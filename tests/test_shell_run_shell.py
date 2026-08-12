@@ -397,3 +397,124 @@ class TestGrepRegexHint:
         fake_subprocess()
         result = _run_shell(_ctx(tmp_path), argv)
         assert "SHELL_REGEX_HINT" not in result, reason
+
+
+# ---------------------------------------------------------------------------
+# Stuffed shell pipeline in a single argv element (v6.93.2 fix class)
+#
+# Closes the recurring "agent passes `["curl && -s && URL"]`" failure shape:
+# a shell pipeline STUFFED into one argv element reaches subprocess as the
+# executable name and dies silently with `[Errno 2]`. Pre-existing
+# `_SHELL_OPERATORS.intersection` only catches `"&&"` as its OWN element;
+# `_GLUED_REDIRECT_RE` only matches redirect-shaped prefixes. The new
+# `_EMBEDDED_SHELL_OP_RE` regex fills the gap, gated by `_SHELL_INTERPRETERS`
+# so `["sh", "-c", "echo a && echo b"]` passes through.
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddedShellPipeline:
+    """_EMBEDDED_SHELL_OP_RE catches stuffed pipelines without breaking legit use."""
+
+    # ------------------------------------------------------------------
+    # Regression guard: existing _SHELL_OPERATORS.intersection still works.
+    # (R4 from plan review: this check had ZERO test coverage before.)
+    # ------------------------------------------------------------------
+    def test_run_shell_blocks_standalone_shell_operator(self, tmp_path):
+        """`["curl", "&&", "-s", "&&", "URL"]` — pre-existing _SHELL_OPERATORS check."""
+        result = _run_shell(_ctx(tmp_path), ["curl", "&&", "-s", "&&", "URL"])
+        assert "SHELL_CMD_ERROR" in result
+        assert "&&" in result
+        assert '"sh"' in result
+
+    # ------------------------------------------------------------------
+    # The NEW check: production failure shape (v6.93.2 fix).
+    # ------------------------------------------------------------------
+    def test_run_shell_blocks_stuffed_pipeline_in_element_zero(self, tmp_path):
+        """The exact shape that hit task 0b7e545d / 352130d1 / 7847c2aa / 91d68bd0."""
+        result = _run_shell(
+            _ctx(tmp_path),
+            ["curl && -s && https://api.example.com/x"],
+        )
+        assert "SHELL_CMD_ERROR" in result
+        assert "cmd[0]" in result
+        assert '"sh"' in result
+
+    def test_run_shell_blocks_stuffed_pipeline_in_middle_element(self, tmp_path):
+        """Stuffed pipeline inside element index 2 (two operators) names the index."""
+        result = _run_shell(
+            _ctx(tmp_path),
+            ["git", "log", "--oneline -n 5 && grep TODO && head -3", "--"],
+        )
+        assert "SHELL_CMD_ERROR" in result
+        assert "cmd[2]" in result
+
+    def test_run_shell_blocks_double_pipe_stuffed(self, tmp_path):
+        """`||` operator also caught."""
+        result = _run_shell(
+            _ctx(tmp_path),
+            ["test -f foo || echo missing && exit 1"],
+        )
+        assert "SHELL_CMD_ERROR" in result
+        assert "||" in result
+
+    # ------------------------------------------------------------------
+    # _SHELL_INTERPRETERS exemption: sh -c / bash -c / zsh -c pass through.
+    # ------------------------------------------------------------------
+    def test_run_shell_allows_sh_c_with_operators(self, tmp_path, fake_subprocess):
+        """`["sh", "-c", "cmd1 && cmd2 && cmd3"]` runs to completion."""
+        fake_subprocess(stdout="ok")
+        result = _run_shell(_ctx(tmp_path), ["sh", "-c", "cmd1 && cmd2 && cmd3"])
+        assert "SHELL_CMD_ERROR" not in result
+        assert "SHELL_ENV_ERROR" not in result
+        assert "exit_code=0" in result
+
+    def test_run_shell_allows_bash_c_with_operators(self, tmp_path, fake_subprocess):
+        """`["bash", "-c", "a || b"]` runs to completion."""
+        fake_subprocess(stdout="ok")
+        result = _run_shell(_ctx(tmp_path), ["bash", "-c", "a || b"])
+        assert "SHELL_CMD_ERROR" not in result
+        assert "exit_code=0" in result
+
+    def test_run_shell_allows_zsh_c_with_operators(self, tmp_path, fake_subprocess):
+        """All _SHELL_INTERPRETERS members carry the exemption."""
+        fake_subprocess(stdout="ok")
+        result = _run_shell(_ctx(tmp_path), ["zsh", "-c", "echo a && echo b"])
+        assert "SHELL_CMD_ERROR" not in result
+        assert "exit_code=0" in result
+
+    # ------------------------------------------------------------------
+    # False-positive guards: legitimate text must NOT be flagged.
+    # ------------------------------------------------------------------
+    def test_run_shell_allows_single_operator_in_legit_text(self, tmp_path, fake_subprocess):
+        """`["echo", "a && b"]` is literal text — only one `&&`, not flagged."""
+        fake_subprocess(stdout="a && b\n")
+        result = _run_shell(_ctx(tmp_path), ["echo", "a && b"])
+        assert "SHELL_CMD_ERROR" not in result
+        assert "exit_code=0" in result
+
+    def test_run_shell_allows_grep_regex_alternation(self, tmp_path, fake_subprocess):
+        """`["grep", "a|b"]` is legitimate regex alternation — no whitespace context."""
+        fake_subprocess(stdout="")
+        result = _run_shell(_ctx(tmp_path), ["grep", "a|b"])
+        assert "SHELL_CMD_ERROR" not in result
+
+    def test_run_shell_allows_glued_double_ampersand(self, tmp_path, fake_subprocess):
+        """`a&&b` (no whitespace) is NOT a shell operator — not flagged."""
+        fake_subprocess(stdout="")
+        result = _run_shell(_ctx(tmp_path), ["echo", "a&&b"])
+        assert "SHELL_CMD_ERROR" not in result
+
+    # ------------------------------------------------------------------
+    # Pre-existing env-ref exemption still works (R5 from plan review:
+    # this is a regression guard for behavior that pre-dates this PATCH).
+    # ------------------------------------------------------------------
+    def test_run_shell_env_ref_exemption_still_works(self, tmp_path, fake_subprocess):
+        """`bash -c "printf '%s' \"$SECRET\""` — env-ref exemption unchanged."""
+        fake_subprocess(stdout="ok")
+        result = _run_shell(
+            _ctx(tmp_path),
+            ["bash", "-c", "printf '%s' \"$SECRET\" && true"],
+        )
+        assert "SHELL_ENV_ERROR" not in result
+        assert "SHELL_CMD_ERROR" not in result
+        assert "exit_code=0" in result

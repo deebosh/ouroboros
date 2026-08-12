@@ -730,6 +730,17 @@ _SHELL_OPERATORS = frozenset(["&&", "||", "|", ";", ">", ">>", "<", "<<"])
 _GLUED_REDIRECT_RE = re.compile(
     r'^(?:(?:\d+>>?|>>?&?\d*|\d*>&\d*|&>>?)(?:\S.*)?|\d+<\S*|<<\S*|<)$'
 )
+# Detect shell pipelines STUFFED into a single argv element (e.g.
+# `["curl && -s && https://api..."]`). Signature: whitespace-bracketed `&&` or
+# `||` inside one element, with non-whitespace on both sides. The whole string
+# reaches subprocess as the executable name and dies with a silent
+# `[Errno 2] No such file or directory`. Narrow to `&&`/`||` only because (a)
+# a bare `|` element is already caught by `_SHELL_OPERATORS.intersection` and
+# (b) `|` inside a regex like `grep "a|b"` is legitimate alternation. The
+# check is gated by `_SHELL_INTERPRETERS` so `["sh", "-c", "a && b"]` scripts
+# pass through (env-ref check at the same cascade location carries the same
+# exemption boundary).
+_EMBEDDED_SHELL_OP_RE = re.compile(r'\s(?:&&|\|\|)\s')
 _SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"})
 _ENV_REF_PATTERN = re.compile(r'\$(?:\{[A-Z][A-Z0-9_]*\}|[A-Z][A-Z0-9_]*)')
 _SENSITIVE_OUTPUT_NAMES = frozenset({".env", ".env.local", "credentials.json", "secrets.json", "token.json"})
@@ -1110,6 +1121,33 @@ def _run_shell(
                 'program as a literal argument. '
                 'Use ["sh", "-c", "your command with redirects"] for redirection.'
             )
+
+    # A shell pipeline STUFFED into a single argv element (e.g.
+    # `["curl && -s && https://api.example.com/x"]`) — the standalone-operator
+    # check above only catches `"&&"` as its own element, and the glued-redirect
+    # check only matches redirect-shaped prefixes. The whole string is then
+    # passed to subprocess as the executable name and dies with a silent
+    # `[Errno 2] No such file or directory`. Gated by `_SHELL_INTERPRETERS` so
+    # `["sh", "-c", "echo a && echo b"]` (a legitimate shell script) passes
+    # through — the env-ref check at the same cascade location carries the
+    # same exemption boundary. Narrowed to whitespace-bracketed `&&`/`||` (no
+    # `|`) so `grep "a|b"` regex alternation is not over-flagged.
+    if executable_name not in _SHELL_INTERPRETERS:
+        for idx, arg in enumerate(cmd):
+            # Count operator occurrences: a SINGLE `&&` in literal text
+            # (e.g. `["echo", "a && b"]`) is legitimate; the production failure
+            # shape is two or more operators with whitespace context in one arg.
+            op_matches = _EMBEDDED_SHELL_OP_RE.findall(arg)
+            if len(op_matches) >= 2:
+                preview = arg if len(arg) <= 80 else arg[:77] + "..."
+                return (
+                    f'⚠️ SHELL_CMD_ERROR: Shell pipeline stuffed into cmd[{idx}]: "{preview}". '
+                    'Two or more `&&`/`||` operators inside one argv element mean '
+                    'the OS treats the WHOLE string as the executable name, producing '
+                    'silent `[Errno 2] No such file or directory` failures. '
+                    'Fix: (1) Split into separate run_command calls; '
+                    '(2) Wrap the pipeline: ["sh", "-c", "cmd1 && cmd2"].'
+                )
 
     active_repo_dir = active_repo_dir_for(ctx)
     active_root = pathlib.Path(active_repo_dir).resolve(strict=False)
