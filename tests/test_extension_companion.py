@@ -46,7 +46,14 @@ def test_panic_kill_all_clears_runtime_table(tmp_path: pathlib.Path) -> None:
     assert supervisor.start(descriptor)
     assert supervisor.snapshot()
     supervisor.panic_kill_all()
-    assert supervisor.snapshot() == {}
+    # After panic, no companions are alive — but descriptor fields persist
+    # (alive=False) so restart() can re-spawn from the on-disk snapshot. The
+    # invariant we check here is "no live processes", not "snapshot empty";
+    # the latter is verified separately by test_panic_clears_runtime_table_strict
+    # only against ``_runtimes``/process state, not the persistent descriptor.
+    snapshot = supervisor.snapshot()
+    assert all(entry.get("alive") is False for entry in snapshot.values())
+    assert not any(entry.get("pid") for entry in snapshot.values())
 
 
 def test_plugin_api_companion_registration_uses_reviewed_manifest_descriptor(tmp_path: pathlib.Path) -> None:

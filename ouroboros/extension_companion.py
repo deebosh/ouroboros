@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import pathlib
@@ -76,6 +77,30 @@ class CompanionRuntime:
     job_handle: Any = None
 
 
+@dataclass
+class RestartResult:
+    """Outcome of a manual ``CompanionSupervisor.restart()`` call.
+
+    The four fields together let the caller (the ``restart_companion``
+    tool, future API endpoints) distinguish a clean respawn from a
+    no-op against an unknown companion: ``success`` is the boolean
+    verdict; ``pid_before`` / ``returncode_before`` describe the prior
+    live runtime (both ``None`` when there was no live runtime); and
+    ``pid_after`` is the new pid (``None`` when start() failed). The
+    free-form ``error`` carries a typed reason — ``"not_registered"``
+    when the descriptor is absent in both the live table and the
+    on-disk snapshot, ``"snapshot_rebuild_failed:<exc>"`` when the
+    persisted descriptor cannot be reconstructed, and the underlying
+    ``"<ExcName>:<msg>"`` when start() raises.
+    """
+
+    success: bool
+    pid_before: Optional[int] = None
+    pid_after: Optional[int] = None
+    returncode_before: Optional[int] = None
+    error: str = ""
+
+
 def init_server_process_pid(pid: Optional[int] = None) -> None:
     global _SERVER_PROCESS_PID
     _SERVER_PROCESS_PID = int(pid or os.getpid())
@@ -105,6 +130,13 @@ class CompanionSupervisor:
         self.data_dir = pathlib.Path(data_dir)
         self._lock = threading.RLock()
         self._runtimes: Dict[str, CompanionRuntime] = {}
+        # ``_known_descriptors`` persists descriptor fields across monitor-runtime
+        # process-death cleanup. The runtime entry is popped on exit (so the
+        # monitor thread can free resources), but the descriptor survives so
+        # ``restart()`` can re-spawn from the on-disk snapshot. Cleared only by
+        # deliberate stop paths (``stop()``, ``stop_skill()``, ``stop_all()``,
+        # ``panic_kill_all()``).
+        self._known_descriptors: Dict[str, CompanionDescriptor] = {}
         self._restart_history: Dict[str, List[float]] = {}
 
     def _key(self, skill_name: str, name: str) -> str:
@@ -188,6 +220,11 @@ class CompanionSupervisor:
                 job_handle=job_handle,
             )
             self._runtimes[key] = runtime
+            # Persist the descriptor so restart() can re-spawn after the runtime
+            # entry is popped (process death, deliberate stop followed by
+            # manual recovery from the on-disk snapshot). The snapshot file
+            # carries both the descriptor and a live-overlay pid/returncode.
+            self._known_descriptors[key] = descriptor
             self._start_drainers(runtime)
             threading.Thread(
                 target=self._monitor_runtime,
@@ -256,6 +293,13 @@ class CompanionSupervisor:
         key = self._key(skill_name, name)
         with self._lock:
             runtime = self._runtimes.pop(key, None)
+            # Deliberate stop removes the descriptor too — once the skill (or
+            # this companion of it) is intentionally stopped, restart() returns
+            # ``not_registered`` until a fresh ``start()`` re-registers the
+            # companion. The ``_known_descriptors`` entry keeps the snapshot
+            # honest: dead companions with descriptors stay recoverable; an
+            # operator-initiated stop drops the recovery path on purpose.
+            self._known_descriptors.pop(key, None)
         if not runtime:
             return
         self._terminate_runtime(runtime, timeout_sec=timeout_sec)
@@ -306,23 +350,165 @@ class CompanionSupervisor:
                 close_job(runtime.job_handle)
 
     def snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Return a per-key dict combining ``_known_descriptors`` (descriptor
+        fields) with a live overlay from ``_runtimes`` (pid/returncode/alive).
+
+        Dead companions stay visible in the snapshot (descriptor fields
+        without live overlay, ``alive=False``) so ``restart()`` can re-spawn
+        them. The ``alive`` boolean is the source of truth for whether the
+        runtime is currently tracked.
+        """
         with self._lock:
-            return {
-                key: self._runtime_snapshot(rt)
-                for key, rt in self._runtimes.items()
-            }
+            out: Dict[str, Dict[str, Any]] = {}
+            for key, descriptor in self._known_descriptors.items():
+                runtime = self._runtimes.get(key)
+                out[key] = self._descriptor_snapshot(descriptor, runtime)
+            return out
+
+    @staticmethod
+    def _descriptor_snapshot(
+        descriptor: CompanionDescriptor,
+        runtime: Optional[CompanionRuntime],
+    ) -> Dict[str, Any]:
+        """Render one entry of the on-disk snapshot.
+
+        For alive companions: pid/returncode come from the live runtime,
+        ``started_at_monotonic`` is the spawn timestamp.
+        For dead companions (descriptor survived ``_monitor_runtime``
+        cleanup but the runtime entry is gone): pid/returncode are None
+        and ``alive=False``. ``restart()`` reads this shape to rebuild
+        a fresh ``CompanionDescriptor`` and re-spawn.
+        """
+        pid = runtime.process.pid if runtime is not None else None
+        returncode = runtime.process.poll() if runtime is not None else None
+        entry: Dict[str, Any] = {
+            "skill_name": descriptor.skill_name,
+            "name": descriptor.name,
+            "pid": pid,
+            "returncode": returncode,
+            "alive": runtime is not None,
+            "ports": list(descriptor.ports),
+            "command": list(descriptor.command),
+            "cwd": str(descriptor.cwd),
+            "env": dict(descriptor.env),
+            "restart_policy": descriptor.restart_policy,
+            "max_restarts": descriptor.max_restarts,
+            "restart_window_sec": descriptor.restart_window_sec,
+            "updated_at": utc_now_iso(),
+        }
+        if runtime is not None:
+            entry["started_at_monotonic"] = runtime.started_at
+        return entry
 
     @staticmethod
     def _runtime_snapshot(rt: CompanionRuntime) -> Dict[str, Any]:
-        return {
-            "skill_name": rt.descriptor.skill_name,
-            "name": rt.descriptor.name,
-            "pid": rt.process.pid,
-            "returncode": rt.process.poll(),
-            "ports": list(rt.descriptor.ports),
-            "started_at_monotonic": rt.started_at,
-            "updated_at": utc_now_iso(),
-        }
+        """Legacy helper retained for callers that still hold a live runtime
+        reference and want a one-row snapshot without consulting
+        ``_known_descriptors``. New code should call ``snapshot()`` instead.
+        """
+        return CompanionSupervisor._descriptor_snapshot(rt.descriptor, rt)
+
+    def restart(self, skill_name: str, name: str, *, reason: str = "manual") -> "RestartResult":
+        """Manually restart a companion using its persisted descriptor.
+
+        Looks up the descriptor (live runtime first, on-disk snapshot as
+        fallback), captures pre-stop runtime state, resets the per-key
+        restart history so the next crash loop gets a fresh window, stops
+        the live runtime if present, then spawns a fresh process.
+
+        Returns RestartResult(success, pid_before, pid_after,
+        returncode_before, error). When the companion is unknown to both
+        the live table and the on-disk snapshot, returns
+        ``success=False, error="not_registered"`` without spawning
+        anything. Inherits the ``is_server_process()`` guard from
+        ``start()`` (v6.93.x): outside the server process the supervisor
+        cannot spawn companions, so a manual restart also returns
+        ``success=False`` there.
+        """
+        key = self._key(skill_name, name)
+        descriptor: Optional[CompanionDescriptor] = None
+
+        # Prefer live runtime (descriptor is guaranteed fresh there). Fall
+        # back to the on-disk snapshot when the runtime entry was popped by
+        # _monitor_runtime after process death or by stop() — the descriptor
+        # persists across those cleanups via _write_runtime_snapshot().
+        with self._lock:
+            existing = self._runtimes.get(key)
+            if existing is not None:
+                descriptor = existing.descriptor
+
+        if descriptor is None:
+            snapshot_path = self.data_dir / "state" / "extension_companions.json"
+            try:
+                snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                snapshot = {}
+            entry = (snapshot or {}).get(key) if isinstance(snapshot, dict) else None
+            if not entry or not isinstance(entry.get("command"), list):
+                return RestartResult(success=False, error="not_registered")
+            try:
+                descriptor = CompanionDescriptor(
+                    skill_name=str(entry.get("skill_name") or skill_name),
+                    name=str(entry.get("name") or name),
+                    command=[str(part) for part in entry.get("command") or []],
+                    cwd=pathlib.Path(str(entry.get("cwd") or ".")),
+                    env={str(k): str(v) for k, v in (entry.get("env") or {}).items()},
+                    ports=[int(p) for p in (entry.get("ports") or []) if str(p).isdigit()],
+                    restart_policy=str(entry.get("restart_policy") or "on_failure"),
+                    max_restarts=max(0, int(entry.get("max_restarts") or 5)),
+                    restart_window_sec=float(entry.get("restart_window_sec") or 300.0),
+                )
+            except Exception as exc:
+                return RestartResult(
+                    success=False,
+                    error=f"snapshot_rebuild_failed:{type(exc).__name__}:{exc}",
+                )
+
+        # Capture pre-stop runtime state BEFORE stop() — process.poll() after
+        # termination returns the exit code, not the live state. Ordering is
+        # load-bearing for audit semantics (R-6).
+        pid_before: Optional[int] = None
+        returncode_before: Optional[int] = None
+        with self._lock:
+            live = self._runtimes.get(key)
+            if live is not None:
+                pid_before = live.process.pid
+                returncode_before = live.process.poll()
+
+        # Reset per-key restart history so the next crash loop gets a fresh
+        # 5-restart-in-300s window. _key() isolates the reset to this
+        # companion only — other companions keep their windows intact.
+        with self._lock:
+            self._restart_history.pop(key, None)
+
+        # Stop the live runtime if present (gives a clean shutdown before
+        # respawn; without this, port conflicts would block the spawn).
+        if pid_before is not None:
+            self.stop(skill_name, name, timeout_sec=5.0)
+
+        # Spawn fresh. start() itself runs the is_server_process() guard, so
+        # outside the server process this returns False without raising.
+        pid_after: Optional[int] = None
+        success = False
+        error = ""
+        try:
+            success = bool(self.start(descriptor))
+            if success:
+                with self._lock:
+                    runtime = self._runtimes.get(key)
+                    if runtime is not None:
+                        pid_after = runtime.process.pid
+        except Exception as exc:
+            error = f"{type(exc).__name__}:{exc}"
+            success = False
+
+        return RestartResult(
+            success=success,
+            pid_before=pid_before,
+            pid_after=pid_after,
+            returncode_before=returncode_before,
+            error=error,
+        )
 
     def _write_runtime_snapshot(self) -> None:
         try:
@@ -354,6 +540,7 @@ def panic_kill_all() -> None:
 
 
 __all__ = [
-    "CompanionDescriptor", "CompanionSupervisor", "init_global_supervisor",
-    "init_server_process_pid", "is_server_process", "panic_kill_all", "snapshot_processes",
+    "CompanionDescriptor", "CompanionRuntime", "CompanionSupervisor", "RestartResult",
+    "init_global_supervisor", "init_server_process_pid", "is_server_process",
+    "panic_kill_all", "snapshot_processes",
 ]

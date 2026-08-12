@@ -841,6 +841,102 @@ def _maybe_autocorrect_grep_backslash_pipe(cmd: List[str]) -> tuple[List[str], s
     )
 
 
+def _validate_shell_argv(cmd: List[str]) -> str:
+    """Cascade validation of a shell argv after autocorrect.
+
+    Returns an empty string when valid, or the SHELL_*_ERROR message that
+    should replace the run. Pulled out of _run_shell (cycle #3 cleanup) to
+    keep that function under the 300-line test gate while keeping every
+    check at the same cascade location and gating the _SHELL_INTERPRETERS
+    exemption boundary. Autocorrect (grep backslash-pipe) is intentionally
+    NOT in here — callers run it first so this helper validates what
+    actually gets executed.
+
+    Cascade order (matches the original inline layout):
+      1. env_ref check (excluded for shell interpreters — same gate as the
+         embedded-op check, so `["sh", "-c", "$FOO && bar"]` passes through)
+      2. shell-builtin check (cd, source, ., etc. — refuse with cwd hint
+         for cd and a generic sh -c hint for the rest)
+      3. standalone shell-operator check (`_SHELL_OPERATORS.intersection`)
+      4. glued-redirect check (`_GLUED_REDIRECT_RE`)
+      5. embedded-op check (the cycle #1 fix: 2+ whitespace-bracketed
+         `&&`/`||` inside one argv element — the production failure shape).
+    """
+    executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
+    if executable_name not in _SHELL_INTERPRETERS:
+        for arg in cmd:
+            match = _ENV_REF_PATTERN.search(arg)
+            if match:
+                return (
+                    f'⚠️ SHELL_ENV_ERROR: Found literal env reference "{match.group(0)}" in cmd array. '
+                    "run_command executes argv directly, so shell variables are not expanded. "
+                    'Use ["sh", "-c", "..."] if you intentionally need shell expansion, '
+                    "or read the environment variable inside the called program."
+                )
+
+    if cmd and cmd[0] in _SHELL_BUILTINS:
+        if cmd[0] == "cd":
+            return (
+                '⚠️ SHELL_CMD_ERROR: "cd" is a shell builtin, not an executable. '
+                'Use the "cwd" parameter instead: '
+                'run_command(cmd=["git", "log"], cwd="/target/dir")'
+            )
+        return (
+            f'⚠️ SHELL_CMD_ERROR: "{cmd[0]}" is a shell builtin and cannot '
+            'be executed directly via subprocess. '
+            'Use ["sh", "-c", "your command"] if you need shell builtins.'
+        )
+
+    found_ops = _SHELL_OPERATORS.intersection(cmd)
+    if found_ops:
+        op = sorted(found_ops)[0]
+        return (
+            f'⚠️ SHELL_CMD_ERROR: Shell operator "{op}" found in cmd array. '
+            'Subprocess does not interpret shell syntax. '
+            'Options: (1) Split into separate run_command calls. '
+            '(2) For pipes/chaining: ["sh", "-c", "cmd1 && cmd2"]'
+        )
+
+    # A redirect glued into one argv element (e.g. "2>/dev/null", "2>&1")
+    # slips past the standalone-operator set above and reaches the program
+    # as a literal arg — the program then dies cryptically ("find:
+    # 2>/dev/null: unknown primary"). Surface the same actionable hint
+    # before subprocess runs.
+    for arg in cmd:
+        if _GLUED_REDIRECT_RE.match(arg):
+            return (
+                f'⚠️ SHELL_CMD_ERROR: Shell redirection "{arg}" found in cmd array. '
+                'Subprocess does not interpret shell syntax, so it reaches the '
+                'program as a literal argument. '
+                'Use ["sh", "-c", "your command with redirects"] for redirection.'
+            )
+
+    # A shell pipeline STUFFED into a single argv element (e.g.
+    # `["curl && -s && https://api.example.com/x"]`) — the standalone-operator
+    # check above only catches `"&&"` as its own element, and the glued-redirect
+    # check only matches redirect-shaped prefixes. The whole string is then
+    # passed to subprocess as the executable name and dies with a silent
+    # `[Errno 2] No such file or directory`. Gated by `_SHELL_INTERPRETERS` so
+    # `["sh", "-c", "echo a && echo b"]` (a legitimate shell script) passes
+    # through. Narrowed to whitespace-bracketed `&&`/`||` (no `|`) so
+    # `grep "a|b"` regex alternation is not over-flagged.
+    if executable_name not in _SHELL_INTERPRETERS:
+        for idx, arg in enumerate(cmd):
+            op_matches = _EMBEDDED_SHELL_OP_RE.findall(arg)
+            if len(op_matches) >= 2:
+                preview = arg if len(arg) <= 80 else arg[:77] + "..."
+                return (
+                    f'⚠️ SHELL_CMD_ERROR: Shell pipeline stuffed into cmd[{idx}]: "{preview}". '
+                    'Two or more `&&`/`||` operators inside one argv element mean '
+                    'the OS treats the WHOLE string as the executable name, producing '
+                    'silent `[Errno 2] No such file or directory` failures. '
+                    'Fix: (1) Split into separate run_command calls; '
+                    '(2) Wrap the pipeline: ["sh", "-c", "cmd1 && cmd2"].'
+                )
+
+    return ""
+
+
 def _resolve_scratch_abs(scratch: List[str] | None, work_dir) -> list[pathlib.Path]:
     """Resolve declared ephemeral `scratch=[...]` paths to absolute host paths (relative ones
     against the command cwd). Blank entries dropped. (v6.52.2)"""
@@ -1072,82 +1168,10 @@ def _run_shell(
         return "⚠️ SHELL_ARG_ERROR: cmd must be a list of strings."
     cmd = [str(x) for x in cmd]
 
-    executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
-    if executable_name not in _SHELL_INTERPRETERS:
-        for arg in cmd:
-            match = _ENV_REF_PATTERN.search(arg)
-            if match:
-                return (
-                    f'⚠️ SHELL_ENV_ERROR: Found literal env reference "{match.group(0)}" in cmd array. '
-                    "run_command executes argv directly, so shell variables are not expanded. "
-                    'Use ["sh", "-c", "..."] if you intentionally need shell expansion, '
-                    "or read the environment variable inside the called program."
-                )
-
-    if cmd and cmd[0] in _SHELL_BUILTINS:
-        if cmd[0] == "cd":
-            return (
-                '⚠️ SHELL_CMD_ERROR: "cd" is a shell builtin, not an executable. '
-                'Use the "cwd" parameter instead: '
-                'run_command(cmd=["git", "log"], cwd="/target/dir")'
-            )
-        return (
-            f'⚠️ SHELL_CMD_ERROR: "{cmd[0]}" is a shell builtin and cannot '
-            'be executed directly via subprocess. '
-            'Use ["sh", "-c", "your command"] if you need shell builtins.'
-        )
-
     cmd, autocorrect_note = _maybe_autocorrect_grep_backslash_pipe(cmd)
-
-    found_ops = _SHELL_OPERATORS.intersection(cmd)
-    if found_ops:
-        op = sorted(found_ops)[0]
-        return (
-            f'⚠️ SHELL_CMD_ERROR: Shell operator "{op}" found in cmd array. '
-            'Subprocess does not interpret shell syntax. '
-            'Options: (1) Split into separate run_command calls. '
-            '(2) For pipes/chaining: ["sh", "-c", "cmd1 && cmd2"]'
-        )
-
-    # A redirect glued into one argv element (e.g. "2>/dev/null", "2>&1") slips
-    # past the standalone-operator set above and reaches the program as a literal
-    # arg — the program then dies cryptically ("find: 2>/dev/null: unknown
-    # primary"). Surface the same actionable hint before subprocess runs.
-    for arg in cmd:
-        if _GLUED_REDIRECT_RE.match(arg):
-            return (
-                f'⚠️ SHELL_CMD_ERROR: Shell redirection "{arg}" found in cmd array. '
-                'Subprocess does not interpret shell syntax, so it reaches the '
-                'program as a literal argument. '
-                'Use ["sh", "-c", "your command with redirects"] for redirection.'
-            )
-
-    # A shell pipeline STUFFED into a single argv element (e.g.
-    # `["curl && -s && https://api.example.com/x"]`) — the standalone-operator
-    # check above only catches `"&&"` as its own element, and the glued-redirect
-    # check only matches redirect-shaped prefixes. The whole string is then
-    # passed to subprocess as the executable name and dies with a silent
-    # `[Errno 2] No such file or directory`. Gated by `_SHELL_INTERPRETERS` so
-    # `["sh", "-c", "echo a && echo b"]` (a legitimate shell script) passes
-    # through — the env-ref check at the same cascade location carries the
-    # same exemption boundary. Narrowed to whitespace-bracketed `&&`/`||` (no
-    # `|`) so `grep "a|b"` regex alternation is not over-flagged.
-    if executable_name not in _SHELL_INTERPRETERS:
-        for idx, arg in enumerate(cmd):
-            # Count operator occurrences: a SINGLE `&&` in literal text
-            # (e.g. `["echo", "a && b"]`) is legitimate; the production failure
-            # shape is two or more operators with whitespace context in one arg.
-            op_matches = _EMBEDDED_SHELL_OP_RE.findall(arg)
-            if len(op_matches) >= 2:
-                preview = arg if len(arg) <= 80 else arg[:77] + "..."
-                return (
-                    f'⚠️ SHELL_CMD_ERROR: Shell pipeline stuffed into cmd[{idx}]: "{preview}". '
-                    'Two or more `&&`/`||` operators inside one argv element mean '
-                    'the OS treats the WHOLE string as the executable name, producing '
-                    'silent `[Errno 2] No such file or directory` failures. '
-                    'Fix: (1) Split into separate run_command calls; '
-                    '(2) Wrap the pipeline: ["sh", "-c", "cmd1 && cmd2"].'
-                )
+    err = _validate_shell_argv(cmd)
+    if err:
+        return err
 
     active_repo_dir = active_repo_dir_for(ctx)
     active_root = pathlib.Path(active_repo_dir).resolve(strict=False)

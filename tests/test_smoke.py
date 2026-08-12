@@ -128,6 +128,7 @@ EXPECTED_TOOLS = [
     "memory_map", "memory_update_registry",
     "plan_task", "recent_tasks", "task_acceptance_review", "verify_and_record", "web_search",
     "start_service", "service_status", "service_logs", "stop_service",
+    "restart_companion",
     "run_command", "run_script",
     "list_skills", "skill_review", "skill_exec", "toggle_skill",
     "skill_preflight", "submit_skill_to_hub",
