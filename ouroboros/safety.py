@@ -109,6 +109,9 @@ TOOL_POLICY: Dict[str, str] = {
     "delegate_start": POLICY_SKIP,
     "delegate_wait": POLICY_SKIP,
     "delegate_cancel": POLICY_SKIP,
+    # Answering a run's question is custody-gated to the task that started it and
+    # carries no authority the task lacks (same reasoning as the verbs above).
+    "delegate_answer": POLICY_SKIP,
     "cancel_task": POLICY_SKIP,
     # Parent's explicit decision to abandon a child result: stamps parent_decision +
     # records the reason on the tree ledger; tree-scoped, no external effect (like cancel_task).
@@ -156,6 +159,7 @@ TOOL_POLICY: Dict[str, str] = {
     # Applies a subagent's patch into the live repo/worktree (protected-path + no-commit
     # gated inside the tool); keep an extra LLM safety look on the integration itself.
     "integrate_subagent_patch": POLICY_CHECK,
+    "integrate_delegated_patch": POLICY_CHECK,
     "fetch_pr_ref": POLICY_CHECK,
     "create_integration_branch": POLICY_CHECK,
     "cherry_pick_pr_commits": POLICY_CHECK,

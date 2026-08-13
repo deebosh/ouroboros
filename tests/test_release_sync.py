@@ -7,6 +7,7 @@ import pytest
 from ouroboros.tools.release_sync import (
     check_history_limit,
     detect_numeric_claims,
+    normalize_linux_package_version,
     run_release_preflight,
     sync_release_metadata,
     version_carrier_desyncs,
@@ -31,6 +32,12 @@ def _make_repo(tmp_path: Path, version: str = "4.99.1") -> Path:
 
     (tmp_path / "pyproject.toml").write_text(
         '[tool.poetry]\nname = "ouroboros"\nversion = "0.0.0"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "uv.lock").write_text(
+        'version = 1\nrevision = 3\nrequires-python = ">=3.10"\n\n'
+        '[[package]]\nname = "ouroboros"\nversion = "0.0.0"\n'
+        'source = { editable = "." }\n',
         encoding="utf-8",
     )
     web = tmp_path / "web"
@@ -81,6 +88,34 @@ class TestSyncReleaseMetadata:
         assert "pyproject.toml" in changed
         text = (repo / "pyproject.toml").read_text()
         assert 'version = "1.2.3"' in text
+
+    def test_syncs_editable_root_version_in_uv_lock(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.2.3-rc.4")
+        changed = sync_release_metadata(str(repo))
+
+        assert "uv.lock" in changed
+        lock_text = (repo / "uv.lock").read_text(encoding="utf-8")
+        assert 'name = "ouroboros"\nversion = "1.2.3rc4"' in lock_text
+
+    def test_stale_uv_lock_root_version_is_reported(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.2.3-rc.4")
+        sync_release_metadata(str(repo))
+        lock_path = repo / "uv.lock"
+        lock_path.write_text(
+            lock_path.read_text(encoding="utf-8").replace(
+                'version = "1.2.3rc4"',
+                'version = "1.2.3rc3"',
+            ),
+            encoding="utf-8",
+        )
+
+        desync = version_carrier_desyncs(
+            "1.2.3-rc.4",
+            uv_lock_text=lock_path.read_text(encoding="utf-8"),
+            detailed=True,
+        )
+
+        assert desync == ['uv.lock (expected editable root version = "1.2.3rc4")']
 
     def test_syncs_readme_badge(self, tmp_path):
         repo = _make_repo(tmp_path, "1.2.3")
@@ -375,6 +410,25 @@ class TestNormalizePep440:
     def test_stable_version_passes_through_unchanged(self):
         assert _normalize_pep440("4.50.0") == "4.50.0"
         assert _normalize_pep440("1.2.3") == "1.2.3"
+
+
+class TestNormalizeLinuxPackageVersion:
+    @pytest.mark.parametrize(
+        "src,expected",
+        [
+            ("4.50.0", "4.50.0"),
+            ("4.50.0-rc.1", "4.50.0~rc1"),
+            ("4.50.0rc1", "4.50.0~rc1"),
+            ("4.50.0-alpha.2", "4.50.0~a2"),
+            ("4.50.0-beta3", "4.50.0~b3"),
+        ],
+    )
+    def test_normalizes_supported_release_spellings(self, src, expected):
+        assert normalize_linux_package_version(src) == expected
+
+    def test_rejects_a_non_release_version(self):
+        with pytest.raises(ValueError, match="unsupported release version"):
+            normalize_linux_package_version("dev")
 
 
 class TestShieldsEscape:

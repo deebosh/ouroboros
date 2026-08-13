@@ -68,6 +68,122 @@ def test_capabilities_sets_are_frozensets():
         assert isinstance(obj, frozenset), f"{name} must be a frozenset"
 
 
+def test_child_profiles_remain_explicit_narrowing_sets():
+    """Top-level surface parity must not widen delegated-child profiles."""
+    from ouroboros.tool_capabilities import (
+        ACTING_SUBAGENT_TOOL_NAMES,
+        CORE_TOOL_NAMES,
+        LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
+    )
+
+    assert LOCAL_READONLY_SUBAGENT_TOOL_NAMES
+    assert ACTING_SUBAGENT_TOOL_NAMES
+    assert "commit_reviewed" not in LOCAL_READONLY_SUBAGENT_TOOL_NAMES
+    assert "commit_reviewed" not in ACTING_SUBAGENT_TOOL_NAMES
+    assert LOCAL_READONLY_SUBAGENT_TOOL_NAMES != CORE_TOOL_NAMES
+    assert ACTING_SUBAGENT_TOOL_NAMES != CORE_TOOL_NAMES
+
+
+def test_top_level_workspace_focus_has_tool_and_schema_parity(tmp_path, monkeypatch):
+    """Ordinary top-level presets differ in default target, not built-in names."""
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
+    import ouroboros.tools.search as search
+
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setattr(search, "_available_web_search_backends", lambda: ["ddgs"])
+    system_repo = tmp_path / "system"
+    project = tmp_path / "project"
+    external = tmp_path / "external"
+    data = tmp_path / "data"
+    for path in (system_repo, project, external, data):
+        path.mkdir()
+
+    contexts = {
+        "plain": ToolContext(repo_dir=system_repo, drive_root=data, task_id="plain"),
+        "workspace": ToolContext(
+            repo_dir=system_repo, drive_root=data, task_id="workspace",
+            workspace_root=project, workspace_mode="project",
+        ),
+        "external_workspace": ToolContext(
+            repo_dir=system_repo, drive_root=data, task_id="external",
+            workspace_root=external, workspace_mode="external",
+        ),
+    }
+    registry = ToolRegistry(repo_dir=system_repo, drive_root=data)
+    snapshots = {}
+    for label, ctx in contexts.items():
+        registry.set_context(ctx)
+        names = frozenset(registry.available_tools())
+        schemas = frozenset(
+            name for name in registry._entries
+            if registry.get_schema_by_name(name) is not None
+        )
+        snapshots[label] = (names, schemas)
+
+    assert snapshots["plain"] == snapshots["workspace"] == snapshots["external_workspace"]
+    names, schemas = snapshots["workspace"]
+    assert names == schemas
+    assert {
+        "delegate_start", "delegate_wait", "delegate_cancel", "delegate_answer",
+        "switch_model", "send_photo", "send_video", "send_file",
+        "commit_reviewed", "promote_chat_to_task", "vcs_restore",
+    } <= names
+
+    # Successor of the retired _WORKSPACE_ALLOWED_TOOLS subset invariant: the
+    # workspace surface is now the full registry, so every child-profile tool
+    # must be a registered, workspace-visible name. Guards the 2026-08-10 saga
+    # shape (a profile tool invisible exactly where children are spawned) —
+    # delegate_answer riding only the child profiles would silently degrade
+    # workspace-scoped nannies to the engine's benign decline.
+    from ouroboros.tool_capabilities import (
+        ACTING_SUBAGENT_TOOL_NAMES,
+        LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
+    )
+
+    assert LOCAL_READONLY_SUBAGENT_TOOL_NAMES <= names, (
+        f"read-only child tools missing from the workspace tool surface: "
+        f"{sorted(LOCAL_READONLY_SUBAGENT_TOOL_NAMES - names)}"
+    )
+    assert ACTING_SUBAGENT_TOOL_NAMES <= names, (
+        f"acting child tools missing from the workspace tool surface: "
+        f"{sorted(ACTING_SUBAGENT_TOOL_NAMES - names)}"
+    )
+
+
+@pytest.mark.parametrize("workspace_mode", ["", "project", "external"])
+def test_top_level_contract_and_resource_filters_narrow_independently(
+    tmp_path, monkeypatch, workspace_mode,
+):
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
+
+    system = tmp_path / f"system-{workspace_mode or 'plain'}"
+    workspace = tmp_path / f"workspace-{workspace_mode or 'plain'}"
+    data = tmp_path / f"data-{workspace_mode or 'plain'}"
+    for path in (system, workspace, data):
+        path.mkdir()
+    contract = {
+        "disabled_tools": ["commit_reviewed"],
+        "allowed_resources": {"web": False, "network": False},
+    }
+    ctx = ToolContext(
+        repo_dir=system,
+        drive_root=data,
+        task_id=f"filter-{workspace_mode or 'plain'}",
+        workspace_root=workspace if workspace_mode else None,
+        workspace_mode=workspace_mode,
+        task_contract=contract,
+        task_metadata={"task_contract": contract},
+    )
+    registry = ToolRegistry(system, data)
+    registry.set_context(ctx)
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *_a, **_k: (True, ""))
+
+    assert registry.get_schema_by_name("commit_reviewed") is None
+    assert "disabled by this task's contract" in registry.policy_hidden_reason("commit_reviewed")
+    assert "RESOURCE_CONSTRAINT_BLOCKED" in registry.execute("youtube_transcript", {"url": "https://example.test"})
+    assert "RESOURCE_CONSTRAINT_BLOCKED" in registry.execute("vcs_pull_ff", {})
+
+
 def test_frozen_registry_includes_pr_integration_tools(tmp_path, monkeypatch):
     import sys
     from ouroboros.tools.registry import ToolRegistry
@@ -570,6 +686,8 @@ def test_local_readonly_subagent_execute_blocks_forbidden_tools(tmp_path, monkey
     assert "LOCAL_READONLY_SUBAGENT_BLOCKED" not in registry.execute("switch_model", {})
     monkeypatch.setattr(mcp_client, "ensure_configured_from_settings", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("MCP touched")))
     assert "LOCAL_READONLY_SUBAGENT_BLOCKED" not in registry.execute("list_files", {"path": "."})
+    assert registry.get_schema_by_name("vcs_status") is not None
+    assert "TOOL_ACCESS_BLOCKED" not in registry.execute("vcs_status", {"root": "system_repo"})
     blocked_tools = [
         "write_file",
         "edit_text",
@@ -591,7 +709,7 @@ def test_local_readonly_subagent_execute_blocks_forbidden_tools(tmp_path, monkey
         assert "LOCAL_READONLY_SUBAGENT_BLOCKED" in registry.execute(name, {})
 
 
-def test_workspace_parent_can_call_task_acceptance_review_only(tmp_path, monkeypatch):
+def test_workspace_parent_keeps_the_ordinary_top_level_control_surface(tmp_path, monkeypatch):
     from ouroboros.tool_policy import initial_tool_schemas
     from ouroboros.tools.registry import ToolContext, ToolRegistry
     import ouroboros.mcp_client as mcp_client
@@ -615,12 +733,40 @@ def test_workspace_parent_can_call_task_acceptance_review_only(tmp_path, monkeyp
 
     assert "plan_task" in names
     assert "task_acceptance_review" in names
-    assert "commit_reviewed" not in names
-    assert "request_restart" not in names
+    assert "commit_reviewed" in names
+    assert "request_restart" in names
 
     registry.override_handler("task_acceptance_review", lambda ctx=None, **_kwargs: "review-ok")
+    registry.override_handler("commit_reviewed", lambda ctx=None, **_kwargs: "commit-ok")
     assert registry.execute("task_acceptance_review", {}) == "review-ok"
-    assert "WORKSPACE_MODE_BLOCKED" in registry.execute("commit_reviewed", {})
+    assert registry.execute("commit_reviewed", {"commit_message": "system target"}) == "commit-ok"
+
+
+def test_workspace_focus_does_not_turn_top_level_cancel_into_child_only(tmp_path, monkeypatch):
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.tools import join_ledger
+    from ouroboros.tools.registry import ToolContext
+
+    system, workspace, data = tmp_path / "system", tmp_path / "workspace", tmp_path / "data"
+    for path in (system, workspace, data):
+        path.mkdir()
+    ctx = ToolContext(
+        repo_dir=system,
+        drive_root=data,
+        workspace_root=workspace,
+        workspace_mode="external",
+        task_id="parent",
+    )
+    monkeypatch.setattr(join_ledger, "_is_own_child", lambda *_a, **_k: False)
+    # NB: no ``write_task_result`` patch — the cancel tool no longer writes a
+    # status latch at all (phase A: it records a durable cancel INTENT), and the
+    # symbol is not imported here any more, so patching it raised AttributeError.
+    monkeypatch.setattr("ouroboros.tools.control._emit_control_event", lambda *_a, **_k: "live")
+
+    assert join_ledger._cancel_task(ctx, "foreign-task").startswith("Cancel requested")
+
+    ctx.task_constraint = TaskConstraint(mode="local_readonly_subagent", allow_enable=False)
+    assert "may only cancel its own children" in join_ledger._cancel_task(ctx, "foreign-task")
 
 
 def test_local_readonly_subagent_allows_enabled_extension_tool(tmp_path, monkeypatch):
@@ -1435,7 +1581,7 @@ def test_local_readonly_subagent_task_drive_and_skill_payload_filters(tmp_path):
     data.mkdir()
     (data / "settings.json").write_text('{"OPENROUTER_API_KEY":"secret"}', encoding="utf-8")
     (data / "skills" / "external" / "alpha").mkdir(parents=True)
-    (data / "skills" / "external" / "alpha" / "skill.md").write_text("hello", encoding="utf-8")
+    (data / "skills" / "external" / "alpha" / "SKILL.md").write_text("hello", encoding="utf-8")
     registry = ToolRegistry(repo_dir=repo, drive_root=data)
     registry.set_context(
         ToolContext(
@@ -1453,7 +1599,7 @@ def test_local_readonly_subagent_task_drive_and_skill_payload_filters(tmp_path):
     assert "TOOL_ACCESS_BLOCKED" in traversal or "READ_FILE_ERROR" in traversal or "TOOL_ARG_ERROR" in traversal
     skill_payload_read = registry.execute(
         "read_file",
-        {"root": "skill_payload", "bucket": "external", "skill_name": "alpha", "path": "skill.md"},
+        {"root": "skill_payload", "bucket": "external", "skill_name": "alpha", "path": "SKILL.md"},
     )
     # v6.70.0 (owner-approved): read-only scouts may READ skill payloads — a scout
     # sent to review a skill used to be structurally blind to it. Mutation stays
@@ -1480,6 +1626,142 @@ def test_discovery_uses_ssot_not_registry_core_names():
         "tool_discovery.py must not call _registry.list_non_core_tools() — "
         "that uses registry.py's local CORE_TOOL_NAMES, not the SSOT"
     )
+
+
+def test_enable_tools_distinguishes_policy_hidden_from_missing(tmp_path):
+    """F3 (2026-08-10 saga): a registered tool filtered by policy must answer
+    'hidden by policy: <reason>', not the same 'Not found' as a typo'd name."""
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.tools import tool_discovery as td
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
+
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    registry.set_context(
+        ToolContext(
+            repo_dir=tmp_path,
+            drive_root=tmp_path,
+            task_constraint=TaskConstraint(mode="local_readonly_subagent", allow_enable=False),
+        )
+    )
+    td.set_registry(registry)
+    out = td._enable_tools(registry._ctx, tools="write_file, definitely_not_a_tool")
+    assert "Hidden by policy" in out
+    assert "write_file — hidden by the read-only subagent profile" in out
+    assert "❌ Not found: definitely_not_a_tool" in out
+    assert "write_file" not in out.split("Not found")[-1]
+
+    # Workspace focus is not a hidden-policy reason: system lifecycle tools are
+    # visible and retain their own target/commit governance.
+    system_repo = tmp_path / "system"
+    workspace = tmp_path / "workspace"
+    data = tmp_path / "data"
+    for path in (system_repo, workspace, data):
+        path.mkdir(parents=True, exist_ok=True)
+    ws_registry = ToolRegistry(repo_dir=system_repo, drive_root=data)
+    ws_registry.set_context(
+        ToolContext(
+            repo_dir=system_repo, drive_root=data,
+            workspace_root=workspace, workspace_mode="external",
+        )
+    )
+    td.set_registry(ws_registry)
+    out = td._enable_tools(ws_registry._ctx, tools="commit_reviewed")
+    assert "hidden by" not in out.lower()
+    assert ws_registry.get_schema_by_name("commit_reviewed") is not None
+
+
+def test_policy_hidden_reason_pins_get_schema_by_name(tmp_path):
+    """Drift pin (adversarial review of 9e59b05d, finding 1): policy_hidden_reason
+    promises "same predicates, same order" as get_schema_by_name. Enforce the
+    XOR invariant — for every registered entry, in every context variant, a tool
+    is either visible (schema, no reason) or policy-hidden (no schema, reason).
+    A predicate added to one method but not the other breaks this immediately."""
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
+
+    system_repo = tmp_path / "system"
+    workspace = tmp_path / "workspace"
+    data = tmp_path / "data"
+    for path in (system_repo, workspace, data):
+        path.mkdir(parents=True, exist_ok=True)
+
+    def ctx_variants():
+        yield "plain", ToolContext(repo_dir=system_repo, drive_root=data)
+        yield "workspace", ToolContext(
+            repo_dir=system_repo, drive_root=data,
+            workspace_root=workspace, workspace_mode="external",
+        )
+        yield "readonly_child", ToolContext(
+            repo_dir=system_repo, drive_root=data,
+            task_constraint=TaskConstraint(mode="local_readonly_subagent", allow_enable=False),
+        )
+        yield "acting_child", ToolContext(
+            repo_dir=system_repo, drive_root=data,
+            task_constraint=TaskConstraint(
+                mode="acting_subagent", allow_enable=False, surface="external_workspace",
+            ),
+        )
+        ephemeral = ToolContext(repo_dir=system_repo, drive_root=data)
+        ephemeral.is_ephemeral_turn = True
+        yield "ephemeral", ephemeral
+        disabled = ToolContext(repo_dir=system_repo, drive_root=data)
+        disabled.task_contract = {"disabled_tools": ["write_file", "delegate_start"]}
+        yield "contract_disabled", disabled
+
+    registry = ToolRegistry(repo_dir=system_repo, drive_root=data)
+    for label, ctx in ctx_variants():
+        registry.set_context(ctx)
+        drift = []
+        for name in list(registry._entries):
+            schema = registry.get_schema_by_name(name)
+            reason = registry.policy_hidden_reason(name)
+            if (schema is None) != (reason is not None):
+                drift.append((name, schema is not None, reason))
+        assert not drift, f"policy_hidden_reason drifted from get_schema_by_name in ctx={label}: {drift}"
+
+
+def test_policy_hidden_reason_covers_contract_disabled_unregistered_names(tmp_path):
+    """ADDENDUM 4 (2026-08-10 amendments): the declarative contract policy applies
+    across ALL discovery sources, so a contract-disabled extension/MCP name (not
+    in ``_entries``) must answer with the disabled reason instead of "not found"
+    — the contract check precedes the registration check, mirroring
+    get_schema_by_name's order. Unknown un-disabled names still answer None."""
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
+
+    system_repo, data = tmp_path / "system", tmp_path / "data"
+    for path in (system_repo, data):
+        path.mkdir(parents=True, exist_ok=True)
+    registry = ToolRegistry(repo_dir=system_repo, drive_root=data)
+    ctx = ToolContext(repo_dir=system_repo, drive_root=data)
+    ctx.task_contract = {"disabled_tools": ["someext_generate", "write_file"]}
+    registry.set_context(ctx)
+
+    assert "someext_generate" not in registry._entries  # an extension-shaped name
+    assert registry.policy_hidden_reason("someext_generate") == (
+        "disabled by this task's contract (disabled_tools)"
+    )
+    assert registry.policy_hidden_reason("write_file") == (
+        "disabled by this task's contract (disabled_tools)"
+    )
+    assert registry.policy_hidden_reason("no_such_tool_anywhere") is None
+    assert registry.policy_hidden_reason("") is None
+
+
+def test_enable_tools_hidden_label_is_shared_between_surfaces():
+    """Drift pin (adversarial review of 9e59b05d, finding 5): the hidden-vs-missing
+    classification exists on TWO enable_tools surfaces (tool_discovery and the
+    loop's override). Pin both to policy_hidden_reason and the identical label so
+    the surfaces cannot silently diverge in honesty wording."""
+    import ouroboros.loop as loop_mod
+    import ouroboros.tools.tool_discovery as td
+
+    label = "🚫 Hidden by policy (the tool exists but this task cannot use it)"
+    loop_src = inspect.getsource(loop_mod)
+    td_src = inspect.getsource(td)
+    assert label in loop_src, "loop enable_tools override lost the shared hidden-by-policy label"
+    assert label in td_src, "tool_discovery lost the shared hidden-by-policy label"
+    assert loop_src.count("policy_hidden_reason(") >= 1
+    assert td_src.count("policy_hidden_reason(") >= 1
 
 
 def test_discovery_path_consistent_with_policy():

@@ -23,7 +23,7 @@ from ouroboros.tool_capabilities import (
     LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
 )
 
-NANNY_TOOLS = {"delegate_start", "delegate_wait", "delegate_cancel"}
+NANNY_TOOLS = {"delegate_start", "delegate_wait", "delegate_cancel", "delegate_answer"}
 
 
 @pytest.fixture(autouse=True)
@@ -941,6 +941,16 @@ def _delegating_ctx(tmp_path, *, acting: bool):
     # `workspace_mode_block_reason` refuses, and the refusal is correct.
     worktree = tmp_path.parent / f"wt-{tmp_path.name}"
     worktree.mkdir(exist_ok=True)
+    if acting and not (worktree / ".git").exists():
+        # C1: a mutating run's authority target must be a git tree — the private
+        # execution snapshot is a worktree of it, at a baseline built from it.
+        import subprocess as _sp
+
+        _sp.run(["git", "init"], cwd=str(worktree), capture_output=True, check=True)
+        (worktree / "README.md").write_text("seed\n", encoding="utf-8")
+        _sp.run(["git", "add", "-A"], cwd=str(worktree), capture_output=True, check=True)
+        _sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "seed"],
+                cwd=str(worktree), capture_output=True, check=True)
     constraint = TaskConstraint(
         mode="acting_subagent" if acting else "local_readonly_subagent",
         surface="self_worktree" if acting else "",
@@ -982,6 +992,9 @@ def _started_request(tmp_path, *, acting: bool, monkeypatch,
 
     _Stub.engine_version = engine_version
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
+    # C1: mutating starts provision a private execution snapshot under the
+    # worktree-service root; keep it inside the test tmp tree.
+    monkeypatch.setenv("OUROBOROS_SUBAGENT_WORKTREE_ROOT", str(tmp_path / "snap_root"))
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()
     payload = json.loads(delegate._delegate_start(_delegating_ctx(tmp_path, acting=acting), "edit the README"))
@@ -990,14 +1003,26 @@ def _started_request(tmp_path, *, acting: bool, monkeypatch,
     return seen.get("request"), payload
 
 
-def test_a_mutating_child_runs_live_in_the_nannys_own_worktree(tmp_path, monkeypatch):
-    # `live` is what makes the EXISTING workspace-patch capture see the harness's edits:
-    # the harness writes the nanny's own tree, so no new patch plumbing exists at all.
+def test_a_mutating_child_runs_live_in_a_private_snapshot_not_the_shared_tree(tmp_path, monkeypatch):
+    # C1: `live` still means the harness edits its scope root in place — but that root
+    # is a PRIVATE execution snapshot of the nanny's write root. The shared tree gets
+    # nothing until the nanny explicitly integrates the captured diff.
+    import pathlib as _pl
+
     request, payload = _started_request(tmp_path, acting=True, monkeypatch=monkeypatch)
     assert request["access"] == "workspace_write"
     assert request["mode"] == "agent"
     assert request["execution"] == {"isolation": "live", "delegated": True}
-    assert request["scope"] == {"kind": "project", "root": str(tmp_path.parent / f"wt-{tmp_path.name}")}
+    worktree = tmp_path.parent / f"wt-{tmp_path.name}"
+    assert request["scope"]["kind"] == "project"
+    scope_root = _pl.Path(str(request["scope"]["root"]))
+    assert scope_root.resolve() != worktree.resolve(), "the run must NEVER scope the shared tree"
+    assert scope_root.resolve().is_relative_to((tmp_path / "snap_root").resolve())
+    assert payload["execution_root"] == str(request["scope"]["root"])
+    assert _pl.Path(payload["authority_target_root"]).resolve() == worktree.resolve()
+    assert payload["baseline_id"], "the baseline commit is the binding's third leg"
+    # The snapshot genuinely carries the target's current state.
+    assert (scope_root / "README.md").read_text(encoding="utf-8") == "seed\n"
     assert payload["access"] == "workspace_write" and payload["isolation"] == "live"
 
 
@@ -1166,7 +1191,7 @@ def test_a_mutating_run_requires_an_ACTIVE_workspace_not_merely_agreement(tmp_pa
     """
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.subagents import delegated_run_shape
-    from ouroboros.tools.delegate import _mutating_run_root
+    from ouroboros.tools.delegate import _mutation_authority
     from ouroboros.tools.registry import ToolContext
 
     repo = tmp_path / "repo"
@@ -1178,10 +1203,10 @@ def test_a_mutating_run_requires_an_ACTIVE_workspace_not_merely_agreement(tmp_pa
     )
     ctx.workspace_root = None
     ctx.workspace_mode = ""
-    root, refusal = _mutating_run_root(
+    record, refusal = _mutation_authority(
         ctx, delegated_run_shape(True))
     assert refusal and "workspace_not_active" in refusal, refusal
-    assert root == ""
+    assert record == {}
 
 
 def test_a_widened_run_is_cancelled_and_typed_not_reported_as_progress(tmp_path, monkeypatch):
@@ -1933,23 +1958,28 @@ def _plain_ctx(tmp_path):
 def test_an_unresolvable_write_root_is_a_typed_refusal_not_a_traceback(tmp_path):
     """"Can this path be resolved at all" is ONE question, not an exception set.
 
-    `Path.resolve()` raises `ValueError` on an embedded null and `RuntimeError` on a
-    symlink loop, neither of which is an `OSError`. Either escaping `_mutating_run_root`
+    Embedded nulls and symlink loops have changed their exact `Path.resolve()` failure
+    behaviour across supported Python versions. Either escaping `_mutating_run_root`
     aborts `delegate_start` with a traceback instead of the typed refusal the function
     exists to produce — and a guard that raises delivers no decision at all.
     """
     import os
 
     from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.delegate_containment import _resolved as containment_resolved
     from ouroboros.subagents import delegated_run_shape
-    from ouroboros.tools.delegate import _mutating_run_root, _resolved
+    from ouroboros.tools.delegate import _mutation_authority, _resolved
     from ouroboros.tools.registry import ToolContext
 
     os.symlink(tmp_path / "b", tmp_path / "a")
     os.symlink(tmp_path / "a", tmp_path / "b")
     assert _resolved(tmp_path / "a" / "x") is None, "a symlink loop must resolve to None"
+    assert containment_resolved(tmp_path / "a" / "x") is None
     assert _resolved("/etc/passwd\x00") is None, "an embedded null must resolve to None"
     assert _resolved(tmp_path) == tmp_path.resolve(), "an ordinary path still resolves"
+    missing = tmp_path / "missing" / "leaf"
+    assert _resolved(missing) == missing.resolve(strict=False)
+    assert containment_resolved(missing) == missing.resolve(strict=False)
 
     workspace = tmp_path.parent / f"ws-{tmp_path.name}"
     workspace.mkdir()
@@ -1960,10 +1990,10 @@ def test_an_unresolvable_write_root_is_a_typed_refusal_not_a_traceback(tmp_path)
     )
     ctx.workspace_root = str(workspace)
     ctx.workspace_mode = "self_worktree"
-    root, refusal = _mutating_run_root(
+    record, refusal = _mutation_authority(
         ctx, delegated_run_shape(True))
     assert refusal and "write_root_mismatch" in refusal, refusal
-    assert root == ""
+    assert record == {}
 
 
 def test_an_inactive_workspace_is_refused_even_when_the_root_is_set(tmp_path):
@@ -1979,7 +2009,7 @@ def test_an_inactive_workspace_is_refused_even_when_the_root_is_set(tmp_path):
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.tool_access import workspace_mode_block_reason
     from ouroboros.subagents import delegated_run_shape
-    from ouroboros.tools.delegate import _mutating_run_root
+    from ouroboros.tools.delegate import _mutation_authority
     from ouroboros.tools.registry import ToolContext
 
     repo = tmp_path / "repo"
@@ -1995,11 +2025,11 @@ def test_an_inactive_workspace_is_refused_even_when_the_root_is_set(tmp_path):
     assert workspace_mode_block_reason(ctx) == "", "the old predicate's leg is satisfied here"
     assert ctx.is_workspace_mode() is False, "yet the workspace is genuinely inactive"
 
-    root, refusal = _mutating_run_root(
+    record, refusal = _mutation_authority(
         ctx, delegated_run_shape(True))
     assert refusal, "an inactive workspace must be refused"
     assert "workspace_not_active" in refusal, refusal
-    assert root == ""
+    assert record == {}
 
 
 # -- 5. the delegated-run marker and the containment it must actually deliver ----
@@ -2037,13 +2067,16 @@ def _isolation_stub(monkeypatch, *, run_dir, engine_version=CLAUDEXOR_DELEGATED_
     return cancelled
 
 
-def _write_attempt(run_dir, *, isolated, home_dir, attempt="a01", mechanism="seatbelt"):
+def _write_attempt(run_dir, *, isolated, home_dir, attempt="a01", mechanism="seatbelt",
+                   unavailable_reason=None):
     """One clean `attempt.yaml`, in Claudexor's own applied-facts shape.
 
     `mechanism=None` is the record an engine writes when it applied NO OS boundary —
     3.3.0/3.3.1, which have no confinement fields at all, and any host whose engine
     ships a mechanism it cannot use here. It is a supported outcome, not a malformed
     record, which is why it is a parameter of the ordinary helper.
+    `unavailable_reason` is the engine's typed explanation for a missing boundary
+    (phase A3) — telemetry the disclosure amplifies, never an admission token.
     """
     attempt_dir = run_dir / "attempts" / attempt
     attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -2054,6 +2087,8 @@ def _write_attempt(run_dir, *, isolated, home_dir, attempt="a01", mechanism="sea
         record["confinement_mechanism"] = mechanism
         record["confinement_profile_digest"] = "sha256:" + "0" * 64
         record["confinement_verified_denied_path"] = "/Users/op/.claudexor/v3/daemon"
+    if unavailable_reason is not None:
+        record["confinement_unavailable_reason"] = unavailable_reason
     lines = [f"{k}: {json.dumps(v)}" for k, v in record.items()]
     (attempt_dir / "attempt.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -2253,24 +2288,24 @@ def test_asking_for_a_scoped_home_is_not_evidence_that_one_was_applied(tmp_path,
     assert out["status"] == "progress", out
     assert cancelled == {}
 
-    # (e) P34P1.5, refined by the 2026-08-07 live incident: a HOME NESTED inside the
-    # operator's own home is a breach ONLY without a proven OS boundary. A bare
-    # `$HOME/tmp/harness` keeps `~/.claudexor/v3/daemon/token` reachable by a relative
-    # walk (DELEGATED_ADMISSION.md §8) — but the engine ROOTS every scoped home under
-    # its runtime dir, which lives under $HOME on every host it supports, so the
-    # spatial rule alone cancelled every real delegated agent run ever started, one of
-    # them provably seatbelt-confined with the daemon directory as its verified DENIED
-    # path. mechanism=None models the boundary-less engine record.
+    # (e) Phase A3 (Poltergeist sprint, grok-simplified rule): a HOME NESTED inside
+    # the operator's own home is NOT a breach — with OR without a recorded OS
+    # boundary. The engine roots every scoped home under its runtime dir, which
+    # lives under $HOME on every host it supports, and on a host with no boundary
+    # mechanism (every non-macOS host today) it CANNOT record one — so the old
+    # nested-without-mechanism rule cancelled every mutating Linux run post-factum
+    # (the colleague's issue-2 class). The boundary-less nested shape flows to the
+    # EXISTING disclosed-unconfined path instead; only a recorded FALSE and the
+    # equality case above stay faults. mechanism=None models the boundary-less
+    # engine record.
     for nested in (home / "tmp" / "harness", home / "sub", home / "a" / "b" / "c"):
         nested.mkdir(parents=True, exist_ok=True)
         cancelled = _isolation_stub(monkeypatch, run_dir=run_dir)
         _write_attempt(run_dir, isolated=True, home_dir=str(nested), mechanism=None)
         out = _waiting(tmp_path, monkeypatch)
-        assert out["reason"] == "home_isolation_not_applied", (nested, out)
-        assert cancelled["reason"] == "home_isolation_not_applied"
+        assert out["status"] == "progress" and cancelled == {}, (nested, out)
 
-    # ...while the SAME nested home WITH the proven boundary (the engine's own layout,
-    # exactly the live run the old rule cancelled) is left alone.
+    # ...and the SAME nested home WITH the proven boundary stays fine too.
     nested = home / ".claudexor-runtime" / "projects" / "x" / "home"
     nested.mkdir(parents=True, exist_ok=True)
     cancelled = _isolation_stub(monkeypatch, run_dir=run_dir)
@@ -2340,6 +2375,7 @@ def test_an_attempt_that_recorded_no_home_fact_is_not_a_containment_fault(tmp_pa
     # unconfined attempt is an unconfined run.
     assert out["containment"] == {
         "verified": False, "attempts": 2, "disclosed": 1, "os_boundary": "",
+        "nested_under_operator_home": False,
         "note": "not every attempt of this run recorded a harness-HOME fact, so its "
                 "confinement is UNPROVEN — do not report it as isolated",
     }, out
@@ -2377,6 +2413,7 @@ def test_the_relayed_result_never_claims_an_isolation_no_artifact_proves(tmp_pat
     payload = _terminal_payload("run-1", detail, delegated_run_shape(True))
     assert payload["containment"] == {
         "verified": True, "attempts": 1, "disclosed": 1, "os_boundary": "seatbelt",
+        "nested_under_operator_home": False,
         "note": "every attempt recorded a scoped harness HOME outside the operator's own "
                 "AND an applied seatbelt boundary, proven against a path it denies",
     }
@@ -2464,6 +2501,62 @@ def test_a_run_with_no_os_boundary_is_disclosed_in_three_places_and_still_allowe
     events = [json.loads(line) for line in
               (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len([e for e in events if e["type"] == "delegate_run_unconfined"]) == 1, events
+
+
+def test_linux_shaped_run_is_disclosed_unconfined_with_the_engines_reason_not_cancelled(
+    tmp_path, monkeypatch,
+):
+    """Phase A3, the exact incident shape: a Linux host has no boundary mechanism,
+    so the engine records `home_isolated: true`, a scoped home NESTED under $HOME,
+    NO mechanism, and its typed `confinement_unavailable_reason`. The run must NOT
+    be cancelled post-factum (the old rule cancelled every mutating Linux run);
+    the reason AMPLIFIES the unconfined disclosure — parent payload and durable
+    record — and is never an admission token."""
+    from ouroboros.subagents import delegated_run_shape
+    from ouroboros.tools.delegate import _terminal_payload
+
+    run_dir = tmp_path / "run-1"
+    home = tmp_path / "operator-home"
+    nested = home / ".claudexor-runtime" / "projects" / "x" / "home"
+    nested.mkdir(parents=True)
+    monkeypatch.setattr(cx, "operator_home", lambda: home)
+
+    _write_attempt(
+        run_dir, isolated=True, home_dir=str(nested), mechanism=None,
+        unavailable_reason="no_boundary_mechanism_for_host: linux",
+    )
+    # The run keeps reporting progress — no cancellation.
+    cancelled = _isolation_stub(monkeypatch, run_dir=run_dir)
+    out = _waiting(tmp_path, monkeypatch)
+    assert out["status"] == "progress" and cancelled == {}, out
+
+    # Parent payload: unconfined, with the engine's own reason beside the note.
+    detail = {"summary": {"state": "succeeded", "runDir": str(run_dir)}}
+    containment = _terminal_payload("run-1", detail, delegated_run_shape(True))["containment"]
+    assert containment["verified"] is False and containment["os_boundary"] == ""
+    assert containment["confinement_unavailable_reason"] == "no_boundary_mechanism_for_host: linux"
+    assert "no_boundary_mechanism_for_host: linux" in containment["note"]
+
+    # Durable record: the unconfined row carries the same reason.
+    cancelled = _isolation_stub(monkeypatch, run_dir=run_dir, state="succeeded")
+    out = _waiting(tmp_path, monkeypatch)
+    assert out["status"] == "terminal" and cancelled == {}, out
+    events = [json.loads(line) for line in
+              (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    unconfined = [e for e in events if e["type"] == "delegate_run_unconfined"]
+    assert len(unconfined) == 1, events
+    assert unconfined[0]["confinement_unavailable_reason"] == "no_boundary_mechanism_for_host: linux"
+
+    # The reason is NOT an admission token: a recorded FALSE stays a fault even
+    # when a reason sits beside it.
+    _write_attempt(
+        run_dir, isolated=False, home_dir=str(home), mechanism=None,
+        unavailable_reason="no_boundary_mechanism_for_host: linux",
+    )
+    cancelled = _isolation_stub(monkeypatch, run_dir=run_dir)
+    out = _waiting(tmp_path, monkeypatch)
+    assert out["reason"] == "home_isolation_not_applied", out
+    assert cancelled["reason"] == "home_isolation_not_applied"
 
 
 def test_the_child_is_told_its_boundary_is_a_request_and_not_a_fact(tmp_path, monkeypatch):
@@ -3408,6 +3501,53 @@ def test_cancel_never_claims_more_than_a_terminal_receipt_proves(
     assert out["run_may_still_be_live"] is may_be_live, out
     faults = dc.open_containment_faults(tmp_path)
     assert bool(faults) is (expected == "failed"), (expected, faults)
+
+
+def test_cancel_and_verify_carries_the_verify_reads_terminal_detail(tmp_path):
+    """BR2-1, purely additive: when the verify read discovers a terminal state,
+    the already-read run detail rides the result as the OPTIONAL `terminal_detail`
+    key, so a caller consuming a discovered natural terminal (completion wins)
+    never depends on a second fetch after settlement. The key is ABSENT on every
+    other outcome — the historical six-key shape is untouched — and it never
+    rides the emitted cancel-outcome event."""
+    import ouroboros.delegate_custody as dc
+
+    detail = {"lastSeq": 9, "summary": {"state": "succeeded", "spendUsd": 0.0,
+                                        "inputTokens": 1, "outputTokens": 1}}
+
+    class _Finished:
+        def cancel_run(self, rid, reason=""):
+            return {"accepted": True, "status": "accepted"}
+        def get_run(self, rid, **_kw):
+            return detail
+
+    entry = dc.RunCustody(run_id="run-td", task_id="t-a", route_id="r", model="m",
+                          project_id="p", project_owned=False, root_task_id="t-a",
+                          ledger_root=str(tmp_path))
+    dc.record_started(tmp_path, entry)
+    out = dc.cancel_and_verify(tmp_path, _Finished(), entry, "test")
+    assert out["outcome"] == "confirmed" and out["state"] == "succeeded"
+    assert out["terminal_detail"] == detail
+
+    class _Live:
+        def cancel_run(self, rid, reason=""):
+            return {"accepted": True, "status": "accepted"}
+        def get_run(self, rid, **_kw):
+            return {"lastSeq": 3, "summary": {"state": "running"}}
+
+    entry2 = dc.RunCustody(run_id="run-td2", task_id="t-a", route_id="r", model="m",
+                           project_id="p", project_owned=False, root_task_id="t-a",
+                           ledger_root=str(tmp_path))
+    dc.record_started(tmp_path, entry2)
+    out2 = dc.cancel_and_verify(tmp_path, _Live(), entry2, "test")
+    assert out2["outcome"] == "requested"
+    assert set(out2) == {"outcome", "accepted", "control_status", "state",
+                         "fault_reason", "detail"}, out2
+
+    rows = [json.loads(line) for line in
+            (tmp_path / "logs" / "events.jsonl").read_text().splitlines()]
+    outcomes = [r for r in rows if r.get("type") == "delegate_run_cancel_outcome"]
+    assert outcomes and all("terminal_detail" not in r for r in outcomes)
 
 
 def test_an_unverifiable_cancel_is_a_loud_durable_incident(tmp_path, monkeypatch):
@@ -4642,17 +4782,31 @@ def test_a_breach_whose_cancel_was_never_verified_is_not_reported_as_cancelled(
 def test_the_configured_wait_ceiling_cannot_promise_more_than_the_tool_can_serve():
     """`OUROBOROS_DELEGATE_WAIT_MAX_SEC` accepted up to 86,400 while `delegate_wait`'s
     own per-call executor timeout is 2100 and the tool is neither per-call-timeout
-    configurable nor deadline-clamped — so everything above 2100 bought a KILLED tool
-    call instead of the graceful typed no-progress return the wait exists to give.
-    The two numbers are pinned together here so they cannot drift apart again."""
+    configurable nor deadline-clamped — so everything above the window max bought a
+    KILLED tool call instead of the graceful typed no-progress return the wait
+    exists to give. F5 (grok blocking): the window max is a HARD 1800, decoupled
+    from the ToolEntry timeout, and the whole chain is STRICT —
+    window (1800) < tool-kill (2100) < lease absolute ceiling (2400) — so a full
+    window plus its teardown always fits under the executor timeout, and the
+    executor timeout always fits under the idle-rail lease."""
     import os
 
-    from ouroboros.config import DELEGATE_WAIT_CEILING_SEC, get_delegate_wait_max_sec
+    from ouroboros.config import (
+        DELEGATE_WAIT_CEILING_SEC,
+        DELEGATE_WAIT_WINDOW_MAX_SEC,
+        get_delegate_wait_max_sec,
+    )
+    from ouroboros.delegate_progress import EXTERNAL_WAIT_LEASE_CEILING_SEC
     from ouroboros.loop_tool_execution import _DEADLINE_CLAMPED_TOOLS, _PER_CALL_TIMEOUT_TOOLS
     from ouroboros.tools.delegate import get_tools
 
     entry = next(e for e in get_tools() if e.schema["name"] == "delegate_wait")
     assert DELEGATE_WAIT_CEILING_SEC == entry.timeout_sec
+    # The strict inequality chain, pinned by value so no member can drift onto
+    # another: a window EQUAL to the executor timeout has zero teardown margin.
+    assert DELEGATE_WAIT_WINDOW_MAX_SEC < DELEGATE_WAIT_CEILING_SEC < EXTERNAL_WAIT_LEASE_CEILING_SEC
+    assert (DELEGATE_WAIT_WINDOW_MAX_SEC, DELEGATE_WAIT_CEILING_SEC,
+            EXTERNAL_WAIT_LEASE_CEILING_SEC) == (1800, 2100, 2400)
     # ...and neither escape hatch applies to this tool, which is why the ToolEntry
     # value really is the bound. The task deadline is a separate concern and is
     # honoured INSIDE the tool (see the wait-window test below), which is why the
@@ -4663,7 +4817,10 @@ def test_the_configured_wait_ceiling_cannot_promise_more_than_the_tool_can_serve
     previous = os.environ.get("OUROBOROS_DELEGATE_WAIT_MAX_SEC")
     os.environ["OUROBOROS_DELEGATE_WAIT_MAX_SEC"] = "7200"
     try:
-        assert get_delegate_wait_max_sec() == DELEGATE_WAIT_CEILING_SEC
+        # The configurable max clamps to the hard window max — NOT to the
+        # ToolEntry timeout: raising the executor timeout must never silently
+        # widen the askable window.
+        assert get_delegate_wait_max_sec() == DELEGATE_WAIT_WINDOW_MAX_SEC
     finally:
         if previous is None:
             os.environ.pop("OUROBOROS_DELEGATE_WAIT_MAX_SEC", None)
@@ -5964,3 +6121,48 @@ def test_shared_project_retirement_defers_quietly_for_non_canonical_sharers(tmp_
     assert custody_a.project_owned is False
     assert "delegate_run_project_retired" in _event_types(tmp_path)
     dc._CUSTODY.clear()
+
+
+# ---------------------------------------------------------------------------
+# BR1-2: the delegate split has no import cycle — one-way seams only
+# ---------------------------------------------------------------------------
+
+
+def test_delegate_split_modules_import_standalone_without_the_facade():
+    """The module split's seam pattern is ONE-WAY: an extracted module never
+    imports the facade back. `delegate_interactions` used to import `_fail` /
+    `_emit` / `_owned_run` from `ouroboros.tools.delegate` — a cycle with the
+    facade's own top-level import of the cluster. Each extracted module must
+    import standalone in a FRESH interpreter, and none of them may pull the
+    facade into sys.modules as a side effect."""
+    import subprocess
+    import sys
+
+    for module in ("ouroboros.delegate_shared",
+                   "ouroboros.delegate_interactions",
+                   "ouroboros.delegate_output",
+                   "ouroboros.delegate_progress",
+                   "ouroboros.delegate_containment",
+                   "ouroboros.delegate_custody"):
+        probe = (
+            f"import sys; import {module}; "
+            "assert 'ouroboros.tools.delegate' not in sys.modules, "
+            f"'{module} pulled the facade back in'"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, (
+            f"{module} failed to import standalone: {result.stderr}")
+
+
+def test_facade_reexports_are_the_same_objects_as_their_owners():
+    """Monkeypatch targets keep working only when the facade re-export IS the
+    owner's object — probe identity, not just importability."""
+    from ouroboros import delegate_shared
+    from ouroboros.tools import delegate
+
+    assert delegate._fail is delegate_shared._fail
+    assert delegate._emit is delegate_shared._emit
+    assert delegate._owned_run is delegate_shared._owned_run

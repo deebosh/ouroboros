@@ -260,22 +260,38 @@ def _preflight_pass_specs(
     ]
 
 
-def _run_git(repo_dir: pathlib.Path, args: Sequence[str], *, input_text: str = "", timeout: int = 30) -> subprocess.CompletedProcess:
+def _run_git(
+    repo_dir: pathlib.Path,
+    args: Sequence[str],
+    *,
+    input_text: "str | bytes" = "",
+    timeout: int = 30,
+    binary_stdout: bool = False,
+) -> subprocess.CompletedProcess:
     # BINARY pipes, decoded here so callers keep the str contract: text-mode pipes
     # translate \n to os.linesep, and on Windows a CRLF-mangled stdin corrupts a
     # multi-line git payload (a replayed diff's context lines stop matching the
     # LF worktree, so `git apply` rejects the candidate diff wholesale).
+    #
+    # ``binary_stdout`` skips the decode for the ONE payload that must survive
+    # byte-for-byte — the candidate capture that is fed straight back into
+    # `git apply`. Git classifies NUL-free non-UTF-8 content (latin-1 logs,
+    # cp1251 fixtures) as TEXT, so its bytes travel on plain diff lines, and
+    # decode(errors="replace") would substitute U+FFFD for each of them —
+    # silently corrupting the candidate while the gate stays green.
+    # ``input_text`` symmetrically accepts those captured bytes unmodified.
+    payload = input_text.encode("utf-8") if isinstance(input_text, str) else input_text
     proc = subprocess.run(
         ["git", *args],
         cwd=str(repo_dir),
-        input=input_text.encode("utf-8") if input_text else None,
+        input=payload or None,
         capture_output=True,
         timeout=timeout,
     )
     return subprocess.CompletedProcess(
         proc.args,
         proc.returncode,
-        (proc.stdout or b"").decode("utf-8", "replace"),
+        (proc.stdout or b"") if binary_stdout else (proc.stdout or b"").decode("utf-8", "replace"),
         (proc.stderr or b"").decode("utf-8", "replace"),
     )
 
@@ -311,11 +327,57 @@ def _baseline_refs(phase: str) -> tuple:
     return _PRE_COMMIT_BASELINE_REFS if phase == PRE_COMMIT_PHASE else _TESTS_BASELINE_REFS
 
 
-def _ref_tracks_tests(repo: pathlib.Path, ref: str) -> bool:
-    listed = _run_git(repo, ["ls-tree", "-r", "--name-only", ref, "--", "tests"])
-    if listed.returncode != 0:
-        return False  # no such ref (root commit, empty repository)
-    return bool((listed.stdout or "").strip())
+def _baseline_commit_oids(
+    repo: pathlib.Path, refs: Sequence[str]
+) -> tuple[tuple[str, str], ...]:
+    """Resolve the phase baselines without mistaking unreadable history for absence."""
+    # Deliberately do not peel here: rev-parse returns the ref's recorded OID
+    # even when the commit object itself is missing. A quiet rc=1 with no output
+    # can mean either an unborn HEAD or a broken ref, so only a successfully read
+    # symbolic HEAD proves the former; every other failure is an operational
+    # error the caller must hard-block.
+    resolved = _run_git(repo, ["rev-parse", "--verify", "--quiet", "HEAD"])
+    if resolved.returncode != 0:
+        if (
+            resolved.returncode == 1
+            and not (resolved.stdout or "").strip()
+            and not (resolved.stderr or "").strip()
+        ):
+            symbolic = _run_git(repo, ["symbolic-ref", "--quiet", "HEAD"])
+            if symbolic.returncode == 0 and (symbolic.stdout or "").strip():
+                return ()
+            detail = (
+                symbolic.stderr.strip()
+                or symbolic.stdout.strip()
+                or f"exit {symbolic.returncode}"
+            )
+            raise RuntimeError(f"git could not prove HEAD is unborn: {detail}")
+        detail = (
+            resolved.stderr.strip()
+            or resolved.stdout.strip()
+            or f"exit {resolved.returncode}"
+        )
+        raise RuntimeError(f"git could not resolve HEAD: {detail}")
+
+    head_oid = (resolved.stdout or "").strip()
+    head_commit = _run_git(repo, ["cat-file", "commit", head_oid])
+    if head_commit.returncode != 0:
+        detail = (
+            head_commit.stderr.strip()
+            or head_commit.stdout.strip()
+            or f"exit {head_commit.returncode}"
+        )
+        raise RuntimeError(f"git could not read HEAD commit {head_oid}: {detail}")
+
+    headers = (head_commit.stdout or "").partition("\n\n")[0].splitlines()
+    first_parent = next(
+        (line.removeprefix("parent ") for line in headers if line.startswith("parent ")),
+        None,
+    )
+    by_ref = {"HEAD": head_oid}
+    if first_parent is not None:
+        by_ref["HEAD~1"] = first_parent
+    return tuple((ref, by_ref[ref]) for ref in refs if ref in by_ref)
 
 
 def _head_tracks_tests(repo: pathlib.Path, refs: Sequence[str] = _TESTS_BASELINE_REFS) -> bool:
@@ -327,15 +389,49 @@ def _head_tracks_tests(repo: pathlib.Path, refs: Sequence[str] = _TESTS_BASELINE
     phase baseline — see above; it defaults to the post-commit pair, which is the
     conservative direction for a caller that does not say.
     """
-    return any(_ref_tracks_tests(repo, ref) for ref in refs)
+    for ref, oid in _baseline_commit_oids(repo, refs):
+        listed = _run_git(repo, ["ls-tree", "-r", "--name-only", oid, "--", "tests"])
+        if listed.returncode != 0:
+            detail = (
+                listed.stderr.strip()
+                or listed.stdout.strip()
+                or f"exit {listed.returncode}"
+            )
+            raise RuntimeError(
+                f"git could not read tests/ from baseline {ref} ({oid}): {detail}"
+            )
+        if (listed.stdout or "").strip():
+            return True
+    return False
 
 
-def _apply_diff(worktree: pathlib.Path, diff_text: str) -> None:
+def _apply_diff(worktree: pathlib.Path, diff_text: "str | bytes") -> None:
+    # Accepts bytes so the candidate capture reaches `git apply` undecoded —
+    # see ``binary_stdout`` on `_run_git` for why the round-trip must not
+    # pass through UTF-8.
+    #
+    # `--unidiff-zero`: the capture's flag tail pins away every operator config
+    # that reshapes diff CONTENT, but hunk WIDTH still leaks through — a user
+    # `diff.context=0` (or `GIT_DIFF_OPTS=--unified=0` in the environment)
+    # makes `git diff` emit zero-context hunks, which `git apply` REJECTS by
+    # default, hard-blocking an ordinary textual candidate before any test
+    # runs. The flag accepts zero-context hunks and is a no-op for hunks that
+    # carry context, so it covers both the config and the env route without
+    # scrubbing either.
     if not diff_text.strip():
         return
     proc = _run_git(
         worktree,
-        ["apply", "--whitespace=nowarn", "--binary"],
+        # `-c core.autocrlf=false -c core.eol=lf`: the candidate capture is
+        # byte-exact (`--binary`, no textconv), so the apply must not re-run
+        # end-of-line conversion either. On a Windows runner (`core.autocrlf=true`
+        # by default) an LF payload applied against a CRLF-converted checkout
+        # otherwise mangles every line ending, breaking the byte-faithful
+        # guarantee this whole capture exists to hold. No `.gitattributes text`
+        # directive governs the affected paths, so the config override is
+        # authoritative.
+        ["-c", "core.autocrlf=false", "-c", "core.eol=lf",
+         "apply", "--whitespace=nowarn", "--binary", "--unidiff-zero"],
         input_text=diff_text,
         timeout=60,
     )
@@ -344,11 +440,17 @@ def _apply_diff(worktree: pathlib.Path, diff_text: str) -> None:
 
 
 def _copy_untracked(repo_dir: pathlib.Path, worktree: pathlib.Path) -> None:
-    listed = _run_git(repo_dir, ["ls-files", "--others", "--exclude-standard", "-z"])
+    # The NAMES arrive as bytes and are decoded with the filesystem's own codec
+    # (surrogateescape on POSIX), not utf-8/replace: a filename carrying a raw
+    # non-UTF-8 byte would otherwise become a U+FFFD name that no longer exists on
+    # disk, `is_file()` would answer False, and the file would drop out of the
+    # candidate silently — an inexact candidate with no assembly failure raised.
+    listed = _run_git(
+        repo_dir, ["ls-files", "--others", "--exclude-standard", "-z"], binary_stdout=True
+    )
     if listed.returncode != 0:
         raise RuntimeError(listed.stderr.strip() or "git ls-files failed")
-    raw = listed.stdout or ""
-    for rel in [part for part in raw.split("\0") if part]:
+    for rel in [os.fsdecode(part) for part in (listed.stdout or b"").split(b"\0") if part]:
         src = (repo_dir / rel).resolve()
         dst = (worktree / rel).resolve()
         try:
@@ -514,7 +616,7 @@ def _preflight_env(temp_root: pathlib.Path, repo_worktree: pathlib.Path) -> dict
 
 
 # (import name, distribution name, minimum version) for the plugins the parallel
-# pass cannot work without. Kept in step with requirements.txt.
+# pass cannot work without. Kept in step with pyproject.toml.
 _REQUIRED_PREFLIGHT_PLUGINS = (
     ("xdist", "pytest-xdist", (3, 5)),
     ("pytest_timeout", "pytest-timeout", (2, 1)),
@@ -631,7 +733,7 @@ def _plugin_missing_remediation(agent_python: str, rejected: str = "") -> str:
     return (
         lead
         + "gate needs pytest-xdist and pytest-timeout installed into THAT interpreter. "
-        "They are declared in requirements.txt (pytest-xdist>=3.5, pytest-timeout>=2.1). "
+        "They are declared in pyproject.toml (pytest-xdist>=3.5, pytest-timeout>=2.1). "
         "The gate does NOT silently fall back to a serial run — a degraded gate is "
         "indistinguishable from a passing one; set OUROBOROS_PREFLIGHT_SERIAL=1 to "
         "take the legacy single serial pass deliberately while you provision."
@@ -997,6 +1099,19 @@ def run_hermetic_pytest(
     the pre-commit review passes ``PRE_COMMIT_PHASE`` so it compares against HEAD
     only, while the default post-commit verification also consults HEAD~1,
     because by then the deletion it is looking for is already in HEAD.
+
+    The candidate is assembled as ONE hardened ``git diff --binary … HEAD``
+    capture (external drivers, textconv, colour and operator prefix configs
+    pinned off; payload kept as raw bytes end to end) applied to a clean
+    worktree at HEAD, plus a copy of the untracked files: an exact tracked
+    projection of the live worktree plus its safe non-ignored untracked
+    entries — for every source-index state, including a merge in progress,
+    whose unmerged entries the former staged+unstaged diff pair rendered as
+    stubs and ``--cc`` hunks that ``git apply`` dropped or rejected. The
+    untracked side keeps ``_copy_untracked``'s long-standing boundaries:
+    ignored files are absent, and untracked symlinks are dereferenced to
+    regular files (non-file entries skipped), so the candidate is not
+    literally byte-equal to the worktree in those corners.
     """
     timeout = _resolve_preflight_timeout(timeout)
     # Checked BEFORE anything runs. `_diagnosis` renders inside this budget, so a
@@ -1020,7 +1135,19 @@ def run_hermetic_pytest(
         # all-passes-empty hard block below never ran and the change that
         # deleted the gate sailed through it.
         baseline_refs = _baseline_refs(phase)
-        if _head_tracks_tests(repo, baseline_refs):
+        try:
+            baseline_tracks_tests = _head_tracks_tests(repo, baseline_refs)
+        except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+            return _diagnosis(
+                "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_TESTS_BASELINE_UNREADABLE (hard block): "
+                f"could not read {' or '.join(baseline_refs)}",
+                "The working tree just lost its tests/ directory and git could not read "
+                "one of the baseline refs well enough to say whether that loss is real. "
+                "Treating an unreadable ref as 'never tracked tests' would let this "
+                "candidate through the gate it exists to trip. This is not a test failure.",
+                str(exc), max_output,
+            )
+        if baseline_tracks_tests:
             return (
                 "⚠️ PRE_PUSH_TEST_ERROR: the candidate change removes the entire tests/ tree "
                 f"that {' or '.join(baseline_refs)} carries. The preflight cannot verify "
@@ -1052,22 +1179,75 @@ def run_hermetic_pytest(
                     "\n".join(problems), max_output,
                 )
 
-        add = _run_git(repo, ["worktree", "add", "--detach", str(worktree), "HEAD"], timeout=60)
+        # `-c core.autocrlf=false -c core.eol=lf`: check HEAD out byte-for-byte so
+        # the hermetic worktree matches the bytes the `--binary` candidate diff was
+        # captured against. Without it a Windows runner (`core.autocrlf=true`)
+        # materializes HEAD with CRLF, and the LF candidate then applies onto a
+        # CRLF base — the capture is byte-faithful but the checkout it lands on is
+        # not. Paired with the same override on `_apply_diff`.
+        add = _run_git(
+            repo,
+            ["-c", "core.autocrlf=false", "-c", "core.eol=lf",
+             "worktree", "add", "--detach", str(worktree), "HEAD"],
+            timeout=60,
+        )
         if add.returncode != 0:
             return f"⚠️ PRE_PUSH_TEST_ERROR: could not create hermetic worktree: {add.stderr.strip()}"
         worktree_added = True
 
-        staged_proc = _run_git(repo, ["diff", "--cached", "--binary"])
-        unstaged_proc = _run_git(repo, ["diff", "--binary"])
-        if staged_proc.returncode != 0:
-            raise RuntimeError(staged_proc.stderr.strip() or "git diff --cached failed")
-        if unstaged_proc.returncode != 0:
-            raise RuntimeError(unstaged_proc.stderr.strip() or "git diff failed")
-        staged = staged_proc.stdout or ""
-        unstaged = unstaged_proc.stdout or ""
-        _apply_diff(worktree, staged)
-        _apply_diff(worktree, unstaged)
-        _copy_untracked(repo, worktree)
+        # ONE capture for every repository state: the tracked delta between
+        # HEAD and the live worktree, assembled identically whether the source
+        # index is clean, dirty, or mid-merge. The staged+unstaged diff pair
+        # this replaces could not represent an unmerged index at all: `git diff
+        # --cached` renders each conflicted path as a literal "* Unmerged path"
+        # stub and `git diff` as a combined `--cc` hunk — which `git apply`
+        # REJECTS when the payload holds nothing else (rc=128, the gate died
+        # before running a test) and silently DROPS when ordinary hunks
+        # accompany it (the gate then ran against a candidate MISSING the
+        # resolutions, so its verdict described a tree nobody has). The two-way
+        # HEAD form has no such rendering: staged-only files, resolutions and
+        # conflict markers all arrive as plain content.
+        #
+        # The flag tail pins away every operator config that reshapes diff
+        # output into something `git apply` cannot re-apply: external diff
+        # drivers (`--no-ext-diff`), textconv filters (`--no-textconv`), colour
+        # escapes (`--no-color`), and prefix rewrites (`--src-prefix=a/
+        # --dst-prefix=b/` — the explicit CLI prefixes win over diff.noprefix
+        # AND diff.srcPrefix/dstPrefix, which `-c diff.noprefix=false` alone
+        # would not). Captured and applied as BYTES end to end (see
+        # ``binary_stdout``) so NUL-free non-UTF-8 text content is not
+        # U+FFFD-substituted in transit.
+        try:
+            combined_proc = _run_git(
+                repo,
+                ["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-color",
+                 "--src-prefix=a/", "--dst-prefix=b/", "HEAD"],
+                binary_stdout=True,
+            )
+            if combined_proc.returncode != 0:
+                raise RuntimeError(combined_proc.stderr.strip() or "git diff HEAD failed")
+            _apply_diff(worktree, combined_proc.stdout or b"")
+            _copy_untracked(repo, worktree)
+        # The assembly block owns EVERY way its own capture can fail, not only
+        # the RuntimeErrors it raises itself: `_run_git` can raise
+        # subprocess.TimeoutExpired (a SubprocessError subclass) and
+        # `_copy_untracked` can raise FileNotFoundError/PermissionError (OSError
+        # subclasses). Let through, those land in the OUTER handlers below and
+        # are misread as a pytest timeout, a missing pytest interpreter, or a
+        # generic preflight failure — all of which invite a retry against a
+        # candidate that was never assembled.
+        except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+            return _diagnosis(
+                "⚠️ PRE_PUSH_TEST_ERROR: PREFLIGHT_CANDIDATE_ASSEMBLY (hard block): "
+                "the candidate tree could not be assembled from the live worktree",
+                "The worktree-vs-HEAD capture could not be built or applied, so "
+                "there is no candidate worth testing and no pass was run. An "
+                "unmerged index is NOT the cause — a merge in progress is a "
+                "supported source state for this capture — so this block means "
+                "the capture or apply itself failed: read the git/filesystem "
+                "error in the body below. This is not a test failure.",
+                str(exc), max_output,
+            )
 
         from ouroboros.platform_layer import kill_processes_referencing
 

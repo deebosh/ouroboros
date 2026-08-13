@@ -11,7 +11,28 @@ def _ctx(tmp_path):
     repo.mkdir()
     skill = drive / "skills" / "external" / "alpha"
     skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# alpha\n", encoding="utf-8")
     return ToolContext(repo_dir=repo, drive_root=drive, task_constraint=TaskConstraint(mode="skill_repair", skill_name="alpha", payload_root="skills/external/alpha", allow_enable=False)), skill
+
+
+def _admit_repair(ctx, skill):
+    """Mint the X3 repair admission these direct-constraint tests bypass.
+
+    Production repair tasks are admitted through the promote seam
+    (supervisor/workers.py), which records the binding fail-closed before the
+    task exists; tests that build the ``skill_repair`` constraint directly must
+    mint the same binding or every payload write is a typed
+    SKILL_REPAIR_STALE refusal. Call AFTER all direct payload setup writes —
+    the admission pins the payload state the repair starts from.
+    """
+    from ouroboros.skill_loader import compute_content_hash
+    from ouroboros.skill_repair_admission import record_repair_admission
+
+    ctx.task_id = getattr(ctx, "task_id", "") or "repair-constraint-test"
+    record_repair_admission(
+        ctx.drive_root, "alpha", task_id=ctx.task_id,
+        base_content_hash=compute_content_hash(skill),
+    )
 
 
 def test_payload_relative_resolver_accepts_short_paths(tmp_path):
@@ -24,6 +45,7 @@ def test_str_replace_editor_uses_payload_relative_path(tmp_path):
     ctx, skill = _ctx(tmp_path)
     target = skill / "plugin.py"
     target.write_text("hello = 1\n", encoding="utf-8")
+    _admit_repair(ctx, skill)
     result = _str_replace_editor(ctx, "plugin.py", "hello = 1", "hello = 2")
     assert "Replaced" in result
     assert target.read_text(encoding="utf-8") == "hello = 2\n"
@@ -32,6 +54,7 @@ def test_str_replace_editor_uses_payload_relative_path(tmp_path):
 
 def test_data_write_uses_payload_relative_path(tmp_path):
     ctx, skill = _ctx(tmp_path)
+    _admit_repair(ctx, skill)
     result = _data_write(ctx, "new_file.py", "VALUE = 1\n")
     assert "OK:" in result
     assert (skill / "new_file.py").read_text(encoding="utf-8") == "VALUE = 1\n"
@@ -86,6 +109,7 @@ def test_repair_data_write_manifest_does_not_create_self_authored_markers(tmp_pa
     from ouroboros import config as cfg
     ctx, skill = _ctx(tmp_path)
     monkeypatch.setattr(cfg, "DATA_DIR", ctx.drive_root)
+    _admit_repair(ctx, skill)
     result = _data_write(ctx, "SKILL.md", "---\nname: alpha\ndescription: x\nversion: 0.1\ntype: instruction\n---\n")
     assert "OK:" in result
     assert not (skill / ".self_authored.json").exists()
@@ -168,6 +192,7 @@ def test_light_mode_allows_normal_skill_str_replace_without_repair_constraint(tm
     repo.mkdir()
     skill = drive / "skills" / "clawhub" / "alpha"
     skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# alpha\n", encoding="utf-8")
     target = skill / "plugin.py"
     target.write_text("VALUE = 1\n", encoding="utf-8")
     registry = ToolRegistry(repo_dir=repo, drive_root=drive)
@@ -192,6 +217,7 @@ def test_light_mode_blocks_normal_skill_sidecar_str_replace(tmp_path, monkeypatc
     repo.mkdir()
     skill = drive / "skills" / "ouroboroshub" / "alpha"
     skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# alpha\n", encoding="utf-8")
     sidecar = skill / ".ouroboroshub.json"
     sidecar.write_text('{"version":"1"}\n', encoding="utf-8")
     registry = ToolRegistry(repo_dir=repo, drive_root=drive)
@@ -207,7 +233,7 @@ def test_light_mode_blocks_normal_skill_sidecar_str_replace(tmp_path, monkeypatc
     assert sidecar.read_text(encoding="utf-8") == '{"version":"1"}\n'
 
 
-def test_light_mode_blocks_review_excluded_skill_dirs(tmp_path, monkeypatch):
+def test_review_excluded_skill_dirs_stay_blocked_in_light_mode(tmp_path, monkeypatch):
     from ouroboros import config as cfg
     from ouroboros.tools.registry import ToolRegistry
 
@@ -216,6 +242,7 @@ def test_light_mode_blocks_review_excluded_skill_dirs(tmp_path, monkeypatch):
     repo.mkdir()
     target_dir = drive / "skills" / "external" / "alpha" / "node_modules"
     target_dir.mkdir(parents=True)
+    (target_dir.parent / "SKILL.md").write_text("# alpha\n", encoding="utf-8")
     target = target_dir / "dep.js"
     target.write_text("VALUE = 1\n", encoding="utf-8")
     registry = ToolRegistry(repo_dir=repo, drive_root=drive)
@@ -226,7 +253,7 @@ def test_light_mode_blocks_review_excluded_skill_dirs(tmp_path, monkeypatch):
         {"path": "skills/external/alpha/node_modules/dep.js", "old_str": "VALUE = 1", "new_str": "VALUE = 2"},
     )
 
-    assert "LIGHT_MODE_BLOCKED" in result
+    assert "STR_REPLACE_BLOCKED" in result
     assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
 
 
@@ -255,6 +282,7 @@ def test_light_mode_allows_skill_payload_write_file(tmp_path, monkeypatch):
     repo.mkdir()
     skill = drive / "skills" / "external" / "alpha"
     skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# alpha\n", encoding="utf-8")
     registry = ToolRegistry(repo_dir=repo, drive_root=drive)
     monkeypatch.setattr(cfg, "get_runtime_mode", lambda: "light")
 

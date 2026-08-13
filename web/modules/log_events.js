@@ -1,4 +1,4 @@
-import { formatUsd4 } from './utils.js';
+import { accountedUpperBound, accountedUpperBoundWithChildren, formatUsd4 } from './utils.js';
 
 export const LOG_CATEGORIES = {
     tools: { label: 'Tools', color: 'var(--blue)' },
@@ -121,6 +121,17 @@ export function executorChip(evt) {
     }
     const started = Number(evidence.delegated_runs_started || 0);
     const settled = Number(evidence.delegated_runs_settled || 0);
+    if (!started && evidence.evidence_read_failed) {
+        // The custody log EXISTS but could not be read: the zero counts above
+        // are UNKNOWN, not an established fact — rendering them as "no run
+        // recorded" would issue a receipt nothing verified (sol finding,
+        // b49f8192 wave).
+        return {
+            ...base,
+            label: `${name} (evidence unavailable)`,
+            title: `The ${name} route was assigned, but the delegated-run evidence could not be read — whether a run happened is unknown, not "none"`,
+        };
+    }
     if (!started) {
         return {
             ...base,
@@ -222,12 +233,26 @@ function describeStartupChecks(checks) {
     return shortText(parts.join(' | '), 240);
 }
 
+// Typed pending-cancel projection (phase A cancel redesign): a durable cancel
+// intent is open and the supervisor teardown has not settled yet. This is NOT a
+// terminal severity — the status stays running/scheduled and the record carries
+// cancel_state="pending"; the card shows an interim "Cancelling…" and resolves
+// on the settled task_done (Cancelled, or Completed when the run finished first).
+export function taskCancelPending(record) {
+    const status = String(record?.status || '').toLowerCase();
+    const settled = ['completed', 'failed', 'cancelled', 'rejected_duplicate'].includes(status);
+    return !settled && String(record?.cancel_state || '') === 'pending';
+}
+
 export function taskOutcomeSeverity(evt) {
     const lifecycle = String(evt.outcome_axes?.lifecycle?.status || evt.status || '').toLowerCase();
     // v6.82 (P5): a cancelled task is neither Done nor Failed — it is honestly
     // Cancelled. Checked first: forced teardown routinely leaves failure-shaped
     // side facts (e.g. artifacts missing on a cancelled workspace task) that must
     // not relabel an owner-requested cancellation as a failure.
+    // 'cancel_requested' as a STATUS is legacy replay only (phase A moved cancel
+    // intent to the durable cancel_state projection); old task_done frames and
+    // pre-redesign history rows keep resolving as Cancelled.
     if (lifecycle === 'cancelled' || lifecycle === 'cancel_requested') {
         return 'cancelled';
     }
@@ -422,7 +447,7 @@ export function summarizeLogEvent(evt) {
             meta: taskMeta(
                 evt.model || '',
                 formatLogTokens(evt),
-                formatLogMoney(evt.cost_usd || evt.cost),
+                formatLogMoney(evt.cost_usd ?? evt.cost),
                 evt.response_kind === 'tool_calls' ? `${evt.tool_call_count || 0} tool calls` : evt.response_kind || '',
             ),
         });
@@ -446,7 +471,7 @@ export function summarizeLogEvent(evt) {
             meta: taskMeta(
                 evt.model || '',
                 formatLogTokens(evt),
-                formatLogMoney(evt.cost_usd || evt.cost),
+                formatLogMoney(evt.cost_usd ?? evt.cost),
                 evt.category || '',
             ),
         });
@@ -499,7 +524,9 @@ export function summarizeLogEvent(evt) {
         const artifactStatus = evt.artifact_bundle?.status || evt.artifact_status || '';
         const reviewDetails = formatReviewProjection(evt.review_projection);
         const unavailable = evt.cost_accounting_status === 'unavailable';
-        const ownValue = evt.cost_usd ?? evt.cost;
+        // C13: the SHARED accessor and its null policy — same alias precedence as
+        // chat.js and the Python seams, and a REAL $0 prints instead of vanishing.
+        const ownValue = accountedUpperBound(evt) ?? (evt.cost ?? null);
         const ownCost = unavailable
             ? 'cost unavailable'
             : (ownValue != null ? `${formatLogMoney(ownValue)}${evt.cost_final === false ? ' (pending)' : ''}` : '');
@@ -512,8 +539,8 @@ export function summarizeLogEvent(evt) {
                 ownCost,
                 // v6.57.0 (P6b): show the recursive cost incl. children when it adds up to
                 // more than this task's own spend, so a parent isn't under-reported.
-                (Number(evt.cost_usd_with_children || 0) > Number(evt.cost_usd || evt.cost || 0))
-                    ? `+children=${formatLogMoney(evt.cost_usd_with_children)}${evt.cost_with_children_partial ? ' (partial)' : ''}`
+                (accountedUpperBoundWithChildren(evt) ?? -1) > (ownValue ?? 0)
+                    ? `+children=${formatLogMoney(accountedUpperBoundWithChildren(evt))}${evt.cost_with_children_partial ? ' (partial)' : ''}`
                     : '',
                 evt.total_rounds ? `${evt.total_rounds} rounds` : '',
                 formatLogTokens(evt),
@@ -523,8 +550,8 @@ export function summarizeLogEvent(evt) {
 
     if (t === 'task_cost_finalized') {
         const unavailable = evt.cost_accounting_status === 'unavailable';
-        const ownCost = unavailable ? 'cost unavailable' : formatLogMoney(evt.cost_usd);
-        const subtreeCost = unavailable ? '' : formatLogMoney(evt.cost_usd_with_children);
+        const ownCost = unavailable ? 'cost unavailable' : formatLogMoney(accountedUpperBound(evt));
+        const subtreeCost = unavailable ? '' : formatLogMoney(accountedUpperBoundWithChildren(evt));
         return view(unavailable ? 'warn' : 'metrics', 'Task cost finalized', {
             meta: taskMeta(ownCost, subtreeCost ? `subtree=${subtreeCost}` : '', evt.post_task_status || ''),
         });
@@ -615,7 +642,7 @@ export function summarizeLogEvent(evt) {
 
     return view('info', shortText(t, 120), {
         body: shortText(evt.text || evt.error || evt.result_preview || compactJson(evt.args || evt.task || evt.checks, 260), 260),
-        meta: taskMeta(evt.model || '', formatLogMoney(evt.cost_usd || evt.cost)),
+        meta: taskMeta(evt.model || '', formatLogMoney(evt.cost_usd ?? evt.cost)),
     });
 }
 
@@ -914,12 +941,14 @@ export function summarizeChatLiveEvent(evt) {
         const phase = taskTerminalPhase(evt);
         const reviewDetails = formatReviewProjection(evt.review_projection);
         const unavailable = evt.cost_accounting_status === 'unavailable';
-        const ownValue = evt.cost_usd ?? evt.cost;
+        // C13: the SHARED accessor and its null policy — same alias precedence as
+        // chat.js and the Python seams, and a REAL $0 prints instead of vanishing.
+        const ownValue = accountedUpperBound(evt) ?? (evt.cost ?? null);
         const ownCost = unavailable
             ? 'cost unavailable'
             : (ownValue != null ? `${formatLogMoney(ownValue)}${evt.cost_final === false ? ' (pending)' : ''}` : '');
-        const childrenCost = (Number(evt.cost_usd_with_children || 0) > Number(evt.cost_usd || evt.cost || 0))
-            ? `+children=${formatLogMoney(evt.cost_usd_with_children)}${evt.cost_with_children_partial ? ' (partial)' : ''}`
+        const childrenCost = (accountedUpperBoundWithChildren(evt) ?? -1) > (ownValue ?? 0)
+            ? `+children=${formatLogMoney(accountedUpperBoundWithChildren(evt))}${evt.cost_with_children_partial ? ' (partial)' : ''}`
             : '';
         return chatView({
             phase,
@@ -942,8 +971,8 @@ export function summarizeChatLiveEvent(evt) {
 
     if (t === 'task_cost_finalized') {
         const unavailable = evt.cost_accounting_status === 'unavailable';
-        const ownCost = unavailable ? 'cost unavailable' : formatLogMoney(evt.cost_usd);
-        const subtreeCost = unavailable ? '' : formatLogMoney(evt.cost_usd_with_children);
+        const ownCost = unavailable ? 'cost unavailable' : formatLogMoney(accountedUpperBound(evt));
+        const subtreeCost = unavailable ? '' : formatLogMoney(accountedUpperBoundWithChildren(evt));
         return chatView({
             phase: unavailable ? 'warn' : 'done',
             headline: unavailable ? 'Cost accounting unavailable' : 'Done',

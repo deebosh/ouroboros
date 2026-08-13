@@ -30,7 +30,8 @@ from ouroboros.config import (
 )
 from ouroboros.contracts.task_contract import attach_task_contract, build_task_contract, normalize_allowed_resources
 from ouroboros.schedule_contract import RESERVED_TEMPLATE_FIELDS, schedule_slug
-from ouroboros.outcomes import normalize_outcome_axes, terminal_outcome_axes
+from ouroboros.skill_loader import skill_identity_collision_names
+from ouroboros.outcomes import terminal_outcome_axes
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
 from supervisor.evolution_lifecycle import (
     _read_evolution_campaign,
@@ -390,8 +391,15 @@ def sync_skill_schedules(skills: List[Any], *, drive_root: pathlib.Path | None =
         tasks = [item for item in data.get("tasks") or [] if isinstance(item, dict)]
         by_id = {str(item.get("id") or ""): dict(item) for item in tasks}
         touched: list[str] = []
+        blocked_skill_names = {
+            str(getattr(skill, "name", "") or "") for skill in skills
+            if bool(getattr(skill, "identity_collision", False))
+        }
         changed = False
         for skill in skills:
+            if bool(getattr(skill, "identity_collision", False)):
+                # Preserve prior rows: a collision is not a removed/runnable skill.
+                continue
             manifest = getattr(skill, "manifest", None)
             for spec in list(getattr(manifest, "scheduled_tasks", []) or []):
                 if not isinstance(spec, dict):
@@ -402,25 +410,15 @@ def sync_skill_schedules(skills: List[Any], *, drive_root: pathlib.Path | None =
                     continue
                 schedule_id = schedule_slug("skill", str(getattr(skill, "name", "")), name)
                 touched.append(schedule_id)
-                # SSOT: a skill schedule is enabled only when the skill is fully
-                # ready to execute (review/grants/deps/enablement), then layered
-                # with the schedule-specific supervised_task requirement. This
-                # keeps schedule readiness identical to execution readiness.
+                # Schedule readiness plus the supervised_task permission.
                 try:
                     from ouroboros.skill_readiness import skill_readiness_for_execution
-
-                    schedule_ready = skill_readiness_for_execution(
-                        pathlib.Path(drive_root or DRIVE_ROOT), skill
-                    ).ready
+                    schedule_ready = skill_readiness_for_execution(pathlib.Path(drive_root or DRIVE_ROOT), skill).ready
                 except Exception:
-                    log.debug(
-                        "skill schedule readiness probe failed for %s",
-                        getattr(skill, "name", ""),
-                        exc_info=True,
-                    )
+                    log.debug("skill schedule readiness probe failed for %s", getattr(skill, "name", ""), exc_info=True)
                     schedule_ready = False
-                schedule_ready = schedule_ready and (
-                    "supervised_task" in set(getattr(manifest, "permissions", []) or [])
+                schedule_ready = schedule_ready and "supervised_task" in set(
+                    getattr(manifest, "permissions", []) or []
                 )
                 record = by_id.get(schedule_id, {})
                 trigger = {"type": "cron", "expr": cron}
@@ -459,11 +457,12 @@ def sync_skill_schedules(skills: List[Any], *, drive_root: pathlib.Path | None =
                 if next_record != record:
                     by_id[schedule_id] = next_record
                     changed = True
-        # Drop schedules whose source skill/scheduled_task no longer exists
-        # (skill deleted, renamed, or scheduled_task removed). Leaving disabled
-        # tombstones around would accumulate stale rows in the active table.
         for schedule_id, record in list(by_id.items()):
-            if str(record.get("source") or "") == "skill_manifest" and schedule_id not in touched:
+            if (
+                str(record.get("source") or "") == "skill_manifest"
+                and str(record.get("skill") or "") not in blocked_skill_names
+                and schedule_id not in touched
+            ):
                 by_id.pop(schedule_id, None)
                 changed = True
         if changed:
@@ -473,12 +472,7 @@ def sync_skill_schedules(skills: List[Any], *, drive_root: pathlib.Path | None =
 
 
 def resync_skill_schedules(drive_root: pathlib.Path | None = None) -> Dict[str, Any]:
-    """Discover skills and mirror their manifest schedules into the core table.
-
-    Convenience wrapper over ``sync_skill_schedules`` so skill lifecycle paths
-    (toggle/grants/reconcile/delete/review/marketplace) reflect payload, grant,
-    and enablement changes promptly instead of waiting for the periodic tick.
-    """
+    """Mirror discovered manifest schedules after skill lifecycle changes."""
     from ouroboros.config import get_skills_repo_path
     from ouroboros.skill_loader import discover_skills
 
@@ -572,6 +566,7 @@ def check_scheduled_tasks() -> None:
                 log.debug("Failed to sync skill schedules during scheduler tick", exc_info=True)
         data = list_scheduled_tasks()
         changed = False
+        collision_names = None
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         for record in list(data.get("tasks") or []):
             if not isinstance(record, dict) or not record.get("enabled", True):
@@ -608,6 +603,11 @@ def check_scheduled_tasks() -> None:
                     continue
             if next_run > now:
                 continue
+            if str(record.get("source") or "") == "skill_manifest":
+                if collision_names is None:
+                    collision_names = skill_identity_collision_names(DRIVE_ROOT)
+                if str(record.get("skill") or "") in collision_names:
+                    continue
             task = _task_from_schedule(record)
             try:
                 from ouroboros.task_results import STATUS_SCHEDULED, write_task_result
@@ -731,11 +731,11 @@ def persist_queue_snapshot(reason: str = "") -> bool:
                 "allowed_resources": t.get("allowed_resources"), "deadline_at": t.get("deadline_at"),
                 "task_contract": t.get("task_contract"),
                 # Scheduling INTENT survives a restart and is all a PENDING child has;
-                # `parent_model_lane` above all, because an omitted lane inherits it and
-                # only the parent knew it. The derived half rides along for a RUNNING row.
+                # `parent_model_lane` and the F9 admission fact `required_model_lane`
+                # above all (R2-3). Pinned to SUBAGENT_INTENT_FIELDS by test_model_slot.
                 "model_lane": t.get("model_lane"), "parent_model_lane": t.get("parent_model_lane"),
                 "requested_model_lane": t.get("requested_model_lane"),
-                "requested_executor": t.get("requested_executor"),
+                "required_model_lane": t.get("required_model_lane"), "requested_executor": t.get("requested_executor"),
                 "effective_model_lane": t.get("effective_model_lane"),
                 "model": t.get("model"), "use_local_model": t.get("use_local_model"),
                 "effective_executor": t.get("effective_executor"), "tool_profile": t.get("tool_profile"),
@@ -913,18 +913,37 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
                     log.warning("Failed to terminalize fenced snapshot task %s", task_id, exc_info=True)
                 continue
             # Never resurrect a terminal/cancelled task as a ghost pending entry.
-            try:
-                existing = load_task_result(DRIVE_ROOT, str(task.get("id")))
-                existing_status = str(existing.get("status") or "") if existing else ""
-                # Terminal OR cancel-intent — both must not be resurrected as pending.
-                if existing_status in _TRULY_TERMINAL_STATUSES or existing_status == STATUS_CANCEL_REQUESTED:
+            # AR2-10 (§8-A1): the intent projection is consulted UNDER the queue
+            # lock at restore — the "no active intent" read and the enqueue form
+            # one serialized step against assignment/drop, the same invariant the
+            # pre-assignment consult keeps. Boot-time and contention-free;
+            # _queue_lock is an RLock, so enqueue_task's own acquisition stays
+            # re-entrant.
+            with _queue_lock:
+                skip_revival = False
+                try:
+                    existing = load_task_result(DRIVE_ROOT, str(task.get("id")))
+                    existing_status = str(existing.get("status") or "") if existing else ""
+                    # Terminal OR cancel-intent — both must not be resurrected as
+                    # pending. Intent lives in the durable projection (phase A);
+                    # the status check covers legacy latch files.
+                    if existing_status in _TRULY_TERMINAL_STATUSES or existing_status == STATUS_CANCEL_REQUESTED:
+                        skip_revival = True
+                    else:
+                        from ouroboros.cancel_intents import has_active_intent
+
+                        if has_active_intent(DRIVE_ROOT, str(task.get("id"))):
+                            # Left for cancellation custody/watchdog to settle —
+                            # never a pending revival racing its own teardown.
+                            skip_revival = True
+                except Exception:
+                    log.debug("Snapshot restore terminal-status check failed for %s", task.get("id"), exc_info=True)
+                if skip_revival:
                     skipped_terminal += 1
                     continue
-            except Exception:
-                log.debug("Snapshot restore terminal-status check failed for %s", task.get("id"), exc_info=True)
-            # These tasks already existed when the root pause was snapshotted.
-            # Restore them behind the root marker; only new admission is fenced.
-            admitted = enqueue_task(task, restoring_snapshot=True)
+                # These tasks already existed when the root pause was snapshotted.
+                # Restore them behind the root marker; only new admission is fenced.
+                admitted = enqueue_task(task, restoring_snapshot=True)
             if isinstance(admitted, dict) and admitted.get("_admission_blocked"):
                 blocked_restore.append(str(task.get("id") or ""))
                 continue
@@ -962,10 +981,6 @@ def _emit_cancel_task_done(
     task: Optional[Dict[str, Any]],
     task_id: str,
     *,
-    cost_usd: float = 0.0,
-    total_rounds: int = 0,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
     cost_fields: Optional[Dict[str, Any]] = None,
     status: str = "cancelled",
 ) -> None:
@@ -974,8 +989,10 @@ def _emit_cancel_task_done(
     ``status`` carries the STORED terminal truth: when a worker wrote its own
     natural result just before the kill, the card must resolve to THAT outcome
     rather than be left unresolved until a reload.
-    Cost fields carry reconstructed totals so a cancelled evolution cycle records
-    its real spend in the campaign tally instead of zeros."""
+    ``cost_fields`` is the caller's accounting authority — a reconstructed
+    ledger projection or a CONFIRMED pre-start zero. An absent projection emits
+    an honest nullable unknown; the old default fabricated a final $0 for every
+    cancel (Poltergeist A1.10, owner 10=B)."""
     try:
         from supervisor import workers
         chat_id = int((task or {}).get("chat_id") or 0) if isinstance(task, dict) else 0
@@ -990,9 +1007,8 @@ def _emit_cancel_task_done(
                     review_trigger="supervisor_terminal",
                 ),
                 **(cost_fields or {
-                    "cost_accounting_status": "available", "cost_final": True,
-                    "cost_usd": cost_usd, "total_rounds": total_rounds,
-                    "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                    "cost_accounting_status": "unavailable", "cost_final": False,
+                    "cost_usd": None,
                 }),
                 "metadata": (task or {}).get("metadata") if isinstance((task or {}).get("metadata"), dict) else {},
         })
@@ -1000,59 +1016,23 @@ def _emit_cancel_task_done(
         log.debug("Failed to emit task_done for cancelled task %s", task_id, exc_info=True)
 
 
-def _is_workspace_task_record(record: Dict[str, Any] | None) -> bool:
-    if not isinstance(record, dict):
-        return False
-    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
-    return bool(str(record.get("workspace_root") or "").strip() or str(metadata.get("workspace_root") or "").strip())
-
-
-def _cancel_result_fields(
-    task: Dict[str, Any] | None,
-    *,
-    existing: Dict[str, Any] | None = None,
-    result: str,
-    **fields: Any,
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {**fields, "result": result}
-    if not (_is_workspace_task_record(task) or _is_workspace_task_record(existing)):
-        return payload
-    try:
-        from ouroboros.headless import ARTIFACT_STATUS_MISSING
-        from ouroboros.outcomes import artifact_bundle_from_result
-
-        base: Dict[str, Any] = {}
-        if isinstance(existing, dict):
-            base.update(existing)
-        if isinstance(task, dict):
-            base.update(task)
-        payload["artifact_status"] = ARTIFACT_STATUS_MISSING
-        payload.setdefault("artifact_error", "Task cancelled before workspace patch finalization.")
-        base.update(payload)
-        base["status"] = "cancelled"
-        base["artifact_status"] = ARTIFACT_STATUS_MISSING
-        base.pop("artifact_bundle", None)
-        bundle = artifact_bundle_from_result(base)
-        payload["artifact_bundle"] = bundle
-        axes = normalize_outcome_axes(base)
-        artifact_axis = dict(axes.get("artifacts") or {})
-        artifact_axis["status"] = ARTIFACT_STATUS_MISSING
-        axes["artifacts"] = artifact_axis
-        payload["outcome_axes"] = axes
-    except Exception:
-        log.debug("Failed to build cancelled artifact fields for task %s", (task or existing or {}).get("id") or (task or existing or {}).get("task_id"), exc_info=True)
-    return payload
-
-
-# Cancellation custody lives in supervisor.task_lifecycle (module-size boundary);
-# re-exported so `supervisor.queue` stays the single import surface for callers.
+# Cancellation custody and the terminal-cancel result-field builder live in
+# supervisor.task_lifecycle (module-size boundary); re-exported so
+# `supervisor.queue` stays the single import surface for callers.
 from supervisor.task_lifecycle import (  # noqa: E402, F401 -- intentional public re-exports
     CANCEL_ALREADY_SETTLED,
     CANCEL_CANCELLED,
     CANCEL_FAILED,
     CANCEL_NOT_FOUND,
     _CANCEL_TERMINALIZED,
+    _cancel_result_fields,
     cancel_task_custody,
+    task_has_live_ownership,
+    task_subtree_is_live,
+)
+from supervisor.queue_transitions import (  # noqa: E402, F401 -- intentional public re-exports
+    evolution_stop_report,
+    stop_evolution_tasks,
 )
 
 
@@ -1061,30 +1041,9 @@ def _cancel_task_by_id_single(task_id: str) -> bool:
     return cancel_task_custody(task_id) in {CANCEL_CANCELLED, CANCEL_ALREADY_SETTLED}
 
 
-def cancel_running_evolution_tasks(reason: str = "evolution stopped") -> List[str]:
-    """Cancel any RUNNING evolution task so ``/evolve stop`` ends the live cycle.
-
-    Pending evolution tasks are pruned by the callers; this covers the worker
-    that is already mid-cycle. Reuses :func:`cancel_task_by_id`, so the task ends
-    as terminal ``cancelled`` (kill_pid_tree, no re-enqueue) and a cancelled
-    ``task_done`` resolves the UI card — the normal success finalizer never runs.
-    Returns the cancelled task ids.
-    """
-    cancelled: List[str] = []
-    for task_id, meta in list(RUNNING.items()):
-        if not isinstance(meta, dict):
-            continue
-        task = meta.get("task") if isinstance(meta.get("task"), dict) else {}
-        if str(task.get("type") or "") != "evolution":
-            continue
-        try:
-            if cancel_task_by_id(task_id):
-                cancelled.append(task_id)
-        except Exception:
-            log.warning(
-                "Failed to cancel running evolution task %s (%s)", task_id, reason, exc_info=True
-            )
-    return cancelled
+# Evolution-stop transitions (GR2-13) live in supervisor.queue_transitions
+# (module-size boundary); re-exported below with the other transition helpers
+# so `supervisor.queue` stays the single import surface for callers.
 
 
 def enforce_task_timeouts() -> None:
@@ -1223,9 +1182,8 @@ def _enforce_task_timeouts_locked(
             float(get_per_call_timeout_ceiling_sec()) + 120.0,
         )
         # deep_self_review runs a single long 1M-context LLM call with NO intermediate
-        # progress events (no tool loop), so the idle timer governs it from started_at.
-        # Preserve its prior ~60min tolerance (the retired effective_hard=3600) so a
-        # legitimately long review is not idle-killed mid-call.
+        # progress events (no tool loop), so the idle timer governs it from started_at;
+        # its prior ~60min tolerance is preserved so it is not idle-killed mid-call.
         if task_type == "deep_self_review":
             idle_timeout = max(idle_timeout, 3600.0)
         abs_ceiling = float(get_task_abs_ceiling_sec())
@@ -1233,17 +1191,22 @@ def _enforce_task_timeouts_locked(
         idle_sec = max(0.0, now - last_progress_at)
         subtree_progressing = _subtree_progressing(task_id, now, idle_timeout)
         own_progress = idle_sec < idle_timeout
-        # Keep an orchestrator alive while it (a) makes own progress, (b) has a freshly
-        # progressing RUNNING descendant, OR (c) has a QUEUED descendant still waiting for a
-        # worker — killing it then would orphan the queued subtree. Only the abs ceiling /
-        # explicit deadline / budget are unconditional.
-        progressing = own_progress or subtree_progressing or _has_pending_descendant(task_id)
+        # B3 external-wait lease: a held delegate_wait window over a live delegated run
+        # is legitimate silence (hard-bounded by events._handle_external_wait_lease);
+        # it spares ONLY this idle rail — ceiling/deadline/budget/cancel never consult it.
+        lease_ts = meta.get("external_wait_lease_until")
+        # Keep an orchestrator alive on own progress, a freshly progressing RUNNING
+        # descendant, a QUEUED descendant (a kill would orphan the queued subtree), or a
+        # live external-wait lease; only abs ceiling / explicit deadline / budget are
+        # unconditional.
+        progressing = (own_progress or subtree_progressing or _has_pending_descendant(task_id)
+                       or (isinstance(lease_ts, (int, float)) and float(lease_ts) > now))
         ceiling_reached = runtime_sec >= abs_ceiling
 
         # Hard axes (deadline_at, abs ceiling) stop the task regardless of activity; the
-        # idle/subtree gate only spares a task that has NO explicit deadline and is still
-        # progressing. This honors an explicit/caller deadline promptly while never letting
-        # the removed blanket wall-clock kill a productively-waiting orchestrator.
+        # idle/subtree gate only spares a still-progressing task with NO explicit deadline
+        # — an explicit/caller deadline is honored promptly, while no blanket wall-clock
+        # kills a productively-waiting orchestrator.
         if not ceiling_reached and not deadline_reached and progressing:
             # An outstanding episode outlives this reprieve or is withdrawn by it; the
             # rule (own progress answers the request, sparing only suspends its clock)
@@ -1281,19 +1244,15 @@ def _enforce_task_timeouts_locked(
         if finalization_requested_at > 0 and now - finalization_requested_at < FINALIZATION_GRACE_SEC:
             continue
 
-        # NOTE: the "worker self-finalized at the idle boundary" case is handled by the
-        # reaper's POST-KILL terminal re-check (which kills+joins the process FIRST, then
-        # honors an on-disk terminal result and emits an idempotent task_done). We do NOT
-        # short-circuit here: freeing the slot inline without killing the still-possibly-
-        # running process would let assign_tasks reuse it mid-flight and could drop the
-        # terminal event, leaving the live card unresolved.
+        # NOTE: "worker self-finalized at the idle boundary" is handled by the reaper's
+        # POST-KILL terminal re-check (kill+join FIRST, then honor an on-disk terminal
+        # result, idempotent task_done). No short-circuit here: freeing the slot inline
+        # would let assign_tasks reuse it mid-flight and could drop the terminal event.
 
         # Variant A: hand the ENTIRE teardown to the background reaper so the loop tick
-        # stays fast AND — critically — the terminal result write + retry enqueue happen
-        # only AFTER the reaper has killed/joined the old process (a still-alive worker can
-        # no longer race a concurrently-assigned retry; for a subagent the retry reuses the
-        # same id/drive). Decisions that need live RUNNING state (orchestrator -> no blind
-        # retry; the retry id) are frozen HERE under the lock and passed in the job.
+        # stays fast and the terminal write + retry enqueue happen only AFTER kill/join
+        # (no race with a concurrently-assigned retry; a subagent retry reuses id/drive).
+        # Live-RUNNING decisions (orchestrator -> no blind retry; retry id) freeze HERE.
         if task_type == "evolution":
             from supervisor.evolution_lifecycle import update_evolution_transaction
             if not update_evolution_transaction(task_id, dispatch_status="reaping"):

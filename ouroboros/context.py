@@ -410,6 +410,54 @@ def _runtime_budget_info(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
     return budget_info
 
 
+def _promoted_task_toolset(env: Any) -> Dict[str, Any]:
+    """The LIVE built-in toolset available to an ordinary promoted task.
+
+    Workspace focus changes the default target, not the top-level principal's
+    tool names. The projection therefore asks the real registry once and keeps
+    credential omissions typed instead of maintaining a second static catalog.
+    Dynamic extension/MCP availability remains task-time state.
+    """
+    from types import SimpleNamespace
+
+    from ouroboros.tools.registry import ToolRegistry, _builtin_tool_availability
+
+    registry = ToolRegistry(pathlib.Path(env.repo_dir), pathlib.Path(getattr(env, "drive_root", ".")))
+
+    probe = SimpleNamespace(
+        task_id="promote_toolset_probe",
+        task_metadata={},
+        task_contract={},
+        task_constraint=None,
+        is_workspace_mode=lambda: False,
+        is_ephemeral_turn=False,
+    )
+    registry.set_context(probe)
+    top_level_tools = set(registry.available_tools())
+    # Typed omissions: registered built-ins that live availability removes right
+    # now (credential gates). Named with their reason so the router can tell
+    # "does not exist" from "exists but currently unavailable".
+    unavailable = {}
+    for name in registry._entries:
+        available, reason, detail = _builtin_tool_availability(name, probe)
+        if not available:
+            unavailable[name] = f"{reason}: {detail}" if detail else reason
+    return {
+        "top_level_tools": sorted(top_level_tools),
+        **({"unavailable_builtin_tools": dict(sorted(unavailable.items()))} if unavailable else {}),
+        "rule": (
+            "LIVE built-in tool availability, evaluated by the real tool "
+            "registry at promote time. Project focus changes the default root, "
+            "not this ordinary top-level toolset. unavailable_builtin_tools "
+            "exist but are currently unusable (e.g. missing credentials) — do "
+            "not demand them. Dynamic extension/MCP tools are NOT listed (their "
+            "availability is unknowable at promote time). If an objective/"
+            "expected_output demands specific BUILT-IN tools, demand only names "
+            "listed here."
+        ),
+    }
+
+
 def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) -> str:
     try:
         git_branch, git_sha = get_git_info(env.repo_dir)
@@ -462,8 +510,10 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
             "workspace_mode": str(task.get("workspace_mode") or ""),
             "memory_mode": str(task.get("memory_mode") or ""),
             "rule": (
-                "read_file/write_file/list_files/search_code/run_command target the active workspace; "
-                "Ouroboros self-review/commit tools are unavailable; final changes are exported as artifacts."
+                "File and process tools default to the active workspace; explicit typed root/cwd "
+                "selectors target other authorized resources per call. Project focus does not remove "
+                "the ordinary top-level toolset: Ouroboros self-review/commit tools remain available "
+                "for system_repo changes, while external-project changes are exported as artifacts."
             ),
         }
     if str(runtime_mode).lower() == "light":
@@ -580,6 +630,15 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
             "your judgment picks the target (or none -> answer inline / promote_chat_to_task). A "
             "message in a project room defaults to that project unless it clearly says otherwise."
         )
+    if _swarm_router:
+        # The router turn authors objectives/contracts for a task it will never
+        # run. Give it the bounded LIVE top-level tool catalog as a structural fact;
+        # the model still writes the contract itself (P5) — no contract text is
+        # ever scanned or gated.
+        try:
+            runtime_data["promoted_task_toolset"] = _promoted_task_toolset(env)
+        except Exception:
+            log.debug("Failed to build promoted-task toolset digest", exc_info=True)
     if bool(task.get("_ephemeral_turn")) and not _swarm_router:
         runtime_data["decision_turn_rule"] = _DECISION_TURN_OUTCOME_RULE
     _main_manifest = (
@@ -589,6 +648,16 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
     )
     if _main_manifest:
         runtime_data["main_routing_manifest"] = _main_manifest
+    _last_result = (
+        _meta.get("project_last_task_result")
+        if isinstance(_meta.get("project_last_task_result"), dict)
+        else None
+    )
+    if _last_result:
+        # Host-built ground truth about the thread's most recent task result
+        # (id/status/workspace facts/artifact refs) — read THIS before framing a
+        # "continue" promotion; never reconstruct prior work from chat memory.
+        runtime_data["project_last_task_result"] = _last_result
     _routing_contract = (
         _meta.get("routing_contract")
         if isinstance(_meta.get("routing_contract"), dict)
@@ -793,6 +862,18 @@ def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 10) -
         ] if bit]
         header = " | ".join(header_bits) or "unknown reflection"
 
+        if str(entry.get("type", "")) == "project_reflection_pointer":
+            # Bounded canonical pointer row (full text lives on the project
+            # drive) — render one informative line, not an empty block.
+            where = str(entry.get("reflection_path", "")).strip() or "(unknown path)"
+            pid = str(entry.get("project_id", "")).strip() or "(unknown project)"
+            note = " (project write FAILED)" if entry.get("write_failed") else ""
+            blocks.append(
+                f"### {header}\n- Full reflection lives on project drive: "
+                f"{pid} — {where}{note}"
+            )
+            continue
+
         lines = [f"### {header}"]
 
         goal = str(entry.get("goal", "")).strip()
@@ -836,7 +917,8 @@ _PROJECT_THREAD_SCAN = 4000
 
 
 def build_recent_sections(
-    memory: Memory, env: Any, task_id: str = "", thread_chat_id: int = 0
+    memory: Memory, env: Any, task_id: str = "", thread_chat_id: int = 0,
+    project_id: str = "",
 ) -> List[str]:
     sections = []
 
@@ -930,6 +1012,27 @@ def build_recent_sections(
     reflections_text = _format_recent_reflections(reflections_entries, limit=10)
     if reflections_text:
         sections.append("## Execution reflections\n\n" + reflections_text)
+
+    # Read-back of the project's OWN full reflections (F5 wrote them to the
+    # project drive; the canonical tail above carries only pointer rows). Same
+    # bounds as the canonical read: last 20 rows, 10 rendered.
+    _pid = str(project_id or "").strip()
+    if _pid:
+        try:
+            from ouroboros.project_facts import project_reflections_path
+            from ouroboros.utils import iter_jsonl_objects
+
+            project_rows = list(iter_jsonl_objects(
+                project_reflections_path(_pid), max_entries=20,
+            ))
+            project_text = _format_recent_reflections(project_rows, limit=10)
+            if project_text:
+                sections.append(
+                    f"## Project execution reflections (this project's own: {_pid})\n\n"
+                    + project_text
+                )
+        except Exception:
+            log.debug("project reflections read-back failed", exc_info=True)
 
     return sections
 
@@ -1205,8 +1308,17 @@ def _capture_context_core(
         except Exception:
             log.debug("Failed to build advisory review status section", exc_info=True)
 
+    # Same resolver the reflection WRITER uses (append_reflection_routed), so
+    # read-back sees exactly the file the task's own reflections land in.
+    try:
+        from ouroboros.project_facts import resolve_project_id
+
+        _reflections_pid = resolve_project_id(task)
+    except Exception:
+        _reflections_pid = ""
     dynamic_parts.extend(build_recent_sections(
-        memory, env, task_id=task.get("id", ""), thread_chat_id=int(task.get("chat_id") or 0)
+        memory, env, task_id=task.get("id", ""), thread_chat_id=int(task.get("chat_id") or 0),
+        project_id=_reflections_pid,
     ))
 
     return _ContextCore(

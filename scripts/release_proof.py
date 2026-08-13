@@ -12,10 +12,22 @@ from pathlib import Path
 from typing import Iterable
 
 
+# One build job produces exactly one platform archive, so ``locate`` only ever
+# looks at these suffixes. The AppImage and native Linux packages are produced
+# after the tarball is located and are discovered separately.
 ARCHIVE_SUFFIXES = (".dmg", ".tar.gz", ".zip")
+RELEASE_ASSET_SUFFIXES = ARCHIVE_SUFFIXES + (".AppImage", ".deb", ".rpm")
 PROOF_IDS = {
     "macos-arm64": lambda version: f"Ouroboros-{version}.dmg",
     "linux-x86_64": lambda version: f"Ouroboros-{version}-linux-x86_64.tar.gz",
+    "linux-appimage-x86_64": (
+        lambda version: f"Ouroboros-{version}-linux-x86_64.AppImage"
+    ),
+    "linux-deb-amd64": lambda version: f"ouroboros_{version}_amd64.deb",
+    "linux-rpm-x86_64": lambda version: f"ouroboros-{version}-1.x86_64.rpm",
+    "linux-rpm-red80-x86_64": (
+        lambda version: f"ouroboros-{version}-1.red80.x86_64.rpm"
+    ),
     "windows-x64": lambda version: f"Ouroboros-{version}-windows-x64.zip",
 }
 RELEASE_GATES = (
@@ -30,12 +42,41 @@ RELEASE_GATES = (
 COMMON_SMOKE_CHECKS = frozenset(
     {"embedded_repo_bundle", "embedded_claudexor_runtime", "packaged_cli_help"}
 )
+# The native packages are proven by a real install in a stock distro container,
+# not by unpacking an archive, so they carry their own check set. Only the
+# release-gating lane counts here: the Astra Linux and RED OS runs are
+# informational and cannot be required of a receipt.
+PACKAGE_SMOKE_CHECKS = frozenset(
+    {
+        "package_install",
+        "runtime_dependency",
+        "packaged_cli_help",
+        "desktop_entry",
+        "systemd_user_unit",
+        "desktop_launcher_start",
+    }
+)
 REQUIRED_SMOKE_CHECKS = {
     "macos-arm64": COMMON_SMOKE_CHECKS
     | frozenset(
         {"applications_shortcut", "install_cli_command", "arm64_main_executable"}
     ),
     "linux-x86_64": COMMON_SMOKE_CHECKS,
+    "linux-appimage-x86_64": COMMON_SMOKE_CHECKS
+    | frozenset(
+        {
+            "appimage_extract_and_run",
+            "appimage_metadata",
+            "browser_fallback_start",
+            "clean_shutdown",
+            "gateway_readiness",
+            "product_version",
+            "shared_libraries",
+        }
+    ),
+    "linux-deb-amd64": PACKAGE_SMOKE_CHECKS,
+    "linux-rpm-x86_64": PACKAGE_SMOKE_CHECKS,
+    "linux-rpm-red80-x86_64": PACKAGE_SMOKE_CHECKS,
     "windows-x64": COMMON_SMOKE_CHECKS,
 }
 
@@ -48,13 +89,14 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _release_archives(directory: Path) -> list[Path]:
+def _release_assets(directory: Path, suffixes: tuple[str, ...]) -> list[Path]:
+    # The .deb and .rpm follow distro naming, which is lowercase.
     return sorted(
         path
         for path in directory.iterdir()
         if path.is_file()
-        and path.name.startswith("Ouroboros-")
-        and path.name.endswith(ARCHIVE_SUFFIXES)
+        and path.name.lower().startswith("ouroboros")
+        and path.name.endswith(suffixes)
     )
 
 
@@ -74,7 +116,7 @@ def _append_github_output(path: Path, values: dict[str, str]) -> None:
 
 
 def locate_artifact(directory: Path) -> Path:
-    archives = _release_archives(directory)
+    archives = _release_assets(directory, ARCHIVE_SUFFIXES)
     if len(archives) != 1:
         names = ", ".join(path.name for path in archives) or "none"
         raise ValueError(f"expected exactly one release archive in {directory}, found: {names}")
@@ -141,11 +183,13 @@ def _proof_files(
     commit: str,
     tag: str,
 ) -> list[dict]:
-    archives = {path.name: path for path in _release_archives(directory)}
+    archives = {
+        path.name: path for path in _release_assets(directory, RELEASE_ASSET_SUFFIXES)
+    }
     expected = {proof_id: factory(version) for proof_id, factory in PROOF_IDS.items()}
     if set(archives) != set(expected.values()):
         raise ValueError(
-            "release archive set does not match the three expected platform assets: "
+            "release asset set does not match the expected platform assets: "
             f"expected {sorted(expected.values())}, found {sorted(archives)}"
         )
 
@@ -234,14 +278,19 @@ def _release_notes(
         "",
         "Download the package for your platform below. macOS builds currently target Apple silicon.",
         "",
+        "On Linux, `sudo apt install ./ouroboros_*_amd64.deb` or `sudo dnf install ./ouroboros-*.x86_64.rpm`"
+        " installs to `/opt/ouroboros` and puts `ouroboros` on `PATH`; RED OS 8 has its own"
+        " `.red80.x86_64.rpm`. The AppImage runs from a user-writable path when listed and host Git"
+        " is installed; the `.tar.gz` stays available for extraction-based installs.",
+        "",
         "## Release proof",
         "",
         f"This release was built from [`{short_commit}`](https://github.com/{repository}/commit/{commit}).",
         "The release workflow passed the full test matrix, UI and Docker smoke tests, skill smoke tests, and packaged artifact smoke tests before publication.",
         "",
-        "- `SHA256SUMS` covers every platform archive, SBOM, and smoke receipt.",
+        "- `SHA256SUMS` covers every release asset, SBOM, and smoke receipt.",
         "- `release-evidence.json` binds the tag, commit, workflow run, artifact hashes, SBOMs, and smoke receipts.",
-        "- Each platform archive has GitHub build provenance and SBOM attestations.",
+        "- Each release asset has GitHub build provenance and SBOM attestations.",
         f"- Verify build provenance with `{verify_base}`.",
         f"- Verify the CycloneDX attestation with `{verify_base} --predicate-type https://cyclonedx.org/bom`.",
     ]

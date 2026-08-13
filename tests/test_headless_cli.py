@@ -793,7 +793,7 @@ def test_effective_task_result_preserves_parent_terminal_status(tmp_path, status
     assert payload["ts"] == "2026-01-01T00:00:02Z"
 
 
-def test_workspace_context_routes_repo_tools_and_blocks_self_commit(tmp_path):
+def test_workspace_context_routes_project_files_and_keeps_system_tools_reachable(tmp_path):
     system_repo = tmp_path / "system"
     workspace = tmp_path / "workspace"
     data = tmp_path / "data"
@@ -814,10 +814,10 @@ def test_workspace_context_routes_repo_tools_and_blocks_self_commit(tmp_path):
     assert "workspace" in _repo_read(ctx, "README.md")
     registry = ToolRegistry(repo_dir=system_repo, drive_root=data)
     registry.set_context(ctx)
-    assert "WORKSPACE_MODE_BLOCKED" in registry.execute("commit_reviewed", {"commit_message": "nope"})
-    assert registry.get_schema_by_name("commit_reviewed") is None
-    assert registry.get_schema_by_name("request_restart") is None
-    assert "WORKSPACE_MODE_BLOCKED" in registry.execute("request_restart", {"reason": "nope"})
+    commit_result = registry.execute("commit_reviewed", {"commit_message": "nope"})
+    assert "WORKSPACE_MODE_BLOCKED" not in commit_result
+    assert registry.get_schema_by_name("commit_reviewed") is not None
+    assert registry.get_schema_by_name("request_restart") is not None
     assert "Written" in registry.execute("write_file", {"path": "BIBLE.md", "content": "external edit"})
     assert (workspace / "BIBLE.md").read_text(encoding="utf-8") == "external edit"
     replaced = registry.execute(
@@ -828,10 +828,10 @@ def test_workspace_context_routes_repo_tools_and_blocks_self_commit(tmp_path):
     assert (workspace / "README.md").read_text(encoding="utf-8") == "workspace edited"
 
 
-def test_workspace_run_shell_cwd_allows_scratch_blocks_runtime(tmp_path, monkeypatch):
+def test_workspace_run_shell_cwd_allows_scratch_and_explicit_system(tmp_path, monkeypatch):
     """External-workspace tasks may run from host scratch (a sibling checkout, a
-    /tmp tree); only the Ouroboros runtime (system repo + data drive) stays
-    off-limits as a working directory, and runtime writes remain blocked."""
+    /tmp tree) and explicitly select the system repo; generic runtime data stays
+    off-limits and system-repo mutation remains independently governed."""
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     # Pin $HOME outside tmp_path so the host-scratch cwd allowance holds on Windows
     # CI too (where pytest's tmp dir lives UNDER home and the data-parent-under-home
@@ -858,9 +858,11 @@ def test_workspace_run_shell_cwd_allows_scratch_blocks_runtime(tmp_path, monkeyp
     # Host scratch outside the declared workspace is now a legitimate cwd...
     scratch_cwd = registry.execute("run_command", {"cmd": ["pwd"], "cwd": str(outside)})
     assert "SHELL_CWD_BLOCKED" not in scratch_cwd
-    # ...but the Ouroboros runtime (system repo + data drive) is never a cwd.
+    # The approved root contract makes system_repo an explicit cwd; generic
+    # runtime_data remains unavailable to process tools.
     runtime_repo_cwd = registry.execute("run_command", {"cmd": ["pwd"], "cwd": str(system_repo)})
-    assert "SHELL_CWD_BLOCKED" in runtime_repo_cwd
+    assert "SHELL_CWD_BLOCKED" not in runtime_repo_cwd
+    assert f"cwd={system_repo.resolve()}" in runtime_repo_cwd
     runtime_data_cwd = registry.execute("run_command", {"cmd": ["pwd"], "cwd": str(data)})
     assert "SHELL_CWD_BLOCKED" in runtime_data_cwd
     # READ-ONLY git at a runtime target is ALLOWED (owner contract "read-only
@@ -1631,6 +1633,76 @@ def test_workspace_patch_fails_when_acting_base_sha_head_changed(tmp_path):
     assert manifest["errors"][-1]["expected_head"] == base_head
     assert manifest["errors"][-1]["current_head"] == moved_head
     assert not any(item["kind"] == "workspace_patch" for item in artifacts)
+
+
+def test_copy_child_result_cannot_overwrite_finalized_accounting(tmp_path):
+    """F2: once the root's terminal checkpoint has finalized accounting
+    (task_cost_finalized rides the same write as post_task_synthesis), a late
+    headless-mirror copy-back may still enrich the result but the parent-owned
+    cost/round/token fields stay finalized (the saga displayed the $66 root-only
+    mirror cost instead of the $128 finalized subtree total)."""
+    from ouroboros.headless import copy_child_task_result
+    from ouroboros.task_results import STATUS_COMPLETED
+
+    parent = tmp_path / "data"
+    child = tmp_path / "child"
+    parent.mkdir()
+    child.mkdir()
+    task_id = "costfinal"
+    write_task_result(
+        parent, task_id, STATUS_COMPLETED,
+        result="root done",
+        root_phase_checkpoint={"post_task_synthesis": "completed"},
+        cost_usd=127.97, cost_final=True,
+        cost_usd_with_children=127.97, cost_with_children_partial=False,
+        total_rounds=200, prompt_tokens=1000, completion_tokens=500,
+    )
+    write_task_result(
+        child, task_id, STATUS_COMPLETED,
+        result="mirror done",
+        cost_usd=66.30, cost_final=True,
+        cost_usd_with_children=66.30, cost_with_children_partial=True,
+        total_rounds=150, prompt_tokens=700, completion_tokens=300,
+        mirror_only_fact="from-child",
+    )
+
+    merged = copy_child_task_result(parent, {"id": task_id, "drive_root": str(child)})
+
+    assert merged is not None
+    assert merged["cost_usd"] == 127.97
+    assert merged["cost_usd_with_children"] == 127.97
+    assert merged["cost_with_children_partial"] is False
+    assert merged["total_rounds"] == 200
+    assert merged["prompt_tokens"] == 1000
+    assert merged["completion_tokens"] == 500
+    # Non-accounting enrichment from the child mirror still lands.
+    assert merged["mirror_only_fact"] == "from-child"
+    assert merged["result"] == "mirror done"
+    assert merged["root_phase_checkpoint"]["post_task_synthesis"] == "completed"
+
+
+def test_copy_child_result_merges_cost_before_finalization(tmp_path):
+    """Before the terminal checkpoint finalizes accounting, the child mirror's
+    cost projection is still the freshest fact and must keep flowing."""
+    from ouroboros.headless import copy_child_task_result
+    from ouroboros.task_results import STATUS_COMPLETED
+
+    parent = tmp_path / "data"
+    child = tmp_path / "child"
+    parent.mkdir()
+    child.mkdir()
+    task_id = "costlive"
+    write_task_result(parent, task_id, STATUS_COMPLETED, result="root running")
+    write_task_result(
+        child, task_id, STATUS_COMPLETED,
+        result="mirror done", cost_usd=12.5, total_rounds=42,
+    )
+
+    merged = copy_child_task_result(parent, {"id": task_id, "drive_root": str(child)})
+
+    assert merged is not None
+    assert merged["cost_usd"] == 12.5
+    assert merged["total_rounds"] == 42
 
 
 def test_effective_result_preserves_workspace_artifact_status_with_child_drive(tmp_path):

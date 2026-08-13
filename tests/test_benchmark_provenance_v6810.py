@@ -270,6 +270,11 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     # mirrors that tuple — changing the provenance of an already-reported result to
     # describe a code that cannot appear in it.
     "subagent_executor_unavailable": (False, "agent.py executor_blocked_outcome; a subagent terminal, never a trial's"),
+    # Q1A preflight (2026-08-10 amendments): an explicit harness pin whose child toolset
+    # hides the delegate verbs ends the CHILD unrun before any LLM spend — the same
+    # subagent-terminal class as subagent_executor_unavailable, never a trial's code.
+    "delegate_tools_invisible": (False, "agent.py executor_blocked_outcome / preflight_delegate_visibility; a subagent terminal, never a trial's"),
+    "delegate_visibility_unverified": (False, "agent.py preflight_delegate_visibility broken-introspection path; a subagent terminal, never a trial's"),
     "task_exception": (False, "agent.py:777 the attempt ran and crashed; an honest failure"),
     "capability_profile_mismatch": (False, "control_delegation.py:81 rejected delegate call"),
     "delegation_constraint_block_surface": (False, "control_delegation.py:116 rejected call"),
@@ -280,6 +285,13 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     "deep_self_review_error": (False, "agent.py:743 review-stage error on a review task"),
     "worker_pool_unavailable": (False, "gateway/tasks.py managed-task admission refusal"),
     "worker_pool_state_unavailable": (False, "gateway/tasks.py fail-closed admission inspection"),
+    # Phase-A AR2-1: the HTTP cancel ingress refuses (503) when the durable
+    # cancel-intent write fails — an ingress refusal about a CANCEL request; the
+    # task itself keeps running untouched, so no trial ever terminalizes with it.
+    "cancel_intent_write_failed": (False, "gateway/tasks.py fail-closed cancel ingress refusal; never a task terminal"),
+    # GR4-8: the corrupt-projection flavor of the same ingress refusal — still a
+    # refusal about a CANCEL request (503), never a task terminal.
+    "cancel_intent_projection_corrupt": (False, "gateway/tasks.py fail-closed cancel ingress refusal (corrupt projection); never a task terminal"),
 }
 
 _REASON_CODE_LITERAL = re.compile(

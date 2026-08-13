@@ -785,15 +785,39 @@ def _promote_chat_to_task(
     cached = _cached_swarm_handoff(ctx)
     if cached:
         return cached
-    if swarm_router_turn(ctx):
-        # The model chooses admission; the host-owned room chooses scope.
-        project_id = str(getattr(ctx, "project_id", "") or "")
-        project_name = workspace_root = workspace = source = ""
     from ouroboros.project_facts import (
         explicit_project_id_ok,
         project_id_from_display_name,
         sanitize_project_id,
     )
+
+    scope_override_note = ""
+    if swarm_router_turn(ctx):
+        # The model chooses admission; the host-owned room chooses scope — but
+        # room scope wins only on a GENUINE conflict (room already bound to a
+        # project). In a projectless room an explicitly passed project_name OR
+        # project_id is INHERITED (Q9-A): silently clearing them made the
+        # saga's first root run projectless, so its work landed in an
+        # off-registry tree that no later task could see.
+        room_pid = str(getattr(ctx, "project_id", "") or "")
+        if room_pid:
+            explicit = str(project_name or "").strip() or str(project_id or "").strip()
+            explicit_pid = (
+                project_id_from_display_name(project_name)
+                if str(project_name or "").strip()
+                else sanitize_project_id(project_id or "")
+            )
+            if explicit and explicit_pid != room_pid:
+                # An explicit owner input lost to the room binding — disclose
+                # it in the response, never drop silently (the silent drop was
+                # the saga defect).
+                scope_override_note = (
+                    f" Explicit project {explicit!r} was ignored: this room is "
+                    f"bound to project {room_pid!r}."
+                )
+            project_id = room_pid
+            project_name = ""
+        workspace_root = workspace = source = ""
 
     display_name = str(project_name or "").strip()
     pid = ""
@@ -881,7 +905,7 @@ def _promote_chat_to_task(
             f"OK: task {tid}{scope_note} accepted and durably scheduled ({mode}).{source_confirmation} "
             "The task now runs independently, and follow-up chat can steer it. "
             "Use wait_task/get_task_result if its result "
-            "is needed in this conversation."
+            "is needed in this conversation." + scope_override_note
         )
         return _finish_swarm_handoff(ctx, evt, response, status="scheduled")
     if confirmation_status in {"rejected", "needs_manual_target"}:
@@ -2070,7 +2094,6 @@ def _get_task_result(ctx: ToolContext, task_id: str) -> str:
         return f"Task {task_id}: unknown or not yet registered"
     status = data.get("status", "unknown")
     result = data.get("result", "")
-    cost = data.get("cost_usd", 0)
     trace = data.get("trace_summary", "")
     try:
         from ouroboros.outcomes import read_verification_receipts
@@ -2098,9 +2121,13 @@ def _get_task_result(ctx: ToolContext, task_id: str) -> str:
     from ouroboros.tools.join_ledger import _child_result_sha256
 
     child_result_sha256 = _child_result_sha256(data)
+    # SSOT cost projection (C2): unknown never renders as $0.00 (and a null in
+    # the stored result no longer crashes the f-string with a TypeError).
+    from ouroboros.cost_projection import cost_display
+
     if status == STATUS_COMPLETED:
         output = (
-            f"Task {task_id} [{status}]: cost=${cost:.2f}\n"
+            f"Task {task_id} [{status}]: cost={cost_display(data)}\n"
             f"child_result_sha256={child_result_sha256}\n\n"
             f"[SUBTASK_OUTCOME]\n{outcome_summary}\n[/SUBTASK_OUTCOME]\n\n"
             f"[BEGIN_SUBTASK_OUTPUT]\n{result}\n[END_SUBTASK_OUTPUT]"
@@ -2170,7 +2197,9 @@ def cache_horizon_note(ctx: Any, elapsed_sec: Any) -> str:
     at the shipped default TTL ``1h`` (3600s horizon) only ``wait_tasks`` (7200s
     clamp) can genuinely emit it; ``wait_task`` clamps at exactly 3600s and can
     only cross by a poll overshoot of a couple of seconds, and ``delegate_wait``
-    clamps at ``config.DELEGATE_WAIT_CEILING_SEC`` (2100s) and cannot cross at all.
+    clamps its WINDOW at ``config.DELEGATE_WAIT_WINDOW_MAX_SEC`` (1800s; the
+    2100s ToolEntry ceiling above it is the kill timeout, not the window — F5)
+    and cannot cross at all.
     At ``5m`` all three emit it. Pinned by
     tests/test_cache_optimization.py::test_cache_horizon_reachability_matches_the_wait_clamps —
     the call sites stay on all three because the tier is an owner setting, not a
@@ -2335,14 +2364,18 @@ def _children_roster_projection(
         )
     except Exception:
         return empty
+    from ouroboros.cost_projection import cost_projection
+
     roster: List[Dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
+        _cost = cost_projection(row)
         roster.append({
             "task_id": str(row.get("task_id") or row.get("id") or ""),
             "status": row.get("status"),
-            "cost_usd": row.get("cost_usd"),
+            "cost_usd": _cost["cost_usd"],
+            "accounted_upper_bound_usd": _cost["accounted_upper_bound_usd"],
             "child_result_sha256": _child_result_sha256(row),
             "outcome_axes": normalize_outcome_axes(row),
         })
@@ -2366,6 +2399,7 @@ def _wait_for_tasks(
     if not isinstance(task_ids, list) or not task_ids:
         return "⚠️ TOOL_ARG_ERROR (wait_tasks): task_ids must be a non-empty list."
     from ouroboros.config import MAX_ACTIVE_SUBAGENTS_HARD_CAP
+    from ouroboros.cost_projection import cost_projection
 
     if len(task_ids) > MAX_ACTIVE_SUBAGENTS_HARD_CAP:
         return (
@@ -2470,10 +2504,16 @@ def _wait_for_tasks(
             if not isinstance(data, dict):
                 public_tasks[str(tid)] = data
                 continue
+            # SSOT cost projection (C2): honest null (never a confirmed-looking $0),
+            # the additive honest name beside the deprecated alias, and finality
+            # only when the child's own record claims it.
+            _cost = cost_projection(data)
             projected: Dict[str, Any] = {
                 "task_id": str(data.get("task_id") or data.get("id") or tid),
                 "status": data.get("status"),
-                "cost_usd": data.get("cost_usd"),  # absent accounting projects null, never a confirmed-looking $0
+                "cost_usd": _cost["cost_usd"],
+                "accounted_upper_bound_usd": _cost["accounted_upper_bound_usd"],
+                "cost_final": _cost["cost_final"],
                 "child_result_sha256": _child_result_sha256(data),
                 "outcome_axes": normalize_outcome_axes(data),
                 "result": data.get("result"),
@@ -2488,6 +2528,43 @@ def _wait_for_tasks(
             _delta = disclosable_capability_delta(data)
             if _delta:
                 projected["capability_delta"] = _delta
+            # Delegation honesty (Q1A, 2026-08-10 amendments): whether a
+            # harness-dispatched child ACTUALLY delegated is a handoff fact the
+            # fan-out parent absorbs here — the e9108a09 incident hid nine
+            # native-only "harness" children behind this very projection.
+            # Compact counts only; the full evidence stays in the envelope.
+            _envelope = data.get("subagent_envelope") if isinstance(data.get("subagent_envelope"), dict) else {}
+            _evidence = _envelope.get("execution_evidence") if isinstance(_envelope.get("execution_evidence"), dict) else {}
+            if _evidence or str(data.get("effective_executor") or "") == "harness":
+                _ee: Dict[str, Any] = {
+                    "dispatch_executor": str(data.get("effective_executor") or ""),
+                }
+                if _evidence.get("evidence_read_failed"):
+                    # Unreadable custody log (v6.94.0 landing-gate scope fix):
+                    # the counts are UNKNOWN — emitting them as 0 beside the
+                    # marker fabricated a "no runs" receipt for a log that was
+                    # never read. The compact projection carries ONLY the typed
+                    # marker; counts AND the substrate claim are omitted, the
+                    # same omission rule subagents.envelope_from_task applies.
+                    _ee["evidence_read_failed"] = True
+                else:
+                    if _evidence:
+                        # Counts only when the envelope actually attested them:
+                        # a result with no evidence recorded (pre-6.94) gets NO
+                        # zero counts — absence means "no evidence yet", not
+                        # "no runs".
+                        _ee["delegated_runs_started"] = int(_evidence.get("delegated_runs_started") or 0)
+                        _ee["delegated_runs_settled"] = int(_evidence.get("delegated_runs_settled") or 0)
+                        _ee["delegated_runs_succeeded"] = int(_evidence.get("delegated_runs_succeeded") or 0)
+                        _ee["delegated_runs_failed"] = int(_evidence.get("delegated_runs_failed") or 0)
+                    # The substrate claim rides only when the envelope made one.
+                    _substrate = str(data.get("actual_substrate") or _envelope.get("actual_substrate") or "")
+                    if _substrate:
+                        _ee["actual_substrate"] = _substrate
+                        # C3: counters are delegated-run facts; the native
+                        # (metered) contribution beside them is unknown.
+                        _ee["native_contribution"] = "unknown"
+                projected["execution_evidence"] = _ee
             public_tasks[str(tid)] = projected
         waited["tasks"] = public_tasks
         waited["tasks_note"] = (

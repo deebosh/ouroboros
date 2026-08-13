@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import pathlib
-import re
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +20,7 @@ from typing import Any, BinaryIO, Dict, Iterable, List, Optional, Sequence, Tupl
 
 from ouroboros.contracts.task_constraint import normalize_task_constraint
 from ouroboros.task_results import (
+    TASK_COST_META_FIELDS,
     cancellation_blocks_child_result, load_task_result, validate_task_id, write_task_result,
 )
 from ouroboros.utils import atomic_write_json, utc_now_iso
@@ -63,67 +63,33 @@ _ARTIFACT_LIFECYCLE_FIELDS = {
     "artifact_bundle",
     "artifact_finalized_at",
 }
-# v6.35.0 (T7): bumped to 2 with binary + size + junk-artifact hygiene so the
-# real-usage workspace.patch (consumed by subagents / PR integration) never
-# carries a compiled `go build` binary, a Redis dump, or other untracked build
-# junk. Kept consistent with the bench capture_patch.sh JUNK_RE + numstat
-# binary detection. This is patch-transport hygiene only (artifact path/extension
-# + git's own binary verdict), never code/content inference (Bible P5).
-_PATCH_EXCLUDE_RULES_VERSION = 2
-_PATCH_MAX_UNTRACKED_FILE_BYTES = 5 * 1024 * 1024  # 5 MiB per untracked file
+# The PURE patch/snapshot eligibility rules (env/cache dirs, junk artifacts,
+# incidental lockfiles, credential-shaped names) live in their own module (size
+# gate); re-exported here (same objects) because project_sources, coop_checkpoint
+# and the tests address them on THIS surface. The I/O checks and the combined
+# `untracked_capture_veto_reason` predicate stay below, beside the git helpers.
+from ouroboros.workspace_patch_rules import (  # noqa: F401
+    _ANY_SEGMENT_EXCLUDE_DIRS,
+    _LOCKFILE_MANIFESTS,
+    _PATCH_EXCLUDE_RULES_VERSION,
+    _PATCH_JUNK_RE,
+    _PATCH_MAX_UNTRACKED_FILE_BYTES,
+    _SENSITIVE_EXAMPLE_SUFFIXES,
+    _SENSITIVE_FILENAMES,
+    _SENSITIVE_KEY_NAMES,
+    _TOP_LEVEL_EXCLUDE_DIRS,
+    _incidental_lockfile_excludes,
+    _lockfile_manifest_for,
+    _patch_exclude_reason,
+    _sensitive_untracked_reason,
+)
+
 # v6.52.2: the task-scoped manifest of {ABSOLUTE_path: sha256} fingerprints the agent declared via
 # run_command/run_script `scratch=[...]` (ephemeral verification files). The patch capture below
 # EXCLUDES a matching untracked path ONLY while its current content still matches the recorded sha
 # (so a later real file at the same path is not dropped). SSOT for the name; ouroboros.artifacts
 # imports this (headless is the lower-level module).
 SCRATCH_MANIFEST_NAME = ".scratch_manifest.json"
-_TOP_LEVEL_EXCLUDE_DIRS = {".ouroboros", ".venv", "venv", "env"}
-_ANY_SEGMENT_EXCLUDE_DIRS = {
-    ".cache",
-    ".mypy_cache",
-    ".npm",
-    ".pnpm-store",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".yarn",
-    "__pycache__",
-    "node_modules",
-}
-# Junk file tails / build dirs the dir-sets above don't already cover; the same
-# JUNK_RE the bench capture_patch.sh uses (devtools/benchmarks/swe_bench_pro/).
-_PATCH_JUNK_RE = re.compile(
-    r"appendonlydir|\.rdb$|\.aof$|\.manifest$|\.log$|\.tmp$|\.pid$|\.sock$"
-    r"|\.pyc$|\.pyo$|^(dist|build)/|\.DS_Store|(^|/)\.coverage$"
-    r"|coverage\.xml$|(^|/)htmlcov/"
-)
-_LOCKFILE_MANIFESTS = {
-    "package-lock.json": "package.json",
-    "npm-shrinkwrap.json": "package.json",
-    "yarn.lock": "package.json",
-    "pnpm-lock.yaml": "package.json",
-    "go.sum": "go.mod",
-    "Cargo.lock": "Cargo.toml",
-    "poetry.lock": "pyproject.toml",
-    "Pipfile.lock": "Pipfile",
-    "composer.lock": "composer.json",
-    "Gemfile.lock": "Gemfile",
-}
-_SENSITIVE_EXAMPLE_SUFFIXES = (".example", ".sample", ".template", ".dist")
-_SENSITIVE_KEY_NAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
-_SENSITIVE_FILENAMES = {
-    ".git-credentials",
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-    "aws-credentials.json",
-    "credentials",
-    "credentials.json",
-    "gcp-service-account.json",
-    "service-account.json",
-    "secrets.json",
-    "token.json",
-}
 _GIT_UNBORN_HEAD = "(unborn)"
 
 
@@ -379,8 +345,9 @@ def prune_task_trees(
 def remove_subagent_task_drive(parent_drive_root: pathlib.Path, task_id: str) -> bool:
     """Immediately remove a subagent's child drive (used on cancel/timeout).
 
-    Cancellation wins: late results are discarded with bounded scratch.
-    Returns whether anything was removed.
+    Completion wins (phase A, owner 4=A): callers run this only AFTER the settled
+    publication (result copied back, salvage preserved on the canonical drive), so
+    removal drops bounded scratch, never a kept answer. Returns whether it removed.
     """
     parent = pathlib.Path(parent_drive_root)
     try:
@@ -454,6 +421,13 @@ def copy_child_task_result(parent_drive_root: pathlib.Path, task: Dict[str, Any]
         # ``not_required`` value.
         merged_checkpoint["post_task_synthesis"] = existing_post_task
         payload["root_phase_checkpoint"] = merged_checkpoint
+        # F2: the same terminal checkpoint finalized the parent-owned accounting
+        # (task_cost_finalized, exact subtree totals) on the canonical result; a
+        # late copy-back of the child drive's stale root-only cost must not
+        # overwrite it. total_rounds/prompt_tokens/completion_tokens ride the same
+        # finalized record but are not in TASK_COST_META_FIELDS — named explicitly.
+        for key in (*TASK_COST_META_FIELDS, "total_rounds", "prompt_tokens", "completion_tokens"):
+            payload.pop(key, None)
     if isinstance(payload.get("artifacts"), list):
         payload["artifacts"] = _copy_child_artifacts_to_parent(
             parent_drive_root,
@@ -862,7 +836,8 @@ def write_workspace_patch_artifacts(
     tracked_excluded: List[Dict[str, str]] = []
     sensitive: List[Dict[str, str]] = []
     included_untracked: List[str] = []
-    task_base_sha = _acting_base_sha_from_task(task)
+    acting_constraint = _acting_constraint_from_task(task)
+    task_base_sha = str(acting_constraint.base_sha or "").strip() if acting_constraint else ""
     preflight_head = _preflight_head_from_task(task)
     if not task_base_sha and not preflight_head and _preflight_head_present(task):
         preflight_head = _GIT_UNBORN_HEAD
@@ -985,42 +960,34 @@ def write_workspace_patch_artifacts(
         digest = hasher.hexdigest()
 
     head_error: Dict[str, Any] | None = None
-    expected_head = base_head if task_base_sha else _preflight_head_from_task(task)
-    expected_head_present = bool(task_base_sha) or _preflight_head_present(task)
-    enforce_static_head = bool(task_base_sha)
     head_errors: List[Dict[str, Any]] = []
     current_head = _git_stdout(["git", "rev-parse", "--verify", "HEAD"], root, allow_rc={0}, errors=head_errors).strip()
-    if not current_head and base_is_empty_tree:
-        head_errors = []
-    if not enforce_static_head:
-        pass
-    elif expected_head == _GIT_UNBORN_HEAD and not current_head and base_is_empty_tree:
-        pass
-    elif expected_head and not current_head:
-        errors.extend(head_errors)
-        head_error = {
-            "type": "workspace_head_unverified",
-            "message": "workspace HEAD could not be verified at artifact finalization",
-            "expected_head": expected_head,
-            "current_head": "",
-        }
-        errors.append(head_error)
-    elif expected_head_present and not expected_head and current_head:
-        head_error = {
-            "type": "workspace_head_changed",
-            "message": "workspace HEAD changed from unborn during task execution; patch artifact is invalid",
-            "expected_head": _GIT_UNBORN_HEAD,
-            "current_head": current_head,
-        }
-        errors.append(head_error)
-    elif expected_head and current_head != expected_head:
-        head_error = {
-            "type": "workspace_head_changed",
-            "message": "workspace HEAD changed during task execution; patch artifact is invalid",
-            "expected_head": expected_head,
-            "current_head": current_head,
-        }
-        errors.append(head_error)
+    # Q11: the moved-HEAD fail-closed tripwire applies ONLY to a child's private
+    # self_worktree, where a moved HEAD can only mean the worktree itself
+    # rewrote history under the patch (its base is always a real provisioned
+    # commit, never unborn). In a SHARED tree (external_workspace/genesis) the
+    # parent's own legitimate commits move HEAD too — enforcing it there failed
+    # every innocent in-flight sibling; shared-tree integrity is verified by the
+    # reverse-patch check in tools/subagent_integration (verified_shared_workspace),
+    # and base_sha stays the patch BASE so parent-committed work is still captured.
+    if task_base_sha and acting_constraint is not None and acting_constraint.surface == "self_worktree":
+        if not current_head:
+            errors.extend(head_errors)
+            head_error = {
+                "type": "workspace_head_unverified",
+                "message": "workspace HEAD could not be verified at artifact finalization",
+                "expected_head": base_head,
+                "current_head": "",
+            }
+            errors.append(head_error)
+        elif current_head != base_head:
+            head_error = {
+                "type": "workspace_head_changed",
+                "message": "workspace HEAD changed during task execution; patch artifact is invalid",
+                "expected_head": base_head,
+                "current_head": current_head,
+            }
+            errors.append(head_error)
     if head_error:
         try:
             patch_path.unlink()
@@ -1411,43 +1378,6 @@ def _write_patch_separator(fh: BinaryIO, hasher: Any) -> int:
     return len(data)
 
 
-def _patch_exclude_reason(rel: str) -> str:
-    posix = str(rel).replace("\\", "/")
-    parts = pathlib.PurePosixPath(posix).parts
-    if not parts:
-        return ""
-    if parts[0] in _TOP_LEVEL_EXCLUDE_DIRS:
-        return f"top-level env/cache directory: {parts[0]}"
-    for part in parts:
-        if part in _ANY_SEGMENT_EXCLUDE_DIRS:
-            return f"env/cache directory segment: {part}"
-    if _PATCH_JUNK_RE.search(posix):
-        return f"junk artifact: {posix}"
-    return ""
-
-
-def _lockfile_manifest_for(rel: str) -> str:
-    posix = str(rel).replace("\\", "/")
-    path = pathlib.PurePosixPath(posix)
-    manifest = _LOCKFILE_MANIFESTS.get(path.name)
-    return path.with_name(manifest).as_posix() if manifest else ""
-
-
-def _incidental_lockfile_excludes(changed_paths: List[str]) -> set[str]:
-    changed = {str(path or "").replace("\\", "/") for path in changed_paths if str(path or "").strip()}
-    lock_to_manifest = {
-        path: manifest
-        for path in changed
-        for manifest in [_lockfile_manifest_for(path)]
-        if manifest
-    }
-    if not lock_to_manifest:
-        return set()
-    if not (changed - set(lock_to_manifest)):
-        return set()
-    return {path for path, manifest in lock_to_manifest.items() if manifest not in changed}
-
-
 def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str) -> str:
     """Reason to drop an untracked file from the workspace patch when it is a
     build/runtime BINARY or exceeds the per-file size cap. Keeps real-usage
@@ -1473,23 +1403,24 @@ def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str) -> str:
     return ""
 
 
-def _sensitive_untracked_reason(rel: str) -> str:
-    name = pathlib.PurePosixPath(str(rel).replace("\\", "/")).name
-    lower = name.lower()
-    is_dotenv_secret = lower.startswith(".env") or lower.endswith(".env") or ".env." in lower
-    if is_dotenv_secret and not lower.endswith(_SENSITIVE_EXAMPLE_SUFFIXES):
-        return "dotenv secret"
-    if lower in _SENSITIVE_KEY_NAMES or lower in _SENSITIVE_FILENAMES:
-        return "credential filename"
-    parts = lower.replace(".", " ").replace("-", " ").replace("_", " ").split()
-    if (
-        any(part in {"secret", "secrets", "credential", "credentials", "token"} for part in parts)
-        or ("service" in parts and "account" in parts)
-    ) and lower.endswith((".json", ".yaml", ".yml", ".toml", ".ini", ".txt")):
-        return "credential-like filename"
-    if lower.endswith((".pem", ".key", ".p12", ".pfx")):
-        return "private key or certificate"
-    return ""
+def untracked_capture_veto_reason(root: pathlib.Path, rel: str) -> str:
+    """Why an untracked file must NOT ride into a workspace snapshot or patch.
+
+    The delegated-run baseline snapshot
+    (``subagent_worktrees.provision_execution_snapshot``) asks the SAME three
+    checks, in the SAME order, that ``write_workspace_patch_artifacts`` applies
+    to untracked files: sensitive/credential-shaped names first, then the
+    static junk rules, then the binary/size veto. One combined predicate here so
+    the snapshot and the patch cannot drift apart about eligibility.
+    Returns the human-readable reason, or "" when the file is eligible.
+    """
+    reason = _sensitive_untracked_reason(rel)
+    if reason:
+        return reason
+    reason = _patch_exclude_reason(rel)
+    if reason:
+        return reason
+    return _untracked_blob_exclude_reason(root, rel)
 
 
 def _preflight_head_from_task(task: Dict[str, Any]) -> str:
@@ -1506,7 +1437,8 @@ def _preflight_head_present(task: Dict[str, Any]) -> bool:
     return "head" in git
 
 
-def _acting_base_sha_from_task(task: Dict[str, Any]) -> str:
+def _acting_constraint_from_task(task: Dict[str, Any]):
+    """Normalized acting-subagent constraint carried by ``task``, or None."""
     raw = task.get("task_constraint") if isinstance(task.get("task_constraint"), dict) else {}
     if not raw:
         meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
@@ -1514,10 +1446,8 @@ def _acting_base_sha_from_task(task: Dict[str, Any]) -> str:
     try:
         constraint = normalize_task_constraint(raw)
     except Exception:
-        return ""
-    if not constraint or constraint.mode != "acting_subagent":
-        return ""
-    return str(constraint.base_sha or "").strip()
+        return None
+    return constraint if constraint and constraint.mode == "acting_subagent" else None
 
 
 def _empty_patch_manifest(

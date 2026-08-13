@@ -16,7 +16,7 @@ import logging
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, add_usage
 from ouroboros import task_pacing
 from ouroboros.config import adaptive_quorum, get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode, resolve_effort
-from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects
+from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_DELIVERY_CONTROL_DEGRADED, RESULT_INFRA_FAILED, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects
 from ouroboros.observability import new_call_id, persist_call
 from ouroboros.tool_policy import CAPABILITY_OMISSION_HEADER, format_capability_omissions, initial_tool_schemas, list_non_core_tools, swarm_router_turn
 from ouroboros.tools.registry import ToolRegistry
@@ -1252,9 +1252,9 @@ def _task_acceptance_subtree_snapshot(
             if status in SETTLED_STATUSES:
                 projected["child_result_sha256"] = _child_result_sha256(row)
             compact.append(projected)
-        # Acceptance needs true quiescence. ``cancel_requested`` is terminal for
-        # parent handoff reminders but the worker may still be exiting, so it is
-        # deliberately excluded here via SETTLED_STATUSES.
+        # Acceptance needs true quiescence: SETTLED statuses only. A child with a
+        # pending durable cancel intent stays non-quiescent until the supervisor
+        # custody settles it (guaranteed by the cancel-intent watchdog).
         queue_rows = [
             {
                 "task_id": str(row.get("task_id") or ""),
@@ -1378,6 +1378,9 @@ ACCEPTANCE_DECISION_REASONS = (
     "review_degraded",
     "fence_reopen_failed",
     "infra_failure",
+    # Owner Q2A: the forced children_unabsorbed rail runs the panel but cannot
+    # grant a requested improvement pass; the dangling revision terminalizes.
+    "revision_unavailable_on_forced_rail",
     REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE,
     # Forced-rail acceptance bypass (closed set, outcomes.py SSOT): stamped by
     # `_record_forced_acceptance_bypass` when the panel was owed but a rail fired.
@@ -1739,7 +1742,7 @@ def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, An
         and str(call.get("status") or "") == "ok"
         for call in (ctx.llm_trace.get("tool_calls") or [])
     )
-    return build_task_acceptance_evidence(
+    evidence = build_task_acceptance_evidence(
         ctx.tools._ctx,
         llm_trace=ctx.llm_trace,
         drive_root=ctx.drive_root,
@@ -1750,6 +1753,12 @@ def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, An
         canonical_subject=str(ctx.content or ""),
         subtree_statuses=ctx.subtree_statuses,
     )
+    # Owner Q2A: the forced children_unabsorbed rail stashes the process debt
+    # (undispositioned children) so the panel sees it; part of the binding hash.
+    undecided = getattr(ctx.tools._ctx, "_forced_undispositioned_children", None)
+    if isinstance(undecided, list) and undecided:
+        evidence["undispositioned_children"] = undecided
+    return evidence
 
 
 def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
@@ -3047,6 +3056,190 @@ def _maybe_inject_cost_budget_milestone(
     return True
 
 
+# The verbs whose call IS delegated-run activity for the nanny-economics baseline.
+# Exact tool-call transitions, observed in the loop as they happen — never a scan
+# of the custody log or events.jsonl (the baseline must be free to read per round).
+_DELEGATE_ACTIVITY_TOOLS = frozenset({
+    "delegate_start", "delegate_wait", "delegate_cancel", "delegate_answer",
+})
+
+
+def _note_nanny_delegate_activity(
+    ctx: Any, round_idx: int, accumulated_usage: Dict[str, Any],
+    tool_calls: List[Dict[str, Any]],
+) -> None:
+    """Advance the nanny's metered-progress marker, and its delegate-activity baseline
+    when this round actually touched a delegated run.
+
+    Two process-local marks on the ToolContext, written once per round: what the task
+    has spent so far (round index + accumulated cost), and where that stood at the
+    LAST delegate-verb call. Their difference is the whole input of the proportional
+    reminder — the poltergeist children burned $87 of opus rounds co-building around
+    their $0 runs, and nothing measured the burn while it happened.
+    """
+    if not getattr(ctx, "_nanny_route_dispatched", False):
+        return
+    try:
+        cost = float(accumulated_usage.get("cost") or 0.0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    mark = {"round": int(round_idx), "cost": cost}
+    ctx._nanny_metered_progress = mark
+    verbs = set()
+    for call in tool_calls or []:
+        fn = call.get("function") if isinstance(call, dict) else None
+        name = str((fn or {}).get("name") or "").strip() if isinstance(fn, dict) else ""
+        if name in _DELEGATE_ACTIVITY_TOOLS:
+            verbs.add(name)
+    if not verbs:
+        return
+    if verbs == {"delegate_wait"}:
+        # R2-5: a wait is WATCHING, not delegating — it advances only the ROUND
+        # half of the baseline. Preserving the COST half keeps the dollar axis
+        # cumulative across waits: the reviewer's probe ($0.24/round with a
+        # ritual wait every 7 rounds — incident burn rate) re-zeroed BOTH axes
+        # at every wait and never heard the reminder, while a genuinely-holding
+        # nanny (waits plus pennies per round) stays under the dollar threshold
+        # anyway.
+        prior = getattr(ctx, "_nanny_delegate_baseline", None)
+        prior_cost = float(prior.get("cost") or 0.0) if isinstance(prior, dict) else 0.0
+        ctx._nanny_delegate_baseline = {"round": mark["round"], "cost": prior_cost}
+    else:
+        ctx._nanny_delegate_baseline = dict(mark)
+    # Delegate activity also RE-ARMS the reminder: the fire cursor is
+    # cleared so a cooldown earned BEFORE this activity can never mute
+    # the reminder for burn that happens AFTER it (gemini, fix F1).
+    ctx._nanny_reminder_mark = None
+
+
+def _nanny_metered_since_delegate_activity(ctx: Any) -> Tuple[int, float]:
+    """(rounds, dollars) this task's OWN metered loop has spent since the last
+    delegate-verb call — zero before the first round is marked."""
+    progress = getattr(ctx, "_nanny_metered_progress", None)
+    progress = progress if isinstance(progress, dict) else {}
+    baseline = getattr(ctx, "_nanny_delegate_baseline", None)
+    baseline = baseline if isinstance(baseline, dict) else {}
+    try:
+        rounds = max(0, int(progress.get("round") or 0) - int(baseline.get("round") or 0))
+    except (TypeError, ValueError):
+        rounds = 0
+    try:
+        cost = max(0.0, float(progress.get("cost") or 0.0) - float(baseline.get("cost") or 0.0))
+    except (TypeError, ValueError):
+        cost = 0.0
+    return rounds, cost
+
+
+def _nanny_reminder_due(ctx: Any, round_idx: int) -> Tuple[int, float, bool]:
+    """The measured burn plus whether the proportional reminder is due THIS round.
+
+    Due when EITHER axis (rounds or dollars, ``task_pacing.NANNY_REMINDER_*``) has
+    crossed its threshold since the last delegate-verb call. The re-arm is
+    DUAL-AXIS too (fix F1, five reviewers converged): after a firing, the next one
+    waits until a further threshold-width has accrued on EITHER axis since that
+    firing — the old single round-spacing gate muted a fast dollar burn outright
+    (a $2+ tail at round 2 never fired, because ``round_idx - 0 < 8``). The FIRST
+    firing has no spacing gate at all, and delegate activity clears the fire
+    cursor (``_note_nanny_delegate_activity``) so a pre-activity cooldown never
+    mutes post-activity burn. Proportional and repeating, never a cap (owner
+    decision 2=B)."""
+    from ouroboros.task_pacing import NANNY_REMINDER_ROUNDS, NANNY_REMINDER_USD
+
+    rounds, cost = _nanny_metered_since_delegate_activity(ctx)
+    if rounds < NANNY_REMINDER_ROUNDS and cost < NANNY_REMINDER_USD:
+        return rounds, cost, False
+    mark = getattr(ctx, "_nanny_reminder_mark", None)
+    if not isinstance(mark, dict):
+        return rounds, cost, True  # first firing: no spacing gate
+    progress = getattr(ctx, "_nanny_metered_progress", None)
+    progress = progress if isinstance(progress, dict) else {}
+    try:
+        rounds_since_fire = int(progress.get("round") or 0) - int(mark.get("round") or 0)
+    except (TypeError, ValueError):
+        rounds_since_fire = 0
+    try:
+        cost_since_fire = float(progress.get("cost") or 0.0) - float(mark.get("cost") or 0.0)
+    except (TypeError, ValueError):
+        cost_since_fire = 0.0
+    if rounds_since_fire >= NANNY_REMINDER_ROUNDS or cost_since_fire >= NANNY_REMINDER_USD:
+        return rounds, cost, True
+    return rounds, cost, False
+
+
+def _nanny_burn_phrase(rounds: int, cost: float) -> str:
+    return (f"{rounds} of your own metered LLM rounds (~${cost:.2f})" if cost > 0
+            else f"{rounds} of your own metered LLM rounds")
+
+
+def _maybe_inject_nanny_economics_reminder(
+    round_idx: int,
+    messages: List[Dict[str, Any]],
+    tools: ToolRegistry,
+    emit_progress: Callable[[str], None],
+    *,
+    event_queue: Optional[queue.Queue] = None,
+    task_id: str = "",
+    drive_logs: Optional[pathlib.Path] = None,
+) -> bool:
+    """The periodic half of the nanny-economics reminder (poltergeist phase B).
+
+    A plain user-message reminder in the existing self-checkpoint style — the loop's
+    checkpoints are ordinary user turns, never protocol (ARCHITECTURE: "Loop
+    self-checkpoints remain plain user-message reminders"). It fires between rounds,
+    while the burn is happening, because the finalization nudge alone arrives only
+    after the money is spent. Proportional and unbounded in count: each further
+    threshold-width of metered rounds re-arms it (owner 2=B — no round cap)."""
+    ctx = tools._ctx
+    if not getattr(ctx, "_nanny_route_dispatched", False):
+        return False
+    rounds, cost, due = _nanny_reminder_due(ctx, round_idx)
+    if not due:
+        return False
+    # The fire cursor is the metered-progress mark AT this firing (round + cost),
+    # so the dual-axis re-arm in `_nanny_reminder_due` measures both axes from
+    # the same instant. Cleared on delegate activity.
+    _progress_mark = getattr(ctx, "_nanny_metered_progress", None)
+    ctx._nanny_reminder_mark = (dict(_progress_mark) if isinstance(_progress_mark, dict)
+                                else {"round": int(round_idx), "cost": 0.0})
+    # R2-7c: before the first delegate verb there IS no "last delegated-run
+    # activity" — the burn is measured from the task's start, and the wording
+    # says so instead of implying an activity that never happened.
+    _baseline_known = isinstance(getattr(ctx, "_nanny_delegate_baseline", None), dict)
+    since_phrase = ("since your last delegated-run activity" if _baseline_known
+                    else "since this task started (no delegated-run activity yet)")
+    # BR1-3: never an unconditional "$0" claim — the owner's wording law is
+    # typed cost classes: known-zero only on a settled $0 spend, never "free"
+    # unqualified (estimated/undisclosed spend is never zero).
+    reminder = (
+        "[NANNY ECONOMICS REMINDER]\n"
+        f"You are a harness-dispatched NANNY and you have spent {_nanny_burn_phrase(rounds, cost)} "
+        f"{since_phrase}. A subscription-lane delegated run has known-zero "
+        "marginal cost only when its settled spend reports $0 (estimated or "
+        "undisclosed spend is never zero); every round you think yourself is "
+        "metered API money.\n"
+        "This is a reminder, not a stop. Consider: delegate the remaining work "
+        "(delegate_start / delegate_wait — follow-up work and fixes are delegated too), "
+        "and keep your own rounds for judgment: acceptance, integration, honest "
+        "settlement. A deliberate switch_model raise for that judgment is "
+        "sanctioned — finish it and drop back. If this work genuinely must run "
+        "on metered tokens, continue deliberately and say why in your result."
+    )
+    _append_or_merge_user_message(messages, reminder)
+    emit_progress(
+        f"Nanny economics: {rounds} metered round(s)"
+        + (f" (~${cost:.2f})" if cost > 0 else "")
+        + (" since the last delegated-run activity" if _baseline_known
+           else " since task start")
+    )
+    _emit_checkpoint_event(event_queue, task_id, drive_logs, {
+        "checkpoint_kind": "nanny_economics_reminder",
+        "round": round_idx,
+        "metered_rounds_since_delegate_activity": rounds,
+        "metered_cost_since_delegate_activity_usd": round(cost, 4),
+    })
+    return True
+
+
 def _inject_round_checkpoints(
     *,
     round_idx: int,
@@ -3079,7 +3272,11 @@ def _inject_round_checkpoints(
         accumulated_usage=accumulated_usage,
         event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
     )
-    return bool(checkpoint or time_budget or cost_budget)
+    nanny_economics = _maybe_inject_nanny_economics_reminder(
+        round_idx, messages, tools, emit_progress,
+        event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
+    )
+    return bool(checkpoint or time_budget or cost_budget or nanny_economics)
 
 
 def _last_assistant_text(messages: List[Dict[str, Any]]) -> str:
@@ -3187,7 +3384,7 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
 
     def _handle_enable_tools(ctx=None, tools: str = "", **kwargs):
         names = [n.strip() for n in tools.split(",") if n.strip()]
-        enabled, not_found = [], []
+        enabled, hidden, not_found = [], [], []
         for name in names:
             schema = tools_registry.get_schema_by_name(name)
             if schema and name not in active_tool_names:
@@ -3198,12 +3395,26 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
             elif name in active_tool_names:
                 enabled.append(f"{name} (already active)")
             else:
-                not_found.append(name)
+                # F3 (2026-08-10 saga): a policy-filtered tool is not "Not found" —
+                # answer with the typed reason so the agent stops guessing names.
+                reason = (
+                    tools_registry.policy_hidden_reason(name)
+                    if hasattr(tools_registry, "policy_hidden_reason") else None
+                )
+                if reason:
+                    hidden.append(f"{name} — {reason}")
+                else:
+                    not_found.append(name)
         parts = []
         if enabled:
             parts.append(
                 "✅ Tools are registered in the active capability envelope: "
                 + ", ".join(enabled)
+            )
+        if hidden:
+            parts.append(
+                "🚫 Hidden by policy (the tool exists but this task cannot use it): "
+                + "; ".join(hidden)
             )
         if not_found:
             parts.append(f"❌ Not found: {', '.join(not_found)}")
@@ -3678,13 +3889,14 @@ def _handle_forced_finalization(ctx: _RoundLimitContext, reason: str) -> Tuple[s
 
 
 def _handle_provider_unavailable(ctx: _RoundLimitContext) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Provider-death terminalization (P2 unified best-effort shelf): the model
-    returned no usable response after the transport same-model reroute + retries
-    (+ any configured cross-model fallback). Join the SAME honest best-effort
-    shelf as deadline/budget/round-limit instead of discarding workspace state
-    with a bare error string — one tool-less final answer (which itself benefits
-    from the same-model reroute) and, failing that, the last assistant text
-    already produced."""
+    """Provider-death terminalization: the model returned no usable response
+    after the transport same-model reroute + retries (+ any configured
+    cross-model fallback). SALVAGE like the other forced rails — one tool-less
+    final answer (which itself benefits from the same-model reroute) and,
+    failing that, the last assistant text already produced — but terminalize as
+    an INFRA FAILURE, never as a completion: an outage interrupts the task with
+    the objective unmet, and calling that "completed (best effort)" was a lie
+    that hid a real outage from the owner (95 minutes of silence)."""
     # A stale DeliveryCandidate is still the best complete text available when
     # the provider is dead. _forced_fallback_result preserves its original
     # evidence provenance and adds a host-owned resume disclosure rather than
@@ -3710,10 +3922,23 @@ def _handle_provider_unavailable(ctx: _RoundLimitContext) -> Tuple[str, Dict[str
         )
     prompt = (
         "[PROVIDER_UNAVAILABLE] The model provider failed to return a usable response. "
-        "Produce your best final answer NOW from the verified work so far; clearly mark "
-        "anything unverified or incomplete. An honest best-effort result is expected here, not a failure."
+        "The task is being INTERRUPTED by this outage, not completed. Summarize the "
+        "verified work so far and state plainly what remains undone."
     )
-    return _forced_final_answer(ctx, prompt=prompt, fallback_text=fallback, reason_code="provider_unavailable")
+    text, usage, llm_trace = _forced_final_answer(
+        ctx, prompt=prompt, fallback_text=fallback, reason_code="provider_unavailable",
+    )
+    # Honesty (P1): a provider outage interrupts the task — it never "completes"
+    # it. Stamp the infra-failure execution status so the outcome reducer lands
+    # on infra_failed/provider (terminal task status: failed) instead of the old
+    # best-effort promotion to "completed". The salvage text above still rides
+    # the result body; only the claimed status changes. Skipped when a swarm
+    # routing handoff already cleared the rail (the admitted task owns its own
+    # lifecycle). NOTE: "interrupted" is deliberately NOT used here — in this
+    # codebase STATUS_INTERRUPTED is a pre-requeue, non-terminal state.
+    if str(usage.get("reason_code") or "") == "provider_unavailable":
+        usage["execution_status"] = RESULT_INFRA_FAILED
+    return text, usage, llm_trace
 
 
 def _maybe_deadline_local_finalize(
@@ -3806,10 +4031,15 @@ def _child_disposition_state(child: Dict[str, Any]) -> str:
 
     # Explicit cancellation is lifecycle authority and wins every completion
     # race. Late scratch results are intentionally not projected or recovered.
+    # Only a SETTLED ``cancelled`` counts as handled (GR2-8c): the legacy
+    # ``cancel_requested`` STATUS is an unsettled latch — intent, not outcome
+    # (phase A moved intent to the durable cancel_state projection). Treating
+    # it as done suppressed the handoff reminder for a child the supervisor
+    # was still tearing down; such a child now stays visible as cancel-pending
+    # until custody settles it.
     if (
         str(child.get("parent_decision") or "").strip().lower() == "cancelled"
-        and str(child.get("status") or "").strip().lower()
-        in {"cancel_requested", "cancelled"}
+        and str(child.get("status") or "").strip().lower() == "cancelled"
     ):
         return "cancelled"
     try:
@@ -4457,9 +4687,11 @@ def _resolve_delivery_control(
         return "fresh", _extract_plain_text_from_content(content)
     raw = _extract_plain_text_from_content(content).strip()
     parsed, duplicate_protocol_key = _parse_delivery_control_object(raw)
+    # ANY parsed object carrying the protocol key is control intent, regardless of
+    # verb/value — an unknown verb is a mangled protocol attempt, never prose (raw
+    # JSON leaked to chat). Verb/shape validity is judged below (repair path).
     is_control_intent = duplicate_protocol_key or (
-        isinstance(parsed, dict)
-        and str(parsed.get("delivery_control") or "") in {"keep", "replace"}
+        isinstance(parsed, dict) and "delivery_control" in parsed
     )
     if not required:
         if _delivery_replace_required(candidate):
@@ -4740,6 +4972,9 @@ def _maybe_enforce_child_absorption_gate(
             f"{listed}. Before a clean final answer, inspect unfinished children or record a "
             "tree_note(kind='decision') payload with type=child_result_disposition, child_task_id, "
             "disposition=integrated|irrelevant|deferred, and the shown child_result_sha256. "
+            "To disposition several children in ONE call, pass a children array instead: "
+            "payload={'type': 'child_result_disposition', 'children': [{'child_task_id': ..., "
+            "'disposition': ..., 'child_result_sha256': ...}, ...]}. "
             "discard_child_result remains the shorthand for irrelevant. This is a bounded reminder; "
             "ignoring it will finalize best_effort, not clean."
         )
@@ -4759,7 +4994,86 @@ def _maybe_enforce_child_absorption_gate(
         reason_code="children_unabsorbed",
     )
     _merge_finalization_trace(llm_trace, forced_trace)
+    _run_forced_children_acceptance(
+        tools, limit_ctx, undecided, text, messages, emit_progress, llm_trace,
+    )
     return text, usage, llm_trace
+
+
+def _run_forced_children_acceptance(
+    tools: ToolRegistry,
+    limit_ctx: _RoundLimitContext,
+    undecided: list[Dict[str, Any]],
+    text: str,
+    messages: List[Dict[str, Any]],
+    emit_progress: Callable[[str], None],
+    llm_trace: Dict[str, Any],
+) -> None:
+    """Content acceptance still runs on the forced children_unabsorbed rail (owner Q2A).
+
+    The panel goes through the ORDINARY entry point (`_run_task_acceptance_review_once`)
+    after the forced answer text exists but BEFORE the loop seals it; the evidence packet
+    carries the undispositioned children via the ctx stash. The forced rail can never take
+    another model round, so a ``True`` return terminalizes here instead of looping: a
+    requested improvement pass is downgraded to ``finalized_unaccepted``, while a WAIT
+    shape that never ran the panel keeps the typed acceptance-bypass verdict already
+    stamped by `_record_forced_finalization`. Never raises — salvage outranks review.
+    """
+    if not str(text or "").strip():
+        return
+    tools_ctx = tools._ctx
+    try:
+        from ouroboros.tools.join_ledger import _child_result_sha256
+
+        debt = [
+            {
+                "task_id": str(c.get("task_id") or c.get("id") or ""),
+                "status": str(c.get("status") or "unknown"),
+                "child_result_sha256": _child_result_sha256(c),
+            }
+            for c in undecided[:20]
+            if isinstance(c, dict)
+        ]
+        if len(undecided) > 20:
+            # Explicit omission marker: a >20-child debt list must not read as complete.
+            debt.append({"omitted": len(undecided) - 20, "total": len(undecided)})
+        tools_ctx._forced_undispositioned_children = debt
+        another_round = _run_task_acceptance_review_once(
+            tools=tools,
+            content=str(text),
+            task_id=limit_ctx.task_id,
+            task_type=limit_ctx.task_type,
+            llm_trace=llm_trace,
+            drive_root=limit_ctx.drive_root,
+            messages=messages,
+            emit_progress=emit_progress,
+        )
+        if not another_round:
+            return
+        tools_ctx._task_acceptance_reviewed = True
+        _end_task_acceptance_fence(tools_ctx, outcome="terminal")
+        decision = llm_trace.get("acceptance_decision")
+        status = str(decision.get("status") or "") if isinstance(decision, dict) else ""
+        if status == ACCEPTANCE_REVISION_REQUESTED:
+            # A panel DID run and asked for an improvement pass; record the honest
+            # terminal state instead of leaving a dangling revision request.
+            _set_acceptance_decision(llm_trace, {
+                "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
+                "reason": "revision_unavailable_on_forced_rail",
+                "source": "forced_finalization",
+                "rationale": (
+                    "The acceptance panel requested an improvement pass, but the "
+                    "forced children_unabsorbed rail cannot take another model round."
+                ),
+            })
+            emit_progress(
+                "Task acceptance ran on the forced rail; the requested improvement "
+                "pass is unavailable, finalizing unaccepted."
+            )
+    except Exception:
+        log.debug("Forced children_unabsorbed acceptance run failed", exc_info=True)
+    finally:
+        tools_ctx._forced_undispositioned_children = None
 
 
 def _enforce_swarm_actions(
@@ -5431,6 +5745,135 @@ def _forced_swarm_router_result(
     return candidate.full_text, ctx.accumulated_usage, llm_trace
 
 
+def _resolve_forced_delivery_control(
+    tools_ctx: Any,
+    extracted: str,
+) -> Tuple[str, str]:
+    """PURE, no-retry delivery-control resolution for the forced rail.
+
+    While the delivery-control latch is armed, the model's one forced answer is
+    legitimately allowed to be the protocol object ``{"delivery_control": ...}``
+    instead of prose — shipping it raw leaked protocol JSON into the owner's
+    chat and the durable result. Resolve it here, before suffix composition and
+    publication, without ever re-looping (``_resolve_delivery_control`` can
+    inject a repair round, which a hard forced stop must never do): a valid
+    ``keep`` uses the retained candidate's full text, a valid ``replace`` uses
+    ``full_answer``, and a malformed/duplicate/invalid control falls back to the
+    retained candidate with the typed degraded reason. Protocol intent under the
+    armed latch is ANY parsed object carrying the ``delivery_control`` key
+    (regardless of verb/value) AND any JSON-LOOKING text (stripped text starting
+    with ``{``) that fails to parse — the model was explicitly instructed to
+    answer with the protocol object, so a JSON-looking non-parse is a mangled
+    protocol attempt, never the answer. JSON while NOT armed passes through
+    untouched — legitimate user-facing JSON is never eaten. Disclosed residual:
+    armed PROSE (text not starting with ``{``) is genuinely indistinguishable
+    from an intentional fresh answer and stands as-is, even if the model meant
+    it as a control acknowledgement. Clears the latch. Returns
+    ``(resolved_text, degraded_reason)``.
+    """
+    if tools_ctx is None or not extracted:
+        return extracted, ""
+    candidate = getattr(tools_ctx, "_delivery_candidate", None)
+    candidate = candidate if isinstance(candidate, DeliveryCandidate) else None
+    armed = bool(getattr(tools_ctx, "_delivery_control_required", False)) or (
+        candidate is not None and _delivery_replace_required(candidate)
+    )
+    if not armed:
+        return extracted, ""
+    tools_ctx._delivery_control_required = False
+    parsed, duplicate_protocol_key = _parse_delivery_control_object(extracted)
+    # Protocol intent: any parsed object with the protocol key (unknown verb =
+    # broken control, never prose), or JSON-looking text that fails to parse (a
+    # mangled protocol attempt under the armed latch — the candidate is the answer).
+    protocol_intent = duplicate_protocol_key or (
+        ("delivery_control" in parsed)
+        if isinstance(parsed, dict)
+        else extracted.lstrip().startswith("{")
+    )
+    if not protocol_intent:
+        # An ordinary prose answer under an armed latch: the fresh text stands.
+        return extracted, ""
+    selected = str(parsed.get("delivery_control") or "") if isinstance(parsed, dict) else ""
+    if selected == "replace" and set(parsed) == {"delivery_control", "full_answer"}:
+        replacement = parsed.get("full_answer")
+        if isinstance(replacement, str) and replacement.strip():
+            return replacement, ""
+    elif selected == "keep" and set(parsed) == {"delivery_control"} and candidate is not None:
+        return candidate.full_text, ""
+    # Malformed/duplicate/invalid control: preserve the retained candidate (or,
+    # with none retained, let the caller's fallback text stand) and say so.
+    return (
+        candidate.full_text if candidate is not None else "",
+        REASON_DELIVERY_CONTROL_DEGRADED,
+    )
+
+
+def _forced_delegation_note(tools_ctx: Any, llm_trace: Dict[str, Any]) -> str:
+    """The nanny postcondition's forced-path half, grounded in DURABLE custody.
+
+    A forced finalization may not re-loop, so the substrate fact rides the one final
+    prompt. `delegate_custody.task_execution_evidence` on the custody root (the
+    canonical/budget root — the same split-root rule Phase A fixed in the ordinary
+    path) decides, not just the current execution's trace: succeeded → no note;
+    started-but-unsettled → pending wording (no retry pressure); settled-without-
+    success → truthful failure wording; zero started with readable evidence → the
+    no-delegation wording; unreadable evidence → no accusation."""
+    if not getattr(tools_ctx, "_nanny_route_dispatched", False):
+        return ""
+    try:
+        from ouroboros import delegate_custody
+
+        root = delegate_custody.custody_root(tools_ctx)
+        log_path = delegate_custody.event_log_path(root)
+        if log_path.exists():
+            # _iter_rows swallows OSError, which would misread an unreadable log
+            # as "zero runs" — probe readability so absence of rows is a fact.
+            log_path.open("rb").close()
+        evidence = delegate_custody.task_execution_evidence(
+            root, str(getattr(tools_ctx, "task_id", "") or ""),
+        )
+    except Exception:
+        log.debug("Forced-path custody evidence unreadable; nanny note skipped", exc_info=True)
+        return ""
+    started = int(evidence.get("delegated_runs_started") or 0)
+    settled = int(evidence.get("delegated_runs_settled") or 0)
+    if int(evidence.get("delegated_runs_succeeded") or 0):
+        # The proportional silence must not extend to FORCED exits (grok / F16):
+        # a wrap-up forced by an overrun still owes the parent the honest-spend
+        # line. One shot, riding the single forced prompt — never a re-loop.
+        rounds, cost = _nanny_metered_since_delegate_activity(tools_ctx)
+        from ouroboros.task_pacing import NANNY_REMINDER_ROUNDS, NANNY_REMINDER_USD
+
+        if rounds >= NANNY_REMINDER_ROUNDS or cost >= NANNY_REMINDER_USD:
+            return (
+                "\nNOTE: your delegated run(s) succeeded, but you have since spent "
+                f"{_nanny_burn_phrase(rounds, cost)} with no delegated-run activity. "
+                "Account for that metered spend honestly in your answer."
+            )
+        return ""
+    if started > settled:
+        return (
+            "\nNOTE: this task dispatched delegated run(s) that have not settled "
+            f"yet ({started - settled} of {started} pending). State their status "
+            "in your answer; do not claim the delegated work finished."
+        )
+    if settled:
+        return (
+            f"\nNOTE: this task's delegated run(s) settled WITHOUT success ({settled} "
+            "run(s)). State that failure and its impact honestly in your answer."
+        )
+    if any(str(c.get("tool") or "") == "delegate_start"
+           for c in (llm_trace.get("tool_calls") or []) if isinstance(c, dict)):
+        # The trace shows a dispatch the durable rows have not recorded — never
+        # accuse over evidence that is behind the task's own actions.
+        return ""
+    return (
+        "\nNOTE: this task was dispatched onto the delegated substrate "
+        "(executor=harness) and made no delegate_start calls — the work ran on "
+        "metered API tokens. State why in your answer."
+    )
+
+
 def _forced_final_answer(
     ctx: _RoundLimitContext,
     *,
@@ -5447,19 +5890,7 @@ def _forced_final_answer(
     if router_result is not None:
         return router_result
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
-    if (getattr(tools_ctx, "_nanny_route_dispatched", False)
-            and not any(str(c.get("tool") or "") == "delegate_start"
-                        for c in (llm_trace.get("tool_calls") or [])
-                        if isinstance(c, dict))):
-        # The nanny postcondition's forced-path half: a forced finalization may not
-        # re-loop (that is its whole point), so the substrate fact rides the one
-        # final prompt instead — the child can still SAY why delegation never
-        # happened, and the parent still sees the decision instead of silence.
-        prompt += (
-            "\nNOTE: this task was dispatched onto the delegated substrate "
-            "(executor=harness) and made no delegate_start calls — the work ran on "
-            "metered API tokens. State why in your answer."
-        )
+    prompt += _forced_delegation_note(tools_ctx, llm_trace)
     _append_or_merge_user_message(ctx.messages, prompt)
     extracted = ""
     for attempt in range(2):
@@ -5495,6 +5926,9 @@ def _forced_final_answer(
             "new complete answer bound to every owner directive now present.",
         )
 
+    extracted, control_degraded = _resolve_forced_delivery_control(
+        getattr(getattr(ctx, "tools", None), "_ctx", None), extracted,
+    )
     if extracted:
         # Typed fact for the best_effort outcome gate: a REAL model answer
         # was extracted (host fallback strings never set this).
@@ -5510,6 +5944,14 @@ def _forced_final_answer(
         candidate = _publish_model_forced_candidate(
             ctx, llm_trace, full_text, reason_code,
         )
+        if control_degraded and candidate is not None:
+            candidate.degraded_reason = control_degraded
+            llm_trace.setdefault("reasoning_notes", []).append(
+                "Forced finalization received an invalid delivery-control object; "
+                "preserved the retained complete answer."
+            )
+            if getattr(ctx, "tools", None) is not None:
+                _publish_delivery_candidate(ctx.tools, candidate, llm_trace)
         _record_forced_finalization(
             ctx,
             llm_trace,
@@ -5748,6 +6190,121 @@ def _emit_round_progress(content: Any, msg: Dict[str, Any], emit_progress, llm_t
             emit_progress(display_reasoning)
 
 
+def _nanny_finalization_message(
+    tools: ToolRegistry, drive_root: pathlib.Path, task_id: str,
+    trace_attempted: bool = False,
+) -> str:
+    """The honest nanny reminder for a harness-dispatched child at finalization —
+    or '' when no reminder is deserved.
+
+    F4 (2026-08-10 saga): the old reminder accused children whose delegated runs
+    CRASHED of "choosing" not to delegate, and fired even when the delegate verbs
+    were policy-hidden from the task's toolset. Two structural facts fix both:
+    the task's own visible toolset, and the durable custody evidence
+    (delegate_custody.task_execution_evidence), which spans the WHOLE task —
+    the per-execution llm_trace resets on every continuation. `trace_attempted`
+    carries the third fact: a delegate_start in THIS execution's trace. It must
+    not suppress the failure message (triad finding on e84475f2: the saga's own
+    shape — delegate, run dies, finish by hand, finalize — happens inside ONE
+    execution), only the accusation when custody has no rows yet (a pending or
+    uncustodied start is an attempt, not a choice).
+    """
+    try:
+        if "delegate_start" not in set(tools.available_tools()):
+            return ""  # the verbs are invisible here; "you chose not to" would be false
+    except Exception:
+        log.debug("nanny nudge: toolset visibility check failed", exc_info=True)
+    evidence: Dict[str, Any] = {}
+    try:
+        from ouroboros.delegate_custody import custody_root, task_execution_evidence
+
+        # Split-root fix (2026-08-10 amendments): custody WRITES land on the
+        # CANONICAL (budget) root, but this read used the loop's drive_root —
+        # the isolated CHILD drive for a split-root subagent, which carries no
+        # custody rows, leaving the nanny blind. Resolve the SAME root the
+        # writers use; the passed drive_root stays the fallback for contexts
+        # custody_root cannot resolve (e.g. unit-test stubs).
+        try:
+            evidence_root = custody_root(tools._ctx)
+        except Exception:
+            evidence_root = drive_root
+        evidence = task_execution_evidence(evidence_root, str(task_id or ""))
+    except Exception:
+        log.debug("nanny nudge: custody evidence read failed", exc_info=True)
+    if evidence.get("delegated_runs_succeeded"):
+        # The route WAS used and worked — but "used once" is not a permanent
+        # license: the poltergeist children each ran ONE successful $0 run and
+        # then co-built for tens of opus rounds around it while this early
+        # return kept the nudge silent forever. The silence is now proportional
+        # to the measured burn since the last delegated-run activity; a nanny
+        # that delegated recently (or spent little since) still hears nothing.
+        rounds, cost = _nanny_metered_since_delegate_activity(tools._ctx)
+        from ouroboros.task_pacing import NANNY_REMINDER_ROUNDS, NANNY_REMINDER_USD
+
+        if rounds < NANNY_REMINDER_ROUNDS and cost < NANNY_REMINDER_USD:
+            return ""
+        return (
+            "⚠️ NANNY_METERED_OVERRUN: your delegated run(s) succeeded, but you have "
+            f"since spent {_nanny_burn_phrase(rounds, cost)} with no delegated-run "
+            "activity. A successful run is verified and integrated, not rebuilt. If "
+            "the remaining work is substantive, delegate it (a new delegate_start); "
+            "if you are wrapping up, keep the wrap-up short and account for the "
+            "metered spend honestly in your result."
+        )
+    started = int(evidence.get("delegated_runs_started") or 0)
+    if not started and (evidence.get("evidence_read_failed") or not evidence):
+        # Zero attempts is an ACCUSATION and needs positively-established
+        # evidence: an unreadable custody log (or a failed read above) proves
+        # nothing (scope finding on a5e59bdf).
+        return ""
+    if not started and trace_attempted:
+        # A start this execution's trace saw but custody has no row for: pending
+        # settlement or an uncustodied start. An attempt either way — neither
+        # accusation fits, and the wait/cancel path owns its own disclosure.
+        return ""
+    settled = int(evidence.get("delegated_runs_settled") or 0)
+    failure_states = [str(s) for s in (evidence.get("delegated_run_failure_states") or [])]
+    pending = max(0, started - settled)
+    if pending:
+        # PENDING ≠ FAILED (sol review on b49f8192): a STARTED row with no
+        # settlement may simply still be executing — calling it failed invites a
+        # duplicate concurrent run, and finalizing over it orphans the result.
+        # Takes precedence over the failed message: with a run in flight,
+        # "retry" is the wrong instruction even when an earlier sibling died
+        # (those failures still ride along as a fact).
+        failed_note = (
+            f" {len(failure_states)} earlier run(s) already ended: {', '.join(failure_states)}."
+            if failure_states else ""
+        )
+        return (
+            "⚠️ NANNY_DELEGATED_RUN_PENDING: you routed work onto the delegated "
+            f"substrate and {pending} delegated run(s) have started but not "
+            "settled — they may still be executing. Do not finalize over an "
+            "in-flight delegated run (its result would be orphaned) and do not "
+            "start a duplicate: wait for or check it (delegate_wait) before "
+            "finalizing, or cancel it (delegate_cancel) and say so." + failed_note
+        )
+    if started:
+        states = ", ".join(failure_states) or "settled without a recorded terminal state"
+        return (
+            "⚠️ NANNY_DELEGATED_RUN_FAILED: you DID route work onto the delegated "
+            f"substrate ({started} run(s) started), but none succeeded — your "
+            f"delegated run(s) ended: {states}. Do not finalize as if delegation "
+            "was never attempted: either retry it (delegate_start / delegate_wait) "
+            "or state in your final answer that the delegated run failed and why "
+            "the remaining work ran on metered API tokens."
+        )
+    return (
+        "⚠️ NANNY_DID_NOT_DELEGATE: this task was dispatched onto the delegated "
+        "substrate (executor=harness), but you are finalizing with ZERO "
+        "delegate_start calls — the work would end up billed to metered API "
+        "tokens the parent asked to avoid. Either delegate the remaining work "
+        "now (delegate_start / delegate_wait), or finalize with an explicit "
+        "statement of WHY delegation was not used (route refused, work shape "
+        "unsuited, deadline) so your parent sees the substrate decision."
+    )
+
+
 def _maybe_inject_finalization_nudges(
     tools: ToolRegistry, drive_root: Optional[pathlib.Path], task_id: str,
     llm_trace: Dict[str, Any], content: Optional[str], messages: List[Dict[str, Any]],
@@ -5759,31 +6316,33 @@ def _maybe_inject_finalization_nudges(
     if drive_root is None:
         return False
     if (getattr(tools._ctx, "_nanny_route_dispatched", False)
-            and not getattr(tools._ctx, "_nanny_finalization_injected", False)
-            and not any(str(c.get("tool") or "") == "delegate_start"
-                        for c in (llm_trace.get("tool_calls") or [])
-                        if isinstance(c, dict))):
+            and not getattr(tools._ctx, "_nanny_finalization_injected", False)):
         # Nanny postcondition (owner decision, 2026-08-07): a child dispatched onto
         # the delegated substrate must not finalize as if that decision never
-        # existed. One structural fact (zero delegate_start calls in this task's
-        # trace), one re-loop; the child stays free to delegate now OR to finalize
-        # with a stated typed reason — never a hard gate on its judgment (P5).
-        tools._ctx._nanny_finalization_injected = True
-        _nanny_msg = (
-            "⚠️ NANNY_DID_NOT_DELEGATE: this task was dispatched onto the delegated "
-            "substrate (executor=harness), but you are finalizing with ZERO "
-            "delegate_start calls — the work would end up billed to metered API "
-            "tokens the parent asked to avoid. Either delegate the remaining work "
-            "now (delegate_start / delegate_wait), or finalize with an explicit "
-            "statement of WHY delegation was not used (route refused, work shape "
-            "unsuited, deadline) so your parent sees the substrate decision."
+        # existed. One structural fact, one re-loop; the child stays free to
+        # delegate now OR to finalize with a stated typed reason — never a hard
+        # gate on its judgment (P5). A delegate_start in THIS trace no longer
+        # short-circuits the whole nudge (triad finding on e84475f2): it rides
+        # into the message decision, where custody evidence distinguishes a
+        # failed run (truthful NANNY_DELEGATED_RUN_FAILED) from a pending or
+        # uncustodied attempt (no message). Suppression cases live in
+        # _nanny_finalization_message.
+        _trace_attempted = any(
+            str(c.get("tool") or "") == "delegate_start"
+            for c in (llm_trace.get("tool_calls") or [])
+            if isinstance(c, dict)
         )
-        if content and content.strip():
-            messages.append({"role": "assistant", "content": content})
-        _append_or_merge_user_message(messages, f"[SYSTEM REMINDER]\n{_nanny_msg}")
-        emit_progress(_nanny_msg)
-        llm_trace["reasoning_notes"].append(_nanny_msg)
-        return True
+        tools._ctx._nanny_finalization_injected = True
+        _nanny_msg = _nanny_finalization_message(
+            tools, drive_root, task_id, trace_attempted=_trace_attempted,
+        )
+        if _nanny_msg:
+            if content and content.strip():
+                messages.append({"role": "assistant", "content": content})
+            _append_or_merge_user_message(messages, f"[SYSTEM REMINDER]\n{_nanny_msg}")
+            emit_progress(_nanny_msg)
+            llm_trace["reasoning_notes"].append(_nanny_msg)
+            return True
     finalization_msg = _skill_finalization_message(drive_root, llm_trace)
     if finalization_msg and not getattr(tools._ctx, "_skill_finalization_injected", False):
         tools._ctx._skill_finalization_injected = True
@@ -6694,9 +7253,9 @@ def run_llm_loop(
                     emit_progress=emit_progress, context_fit_plan=context_fit_plan,
                     active_context_mode=active_context_mode)
                 if msg is None:
-                    # Provider-death: join the unified honest best-effort shelf
-                    # (deadline/budget/round-limit) instead of discarding useful
-                    # workspace state with a bare error string.
+                    # Provider-death: salvage the useful workspace state like the
+                    # forced rails do, but terminalize as an infra failure — an
+                    # outage interrupts the task, it never completes it.
                     text, accumulated_usage, forced_trace = _handle_provider_unavailable(limit_ctx)
                     _merge_finalization_trace(llm_trace, forced_trace)
                     return text, accumulated_usage, llm_trace
@@ -6704,6 +7263,9 @@ def run_llm_loop(
             tool_calls = msg.get("tool_calls") or []
             content = msg.get("content")
             _latch_final_answer_marker(llm_trace, content, current_tool_calls=tool_calls)
+            # F12: EVERY LLM response marks metered nanny progress (expensive
+            # no-tool rounds count); the delegate BASELINE moves post-tools only.
+            _note_nanny_delegate_activity(tools._ctx, round_idx, accumulated_usage, [])
             if not tool_calls:
                 final_result = _no_tool_final_answer(
                     content, limit_ctx, llm_trace, tools, incoming_messages,
@@ -6724,6 +7286,13 @@ def run_llm_loop(
             handle_tool_calls(
                 tool_calls, tools, drive_logs, task_id, stateful_executor,
                 messages, llm_trace, emit_progress
+            )
+
+            # Nanny-economics baseline (poltergeist phase B): mark this round's
+            # metered progress, and re-baseline when the round touched a
+            # delegated run. Exact tool-call transitions — no log scans.
+            _note_nanny_delegate_activity(
+                tools._ctx, round_idx, accumulated_usage, tool_calls,
             )
 
             _prepare_post_tool_budget_context(

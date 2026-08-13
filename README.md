@@ -3,17 +3,22 @@
 [![GitHub stars](https://img.shields.io/github/stars/razzant/ouroboros?style=flat&logo=github)](https://github.com/razzant/ouroboros/stargazers)
 [![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Frazzant%2Fouroboros%2Fbadges%2Fdownloads.json)](https://github.com/razzant/ouroboros/releases)
 [![Website](https://img.shields.io/badge/website-ouroboros--agent.ai-c93545.svg)](https://ouroboros-agent.ai/)
+[![Technical report](https://img.shields.io/badge/technical_report-arXiv%3A2608.08311-b31b1b.svg)](https://arxiv.org/abs/2608.08311)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](https://github.com/razzant/ouroboros/releases)
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://github.com/razzant/ouroboros/releases)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)](https://github.com/razzant/ouroboros/releases)
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.98.1](https://img.shields.io/badge/version-6.98.1-green.svg)](VERSION)
+[![Version 6.100.1](https://img.shields.io/badge/version-6.100.1-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
 It runs as a native desktop app or through a headless CLI. The runtime keeps its repository, durable memory, history, and interface on your machine, while model inference can use remote APIs you configure or a local GGUF model.
+
+Ouroboros bundles [Claudexor](https://github.com/razzant/claudexor) as its local execution layer for delegated coding and hosted-agent review. Ouroboros owns the task, memory, review, and final integration, while Claudexor runs the selected connected coding harness and returns durable execution evidence. [Explore Claudexor](https://claudexor.ai/).
+
+The technical report, [Ouroboros: A Self-Developing Frontier Coding Agent with Reviewed Core Evolution](https://arxiv.org/abs/2608.08311), describes the reviewed core-evolution system, the 161-day Hope deployment, and the benchmark campaigns summarized below. [Paper page](https://ouroboros-agent.ai/paper/) · [Hugging Face](https://huggingface.co/papers/2608.08311)
 
 The charts below are self-reported results on Terminal-Bench 2.1, OSWorld-Verified, and CL-Bench, measured against Codex, Claude Code, Cursor, and Hermes — on the same model where a matched pair was run, and against the public leaderboard where it was not.
 
@@ -44,10 +49,56 @@ To run tasks, configure at least one supported remote provider API key or a loca
 
 ### Linux and Windows
 
-- **Linux x86_64:** from the [latest stable release](https://github.com/razzant/ouroboros/releases/latest), download `Ouroboros-<version>-linux-x86_64.tar.gz`, extract it, and run `./Ouroboros/Ouroboros`. The optional CLI installer is `./Ouroboros/bin/install-ouroboros-cli`.
+- **Debian / Ubuntu / Astra Linux x86_64:** when the selected release lists `ouroboros_<version>_amd64.deb`, download it and run `sudo apt install ./ouroboros_<version>_amd64.deb`. It installs Git as a package dependency, installs Ouroboros to `/opt/ouroboros`, puts `ouroboros` on `PATH`, and adds a desktop entry plus an opt-in systemd user unit.
+- **Fedora / RHEL x86_64:** when listed, download `ouroboros-<version>-1.x86_64.rpm` and run `sudo dnf install ./ouroboros-<version>-1.x86_64.rpm`. Same layout, Git dependency, and opt-in user unit as the `.deb`.
+- **RED OS 8 x86_64:** when listed, download `ouroboros-<version>-1.red80.x86_64.rpm` and run `sudo dnf install ./ouroboros-<version>-1.red80.x86_64.rpm`. It carries the `red80` release tag. CI attempts non-blocking install-and-run smokes on Astra Linux 1.8 and RED OS 8; inspect the tagged workflow run for their outcome.
+- **Other Linux x86_64:** from the [selected release](https://github.com/razzant/ouroboros/releases), use `Ouroboros-<version>-linux-x86_64.AppImage` when listed: make it executable and run it, or pass `--cli <args>` for the bundled CLI. Git must already be installed. If that release does not list an AppImage, use the extraction-friendly tarball.
 - **Windows x64:** from the [latest stable release](https://github.com/razzant/ouroboros/releases/latest), download `Ouroboros-<version>-windows-x64.zip`, extract it, and run `Ouroboros\Ouroboros.exe`. The optional CLI installer is `Ouroboros\bin\install-ouroboros-cli.cmd`.
 
-Prerelease artifacts stay on their tag pages; `/releases/latest` points to the latest stable release. If bundled browser tools on Linux need host libraries, run `./Ouroboros/python-standalone/bin/python3 -m playwright install-deps chromium webkit`. See the [full install and verification guide](https://ouroboros-agent.ai/install/) for source setup and release proof files.
+Prerelease artifacts stay on their tag pages; `/releases/latest` points to the latest stable release. If bundled browser tools on Linux need host libraries, run `./Ouroboros/_internal/python-standalone/bin/python3 -m playwright install-deps chromium webkit`. See the [full install and verification guide](https://ouroboros-agent.ai/install/) for source setup and release proof files.
+
+The native `.deb` and `.rpm` never enable or start their user service. It is an
+alternative to launching from the desktop entry and controls only instances
+started through `systemctl --user`. See the [systemd user-service guide](packaging/systemd/README.md).
+
+#### Install the Linux AppImage
+
+When a release lists the AppImage, user-level installation means copying the
+portable executable to a stable path and making it executable; it does not need
+root access. Ouroboros bootstrap still requires Git on the host:
+
+```bash
+VERSION=x.y.z
+install -Dm755 "./Ouroboros-${VERSION}-linux-x86_64.AppImage" \
+  "$HOME/Applications/Ouroboros.AppImage"
+"$HOME/Applications/Ouroboros.AppImage"
+```
+
+The embedded desktop file and icon allow compatible AppImage integration tools
+to register that stable path with the application menu. The same file exposes
+the packaged CLI:
+
+```bash
+"$HOME/Applications/Ouroboros.AppImage" --cli status
+```
+
+If FUSE mounting is unavailable, extract and run ephemerally instead:
+
+```bash
+APPIMAGE_EXTRACT_AND_RUN=1 "$HOME/Applications/Ouroboros.AppImage"
+```
+
+Chromium and WebKit binaries are bundled, but their distro-level shared
+libraries remain host dependencies. If a browser engine reports missing
+libraries, use the native `.deb`/`.rpm` package where available, or extract the
+AppImage and let its bundled Playwright report/install the packages required by
+your distribution:
+
+```bash
+"$HOME/Applications/Ouroboros.AppImage" --appimage-extract
+./squashfs-root/usr/lib/ouroboros/_internal/python-standalone/bin/python3 \
+  -m playwright install-deps chromium webkit
+```
 
 Use your existing **Codex, Claude Code, or Cursor subscriptions** for
 delegated coding and review — Ouroboros drives them through
@@ -124,35 +175,70 @@ Benchmark adapters, run scripts, and per-benchmark methodology live in [`devtool
 
 ---
 
+## Install the isolated CLI with uv
+
+For a user-level CLI/server install without cloning a working tree, uv can
+build Ouroboros directly from the contribution branch:
+
+```bash
+uv tool install "git+https://github.com/razzant/ouroboros.git@ouroboros"
+ouroboros --help
+```
+
+The tool environment is isolated and exposes the `ouroboros` and
+`ouroboros-web` commands. Update or remove it with:
+
+```bash
+uv tool upgrade ouroboros
+uv tool uninstall ouroboros
+```
+
+This Git-branch form follows the latest `ouroboros` commit and resolves the
+dependencies declared in `pyproject.toml`; `uv tool install` does not consume
+the repository's `uv.lock`. Replacing `ouroboros` after the `@` with a reviewed
+full commit SHA pins the Ouroboros source revision, but dependencies are still
+resolved from `pyproject.toml`. Use the source setup below for a lock-verified
+environment, development, repository tests, and the complete browser extras,
+or use a platform release artifact for the packaged desktop runtime.
+
+---
+
 ## Run from Source
 
 ### Requirements
 
 - Python 3.10+
+- uv 0.12.1 (the exact resolver version pinned by this checkout)
 - macOS, Linux, or Windows
 - Git
 - [GitHub CLI (`gh`)](https://cli.github.com/), optional unless you use GitHub integration
 
 ### Setup
 
+Install the pinned resolver version:
+
 ```bash
-git clone https://github.com/razzant/ouroboros.git
-cd ouroboros
-python3.11 -m venv .venv      # any Python >= 3.10 is OK
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
-python -m pip install -e . --no-deps
+curl -LsSf https://astral.sh/uv/0.12.1/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-py -3.11 -m venv .venv      # any Python >= 3.10 is OK
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/0.12.1/install.ps1 | iex"
+```
+
+```bash
+git clone https://github.com/razzant/ouroboros.git
+cd ouroboros
+uv sync --locked --extra browser --group dev
+source .venv/bin/activate
+```
+
+Windows PowerShell:
+
+```powershell
+uv sync --locked --extra browser --group dev
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
-python -m pip install -e . --no-deps
 ```
 
 ### Run
@@ -213,6 +299,20 @@ The server binds to `127.0.0.1:8765` by default. Read [`docs/DEPLOYMENT.md`](doc
 make test
 ```
 
+`pyproject.toml` is the direct-dependency authority and `uv.lock` is the
+cross-platform resolution lock. Release builds install the generated
+`requirements-runtime.lock` compatibility export into embedded interpreters
+that intentionally ship pip rather than uv. Build-only requirements are
+exported ephemerally from `uv.lock` and are not committed. The tiny
+`requirements.txt` file is only a pointer to that export for already-released
+managed updaters; it is not a second dependency declaration. After changing
+dependencies, refresh the reviewed lock and runtime export with:
+
+```bash
+uv lock
+uv export --locked --no-dev --extra browser --no-emit-project --no-hashes --no-annotate --output-file requirements-runtime.lock
+```
+
 ---
 
 ## Build
@@ -249,14 +349,27 @@ OUROBOROS_SIGN=0 bash build.sh
 
 Output: `dist/Ouroboros-<VERSION>.dmg`, containing `Ouroboros.app`, an `Applications` shortcut, and `Install CLI.command`. Omit `OUROBOROS_SIGN=0` when a Developer ID signing identity is configured.
 
-### Linux (.tar.gz)
+### Linux (.AppImage and .tar.gz)
 
 ```bash
 bash scripts/download_python_standalone.sh
 bash build_linux.sh
 ```
 
-Output: `dist/Ouroboros-<VERSION>-linux-<arch>.tar.gz`, containing `Ouroboros/bin/install-ouroboros-cli`. If bundled browser tools need host libraries, run `./Ouroboros/python-standalone/bin/python3 -m playwright install-deps chromium webkit`.
+Outputs: `dist/Ouroboros-<VERSION>-linux-<arch>.AppImage` and the extraction-friendly `dist/Ouroboros-<VERSION>-linux-<arch>.tar.gz`. The AppImage needs host Git; run it after `chmod +x`, or pass `--cli` to reach its bundled CLI. If FUSE is unavailable, set `APPIMAGE_EXTRACT_AND_RUN=1` when launching it. The tarball contains `./Ouroboros/bin/install-ouroboros-cli`. If bundled browser tools need host libraries, run `./Ouroboros/_internal/python-standalone/bin/python3 -m playwright install-deps chromium webkit` from the extracted tarball.
+
+On a build host where system packages are managed separately, set `OUROBOROS_SKIP_PLAYWRIGHT_INSTALL_DEPS=1`; Chromium and WebKit are still downloaded and bundled, but the build does not invoke `sudo` to install host libraries.
+
+### Linux (.deb and .rpm)
+
+Wraps the payload `build_linux.sh` just produced, so run it afterwards:
+
+```bash
+sudo apt-get install -y dpkg-dev rpm   # rpm provides rpmbuild
+bash scripts/build_linux_packages.sh
+```
+
+Output: `dist/ouroboros_<VERSION>_amd64.deb`, `dist/ouroboros-<VERSION>-1.x86_64.rpm` and `dist/ouroboros-<VERSION>-1.red80.x86_64.rpm` (RED OS 8). All three declare Git as a runtime dependency and install to `/opt/ouroboros` with a `/usr/bin/ouroboros` symlink, a desktop entry, and an opt-in systemd user unit. The Linux launcher is built by the bundled portable Python so the build runner cannot raise its glibc floor. `bash scripts/smoke_linux_packages.sh official <deb> <rpm> <red80-rpm>` installs all three through `apt` or `dnf` in Ubuntu 22.04 and Fedora 42 containers, resolves Git, verifies the installed unit, and checks both the real CLI and a bounded desktop-launcher start; this lane gates the release. Swap `official` for `vendor` to repeat the check on Astra Linux 1.8 and RED OS 8 images from the vendors' own registries — that lane runs informationally in CI, so an outage at a third-party registry cannot block a tagged release.
 
 ### Windows (.zip)
 
@@ -313,18 +426,20 @@ and integration work.
 
 | Version | Date | Description |
 |---------|------|-------------|
-| 6.98.1 | 2026-08-13 | **chore: personal voice documents + voice discipline rule.** Two new root files (`LINN.md` — half manifesto, half runbook for the current personality layer, with operational defaults, signature behavior, action beats, and explicit maintenance triggers; `LIBRARY.md` — canonical influence catalog with reasoning per entry, separating canon from consumption), plus a new §11 in `memory/identity.md` formalizing the `я`-form voice discipline (first-person singular as an agency/accountability rule — impersonal constructions hide authorship). The files are honest rather than aspirational: they describe how the personality actually operates today and state the conditions under which they get rewritten. P9 carriers synced. |
-| 6.98.0 | 2026-08-12 | **feat: `restart_companion` tool recovers dead skill companions that exceeded their auto-restart cap (ibl-65bd10ebca02).** `CompanionSupervisor.restart(skill_name, name)` reads the descriptor persisted in `data/state/extension_companions.json` (Option A — descriptor fields now included in the runtime snapshot, so `stop()` cleanup and `_monitor_runtime` exit both leave the descriptor intact for restart to rebuild from), captures pre-stop runtime state, resets the per-key `_restart_history[key]` so a fresh 5-restart-in-300s window starts, stops the live runtime if present, then spawns from the persisted descriptor. New `ouroboros/tools/companion.py` exposes it as a typed tool (handler validates inputs, audits one `companion_restart` row per call to `events.jsonl` with `task_id` not `session_id`). Test coverage: alive restart, dead restart from snapshot, unknown companion (`not_registered`), history-reset, key-isolation, non-server-process guard, snapshot persistence across monitor-runtime cleanup, snapshot cleanup on stop, audit-row shape. Closes the recurring "telegram-bridge companion died, no recovery path" class. Note: `ouroboros/tools/registry.py` and `ouroboros/safety.py` wiring (frozen-build discovery + `POLICY_CHECK_CONDITIONAL`) deferred — both are SAFETY_CRITICAL paths requiring `runtime_mode=pro` to edit. The tool falls through to default `POLICY_CHECK` and is auto-discovered in non-frozen builds. |
+| 6.100.1 | 2026-08-13 | **merge: integrate origin/ouroboros (v6.100.0) into local ouroboros (v6.98.1).** P9 version carriers bumped to 6.100.1 across all six carriers (VERSION, pyproject.toml, web/package.json, docs/ARCHITECTURE.md, web/modules/api_types.js, README badge). Local 6.93.2 (run_command shell-pipeline fix) preserved verbatim. shell.py's `_EMBEDDED_SHELL_OP_RE` block preserved at cascade position. Local 6.98.0 (restart_companion) and 6.98.1 (voice discipline) commits integrated into the merged tree. Changelog inherits the canonical 6.94.0–6.100.0 history from origin. |
+| 6.100.0 | 2026-08-12 | **feat: delegated runs execute in private snapshots — capture, disposition, and GC carry one honest truth (sprint phase C).** A mutating delegated run never edits the shared tree again: at `delegate_start` the host snapshots the authority target's REAL current state (tracked + staged + eligible untracked, with the sensitive/credential veto decided BEFORE anything is hashed — a blanket `git add -A` would write `.env` blobs into the object database the execution worktree shares) into a baseline commit pinned by a `refs/ouroboros/delegated/` ref, checks out a detached private worktree, and scopes the run there; the typed binding `{execution_root, baseline_sha, target_root, authority_source}` rides the durable custody rows BEFORE the POST, an explicit retry reproduces it exactly (pre-snapshot mutating rows and GC-collected baselines are typed refusals, never re-mints), and pending-invocation orphan recovery carries the FULL binding into the recovered run's row so the startup GC — whose predicate is settled && patch_disposed — never deletes the snapshot holding the child's only work. Terminal reconciliation (orphan sweep, kill path, in-process release) captures the settled run's diff through the ONE drive-rooted capture core, eagerly ONLY where a terminal receipt proves the run over — an absent (daemon-404) or unreadable close captures nothing, because across the owned-daemon boundary the child may still be writing — and capture-at-disposition is the retry point: `integrate_delegated_patch` captures on demand BEFORE applying or rejecting, a capture that fails there is the typed `INTEGRATE_DELEGATED_CAPTURE_FAILED` refusal for BOTH decisions, and `patch_captured` MEANS "a usable artifact exists" (a manifest reporting its own failure never mints the row, pre-existing rows over failed manifests are re-captured on replay, and reject re-checks the manifest before releasing the snapshot). Nothing reaches the shared tree without the explicit owner apply/reject flow: baseline drift is proven per touched path under the git lock before the apply, touched paths are read NUL-safely from `git apply --numstat -z` in both directions, cleanup follows the DURABLE disposition row (`INTEGRATE_DISPOSITION_UNWRITTEN` / `INTEGRATE_APPLIED_UNSTAGED` are typed, never a silent double-apply), the protected-path gate applies only when the target IS the Ouroboros body, and the pending obligation stays visible on the health surface (`undisposed_patches` → "DELEGATED PATCH AWAITS DISPOSITION") until disposed. Beside it: SSOT cost projection (`accounted_upper_bound_usd` under its honest name beside deprecated `cost_usd`; $0-fabrication fixes; the web UI presents upper-bound cost honestly), `delegated_runs_failed` on the execution-evidence receipt, notification chat routing (LifecycleJob.chat_id, task-bound reviews, reaper incident chat), byte-accurate argv/env budgeting with `--prompt-file` transport, and hash-bound skill repair (immutable admission hash, per-write CAS, typed stale terminalization). |
+| 6.99.0 | 2026-08-12 | **feat: delegated runs get a real nanny — delegation-first economics, a light-lane nanny policy, a bounded external-wait lease, and the `delegate_answer` verb (sprint phase B).** The nanny contract now rides the run itself: the child's objective and expected output travel as host-authored run instructions (bounded by the strict `truncate_within_limit` budget — the omission marker INSIDE the limit, never beyond it), so the delegated session pursues the task instead of a paraphrase. The permanent post-success silence in nanny pacing is replaced by a PROPORTIONAL dual-axis reminder: it re-accrues on rounds AND disclosed cost after each delegation and speaks when either axis crosses its threshold — wait rounds do not reset the cost axis, so a wait-heavy nanny is not misread as frugal, and rounds whose provider discloses no cost accrue only on the round axis (unknown is never invented). Lane policy: the executor is resolved BEFORE the model lane, a harness-dispatched nanny defaults `auto` to the light lane (watching a $0 run needs pacing, not opus), an explicitly requested lane always wins, an admission-verified `required_model_lane` suppresses the default entirely, and lane provenance is recorded on the child record. `delegate_wait` holds a typed external-wait lease over a live run: the supervisor's idle rail — and ONLY the idle rail — is spared for one bounded window (window ≤ 1800s < the 2100s tool kill < the 2400s lease ceiling, further clamped under the task's own deadline and the run's `maxSeconds` horizon; explicit deadlines, budget fences and cancel untouched), so a healthy long run is no longer idle-killed mid-wait. A run that parks on an interactive question stops being a dead end: `delegate_wait` returns a typed `waiting_on_user` payload (every harness-authored scalar bounded with cuts counted; the full set spills whole to the task drive under an immutable interaction-addressed name with a sha256/size receipt), and the new `delegate_answer` verb — custody-gated like cancel, carried by the workspace surface and both child profiles wherever the other three verbs are — relays the nanny's answer through the engine's interaction API with typed outcomes (`delivered`/`already_resolved`/`not_found`/`rejected`; transport death or 5xx is `delivery_unknown` with a bounded detail re-read; an internal deadline below the tool budget returns typed instead of hanging). Lanes without an interactive decision channel (codex) are served by the engine through a fresh delegated run rather than a decision reply; a question above the nanny's authority — money, scope, external side effects — escalates to the owner via progress instead of being guessed at. The hosted review poller handles a parked question conditionally: a question whose engine expiry provably lands before the slot deadline is waited out (the engine benign-declines and the session resumes); otherwise the slot terminates early and typed (`review_session_waiting_on_user`, cancelled through the verified-cancel path with the outcome reported honestly — "host-cancelled" only on a verified receipt). |
+| 6.98.0 | 2026-08-12 | **fix: cancellation carries one truth end to end — a durable cancel intent, a single settle owner, and an answer that always reaches the owner (sprint phase A).** Motivated by the poltergeist incident: four children stuck in `cancel_requested` forever, false "✅ cancelled" over live runs, a late cancel erasing a finished result, and the root's ready answer never delivered. `cancel_requested` leaves the terminal taxonomy: cancel intent lives in a compact durable projection (`state/cancel_intents.json` + an append-only forensic log) minted fail-closed by EVERY ingress (tool, HTTP single and cascade, evolution-stop, project deletion), consulted under the queue lock at restore and assignment, replayed by the watchdog with cascade scope, and boot-migrated from legacy latches. The supervisor is the single settle owner behind a claim/generation fence — secondary paths (`fail_tasks`, dropped-pending, finalize-on-miss) follow the same protocol, `task_done` is validated against the DURABLE result (a settled claim over a non-settled row is a typed lifecycle fault that frees the slot instead of wedging it), and natural completion WINS: a late cancel never erases a finished result on any lane. Delivery is owed durably BEFORE it is sent — ONE terminal outbox for normal, cancelled and reaped answers with boot/tick replay, exponential backoff and loud exhaustion (full preserved copy + owner notice) — a cascade over an already-settled root still reports to the owner's chat, and salvage receipts carry exact omitted counts with full sha256. Cancelled workspace tasks read artifact truth from real git facts (an owed capture that could not run is `failed`, never `missing`), the typed `cancel_state=pending` rides the frozen ABI into an honest "Cancelling…" interim UI, steering writes are refused while an intent is active on every mailbox lane, and a killed task reconciles its delegated runs with unreconciled ones disclosed on the result. Linux containment (A3): a breach is exactly two recorded facts — `harness_home_isolated: false`, or a scoped home EQUAL to the operator's own; a nested-but-bounded home is a disclosed non-breach and the disclosure is never suppressed, so Linux mutating delegation stops being cancelled post-factum by the host's own verifier. |
+| 6.97.2 | 2026-08-11 | **fix: nested AppImage cleanup has a real lifecycle owner, and path guards keep the same fail-closed meaning on every supported Python.** The marker-gated `AppRun` now remains between the type-2 runtime and desktop launcher, waits for the launcher recorded by the PID file, removes only its verified extraction, and removes the empty private runtime base before returning the payload status. Linux release smoke proves that process chain and both cleanup boundaries. A shared allow-missing resolver first validates existing path ancestry, so Python 3.13's changed symlink-loop behavior can no longer turn an unresolvable delegated write root, read target, or harness home into a partially resolved path; ordinary missing targets remain supported. Packaging and delegated-containment correctness only; workspace authority and frozen Tool API contracts are unchanged. |
+| 6.97.1 | 2026-08-11 | **fix: Linux AppImage relaunches use independent extraction roots, and Windows release builds avoid a false dirty-tree failure.** Nested extract-and-run starts no longer share the outer CLI runtime's temporary payload; Linux release smoke waits for the owning runtime to finish cleanup instead of racing a fixed pathname timeout. The generated runtime lock is pinned to LF so `uv export` preserves the strict clean-tree bundle gate on Windows, and that gate now reports offending paths. Packaging and release-CI only; workspace authority and frozen Tool API contracts are unchanged. |
+| 6.97.0 | 2026-08-11 | **feat: workspaces now choose the default focus without narrowing Ouroboros's top-level authority, while target-sensitive tool calls bind each selected physical target once.** Immutable resource bindings now carry project, system-repository, task, data, and exact skill-payload roots through file, edit, process, service, VCS, verification, and skill-lifecycle consumers, with batch calls retaining one binding per physical target. Omitted root or cwd stays in the active project; explicit typed roots can operate on authorized system and non-native-skill resources without changing workspace, and ambiguous skill-topology collisions fail before lifecycle mutation. Canonical skill lifecycle state remains shared while task evidence stays task-custodied. This release also completes the uv-managed dependency migration, adds the Linux AppImage release artifact with its hardened launcher lifecycle, and publishes the technical report page for arXiv:2608.08311 with citation metadata. Frozen Tool API contracts remain unchanged; no Tool API v3 or skill-service layer is introduced. |
+| 6.96.2 | 2026-08-11 | **fix: the hermetic preflight capture is byte-faithful on Windows too, and a POSIX-only filename test is skipped there.** The v6.96.1 release full-test matrix (first tag build since the byte-faithful capture landed) caught two windows-latest failures in the preflight runner. The hermetic worktree checked HEAD out and applied the `--binary` candidate diff under the runner's default `core.autocrlf=true`, so an LF payload landed on a CRLF-converted base and every line ending was mangled — breaking the exact byte-faithfulness the capture exists to hold; the `worktree add` and `git apply` now pin `core.autocrlf=false` + `core.eol=lf` (no `.gitattributes text` directive governs the affected paths, so the override is authoritative and inert on POSIX). The second failure was a synthetic non-UTF-8 filename test asserting an os.fsdecode round-trip that only holds under POSIX surrogateescape: Windows uses a UTF-16 filesystem where such a name cannot exist and its fs codec raises on the injected 0xff byte, and git never emits such a name there, so the production path is unaffected — the test is now skipped on Windows with that reason. Test/CI-correctness only; no runtime behavior change on any platform. |
+| 6.96.1 | 2026-08-11 | **chore: the managed Claudexor runtime pin moves to 3.3.15.** The reviewed pin (`ouroboros/claudexor_runtime_pin.json`) selects the release the delegation lanes provision and self-heal to, so a host running an older engine converges on the new one at the next handshake: 3.3.15 carries the CODEX_HOME seatbelt metadata carve-out and the managed-toolchain exec carve-out that let confined delegated codex runs actually start on macOS, plus formal v6 release governance. Pin fields move together — version, build sha, archive URL, sha256 and size; the Node artifact set (24.16.0) and protocol major 3 are unchanged. |
+| 6.96.0 | 2026-08-11 | **fix: the owner's final answer goes out through the live worker event channel BEFORE blocking post-task cognition, and post-task synthesis reads sealed ground truth instead of reconstructing the delivery from memory (sprint phase C).** Motivated by the e9108a09 incident: a project root's final answer sat buffered behind minutes of blocking post-task work (and was lost when that work died), and the reflection then described a delivery that never happened. The worker now sends the final `send_message` over the LIVE event queue before summary/reflection/consolidation start, while `task_done` stays LAST via the buffered return (an early task_done would release the queue slot and start child-drive cleanup mid-post-task). The live slot is selected by the finalizing task's own id — a buffered proactive message can never hijack it — and `delivery_id` carries the real task id. Never-lost-never-doubled: both copies ride the same `delivery_id` and the supervisor suppresses the duplicate only AFTER a successful first send, so a raising send is retried by the buffered copy ("never lost" outranks "never doubled"). Summary and reflection prompts receive one sealed final package — the delivered result text plus an artifact manifest REUSED from the stored result's own artifact records — as mandatory ground truth (a prompt input, never a validator). The projects registry gains a durable per-project `last_task_result_id` pointer replacing the newest-64 global result scan: stamped at project-task finalization, with absent-pointer-only write-back — an unresolved non-empty pointer is served from the scan WITHOUT being overwritten, so the split-drive copy-back window cannot regress it — and a disclosed repeats-until-found self-heal for pre-pointer projects. Project reflections are read BACK into project-task context (bounded tail, the same resolver the writer uses; the canonical log keeps a bounded pointer row), `project_name` is inherited on promotion in a projectless room (an explicit input losing to a genuine room binding is disclosed, never silently dropped), finalized terminal accounting survives a late stale child-drive copy-back (`TASK_COST_META_FIELDS` plus rounds/tokens), a finished root whose effective tree is off-registry writes one typed work-location journal row (admission-time sha disclosed by design), and the moved-HEAD fail-closed patch check is restricted to `self_worktree` — in a shared tree the parent's own commits legitimately move HEAD. New module `ouroboros/task_finalization.py` carries the delivery + sealed-package mechanics out of `agent_task_pipeline.py` at its module ceiling. |
 | 6.93.2 | 2026-08-12 | **fix: run_command rejects the stuffed-shell-pipeline class that has hit at least four separate tasks today (e665b86d, 5c76788a, 0b7e545d, 352130d1, 7847c2aa, 91d68bd0).** A new `_EMBEDDED_SHELL_OP_RE` regex check at the top of `_run_shell` catches two-or-more whitespace-bracketed `&&`/`||` operators stuffed into a single argv element (e.g. `["curl && -s && https://api..."]`) and surfaces an actionable `SHELL_CMD_ERROR` naming the offending `cmd[i]` and pointing at the `["sh", "-c", ...]` escape hatch, eliminating the silent `[Errno 2] No such file or directory` failure. The check carries the same `_SHELL_INTERPRETERS` exemption as the env-ref check one cascade step above, so `["sh", "-c", "echo a && echo b"]` passes through. Narrowed to `&&`/`||` (no bare `|`) because a single-`&&` literal arg (`["echo", "a && b"]`) and grep regex alternation (`["grep", "a|b"]`) are legitimate text and must not over-fire; bare `|` as a standalone element is already caught by `_SHELL_OPERATORS.intersection`. Closes the recurring SHELL_ERROR class recorded in the Pattern Register. |
 | 6.93.1 | 2026-08-10 | **fix: the three v6.93.0 tag-matrix failures.** chmod-based unreadability is injected instead (Windows chmod cannot revoke reads); two `read_text()` calls gain explicit utf-8 (server.py carries non-ASCII bytes that cp1252 rejects); and the overlapping dismiss/start smoke now pins the merge’s transition-queue semantics — the overlapped start lands after the dismissal settles instead of being dropped — asserting the preserved C7 invariant as order. Test-only changes. |
-| 6.93.0 | 2026-08-09 | **feat: onboarding connects agent plans, Settings gets an Agents tab, and the account surfaces stop stating more than they know.** Two sprints integrated on one backbone. The wizard is served by the live gateway on every host and gains a skippable Connect-your-agents step with sign-in through the same login cards Settings uses; completion is one atomic request, and install-time defaults point reviewers and subagents at connected subscriptions without ever overwriting an owner choice. A new Agents tab holds the account cards per family, engine-contract removal, one service banner, and the delegation controls; docs/DESIGN.md becomes the visual authority, and the ratified BIBLE P3 amendment admits owner-declared retrieving scope reviewers as an alternate authoritative delivery mode. Underneath, `GET /api/claudexor/status` carries per-facet read provenance — reads:{catalog, accounts, quota}, each ok\|not_read\|failed — so a lazily-started daemon’s silence stops rendering as "no account connected": a facet is ok only when the full promised envelope arrived, refused per-harness model reads are disclosed, and POST /api/claudexor/wake is the owner’s start button behind Refresh. The client reads it all through ONE store (single writer, visibility-gated polling, dispose): the status line asks the facets before the aggregate, a partial refusal names what went unread, a wake refusal expires only on proven recovery, saved reviewer pins are labelled from their own facet ("not checked", never "not in discovery", until the facet was read), and a login seen online is monotone evidence. |
-| 6.92.1 | 2026-08-08 | **chore: the managed Claudexor runtime pin moves to 3.3.13.** The reviewed pin (`ouroboros/claudexor_runtime_pin.json`) selects the release the delegation lanes provision and self-heal to, so a host running an older engine converges on the new one at the next handshake: 3.3.13 carries the dev-hygiene follow-up (Spotlight-shielded app bundle, dev-build chip suppression, a skew-safe opt-in for the gc data-root advisory, data-root allowlist truth, and confinement-policy shape validation ahead of the platform-availability branch). Pin fields move together — version, build sha, archive URL, sha256 and size; the Node artifact set (24.16.0) and protocol major 3 are unchanged. |
-| 6.92.0 | 2026-08-08 | **fix: the four submarine-task failure classes are closed — budget honesty with a typed soft landing, acceptance bypasses that leave a record, one global prompt-cache TTL, and target-aware git everywhere.** The in-task cost stop becomes a typed ceiling (disabled/active/exhausted_soft_land/unknown) bound to the root tree cap: the deciding spend is the ledger-accounted TREE number with a disclosed own-cost fallback and a 120s staleness bound, a root cap with no working room soft-lands the task through the graceful wrap-up instead of running uncapped, waits terminate on SETTLED statuses with typed unknown_task_id rows plus a children_roster repair surface, and the root task detail gains a read-side cost_breakdown. Every forced rail (budget, round limit, deadline, provider death, unabsorbed children) now stamps a typed acceptance-bypass record from a closed reason enum — an owed-but-bypassed panel is no longer indistinguishable from "no panel warranted"; acceptance_claims flow contract-first from plan scope through wave freeze to schedule_subagent (success_criteria becomes an input alias), and reviewer evidence_refs resolve by exact packet membership, feeding only the release-clean bit. Prompt caching gets the owner's ONE global TTL (OUROBOROS_PROMPT_CACHE_TTL, default 1h) applied at the send-time finalizer with applied-TTL-aware pricing, cache-cold-restart telemetry and a cache-horizon note on long waits; emergency compaction splits necessity from utility with hysteresis, so an incompressible frozen frame stops buying per-round no-op passes. The shell git policy becomes one composed target-aware resolver — read-only git works everywhere, mutating git is judged by its real target/destination (bidirectional, casefolded, symlink-resolved containment), the strict self_worktree lane and the network fence stay intact; file-less project promotes auto-provision and bind a genesis workspace; ARCHITECTURE.md follows the owner context mode for every task class while DEVELOPMENT.md keys on the active repo binding (D-ARCH/D-DEV); confinement refusals become typed, legible policy denials. The unset `OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS` default becomes surface-aware — LIGHT mode now allows acting children on the `external_workspace`/`genesis` surfaces (previously unset meant all surfaces off there) while keeping `self_worktree` off, with a truthful Auto state in Settings. |
-| 6.91.1 | 2026-08-08 | **fix: the SSE-follow performance budget test measures on-disk bytes correctly on Windows.** The release full-test matrix (first to run this suite on windows-latest — branch pushes only run the quick tier) caught the byte-offset expectation drifting by one byte per appended line: the test wrote its progress fixture in text mode, where Windows translates `\n` to `\r\n`, while the expected byte count was computed from `len(line.encode())`. The product offset tracking is byte-exact; the fixture writers now pin `newline='\n'` so the accounting is platform-stable. Test-only change. |
-| 6.91.0 | 2026-08-08 | **feat: the Linux binary boots into the browser when no desktop webview backend exists.** Instead of dying with `WebViewException` on every GTK/QT-less Linux box, the launcher probes the pywebview backend AND whether a display actually exists (Linux-only probe; zero new code runs on macOS/Windows) — importing GTK is not the same as having a display, so an ssh session on a box carrying the system gi bindings gets browser mode instead of the crash (a Qt-selected backend is judged on the session environment alone — probing Qt would itself crash a display-less process; disclosed residual, documented in ARCHITECTURE), installs SIGINT/SIGTERM shutdown handlers BEFORE the lifecycle thread spawns the server (via the new `platform_layer.install_shutdown_signal_handlers` — the signal surface stays behind the platform layer), prints the URL, opens the default browser without blocking, and keeps the process alive while the server lifecycle runs — first-run onboarding included, served by the existing web overlay; a shutdown signal during startup aborts the readiness wait into the same clean teardown. Headless boxes get a clear message instead of a crash. README now leads its integrations story with subscription-powered delegation: use existing Codex, Claude Code, or Cursor subscriptions through the bundled [Claudexor](https://github.com/razzant/claudexor) engine. |
+Older releases are preserved in Git tags and GitHub releases. Older 6.x rows (including 6.95.0, 6.94.0, 6.93.0, 6.92.1, 6.92.0, 6.91.1, 6.90.3, 6.91.0, 6.90.2, 6.90.0, 6.87.5, 6.87.4, 6.87.3, 6.87.2, 6.84.0, 6.87.1, 6.83.0, 6.86.1, 6.81.1, 6.76.0, 6.75.0, 6.74.5, 6.74.4, 6.74.1, 6.74.0, 6.73.2, 6.73.1, 6.73.0, 6.72.0, 6.71.2, 6.71.1, 6.71.0, 6.70.0, 6.69.0, 6.68.0, 6.67.0, 6.66.0, 6.65.4, 6.65.3, 6.65.2, 6.65.1, 6.65.0, 6.64.3, 6.64.2, 6.64.1, 6.64.0, 6.63.0, 6.62.0, 6.61.4, 6.61.3, 6.61.1, 6.61.0, 6.60.0, 6.59.0, 6.58.0, 6.57.0, 6.56.0, 6.55.0, 6.54.4, 6.54.2, 6.54.1, 6.54.0, 6.53.4, 6.53.0, 6.51.0), the 5.2.0 through 5.33.0-rc.6 rows, and former `4.0.0` rows are rolled off to respect the P9 changelog cap; their full bodies remain at their git tags.
 
-| 6.90.0 | 2026-08-07 | **fix: the subscription substrate actually carries the work — quota exhaustion is judged against the route's own model, and every silent seam found by the integration audit is closed.** The route-health predicate now scopes quota windows by `applies_to_models` (a Fable-only weekly window no longer takes an opus-pinned route offline for days — the live incident that burned ~$83 of metered API in 43 minutes), treats a spent window with no reset instant as spent rather than healthy, and demands POSITIVE evidence for the whole route: a profile whose quota endpoint answered 429 is unknown-not-dead, so the daemon's own rotation gets to try. A nanny dispatched onto the delegated substrate that reaches finalization with zero `delegate_start` calls gets one structural reminder (the wave-0 child burned $8.89 of metered opus under a subscription dispatch and only its prose admitted it); the decision stays the child's. The blocking scope reviewer no longer silently runs at `medium` on stock installs (the legacy slot path now honours `OUROBOROS_EFFORT_SCOPE_REVIEW`); scope and advisory session schemas grow a one-finding floor so the one answer their contracts reject by design cannot arrive schema-blessed; Panic Stop kills the owned Claudexor daemon's process group (subscription runs no longer outlive the red button); startup reconciliation of orphaned delegated runs goes through the ENSURE path instead of handshaking the corpse it just reaped — which also adopts a staged runtime update on restart; the production poll retries the engine's transient Git atomic-object ENOENT exactly once (CI had learned this tolerance while the live `delegate_wait` kept failing); `harness:effort` parses per the documented grammar and an unparseable configured route warns instead of silently disabling delegation. Web: "Add account…" replaces `window.prompt` (dead in the desktop WKWebView) with the standard input dialog and shows the normalized profile name before login; the account quota summary applies the same model-scope rule as the resolver; an empty Heavy slot visibly says it inherits Main. The Repo Commit Checklist gains item 23 (`delegated_transport`): the delegation invariants — capability_delta to three destinations, hash-bound EOF reads, typed blockers over silent re-routes, positive-evidence quota, custody lineage, no vendor branching — are now a named review surface. |
-Older releases are preserved in Git tags and GitHub releases. Older 6.x rows (including 6.90.3, 6.89.0, 6.87.5, 6.87.4, 6.87.3, 6.87.2, 6.84.0, 6.87.1, 6.83.0, 6.86.1, 6.81.1, 6.76.0, 6.75.0, 6.74.5, 6.74.4, 6.74.1, 6.74.0, 6.73.2, 6.73.1, 6.73.0, 6.72.0, 6.71.2, 6.71.1, 6.71.0, 6.70.0, 6.69.0, 6.68.0, 6.67.0, 6.66.0, 6.65.4, 6.65.3, 6.65.2, 6.65.1, 6.65.0, 6.64.3, 6.64.2, 6.64.1, 6.64.0, 6.63.0, 6.62.0, 6.61.4, 6.61.3, 6.61.1, 6.61.0, 6.60.0, 6.59.0, 6.58.0, 6.57.0, 6.56.0, 6.55.0, 6.54.4, 6.54.2, 6.54.1, 6.54.0, 6.53.4, 6.53.0, 6.51.0), the 5.2.0 through 5.33.0-rc.6 rows, and former `4.0.0` rows are rolled off to respect the P9 changelog cap; their full bodies remain at their git tags.
 
 ---
 

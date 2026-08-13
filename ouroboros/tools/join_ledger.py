@@ -20,7 +20,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from ouroboros.task_results import validate_task_id, write_task_result
+from ouroboros.task_results import validate_task_id
 from ouroboros.task_status import load_effective_task_result
 from ouroboros.task_tree_ledger import (
     CHILD_RESULT_DISPOSITIONS,
@@ -272,6 +272,59 @@ def _record_child_result_disposition(
     return f"OK: child {tid} marked {disposition} for result {expected[:12]}."
 
 
+def _record_child_result_disposition_batch(
+    ctx: ToolContext,
+    payload: Dict[str, Any],
+    rationale: str,
+) -> str:
+    """Record dispositions for MANY children in ONE tree_note call.
+
+    Each ``children`` entry is validated and recorded exactly like the single
+    form (same exact-hash binding, lineage gates, and idempotency — the batch
+    expands into the same individual authoritative ledger rows, so every
+    existing reader is unchanged). Entries are independent: an invalid entry is
+    rejected with a clear per-entry error naming it, while valid entries still
+    record. The shared tree_note text is the rationale for every entry.
+    """
+
+    envelope_extra = sorted(set(payload) - {"type", "children"})
+    children = payload.get("children")
+    if envelope_extra or not isinstance(children, list) or not children:
+        return (
+            "⚠️ CHILD_RESULT_DISPOSITION_INVALID: the batch form is exactly "
+            "{'type': 'child_result_disposition', 'children': [{'child_task_id', "
+            "'disposition', 'child_result_sha256'}, ...]} with a non-empty array"
+            + (f" (unknown key(s): {', '.join(envelope_extra)})" if envelope_extra else "")
+            + ". Nothing was recorded (atomic no-op)."
+        )
+    lines: list[str] = []
+    recorded = 0
+    for index, entry in enumerate(children):
+        if not isinstance(entry, dict):
+            lines.append(f"[entry {index}] ⚠️ CHILD_RESULT_DISPOSITION_INVALID: entry must be a JSON object.")
+            continue
+        single = dict(entry)
+        single.setdefault("type", CHILD_RESULT_DISPOSITION_TYPE)
+        label = str(entry.get("child_task_id") or f"entry {index}")
+        outcome = _record_child_result_disposition(ctx, single, rationale)
+        if outcome.startswith("OK:"):
+            recorded += 1
+        lines.append(f"[{label}] {outcome}")
+    total = len(children)
+    if recorded == total:
+        header = f"OK: batch child disposition recorded for {recorded} child(ren)."
+    elif recorded:
+        header = (
+            f"⚠️ CHILD_RESULT_DISPOSITION_PARTIAL: {recorded}/{total} entries recorded; "
+            "the failed entries below were rejected individually and must be corrected."
+        )
+    else:
+        header = (
+            f"⚠️ CHILD_RESULT_DISPOSITION_INVALID: 0/{total} batch entries were recorded."
+        )
+    return header + "\n" + "\n".join(lines)
+
+
 def _record_current_child_result_disposition(
     ctx: ToolContext,
     child_task_id: str,
@@ -369,9 +422,12 @@ def _peek_task(ctx: ToolContext, task_id: str, view: str = "summary") -> str:
     status_drive_root = _status_drive_root(ctx)
     data = load_effective_task_result(status_drive_root, tid) or {}
     status = str(data.get("status") or "unknown")
-    cost = data.get("cost_usd", 0) or 0
+    # SSOT cost projection (C2): a missing/unknown cost says "unknown", never a
+    # confident $0.00, and an open amount is labelled as the upper bound it is.
+    from ouroboros.cost_projection import cost_display
+
     parts = [
-        f"Task {tid} [{status}] cost=${float(cost):.2f} (peek — NOT absorbed)",
+        f"Task {tid} [{status}] cost={cost_display(data)} (peek — NOT absorbed)",
         f"child_result_sha256={_child_result_sha256(data)}",
     ]
     # Latest beacons this child posted to the shared ledger (partial_finding / blocker /
@@ -493,56 +549,107 @@ def _cancel_task(ctx: ToolContext, task_id: str, reason: str = "") -> str:
     # target is THIS task's own child — a cancel must not rewrite an unrelated task's
     # parent_decision and hide it from its real parent's reminder (D#7 safety).
     own = _is_own_child(ctx, status_drive_root, tid)
-    # Subagent isolation: a CONSTRAINED caller (workspace/subagent task that can schedule
-    # children) may cancel ONLY its own children — never an arbitrary task id. The
-    # owner-level orchestrator (self_modification / operator_control) keeps general cancel.
+    # Subagent isolation: a delegated child may cancel only its own children.
+    # Project focus does not narrow an ordinary top-level principal; workspace
+    # parents keep the same task-control authority as other top-level tasks.
     if not own:
         try:
             from ouroboros.tool_access import active_tool_profile
 
             if active_tool_profile(ctx) in (
-                "workspace_task", "external_workspace_task", "acting_subagent", "local_readonly_subagent",
+                "acting_subagent", "local_readonly_subagent",
             ):
-                return f"⚠️ cancel_task: {tid} is not a child of this task — a constrained task may only cancel its own children."
+                return f"⚠️ cancel_task: {tid} is not a child of this task — a delegated task may only cancel its own children."
         except Exception:
             log.debug("cancel_task lineage profile check failed for %s", tid, exc_info=True)
-    # Latch a cancel-intent status so the parent's find_child_tasks view treats the child
-    # as terminal immediately (stops the handoff reminder re-injecting "still scheduled").
+    # Durable cancel intent — the ONE ingress (phase A, owner batch-4 1=A). The
+    # canonical status never carries intent: the supervisor's cancellation
+    # custody claims this intent, tears the task down, and settles the terminal
+    # outcome (writing parent_decision only at that OUTCOME — never here, so a
+    # child that finishes before the kill keeps its completed result; completion
+    # wins, and discarding a kept result stays a separate explicit action).
+    intent: Dict[str, Any] = {}
+    # GR6-1 live-ownership check at the ingress: the durable terminal result
+    # is persisted BEFORE post-task cognition ends, so a settled STATUS with a
+    # live RUNNING row means a worker still spending — the mint must not
+    # no-op as ``already_settled`` over it. Worker-side, the queue snapshot is
+    # the ownership projection (the live maps belong to the supervisor).
+    live_ownership = False
     try:
-        from ouroboros.task_results import STATUS_CANCEL_REQUESTED
+        from ouroboros.task_status import task_has_live_queue_ownership
 
-        fields: Dict[str, Any] = {
-            "result": f"Cancellation requested by agent; awaiting supervisor teardown.{(' Reason: ' + reason_text) if reason_text else ''}",
-        }
-        if own:
-            fields["parent_decision"] = "cancelled"
-            fields["parent_decision_reason"] = reason_text
-        write_task_result(
+        live_ownership = task_has_live_queue_ownership(status_drive_root, tid)
+    except Exception:
+        log.debug("cancel_task live-ownership read failed for %s", tid, exc_info=True)
+    try:
+        from ouroboros.cancel_intents import CancelIntentProjectionCorrupt, request_cancel
+
+        intent = request_cancel(
             status_drive_root,
             tid,
-            STATUS_CANCEL_REQUESTED,
-            _explicit_cancellation=True,
-            **fields,
+            reason=reason_text,
+            source="agent_tool",
+            requested_by=str(getattr(ctx, "task_id", "") or "") if own else "",
+            allow_settled_target=live_ownership,
+        )
+    except CancelIntentProjectionCorrupt:
+        # GR4-8: a corrupt projection is not a transient — "retry" cannot
+        # succeed until the file is repaired. The malformed file was preserved
+        # (never overwritten) and a projection_corrupt_refused forensic row was
+        # recorded in logs/supervisor.jsonl.
+        log.error("cancel_task refused for %s: intent projection corrupt", tid)
+        return (
+            f"⚠️ CANCEL_INTENT_PROJECTION_CORRUPT: the cancel-intent projection "
+            f"(state/cancel_intents.json) is corrupt; nothing was cancelled for {tid} "
+            "and retrying cannot succeed until the file is repaired. The malformed "
+            "file was preserved (no overwrite) and a projection_corrupt_refused "
+            "forensic row was recorded in logs/supervisor.jsonl."
         )
     except Exception:
-        log.debug("Failed to latch cancel_requested status for %s", tid, exc_info=True)
+        log.debug("Failed to record durable cancel intent for %s", tid, exc_info=True)
+        return (
+            f"⚠️ CANCEL_INTENT_WRITE_FAILED: durable cancel intent for {tid} could not "
+            "be recorded; nothing was cancelled. Retry, or report the failure."
+        )
+    if intent.get("already_settled"):
+        # Completion wins (owner 4=A): nothing to tear down, and minting an intent
+        # for a settled task would show a false "Cancelling…" state on a finished
+        # card until the watchdog cleaned it up.
+        return (
+            f"Nothing to cancel: {tid} had already finished ({intent.get('status')}). "
+            "Its result is preserved — use discard_child_result if you want to drop it."
+        )
     if own:
-        _record_child_decision_beacon(ctx, tid, f"cancelled child {tid}" + (f": {reason_text}" if reason_text else ""))
-    # Emit live so the supervisor processes the cancellation within one loop tick.
+        _record_child_decision_beacon(
+            ctx, tid,
+            f"requested cancellation of child {tid}" + (f": {reason_text}" if reason_text else ""),
+        )
+    # Emit live so the supervisor processes the cancellation within one loop tick;
+    # the durable intent survives a lost event (the supervisor watchdog re-feeds it).
     from ouroboros.tools.control import _emit_control_event
 
     emitted = _emit_control_event(ctx, {"type": "cancel_task", "task_id": tid, "reason": reason_text, "ts": utc_now_iso()})
     note = " (live)" if emitted == "live" else " (deferred to round end)"
-    return f"Cancel requested: {tid}{(' — ' + reason_text) if reason_text else ''}{note}"
+    already = " (already requested earlier — idempotent)" if intent.get("already_requested") else ""
+    return (
+        f"Cancel requested: {tid}{(' — ' + reason_text) if reason_text else ''}{note}{already}. "
+        "cancel_state=pending until the supervisor confirms teardown; a child that "
+        "already finished keeps its completed result (use discard_child_result to drop it)."
+    )
 
 
 def get_tools() -> list[ToolEntry]:
     return [
         ToolEntry("cancel_task", {
             "name": "cancel_task",
-            "description": "Stop a running/scheduled child task by ID. Give a short reason — it is "
-                           "recorded on the shared task-tree ledger and the child's result, so a "
-                           "stopped child is an auditable decision, not a silent disappearance.",
+            "description": "Request cancellation of a running/scheduled task by ID (durable intent; "
+                           "the supervisor confirms teardown and settles the outcome — the child shows "
+                           "cancel_state=pending until then). A child that already finished keeps its "
+                           "completed result: cancel means 'stop spending', not 'discard the result' "
+                           "(use discard_child_result for that). Delegated children may target only "
+                           "their own children. Give a short reason — it is recorded on the shared "
+                           "task-tree ledger, so a stopped child is an auditable decision, not a "
+                           "silent disappearance.",
             "parameters": {"type": "object", "properties": {
                 "task_id": {"type": "string"},
                 "reason": {"type": "string", "default": "", "description": "Why you are stopping it (recorded for the tree + review)."},

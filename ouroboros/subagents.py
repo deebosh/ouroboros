@@ -578,6 +578,14 @@ class SubagentLaneResolution:
     # on Main compared `main` against `auto` and reported no reduction at all: the
     # v6.87.26 default was the one case its own invariant could not see.
     resolved_from: str = ""
+    # WHERE `resolved_from` came from: "requested" (the request named a lane),
+    # "inherited" (the request said `auto` and the parent's lane answered), or
+    # "policy" (the request said `auto` and a dispatch policy answered — today the
+    # light-lane default for harness-dispatched nannies). `effective_lane` may
+    # still land elsewhere (an unconfigured slot resolves to Main); the provenance
+    # names the DECISION source, never the slot outcome, so the two facts stay
+    # separately readable on the durable delta.
+    provenance: str = ""
 
     @property
     def reduced(self) -> bool:
@@ -690,6 +698,7 @@ def resolve_subagent_lane(
     requested_lane: str,
     *,
     parent_lane: str = "",
+    policy_default_lane: str = "",
 ) -> SubagentLaneResolution:
     """Resolve a subagent's effective lane + model.
 
@@ -720,9 +729,26 @@ def resolve_subagent_lane(
 
     ``parent_lane`` is the caller's OWN effective lane; empty means "no lane on
     record", which is the root agent, and the root runs Main.
+
+    ``policy_default_lane`` is a DISPATCH policy's answer for an omitted lane —
+    consulted only when the request says ``auto``, because an explicit lane always
+    wins (the parent that names a lane has made the declaration this default
+    exists to substitute for). Today's one policy: a harness-dispatched child is
+    a NANNY whose own rounds are custody chores around a $0 delegated run, so it
+    defaults to ``light`` instead of inheriting the parent's expensive lane (the
+    poltergeist tree paid $87 of opus rounds for exactly this inheritance); it
+    still raises itself with ``switch_model`` for real acceptance judgment. The
+    provenance field records which source answered, so the durable delta can
+    tell a policy default from an inheritance.
     """
     requested = normalize_subagent_model_lane(requested_lane)
-    resolved_from = intended_lane(requested, parent_lane)
+    if requested != "auto":
+        resolved_from, provenance = requested, "requested"
+    elif policy_default_lane:
+        resolved_from = normalize_subagent_model_lane(policy_default_lane)
+        provenance = "policy"
+    else:
+        resolved_from, provenance = intended_lane(requested, parent_lane), "inherited"
     effective = resolved_from
     model = _lane_model(effective)
     if lane_ran_on_main(effective, model):
@@ -737,6 +763,77 @@ def resolve_subagent_lane(
         model=model,
         use_local_model=_use_local_for_lane(effective, model),
         resolved_from=resolved_from,
+        provenance=provenance,
+    )
+
+
+def preflight_native_fallback_lane(task: Mapping[str, Any]) -> SubagentLaneResolution:
+    """The lane a preflight-falsified harness child runs NATIVE on (F10/sol #2).
+
+    The B2 light-lane default is a policy about HARNESS-dispatched nannies —
+    their own rounds are custody chores around a $0 delegated run. A child the
+    delegate-visibility preflight just demoted to native executes the work
+    ITSELF on metered tokens, so the policy must not survive the demotion: the
+    lane re-resolves exactly as a native dispatch would have (explicit request,
+    else parent inheritance — never policy-light), and the model/effort the
+    record states follow the re-resolved lane.
+    """
+    requested_lane = str(task.get("requested_model_lane") or task.get("model_lane") or "auto")
+    try:
+        requested_lane = normalize_subagent_model_lane(requested_lane)
+    except ValueError:
+        requested_lane = "auto"
+    return resolve_subagent_lane(
+        requested_lane, parent_lane=str(task.get("parent_model_lane") or ""))
+
+
+def preflight_native_fallback_dispatch(
+    task: Mapping[str, Any], dispatch: "SubagentDispatch", reason: str,
+) -> "SubagentDispatch":
+    """The preflight's harness→native fallback, with the lane RE-RESOLVED (F10).
+
+    The falsified dispatch resolved its lane under the harness policy (auto ⇒
+    light) and measured its effort band against that cheap model. Keeping them
+    would run a native child of a heavy parent on policy-light — the delta is
+    rebuilt from the re-resolved lane: the lane axes, the effort re-measured
+    against the model that will actually run, the executor reduction, and the
+    preflight reason. The caller (``agent.preflight_delegate_visibility``)
+    re-stamps the record and envelope; ``agent._prepare_task_context`` re-syncs
+    the metadata projection and the ToolContext model override off them.
+    """
+    import dataclasses
+
+    from ouroboros.config import effort_rank
+
+    lane = preflight_native_fallback_lane(task)
+    derived_effort = dispatch.delta.derived_effort
+    effective_effort = _route_effort(lane.model, derived_effort)
+    reasons: List[str] = []
+    if derived_effort and effort_rank(effective_effort) < effort_rank(derived_effort):
+        reasons.append(f"route_effort_ceiling={effective_effort}")
+    if lane.reduced:
+        reasons.append(f"lane_slot_unavailable={lane.resolved_from}")
+    reasons.append(reason)
+    delta = dataclasses.replace(
+        dispatch.delta,
+        resolved_lane=lane.resolved_from,
+        effective_lane=lane.effective_lane,
+        lane_provenance=lane.provenance,
+        effective_effort=effective_effort,
+        effective_executor="native",
+        reason="; ".join(reasons),
+        reduced=True,
+    )
+    return dataclasses.replace(
+        dispatch,
+        lane=lane,
+        executor="native",
+        route="",
+        delta=delta,
+        executor_resolution=dataclasses.replace(
+            dispatch.executor_resolution,
+            executor="native", reason=reason, reset_at="",
+        ),
     )
 
 
@@ -763,6 +860,12 @@ class CapabilityDelta:
     # The effective lane is measured against this, never against a bare `auto`.
     resolved_lane: str = "main"
     effective_lane: str = "main"
+    # WHERE the resolved lane came from — "requested" / "inherited" / "policy"
+    # (see SubagentLaneResolution.provenance). Additive disclosure: a policy
+    # default (light-lane nanny) is not a REDUCTION relative to itself, so the
+    # reduction phrases stay quiet about it — this field is what keeps the
+    # decision source readable on the durable record anyway.
+    lane_provenance: str = ""
     derived_effort: str = ""
     effective_effort: str = ""
     requested_executor: str = "auto"
@@ -780,6 +883,7 @@ class CapabilityDelta:
             "requested_lane": self.requested_lane,
             "resolved_lane": self.resolved_lane,
             "effective_lane": self.effective_lane,
+            "lane_provenance": self.lane_provenance,
             "derived_effort": self.derived_effort,
             "effective_effort": self.effective_effort,
             "requested_executor": self.requested_executor,
@@ -862,6 +966,12 @@ def _route_effort(model: str, effort: str) -> str:
 SUBAGENT_INTENT_FIELDS: tuple[str, ...] = (
     "requested_model_lane",
     "parent_model_lane",
+    # An ADMISSION fact carried as intent (F9): the lane an applicable
+    # non-advisory `require_lane` delegation constraint verified this child
+    # against at schedule time. The dispatch consults it to suppress the
+    # harness light-lane policy default — a lane the gate enforced must not be
+    # policy-overridden between admission and dispatch.
+    "required_model_lane",
     "requested_executor",
 )
 
@@ -983,16 +1093,32 @@ def resolve_subagent_dispatch(
     except ValueError:
         requested_executor = "auto"
 
-    lane = resolve_subagent_lane(
-        requested_lane, parent_lane=str(task.get("parent_model_lane") or ""),
-    )
     # The executor axis lands on p34's typed rule table (H1: one resolver, one
     # vocabulary, `blocked` a typed third outcome), fed with LIVE route health at
     # this same dispatch moment. The p2-era `harness_delegation_route()` stub and
     # its tuple-returning twin resolver are deleted rather than kept beside it.
+    # Resolved BEFORE the lane, because the lane's policy default depends on the
+    # EFFECTIVE executor: a harness-dispatched child whose request said `auto`
+    # defaults to the LIGHT lane (its own rounds are custody chores around a $0
+    # delegated run — poltergeist phase B), while an explicit lane always wins
+    # and a native child keeps inheriting its parent's lane unchanged.
     executor_resolution = dispatch_executor_resolution(task)
     executor = executor_resolution.executor
     route = executor_resolution.route.route_id if executor_resolution.route else ""
+    # F9 (sol #1): a lane the ADMISSION gate enforced (`require_lane` delegation
+    # constraint, stamped as `required_model_lane`) wins over the dispatch
+    # policy default — the admission verified this child against that lane, and
+    # the auto+harness ⇒ light policy silently landing it elsewhere would break
+    # admission→dispatch consistency. With the policy suppressed, `auto`
+    # inherits the parent's lane, which is exactly the lane the gate matched.
+    required_lane = str(task.get("required_model_lane") or "").strip().lower()
+    if required_lane not in SUBAGENT_MODEL_LANES or required_lane == "auto":
+        required_lane = ""
+    lane = resolve_subagent_lane(
+        requested_lane, parent_lane=str(task.get("parent_model_lane") or ""),
+        policy_default_lane=(
+            "light" if executor == "harness" and not required_lane else ""),
+    )
     # Only a REDUCTION belongs in the delta. The table also names the ordinary
     # outcomes (`requested_native`, `harness_ready`) and the no-preference case
     # (`auto` with no route configured, D28: nothing was asked for, no delta) —
@@ -1031,6 +1157,7 @@ def resolve_subagent_dispatch(
         requested_lane=lane.requested_lane,
         resolved_lane=lane.resolved_from,
         effective_lane=lane.effective_lane,
+        lane_provenance=lane.provenance,
         derived_effort=derived_effort,
         # The effort the route will ACTUALLY run — the whole learned band through
         # the same call the dispatcher clamps with, so a route with a learned FLOOR
@@ -1082,6 +1209,7 @@ def build_subagent_envelope(
     usage: Dict[str, Any] | None = None,
     cost_usd: float | None = None,
     execution_evidence: Dict[str, Any] | None = None,
+    actual_substrate: str = "",
 ) -> Dict[str, Any]:
     usage_data = dict(usage or {})
     if cost_usd is None:
@@ -1148,6 +1276,15 @@ def build_subagent_envelope(
         # custody rows prove actually ran. Absent means "no evidence yet"
         # (pre-completion), never "ran natively".
         envelope["execution_evidence"] = dict(execution_evidence)
+    if actual_substrate:
+        # The FACT beside the plan (Q1A): harness_used / harness_attempted /
+        # native_only, always beside the execution_evidence counts above.
+        envelope["actual_substrate"] = str(actual_substrate)
+        # C3 (additive): the counters are delegated-run FACTS; the metered/native
+        # work interleaved beside them is not measurable from custody rows, so no
+        # share, ratio, or dominance claim is derivable — said here so no reader
+        # invents one from the enum.
+        envelope["native_contribution"] = "unknown"
     return envelope
 
 
@@ -1155,6 +1292,71 @@ def build_subagent_envelope(
 # so the custody rows are the complete story of its delegated runs. A RUNNING
 # envelope carries no evidence — the neutral "dispatched" reading is the honest one.
 _EVIDENCE_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
+
+# The substrate FACT vocabulary (owner decision Q1A, 2026-08-10 amendments):
+# `effective_executor`/`executor_route` stay the dispatch PLAN, `actual_substrate`
+# is what the durable custody rows PROVE ran. Derived from custody evidence ONLY —
+# never from usage/rounds, where delegate_wait polling and real native thinking
+# are indistinguishable, so any boundary would be a guess. The raw attested
+# counts always ride beside the enum on every surface that carries it.
+SUBSTRATE_HARNESS_USED = "harness_used"            # >=1 delegated run succeeded
+SUBSTRATE_HARNESS_ATTEMPTED = "harness_attempted"  # >=1 started, none succeeded
+SUBSTRATE_NATIVE_ONLY = "native_only"              # no delegated run ever started
+
+
+def actual_substrate(evidence: Mapping[str, Any] | None) -> str:
+    """Classify what ACTUALLY ran, from durable custody evidence alone (Q1A)."""
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+
+    def _count(key: str) -> int:
+        try:
+            return int(evidence.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if _count("delegated_runs_succeeded"):
+        return SUBSTRATE_HARNESS_USED
+    if _count("delegated_runs_started"):
+        return SUBSTRATE_HARNESS_ATTEMPTED
+    return SUBSTRATE_NATIVE_ONLY
+
+
+def substrate_result_fields(envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    """Top-level durable-result mirror of the substrate FACT plus its raw counts.
+
+    The enum never travels without the attested counts it was derived from, so
+    a consumer of the durable result sees the full fact, not a classification.
+    """
+    if not envelope.get("actual_substrate"):
+        return {}
+    ev = envelope.get("execution_evidence")
+    ev = ev if isinstance(ev, Mapping) else {}
+    return {
+        "actual_substrate": str(envelope["actual_substrate"]),
+        "delegated_runs_started": int(ev.get("delegated_runs_started") or 0),
+        "delegated_runs_settled": int(ev.get("delegated_runs_settled") or 0),
+        "delegated_runs_succeeded": int(ev.get("delegated_runs_succeeded") or 0),
+        "delegated_runs_failed": int(ev.get("delegated_runs_failed") or 0),
+        # C3: delegated-run facts only — the native contribution is unknown and
+        # no share is derivable (owner-approved replacement for harness_share).
+        "native_contribution": "unknown",
+    }
+
+
+def _disclose_native_only_substrate(delta: Dict[str, Any]) -> Dict[str, Any]:
+    """A harness dispatch that never started a delegated run is a REDUCED execution.
+
+    Surfaced through the EXISTING capability_delta disclosure (owner decision:
+    no new axis). Amends a COPY at the completion seam; the dispatch-time
+    author's dict on the live task stays untouched.
+    """
+    amended = dict(delta or {})
+    reason = str(amended.get("reason") or "")
+    if "delegated_substrate_unused" not in reason:
+        amended["reason"] = "; ".join(
+            part for part in (reason, "delegated_substrate_unused") if part)
+    amended["reduced"] = True
+    return amended
 
 
 def _execution_evidence_for_task(task: Mapping[str, Any], status: str) -> Dict[str, Any] | None:
@@ -1203,6 +1405,17 @@ def envelope_from_task(
     than a substituted default.
     """
     usage = usage or {}
+    evidence = _execution_evidence_for_task(task, status)
+    # Unreadable custody log: the zero counts are UNKNOWN, not established
+    # facts — no substrate claim and no reduction amendment (the docs/JSDoc
+    # contract; omission keeps the enum vocabulary closed).
+    claimable = evidence is not None and not evidence.get("evidence_read_failed")
+    substrate = actual_substrate(evidence) if claimable else ""
+    capability_delta = task.get("capability_delta") if isinstance(task.get("capability_delta"), dict) else {}
+    if substrate == SUBSTRATE_NATIVE_ONLY and str(task.get("effective_executor") or "") == "harness":
+        # Q1A: a harness dispatch that ended native_only must not present as a
+        # clean un-reduced execution — the envelope carries the amended copy.
+        capability_delta = _disclose_native_only_substrate(capability_delta)
     return build_subagent_envelope(
         task_id=str(task.get("id") or ""),
         parent_task_id=str(task.get("parent_task_id") or ""),
@@ -1218,7 +1431,7 @@ def envelope_from_task(
         effective_executor=str(task.get("effective_executor") or ""),
         executor_route=str(task.get("executor_route") or ""),
         tool_profile=str(task.get("tool_profile") or ""),
-        capability_delta=task.get("capability_delta") if isinstance(task.get("capability_delta"), dict) else {},
+        capability_delta=capability_delta,
         status=status,
         usage={
             "prompt_tokens": int(usage.get("prompt_tokens") or 0),
@@ -1226,5 +1439,6 @@ def envelope_from_task(
             "rounds": int(usage.get("rounds") or 0),
         },
         cost_usd=cost_usd,
-        execution_evidence=_execution_evidence_for_task(task, status),
+        execution_evidence=evidence,
+        actual_substrate=substrate,
     )

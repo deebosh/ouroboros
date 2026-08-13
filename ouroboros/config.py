@@ -14,9 +14,9 @@ import sys
 import time
 from typing import Any, Optional, Sequence
 
-from ouroboros.platform_layer import pid_lock_acquire as _compat_pid_lock_acquire
-from ouroboros.platform_layer import pid_lock_release as _compat_pid_lock_release
+from ouroboros.platform_layer import pid_lock_acquire as _compat_pid_lock_acquire, pid_lock_release as _compat_pid_lock_release
 from ouroboros.provider_models import compute_direct_review_models_fallback, local_only_review_route_env, migrate_model_value, review_model_uses_local as review_model_uses_local
+from ouroboros.secret_masking import strip_masked_secrets
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel
 
 
@@ -851,22 +851,22 @@ def get_subagent_worktree_root() -> str:
     return raw or os.path.expanduser(os.path.join("~", "Ouroboros", "subagent_worktrees"))
 
 
-# The delegate_wait ToolEntry's own per-call timeout: a configured ceiling above it
-# buys a KILLED tool call, not a longer wait. Pinned to that ToolEntry by test.
+# delegate_wait's ToolEntry per-call timeout (above it a configured ceiling buys a
+# KILLED call, not a longer wait; pinned by test) and the hard max WINDOW per call
+# (F5): 1800 < 2100 (kill) < 2400 (lease) — decoupled, a raised timeout never widens it.
 DELEGATE_WAIT_CEILING_SEC = 2100
+DELEGATE_WAIT_WINDOW_MAX_SEC = 1800
 
 
 def get_delegate_wait_max_sec() -> int:
-    """Ceiling for a caller-supplied ``delegate_wait`` window, in seconds."""
+    """delegate_wait window ceiling: the setting NARROWS, never widens past 1800."""
     return _clamped_number_setting(
-        "OUROBOROS_DELEGATE_WAIT_MAX_SEC", low=1, high=DELEGATE_WAIT_CEILING_SEC, cast=int)
+        "OUROBOROS_DELEGATE_WAIT_MAX_SEC", low=1, high=DELEGATE_WAIT_WINDOW_MAX_SEC, cast=int)
 
 
 def get_delegate_wait_sec() -> int:
-    """Default WINDOW one ``delegate_wait`` call holds, in seconds.
-
-    Not a quiet cutoff: the wait holds this long and returns the advances it saw,
-    so this also bounds how long the nanny stays out of its own mailbox."""
+    """Default WINDOW one ``delegate_wait`` call holds — not a quiet cutoff: the
+    wait holds, returns its advances, and bounds the nanny's mailbox absence."""
     return _clamped_number_setting(
         "OUROBOROS_DELEGATE_WAIT_SEC", low=1, high=get_delegate_wait_max_sec(), cast=int)
 
@@ -1145,7 +1145,7 @@ def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str]
         and str(v) == str(SETTINGS_DEFAULTS.get(k, "")))}
     _guard_context_mode_lowering(prepared, allow_context_lowering=allow_context_lowering)
     _guard_safety_mode_lowering(prepared, allow_safety_lowering=allow_safety_lowering)
-    return prepared
+    return strip_masked_secrets(prepared, known_setting_keys=SETTINGS_DEFAULTS)
 
 
 _SAFETY_MODE_RANK = {"full": 2, "light": 1, "off": 0}
@@ -1382,7 +1382,7 @@ def load_settings_lock_held() -> dict:
         loaded.pop(_retired, None)
     migrate_legacy_slot_keys(loaded)
     settings = dict(SETTINGS_DEFAULTS)
-    settings.update(loaded)
+    settings.update(strip_masked_secrets(loaded, known_setting_keys=SETTINGS_DEFAULTS))
     for key in SETTINGS_DEFAULTS:
         raw_env = os.environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored

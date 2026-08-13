@@ -106,13 +106,15 @@ def test_schedule_task_falls_back_to_pending_events_when_live_queue_unavailable(
     assert event_queue.events == []
 
 
-def test_cancel_task_latches_cancel_requested_and_emits_live(tmp_path):
+def test_cancel_task_writes_durable_intent_and_emits_live(tmp_path):
+    """Phase A: the cancel_task tool records a DURABLE intent, never a status."""
+    from ouroboros.cancel_intents import active_intent
     from ouroboros.tools.join_ledger import _cancel_task
     from ouroboros.task_results import (
-        STATUS_CANCEL_REQUESTED, STATUS_RUNNING, load_task_result, write_task_result,
+        STATUS_RUNNING, load_task_result, write_task_result,
     )
+    from ouroboros.task_status import load_effective_task_result
 
-    # Pre-existing running status: the latch must advance running -> cancel_requested.
     write_task_result(tmp_path, "child42", STATUS_RUNNING, result="working")
     event_queue = _FakeEventQueue()
     ctx = SimpleNamespace(
@@ -121,20 +123,33 @@ def test_cancel_task_latches_cancel_requested_and_emits_live(tmp_path):
         is_direct_chat=False, is_workspace_mode=lambda: False,
     )
 
-    result = _cancel_task(ctx, "child42")
+    result = _cancel_task(ctx, "child42", reason="not needed")
 
     assert "Cancel requested" in result
-    # The latch is actually written (a missing write_task_result import would
-    # silently skip this and leave the status at running).
-    assert load_task_result(tmp_path, "child42")["status"] == STATUS_CANCEL_REQUESTED
+    # The canonical status is NOT touched — intent lives in the projection.
+    assert load_task_result(tmp_path, "child42")["status"] == STATUS_RUNNING
+    intent = active_intent(tmp_path, "child42")
+    assert intent is not None and intent["state"] == "requested"
+    assert intent["reason"] == "not needed"
+    # The typed public projection rides every effective read.
+    effective = load_effective_task_result(tmp_path, "child42")
+    assert effective["status"] == STATUS_RUNNING
+    assert effective["cancel_state"] == "pending"
     # And the cancel is emitted live (not buffered to round end).
     assert any(e.get("type") == "cancel_task" and e.get("task_id") == "child42" for e in event_queue.events)
+    # Idempotent: a second request reuses the intent instead of re-minting.
+    again = _cancel_task(ctx, "child42")
+    assert "idempotent" in again
+    assert active_intent(tmp_path, "child42")["request_id"] == intent["request_id"]
 
 
-def test_explicit_cancel_wins_when_child_completed_before_latch(tmp_path, monkeypatch):
+def test_natural_completion_wins_a_late_cancel(tmp_path, monkeypatch):
+    """Phase A (owner 4=A): a child that finished before the teardown KEEPS its
+    completed result and artifacts; the cancel settles as already_settled and
+    the durable intent is closed — never the old completed-overwrite."""
+    from ouroboros.cancel_intents import active_intent
     from ouroboros.outcomes import public_task_result
     from ouroboros.task_results import (
-        STATUS_CANCELLED,
         STATUS_COMPLETED,
         load_task_result,
         write_task_result,
@@ -142,6 +157,7 @@ def test_explicit_cancel_wins_when_child_completed_before_latch(tmp_path, monkey
     from ouroboros.tools.join_ledger import _cancel_task
     from supervisor import queue as queue_module
     from supervisor import workers
+    from supervisor import task_lifecycle
 
     write_task_result(
         tmp_path,
@@ -151,9 +167,9 @@ def test_explicit_cancel_wins_when_child_completed_before_latch(tmp_path, monkey
         root_task_id="parent123",
         delegation_role="subagent",
         result="finished in the cancellation race",
-        final_answer="late answer",
-        trace_summary="late trace",
-        artifacts=[{"name": "late.txt"}],
+        final_answer="kept answer",
+        trace_summary="kept trace",
+        artifacts=[{"name": "kept.txt"}],
         artifact_bundle={"status": "ready"},
         outcome_axes={
             "execution": {"status": "ok"},
@@ -175,7 +191,19 @@ def test_explicit_cancel_wins_when_child_completed_before_latch(tmp_path, monkey
         is_workspace_mode=lambda: False,
     )
 
-    assert "Cancel requested" in _cancel_task(ctx, "fast-child")
+    # GR7-1a: "Nothing to cancel" needs a FRESH snapshot that positively
+    # proves no live ownership — a missing snapshot fails OPEN and mints.
+    from ouroboros.utils import atomic_write_json, utc_now_iso
+
+    atomic_write_json(
+        tmp_path / "state" / "queue_snapshot.json",
+        {"ts": utc_now_iso(), "running": [], "pending": []},
+    )
+    # The child had ALREADY finished, so the tool mints no intent at all: an
+    # intent on a settled task would show a "Cancelling…" badge on a finished
+    # card until the watchdog cleaned it up, and there is nothing to tear down.
+    assert "Nothing to cancel" in _cancel_task(ctx, "fast-child")
+    assert active_intent(tmp_path, "fast-child") is None
     monkeypatch.setattr(queue_module, "DRIVE_ROOT", tmp_path)
     monkeypatch.setattr(queue_module, "PENDING", [])
     monkeypatch.setattr(queue_module, "RUNNING", {})
@@ -185,16 +213,20 @@ def test_explicit_cancel_wins_when_child_completed_before_latch(tmp_path, monkey
 
     assert queue_module.cancel_task_by_id("fast-child") is True
     stored = load_task_result(tmp_path, "fast-child")
-    assert stored["status"] == STATUS_CANCELLED
+    assert stored["status"] == STATUS_COMPLETED
     assert stored["cost_usd"] == 0.75
-    assert stored["parent_task_id"] == "parent123"
-    assert stored.get("final_answer") is None
-    assert stored.get("trace_summary") is None
-    assert stored.get("artifacts") is None
+    assert stored["result"] == "finished in the cancellation race"
+    assert stored["final_answer"] == "kept answer"
+    assert stored["artifacts"] == [{"name": "kept.txt"}]
+    # Completion wins WITHOUT a parent_decision stamp: discarding a kept result
+    # stays a separate explicit action (discard_child_result).
+    assert "parent_decision" not in stored
+    # The durable intent settled (already_settled) — nothing left pending.
+    assert active_intent(tmp_path, "fast-child") is None
     public = public_task_result(stored)
-    assert public["outcome_axes"]["execution"]["status"] == "cancelled"
-    assert public["outcome_axes"]["objective"]["status"] == "not_evaluated"
-    assert public["outcome_axes"]["review"]["status"] == "skipped"
+    assert public["outcome_axes"]["execution"]["status"] == "ok"
+    # The typed custody outcome (not the boolean facade) reports already_settled.
+    assert task_lifecycle.cancel_task_custody("fast-child") == task_lifecycle.CANCEL_ALREADY_SETTLED
 
 
 def test_cancel_workspace_task_records_terminal_artifact_state(tmp_path, monkeypatch):
@@ -701,6 +733,94 @@ def test_wait_for_tasks_returns_compact_structural_batch(tmp_path):
     )
 
 
+def test_wait_for_tasks_projects_execution_evidence_for_harness_children(tmp_path):
+    # Q1A (2026-08-10 amendments): the batch projection is the surface a fan-out
+    # parent absorbs its children through, and it used to hide whether a
+    # harness-dispatched child ever actually delegated (the e9108a09 shape:
+    # nine "harness" children, zero delegated runs, invisible in the batch).
+    from ouroboros.task_results import STATUS_COMPLETED, write_task_result
+    from ouroboros.tools.control import _wait_for_tasks
+
+    write_task_result(
+        tmp_path, "harnesskid", STATUS_COMPLETED, result="done",
+        effective_executor="harness", executor_route="codex",
+        actual_substrate="native_only",
+        subagent_envelope={
+            "actual_substrate": "native_only",
+            "execution_evidence": {
+                "delegated_runs_started": 0, "delegated_runs_settled": 0,
+                "delegated_runs_succeeded": 0, "delegated_run_failure_states": [],
+                "evidence_read_failed": False, "subscription_cost_usd": None,
+                "subscription_cost_estimated": False, "harness_models": [],
+            },
+        },
+    )
+    write_task_result(tmp_path, "nativekid", STATUS_COMPLETED, result="done")
+
+    ctx = SimpleNamespace(drive_root=tmp_path)
+    payload = json.loads(_wait_for_tasks(ctx, ["harnesskid", "nativekid"], timeout_sec=0))
+
+    assert payload["tasks"]["harnesskid"]["execution_evidence"] == {
+        "delegated_runs_settled": 0,
+        "delegated_runs_failed": 0,
+        "native_contribution": "unknown",
+        "dispatch_executor": "harness",
+        "actual_substrate": "native_only",
+        "delegated_runs_started": 0,
+        "delegated_runs_succeeded": 0,
+    }
+    # A native child with no custody evidence stays compact — no evidence block.
+    assert "execution_evidence" not in payload["tasks"]["nativekid"]
+
+
+def test_wait_for_tasks_projection_marks_unreadable_evidence(tmp_path):
+    # v6.94.0 landing-gate scope fix: unreadable custody evidence means the
+    # counts are UNKNOWN — the projection carries ONLY dispatch_executor and
+    # the typed evidence_read_failed marker. Emitting the raw zeros beside the
+    # marker fabricated a "no runs" receipt for a log that was never read; the
+    # substrate claim is likewise dropped even when the stored record carries
+    # one (same omission rule subagents.envelope_from_task applies).
+    from ouroboros.task_results import STATUS_COMPLETED, write_task_result
+    from ouroboros.tools.control import _wait_for_tasks
+
+    write_task_result(
+        tmp_path, "blindkid", STATUS_COMPLETED, result="done",
+        effective_executor="harness", executor_route="codex",
+        actual_substrate="native_only",
+        subagent_envelope={
+            "actual_substrate": "native_only",
+            "execution_evidence": {
+                "delegated_runs_started": 0, "delegated_runs_succeeded": 0,
+                "evidence_read_failed": True,
+            },
+        },
+    )
+    ctx = SimpleNamespace(drive_root=tmp_path)
+    payload = json.loads(_wait_for_tasks(ctx, ["blindkid"], timeout_sec=0))
+    assert payload["tasks"]["blindkid"]["execution_evidence"] == {
+        "dispatch_executor": "harness",
+        "evidence_read_failed": True,
+    }
+
+
+def test_wait_for_tasks_projection_omits_counts_without_envelope_evidence(tmp_path):
+    # 6c03c24e corrective wave (LOW b): a stored harness child with NO envelope
+    # evidence at all (pre-6.94 records) must not read as a zero-run receipt —
+    # absence means "no evidence yet", so no counts and no substrate claim.
+    from ouroboros.task_results import STATUS_COMPLETED, write_task_result
+    from ouroboros.tools.control import _wait_for_tasks
+
+    write_task_result(
+        tmp_path, "oldkid", STATUS_COMPLETED, result="done",
+        effective_executor="harness", executor_route="codex",
+    )
+    ctx = SimpleNamespace(drive_root=tmp_path)
+    payload = json.loads(_wait_for_tasks(ctx, ["oldkid"], timeout_sec=0))
+    assert payload["tasks"]["oldkid"]["execution_evidence"] == {
+        "dispatch_executor": "harness",
+    }
+
+
 def test_wait_for_tasks_any_terminal_early_return_projects_pending_child(tmp_path):
     from ouroboros.task_results import STATUS_COMPLETED, STATUS_SCHEDULED, write_task_result
     from ouroboros.tools.control import _wait_for_tasks
@@ -782,8 +902,8 @@ def test_wait_for_effective_tasks_keeps_polling_cancel_requested(tmp_path):
     waited = wait_for_effective_tasks(tmp_path, ["cancelling1"], timeout_sec=0)
     assert waited["all_terminal"] is False
     assert waited["timed_out"] is True
-    # The latch is reported as ITSELF — a known live state, never terminal/unknown.
-    assert waited["live_child_status"]["cancelling1"] == STATUS_CANCEL_REQUESTED
+    # A pending cancellation is reported as the typed state — never terminal/unknown.
+    assert waited["live_child_status"]["cancelling1"] == "cancel_pending"
 
     # Once the supervisor settles it, the same wait completes normally.
     write_task_result(tmp_path, "cancelling1", STATUS_CANCELLED, result="cancelled")
@@ -852,8 +972,11 @@ def test_wait_for_tasks_flags_unknown_ids_and_attaches_children_roster(tmp_path)
     # only — no result/trace envelope fields, absent accounting projects null.
     roster = payload["children_roster"]
     assert [row["task_id"] for row in roster] == ["realchild1"]
-    assert set(roster[0]) == {"task_id", "status", "cost_usd", "child_result_sha256", "outcome_axes"}
+    assert set(roster[0]) == {"task_id", "status", "cost_usd", "accounted_upper_bound_usd",
+                              "child_result_sha256", "outcome_axes"}
     assert roster[0]["cost_usd"] == 0.55
+    # C2: the additive honest name carries the SAME value as the alias.
+    assert roster[0]["accounted_upper_bound_usd"] == 0.55
     # Nothing was capped away, and the projection SAYS so (BIBLE P1).
     assert payload["children_roster_omitted"] == 0
 
@@ -888,7 +1011,8 @@ def test_children_roster_projection_discloses_the_capped_tail(tmp_path):
     assert len(roster) == 30  # the cap holds — the surface stays compact
     assert projected["children_roster_omitted"] == total - 30  # …and is disclosed
     assert all(
-        set(row) == {"task_id", "status", "cost_usd", "child_result_sha256", "outcome_axes"}
+        set(row) == {"task_id", "status", "cost_usd", "accounted_upper_bound_usd",
+                     "child_result_sha256", "outcome_axes"}
         for row in roster
     )
 

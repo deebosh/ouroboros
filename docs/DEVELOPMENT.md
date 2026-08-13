@@ -47,11 +47,14 @@ transport-specific decisions do not flow back into core policy.
 - CLI commands parse, call the existing gateway/scheduler, and render
   text or typed JSON/JSONL/SSE. They do not create a second task state machine.
 - External workspace tasks keep governance bound to the system repository while
-  contextual tools resolve through `ToolContext.active_repo_dir()`. Admission
+  contextual tools default through `ToolContext.active_repo_dir()`. Admission
   rejects overlap with the system repo/data and records a read-only preflight.
-- Workspace execution returns durable artifacts and patch diagnostics; it does
-  not grant commit, restart, runtime-control, or review-state authority over
-  Ouroboros. `executor_ref` selects a process backend, not an implicit sandbox.
+- Project focus changes the default target, not the ordinary top-level tool
+  surface. Generic VCS selects active/system explicitly; advisory, reviewed
+  commit, rollback, promotion, restart, and runtime control keep their intrinsic
+  system-repository contracts and existing gates. Workspace finalization still
+  returns durable patch artifacts. `executor_ref` selects a process backend, not
+  an implicit sandbox.
 - Project-local installs may run within the workspace policy. Global/system
   installs remain safety-reviewed, and `sudo` is non-interactive (`sudo -n`).
 - Do not add a second scheduler for operator tooling or a generic CLI file
@@ -579,6 +582,11 @@ If a core governance artifact cannot fit in the available context budget:
   damage, so below it the text passes through whole. A local re-implementation loses
   the floor and can return a value LONGER than the input it "shortened" (a `…[+N
   chars]` marker is 11 characters, so any overflow under that grew the field).
+  The two bounded-string primitives serve different contracts:
+  `truncate_review_artifact` produces DISPLAY previews of review artifacts (its
+  anti-waste floor may return the text whole), while `truncate_within_limit`
+  enforces a STRICT wire/prompt bound — the omission marker lands INSIDE the
+  limit and the result never exceeds it.
 - Bounding a LIST is subject to the same rule as bounding a string: a `[:N]` slice
   must be accompanied by an explicit omitted COUNT, and — where the slice touches an
   identity that something downstream compares — a durable hash or reference for the
@@ -684,7 +692,7 @@ the review substrate cannot self-attest its own fast path. Maintainers choose
 the landing parent and release version, preserve authorship, and run the normal
 final exact-candidate gate. `CONTRIBUTING.md` owns the contribution procedure.
 Accordingly, a pull request into `ouroboros` leaves `VERSION`,
-`pyproject.toml`, `web/package.json`,
+`pyproject.toml`, the editable root version in `uv.lock`, `web/package.json`,
 `web/modules/api_types.js::GATEWAY_CONTRACT_VERSION`, the README badge, and
 the Architecture header byte-identical to its target. At integration,
 `ouroboros/tools/release_sync.py::sync_release_metadata()` projects the chosen
@@ -720,7 +728,7 @@ Before every commit, verify the following:
 - [ ] No gratuitous abstract layers (Bible P7)
 
 #### Structural Rules
-- [ ] New Tool? `get_tools()` exports it using the `ToolEntry` pattern from `registry.py`, an explicit entry is added to `ouroboros/safety.py::TOOL_POLICY` (`POLICY_SKIP` for trusted built-ins, `POLICY_CHECK` for opaque or outward-facing ones), AND the intended visibility is declared in `ouroboros/tool_capabilities.py` (`CORE_TOOL_NAMES`, local-readonly/acting subagent allowlists, parallel/truncation sets as appropriate). If workspace tasks should see the tool, update the workspace allowlist in `tools/registry.py` too. Without the policy entry the tool falls through to `DEFAULT_POLICY = POLICY_CHECK` and pays a light-model LLM call per invocation, and without the capability/allowlist wiring a packaged/visible tool can still be unreachable to subagents or workspace tasks. **A tool that WRITES the repo working tree needs the GUARD surfaces too, not only the visibility ones:** add it to `_ROOT_ARG_REPO_WRITE_TOOLS` (the single set behind the acting-no-workspace fence, the protected-write gate and the acting root-enum narrowing) and make sure its target paths are canonicalized — via `_PATH_NORMALIZED_TOOLS` if it takes a top-level `path`, or via `canonical_repo_relative_path` + `_payload_write_paths` if its paths ride inside the payload. Visibility lists are all green while these are missing, so the gap does not surface as a failing test: `apply_patch`/`edit_batch` shipped a protected-path bypass that way (a guard reading `repo/BIBLE.md` while the write landed on `BIBLE.md`). Tests must exercise the REAL guard chain — a test that monkeypatches the resolver proves the mechanics, not the fence.
+- [ ] New Tool? `get_tools()` exports it using the `ToolEntry` pattern from `registry.py`, an explicit entry is added to `ouroboros/safety.py::TOOL_POLICY` (`POLICY_SKIP` for trusted built-ins, `POLICY_CHECK` for opaque or outward-facing ones), and the intended capability class is declared in `ouroboros/tool_capabilities.py` (`CORE_TOOL_NAMES`, local-readonly/acting child profiles, parallel/truncation sets as appropriate). Ordinary top-level tasks share the registered built-in surface; add a tool to a child profile only when that narrower principal should receive it, and test schema plus execution behavior rather than mirroring names into another catalog. Without the policy entry the tool falls through to `DEFAULT_POLICY = POLICY_CHECK` and pays a light-model LLM call per invocation. **A tool that WRITES the repo working tree needs the GUARD surfaces too, not only the visibility ones:** add it to `_ROOT_ARG_REPO_WRITE_TOOLS` (the single set behind the acting-no-workspace fence, the protected-write gate and the acting root-enum narrowing) and make sure its target paths are canonicalized — via `_PATH_NORMALIZED_TOOLS` if it takes a top-level `path`, or via `canonical_repo_relative_path` + `_payload_write_paths` if its paths ride inside the payload. Visibility checks can all be green while these are missing, so tests must exercise the real guard chain, not only a mocked resolver.
 - [ ] New Gateway (if extracted)? Contains no business logic, only transport.
 - [ ] New memory/data files? Should they appear in LLM context (`context.py`)?
 
@@ -758,14 +766,14 @@ Before every commit, verify the following:
 - `runtime_mode=light` is a self-modification boundary, not an OS sandbox. User-visible deliverables are allowed when they are outside the Ouroboros repo/control-plane.
 - Preferred flow: `task_drive` for scratch, `artifact_store` for canonical deliverables, and `user_files` for the owner's visible copy (for example `Desktop/report.html`). `write_file(root=user_files)` and declared process `outputs` must register/copy canonical task artifacts. Rewrites of the same user-visible source keep the previous canonical artifact in non-manifest history with last-5 retention; history is for recovery, not a second deliverable list.
 - `run_command`/`run_script` `scratch=[...]` (v6.52.2) is a DISTINCT channel from `outputs=[...]`: it declares EPHEMERAL in-workspace verification files (a throwaway test the agent writes, runs, and deletes — e.g. an in-package test that must live in the repo to compile). Scratch is exempt from the undeclared-output guard, never registered as an artifact, confined to the cwd, honored for NEW files and (v6.56.0) for ADOPTED existing untracked in-cwd files — adoption records the file's sha at declaration time through the SSOT `artifacts.record_task_scratch`, so the patch exclusion applies only while the content still matches (tracked files, paths outside the cwd, and paths outside a git worktree stay blocked; a real edit can never hide behind a scratch declaration) — and excluded from the workspace patch via `.scratch_manifest.json` (`headless.write_workspace_patch_artifacts`). Re-declaring a manifest path is idempotent. The undeclared-output guard verifies candidates POST-exec by stat (exists + mtime ≥ start−slack), so a mere path MENTION (import strings, CLI flags, heredoc bodies) is not a write. Use `outputs` for deliverables, `scratch` for throwaway verification — never overload one for the other.
-- `run_command`/`run_script`/`start_service` may use cwd under `active_workspace`, task-scoped `task_drive`, task-scoped `artifact_store`, and external `user_files` where the active profile permits it. In light direct tasks, omitted `run_script.cwd` defaults to task scratch instead of the Ouroboros repo; long-running services in light must use an explicit external/task/artifact cwd. Declared service `outputs` are copied into the task artifact store when the service stops.
+- `run_command`/`run_script`/`start_service` may use cwd under `active_workspace`, explicit `system_repo`, task-scoped `task_drive`, task-scoped `artifact_store`, and external `user_files` where the active profile permits it. Omitted cwd consistently selects `active_workspace`; a light direct task that needs writable scratch must therefore select `task_drive` explicitly. Long-running services in light must use an explicit external/task/artifact cwd. Declared service `outputs` are copied into the task artifact store when the service stops.
 - `run_script` temporary files are created under the active workspace when the task is workspace/executor-backed, then removed after execution. Do not run workspace scripts from the system repo temp path; relative imports, generated files, and toolchain discovery must observe the same cwd the user requested.
 - Declared process outputs may be files or directories. Directory outputs are copied to the canonical artifact store as a bounded manifest plus zip archive; hidden/control/credential-shaped files, excessive file counts, and excessive byte sizes fail closed instead of leaking through artifact registration.
 - In external workspace mode, light-mode self-repo dirty checks snapshot the system repo, not the active workspace. Task-local git operations inside the external workspace are allowed when the task requires them; Ouroboros repo/data paths remain structurally protected, and workspace patch artifacts are captured against the preflight git base.
 - Project-room promotion with no working folder and no `workspace="none"` opt-out idempotently provisions a standalone git repo through `ensure_project_workspace`, then runs the ordinary workspace admission checks. Never provision over a non-empty broken binding or an unreadable registry; those cases fail loudly. Binding affects tool profile, memory, lease, and preflight, not the Max-mode Architecture projection.
 - Keep policy denials separate from execution failures: `user_files_path_blocked`, `cwd_blocked`, and `artifact_output_undeclared` are non-failure outcomes, while failure to register an explicitly declared output remains `artifact_output_error`.
 - The DEFAULT (non-workspace) shell lane carries the SAME target-aware git policy in every runtime mode including light (Q4=A sandbox unwind): mutating git is blocked only when it targets the Ouroboros runtime (system repo / any data drive — bidirectional, casefold, symlink-resolved containment; `commit_reviewed` is the remedy for self-repo changes), read-only git works everywhere including at the system repo, `allowed_resources.network=false` still fences network git subcommands, and acting `self_worktree` children keep the strict no-commit policy. `git init`/`commit`/`push` in `~/projects`, `/tmp`, an attached project folder, or a host-minted coop tree is legitimate task work, not a violation.
-- `claude_code_edit` is RETIRED (D10, owner-approved migration, phase 6.4): the SDK edit gateway's job moved to the delegated coding path — a mutating subagent (`schedule_subagent`) whose nanny drives the session with `delegate_start`/`delegate_wait`/`delegate_cancel`, on the owner's subscription when a harness route is configured. Compatibility is one-way and permanent: a saved task contract carrying `disabled_tools=["claude_code_edit"]` also withholds the successor `delegate_start` (registry `_disabled_tools`), and the frozen `GET /api/claude-code/status` + `POST /api/claude-code/install` endpoints stay — the Claude runtime still powers the api-route advisory review. Do not resurrect the tool name.
+- `claude_code_edit` is RETIRED (D10, owner-approved migration, phase 6.4): the SDK edit gateway's job moved to the delegated coding path — a mutating subagent (`schedule_subagent`) whose nanny drives the session with `delegate_start`/`delegate_wait`/`delegate_answer`/`delegate_cancel`, on the owner's subscription when a harness route is configured. Compatibility is one-way and permanent: a saved task contract carrying `disabled_tools=["claude_code_edit"]` also withholds the successor `delegate_start` (registry `_disabled_tools`), and the frozen `GET /api/claude-code/status` + `POST /api/claude-code/install` endpoints stay — the Claude runtime still powers the api-route advisory review. Do not resurrect the tool name.
 - Do not recommend `runtime_data/uploads`, skill payloads, or owner state directories as generic artifact transport.
 
 #### Runtime Cleanup / Retention
@@ -955,12 +963,94 @@ Before every commit, verify the following:
   control-plane, private-range, and DNS-rebind denial preserved. See ARCHITECTURE.md.)
 - Effective task status belongs in `ouroboros/task_status.py`. Do not duplicate
   child-drive merge or terminality in gateways/tools. Task waits use
-  `SETTLED_STATUSES`; `cancel_requested` is not settled. `wait_task` and
+  `SETTLED_STATUSES`. Cancel INTENT is never a status value (Poltergeist phase A):
+  every cancel ingress — tool, HTTP single/cascade, evolution stop (pending AND
+  running evolution tasks; never an in-place queue prune), project
+  delete, cascade descendants, boot migration — writes a durable intent through
+  `ouroboros/cancel_intents.request_cancel` (nothing is minted for an
+  already-settled task WITH NO LIVE OWNERSHIP — a settled RESULT does not mean
+  a dead WORKER (GR6-1): the terminal result is persisted before post-task
+  cognition ends, so every ingress checks live physical ownership
+  (`supervisor.queue.task_has_live_ownership` in-process; the queue-snapshot
+  twin `task_status.task_has_live_queue_ownership` worker-side) and passes
+  `allow_settled_target` while a RUNNING row / busy worker remains, letting
+  custody kill the still-spending process while completion-wins preserves the
+  stored result; the cascade-coordination shape does the same for a settled
+  root with live descendants: `scope=cascade` with `allow_settled_target` —
+  the watchdog's replay trigger for the subtree, settled only by the cascade's
+  no-live postcondition; the recorded scope is WIDEN-ONLY, cascade never
+  narrows back to single) and FAILS CLOSED when that write fails: a cancel
+  without a durable, watchdog-replayable intent is refused with a typed error,
+  never run unfenced — an evolution-stop task whose intent write fails is KEPT
+  and the stop reported INCOMPLETE.
+  Timeout reaping is deliberately NOT a cancel ingress (owner decision: 1=A
+  covers explicit cancellation; the reaper keeps its own custody protocol over
+  the shared `reaping` slot marker and mints no intents). Effective reads
+  project the intent as
+  `cancel_state: "pending"` (plus `cancel_reason` when the intent carries one),
+  the supervisor's `cancel_task_custody` is the one
+  settle owner — it claims the intent BEFORE any custody mutation (a refused
+  claim is `failed` with zero mutation, so racing custodies can never
+  double-settle through the capture-miss lane), its claim is EXCLUSIVE while
+  alive (a claimant the pid probe proves alive is NEVER abandoned by age; only
+  a provably dead pid, or age-stale with liveness unknown, is recoverable),
+  every intent mutation is
+  fenced by the claim generation, so a second ingress cannot double-settle and a
+  taken-over attempt cannot revert the new owner, and the claim is re-verified
+  (pid + generation) immediately before the durable terminal write — a claim
+  lost across the kill/join window aborts the publication (deliberately ONE
+  re-read at the one write that matters, not a renewable-lease subsystem —
+  rejected by owner scope); the secondary settle
+  sites (pre-assignment pending drop, budget-drain `fail_tasks` — whose intent
+  reads resolve at the CANONICAL supervisor root, never a child's
+  `budget_drive_root`) hold the SAME
+  claim/generation fence and yield to a live claim owner. A `scope=cascade`
+  intent is settled EXCLUSIVELY by the cascade's no-live postcondition: every
+  other settle site is refused atomically against the CURRENT durable scope
+  (a mid-flight widen beats a stale claim snapshot; the refused claimant's
+  claim is auto-released for the watchdog), and the postcondition always owes
+  the tree's one summary BEFORE it settles — including the replay/already-down
+  path — while re-judging stale sweep failures against the current durable
+  status. Natural
+  completion WINS a
+  late cancel (a completed result is
+  never overwritten or stripped — discarding is the parent's separate explicit
+  `discard_child_result`). The owner's terminal answer is registered as OWED in
+  the durable outbox BEFORE the intent settles (a crash between settle and send
+  replays instead of losing both the watchdog trigger and the answer); a
+  registration that could not be made durable leaves the intent OPEN on the
+  cancel path and is a typed `terminal_delivery_unregistered` disclosure on the
+  normal path — never a silent gap. On the natural path the owed row is
+  registered immediately BEFORE the durable result write (projection-over-
+  replay: a crash in the window leaves an owed row boot replay delivers; no
+  boot scan over task_results).   The intent and delivery registries read STRICT:
+  a corrupt projection refuses the mutation loudly instead of collapsing to
+  `{}` and overwriting every active row — and strictness reaches ROWS, not
+  just containers (GR6-3): a malformed pending/intent row or `delivered`
+  entry refuses the mutation (bytes kept) and the enforcement reads
+  (watchdog sweep, outbox replay) disclose loudly once, then quarantine the
+  row. The unreconciled-delegated-runs disclosure is outcome-INDEPENDENT
+  (GR6-5a) and rides completed/failed deliveries too; an EXISTING-but-
+  unreadable custody log audits as the typed
+  `delegated_run_state_unknown:custody_log_unreadable` marker, never as
+  cleanly reconciled (GR6-4); and the cascade digest enumerates descendants
+  by ancestry rooted at the cancelled node, so a mid-tree cascade lists its
+  grandchildren and non-subagent descendants (GR6-2).
+  `task_done` is validated through the DURABLE result
+  UNCONDITIONALLY for every non-ephemeral event — a blank event status (the
+  primary producer's shape) validates exactly like a settled claim, a settled
+  claim over a non-settled row is the same lifecycle fault as a non-settled
+  claim, and the copy-back exception path neither skips the validation nor
+  synthesizes a `completed` row for a task that never wrote one (only
+  `interrupted` keeps its restore-path exemption). The legacy
+  `cancel_requested` status survives on a
+  read-path only. `wait_task` and
   `get_task_result` keep the full handoff plus a bounded verification-receipt
   projection: every outstanding red/masked receipt first, then newest rows, with
   an exact omitted count; read the canonical store and fall back to the recorded
   child drive before copy-back. `wait_tasks` stays batch-compact:
-  `task_id, status, cost_usd, child_result_sha256, outcome_axes, result,
+  `task_id, status, cost_usd (+ its honest alias accounted_upper_bound_usd and
+  cost_final — C2), child_result_sha256, outcome_axes, result,
   trace_summary, capability_delta when disclosable, duplicate_of`; it points to
   the hash-addressed full result rather than re-inlining trace/ledger forensics.
   Unknown ids are probed across result, queue, and tree-ledger authorities and
@@ -1169,13 +1259,13 @@ Before every commit, verify the following:
 #### Loop / State-Machine Changes
 - [ ] Changes to `loop.py` or other task state-machine logic include adversarial tests for malformed output, false-completion prevention, replay/log durability, and failure modes — not just the happy path.
 - [ ] Audit/checkpoint rounds must not silently reuse the normal final-answer path unless that invariant is explicitly tested and documented.
-- [ ] Keep a complete loop-local `DeliveryCandidate` once a substantive answer exists. A service round may return `keep`, or `replace` plus the complete replacement answer; allow one repair for malformed control, then preserve the prior complete answer and mark finalization degraded. A service notice alone does not change evidence. Owner messages, tool effects, child results, and verification receipts advance the evidence revision and require fresh delivery/acceptance binding. Finalize task-scoped service outputs/errors before host acceptance and require a complete replacement when that evidence changes; keep the `finally` path as idempotent cleanup only. This control must not bypass verification, acceptance, safety, skill-finalization, deadline, child-handoff, the unconditional `FINAL ANSWER:` latch, or the task-level answer protocol.
-- [ ] Every direct child result needs an exact-hash disposition through the existing `tree_note(kind="decision")` tagged payload (`type=child_result_disposition`, child id, `integrated | irrelevant | deferred`, complete-result SHA-256; note text is rationale). The typed task-tree row is the sole authority; task-result disposition fields are derived reads, never a mirrored write. The join-ledger helper alone validates lineage and current content. Stale or malformed payloads change nothing. `deferred` suppresses only the unchanged reminder and forces an honest degraded/best-effort terminal answer until the item is resolved. Explicit cancellation wins a late-completion race and bounded child scratch is removed without preserving another copy.
+- [ ] Keep a complete loop-local `DeliveryCandidate` once a substantive answer exists. A service round may return `keep`, or `replace` plus the complete replacement answer; allow one repair for malformed control, then preserve the prior complete answer and mark finalization degraded. A FORCED finalization (budget/round/deadline/provider/children rails) resolves an armed control purely and without retry instead: valid keep/replace is honored, anything malformed preserves the retained candidate with a typed degraded reason, and the protocol JSON itself never reaches chat or the durable result. A service notice alone does not change evidence. Owner messages, tool effects, child results, and verification receipts advance the evidence revision and require fresh delivery/acceptance binding. Finalize task-scoped service outputs/errors before host acceptance and require a complete replacement when that evidence changes; keep the `finally` path as idempotent cleanup only. This control must not bypass verification, acceptance, safety, skill-finalization, deadline, child-handoff, the unconditional `FINAL ANSWER:` latch, or the task-level answer protocol.
+- [ ] Every direct child result needs an exact-hash disposition through the existing `tree_note(kind="decision")` tagged payload (`type=child_result_disposition`, child id, `integrated | irrelevant | deferred`, complete-result SHA-256; note text is rationale). One call may instead carry a `children` array of such entries (batch form): each entry is validated exactly like the single form, invalid entries are rejected individually by index while valid ones record. The typed task-tree row is the sole authority; task-result disposition fields are derived reads, never a mirrored write. The join-ledger helper alone validates lineage and current content. Stale or malformed payloads change nothing. `deferred` suppresses only the unchanged reminder and forces an honest degraded/best-effort terminal answer until the item is resolved. Natural completion WINS a late cancellation (owner decision 4=A, 2026-08-11): a child that settled its own completed result keeps it — payload, artifacts, and cost — and the cancel settles as already-settled; discarding a kept result is the parent's separate explicit `discard_child_result`. A cancelled (not completed) child still has its salvageable output preserved on the canonical drive before its bounded scratch is removed. Only a SETTLED `cancelled` status counts as a handled cancellation disposition: a child wedged in the legacy `cancel_requested` STATUS latch is intent, not outcome — it stays visible in the parent's handoff reminder as cancel-pending until custody settles it.
 - [ ] Host task acceptance is root-only. Queued/headless/scheduled roots are reviewed in `auto` and `required`; direct eligibility is the union of `outcomes.turn_has_reviewable_effects` and a typed deliverable/criterion. Ordinary read-only tool activity, pure conversation, and meta/routing controls are not reviewed, and child reviews remain advisory. Eligibility must use structured facts, never keywords (Bible P3/P5). For an eligible root under `auto|required`, agent-callable `task_acceptance_review` validates/stores evidence and optional agent disposition but makes zero reviewer calls; it returns `deferred_to_host_acceptance`, `authoritative=false`, and the evidence revision. The call itself never widens eligibility; child and `off` behavior remain unchanged.
 - [ ] Before root acceptance, atomically fence new descendants under the queue lock and prove recursive subtree quiescence from the existing task-status SSOT. Split-drive ACK, subtree, and acceptance-timing reads/writes use canonical `budget_drive_root`. Preserve the prior verdict until the replacement is recorded. A revision must explicitly reopen the fence; terminal/degraded outcomes seal it.
-- [ ] The host runs the authoritative acceptance panel once per unchanged candidate-hash/evidence-revision/fence binding. Task-acceptance actors receive one substantive call and at most two physical attempts total. Record transport status, parse status, and valid-response semantic verdict separately, with actor model/provider, role, coverage, panel id, quorum contribution, reason, enforcement impact, and binding hashes. Public task/event/UI records receive only the compact projection; full model payloads remain in private audit storage. `adaptive_quorum` applies; any contributing FAIL fails, DEGRADED abstains (the reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable — `_contract_valid_actors`, the deliberate-DEGRADED capsule rail and the host's core-overflow DEGRADED all depend on it), and no quorum is a terminal HOST decision. The host acceptance decision itself is written ONLY by `loop._set_acceptance_decision` and has exactly three owner-facing states — `accepted | revision_requested | finalized_unaccepted` — each with a typed `reason` from an existing structured fact; an unknown status fails closed to `finalized_unaccepted` keeping its raw token as the reason. When you add a writer, add its reason to the closed set AND check every value-keyed reader: `outcomes.derive_loop_outcome` keys the eligible-but-skipped degradation on the status+reason PAIR (`review_skipped_deadline_reserve` plus the closed forced-rail `ACCEPTANCE_BYPASS_REASONS`), and breaking that pairing is a silent false green. Forced exits stamp their typed bypass record in the common terminal recorder (`_record_forced_acceptance_bypass`) as a pure ledger write — never a fence, panel, extra round, or prompt text on a forced path, and never overwriting an existing host decision. The agent may write only `agent_disposition`/`agent_rationale`, merged into the host decision, never replacing it. Clean requires PASS + solved + supported criterion evidence. Chat and Logs must use the same severity reducer, and degraded review or best-effort/degraded objective must never render as green solved. Do not add task scope review or reuse the commit gate.
+- [ ] The host runs the authoritative acceptance panel once per unchanged candidate-hash/evidence-revision/fence binding. Task-acceptance actors receive one substantive call and at most two physical attempts total. Record transport status, parse status, and valid-response semantic verdict separately, with actor model/provider, role, coverage, panel id, quorum contribution, reason, enforcement impact, and binding hashes. Public task/event/UI records receive only the compact projection; full model payloads remain in private audit storage. `adaptive_quorum` applies; any contributing FAIL fails, DEGRADED abstains (the reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable — `_contract_valid_actors`, the deliberate-DEGRADED capsule rail and the host's core-overflow DEGRADED all depend on it), and no quorum is a terminal HOST decision. The host acceptance decision itself is written ONLY by `loop._set_acceptance_decision` and has exactly three owner-facing states — `accepted | revision_requested | finalized_unaccepted` — each with a typed `reason` from an existing structured fact; an unknown status fails closed to `finalized_unaccepted` keeping its raw token as the reason. When you add a writer, add its reason to the closed set AND check every value-keyed reader: `outcomes.derive_loop_outcome` keys the eligible-but-skipped degradation on the status+reason PAIR (`review_skipped_deadline_reserve` plus the closed forced-rail `ACCEPTANCE_BYPASS_REASONS`), and breaking that pairing is a silent false green. Forced exits stamp their typed bypass record in the common terminal recorder (`_record_forced_acceptance_bypass`) as a pure ledger write — never a fence, panel, extra round, or prompt text on a forced path, and never overwriting an existing host decision — with ONE exception (owner decision Q2A, 2026-08-10): the forced `children_unabsorbed` rail still runs the acceptance panel for an acceptance-eligible root when the subtree is quiescent, with the undispositioned-children debt included in the evidence packet; because that rail cannot take another round, a requested revision terminalizes as `finalized_unaccepted` with the typed `revision_unavailable_on_forced_rail` reason, while the process outcome stays best-effort `children_unabsorbed`. The agent may write only `agent_disposition`/`agent_rationale`, merged into the host decision, never replacing it. Clean requires PASS + solved + supported criterion evidence. Chat and Logs must use the same severity reducer, and degraded review or best-effort/degraded objective must never render as green solved. Do not add task scope review or reuse the commit gate.
 - [ ] The acceptance improvement loop is a reviewer-authored DIALOGUE (v6.74.0): obligation identity comes from the reviewer's typed `disposition_kind`/`obligation_id` (an unknown re-raise id fails closed to `new`, disclosed — never a silent fresh hash id); a re-raise reopens the row WITHOUT wiping the agent's argument (`previous_disposition`/`previous_reason`/`reopened_count` survive into the evidence catalog and the obligations clause); termination beyond a clean PASS/accepted rebuttal happens ONLY via the reviewers' quorum `dialogue_status` judgement reduced over ALL contract-valid actors (`aggregate_dialogue_status` — never `_contributing_actors`, which drops a DEGRADED slot's vote) or a real rail — no host counters, no answer/verdict hashes, no keyword gates (P5). Changes here must cover: malformed reviewer output, unknown/stale `obligation_id` on a re_raise, partial panel failure, multi-slot dialogue-status disagreement (the reducer's precedence), replay/restart durability of obligation rows, false completion, and the backward-compatible default when the new fields are absent.
-- [ ] An explicit `max_improvement_passes` binds under every legacy policy. Required+Blocking without one has no local count cap, but real deadline/budget/lifecycle rails remain. The first acceptance review reserves at least 200s; later passes use the canonical event-derived `max(floor, 1.5×EWMA)` (`alpha=0.5`). Only the root runs global post-task synthesis once and persists one phase checkpoint in the canonical `budget_drive_root`. Recovery is startup-only: replay `pending_once`, degrade indeterminate `running` without another paid call, and let the normal supervisor copy-back/artifact path materialize child results without overwriting a terminal canonical phase.
+- [ ] An explicit `max_improvement_passes` binds under every legacy policy. Required+Blocking without one has no local count cap, but real deadline/budget/lifecycle rails remain. The first acceptance review reserves at least 200s; later passes use the canonical event-derived `max(floor, 1.5×EWMA)` (`alpha=0.5`). Only the root runs global post-task synthesis once and persists one phase checkpoint in the canonical `budget_drive_root`. Recovery is startup-only: replay `pending_once`, degrade indeterminate `running` without another paid call, and let the normal supervisor copy-back/artifact path materialize child results without overwriting a terminal canonical phase or the finalized terminal accounting (`TASK_COST_META_FIELDS` plus rounds/tokens).
 
 #### Cognitive Artifact Integrity
 - [ ] Cognitive artifacts (identity.md, scratchpad, task reflections, review outputs, pattern register) must NOT use hardcoded `[:N]` truncation. If content must be shortened, include an explicit omission note (e.g. `⚠️ OMISSION NOTE: truncated at N chars`).
@@ -1217,6 +1307,14 @@ Before every commit, verify the following:
   same update lock and honors this admission owner; it must not stash/reset
   behind the fence. Managed merge tests pass before restart; the ordinary
   self-modification commit/tag/test/push ordering remains unchanged.
+- Take a fresh rescue before every destructive rollback and before boot-resume
+  re-materialization: the pre-update snapshot predates the merge and holds none
+  of the resolution. The hook is fail-open — never block a rollback on it — but
+  its outcome, captured or failed, is disclosed durably at capture time, before
+  the destruction. Record the pointer in the update transaction so a replayed
+  rollback does not re-snapshot and a retry rescues what appeared since; keep
+  that pointer until the transaction ends, because a re-materialized merge looks
+  identical to restored work and is not evidence the rescue was applied.
 - Manual Restore reuses the same writer fence and pins the previous HEAD on a
   local recovery branch before reset. Promotion resolves the development SHA
   once and uses that exact SHA for both the local QA ref and any remote push.
@@ -1421,10 +1519,11 @@ host state, never in extension manifests.
 
 The base runtime is an optional client for trusted HTTP/SSE and local stdio MCP
 servers; it is not an MCP server. `ouroboros/mcp_client.py` owns server parsing,
-transport-specific validation, auth masking, provider-safe tool names,
-discovery, timeout, and result normalization. Settings carry only `MCP_ENABLED`,
-`MCP_TOOL_TIMEOUT_SEC`, and structured `MCP_SERVERS`; tokens never appear in
-status responses.
+transport-specific validation, provider-safe tool names, discovery, timeout,
+and result normalization. `ouroboros/secret_masking.py` owns the exact shared
+Settings/MCP auth-placeholder emitters and recognizers. Settings carry only
+`MCP_ENABLED`, `MCP_TOOL_TIMEOUT_SEC`, and structured `MCP_SERVERS`; tokens never
+appear in status responses.
 
 MCP descriptions/results are untrusted data, not policy. Enabled tools join the
 initial capability envelope, still pass runtime safety, and remain unavailable
@@ -1445,6 +1544,28 @@ the contract. Outbound provider/harness adapters belong in
 already preserve the boundary.
 
 ## Build & CI
+
+### Python dependency locks
+
+`pyproject.toml` is the direct-dependency SSOT and `uv.lock` is the reviewed
+cross-platform resolution. Local and CI commands use `uv sync --locked`; do not
+add an independent hand-written requirements list. Release packaging preserves
+the separate build and embedded interpreters by exporting build requirements
+ephemerally and committing `requirements-runtime.lock` for embedded pip. The
+legacy `requirements.txt` is a generated pointer to that export for N-1 managed
+updaters, never a dependency authority. A dependency change updates the project
+metadata, runs `uv lock`, regenerates the runtime export with the exact command
+in README, and leaves its CI clean-diff check green.
+The pinned `tool.uv.required-version` and the digest-pinned `setup-uv` action
+make resolver changes deliberate rather than an ambient CI upgrade.
+
+`uv tool install "git+https://github.com/razzant/ouroboros.git@ouroboros"`
+is the documented checkout-free CLI/server path. It resolves the project
+metadata into an isolated tool environment but does not read this repository's
+`uv.lock`; branch installs therefore follow dependency ranges as well as source
+HEAD. Documentation may pair that convenient form with a full commit SHA to pin
+the source revision, but must not claim that it locks dependencies or describe
+it as a release-artifact install or contributor development environment.
 
 ### Pytest marker lanes
 
@@ -1519,7 +1640,12 @@ that:
 ### The commit gate mirrors the CI split
 
 `ouroboros/preflight_runner.py::run_hermetic_pytest` runs the same two logical
-passes as CI in one disposable checkout and scrubbed temporary data root:
+passes as CI in one disposable checkout and scrubbed temporary data root. The
+candidate is captured universally — one hardened worktree-vs-`HEAD` binary diff
+applied as raw bytes, assembled identically whether the source index is clean,
+dirty, or mid-merge — and a capture or apply failure is the typed
+`PREFLIGHT_CANDIDATE_ASSEMBLY` hard block with its own remediation, never a
+test failure:
 
 1. parallel `not serial` with xdist, loadscope distribution, no worker restart,
    and the configured per-test timeout;
@@ -1621,30 +1747,62 @@ signing material never persists across runs.
 
 The tagged build binds public release assets to their source and verification
 record. Each platform shard locates the final DMG, tarball, or ZIP after all
-packaging steps, then performs a smoke test against that final archive. The
-smoke checks require the embedded repository bundle, run the packaged CLI with
-`--help` in an isolated home directory, then use the embedded Claudexor seed and
-Node from that extracted final artifact to perform install, extraction, exact
-identity probe, owned-daemon handshake, one fake task, and an identity-bound
-graceful stop of the serving closure. The separate
+archive packaging steps, then performs a smoke test against that final archive.
+The smoke checks require the embedded repository bundle, run the packaged CLI
+with `--help` in an isolated home directory, then use the embedded Claudexor
+seed and Node from that extracted final artifact to perform install, extraction,
+exact identity probe, owned-daemon handshake, one fake task, and an
+identity-bound graceful stop of the serving closure. The Linux shard builds
+PyInstaller under the pinned portable interpreter so the runner's glibc cannot
+leak into the desktop launcher's libpython, then wraps that proven x86_64
+payload into `.deb`, generic `.rpm`, and RED OS 8 `.rpm` assets. Their metadata
+declares Git, which packaged bootstrap requires; the gating smoke installs
+through `apt` or `dnf` in Ubuntu 22.04/Fedora 42 and proves dependency
+resolution, desktop integration, the installed opt-in systemd user unit and
+its launcher/cgroup/no-restart contract, the real packaged CLI, and a bounded
+desktop-launcher start. The unit never activates during package installation;
+the launcher remains the sole restart and panic-policy owner. Vendor
+image smokes for Astra Linux and RED OS are non-blocking evidence, and their
+outcome is reported without becoming release authority. The separate
 Claudexor platform gate repeats that fixture path on ordinary branch changes and
 adds the explicit-key live compatibility matrix; neither path installs a
 floating Claudexor npm package. The macOS check also requires the
 `Applications -> /Applications` drag target, the separate `Install CLI.command`
 payload, and an arm64 app executable.
 
+Linux additionally emits an AppImage built by a version- and digest-pinned
+`appimagetool` with a separately SHA-pinned embedded type-2 runtime. CI extracts
+it for metadata and SBOM inspection, then uses real extract-and-run invocations
+to verify product version, CLI dispatch, the browser-fallback launcher, gateway
+readiness, payload lifetime after `run --start`, shared libraries, and graceful
+shutdown. A nested extract-and-run relaunch receives a private temporary base;
+its marker-gated `AppRun` waits as the payload custodian, restores the caller's
+`TMPDIR` before launch, and removes the verified extraction plus the empty private
+base after the launcher exits. The release smoke proves the resulting type-2
+runtime → custodian → launcher process chain and waits on the runtime before it
+requires both paths to be absent. Ordinary FUSE launches retain direct `exec`.
+This smoke deliberately makes no native GTK/Qt claim: packaged native
+webview coverage remains a separate Linux distribution contract.
+`OUROBOROS_SKIP_PLAYWRIGHT_INSTALL_DEPS=1` is only a local-builder escape hatch
+for hosts whose system packages are managed separately: it skips Playwright's
+interactive host-library installation, not browser-binary bundling, and a build
+using it must disclose that browser host compatibility was not locally proven.
 Each shard also generates a CycloneDX SBOM from the payload extracted from the
-final archive. The macOS smoke proves the Applications link, then removes only
+final archive. The Linux payload inventory is reused for its three native
+wrappers because their `/opt/ouroboros` bytes come from that same payload; each
+wrapper still has its own digest-bound smoke receipt, provenance attestation,
+and SBOM attestation. The macOS smoke proves the Applications link, then removes only
 that link from the SBOM staging copy so Syft cannot follow it into the runner's
 host `/Applications`; the app and CLI launcher remain in the scan. The workflow
 downloads a fixed Syft release asset and checks its platform-specific SHA-256
 before execution. GitHub artifact attestations bind both build provenance and
-the SBOM to the final archive digest. The release job downloads the three
-archives and their proof files, checks the exact platform allowlist,
+the SBOM to each final asset digest. The release job downloads the three
+archives, the AppImage, three native Linux packages, and their proof files,
+checks the exact seven-asset allowlist,
 recalculates every digest, and verifies both predicates against the exact source
 SHA, tag ref, repository, and signer workflow before it writes:
 
-- `SHA256SUMS` for archives, SBOMs, and smoke receipts;
+- `SHA256SUMS` for release assets, SBOMs, and smoke receipts;
 - `release-evidence.json` with tag, commit, workflow, checks, and artifact
   bindings;
 - release notes from the matching README Version History row.

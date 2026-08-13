@@ -12,6 +12,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "vcs_status", "vcs_diff", "vcs_commit_reviewed", "commit_reviewed",
     "vcs_restore", "vcs_revert", "vcs_pull_ff", "vcs_rollback",
     "schedule_subagent", "integrate_subagent_patch", "compare_subagent_patches",
+    "integrate_delegated_patch",
     "wait_task", "wait_tasks", "get_task_result",
     # D#7 soft-join child controls (siblings of steer_task): inspect/decide a child's fate
     # before finalizing (peek = pure read, discard = explicit abandon, cancel = real stop).
@@ -66,8 +67,9 @@ LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "tree_note", "tree_read", "override_delegation_constraint",
     # Nanny verbs. The child gets no shell — it gets the right to ASK the host to run a
     # session, and the host derives the access profile from THIS task's authority, so a
-    # read-only child can only ever host a read-only session.
-    "delegate_start", "delegate_wait", "delegate_cancel",
+    # read-only child can only ever host a read-only session. delegate_answer speaks
+    # only to a run this task already owns (custody-gated like cancel).
+    "delegate_start", "delegate_wait", "delegate_cancel", "delegate_answer",
     "web_search", "browse_page", "browser_action", "analyze_screenshot", "vlm_query", "view_image",
     # Bounded media projection: writes derived frames only under artifact_store/video_frames.
     "ocr_pdf", "youtube_transcript", "extract_video_frames",
@@ -101,8 +103,10 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledge_read", "knowledge_list",
     "tree_note", "tree_read", "override_delegation_constraint",
     # Same nanny verbs, same host-derived profile — an acting child hosts a
-    # workspace_write session confined to its own write root.
-    "delegate_start", "delegate_wait", "delegate_cancel",
+    # workspace_write session confined to a private snapshot of its own write
+    # root, and explicitly integrates the captured diff (C1).
+    "delegate_start", "delegate_wait", "delegate_cancel", "delegate_answer",
+    "integrate_delegated_patch",
     "web_search", "browse_page", "browser_action", "analyze_screenshot", "vlm_query", "view_image",
     "ocr_pdf", "youtube_transcript", "extract_video_frames",
     "list_available_tools",

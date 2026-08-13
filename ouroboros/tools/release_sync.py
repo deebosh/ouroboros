@@ -1,8 +1,9 @@
 """Deterministic release metadata sync and P9 preflight helpers.
 
 VERSION remains canonical for author-facing carriers; pyproject receives PEP
-440 spelling, web/package.json keeps VERSION spelling, README badge URL escapes
-hyphens, and changelog prose stays manual.
+440 spelling, uv.lock mirrors the editable root package, web/package.json keeps
+VERSION spelling, README badge URL escapes hyphens, and changelog prose stays
+manual.
 """
 
 from __future__ import annotations
@@ -54,6 +55,12 @@ _ARCH_HEADER_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
+_UV_LOCK_ROOT_RE = re.compile(
+    r'^(\[\[package\]\]\nname = "ouroboros"\nversion = ")([^"]+)'
+    r'("\nsource = \{ editable = "\." \})',
+    re.MULTILINE,
+)
+
 
 def _shields_escape(version: str) -> str:
     """Double literal hyphens so shields.io keeps them inside the value segment."""
@@ -65,6 +72,7 @@ _PRE_TAIL_RE = re.compile(
     r'(-?)(rc|alpha|beta|a|b)(\.?)(\d+)$',
     re.IGNORECASE,
 )
+_PRE_CANONICAL_ALIASES = {"alpha": "a", "beta": "b"}
 
 
 def _normalize_pep440(version: str) -> str:
@@ -74,10 +82,23 @@ def _normalize_pep440(version: str) -> str:
         return version
     base = version[: match.start()]
     identifier_raw = match.group(2).lower()
-    _pep440_alias = {"alpha": "a", "beta": "b"}
-    identifier = _pep440_alias.get(identifier_raw, identifier_raw)
+    identifier = _PRE_CANONICAL_ALIASES.get(identifier_raw, identifier_raw)
     number = match.group(4)
     return f"{base}{identifier}{number}"
+
+
+def normalize_linux_package_version(version: str) -> str:
+    """Return dpkg/rpm spelling whose prereleases sort before the final release."""
+    raw = str(version or "").strip()
+    if not is_release_version(raw):
+        raise ValueError(f"unsupported release version: {raw!r}")
+    match = _PRE_TAIL_RE.search(raw)
+    if not match:
+        return raw
+    base = raw[: match.start()]
+    identifier_raw = match.group(2).lower()
+    identifier = _PRE_CANONICAL_ALIASES.get(identifier_raw, identifier_raw)
+    return f"{base}~{identifier}{match.group(4)}"
 
 
 def is_release_version(version: str) -> bool:
@@ -112,6 +133,7 @@ def version_carrier_desyncs(
     version: str,
     *,
     pyproject_text: str = "",
+    uv_lock_text: str = "",
     web_package_text: str = "",
     readme_text: str = "",
     arch_text: str = "",
@@ -128,6 +150,11 @@ def version_carrier_desyncs(
         expected = _normalize_pep440(version)
         if not match or match.group(1).strip() != expected:
             desync.append(f'pyproject.toml (expected version = "{expected}")' if detailed else "pyproject.toml")
+    if uv_lock_text:
+        match = _UV_LOCK_ROOT_RE.search(uv_lock_text)
+        expected = _normalize_pep440(version)
+        if not match or match.group(2).strip() != expected:
+            desync.append(f'uv.lock (expected editable root version = "{expected}")' if detailed else "uv.lock")
     if web_package_text:
         match = re.search(r'"version"\s*:\s*"([^"]+)"', web_package_text)
         if not match or match.group(1).strip() != version:
@@ -150,7 +177,7 @@ def version_carrier_desyncs(
 
 
 def sync_release_metadata(repo_dir: str) -> List[str]:
-    """Sync VERSION into pyproject, web package, README badge, and ARCHITECTURE header."""
+    """Sync VERSION into generated and author-facing release carriers."""
     root = Path(repo_dir)
     version_file = root / "VERSION"
     if not version_file.exists():
@@ -178,6 +205,18 @@ def sync_release_metadata(repo_dir: str) -> List[str]:
         if new_text != text:
             pyproject.write_text(new_text, encoding="utf-8")
             changed.append("pyproject.toml")
+
+    uv_lock = root / "uv.lock"
+    if uv_lock.exists():
+        text = uv_lock.read_text(encoding="utf-8")
+        new_text, replacements = _UV_LOCK_ROOT_RE.subn(
+            lambda m: f'{m.group(1)}{pyproject_version}{m.group(3)}',
+            text,
+            count=1,
+        )
+        if replacements == 1 and new_text != text:
+            uv_lock.write_text(new_text, encoding="utf-8")
+            changed.append("uv.lock")
 
     web_package = root / "web" / "package.json"
     if web_package.exists():

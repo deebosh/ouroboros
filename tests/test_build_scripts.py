@@ -295,6 +295,16 @@ class TestBuildLinuxSh:
         assert pi_pos != -1
         assert bundle_pos < pi_pos, "repo bundle generation must happen before PyInstaller in build_linux.sh"
 
+    def test_pyinstaller_uses_the_packaged_portable_python(self):
+        src = _read("build_linux.sh")
+        assert 'PORTABLE_PYTHON="python-standalone/bin/python3"' in src
+        assert '"$PORTABLE_PYTHON" -m venv "$BUILD_VENV"' in src
+        assert "uv export --locked --no-dev --extra browser --extra desktop --extra build" in src
+        assert 'uv pip install --python "$BUILD_PYTHON" -q -r "$BUILD_REQUIREMENTS"' in src
+        assert '"$BUILD_PYTHON" -m PyInstaller Ouroboros.spec' in src
+        assert 'uv pip install --python "$PORTABLE_PYTHON" -q -r requirements-runtime.lock' in src
+        assert '"$HOST_PYTHON_CMD" -m PyInstaller' not in src
+
     def test_ripgrep_download_before_pyinstaller(self):
         src = _read("build_linux.sh")
         rg_pos = src.find("download_ripgrep_standalone.sh")
@@ -540,26 +550,26 @@ class TestDockerfile:
             "playwright install-deps must appear BEFORE playwright install chromium webkit in Dockerfile"
         )
 
-    def test_pip_install_before_playwright_install_deps(self):
-        """pip install must appear BEFORE playwright install-deps chromium webkit — the
+    def test_uv_sync_before_playwright_install_deps(self):
+        """uv sync must appear BEFORE playwright install-deps chromium webkit — the
         playwright Python package must be importable when install-deps runs."""
         src = _read("Dockerfile")
-        pip_pos = src.find("pip install")
+        sync_pos = src.find("uv sync")
         deps_pos = src.find("playwright install-deps chromium webkit")
-        assert pip_pos != -1, "pip install step not found in Dockerfile"
+        assert sync_pos != -1, "uv sync step not found in Dockerfile"
         assert deps_pos != -1, "playwright install-deps chromium webkit not found in Dockerfile"
-        assert pip_pos < deps_pos, (
-            "pip install must appear BEFORE playwright install-deps chromium webkit in Dockerfile "
-            f"(pip at char {pip_pos}, install-deps at {deps_pos})"
+        assert sync_pos < deps_pos, (
+            "uv sync must appear BEFORE playwright install-deps chromium webkit in Dockerfile "
+            f"(sync at char {sync_pos}, install-deps at {deps_pos})"
         )
 
-    def test_pip_install_before_all_playwright_invocations(self):
-        """pip install must appear BEFORE every ``python3 -m playwright ...`` invocation
+    def test_uv_sync_before_all_playwright_invocations(self):
+        """uv sync must appear BEFORE every ``python3 -m playwright ...`` invocation
         in the Dockerfile — both ``install-deps`` and ``install chromium webkit``.
-        If *any* playwright invocation precedes pip install, ModuleNotFoundError occurs."""
+        If *any* playwright invocation precedes dependency sync, ModuleNotFoundError occurs."""
         src = _read("Dockerfile")
-        pip_pos = src.find("pip install")
-        assert pip_pos != -1, "pip install step not found in Dockerfile"
+        sync_pos = src.find("uv sync")
+        assert sync_pos != -1, "uv sync step not found in Dockerfile"
 
         import re as _re
         playwright_invocations = [
@@ -568,12 +578,36 @@ class TestDockerfile:
         assert playwright_invocations, "No 'python3 -m playwright' invocations found in Dockerfile"
 
         earliest_playwright = min(playwright_invocations)
-        assert pip_pos < earliest_playwright, (
-            "pip install must appear BEFORE the earliest 'python3 -m playwright' invocation "
-            f"in the Dockerfile (pip at char {pip_pos}, earliest playwright at {earliest_playwright}). "
+        assert sync_pos < earliest_playwright, (
+            "uv sync must appear BEFORE the earliest 'python3 -m playwright' invocation "
+            f"in the Dockerfile (sync at char {sync_pos}, earliest playwright at {earliest_playwright}). "
             f"Found {len(playwright_invocations)} playwright invocation(s) at positions: "
             f"{playwright_invocations}"
         )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/actions/setup-python-env/action.yml",
+        "Dockerfile",
+        "Makefile",
+        "build.sh",
+        "build_linux.sh",
+        "build_windows.ps1",
+    ],
+)
+def test_uv_project_commands_validate_lock_freshness(path):
+    source = _read(path)
+    commands = re.findall(r"uv (?:sync|run|export)[^\n]*", source)
+    assert commands, f"no uv project command found in {path}"
+    assert all("--locked" in command for command in commands), commands
+    assert all("--frozen" not in command for command in commands), commands
+
+
+def test_generated_runtime_lock_keeps_lf_on_windows():
+    attributes = _read(".gitattributes").splitlines()
+    assert "requirements-runtime.lock text eol=lf" in attributes
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +635,12 @@ class TestRepoBundleReleaseTagGuard:
         assert '"rev-parse", "HEAD"' in src
         assert '"rev-list", "-1"' in src
         assert "does not point at HEAD" in src
+
+    def test_dirty_tree_refusal_reports_the_offending_paths(self):
+        src = _read("scripts/build_repo_bundle.py")
+        assert '"status", "--porcelain"' in src
+        assert '"Commit or stash changes first so the embedded managed repo matches the packaged code.\\n"' in src
+        assert "+ status" in src
 
 
 # ---------------------------------------------------------------------------
@@ -1059,9 +1099,10 @@ def test_ci_build_job_exports_release_tag_and_fetches_full_history():
     assert "fetch-depth: 0" in workflow
 
 
-def test_ci_release_smokes_the_exact_embedded_claudexor_archive_on_all_platforms():
+def test_ci_release_smokes_the_exact_embedded_claudexor_archive_in_all_assets():
     workflow = _ci_workflow()
-    assert workflow.count("fetch_claudexor_runtime.py --verify-only") == 3
-    assert workflow.count("scripts/claudexor_platform_smoke.py") == 3
-    assert workflow.count("--managed-runtime --lane fixture") == 3
+    # DMG, Linux tarball, Linux AppImage, and Windows ZIP.
+    assert workflow.count("fetch_claudexor_runtime.py --verify-only") == 4
+    assert workflow.count("scripts/claudexor_platform_smoke.py") == 4
+    assert workflow.count("--managed-runtime --lane fixture") == 4
     assert "embedded_claudexor_runtime" in workflow

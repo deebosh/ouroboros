@@ -94,6 +94,25 @@ def read_text(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def resolve_path_allow_missing(path: pathlib.Path) -> Optional[pathlib.Path]:
+    """Resolve a path while allowing a missing tail but rejecting unusable ancestry.
+
+    Python 3.13 changed ``Path.resolve(strict=False)`` so a symlink loop no longer
+    raises and instead returns a partially resolved path. Probe strict resolution
+    first to keep loops, unreadable parents, and non-directory ancestors typed as
+    unusable; only an ordinary missing component earns the allow-missing fallback.
+    """
+    try:
+        return pathlib.Path(path).resolve(strict=True)
+    except FileNotFoundError:
+        try:
+            return pathlib.Path(path).resolve(strict=False)
+        except (OSError, ValueError, RuntimeError, TypeError):
+            return None
+    except (OSError, ValueError, RuntimeError, TypeError):
+        return None
+
+
 def write_text(path: pathlib.Path, content: str) -> None:
     # Full-file overwrite -> atomic (temp-sibling + os.replace), so a crash mid-write never
     # leaves a truncated file (G, v6.39). Strictly safer for every caller of this overwrite
@@ -986,3 +1005,24 @@ def truncate_review_artifact(text: str | None, limit: int = 4000) -> str:
         return text
     return text[:limit] + marker
 
+
+def truncate_within_limit(text: str | None, limit: int) -> str:
+    """A STRICT disclosed bound: the result NEVER exceeds ``limit`` characters,
+    with the omission marker INSIDE the budget.
+
+    For fields whose limit is a hard wire/prompt budget rather than a display
+    preference. ``truncate_review_artifact``'s anti-waste floor deliberately lets
+    a small overflow pass through whole and appends its marker BEYOND the limit —
+    right for logs and previews, wrong for a bounded field: a 4050-char
+    assignment field rode through at 4050 against a 4000 budget (sol #9 probe),
+    and a 50k harness-authored header rode a "bounded" projection to 3x the tool
+    budget. Disclosure survives — the marker states the cut and the original
+    length — but the budget wins. A limit too small to hold the marker returns a
+    bare prefix: at that scale the marker WOULD BE the content."""
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    marker = f"\n⚠️ OMISSION NOTE: truncated at {limit} chars; original length {len(text)}"
+    if limit <= len(marker):
+        return text[:max(0, limit)]
+    return text[: limit - len(marker)] + marker
