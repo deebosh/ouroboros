@@ -2264,9 +2264,43 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
             _committing["phase"] = "committing_assisted"
             write_update_tx(_committing)
 
+        # Re-establish MERGE_HEAD for user-initiated merges: a blocked review's
+        # index reset can clear the live MERGE_HEAD, and the next `git commit`
+        # would silently drop the merge parent. Mirror the managed-update path
+        # above so user-initiated merges don't strand on a blocked review
+        # (the pre-fingerprint's parents list captures the original merge
+        # vector before the review reset the index).
+        if not _managed_tx:
+            _merge_parents = pre_fingerprint.get("binding", {}).get("parents") or []
+            if len(_merge_parents) > 1:
+                try:
+                    _target = _merge_parents[1]
+                    _mh_path_str = run_cmd(
+                        ["git", "rev-parse", "--git-path", "MERGE_HEAD"],
+                        cwd=ctx.repo_dir,
+                    ).strip()
+                    _mh_path = pathlib.Path(_mh_path_str)
+                    if not _mh_path.is_absolute():
+                        _mh_path = pathlib.Path(ctx.repo_dir) / _mh_path
+                    _mh_path.parent.mkdir(parents=True, exist_ok=True)
+                    _mh_path.write_text(_target + "\n", encoding="utf-8")
+                except Exception:
+                    log.debug("reestablish_merge_head for user-initiated merge failed", exc_info=True)
+
         try:
             run_cmd(["git", "commit", "-m", commit_message], cwd=ctx.repo_dir)
             commit_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=ctx.repo_dir).strip()
+            # Synchronous state.current_sha write: campaign supervisor sees the
+            # actual HEAD immediately instead of waiting for reconciliation.
+            # Mirrors supervisor/git_ops.py:1480 (managed update) and
+            # supervisor/update_recovery.py:50 (rollback restore).
+            try:
+                from supervisor.state import load_state, save_state  # type: ignore
+                _state = load_state()
+                _state["current_sha"] = commit_sha
+                save_state(_state)
+            except Exception:
+                log.debug("synchronous state.current_sha write after commit failed", exc_info=True)
         except Exception as e:
             err_msg = f"⚠️ GIT_ERROR (commit): {_sanitize_git_error(str(e))}"
             if _managed_tx:
