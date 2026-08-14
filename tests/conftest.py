@@ -196,6 +196,11 @@ _SERIAL_TEST_FILES = frozenset({
     # under -n the replace-family no-side-effect pins (replace_env["calls"] == []) intermittently
     # observe git calls leaked by co-located modules. Same module-global class -> serial lane.
     "test_update_apply_routing.py",
+    # one streaming test (test_streaming_direct_openai_cost_remains_nullable) hangs
+    # past pytest-timeout signal SIGALRM in the autouse _rebind_runtime_roots_between_tests
+    # fixture, so the whole file has to leave the parallel lane (an xdist worker hang on a
+    # sibling module collaterally kills its co-located batch).
+    "test_web_search.py",
 })
 
 

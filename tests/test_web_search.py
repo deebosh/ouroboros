@@ -297,7 +297,16 @@ def test_streaming_emits_progress_on_search(ctx, patch_env, mock_openai):
     assert call_kwargs["stream"] is True
 
 
+@pytest.mark.timeout(10, method="signal")
 def test_streaming_direct_openai_cost_remains_nullable(ctx, patch_env, mock_openai):
+    # Per-test failsafe: when the FULL FILE batch is run under xdist, an
+    # order-dependent hang past pytest-timeout's signal-method SIGALRM
+    # occurs (not specific to this test; the file's first 6 pass quickly,
+    # then somewhere test 7+ stops returning). This decorator bounds the
+    # blast radius at 10s per test so a single stuck test cannot eat the
+    # preflight budget. Tracked separately as ibl-system-test-fragility.
+    # This test alone completes in ~0.1s; the per-test fail-safe is for
+    # the batch-context hang, not for a hang inside the test itself.
     events = [
         _make_event("response.output_text.delta", delta="Answer", content_index=0,
                     item_id="m1", output_index=0, sequence_number=1, logprobs=[]),
