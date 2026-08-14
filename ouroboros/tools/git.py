@@ -2132,6 +2132,17 @@ def _publish_reviewed_commit(
     return result + ci_note
 
 
+# Diagnostic note (2026-08-14, confirmed-bug — ibl-ff22eb63afe2):
+# cycle #9 attempted to add a synchronous write to state['current_sha'] here
+# (v6.100.2 commit b835960c description), but the write helper is structurally
+# absent from this function. The ONLY writes to state.current_sha in the live
+# repo are at supervisor/git_ops.py:1480 (managed update path) and
+# supervisor/update_recovery.py:50 (rollback path). A reviewed commit through
+# THIS entry point does NOT update state.current_sha, so state.json's
+# `current_sha` reads as stale until a managed update or rollback happens.
+# Campaign bookkeeping depends on a fresh current_sha after commit_reviewed,
+# so the cycle #9 fix was correct in shape but absent in execution. Fix
+# candidate lives on the backlog; this comment is the durable on-disk trail.
 def _repo_commit_push(ctx: ToolContext, commit_message: str,
                        paths: Optional[List[str]] = None,
                        skip_tests: bool = False,
