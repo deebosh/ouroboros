@@ -98,6 +98,18 @@ def _locked(root: pathlib.Path) -> Iterator[None]:
 
 
 def _append_bytes_fsync(path: pathlib.Path, payload: bytes) -> None:
+    """Append payload to path with O_APPEND. NO fsync.
+
+    ``os.fsync`` is NOT called here on purpose: it is a kernel-level blocking
+    syscall that cannot be interrupted by SIGALRM/SIGTERM, and calling it
+    while the cross-process ``_locked`` flock is held turned every pytest
+    timeout into a SIGKILL (the 30s ``pyproject.toml timeout = 30`` could not
+    reach the test body because the fsync queued the signal indefinitely).
+    The caller is responsible for ``_fsync_path(path)`` AFTER releasing the
+    ledger lock — at that point a SIGALRM will wake the test, and the ledger
+    is still durable on disk because the write completed under the lock
+    and the fsync flushes exactly what was appended.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
@@ -107,9 +119,55 @@ def _append_bytes_fsync(path: pathlib.Path, payload: bytes) -> None:
             if written <= 0:
                 raise OSError(f"short append to {path}")
             view = view[written:]
+    finally:
+        os.close(fd)
+
+
+def _fsync_path(path: pathlib.Path) -> None:
+    """Flush the file at ``path`` to disk. Safe to call OUTSIDE the lock.
+
+    Opens, fsyncs, closes — three short operations, none of which hold the
+    cross-process ledger flock. ``os.fsync`` itself is uninterruptible by
+    signals, so a SIGALRM delivered between open() and fsync() will still
+    queue until fsync() returns — but the test framework's
+    ``pytest-timeout`` sends SIGALRM after the test body has started, so a
+    fsync here runs only after the ledger append has already succeeded and
+    the lock has been released; the worst case is a single ``os.fsync``
+    blocking the main thread, not a permanent SIGKILL.
+
+    A non-existent file is a no-op: the caller (``_locked_with_fsync``) does
+    not know whether any rows were appended, and the first import on a fresh
+    drive has not yet created the ledger. There is nothing durable to flush.
+    """
+    try:
+        fd = os.open(str(path), os.O_WRONLY)
+    except FileNotFoundError:
+        return
+    try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+@contextlib.contextmanager
+def _locked_with_fsync(root: pathlib.Path) -> Iterator[None]:
+    """``_locked`` + ``_fsync_path(ledger)`` AFTER release.
+
+    Every append that goes through the ledger is paired with exactly one
+    fsync. Doing both inside ``_locked`` made ``os.fsync`` uninterruptible
+    by pytest-timeout's SIGALRM, which SIGKILLed every test that hit the
+    ledger under pytest. This context manager keeps the ledger-write
+    critical section under the flock (O_APPEND atomicity per write, dense
+    sequence, transition validation) and moves the kernel-level flush
+    OUTSIDE the lock so a signal can interrupt it.
+
+    Yielding callers run their budget read + append under the lock; the
+    fsync happens automatically on successful exit. A failure inside the
+    ``with`` block skips the fsync — there is nothing durable to flush.
+    """
+    with _locked(root):
+        yield
+    _fsync_path(root / LEDGER_REL)
 
 
 def _write_bytes_atomic_fsync(path: pathlib.Path, payload: bytes) -> None:

@@ -42,8 +42,10 @@ from ouroboros.usage_ledger import (  # noqa: F401 — re-exported substrate
     _append_rows_locked,
     _drive_root,
     _final_rows,
+    _fsync_path,
     _ledger_resume_state,
     _locked,
+    _locked_with_fsync,
     _named_lock,
     _number,
     _read_new_records_locked,
@@ -653,12 +655,15 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
             root_task_id=scope.root_task_id,
         )
     ensure_legacy_imported(root)
-    # IMPORTANT: live catalog I/O belongs before ``with _locked(root)`` below.
-    # The lock protects only the atomic budget read/check/append transaction.
+    # IMPORTANT: live catalog I/O belongs before ``with _locked_with_fsync(root)``
+    # below. The lock protects only the atomic budget read/check/append
+    # transaction; ``_locked_with_fsync`` releases the lock before the kernel-level
+    # ``os.fsync`` so a SIGALRM can interrupt the flush (the SIGKILL-on-timeout
+    # class fixed in v6.100.5).
     bound = _reservation_cost(request)
     pricing_known = bound is not None
     attempt_id = uuid.uuid4().hex
-    with _locked(root):
+    with _locked_with_fsync(root):
         records = _read_records_locked(root)
         finals = list(_final_rows(records).values())
         global_summary = _summary(finals)
@@ -796,7 +801,7 @@ def _append_single_settled_row(
     """Idempotently append a one-shot settled row; a replay under a DIFFERENT identity
     is a conflict, never a silent overwrite. Shared by every single-row kind."""
     attempt_id = str(row["attempt_id"])
-    with _locked(root):
+    with _locked_with_fsync(root):
         records = _read_records_locked(root)
         existing = _final_rows(records).get(attempt_id)
         if existing is not None:
@@ -918,7 +923,7 @@ def record_subscription_session(
 
 
 def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> Dict[str, Any]:
-    with _locked(reservation.drive_root):
+    with _locked_with_fsync(reservation.drive_root):
         records = _read_records_locked(reservation.drive_root)
         current = _final_rows(records).get(reservation.attempt_id)
         if current is None:
@@ -1526,7 +1531,7 @@ def _ensure_legacy_imported_locked(
             }
         )
 
-    with _locked(root):
+    with _locked_with_fsync(root):
         current_watermark = _completed_import_watermark(root)
         if current_watermark is not None:
             return current_watermark

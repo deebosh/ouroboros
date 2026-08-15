@@ -2292,13 +2292,16 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
             commit_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=ctx.repo_dir).strip()
             # Synchronous state.current_sha write: campaign supervisor sees the
             # actual HEAD immediately instead of waiting for reconciliation.
-            # Mirrors supervisor/git_ops.py:1480 (managed update) and
-            # supervisor/update_recovery.py:50 (rollback restore).
+            # Uses supervisor.state.update_state(mutator) for atomicity —
+            # one lock acquisition covers load+mutate+save, so a concurrent
+            # writer (supervisor reconciliation at git_ops.py:1185/1631)
+            # cannot drop this write the way the racy load_state->save_state
+            # pattern did. Mirrors supervisor/git_ops.py:1480 (managed
+            # update) and supervisor/update_recovery.py:50 (rollback restore).
+            # Backlog: ibl-ff22eb63afe2.
             try:
-                from supervisor.state import load_state, save_state  # type: ignore
-                _state = load_state()
-                _state["current_sha"] = commit_sha
-                save_state(_state)
+                from supervisor.state import update_state  # type: ignore
+                update_state(lambda _st: _st.__setitem__("current_sha", commit_sha))
             except Exception:
                 log.debug("synchronous state.current_sha write after commit failed", exc_info=True)
         except Exception as e:

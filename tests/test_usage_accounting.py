@@ -1367,3 +1367,64 @@ def test_a_non_final_projection_names_its_cause(data_root):
         root_task_id="root", spend_usd=0.0)
     free = ua.usage_projection(data_root / "free")
     assert free["non_final_rows"] == 0 and free["cost_final"] is True
+
+
+def test_fsync_does_not_run_under_ledger_lock():
+    """Regression for v6.100.5: ``os.fsync`` must NOT execute inside ``_locked``.
+
+    The cross-process flock held by ``_locked`` is the substrate's atomicity
+    guarantee. Before the fix, ``_append_bytes_fsync`` invoked ``os.fsync(fd)``
+    while the lock was held; ``os.fsync`` is a kernel-level syscall that
+    cannot be interrupted by SIGALRM, so every pytest-timeout (signal method)
+    queued behind it and the test was SIGKILLed. After the fix, fsync is
+    performed by ``_fsync_path`` AFTER the lock context exits, so SIGALRM
+    can interrupt the flush and the lock is free for concurrent writers.
+
+    AST verification: ``_locked_with_fsync`` MUST release the lock before
+    calling ``_fsync_path``. Any future refactor that re-nests fsync under
+    the lock (or moves the fsync call inside the ``with _locked(root)``
+    block) will fail this test loudly.
+    """
+    import ast
+    import inspect
+
+    from ouroboros.usage_ledger import _locked_with_fsync
+
+    src = inspect.getsource(_locked_with_fsync)
+    tree = ast.parse(src)
+    function_body = tree.body[0]
+
+    fsync_call_lineno = None
+    with_lineno = None
+    for node in ast.walk(function_body):
+        if isinstance(node, ast.With):
+            with_lineno = node.lineno
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_fsync_path"
+        ):
+            fsync_call_lineno = node.lineno
+    assert with_lineno is not None, "_locked_with_fsync must use `with _locked(root):`"
+    assert fsync_call_lineno is not None, (
+        "_locked_with_fsync must call _fsync_path after the lock context exits"
+    )
+    assert fsync_call_lineno > with_lineno, (
+        f"_fsync_path at line {fsync_call_lineno} must be AFTER the `with _locked` "
+        f"block at line {with_lineno} — otherwise os.fsync holds the flock and "
+        "SIGALRM/SIGTERM cannot interrupt pytest-timeout, turning every test "
+        "that touches the ledger into a SIGKILL."
+    )
+
+
+def test_fsync_path_tolerates_missing_ledger_file(tmp_path, monkeypatch):
+    """The first import on a fresh drive has no ledger yet; ``_fsync_path``
+    must not raise ``FileNotFoundError`` when called as part of the
+    post-release flush in ``_locked_with_fsync``."""
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path / "data"))
+    from ouroboros.usage_ledger import _fsync_path
+
+    # No ledger file exists yet.
+    assert not (tmp_path / "data" / "state" / "usage_attempts.jsonl").exists()
+    # Must be a no-op, not raise.
+    _fsync_path(tmp_path / "data" / "state" / "usage_attempts.jsonl")
