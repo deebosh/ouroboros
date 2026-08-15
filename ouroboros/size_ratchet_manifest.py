@@ -11,7 +11,6 @@ GIANT_PATHS = (
     "ouroboros/review_state.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/control.py",
-    "ouroboros/tools/core.py",
     "ouroboros/tools/git.py",
     "server.py",
     "skills/unix_computer_use/plugin.py",
@@ -73,7 +72,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/tool_access.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/control.py",
-    "ouroboros/tools/core.py",
     "ouroboros/tools/delegate.py",
     "ouroboros/tools/delegate_integration.py",
     "ouroboros/tools/git.py",
@@ -228,6 +226,7 @@ BAND_PATHS = {
     "ouroboros/task_results.py": None,
     "ouroboros/task_status.py": None,
     "ouroboros/tools/browser.py": None,
+    "ouroboros/tools/core.py": "retains the direct core tool catalog plus write, edit, text-search, and worker-forwarding implementations after semantic-no-op read/list and delivery extraction",
     "ouroboros/tools/registry_core.py": "ToolRegistry execution authority extracted verbatim behind the compatibility facade while preserving guard and dispatch order",
     "ouroboros/tools/registry_guards.py": "consolidates existing root/CWD/workspace/git process receiver guards without semantic or ABI change",
     "ouroboros/tools/shell_guards.py": None,
@@ -285,7 +284,7 @@ BYTE_BASELINE_DEBT = {
 BYTE_DEBT = {
     "ouroboros/llm.py": 200307,
     "ouroboros/loop.py": 321064,
-    "tests/test_delegated_subagent_transport.py": 320623,
+    "tests/test_delegated_subagent_transport.py": 320438,
     "tests/test_devtools_benchmarks.py": 328786,
     "web/modules/chat.js": 229431,
 }
