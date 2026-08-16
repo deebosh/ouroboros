@@ -361,6 +361,42 @@ export function renderSettingsPage() {
                             </div>
                         </div>
                     </div>
+
+                    <div class="form-section">
+                        <h3>Web Search</h3>
+                        <div class="settings-section-copy">
+                            <code>Backend</code> picks which provider serves the <code>web_search</code> tool: <code>Auto</code>
+                            cascades OpenAI-first, <code>DDGS</code> is pure retrieval with no second LLM call (for fixed-model
+                            runs), or pin a specific provider. Separately, <code>Main Chat Web Search</code> is an
+                            OpenRouter-specific capability (off by default) letting the main chat model call a native
+                            server-side search tool, independent of the <code>web_search</code> tool above.
+                        </div>
+                        <div class="settings-effort-card">
+                            <label>Backend</label>
+                            <input id="s-websearch-backend" type="hidden" value="auto">
+                            ${renderSegmentedField({
+                                target: 's-websearch-backend',
+                                options: [
+                                    { value: 'auto', label: 'Auto' },
+                                    { value: 'ddgs', label: 'DDGS' },
+                                    { value: 'openai', label: 'OpenAI' },
+                                    { value: 'openrouter', label: 'OpenRouter' },
+                                    { value: 'anthropic', label: 'Anthropic' },
+                                ],
+                            })}
+                        </div>
+                        <div class="settings-effort-card">
+                            <label>Main Chat Web Search</label>
+                            <input id="s-main-web-search" type="hidden" value="off">
+                            ${renderSegmentedField({
+                                target: 's-main-web-search',
+                                options: [
+                                    { value: 'off', label: 'Off' },
+                                    { value: 'on', label: 'On' },
+                                ],
+                            })}
+                        </div>
+                    </div>
                 </section>
 
                 <section class="settings-panel" data-settings-panel="agents">
@@ -793,7 +829,7 @@ export function renderSettingsPage() {
                              Agents → Delegation (D-10): they bound the agents,
                              not the process pool. Max Workers stays: it is
                              runtime worker processes, not an agent setting. -->
-                        <div class="settings-section-copy">Workers control parallel task capacity. Task liveness is governed automatically by progress, deadlines, the absolute ceiling, and the reaper. Budget limits control runtime cost thresholds. How many subagents a task may run, and how deep they may nest, live in <code>Agents</code>.</div>
+                        <div class="settings-section-copy">Workers control parallel task capacity. Task liveness is governed by progress and two activity-based bounds below, plus the reaper. Budget limits control runtime cost thresholds. How many subagents a task may run, and how deep they may nest, live in <code>Agents</code>.</div>
                         <div class="form-grid two">
                             <div class="form-field">
                                 <label>Max Workers</label>
@@ -810,6 +846,14 @@ export function renderSettingsPage() {
                             <div class="form-field">
                                 <label>Per-Task Cost Cap (USD)</label>
                                 <input id="s-settings-per-task-cost" type="number" min="0.01" step="any" value="20.0">
+                            </div>
+                            <div class="form-field">
+                                <label title="No real progress AND no progressing subtree for this long stops the task.">Task Idle Timeout (s)</label>
+                                <input id="s-task-idle-timeout" type="number" min="60" value="900">
+                            </div>
+                            <div class="form-field">
+                                <label title="Unconditional per-task wall-clock backstop, independent of activity — a productively-waiting task survives to this ceiling instead.">Task Absolute Ceiling (s)</label>
+                                <input id="s-task-abs-ceiling" type="number" min="300" value="21600">
                             </div>
                         </div>
                     </div>
