@@ -447,6 +447,34 @@ def test_no_oversized_modules():
     assert len(violations) == 0, f"Oversized modules (>{max_lines} lines):\n" + "\n".join(violations)
 
 
+def test_complexity_metrics_measures_multiline_signatures_correctly():
+    """compute_complexity_metrics's function-length scan must not mistake a
+    multi-line signature's own closing line (e.g. a Black-style ")" sitting at
+    column 0, below the `def` line's indent) for the end of the function body —
+    that undercounted every such function down to just its signature length,
+    silently blinding the codebase_health self-assessment tool to real
+    oversized functions with this (very common) formatting style."""
+    from ouroboros.review import compute_complexity_metrics
+
+    source = (
+        "def multiline_signature(\n"
+        "    a,\n"
+        "    b,\n"
+        ") -> None:\n"
+        + "    x = 1\n" * 20
+        + "\n"
+        "def single_line(a, b):\n"
+        + "    y = 2\n" * 5
+    )
+    metrics = compute_complexity_metrics([("x.py", source)])
+    lengths = {start: length for _path, start, length in metrics["longest_functions"]}
+    # multiline_signature starts at line index 0: signature (4 lines) + 20 body lines.
+    # The bug reported this as ~4 (the signature alone, mistaking its own closing
+    # ")" line for the end of the body).
+    assert lengths[0] >= 20
+    # single_line (unaffected by the bug) starts right after the blank separator.
+    single_line_start = source.splitlines().index("def single_line(a, b):")
+    assert lengths[single_line_start] >= 5
 def test_js_module_gate_buckets_and_grandfathering():
     """The JS size gate sees web/**/*.js, exempts chat.js by rel-path only,
     and excludes vendored/minified payloads and web/tests/."""

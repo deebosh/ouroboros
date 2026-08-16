@@ -134,8 +134,10 @@ MAX_FUNCTION_LINES = 300
 MAX_TOTAL_FUNCTIONS = 6000
 GRANDFATHERED_OVERSIZED_FUNCTIONS = {
     ("agent_startup_checks.py", "verify_restart"),  # managed #53 boot diagnostic flow, 307 lines
-    ("git.py", "_run_reviewed_stage_cycle"),  # reviewed-commit gate orchestration, 302 lines
     ("events.py", "_handle_schedule_task"),  # v6.50 admission reconciliation grew the existing scheduling choke point.
+    # git.py::_run_reviewed_stage_cycle removed (v6.103.4): now 287 lines, under
+    # the 300-line gate — extraction work in the same v6.103.3 pass that split
+    # its neighbor _repo_commit_push paid this one down too.
 }
 # Grandfathered modules are accepted debt until their surfaces stabilize/split.
 GRANDFATHERED_OVERSIZED_MODULES = {
@@ -252,8 +254,21 @@ def compute_complexity_metrics(sections: List[Tuple[str, str]]) -> Dict[str, Any
         for pos, start in enumerate(starts):
             def_indent = len(lines[start]) - len(lines[start].lstrip())
             next_start = starts[pos + 1] if pos + 1 < len(starts) else len(lines)
+            # A multi-line signature's continuation/closing lines (e.g. a Black-style
+            # closing ")" at column 0) can sit at or below def_indent — without
+            # skipping past them first, the indent-based end scan below mistakes the
+            # signature's own closing line for the end of the function body and
+            # drastically undercounts length. Track paren depth from the `def` line
+            # to find where the signature actually ends.
+            depth = 0
+            body_start = next_start
+            for idx in range(start, next_start):
+                depth += lines[idx].count("(") - lines[idx].count(")")
+                if depth <= 0:
+                    body_start = idx + 1
+                    break
             end = next_start
-            for idx in range(start + 1, next_start):
+            for idx in range(body_start, next_start):
                 stripped = lines[idx].strip()
                 if not stripped or stripped.startswith("#"):
                     continue
