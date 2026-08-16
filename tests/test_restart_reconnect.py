@@ -301,7 +301,10 @@ def test_chat_scrolls_to_bottom_after_first_history_load():
         "insertMessageNode must route through chronological insertTimelineNode"
     # Media producers (photo, video, document) must each stamp sortable
     # data-ts from the raw source timestamp; text bubbles stamp msg.ts.
-    assert source.count("stampNodeTimestamp(bubble, rawTs);") >= 3, \
+    media_stamps = source.count("stampNodeTimestamp(bubble, rawTs);") + _read(
+        "web/modules/chat_document_bubble.js"
+    ).count("stampNodeTimestamp(bubble, rawTs);")
+    assert media_stamps >= 3, \
         "photo/video/document bubbles must carry raw-timestamp data-ts"
     assert "stampNodeTimestamp(bubble, ts);" in source, \
         "chat text bubbles must carry raw-timestamp data-ts"
