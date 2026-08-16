@@ -134,8 +134,12 @@ def _payload_dispatch_constraint(
             synthesized = None
         else:
             return None, ToolResult(
-                status="error",
-                code="TOOL_ARG_ERROR",
+                # The skill-payload selector refusal is a POLICY denial (v6.57.0),
+                # which is what its own first line has always said; the generic
+                # argument-error code contradicted it and would have promoted the
+                # refusal to an execution failure once the loop reads the code.
+                status="blocked",
+                code="SKILL_PAYLOAD_BLOCKED",
                 text=f"⚠️ SKILL_PAYLOAD_ARG_ERROR: {short_form_decision.error}",
             )
 

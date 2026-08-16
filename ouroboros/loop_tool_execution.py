@@ -28,7 +28,7 @@ from ouroboros.tool_capabilities import (
     tool_result_limit as _tool_result_limit,
 )
 from ouroboros.tools.registry import ToolRegistry
-from ouroboros.tools.tool_result import ToolResult
+from ouroboros.tools.tool_result import TOOL_CODE_SPECS, ToolResult
 from ouroboros.usage_accounting import UsageAccountingError
 from ouroboros.utils import (
     append_jsonl,
@@ -498,6 +498,85 @@ def _extract_result_metadata(
             meta["artifact_registered"] = True
     if fn_name == "run_command" and not is_error and meta.get("exit_code") == 0:
         if status == "ok_autocorrected":
+            meta["status"] = "ok_autocorrected"
+        else:
+            meta["status"] = "ok"
+    return meta
+
+
+def _typed_execution_failure(tool_ok: bool, tool_result: ToolResult | None) -> bool:
+    """Whether the call failed, read from the published code instead of its text."""
+    if not tool_ok:
+        return True
+    if not isinstance(tool_result, ToolResult):
+        return False
+    return TOOL_CODE_SPECS[tool_result.code].status != "ok"
+
+
+def _typed_result_metadata(
+    fn_name: str,
+    result: Any,
+    is_error: bool,
+    tool_result: ToolResult | None = None,
+) -> Dict[str, Any]:
+    """Outcome facts for summaries and reflections, taken from the typed result.
+
+    The status is the code's ``outcome_bucket``, which IS the trace vocabulary the
+    outcome classifier, the reflection scan and the web client already read, so the
+    cutover replaces the PRODUCER of the field, not its consumers.
+
+    The three rules below are deliberately NOT text classification and stay here:
+    the untruncated artifact-registration fallback, the plan-review metadata, and
+    the process facts with the ``run_command`` exit-0 override. None of them can be
+    expressed by a code table — they are keyed on the tool name and on trusted meta.
+    """
+    text = str(result or "")
+    if isinstance(tool_result, ToolResult):
+        status = TOOL_CODE_SPECS[tool_result.code].outcome_bucket
+    else:
+        status = "error" if is_error else "ok"
+
+    meta: Dict[str, Any] = {"status": status}
+    # Legacy non-process deliverable fallback reads the FULL result before trace
+    # truncation. Process producers must supply the typed fact below.
+    if (
+        fn_name not in _PROCESS_RESULT_TOOLS
+        and not is_error
+        and "ARTIFACT_OUTPUTS" in text
+    ):
+        meta["artifact_registered"] = True
+    if fn_name == "plan_task" and not is_error and isinstance(tool_result, ToolResult):
+        plan_outcome = tool_result.meta.get("plan_review_outcome")
+        plan_closed = tool_result.meta.get("plan_review_closed")
+        if (
+            plan_outcome in {"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN"}
+            and type(plan_closed) is bool
+            and not (plan_outcome == "GREEN" and not plan_closed)
+            and not (plan_outcome == "REVISE_PLAN" and plan_closed)
+        ):
+            meta["plan_review_outcome"] = plan_outcome
+            meta["plan_review_closed"] = plan_closed
+    if fn_name in _PROCESS_RESULT_TOOLS and isinstance(tool_result, ToolResult):
+        exit_code = tool_result.meta.get("exit_code")
+        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+            meta["exit_code"] = exit_code
+        signal_name = tool_result.meta.get("signal")
+        if isinstance(signal_name, str) and signal_name:
+            meta["signal"] = signal_name
+        if tool_result.meta.get("artifact_registered") is True:
+            meta["artifact_registered"] = True
+    if (
+        meta["status"] == "ok"
+        and isinstance(tool_result, ToolResult)
+        and tool_result.meta.get("shell_regex_auto_corrected") is True
+    ):
+        # The autocorrection is a producer FACT carried in meta, not a text prefix.
+        # A shell producer that also has a more specific code (no-match, exit error,
+        # undeclared outputs) keeps that code; only an otherwise-plain success is
+        # relabelled, which is what the retired text scan did for every shape.
+        meta["status"] = "ok_autocorrected"
+    if fn_name == "run_command" and not is_error and meta.get("exit_code") == 0:
+        if meta["status"] == "ok_autocorrected":
             meta["status"] = "ok_autocorrected"
         else:
             meta["status"] = "ok"

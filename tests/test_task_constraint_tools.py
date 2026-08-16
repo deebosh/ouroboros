@@ -463,9 +463,12 @@ def test_registry_native_heal_guard_preserves_order_and_zero_dispatch(tmp_path, 
         "write_file",
         {"bucket": "external", "path": "SKILL.md"},
     )
+    # T1 (owner batch #4 answer 1): the skill-payload selector refusal is a policy
+    # denial, which its own first line always said; the generic argument-error code
+    # contradicted it and would promote the refusal to an execution failure.
     assert payload_arg_error == ToolResult(
-        status="error",
-        code="TOOL_ARG_ERROR",
+        status="blocked",
+        code="SKILL_PAYLOAD_BLOCKED",
         text=(
             "⚠️ SKILL_PAYLOAD_ARG_ERROR: bucket and skill_name must be supplied together; "
             "bucket must be one of external/clawhub/ouroboroshub (native excluded); "
@@ -556,8 +559,8 @@ def test_loop_preserves_legacy_heal_projection_with_native_code(tmp_path):
             {"bucket": "external", "path": "SKILL.md"},
             payload_arg_error,
             "skill_payload_blocked",
-            "error",
-            "TOOL_ARG_ERROR",
+            "blocked",
+            "SKILL_PAYLOAD_BLOCKED",
         ),
     ]
     for index, (name, args, text, legacy_status, typed_status, typed_code) in enumerate(cases):
