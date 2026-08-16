@@ -3,12 +3,12 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import {
+    costDashboardPresentation,
     headerBudgetPresentation,
     mergeStickyCostMeta,
     taskCostMeta,
     taskCostProjection,
-} from '../modules/chat.js';
-import { costDashboardPresentation } from '../modules/costs.js';
+} from '../modules/costs.js';
 import { summarizeLogEvent } from '../modules/log_events.js';
 import {
     accountedUpperBound,
@@ -16,7 +16,9 @@ import {
     formatUsd4,
 } from '../modules/utils.js';
 
-test('header starts loading and fails closed when ledger money is unavailable', () => {
+// The nullable-money contract now belongs to costs.js, which owns the single
+// optionalFiniteNumber helper: a null ledger reading must never render as $0.
+function assertNullableCostPresentation() {
     assert.deepEqual(headerBudgetPresentation(), {
         state: 'loading', label: 'Loading…', fillPct: 0,
     });
@@ -27,6 +29,12 @@ test('header starts loading and fails closed when ledger money is unavailable', 
         headerBudgetPresentation({ accounting: { available: true }, spent_usd: null, budget_limit: 10 }).state,
         'unavailable',
     );
+    assert.equal(costDashboardPresentation({ accounting: { available: true, accounted_usd: null } }).state,
+        'unavailable');
+}
+
+test('header starts loading and fails closed when ledger money is unavailable', () => {
+    assertNullableCostPresentation();
 });
 
 test('header accepts the legacy numeric state shape without fabricating null as zero', () => {

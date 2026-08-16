@@ -420,6 +420,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                               "tests/test_git_review_pipeline.py::_get_git_ops_module",
                               "tests/test_git_review_pipeline.py::_get_registry_module",
                               "tests/test_git_review_pipeline.py::_make_ctx"}
+    web_extractions = {f"web/modules/chat.js::{symbol}": f"web/modules/{owner}::{symbol}" for owner, symbols in {"chat_card_state.js": "liveLineRowToggleKey clearStickyCardState COLLAPSED_ACTIVITY_MAX boundActivityPreview projectCollapsedActivity isTerminalTaskPhase", "chat_controls.js": "shouldFirePanic confirmAndSendPanic", "chat_render_batch.js": "insertTimelineNode", "costs.js": "headerBudgetPresentation taskCostMeta taskCostProjection mergeStickyCostMeta", "utils.js": "rawTimestampEpoch"}.items() for symbol in symbols.split()}
     implemented.update(registry_core_rows)
     implemented.update(registry_resolution_rows)
     implemented.update(registry_guard_rows)
@@ -455,7 +456,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "retired:ref inventories read blobs directly through _iter_ref_gated_blobs "
         "and reuse them by blob id"
     )
-    retired_current.update({"ouroboros/loop_tool_execution.py::_parse_plan_review_control": "retired:native plan_task ToolResult metadata replaces textual control parsing", "ouroboros/loop_tool_execution.py::PLAN_REVIEW_CONTROL_PREFIX": "retired:loop no longer imports the display-only plan footer prefix", "ouroboros/loop_tool_execution.py::_PLAN_REVIEW_OUTCOMES": "retired:plan producer validates the closed outcome vocabulary before publication"})
+    retired_current.update({"web/modules/chat.js::optionalFiniteNumber": "web/modules/costs.js::optionalFiniteNumber", "ouroboros/loop_tool_execution.py::_parse_plan_review_control": "retired:native plan_task ToolResult metadata replaces textual control parsing", "ouroboros/loop_tool_execution.py::PLAN_REVIEW_CONTROL_PREFIX": "retired:loop no longer imports the display-only plan footer prefix", "ouroboros/loop_tool_execution.py::_PLAN_REVIEW_OUTCOMES": "retired:plan producer validates the closed outcome vocabulary before publication"})
     # T1: two retirements that DO carry a semantic delta — the loop's ordered
     # families and generic markers move into the single classifier rather than
     # disappearing, so their rows name the spec 4.3.3 delta instead of "none".
@@ -531,6 +532,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(headless_extraction_rows)
     implemented.update(tool_access_extraction_rows)
     implemented.update(test_split_rows)
+    implemented.update(web_extractions)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     for row in rows:
@@ -544,7 +546,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             owner_path = row["new owner/path"].split("::", 1)[0]
             if (
                 row["old path/symbol"] in existing_process_owner_rows
-                or row["old path/symbol"] in registry_dependency_owners
+                or row["old path/symbol"] in registry_dependency_owners | web_extractions
             ):
                 assert (REPO / owner_path).is_file()
             else:

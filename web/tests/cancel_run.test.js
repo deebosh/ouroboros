@@ -9,7 +9,7 @@ import {
     taskOutcomeSeverity,
     taskTerminalPhase,
 } from '../modules/log_events.js';
-import { isTerminalTaskPhase } from '../modules/chat.js';
+import { isTerminalTaskPhase } from '../modules/chat_card_state.js';
 import { cancelRunEligibility } from '../modules/task_control_menu.js';
 
 // --- cancelled severity reducer (added ONCE, consumed everywhere) ---
@@ -98,10 +98,23 @@ test('logs task_done summarizer labels cancellation as Cancelled', () => {
 
 // --- terminal phase + history replay fallback ---
 
-test('cancelled is a terminal card phase (card resolves, never re-inflates)', () => {
+// The complete terminality contract, asserted behaviourally: the explicit
+// terminal bit wins over any working-looking phase, and the phase vocabulary is
+// exactly done/lifecycle_error/cancelled. This replaces the source-string pins
+// that used to read the classifier's body out of chat.js before it moved to its
+// owner module.
+function assertTerminalTaskPhaseContract() {
     assert.equal(isTerminalTaskPhase('cancelled'), true);
     assert.equal(isTerminalTaskPhase('done'), true);
+    assert.equal(isTerminalTaskPhase('lifecycle_error'), true);
     assert.equal(isTerminalTaskPhase('working'), false);
+    assert.equal(isTerminalTaskPhase('error'), false);
+    assert.equal(isTerminalTaskPhase('working', true), true);
+    assert.equal(isTerminalTaskPhase('', false), false);
+}
+
+test('cancelled is a terminal card phase (card resolves, never re-inflates)', () => {
+    assertTerminalTaskPhaseContract();
 });
 
 test('history replay of a cancelled root resolves to Cancelled, not Done', () => {
