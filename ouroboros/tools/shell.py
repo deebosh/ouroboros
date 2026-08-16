@@ -1331,6 +1331,30 @@ def _run_shell(
                 mutation_root=repo_root,
                 source_tool="run_command",
             )
+        # A shell command has no file-write guard the way write_file/edit_text do —
+        # revert any protected runtime path (BIBLE.md, docs/CHECKLISTS.md, etc.) it
+        # happened to dirty in the system repo, the same way an unauthorized edit_text
+        # write is refused. Scoped to the SYSTEM repo only (never an unrelated cwd's
+        # git tree that coincidentally shares a protected filename).
+        protected_restore_note = ""
+        if repo_root is not None:
+            try:
+                system_repo = pathlib.Path(
+                    getattr(ctx, "system_repo_dir", None) or getattr(ctx, "repo_dir")
+                ).resolve(strict=False)
+                if pathlib.Path(repo_root).resolve(strict=False) == system_repo:
+                    protected_dirty = _protected_runtime_dirty_paths(repo_root)
+                    if protected_dirty:
+                        restored = _restore_protected_runtime_paths(repo_root, protected_dirty)
+                        if restored:
+                            protected_restore_note = (
+                                "\n\n⚠️ PROTECTED_PATH_AUTO_RESTORED: this command changed protected "
+                                "runtime file(s), which shell commands cannot modify (use edit_text "
+                                "through the normal review path instead); reverted: "
+                                + ", ".join(restored[:5])
+                            )
+            except Exception:
+                log.debug("protected-runtime-path restore check failed", exc_info=True)
         undeclared_user_outputs = _mentioned_user_file_outputs_without_declaration(ctx, cmd, outputs, scratch_abs=scratch_abs, command_start_ts=_command_start_ts)
         if undeclared_user_outputs:
             # Declaration NUDGE, not a failure — see _UNDECLARED_OUTPUTS_MARKER.
@@ -1342,6 +1366,7 @@ def _run_shell(
                 f"Paths: {', '.join(undeclared_user_outputs[:5])}.\n\n"
                 + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n"
                 + _format_process_output(res.stdout or "", res.stderr or "")
+                + protected_restore_note
             )
         artifact_note, artifact_failed = _register_process_outputs(
             ctx,
@@ -1387,11 +1412,12 @@ def _run_shell(
                 + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n"
                 + f"{_format_process_output(res.stdout or '', res.stderr or '')}"
                 + artifact_note
+                + protected_restore_note
             )
         executor_note = ""
         if getattr(res, "backend_trace", None):
             executor_note = "\n\nEXECUTOR_TRACE:\n" + json.dumps(res.backend_trace, ensure_ascii=False, indent=2)
-        return autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}"
+        return autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}{protected_restore_note}"
     except subprocess.TimeoutExpired:
         # Timeout-created scratch still needs its exclusion fingerprint.
         _record_scratch_fingerprints(ctx, scratch_abs)

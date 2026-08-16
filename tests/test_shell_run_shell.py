@@ -598,3 +598,71 @@ class TestSingleElementShellMetachar:
         result = _run_shell(_ctx(tmp_path), ["echo hello world"])
         assert "SHELL_CMD_ERROR" not in result
         assert "exit_code=0" in result
+
+
+# ---------------------------------------------------------------------------
+# Protected-runtime-path auto-restore: a shell command has no file-write guard
+# the way write_file/edit_text do, so a dirtied protected path (BIBLE.md, etc.)
+# is reverted after the command instead of silently landing.
+# ---------------------------------------------------------------------------
+
+
+def _init_protected_repo(tmp_path):
+    """A real git repo (not faked) — the restore logic runs real `git diff`/
+    `git checkout` against it, independent of fake_subprocess (which only
+    stubs the command execution itself, not this tool's own git calls)."""
+    import subprocess as _sp
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "t@example.com"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    _sp.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True)
+    (repo / "BIBLE.md").write_text("original constitution\n")
+    (repo / "README.md").write_text("original readme\n")
+    _sp.run(["git", "add", "-A"], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)
+    return repo
+
+
+def test_run_shell_reverts_a_protected_path_the_command_dirtied(tmp_path, fake_subprocess):
+    repo = _init_protected_repo(tmp_path)
+    # Simulate the effect of the (faked) shell command tampering with a
+    # protected runtime file directly on disk.
+    (repo / "BIBLE.md").write_text("tampered by shell command\n")
+    fake_subprocess(stdout="ok")
+
+    result = _run_shell(_ctx(repo), ["echo", "hi"])
+
+    assert "PROTECTED_PATH_AUTO_RESTORED" in result
+    assert "BIBLE.md" in result
+    assert (repo / "BIBLE.md").read_text() == "original constitution\n"
+
+
+def test_run_shell_leaves_unprotected_paths_alone(tmp_path, fake_subprocess):
+    repo = _init_protected_repo(tmp_path)
+    (repo / "README.md").write_text("edited by shell command\n")
+    fake_subprocess(stdout="ok")
+
+    result = _run_shell(_ctx(repo), ["echo", "hi"])
+
+    assert "PROTECTED_PATH_AUTO_RESTORED" not in result
+    assert (repo / "README.md").read_text() == "edited by shell command\n"
+
+
+def test_run_shell_does_not_restore_outside_the_system_repo(tmp_path, fake_subprocess):
+    """A protected-looking filename in an UNRELATED git repo (e.g. a subagent
+    worktree or a skill's own repo) must never be auto-reverted — only the
+    system repo (ctx.system_repo_dir / ctx.repo_dir) is in scope."""
+    other_repo = _init_protected_repo(tmp_path)  # git root != ctx.system_repo_dir below
+    (other_repo / "BIBLE.md").write_text("tampered\n")
+
+    ctx = _ctx(other_repo)
+    ctx.system_repo_dir = tmp_path / "elsewhere"  # deliberately NOT other_repo
+    fake_subprocess(stdout="ok")
+
+    result = _run_shell(ctx, ["echo", "hi"])
+
+    assert "PROTECTED_PATH_AUTO_RESTORED" not in result
+    assert (other_repo / "BIBLE.md").read_text() == "tampered\n"
