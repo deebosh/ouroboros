@@ -11,6 +11,21 @@ from types import SimpleNamespace
 import pytest
 
 
+def _patch_commit_seam(monkeypatch, name, value):
+    """Stub one reviewed-commit seam on every module that resolves it.
+
+    ``_repo_commit_push`` spans ``tools/git.py`` and its extracted owners
+    (``git_review_cycle``, ``git_evolution``), so a seam stub has to reach
+    whichever module resolves the name at call time.
+    """
+    from ouroboros.tools import git as git_tools
+    from ouroboros.tools import git_evolution, git_review_cycle
+
+    for module in (git_tools, git_review_cycle, git_evolution):
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, value)
+
+
 def _active_transaction(tmp_path: pathlib.Path, task_id: str = "evo-task"):
     from supervisor import evolution_lifecycle, queue, state
 
@@ -1031,13 +1046,11 @@ def test_second_evolution_commit_is_blocked_before_review(tmp_path, monkeypatch)
     review_calls = []
     monkeypatch.setattr(git_tools, "_task_attributed_commit_paths", lambda *a, **k: (None, None, "", None))
     monkeypatch.setattr(git_tools, "_check_overlapping_review_attempt", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_commit_attempt", lambda *a, **k: None)
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_acquire_git_lock", lambda *a, **k: pathlib.Path("lock"))
     monkeypatch.setattr(git_tools, "_release_git_lock", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_prepare_review_commit_worktree", lambda *a, **k: (False, ""))
-    monkeypatch.setattr(
-        git_tools,
-        "_run_reviewed_stage_cycle",
+    _patch_commit_seam(monkeypatch, "_run_reviewed_stage_cycle",
         lambda *a, **k: review_calls.append(True) or {"status": "passed"},
     )
     ctx = SimpleNamespace(
@@ -1066,7 +1079,7 @@ def test_receipt_race_blocks_evolution_before_git_commit(tmp_path, monkeypatch):
         task_id=tx["task_id"],
         task_metadata={"evolution_transaction": tx},
     )
-    monkeypatch.setattr(git_tools, "_record_commit_attempt", lambda *a, **k: None)
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: None)
     claim, error = git_tools._check_evolution_commit_stage(
         ctx, "commit", 0.0, phase="pre_review_authority",
     )
@@ -1315,16 +1328,14 @@ def test_evolution_commit_refuses_review_when_claim_is_gone(tmp_path, monkeypatc
     reviewed = []
     monkeypatch.setattr(git_tools, "_task_attributed_commit_paths", lambda *a, **k: (None, None, "", None))
     monkeypatch.setattr(git_tools, "_check_overlapping_review_attempt", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_commit_attempt", lambda *a, **k: None)
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_acquire_git_lock", lambda *a, **k: pathlib.Path("lock"))
     monkeypatch.setattr(git_tools, "_release_git_lock", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_prepare_review_commit_worktree", lambda *a, **k: (False, ""))
-    monkeypatch.setattr(
-        git_tools, "_evolution_commit_authority",
+    _patch_commit_seam(monkeypatch, "_evolution_commit_authority",
         lambda *a, **k: ({}, {"ok": False, "reason": "owner_stopped"}),
     )
-    monkeypatch.setattr(
-        git_tools, "_run_reviewed_stage_cycle",
+    _patch_commit_seam(monkeypatch, "_run_reviewed_stage_cycle",
         lambda *a, **k: reviewed.append(True) or {"status": "passed"},
     )
     ctx = SimpleNamespace(
@@ -1350,22 +1361,20 @@ def test_postcommit_cas_failure_returns_local_orphan_after_binding(tmp_path, mon
     tagged, contained = [], []
     monkeypatch.setattr(git_tools, "_task_attributed_commit_paths", lambda *a, **k: (None, None, "", None))
     monkeypatch.setattr(git_tools, "_check_overlapping_review_attempt", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_commit_attempt", lambda *a, **k: None)
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_acquire_git_lock", lambda *a, **k: pathlib.Path("lock"))
     monkeypatch.setattr(git_tools, "_release_git_lock", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_prepare_review_commit_worktree", lambda *a, **k: (False, ""))
-    monkeypatch.setattr(git_tools, "_evolution_commit_authority", lambda *a, **k: (claim, {"ok": True}))
-    monkeypatch.setattr(git_tools, "_verify_reviewed_commit_binding", lambda *a, **k: (True, ""))
-    monkeypatch.setattr(
-        git_tools, "_run_reviewed_stage_cycle",
+    _patch_commit_seam(monkeypatch, "_evolution_commit_authority", lambda *a, **k: (claim, {"ok": True}))
+    _patch_commit_seam(monkeypatch, "_verify_reviewed_commit_binding", lambda *a, **k: (True, ""))
+    _patch_commit_seam(monkeypatch, "_run_reviewed_stage_cycle",
         lambda *a, **k: {
             "status": "passed",
             "pre_fingerprint": {"fingerprint": "pre"},
             "post_fingerprint": {"fingerprint": "post", "binding": {}},
         },
     )
-    monkeypatch.setattr(
-        git_tools, "run_cmd",
+    _patch_commit_seam(monkeypatch, "run_cmd",
         lambda cmd, cwd=None: "d" * 40 if cmd[:3] == ["git", "rev-parse", "HEAD"] else "",
     )
     monkeypatch.setattr(
@@ -1378,9 +1387,7 @@ def test_postcommit_cas_failure_returns_local_orphan_after_binding(tmp_path, mon
         "_auto_tag_on_version_bump",
         lambda *a, **k: tagged.append(True) or "",
     )
-    monkeypatch.setattr(
-        git_tools,
-        "_preserve_evolution_orphan",
+    _patch_commit_seam(monkeypatch, "_preserve_evolution_orphan",
         lambda *a, **k: contained.append((a, k)) or "contained",
     )
     ctx = SimpleNamespace(
@@ -1416,28 +1423,24 @@ def test_only_evolution_push_stays_under_git_lock(
     order = []
     monkeypatch.setattr(git_tools, "_task_attributed_commit_paths", lambda *a, **k: (None, None, "", None))
     monkeypatch.setattr(git_tools, "_check_overlapping_review_attempt", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_commit_attempt", lambda *a, **k: None)
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_acquire_git_lock", lambda *a, **k: pathlib.Path("lock"))
     monkeypatch.setattr(git_tools, "_release_git_lock", lambda *a, **k: order.append("release"))
     monkeypatch.setattr(git_tools, "_prepare_review_commit_worktree", lambda *a, **k: (False, ""))
-    monkeypatch.setattr(git_tools, "_evolution_commit_authority", lambda *a, **k: (claim, {"ok": True}))
-    monkeypatch.setattr(git_tools, "_verify_reviewed_commit_binding", lambda *a, **k: (True, ""))
-    monkeypatch.setattr(
-        git_tools,
-        "_run_reviewed_stage_cycle",
+    _patch_commit_seam(monkeypatch, "_evolution_commit_authority", lambda *a, **k: (claim, {"ok": True}))
+    _patch_commit_seam(monkeypatch, "_verify_reviewed_commit_binding", lambda *a, **k: (True, ""))
+    _patch_commit_seam(monkeypatch, "_run_reviewed_stage_cycle",
         lambda *a, **k: {
             "status": "passed",
             "pre_fingerprint": {"fingerprint": "pre"},
             "post_fingerprint": {"fingerprint": "post", "binding": {}},
         },
     )
-    monkeypatch.setattr(
-        git_tools,
-        "run_cmd",
+    _patch_commit_seam(monkeypatch, "run_cmd",
         lambda cmd, cwd=None: "d" * 40 if cmd[:3] == ["git", "rev-parse", "HEAD"] else "",
     )
     monkeypatch.setattr(git_tools, "_auto_tag_on_version_bump", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_evolution_commit_receipt", lambda *a, **k: "")
+    _patch_commit_seam(monkeypatch, "_record_evolution_commit_receipt", lambda *a, **k: "")
     monkeypatch.setattr(
         git_tools,
         "_evolution_publication_stopped_result",
@@ -1477,12 +1480,12 @@ def test_revoked_publication_does_not_record_or_anchor_success(tmp_path, monkeyp
     ])
     monkeypatch.setattr(git_tools, "_task_attributed_commit_paths", lambda *a, **k: (None, None, "", ("root", "task")))
     monkeypatch.setattr(git_tools, "_check_overlapping_review_attempt", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_commit_attempt", lambda *a, **k: attempts.append((k.get("status") or a[2], k)))
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: attempts.append((k.get("status") or a[2], k)))
     monkeypatch.setattr(git_tools, "_acquire_git_lock", lambda *a, **k: pathlib.Path("lock"))
     monkeypatch.setattr(git_tools, "_release_git_lock", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_prepare_review_commit_worktree", lambda *a, **k: (False, ""))
-    monkeypatch.setattr(git_tools, "_evolution_commit_authority", lambda *a, **k: next(authority))
-    monkeypatch.setattr(git_tools, "_verify_reviewed_commit_binding", lambda *a, **k: (True, ""))
+    _patch_commit_seam(monkeypatch, "_evolution_commit_authority", lambda *a, **k: next(authority))
+    _patch_commit_seam(monkeypatch, "_verify_reviewed_commit_binding", lambda *a, **k: (True, ""))
     def reviewed(review_ctx, *args, **kwargs):
         review_ctx._last_triad_raw_results = [{"raw": "triad"}]
         review_ctx._last_scope_raw_result = {"raw": "scope"}
@@ -1492,11 +1495,11 @@ def test_revoked_publication_does_not_record_or_anchor_success(tmp_path, monkeyp
             "pre_fingerprint": {"fingerprint": "pre"},
             "post_fingerprint": {"fingerprint": "post", "binding": {}},
         }
-    monkeypatch.setattr(git_tools, "_run_reviewed_stage_cycle", reviewed)
-    monkeypatch.setattr(git_tools, "run_cmd", lambda cmd, cwd=None: sha if cmd[:3] == ["git", "rev-parse", "HEAD"] else "")
+    _patch_commit_seam(monkeypatch, "_run_reviewed_stage_cycle", reviewed)
+    _patch_commit_seam(monkeypatch, "run_cmd", lambda cmd, cwd=None: sha if cmd[:3] == ["git", "rev-parse", "HEAD"] else "")
     monkeypatch.setattr(git_tools, "_auto_tag_on_version_bump", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_evolution_commit_receipt", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_preserve_evolution_orphan", lambda *a, **k: contained.append(True) or "contained")
+    _patch_commit_seam(monkeypatch, "_record_evolution_commit_receipt", lambda *a, **k: "")
+    _patch_commit_seam(monkeypatch, "_preserve_evolution_orphan", lambda *a, **k: contained.append(True) or "contained")
     monkeypatch.setattr(git_tools, "_auto_push", lambda *a, **k: pushed.append(True) or "")
     monkeypatch.setattr(mutation_attribution, "advance_mutation_baseline", lambda *a, **k: baselines.append(a))
     ctx = SimpleNamespace(
@@ -1532,33 +1535,25 @@ def test_postcommit_binding_failure_contains_evolution_commit(tmp_path, monkeypa
     contained = []
     monkeypatch.setattr(git_tools, "_task_attributed_commit_paths", lambda *a, **k: (None, None, "", None))
     monkeypatch.setattr(git_tools, "_check_overlapping_review_attempt", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_commit_attempt", lambda *a, **k: None)
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_acquire_git_lock", lambda *a, **k: pathlib.Path("lock"))
     monkeypatch.setattr(git_tools, "_release_git_lock", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_prepare_review_commit_worktree", lambda *a, **k: (False, ""))
-    monkeypatch.setattr(git_tools, "_evolution_commit_authority", lambda *a, **k: (claim, {"ok": True}))
-    monkeypatch.setattr(
-        git_tools,
-        "_run_reviewed_stage_cycle",
+    _patch_commit_seam(monkeypatch, "_evolution_commit_authority", lambda *a, **k: (claim, {"ok": True}))
+    _patch_commit_seam(monkeypatch, "_run_reviewed_stage_cycle",
         lambda *a, **k: {
             "status": "passed",
             "pre_fingerprint": {"fingerprint": "pre"},
             "post_fingerprint": {"fingerprint": "post", "binding": {}},
         },
     )
-    monkeypatch.setattr(
-        git_tools,
-        "run_cmd",
+    _patch_commit_seam(monkeypatch, "run_cmd",
         lambda cmd, cwd=None: "2" * 40 if cmd[:3] == ["git", "rev-parse", "HEAD"] else "",
     )
-    monkeypatch.setattr(
-        git_tools,
-        "_verify_reviewed_commit_binding",
+    _patch_commit_seam(monkeypatch, "_verify_reviewed_commit_binding",
         lambda *a, **k: (False, "tree mismatch"),
     )
-    monkeypatch.setattr(
-        git_tools,
-        "_preserve_evolution_orphan",
+    _patch_commit_seam(monkeypatch, "_preserve_evolution_orphan",
         lambda *a, **k: contained.append((a, k)) or "contained",
     )
     ctx = SimpleNamespace(
@@ -1586,16 +1581,14 @@ def test_final_tag_binding_failure_cannot_record_restart_receipt(tmp_path, monke
     binding_results = iter([(True, ""), (False, "tag target mismatch")])
     monkeypatch.setattr(git_tools, "_task_attributed_commit_paths", lambda *a, **k: (None, None, "", None))
     monkeypatch.setattr(git_tools, "_check_overlapping_review_attempt", lambda *a, **k: "")
-    monkeypatch.setattr(git_tools, "_record_commit_attempt", lambda *a, **k: None)
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_acquire_git_lock", lambda *a, **k: pathlib.Path("lock"))
     monkeypatch.setattr(git_tools, "_release_git_lock", lambda *a, **k: None)
     monkeypatch.setattr(git_tools, "_prepare_review_commit_worktree", lambda *a, **k: (False, ""))
-    monkeypatch.setattr(git_tools, "_evolution_commit_authority", lambda *a, **k: (claim, {"ok": True}))
-    monkeypatch.setattr(
-        git_tools, "_verify_reviewed_commit_binding", lambda *a, **k: next(binding_results),
+    _patch_commit_seam(monkeypatch, "_evolution_commit_authority", lambda *a, **k: (claim, {"ok": True}))
+    _patch_commit_seam(monkeypatch, "_verify_reviewed_commit_binding", lambda *a, **k: next(binding_results),
     )
-    monkeypatch.setattr(
-        git_tools, "_run_reviewed_stage_cycle",
+    _patch_commit_seam(monkeypatch, "_run_reviewed_stage_cycle",
         lambda *a, **k: {
             "status": "passed",
             "pre_fingerprint": {"fingerprint": "pre"},
@@ -1605,8 +1598,7 @@ def test_final_tag_binding_failure_cannot_record_restart_receipt(tmp_path, monke
             },
         },
     )
-    monkeypatch.setattr(
-        git_tools, "run_cmd",
+    _patch_commit_seam(monkeypatch, "run_cmd",
         lambda cmd, cwd=None: "1" * 40 if cmd[:3] == ["git", "rev-parse", "HEAD"] else "",
     )
     monkeypatch.setattr(
@@ -1614,14 +1606,10 @@ def test_final_tag_binding_failure_cannot_record_restart_receipt(tmp_path, monke
         "_auto_tag_on_version_bump",
         lambda *a, **k: " [tagged: v-test]",
     )
-    monkeypatch.setattr(
-        git_tools,
-        "_preserve_evolution_orphan",
+    _patch_commit_seam(monkeypatch, "_preserve_evolution_orphan",
         lambda *a, **k: contained.append((a, k)) or "contained",
     )
-    monkeypatch.setattr(
-        git_tools,
-        "_record_evolution_commit_receipt",
+    _patch_commit_seam(monkeypatch, "_record_evolution_commit_receipt",
         lambda *a, **k: recorded.append(True) or "",
     )
     ctx = SimpleNamespace(
@@ -1648,9 +1636,7 @@ def test_evolution_publication_authority_requires_exact_head(tmp_path, monkeypat
         "supervisor.evolution_lifecycle.check_evolution_authority",
         lambda **kwargs: {"ok": True, "reason": ""},
     )
-    monkeypatch.setattr(
-        git_tools,
-        "run_cmd",
+    _patch_commit_seam(monkeypatch, "run_cmd",
         lambda cmd, cwd=None: "b" * 40 if cmd[:3] == ["git", "rev-parse", "HEAD"] else "",
     )
     ctx = SimpleNamespace(

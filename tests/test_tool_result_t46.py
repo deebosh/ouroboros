@@ -480,7 +480,7 @@ def test_physical_vcs_status_exception_is_native(
     monkeypatch,
 ) -> None:
     import ouroboros.safety as safety
-    from ouroboros.tools import git as git_tools
+    from ouroboros.tools import git_vcs_ops as git_tools
 
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     monkeypatch.setattr(safety, "check_safety", lambda *_args, **_kwargs: (True, ""))
@@ -514,7 +514,7 @@ def test_review_cycle_publishes_only_structural_critical_finding_rejection(
 ) -> None:
     from types import SimpleNamespace
 
-    from ouroboros.tools import git as git_tools
+    from ouroboros.tools import git_review_cycle as git_tools
 
     sentinel = object()
     ctx = SimpleNamespace(

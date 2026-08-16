@@ -63,6 +63,11 @@ def _get_git_module():
     return importlib.import_module("ouroboros.tools.git")
 
 
+def _get_git_review_cycle_module():
+    """Owner of the staging/review cycle seams these tests patch."""
+    return importlib.import_module("ouroboros.tools.git_review_cycle")
+
+
 def _get_review_module():
     return importlib.import_module("ouroboros.tools.review")
 
@@ -114,7 +119,9 @@ def test_managed_resolver_stages_tracked_binary_from_official_merge(tmp_path, mo
     subprocess.run(["git", "add", "-f", "native.so"], cwd=ctx.repo_dir, check=True)
     subprocess.run(["git", "commit", "-m", "track binary"], cwd=ctx.repo_dir, check=True)
     binary.write_bytes(b"official\x00payload")
-    monkeypatch.setattr(git_mod, "_authorized_managed_update_resolver", lambda _ctx: True)
+    monkeypatch.setattr(
+        _get_git_review_cycle_module(), "_authorized_managed_update_resolver", lambda _ctx: True
+    )
 
     _paths, _advisory_paths, error = git_mod._stage_candidate_for_review(
         ctx,
@@ -1647,7 +1654,7 @@ class TestBypassPathTestsRun:
         ctx = self._make_staged_repo(tmp_path)
 
         # Freshness check is irrelevant when bypass is in effect — stub to None.
-        monkeypatch.setattr(git_mod, "_check_advisory_freshness", lambda *a, **kw: None)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_check_advisory_freshness", lambda *a, **kw: None)
 
         called = {"preflight": 0, "parallel": 0}
 
@@ -1659,8 +1666,8 @@ class TestBypassPathTestsRun:
             called["parallel"] += 1
             return None, {}, "", []
 
-        monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
-        monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_review_preflight_tests", _fake_preflight)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_parallel_review", _fake_parallel)
 
         outcome = git_mod._run_reviewed_stage_cycle(
             ctx,
@@ -1690,8 +1697,8 @@ class TestBypassPathTestsRun:
             called["parallel"] += 1
             return None, {}, "", []
 
-        monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
-        monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_review_preflight_tests", _fake_preflight)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_parallel_review", _fake_parallel)
 
         outcome = git_mod._run_reviewed_stage_cycle(
             ctx,
@@ -1716,7 +1723,7 @@ class TestBypassPathTestsRun:
         from ouroboros.tools import git as git_mod
 
         ctx = self._make_staged_repo(tmp_path)
-        monkeypatch.setattr(git_mod, "_check_advisory_freshness", lambda *a, **kw: None)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_check_advisory_freshness", lambda *a, **kw: None)
 
         called = {"preflight": 0, "parallel": 0}
 
@@ -1733,9 +1740,9 @@ class TestBypassPathTestsRun:
             # Simulate a clean verdict so the review passes through.
             return False, "", "", [], []
 
-        monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
-        monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
-        monkeypatch.setattr(git_mod, "_aggregate_review_verdict", _fake_aggregate)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_review_preflight_tests", _fake_preflight)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_parallel_review", _fake_parallel)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_aggregate_review_verdict", _fake_aggregate)
 
         outcome = git_mod._run_reviewed_stage_cycle(
             ctx,
@@ -1777,7 +1784,7 @@ class TestBypassPathTestsRun:
             captured["paths"] = list(paths or [])
             return "blocked for test"
 
-        monkeypatch.setattr(git_mod, "_check_advisory_freshness", _fake_freshness)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_check_advisory_freshness", _fake_freshness)
 
         outcome = git_mod._run_reviewed_stage_cycle(
             ToolContext(repo_dir=repo, drive_root=drive),
@@ -1810,7 +1817,7 @@ class TestBypassPathTestsRun:
         monkeypatch.delenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", raising=False)
 
         ctx = self._make_staged_repo(tmp_path)
-        monkeypatch.setattr(git_mod, "_check_advisory_freshness", lambda *a, **kw: None)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_check_advisory_freshness", lambda *a, **kw: None)
 
         called = {"preflight": 0, "parallel": 0}
 
@@ -1825,9 +1832,9 @@ class TestBypassPathTestsRun:
         def _fake_aggregate(*a, **kw):
             return False, "", "", [], []
 
-        monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
-        monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
-        monkeypatch.setattr(git_mod, "_aggregate_review_verdict", _fake_aggregate)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_review_preflight_tests", _fake_preflight)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_parallel_review", _fake_parallel)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_aggregate_review_verdict", _fake_aggregate)
 
         git_mod._run_reviewed_stage_cycle(
             ctx,
@@ -1863,7 +1870,7 @@ class TestBypassPathTestsRun:
         monkeypatch.delenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", raising=False)
 
         # Advisory freshness check passes (advisory recorded a bypass run externally).
-        monkeypatch.setattr(git_mod, "_check_advisory_freshness", lambda *a, **kw: None)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_check_advisory_freshness", lambda *a, **kw: None)
 
         called = {"preflight": 0, "parallel": 0}
 
@@ -1875,8 +1882,8 @@ class TestBypassPathTestsRun:
             called["parallel"] += 1
             return None, {}, "", []
 
-        monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
-        monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_review_preflight_tests", _fake_preflight)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_parallel_review", _fake_parallel)
 
         outcome = git_mod._run_reviewed_stage_cycle(
             ctx,
@@ -1908,7 +1915,7 @@ class TestRouteSlotAwareBypassGate:
 
     @staticmethod
     def _stub_cycle(monkeypatch, git_mod, called, *, preflight_result):
-        monkeypatch.setattr(git_mod, "_check_advisory_freshness", lambda *a, **kw: None)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_check_advisory_freshness", lambda *a, **kw: None)
 
         def _fake_preflight(ctx, *, timeout=120):
             called["preflight"] += 1
@@ -1921,9 +1928,9 @@ class TestRouteSlotAwareBypassGate:
         def _fake_aggregate(*a, **kw):
             return False, "", "", [], []
 
-        monkeypatch.setattr(git_mod, "_run_review_preflight_tests", _fake_preflight)
-        monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
-        monkeypatch.setattr(git_mod, "_aggregate_review_verdict", _fake_aggregate)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_review_preflight_tests", _fake_preflight)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_parallel_review", _fake_parallel)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_aggregate_review_verdict", _fake_aggregate)
 
     def test_slot_disabled_with_key_runs_compensating_preflight(self, tmp_path, monkeypatch):
         """Defect (a): advisory slot disabled + key present used to skip BOTH
@@ -2065,7 +2072,7 @@ class TestRouteSlotAwareBypassGate:
         monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
         monkeypatch.delenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", raising=False)
         monkeypatch.setenv("OUROBOROS_PRE_PUSH_TESTS", "0")
-        monkeypatch.setattr(git_mod, "_check_advisory_freshness", lambda *a, **kw: None)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_check_advisory_freshness", lambda *a, **kw: None)
 
         called = {"parallel": 0, "pytest": 0}
 
@@ -2080,8 +2087,8 @@ class TestRouteSlotAwareBypassGate:
         # The REAL _run_review_preflight_tests stays in place: its env gate
         # must return before ever reaching the hermetic runner.
         monkeypatch.setattr(preflight_runner, "run_hermetic_pytest", _no_pytest)
-        monkeypatch.setattr(git_mod, "_run_parallel_review", _fake_parallel)
-        monkeypatch.setattr(git_mod, "_aggregate_review_verdict",
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_run_parallel_review", _fake_parallel)
+        monkeypatch.setattr(_get_git_review_cycle_module(), "_aggregate_review_verdict",
                             lambda *a, **kw: (False, "", "", [], []))
 
         outcome = git_mod._run_reviewed_stage_cycle(

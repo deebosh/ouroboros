@@ -698,7 +698,7 @@ def test_advanced_commit_blocks_rename_from_protected_path(tmp_path, monkeypatch
 
 
 def test_pro_commit_uses_normal_review_for_protected_paths(tmp_path, monkeypatch):
-    from ouroboros.tools import git as git_mod
+    from ouroboros.tools import git_review_cycle as git_mod
 
     repo = _git_repo(tmp_path)
     (repo / "BIBLE.md").write_text("changed\n", encoding="utf-8")
