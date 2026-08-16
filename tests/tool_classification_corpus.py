@@ -7,16 +7,39 @@ the live answers from the single classifier are computed over identical inputs.
 
 Regenerating the golden (only ever needed if the corpus definition itself changes,
 and then only with an explicit owner decision, because the golden is the evidence
-that the cutover was lossless):
+that the cutover was lossless). The corpus is HARVESTED FROM THE TREE UNDER TEST and
+ANSWERED BY THE OLD TREE, so the two roots are different and both must be passed
+explicitly — running ``build_corpus()`` inside the old checkout silently harvests the
+old tree's producers instead and reproduces a different file (it differs today in the
+``native:*`` keys the current producers publish):
 
-    git archive <GOLDEN_SOURCE_SHA> | tar -x -C /tmp/old
-    cp tests/tool_classification_corpus.py /tmp/old/tests/
-    cd /tmp/old && python -c "import json,sys; sys.path.insert(0,'.'); \\
-        from tests.tool_classification_corpus import build_corpus, legacy_answer; \\
-        print(json.dumps({c.key: legacy_answer(c) for c in build_corpus()}))"
+    NEW=$(pwd)                                   # the tree being verified
+    OLD=$(mktemp -d)
+    git archive <GOLDEN_SOURCE_SHA> | tar -x -C "$OLD"
+    cp tests/tool_classification_corpus.py "$OLD/tests/"
+    cd "$OLD" && python -c '
+    import json, pathlib, sys; sys.path.insert(0, ".")
+    from tests.tool_classification_corpus import GOLDEN_SOURCE_SHA, build_corpus, legacy_answer
+    corpus = build_corpus(root=pathlib.Path(sys.argv[1]))
+    payload = {
+        "source_sha": GOLDEN_SOURCE_SHA,
+        "producer": "the retired loop pair (_is_tool_execution_failure + "
+                    "_extract_result_metadata) at source_sha",
+        "corpus": "tests/tool_classification_corpus.py::build_corpus over the current tree",
+        "entries": {c.key: legacy_answer(c) for c in sorted(corpus, key=lambda c: c.key)},
+    }
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=1) + "\n")
+    ' "$NEW" > "$NEW/tests/fixtures/legacy_tool_classification_306f8827.json"
+
+The entries are pre-sorted and the payload is dumped WITHOUT ``sort_keys`` (which
+would reorder the four provenance keys); ``indent=1`` and the trailing newline are
+what the checked-in file carries. Run verbatim against the corpus definition of any
+commit, this reproduces that commit's fixture byte for byte.
 
 ``legacy_answer`` runs the retired pair, which exists only in the old tree; importing
-this module in the current tree never touches it.
+this module in the current tree never touches it. The composers it calls live in the
+old tree too, and their composed bytes are identical in both, which is what makes one
+corpus definition legitimate across the two checkouts.
 """
 
 from __future__ import annotations
@@ -24,7 +47,8 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-from typing import Any, Iterator, NamedTuple
+from types import MappingProxyType
+from typing import Any, Iterator, Mapping, NamedTuple
 
 from ouroboros.tools.tool_result import (
     LegacyTextResultAdapter,
@@ -54,6 +78,19 @@ _NATIVE_CALLS = frozenset({
     "_classification",
 })
 _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+# Identifiers a producer INTERPOLATES: the name reaches the text through a variable
+# (``f"⚠️ {error_tag}: …"``, ``f"⚠️ {action}_BLOCKED: …"``, a tool→prefix lookup), so
+# no single string literal ever holds ``⚠️ IDENT`` and the harvest above cannot see
+# them. Listed explicitly with the producer that assembles each, because a corpus
+# that silently omits a producer is a corpus that proves less than it claims.
+_INTERPOLATED_IDENTIFIERS = (
+    "APPLY_PATCH_BLOCKED",   # tools/edit_ops.py::apply_patch error_tag
+    "EDIT_BATCH_BLOCKED",    # tools/edit_ops.py::edit_batch error_tag
+    "READ_FILE_BLOCKED",     # tools/core_file_tools.py::_local_readonly_resource_block action
+    "SCRIPT_CWD_BLOCKED",    # tools/tool_resolution.py::_binding_error_text prefixes
+    "SEARCH_BLOCKED",        # tools/core.py search_code, same action argument
+    "VERIFY_ERROR",          # tools/tool_resolution.py::_binding_error_text prefixes
+)
 
 
 class Case(NamedTuple):
@@ -93,10 +130,41 @@ def _sources(root: pathlib.Path) -> Iterator[tuple[str, ast.AST]]:
 
 def harvested_identifiers(root: pathlib.Path | None = None) -> tuple[str, ...]:
     """Every ``⚠️ IDENTIFIER`` a producer can emit, harvested from the tree."""
-    found: set[str] = set()
+    found: set[str] = set(_INTERPOLATED_IDENTIFIERS)
     for _rel, tree in _sources(root or repo_root()):
         for value in _string_constants(tree):
             found.update(match.group(1) for match in _MARKER_RE.finditer(value))
+    return tuple(sorted(found))
+
+
+def harvested_native_codes(root: pathlib.Path | None = None) -> tuple[str, ...]:
+    """Every ``ToolResult`` code a producer publishes NATIVELY, whether or not its
+    text is a literal.
+
+    ``harvested_native_pairs`` sees only producers whose first line is statically
+    known, so a producer that assembles its text at runtime — every extension and
+    MCP terminal, the protected-write refusal, the binding-error family — was
+    invisible to the differential: its code could change status without a single
+    corpus case moving. This is the set the coverage assertion closes over.
+    """
+    found: set[str] = set()
+    for _rel, tree in _sources(root or repo_root()):
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            if name not in _NATIVE_CALLS:
+                continue
+            code = ""
+            for keyword in node.keywords:
+                if keyword.arg == "code" and isinstance(keyword.value, ast.Constant):
+                    code = str(keyword.value.value)
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and _CODE_RE.fullmatch(arg.value):
+                    code = code or arg.value
+            if code:
+                found.add(code)
     return tuple(sorted(found))
 
 
@@ -163,6 +231,10 @@ _COMPOSITION_BASES = (
     ("violation", "⚠️ CRITICAL SAFETY_VIOLATION: refused."),
     ("integrate", "⚠️ INTEGRATE_CONFLICT: patch did not apply."),
     ("reported", '{"ok": false, "error": "provider said no"}'),
+    # A SUCCESSFUL body that itself contains the safety wrapper's separator: a
+    # markdown rule in stdout is ordinary output, and counting separators once
+    # turned exactly this into a blocking safety-provider failure.
+    ("separator_in_body", "exit_code=0\nSTDOUT:\n# README\n\n---\n\nUsage: run it"),
 )
 _ROUTE_NOTES = (("", ""), ("route", "⚠️ AUTO_ROUTED_TO_ACTIVE_WORKSPACE: fixture"))
 _SAFETY_MSGS = (("", ""), ("safety", "⚠️ SAFETY_WARNING: inspect the call"))
@@ -181,6 +253,13 @@ _LINE_EDGES = (
     ("critical_safety_violation", "⚠️ CRITICAL SAFETY_VIOLATION: refused by the safety supervisor"),
     ("mcp_envelope_marker", "External MCP tool result from 'demo'/'ping'.\n\n⚠️ MCP_TOOL_ERROR: server text"),
 )
+# Edges whose answer depends on the TOOL NAME SHAPE as well as the text. The
+# unknown-tool sentence is host text under a name that looks dynamic — a
+# hallucinated ``ext_``/``mcp_`` name, or one whose extension was unloaded — and
+# the dynamic short-circuit used to claim it and report the call as a success.
+_EDGE_EXTRA_TOOLS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "unknown_tool": ("ext_1_a_foo", "mcp_demo__ping"),
+})
 _STRUCTURED_BODIES = (
     ("false", '{"ok": false, "error": "boom"}'),
     ("false_indented", '  {"ok": false}'),
@@ -192,10 +271,15 @@ _STRUCTURED_BODIES = (
     ("empty", ""),
 )
 _STRUCTURED_TOOLS = ("read_file", "ext_1_demo_screenshot", "mcp_demo__ping", "run_command")
-# Producer shapes whose text is assembled at runtime, transcribed from the exact
-# composition in ouroboros/tools/shell.py. These are the only corpus entries that
-# are not built by a harvest or a real composer, and they exist because the shell
-# producer's code and its text deliberately carry different facts.
+# Producer shapes whose text is ASSEMBLED AT RUNTIME, transcribed from the exact
+# composition at each producer. These are the only corpus entries that are not
+# built by a harvest or a real composer, and they exist because the static harvest
+# structurally cannot see them: it pairs a code with a first line only when that
+# line is a string literal, so every producer that interpolates a name, a path or
+# an exception into its text was invisible — its code could change status without
+# one corpus case moving. ``test_every_native_code_is_covered_by_the_corpus``
+# fails if a producer publishes a code no shape below (and no harvested pair)
+# exercises, which is the assertion that closes that blind spot.
 _PRODUCER_SHAPES = (
     ("shell_ok", "run_command", "exit_code=0\nSTDOUT:\nfine", "OK", (("exit_code", 0),)),
     ("shell_autocorrected", "run_command", "⚠️ SHELL_REGEX_AUTO_CORRECTED: corrected\nexit_code=0\nSTDOUT:\nfine", "SHELL_REGEX_AUTO_CORRECTED", (("exit_code", 0), ("shell_regex_auto_corrected", True))),
@@ -216,6 +300,28 @@ _PRODUCER_SHAPES = (
     ("review_blocked_untyped_text", "commit_reviewed", "review rejection text without any marker", "REVIEW_BLOCKED", ()),
     ("executor_crash", "write_file", "⚠️ TOOL_ERROR (write_file): RuntimeError: boom", "EXECUTOR_ERROR", ()),
     ("outer_timeout", "read_file", "⚠️ TOOL_TIMEOUT (read_file): exceeded 120s limit.", "TOOL_TIMEOUT", (("timeout_sec", 120),)),
+    # tools/extension_dispatch.py — every terminal interpolates the tool name, so
+    # all four were outside the harvest while carrying real status changes.
+    ("extension_handler_error", "ext_1_demo_screenshot", "⚠️ TOOL_ERROR (ext_1_demo_screenshot): extension tool failed: RuntimeError: boom", "EXTENSION_ERROR", (("dynamic_provider", True),)),
+    ("extension_async_timeout", "ext_1_demo_screenshot", "⚠️ TOOL_ERROR (ext_1_demo_screenshot): extension async handler failed: TimeoutError: handler exceeded timeout", "EXTENSION_TIMEOUT", (("dynamic_provider", True), ("timeout_sec", 60))),
+    ("extension_not_live", "ext_1_demo_screenshot", "⚠️ TOOL_ERROR (ext_1_demo_screenshot): extension 'demo' is not allowed to dispatch right now.", "EXTENSION_UNAVAILABLE", (("dynamic_provider", True),)),
+    ("extension_safety_wrapped_ok", "ext_1_demo_screenshot", '⚠️ SAFETY_WARNING: inspect the call\n\n---\n{"ok": true, "path": "/x/shot.png"}', "SAFETY_WARNING", (("dynamic_provider", True), ("safety_warning", True))),
+    # tools/registry_core.py — an extension surface that exists but is not live
+    # gets the host's unknown-tool sentence typed as unavailable, which is more
+    # precise than "unknown" and is NOT the adapter's answer for the same text.
+    ("unknown_tool_extension_down", "ext_1_demo_screenshot", "⚠️ Unknown tool: ext_1_demo_screenshot. Available: read_file, run_command", "EXTENSION_UNAVAILABLE", (("dynamic_provider", True),)),
+    ("protected_write", "write_file", "⚠️ CORE_PROTECTION_BLOCKED: runtime_mode='advanced' refuses to write protected core path: ouroboros/safety.py. Switch to runtime_mode='pro' and let the normal triad + scope review cover the protected core/contract/release change before commit.", "CORE_PROTECTION_BLOCKED", ()),
+    # ouroboros/mcp_client.py — both unavailable terminals publish one code from
+    # two different first lines, which only a shape can express.
+    ("mcp_disabled", "mcp_svc__ping", "⚠️ MCP_DISABLED: enable MCP in Settings → Advanced to use this tool.", "MCP_UNAVAILABLE", ()),
+    ("mcp_tool_not_found", "mcp_svc__ping", "⚠️ MCP_TOOL_NOT_FOUND: 'mcp_svc__ping'. Refresh the server in Settings → Advanced or check the allowed_tools allowlist.", "MCP_UNAVAILABLE", ()),
+    ("mcp_transport_timeout", "mcp_svc__ping", "⚠️ MCP_TOOL_TIMEOUT: server 'svc' did not respond in 60s", "MCP_TIMEOUT", ()),
+    # tool_access.shell_cwd_block_message, published by both process guards.
+    ("shell_cwd_block", "run_command", "⚠️ SHELL_CWD_BLOCKED: CWD_BLOCKED: cwd /etc is outside allowed roots for shell. Allowed cwd roots for this tool/profile: active_workspace=/w. Use one of those exact paths as cwd (or root=task_drive/artifact_store/user_files in file tools).", "SHELL_CWD_BLOCKED", ()),
+    # tools/tool_resolution.py::_binding_error_text — the two typed terminals of
+    # the interpolated prefix table.
+    ("binding_arg_error", "query_code", "⚠️ TOOL_ARG_ERROR (query_code): ValueError: unknown root 'nope'", "TOOL_ARG_ERROR", ()),
+    ("binding_default_error", "apply_patch", "⚠️ TOOL_ERROR: ValueError: unknown root 'nope'", "TOOL_ERROR", ()),
 )
 
 
@@ -246,7 +352,7 @@ def build_corpus(root: pathlib.Path | None = None) -> tuple[Case, ...]:
                 ))
 
     for edge_name, text in _LINE_EDGES:
-        for tool in ("run_command", "read_file"):
+        for tool in ("run_command", "read_file") + _EDGE_EXTRA_TOOLS.get(edge_name, ()):
             cases.append(Case(
                 key=f"edge:{edge_name}:{tool}",
                 subject=f"edge:{edge_name}",

@@ -211,6 +211,22 @@
    "is_error": false,
    "status": "ok"
   },
+  "compose:separator_in_body:bare": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "compose:separator_in_body:route": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "compose:separator_in_body:route+safety": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "compose:separator_in_body:safety": {
+   "is_error": false,
+   "status": "ok"
+  },
   "compose:timeout:bare": {
    "is_error": true,
    "status": "timeout"
@@ -323,6 +339,14 @@
    "is_error": false,
    "status": "ok"
   },
+  "edge:unknown_tool:ext_1_a_foo": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "edge:unknown_tool:mcp_demo__ping": {
+   "is_error": false,
+   "status": "ok"
+  },
   "edge:unknown_tool:read_file": {
    "is_error": false,
    "status": "ok"
@@ -426,6 +450,14 @@
   "ident:ANTHROPIC_API_KEY:plain": {
    "is_error": false,
    "status": "ok"
+  },
+  "ident:APPLY_PATCH_BLOCKED:named": {
+   "is_error": true,
+   "status": "edit_ops_blocked"
+  },
+  "ident:APPLY_PATCH_BLOCKED:plain": {
+   "is_error": true,
+   "status": "edit_ops_blocked"
   },
   "ident:APPLY_PATCH_ERROR:named": {
    "is_error": true,
@@ -706,6 +738,14 @@
   "ident:DEGRADED:plain": {
    "is_error": false,
    "status": "ok"
+  },
+  "ident:EDIT_BATCH_BLOCKED:named": {
+   "is_error": true,
+   "status": "edit_ops_blocked"
+  },
+  "ident:EDIT_BATCH_BLOCKED:plain": {
+   "is_error": true,
+   "status": "edit_ops_blocked"
   },
   "ident:EDIT_BATCH_ERROR:named": {
    "is_error": true,
@@ -1563,6 +1603,14 @@
    "is_error": true,
    "status": "error"
   },
+  "ident:READ_FILE_BLOCKED:named": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:READ_FILE_BLOCKED:plain": {
+   "is_error": true,
+   "status": "blocked"
+  },
   "ident:READ_FILE_ERROR:named": {
    "is_error": true,
    "status": "error"
@@ -1858,6 +1906,22 @@
   "ident:SCRATCH_REMAINS:plain": {
    "is_error": false,
    "status": "ok"
+  },
+  "ident:SCRIPT_CWD_BLOCKED:named": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:SCRIPT_CWD_BLOCKED:plain": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:SEARCH_BLOCKED:named": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:SEARCH_BLOCKED:plain": {
+   "is_error": true,
+   "status": "blocked"
   },
   "ident:SEARCH_ERROR:named": {
    "is_error": true,
@@ -2371,6 +2435,14 @@
    "is_error": true,
    "status": "blocked"
   },
+  "ident:VERIFY_ERROR:named": {
+   "is_error": true,
+   "status": "error"
+  },
+  "ident:VERIFY_ERROR:plain": {
+   "is_error": true,
+   "status": "error"
+  },
   "ident:VIEW_IMAGE_UNAVAILABLE:named": {
    "is_error": true,
    "status": "error"
@@ -2623,6 +2695,14 @@
    "is_error": true,
    "status": "workspace_blocked"
   },
+  "shape:binding_arg_error": {
+   "is_error": true,
+   "status": "error"
+  },
+  "shape:binding_default_error": {
+   "is_error": true,
+   "status": "error"
+  },
   "shape:cognitive_redirect": {
    "is_error": true,
    "status": "cognitive_tool_required"
@@ -2635,21 +2715,53 @@
    "is_error": true,
    "status": "error"
   },
+  "shape:extension_async_timeout": {
+   "is_error": true,
+   "status": "error"
+  },
+  "shape:extension_handler_error": {
+   "is_error": true,
+   "status": "error"
+  },
+  "shape:extension_not_live": {
+   "is_error": true,
+   "status": "error"
+  },
   "shape:extension_reported_failure": {
    "is_error": true,
    "status": "tool_reported_failure"
+  },
+  "shape:extension_safety_wrapped_ok": {
+   "is_error": false,
+   "status": "ok"
   },
   "shape:git_error_untyped_text": {
    "is_error": false,
    "status": "error"
   },
+  "shape:mcp_disabled": {
+   "is_error": false,
+   "status": "ok"
+  },
   "shape:mcp_provider_error": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:mcp_tool_not_found": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:mcp_transport_timeout": {
    "is_error": false,
    "status": "ok"
   },
   "shape:outer_timeout": {
    "is_error": true,
    "status": "timeout"
+  },
+  "shape:protected_write": {
+   "is_error": true,
+   "status": "protected_blocked"
   },
   "shape:resource_constraint": {
    "is_error": true,
@@ -2679,6 +2791,10 @@
    "is_error": false,
    "status": "ok_autocorrected"
   },
+  "shape:shell_cwd_block": {
+   "is_error": true,
+   "status": "cwd_blocked"
+  },
   "shape:shell_exit_error": {
    "is_error": true,
    "status": "non_zero_exit"
@@ -2698,6 +2814,10 @@
   "shape:shell_undeclared": {
    "is_error": true,
    "status": "artifact_output_undeclared"
+  },
+  "shape:unknown_tool_extension_down": {
+   "is_error": false,
+   "status": "ok"
   }
  }
 }

@@ -515,6 +515,17 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented["tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures"] = "tests/test_tool_execution_classification.py::test_shell_and_protected_failures_are_treated_as_tool_failures"
     existing_process_owner_rows.update({"ouroboros/tools/core.py::_code_search", "ouroboros/loop_tool_execution.py::_structured_tool_failure", "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures", 'ouroboros/tools/core.py::_filter_out_project_store', 'ouroboros/tools/core.py::_policy_is_skill_owner_state_target', 'ouroboros/tools/core.py::active_repo_dir_for', 'ouroboros/tools/core.py::active_tool_profile', 'ouroboros/tools/core.py::build_resolved_resource_binding', 'ouroboros/tools/core.py::decide_tool_access', 'ouroboros/tools/core.py::normalize_root', 'ouroboros/tools/core.py::normalize_runtime_data_path', 'ouroboros/tools/core.py::read_text', 'ouroboros/tools/core.py::SKILL_OWNER_STATE_FILENAMES', "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/loop_tool_execution.py::_is_tool_execution_failure", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     registry_extraction_no_facade_rows.update({"ouroboros/loop_tool_execution.py::_structured_tool_failure", "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/loop_tool_execution.py::_is_tool_execution_failure", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
+    # T1 fix batch: the self-reported-failure homing, the reflection ok-set, and the
+    # two classifier pins that move out of the loop's wall module.
+    t1_fix_rows = {
+        "ouroboros/_outcome_tool_errors.py::_POLICY_DENIAL_STATUSES": "ouroboros/_outcome_tool_errors.py::_POLICY_DENIAL_STATUSES",
+        "ouroboros/reflection.py::should_generate_reflection": "ouroboros/reflection.py::_trace_call_errored",
+        "tests/test_loop_misc.py::test_a_tool_that_reports_its_own_failure_is_not_recorded_as_success": "tests/test_tool_execution_classification.py::test_a_tool_that_reports_its_own_failure_is_not_recorded_as_success",
+        "tests/test_loop_misc.py::test_auto_attach_skips_a_result_that_declared_failure": "tests/test_tool_execution_classification.py::test_auto_attach_skips_a_result_that_declared_failure",
+    }
+    implemented.update(t1_fix_rows)
+    existing_process_owner_rows.update(t1_fix_rows)
+    registry_extraction_no_facade_rows.update(t1_fix_rows)
     implemented.update(w_stream_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)
@@ -548,6 +559,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                     "ouroboros/loop_tool_execution.py::_is_tool_execution_failure",
                     "ouroboros/loop_tool_execution.py::_structured_tool_failure",
                     "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES",
+                    "ouroboros/_outcome_tool_errors.py::_POLICY_DENIAL_STATUSES",
+                    "ouroboros/reflection.py::should_generate_reflection",
                     "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
                 }
                 else "none"
@@ -659,6 +672,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                     "ouroboros/loop_tool_execution.py::_is_tool_execution_failure",
                     "ouroboros/loop_tool_execution.py::_structured_tool_failure",
                     "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES",
+                    "ouroboros/_outcome_tool_errors.py::_POLICY_DENIAL_STATUSES",
+                    "ouroboros/reflection.py::should_generate_reflection",
                     "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
                 }
                 else "none"

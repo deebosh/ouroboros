@@ -1134,7 +1134,7 @@ Summarize this completed task for Ouroboros's episodic memory.
 Be specific about: what was tried, what worked, what failed, key decisions made.
 Include file names, tool names, error messages when relevant.
 Treat tool statuses and exit/signal facts as authoritative. Agent notes are supplementary only.
-Never claim a tool succeeded when the trace shows non-zero exit, timeout, install_error, or any error status.
+Never claim a tool succeeded when the trace shows non-zero exit, timeout, or any error status.
 If structured review evidence contains critical/advisory findings or open obligations,
 mention them individually with severity, item/tag identity, and whether they blocked
 the commit, remained open, or were resolved.

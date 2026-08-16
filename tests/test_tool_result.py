@@ -157,7 +157,12 @@ def test_legacy_adapter_maps_host_owned_first_line(
         ("plain success", "", "⚠️ SAFETY_WARNING: inspect", "ok", "SAFETY_WARNING", {}),
         (ToolResult(status="error", code="TOOL_ERROR", text="⚠️ TOOL_ERROR: failed", meta={"base": 1}), "", "⚠️ SAFETY_WARNING: inspect", "error", "TOOL_ERROR", {"base": 1, "safety_warning": True}),
         (ToolResult(status="ok", code="GIT_ERROR", text="⚠️ GIT_ERROR: refused"), "", "⚠️ SAFETY_WARNING: inspect", "ok", "GIT_ERROR", {"safety_warning": True}),
-        (ToolResult(status="error", code="TOOL_ERROR", text="⚠️ TOOL_ERROR: failed", meta={"base": 1}), "route", "⚠️ SAFETY_WARNING: reason\n\n---\nreason tail", "error", "SAFETY_ERROR", {"base": 1, "ambiguous_safety_wrapper": True, "route_note": True}),
+        # A second separator does not re-decide the outcome: the composer HOLDS the
+        # typed base, so the base's code stays and the ambiguity is metadata. The
+        # count used to publish SAFETY_ERROR, which made an ordinary success whose
+        # body contains a markdown rule a blocking safety-provider failure.
+        (ToolResult(status="error", code="TOOL_ERROR", text="⚠️ TOOL_ERROR: failed", meta={"base": 1}), "route", "⚠️ SAFETY_WARNING: reason\n\n---\nreason tail", "error", "TOOL_ERROR", {"base": 1, "ambiguous_safety_wrapper": True, "route_note": True, "safety_warning": True}),
+        (ToolResult(status="ok", code="OK", text="exit_code=0\nSTDOUT:\n# README\n\n---\n\nUsage", meta={"exit_code": 0}), "", "⚠️ SAFETY_WARNING: inspect", "ok", "SAFETY_WARNING", {"exit_code": 0, "ambiguous_safety_wrapper": True}),
     ),
 )
 def test_typed_composer_preserves_legacy_wrapper_semantics(

@@ -56,13 +56,27 @@ _BLOCKING_TOOL_STATUSES = frozenset({
     "extension_error",           # nearest analogue: `error` (the extension raised)
     "git_error",                 # nearest analogue: `error`; is_error stays false, so unreachable here
     "mcp_error",                 # nearest analogue: `error` (the provider reported one)
-    "resource_blocked",          # nearest analogue: the two specific resource blocks
     "review_blocked",            # nearest analogue: `blocked`; is_error stays false, so unreachable here
-    "root_required",             # nearest analogue: the two specific root redirects
     "run_script_error",          # nearest analogue: `error`
-    "safety_error",              # nearest analogue: `error` (the safety provider failed)
-    "tool_reported_failure",     # nearest analogue: `error` (the tool declared its own failure)
+    # A tool that RAN and answered `{"ok": false}`: walked like a failure so the
+    # recovery credit still applies, then routed to `policy_denials` below rather
+    # than `unresolved`. It stays is_error=True for the counters and the anti-loop
+    # scan, and it does NOT degrade the execution axis — which is what
+    # `outcomes._LEDGER_NON_FAILURE_STATUSES` has declared about the SAME status
+    # since v6.83.0 ("the tool ran and answered honestly; a finding, not a
+    # failure"). Homing it as blocking-only made the two consumers contradict each
+    # other on every unrecovered ext_/mcp_/read `{"ok": false}`.
+    "tool_reported_failure",
     "unknown_tool",              # nearest analogue: `error` (the tool does not exist)
+
+    # Retired CODES, surviving STATUS names: `root_required`, `resource_blocked`
+    # and `safety_error` are no longer published by any code (the merged parents
+    # split, and the safety separator count is gone), but a task result written
+    # before this change still carries the string, and this classifier reads those
+    # traces back. Names stay; nothing new can produce them.
+    "resource_blocked",
+    "root_required",
+    "safety_error",
 })
 # Buckets deliberately left OUT of every partition, each with its reason. The
 # totality assertion in tests/test_tool_classification_differential.py fails if a
@@ -119,6 +133,13 @@ _POLICY_DENIAL_STATUSES = frozenset({
     "review_blocked",
     "skill_payload_blocked",
     "skill_state_blocked",
+    # T1 (owner batch #4, operator homing): a provider that RAN and answered
+    # `{"ok": false}` is honest telemetry on the execution axis, matching the
+    # ledger's v6.83.0 declaration of the same status. It is NOT a runtime "no",
+    # so it is named here by its EFFECT — recorded, never degrading — and the
+    # bucket-level assertion in tests/test_tool_classification_differential.py
+    # pins that effect rather than the membership.
+    "tool_reported_failure",
     "user_files_path_blocked",
     "workspace_blocked",
     "write_file_blocked",

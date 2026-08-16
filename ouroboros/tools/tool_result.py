@@ -20,6 +20,11 @@ _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _FIRST_MARKER_RE = re.compile(r"^⚠️ +([A-Z][A-Z0-9_]*)")
 _SAFETY_SEPARATOR = "\n\n---\n"
 _MCP_RESULT_ENVELOPE_PREFIX = "External MCP tool result from "
+# The registry composes this sentence PRECISELY BECAUSE no provider ran: the name
+# resolved to nothing. It is host text under a dynamic-looking name, which is the
+# one place the ``ext_``/``mcp_`` name-shape proxy for "body I did not compose" is
+# wrong, so both the adapter and the ordered chain read it from here.
+_UNKNOWN_TOOL_PREFIX = "⚠️ Unknown tool:"
 _MAX_META_ITEMS = 32
 _MAX_META_BYTES = 8192
 _HOST_META_KEYS = frozenset(
@@ -152,15 +157,11 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "warning",
             "use the reviewed protected-write path",
         ),
-        "ROOT_REQUIRED": _code_spec(
-            "blocked",
-            "root_required",
-            "warning",
-            "retry against the required resource root",
-        ),
-        # The two demanded roots stay DISTINCT codes: the recovery walk credits a
-        # retry only when the write lands on the root the redirect named, and a
-        # merged code makes that branch unreachable.
+        # The two demanded roots are DISTINCT codes and the merged `ROOT_REQUIRED`
+        # parent is retired: the recovery walk credits a retry only when the write
+        # lands on the root the redirect named, so a merged code makes that branch
+        # unreachable, and leaving the parent published-by-nobody invites a future
+        # reader to "simplify" the split back out.
         "ROOT_REQUIRED_USER_FILES": _code_spec(
             "blocked",
             "root_required_user_files",
@@ -173,13 +174,8 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "warning",
             "retry the same write with root='active_workspace'",
         ),
-        "RESOURCE_BLOCKED": _code_spec(
-            "blocked",
-            "resource_blocked",
-            "warning",
-            "use a resource allowed by the task contract",
-        ),
-        # Distinct for the same structural reason: only these two names demote a
+        # Distinct for the same structural reason, and the merged `RESOURCE_BLOCKED`
+        # parent retires with `ROOT_REQUIRED`: only these two names demote a
         # resource block on a read-only tool to ignored telemetry.
         "RESOURCE_CONSTRAINT_BLOCKED": _code_spec(
             "blocked",
@@ -460,12 +456,9 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "error",
             "inspect the extension response and health",
         ),
-        "SAFETY_ERROR": _code_spec(
-            "error",
-            "safety_error",
-            "error",
-            "restore the safety provider before retrying",
-        ),
+        # `SAFETY_ERROR` retires with them: its only publisher was the separator
+        # count this change removed, and a code nothing publishes is a name a
+        # later reader mistakes for a live outcome.
         "TOOL_REPORTED_FAILURE": _code_spec(
             "error",
             "tool_reported_failure",
@@ -834,7 +827,7 @@ def _classify_legacy_text(
         return _classification("TOOL_REPORTED_FAILURE")
     if text.startswith("⚠️ CRITICAL SAFETY_VIOLATION"):
         return _classification("SAFETY_VIOLATION")
-    if text.startswith("⚠️ Unknown tool:"):
+    if text.startswith(_UNKNOWN_TOOL_PREFIX):
         return _classification("UNKNOWN_TOOL")
 
     first_line = text.splitlines()[0] if text else ""
@@ -881,9 +874,19 @@ class LegacyTextResultAdapter:
         if not isinstance(text, str):
             text = str(text)
         normalized_name = str(tool_name or "").strip()
-        dynamic_body_untyped = normalized_name.startswith("ext_") or (
-            normalized_name.startswith("mcp_")
-            and text.startswith(_MCP_RESULT_ENVELOPE_PREFIX)
+        # The name shape is a PROXY for "a provider composed this body", and the
+        # unknown-tool sentence is the one text where the proxy is wrong: the
+        # registry writes it because the name resolved to no provider at all, so a
+        # hallucinated ``ext_``/``mcp_`` name — or one whose extension was
+        # unloaded — would otherwise be a nameless success. Owner item A.1 ("a
+        # call to a tool that does not exist was never a success") holds for every
+        # name shape, and it holds through the ONE chain below, not a second table.
+        dynamic_body_untyped = not text.startswith(_UNKNOWN_TOOL_PREFIX) and (
+            normalized_name.startswith("ext_")
+            or (
+                normalized_name.startswith("mcp_")
+                and text.startswith(_MCP_RESULT_ENVELOPE_PREFIX)
+            )
         )
         if dynamic_body_untyped:
             # A dynamic body still gets the ONE structured self-report read: a
@@ -922,21 +925,18 @@ def _compose_execute_result_result(
         else LegacyTextResultAdapter.from_text(tool_name, base)
     )
     text = _compose_execute_result(base_result.text, route_note, safety_msg)
-    if safety_msg and text.count(_SAFETY_SEPARATOR) > 1:
-        meta = dict(base_result.meta)
-        meta["ambiguous_safety_wrapper"] = True
-        if route_note:
-            meta["route_note"] = True
-        return ToolResult(
-            status="error",
-            code="SAFETY_ERROR",
-            text=text,
-            meta=meta,
-        )
-
     meta = dict(base_result.meta)
     if route_note:
         meta["route_note"] = True
+    if safety_msg and text.count(_SAFETY_SEPARATOR) > 1:
+        # The composer HOLDS the typed base, so the base's own code is the answer
+        # and a second separator merely means the body contains a markdown rule.
+        # Turning that count into SAFETY_ERROR made an ordinary successful
+        # `run_command` whose stdout printed `---` a safety-provider failure —
+        # a blocking status — which is a delta nobody approved. The ambiguity is
+        # still recorded, as metadata, where a reader can see it without it
+        # deciding the outcome.
+        meta["ambiguous_safety_wrapper"] = True
     if not safety_msg:
         return ToolResult(
             status=base_result.status,

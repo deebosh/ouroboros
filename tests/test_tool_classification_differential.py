@@ -34,6 +34,7 @@ from tests.tool_classification_corpus import (
     GOLDEN_SOURCE_SHA,
     build_corpus,
     harvested_identifiers,
+    harvested_native_codes,
     typed_result,
 )
 
@@ -124,6 +125,36 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:mcp_provider_error": Delta(False, "ok", True, "mcp_error", "A.3",
         "the provider error was already typed; only the status beside it said success"),
     "shape:review_blocked_untyped_text": Delta(False, "blocked", False, "review_blocked", "A.17", "same bucket rename through the native code, with no marker in the text"),
+    # Producers whose TEXT IS ASSEMBLED AT RUNTIME. The static harvest pairs a code
+    # with a first line only when that line is a literal, so until the shapes below
+    # entered the corpus these eight status changes were real and invisible: the
+    # differential could not have failed on them, and neither could a mutation that
+    # moved one of these codes to another status.
+    "shape:extension_handler_error": Delta(True, "error", True, "extension_error", "A.17", "the extension error gets its own bucket, homed to the blocking partition"),
+    "shape:extension_async_timeout": Delta(True, "error", True, "timeout", "A.18", "an expired extension handler is named a timeout; the report bucket is unchanged"),
+    "shape:extension_not_live": Delta(True, "error", True, "unavailable", "A.18", "an extension that may not dispatch is unavailable; the report bucket is unchanged"),
+    "shape:mcp_disabled": Delta(False, "ok", True, "unavailable", "A.3", "same fix as MCP_DISABLED, through the native code the provider publishes"),
+    "shape:mcp_tool_not_found": Delta(False, "ok", True, "unavailable", "A.3", "same fix as MCP_TOOL_NOT_FOUND, through the native code the provider publishes"),
+    "shape:mcp_transport_timeout": Delta(False, "ok", True, "timeout", "A.3", "same fix as MCP_TOOL_TIMEOUT, through the native code the provider publishes"),
+    "shape:unknown_tool_extension_down": Delta(False, "ok", True, "unavailable", "A.1",
+        "a call to a tool whose extension is not live was never a success; the registry publishes the more precise `unavailable` rather than `unknown_tool`"),
+    "shape:binding_arg_error": Delta(True, "error", True, "argument_error", "A.17", "same bucket as TOOL_ARG_ERROR, through the interpolated binding-error text"),
+})
+
+# Deltas the classifier WOULD produce for which no producer exists, recorded so a
+# later reader can tell "checked, unreachable" from "missed". Neither can appear in
+# APPROVED_DELTAS: that table fails on rows that do not fire, and these cannot fire.
+_DELTAS_WITHOUT_A_PRODUCER: Mapping[str, str] = MappingProxyType({
+    "SKILL_PAYLOAD_CONTROL_BLOCKED": (
+        "would move ok -> blocked. The retired loop branch was its only mention; no "
+        "producer emits the identifier, so the corpus harvest never sees it and the "
+        "generic `_BLOCKED` marker would answer if one ever did."
+    ),
+    "four nested SAFETY_WARNING wrappers": (
+        "would move ok -> error (LEGACY_TOOL_ERROR, wrapper_depth_exceeded). The "
+        "composer wraps at most once, so a body reaching depth four is a producer "
+        "quoting the wrapper's own text at itself, not a runtime shape."
+    ),
 })
 
 
@@ -170,6 +201,66 @@ def test_every_approved_delta_names_an_owner_item() -> None:
         assert delta.owner_item.startswith("A."), subject
         assert delta.reason.strip(), subject
         assert (delta.old_is_error, delta.old_status) != (delta.new_is_error, delta.new_status), subject
+
+
+def test_every_delta_without_a_producer_is_named_with_its_reason() -> None:
+    """The two unreachable deltas stay documented, never approved: an approved row
+    that cannot fire would fail the table's own staleness direction."""
+    assert set(_DELTAS_WITHOUT_A_PRODUCER).isdisjoint(APPROVED_DELTAS)
+    for subject, reason in _DELTAS_WITHOUT_A_PRODUCER.items():
+        assert reason.strip(), subject
+    assert "SKILL_PAYLOAD_CONTROL_BLOCKED" not in harvested_identifiers()
+
+
+def test_every_native_code_is_covered_by_the_corpus() -> None:
+    """A producer cannot publish a code the differential has never classified.
+
+    The text corpus is blind to a producer that assembles its text at runtime, and
+    the (code, first line) harvest is blind for the same reason: it needs a literal.
+    That blind spot let four extension terminals, both MCP unavailable terminals and
+    the registry's unknown-tool publish change status with no test able to notice.
+    Any new native code now fails here until a corpus case exercises it."""
+    covered = {case.code for case in build_corpus() if case.code}
+    uncovered = sorted(set(harvested_native_codes()) - covered)
+    assert not uncovered, (
+        "native producer codes no corpus case classifies (add a _PRODUCER_SHAPES "
+        f"entry transcribed from the producer): {uncovered}"
+    )
+
+
+def test_a_self_reported_failure_is_telemetry_on_the_execution_axis() -> None:
+    """Owner homing of `tool_reported_failure`, asserted where it is consumed.
+
+    A provider that RAN and answered `{"ok": false}` is is_error=True — the counters
+    and the anti-loop scan need that — but it must not degrade execution health,
+    because `outcomes._LEDGER_NON_FAILURE_STATUSES` has declared the SAME status a
+    non-failure since v6.83.0. Homing it as blocking-only made every unrecovered
+    ext_/mcp_/read `{"ok": false}` land in `unresolved` on one axis while the ledger
+    called it fine on the other. Asserted through the classifier, not by frozenset
+    membership, so a future re-homing has to face the contradiction again."""
+    from ouroboros._outcome_tool_errors import _classify_tool_errors
+
+    buckets = _classify_tool_errors({"tool_calls": [{
+        "tool": "ext_1_demo_screenshot",
+        "status": "tool_reported_failure",
+        "is_error": True,
+        "result": '{"ok": false, "error": "HTTP 500"}',
+    }]})
+    assert [row["tool"] for row in buckets["policy_denials"]] == ["ext_1_demo_screenshot"]
+    assert buckets["unresolved"] == []
+    # And the two consumers agree: the ledger says the same about the same status.
+    from ouroboros.outcomes import _LEDGER_NON_FAILURE_STATUSES
+
+    assert "tool_reported_failure" in _LEDGER_NON_FAILURE_STATUSES
+    # A recovered one is still credited: it is walked, not skipped.
+    recovered = _classify_tool_errors({"tool_calls": [
+        {"tool": "ext_1_demo_screenshot", "status": "tool_reported_failure",
+         "is_error": True, "args": {"path": "/x/shot.png"}},
+        {"tool": "ext_1_demo_screenshot", "status": "ok",
+         "is_error": False, "args": {"path": "/x/shot.png"}},
+    ]})
+    assert len(recovered["recovered"]) == 1
+    assert recovered["policy_denials"] == []
 
 
 def test_golden_covers_every_harvested_producer() -> None:
