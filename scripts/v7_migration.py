@@ -90,6 +90,8 @@ APPROVED_PENDING_OWNERS = frozenset({
     "skills/unix_computer_use/lib/cu_runtime.py", "skills/unix_computer_use/lib/cu_connections.py", "skills/unix_computer_use/lib/cu_remote_backends.py",
     "devtools/benchmarks/osworld/cu_bridge_runtime.py", "devtools/benchmarks/osworld/cu_bridge_prompts.py", "devtools/benchmarks/osworld/cu_bridge_tool_policy.py",
     "devtools/benchmarks/osworld/cu_bridge_gate.py", "devtools/benchmarks/osworld/cu_bridge_budget.py",
+    "devtools/benchmarks/osworld/step_agent_common.py", "devtools/benchmarks/osworld/step_agent_env.py", "devtools/benchmarks/osworld/step_agent_claims.py",
+    "devtools/benchmarks/osworld/step_agent_actions.py", "devtools/benchmarks/osworld/step_agent_policy.py",
 })
 _PY_LOCAL_KINDS = frozenset({"class", "function", "assignment"})
 def _git(repo: pathlib.Path, *args: str, text: bool = True) -> str | bytes:

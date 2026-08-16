@@ -334,34 +334,40 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in tool_access_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
-    cu_runtime_symbols = (
-        "_TIMEOUT_SEC _MAX_IMAGE_W _MAX_IMAGE_H _CONNECTIONS_FILE _ACTIVE_CONNECTION_FILE "
-        "_REMOTE_BACKENDS _MAX_REMOTE_SHOT_BYTES _OSWORLD_PKGS_PREFIX _osworld_result_ok "
-        "_png_dimensions _png_intact _json _run"
-    )
-    cu_mixin_symbols_by_owner = {
-        ("cu_connections.py", "_ConnectionRegistryMixin"):
-            "_connections_path _active_connection_path _read_connections _atomic_write "
-            "_write_connections _active_connection _disabled_connection_error "
-            "_active_backend_name _is_remote list_connections add_connection "
-            "activate_connection use_local clear_active_connection test_connection",
-        ("cu_remote_backends.py", "_RemoteBackendMixin"):
-            "_connection_target _osworld_execute _ssh_macos_key_name "
-            "_ssh_macos_cliclick_for_pyautogui _remote_pyautogui _remote_screenshot_result "
-            "_osworld_screenshot _test_osworld _ssh_destination _ssh_scp_source _ssh_run "
-            "_ssh_macos_screenshot _test_ssh_macos",
+    # v7 stream W periphery extractions. Owner -> symbols, one row per symbol.
+    w_stream_owners = {
+        ("skills/unix_computer_use/plugin.py", "skills/unix_computer_use/lib/cu_runtime.py"):
+            "_TIMEOUT_SEC _MAX_IMAGE_W _MAX_IMAGE_H _CONNECTIONS_FILE _ACTIVE_CONNECTION_FILE _REMOTE_BACKENDS _MAX_REMOTE_SHOT_BYTES _OSWORLD_PKGS_PREFIX _osworld_result_ok _png_dimensions _png_intact _json _run",
+        ("skills/unix_computer_use/plugin.py", "skills/unix_computer_use/lib/cu_connections.py::_ConnectionRegistryMixin"):
+            "_ComputerUse._connections_path _ComputerUse._active_connection_path _ComputerUse._read_connections _ComputerUse._atomic_write _ComputerUse._write_connections _ComputerUse._active_connection _ComputerUse._disabled_connection_error _ComputerUse._active_backend_name _ComputerUse._is_remote _ComputerUse.list_connections _ComputerUse.add_connection _ComputerUse.activate_connection _ComputerUse.use_local _ComputerUse.clear_active_connection _ComputerUse.test_connection",
+        ("skills/unix_computer_use/plugin.py", "skills/unix_computer_use/lib/cu_remote_backends.py::_RemoteBackendMixin"):
+            "_ComputerUse._connection_target _ComputerUse._osworld_execute _ComputerUse._ssh_macos_key_name _ComputerUse._ssh_macos_cliclick_for_pyautogui _ComputerUse._remote_pyautogui _ComputerUse._remote_screenshot_result _ComputerUse._osworld_screenshot _ComputerUse._test_osworld _ComputerUse._ssh_destination _ComputerUse._ssh_scp_source _ComputerUse._ssh_run _ComputerUse._ssh_macos_screenshot _ComputerUse._test_ssh_macos",
+        ("devtools/benchmarks/osworld/run_cu_bridge_agent.py", "devtools/benchmarks/osworld/cu_bridge_runtime.py"):
+            "SKILL_NAME _api _text_declares_infeasible _terminal_answer_text _final_answer_declares_infeasible",
+        ("devtools/benchmarks/osworld/run_cu_bridge_agent.py", "devtools/benchmarks/osworld/cu_bridge_prompts.py"):
+            "GATE_PREAMBLE GATE_SUFFIX OSWORLD_PREAMBLE _ACCEPTANCE_CLAIMS",
+        ("devtools/benchmarks/osworld/run_cu_bridge_agent.py", "devtools/benchmarks/osworld/cu_bridge_tool_policy.py"):
+            "_ALLOWED_CORE_TOOLS _core_tool_names _host_denied_tools _GUI_ACTION_TOOLS _DENIED_SKILL_EXT_TOOLS _effective_disabled_tools _COMPUTER_USE_SHORT_TOOLS",
+        ("devtools/benchmarks/osworld/run_cu_bridge_agent.py", "devtools/benchmarks/osworld/cu_bridge_gate.py"):
+            "_gate_window_sec _gate_claim_window_sec _gate_verdict _DesktopEnvLogCapture ResetUnverified _reset_verified _live_policy_turns _policy_turns _await_gate_task _gate_round _GATE_TURN_RESERVE _GUEST_DOWN_GRACE_SEC _guest_endpoint_healthy _gate_cancel_unconfirmed _gate_tool_trace _gate_turn_budget",
+        ("devtools/benchmarks/osworld/run_cu_bridge_agent.py", "devtools/benchmarks/osworld/cu_bridge_budget.py"):
+            "_effective_max_rounds _step_budget _official_evaluate_cwd _worker_round_cap _publish_worker_round_cap _proxy_trace_shows_exhaustion _verify_setup_effect _task_scoped_proxy_config _proxy_config_is_live _refuse_wrong_dataset_commit _refuse_uncapped_step_claim _audit_step_budget _collect_budget_counters",
+        ("devtools/benchmarks/osworld/run_step_agent.py", "devtools/benchmarks/osworld/step_agent_common.py"):
+            "StepAgentConfig TaskRecordConfig PreflightConfig _safe_slug _http_json",
+        ("devtools/benchmarks/osworld/run_step_agent.py", "devtools/benchmarks/osworld/step_agent_env.py"):
+            "VMWARE_FUSION_PATHS ALIGNED_UPSTREAM SUPPORTED_PROVIDERS osworld_checkout_info provider_preflight_failures _install_optional_dependency_stubs _ensure_vmrun_on_path _DEFAULT_DESKTOP_PORT _LOOPBACK_HOSTS _is_default_desktop_server _teardown_partial_desktop_env construct_desktop_env",
+        ("devtools/benchmarks/osworld/run_step_agent.py", "devtools/benchmarks/osworld/step_agent_claims.py"):
+            "ClaimDirNotConfined confined_claims_dir task_claim_key claim_stale_sec acquire_task_claim UNCONFIRMED_SCORE_SUFFIX ClaimMarkerNotDurable record_unconfirmed_score mark_task_scored scored_claim_state task_already_scored release_task_claim",
+        ("devtools/benchmarks/osworld/run_step_agent.py", "devtools/benchmarks/osworld/step_agent_actions.py"):
+            "SPECIAL_ACTIONS _json_from_text _shell_action _click_action _type_action _hotkey_action _wait_action _normalize_structured_action",
+        ("devtools/benchmarks/osworld/run_step_agent.py", "devtools/benchmarks/osworld/step_agent_policy.py"):
+            "_initial_observation_with_retries OuroborosStepAgent",
     }
-    unix_computer_use_extraction_rows = {
-        f"skills/unix_computer_use/plugin.py::{symbol}":
-            f"skills/unix_computer_use/lib/cu_runtime.py::{symbol}"
-        for symbol in cu_runtime_symbols.split()
+    w_stream_rows = {
+        f"{old}::{symbol}": (f"{owner}.{symbol.split('.', 1)[1]}" if "::" in owner
+                             else f"{owner}::{symbol}")
+        for (old, owner), symbols in w_stream_owners.items() for symbol in symbols.split()
     }
-    unix_computer_use_extraction_rows.update({
-        f"skills/unix_computer_use/plugin.py::_ComputerUse.{symbol}":
-            f"skills/unix_computer_use/lib/{owner}::{mixin}.{symbol}"
-        for (owner, mixin), symbols in cu_mixin_symbols_by_owner.items()
-        for symbol in symbols.split()
-    })
     implemented.update(registry_core_rows)
     implemented.update(registry_resolution_rows)
     implemented.update(registry_guard_rows)
@@ -380,8 +386,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # same function object, so the compatibility contract is inheritance, not a
     # module-level re-export, and the facade cell is "-".
     registry_extraction_no_facade_rows |= {
-        identity for identity in unix_computer_use_extraction_rows
-        if "::_ComputerUse." in identity
+        identity for identity in w_stream_rows if "::_ComputerUse." in identity
     }
     retired_current = {
         "ouroboros/tools/registry.py::_HEAL_PROTECTED_PAYLOAD_FILENAMES":
@@ -431,35 +436,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/tools/registry.py::resolve_skill_payload_target",
     }
     implemented.update({name: name for name in ("ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS")})
-    implemented.update(unix_computer_use_extraction_rows)
-    cu_bridge_symbols_by_owner = {
-        "cu_bridge_runtime.py":
-            "SKILL_NAME _api _text_declares_infeasible _terminal_answer_text "
-            "_final_answer_declares_infeasible",
-        "cu_bridge_prompts.py":
-            "GATE_PREAMBLE GATE_SUFFIX OSWORLD_PREAMBLE _ACCEPTANCE_CLAIMS",
-        "cu_bridge_tool_policy.py":
-            "_ALLOWED_CORE_TOOLS _core_tool_names _host_denied_tools _GUI_ACTION_TOOLS "
-            "_DENIED_SKILL_EXT_TOOLS _effective_disabled_tools _COMPUTER_USE_SHORT_TOOLS",
-        "cu_bridge_gate.py":
-            "_gate_window_sec _gate_claim_window_sec _gate_verdict _DesktopEnvLogCapture "
-            "ResetUnverified _reset_verified _live_policy_turns _policy_turns "
-            "_await_gate_task _gate_round _GATE_TURN_RESERVE _GUEST_DOWN_GRACE_SEC "
-            "_guest_endpoint_healthy _gate_cancel_unconfirmed _gate_tool_trace "
-            "_gate_turn_budget",
-        "cu_bridge_budget.py":
-            "_effective_max_rounds _step_budget _official_evaluate_cwd _worker_round_cap "
-            "_publish_worker_round_cap _proxy_trace_shows_exhaustion _verify_setup_effect "
-            "_task_scoped_proxy_config _proxy_config_is_live _refuse_wrong_dataset_commit "
-            "_refuse_uncapped_step_claim _audit_step_budget _collect_budget_counters",
-    }
-    cu_bridge_extraction_rows = {
-        f"devtools/benchmarks/osworld/run_cu_bridge_agent.py::{symbol}":
-            f"devtools/benchmarks/osworld/{owner}::{symbol}"
-        for owner, symbols in cu_bridge_symbols_by_owner.items()
-        for symbol in symbols.split()
-    }
-    implemented.update(cu_bridge_extraction_rows)
+    implemented.update(w_stream_rows)
     existing_process_owner_rows.update({"ouroboros/tools/core.py::_code_search", 'ouroboros/tools/core.py::_filter_out_project_store', 'ouroboros/tools/core.py::_policy_is_skill_owner_state_target', 'ouroboros/tools/core.py::active_repo_dir_for', 'ouroboros/tools/core.py::active_tool_profile', 'ouroboros/tools/core.py::build_resolved_resource_binding', 'ouroboros/tools/core.py::decide_tool_access', 'ouroboros/tools/core.py::normalize_root', 'ouroboros/tools/core.py::normalize_runtime_data_path', 'ouroboros/tools/core.py::read_text', 'ouroboros/tools/core.py::SKILL_OWNER_STATE_FILENAMES', "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     registry_extraction_no_facade_rows.update({"ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     for row in rows:

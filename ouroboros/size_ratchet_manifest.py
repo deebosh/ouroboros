@@ -3,7 +3,6 @@
 BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 
 GIANT_PATHS = (
-    "devtools/benchmarks/osworld/run_step_agent.py",
     "ouroboros/extension_loader.py",
     "ouroboros/llm.py",
     "ouroboros/loop.py",
@@ -51,7 +50,6 @@ GIANT_PATHS = (
 )
 
 MODULE_DEBT_1500 = (
-    "devtools/benchmarks/osworld/run_step_agent.py",
     "ouroboros/agent.py",
     "ouroboros/agent_task_pipeline.py",
     "ouroboros/config.py",
@@ -279,6 +277,6 @@ BYTE_DEBT = {
     "ouroboros/llm.py": 200307,
     "ouroboros/loop.py": 321064,
     "tests/test_delegated_subagent_transport.py": 320438,
-    "tests/test_devtools_benchmarks.py": 328786,
+    "tests/test_devtools_benchmarks.py": 328781,
     "web/modules/chat.js": 229431,
 }
