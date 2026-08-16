@@ -362,6 +362,14 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "SPECIAL_ACTIONS _json_from_text _shell_action _click_action _type_action _hotkey_action _wait_action _normalize_structured_action",
         ("devtools/benchmarks/osworld/run_step_agent.py", "devtools/benchmarks/osworld/step_agent_policy.py"):
             "_initial_observation_with_retries OuroborosStepAgent",
+        ("web/tests/harness_accounts.test.js", "web/tests/harness_accounts_helpers.js"):
+            "fakeResponse",
+        ("web/tests/harness_accounts.test.js", "web/tests/harness_accounts_cards.test.js"):
+            "cardWithUrl fakeCodeInput fakeCardHost",
+        ("web/tests/harness_accounts.test.js", "web/tests/harness_accounts_custody.test.js"):
+            "storeWithReads",
+        ("web/tests/harness_accounts.test.js", "web/tests/harness_accounts_panel.test.js"):
+            "fakeElement mountSection captureCardControls WAKE_STILL_DOWN WAKE_UP",
     }
     w_stream_rows = {
         f"{old}::{symbol}": (f"{owner}.{symbol.split('.', 1)[1]}" if "::" in owner
@@ -387,6 +395,12 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # module-level re-export, and the facade cell is "-".
     registry_extraction_no_facade_rows |= {
         identity for identity in w_stream_rows if "::_ComputerUse." in identity
+    }
+    # Node test fixtures move to a sibling *.test.js discovered by the same glob;
+    # a test module has no re-export contract, so those facade cells stay "-".
+    registry_extraction_no_facade_rows |= {
+        identity for identity in w_stream_rows
+        if identity.startswith("web/tests/") and "fakeResponse" not in identity
     }
     retired_current = {
         "ouroboros/tools/registry.py::_HEAL_PROTECTED_PAYLOAD_FILENAMES":

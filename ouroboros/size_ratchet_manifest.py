@@ -46,7 +46,6 @@ GIANT_PATHS = (
     "tests/test_ui_smoke_playwright.py",
     "tests/test_workspace_executor.py",
     "web/modules/chat.js",
-    "web/tests/harness_accounts.test.js",
 )
 
 MODULE_DEBT_1500 = (
@@ -114,7 +113,6 @@ MODULE_DEBT_1500 = (
     "tests/test_ui_smoke_playwright.py",
     "tests/test_workspace_executor.py",
     "web/modules/chat.js",
-    "web/tests/harness_accounts.test.js",
 )
 
 FUNCTION_DEBT = (
