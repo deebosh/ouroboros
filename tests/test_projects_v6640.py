@@ -424,7 +424,7 @@ def test_ephemeral_decision_web_frames_never_create_task_card_or_second_receipt(
 
     progress = chat[
         chat.index("function updateLiveCardFromProgressMessage"):
-        chat.index("function updateSubagentCardFromEvent")
+        chat.index("function updateLiveCardFromLogEvent")
     ]
     logs = chat[
         chat.index("function updateLiveCardFromLogEvent"):
