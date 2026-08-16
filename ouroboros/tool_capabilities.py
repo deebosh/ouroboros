@@ -4,7 +4,7 @@ from __future__ import annotations
 
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_file", "list_files", "write_file", "edit_text",
-    "apply_patch", "edit_batch",
+    "apply_patch", "edit_batch", "bump_version",
     "search_code", "query_code", "plan_task",
     "run_command", "run_script",
     "start_service", "service_status", "service_logs", "stop_service",

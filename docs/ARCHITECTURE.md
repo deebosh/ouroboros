@@ -1,4 +1,4 @@
-# Ouroboros v6.100.5 — Architecture & Reference
+# Ouroboros v6.101.0 — Architecture & Reference
 
 This file is NOT a changelog. Version history lives in README.md, git tags, and commit log.
 
@@ -221,7 +221,8 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   └── _helpers.py      ← shared HTTP request root helpers, coercion, and JSON error envelope
       ├── tools/               ← Auto-discovered tool plugins
       │   ├── extension_dispatch.py ← Extension tool dispatch helper extracted from registry.py; preserves liveness, safety, async, and out-of-process error contracts
-      │   ├── release_sync.py    ← Release-metadata sync library; advisory_review uses sync_release_metadata before provider spend when VERSION is in scope; _preflight_check uses check_history_limit for P9 row caps; agents can also call it directly for version-carrier sync
+      │   ├── release_sync.py    ← Release-metadata sync library; advisory_review uses sync_release_metadata before provider spend when VERSION is in scope; _preflight_check uses check_history_limit for P9 row caps; bump_version_files() (v6.101.0) composes VERSION write + sync_release_metadata + insert_changelog_row (P9 2/5/5 cap enforced by rolling the oldest same-category row to git tags) into one atomic carrier bump; agents can also call sync_release_metadata directly for version-carrier sync
+      │   ├── version_release.py ← `bump_version` tool (v6.101.0): thin wrapper around release_sync.bump_version_files. Structural fix for the recurring `advisory_stale` commit-readiness debt pattern (crd-0003): a version bump used to be several independent edit_text calls, each an independent worktree mutation capable of staling an already-fresh advisory_review; one bump_version call is one mutates_worktree=True dispatch, so it stales advisory at most once per bump instead of once per touched carrier file
       │   ├── review_synthesis.py ← LLM-based commit-finding synthesis (fail-open to the original findings on synthesis error) plus the strict plan-review parser/aggregator, reference-only `review_disposition` validator, and requested/effective context disclosure; plan outcomes are exactly `GREEN`, `REVIEW_REQUIRED`, or `REVISE_PLAN`
       │   ├── ci.py              ← CI trigger and monitoring (GitHub Actions API)
       │   ├── claude_advisory_review.py ← Advisory pre-review tool (read-only Claude Agent SDK)

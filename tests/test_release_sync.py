@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 
 from ouroboros.tools.release_sync import (
+    bump_version_files,
     check_history_limit,
     detect_numeric_claims,
+    insert_changelog_row,
     normalize_linux_package_version,
     run_release_preflight,
     sync_release_metadata,
@@ -631,3 +633,130 @@ class TestBadgeAndArchRegexAcceptRc:
     def test_arch_header_regex_still_matches_stable(self):
         header = "# Ouroboros v4.50.0 — Three-layer refactor\n"
         assert _ARCH_HEADER_RE.search(header) is not None
+
+
+# ---------------------------------------------------------------------------
+# insert_changelog_row
+# ---------------------------------------------------------------------------
+
+class TestInsertChangelogRow:
+    def test_new_row_lands_directly_under_header(self):
+        readme = (
+            "## Version History\n\n"
+            "| Version | Date | Description |\n"
+            "|---------|------|-------------|\n"
+            "| 1.0.0 | 2026-01-01 | first |\n"
+        )
+        out = insert_changelog_row(readme, "1.0.1", "2026-01-02", "second")
+        lines = out.splitlines()
+        first_row_idx = next(i for i, l in enumerate(lines) if l.startswith("| 1.0"))
+        assert lines[first_row_idx] == "| 1.0.1 | 2026-01-02 | second |"
+        assert "| 1.0.0 | 2026-01-01 | first |" in out
+
+    def test_trims_oldest_row_in_same_category_over_cap(self):
+        # 5 existing patch rows (at the cap) under one minor version.
+        rows = "\n".join(
+            f"| 1.0.{n} | 2026-01-0{n} | patch {n} |" for n in range(5, 0, -1)
+        )
+        readme = (
+            "## Version History\n\n"
+            "| Version | Date | Description |\n"
+            "|---------|------|-------------|\n"
+            f"{rows}\n"
+        )
+        out = insert_changelog_row(readme, "1.0.6", "2026-01-06", "patch 6")
+        assert out.count("| 1.0.") == 5
+        assert "1.0.6" in out
+        assert "1.0.1" not in out  # oldest patch rolled off
+        assert "1.0.2" in out
+
+    def test_does_not_trim_other_categories(self):
+        readme = (
+            "## Version History\n\n"
+            "| Version | Date | Description |\n"
+            "|---------|------|-------------|\n"
+            "| 2.0.0 | 2026-01-01 | major |\n"
+            "| 1.5.0 | 2026-01-01 | minor |\n"
+        )
+        out = insert_changelog_row(readme, "1.5.1", "2026-01-02", "patch")
+        assert "2.0.0" in out
+        assert "1.5.0" in out
+        assert "1.5.1" in out
+
+    def test_no_table_returns_text_unchanged(self):
+        readme = "# No version history table here.\n"
+        assert insert_changelog_row(readme, "1.0.0", "2026-01-01", "x") == readme
+
+
+# ---------------------------------------------------------------------------
+# bump_version_files
+# ---------------------------------------------------------------------------
+
+class TestBumpVersionFiles:
+    def test_writes_version_file(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.0.0")
+        bump_version_files(str(repo), "1.0.1", "fix: something", changelog_date="2026-08-16")
+        assert (repo / "VERSION").read_text(encoding="utf-8").strip() == "1.0.1"
+
+    def test_cascades_every_carrier_in_one_call(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.0.0")
+        changed = bump_version_files(str(repo), "1.0.1", "fix: something", changelog_date="2026-08-16")
+        assert changed == sorted([
+            "README.md", "VERSION", "docs/ARCHITECTURE.md", "pyproject.toml",
+            "uv.lock", "web/modules/api_types.js", "web/package.json",
+        ])
+        assert 'version = "1.0.1"' in (repo / "pyproject.toml").read_text(encoding="utf-8")
+        assert "v1.0.1" in (repo / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+
+    def test_inserts_changelog_row_with_given_date_and_description(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.0.0")
+        bump_version_files(str(repo), "1.0.1", "fix: something specific", changelog_date="2026-08-16")
+        readme = (repo / "README.md").read_text(encoding="utf-8")
+        assert "| 1.0.1 | 2026-08-16 | fix: something specific |" in readme
+
+    def test_defaults_changelog_date_to_today(self, tmp_path):
+        import datetime
+        repo = _make_repo(tmp_path, "1.0.0")
+        bump_version_files(str(repo), "1.0.1", "fix: no explicit date")
+        readme = (repo / "README.md").read_text(encoding="utf-8")
+        today = datetime.date.today().isoformat()
+        assert f"| 1.0.1 | {today} | fix: no explicit date |" in readme
+
+    def test_rejects_invalid_version(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.0.0")
+        with pytest.raises(ValueError):
+            bump_version_files(str(repo), "not-a-version", "desc")
+
+    def test_rejects_empty_description(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.0.0")
+        with pytest.raises(ValueError):
+            bump_version_files(str(repo), "1.0.1", "")
+
+    def test_rejects_pipe_in_description(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.0.0")
+        with pytest.raises(ValueError):
+            bump_version_files(str(repo), "1.0.1", "breaks | the table")
+
+    def test_rejects_invalid_version_before_any_write(self, tmp_path):
+        """A bad new_version must not touch VERSION at all (atomic-in-spirit)."""
+        repo = _make_repo(tmp_path, "1.0.0")
+        with pytest.raises(ValueError):
+            bump_version_files(str(repo), "garbage", "desc")
+        assert (repo / "VERSION").read_text(encoding="utf-8").strip() == "1.0.0"
+
+    def test_no_carriers_desync_after_bump(self, tmp_path):
+        """The whole point: after one bump_version_files call, every carrier
+        version_carrier_desyncs checks agrees with VERSION."""
+        repo = _make_repo(tmp_path, "1.0.0")
+        bump_version_files(str(repo), "1.0.1", "fix: consistency", changelog_date="2026-08-16")
+        desync = version_carrier_desyncs(
+            "1.0.1",
+            pyproject_text=(repo / "pyproject.toml").read_text(encoding="utf-8"),
+            uv_lock_text=(repo / "uv.lock").read_text(encoding="utf-8"),
+            web_package_text=(repo / "web" / "package.json").read_text(encoding="utf-8"),
+            readme_text=(repo / "README.md").read_text(encoding="utf-8"),
+            arch_text=(repo / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8"),
+            api_types_text=(repo / "web" / "modules" / "api_types.js").read_text(encoding="utf-8"),
+            detailed=True,
+        )
+        assert desync == []

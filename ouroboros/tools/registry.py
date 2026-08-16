@@ -790,6 +790,7 @@ _REPO_MUTATION_TOOLS = frozenset({
     "edit_text",
     "apply_patch",
     "edit_batch",
+    "bump_version",
     "vcs_revert",
     "vcs_pull_ff",
     "vcs_restore",
@@ -1487,7 +1488,8 @@ class ToolRegistry:
         "health", "join_ledger", "knowledge", "media", "memory_tools", "plan_review", "project_journal",
         "recent_tasks",
         "query_code", "review", "search", "services", "shell", "skill_exec", "skill_publish",
-        "skill_preflight", "subagent_integration", "task_tree", "tool_discovery", "verify", "vision",
+        "skill_preflight", "subagent_integration", "task_tree", "tool_discovery", "verify",
+        "version_release", "vision",
     ]
 
     def _load_modules(self) -> None:

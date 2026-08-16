@@ -9,6 +9,7 @@ manual.
 from __future__ import annotations
 
 import re
+from datetime import date as _date
 from pathlib import Path
 from typing import List, Tuple
 
@@ -268,6 +269,108 @@ def sync_release_metadata(repo_dir: str) -> List[str]:
             changed.append("docs/ARCHITECTURE.md")
 
     return changed
+
+
+def insert_changelog_row(readme_text: str, version: str, date: str, description: str) -> str:
+    """Insert one Version History row for *version* and trim the oldest row in
+    the same major/minor/patch category when the P9 cap (2/5/5) is exceeded.
+
+    The new row always lands directly under the table header (rows read
+    newest-first), matching the existing hand-edited convention.
+    """
+    row = f"| {version} | {date} | {description} |"
+    match = _VERSION_ROW_RE.search(readme_text)
+    if match:
+        insert_at = match.start()
+        new_text = readme_text[:insert_at] + row + "\n" + readme_text[insert_at:]
+    else:
+        header = re.search(r'\|\s*Version\s*\|\s*Date\s*\|\s*Description\s*\|\s*\n\|[-\s|]+\|\s*\n', readme_text)
+        if not header:
+            return readme_text
+        insert_at = header.end()
+        new_text = readme_text[:insert_at] + row + "\n" + readme_text[insert_at:]
+
+    return _trim_oldest_over_cap(new_text)
+
+
+def _row_category(min_: int, patch: int) -> str:
+    if min_ == 0 and patch == 0:
+        return "major"
+    if patch == 0:
+        return "minor"
+    return "patch"
+
+
+def _trim_oldest_over_cap(readme_text: str) -> str:
+    """Drop the oldest row in any category that exceeds its P9 cap.
+
+    Rows are newest-first by convention (each bump inserts at the top), so the
+    LAST matching row in document order is the one to roll off to git tags.
+    """
+    caps = {"major": _MAX_MAJOR, "minor": _MAX_MINOR, "patch": _MAX_PATCH}
+    rows_by_category: dict[str, list[re.Match]] = {"major": [], "minor": [], "patch": []}
+    for m in _VERSION_ROW_RE.finditer(readme_text):
+        category = _row_category(int(m.group(2)), int(m.group(3)))
+        rows_by_category[category].append(m)
+
+    to_drop: List[re.Match] = []
+    for category, cap in caps.items():
+        rows = rows_by_category[category]
+        if len(rows) > cap:
+            to_drop.extend(rows[cap:])
+
+    if not to_drop:
+        return readme_text
+
+    # Drop whole lines, right-to-left so earlier offsets stay valid.
+    to_drop.sort(key=lambda m: m.start(), reverse=True)
+    for m in to_drop:
+        line_start = readme_text.rfind("\n", 0, m.start()) + 1
+        line_end = readme_text.find("\n", m.start())
+        line_end = line_end + 1 if line_end != -1 else len(readme_text)
+        readme_text = readme_text[:line_start] + readme_text[line_end:]
+
+    return readme_text
+
+
+def bump_version_files(
+    repo_dir: str,
+    new_version: str,
+    changelog_description: str,
+    changelog_date: str = "",
+) -> List[str]:
+    """Atomically write VERSION, cascade every derived carrier, and insert the
+    changelog row — one filesystem transaction instead of a hand-run sequence
+    of separate edits (each of which independently stales advisory review).
+
+    Returns the sorted list of repo-relative paths actually changed, always
+    including "VERSION" itself.
+    """
+    version = str(new_version or "").strip()
+    if not is_release_version(version):
+        raise ValueError(f"unsupported release version: {version!r}")
+    description = str(changelog_description or "").strip()
+    if not description:
+        raise ValueError("changelog_description must not be empty")
+    if "|" in description:
+        raise ValueError("changelog_description must not contain '|' (breaks the Markdown table row)")
+
+    root = Path(repo_dir)
+    version_file = root / "VERSION"
+    version_file.write_text(version + "\n", encoding="utf-8")
+    changed = {"VERSION"}
+    changed.update(sync_release_metadata(repo_dir))
+
+    date = changelog_date.strip() if changelog_date else _date.today().isoformat()
+    readme = root / "README.md"
+    if readme.exists():
+        text = readme.read_text(encoding="utf-8")
+        new_text = insert_changelog_row(text, version, date, description)
+        if new_text != text:
+            readme.write_text(new_text, encoding="utf-8")
+            changed.add("README.md")
+
+    return sorted(changed)
 
 
 def check_history_limit(readme_text: str) -> List[str]:

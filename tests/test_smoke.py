@@ -114,7 +114,7 @@ EXPECTED_TOOLS = [
     "wait_task", "wait_tasks", "tree_note", "tree_read",
     "delegate_start", "delegate_wait", "delegate_cancel", "delegate_answer",
     "read_file", "list_files", "write_file", "edit_text",
-    "apply_patch", "edit_batch",
+    "apply_patch", "edit_batch", "bump_version",
     "send_photo", "send_video", "send_file", "search_code", "query_code", "forward_to_worker",
     "generate_evolution_stats",
     "commit_reviewed", "vcs_commit_reviewed", "vcs_status", "vcs_diff",

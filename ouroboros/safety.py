@@ -80,6 +80,7 @@ TOOL_POLICY: Dict[str, str] = {
     "edit_text": POLICY_SKIP,
     "apply_patch": POLICY_SKIP,
     "edit_batch": POLICY_SKIP,
+    "bump_version": POLICY_SKIP,
     "commit_reviewed": POLICY_SKIP,
     "vcs_commit_reviewed": POLICY_SKIP,
     "knowledge_write": POLICY_SKIP,
