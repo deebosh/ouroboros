@@ -609,6 +609,17 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in headless_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
+    tool_access_extraction_symbols_by_owner = {
+        "tool_access_types.py": "ToolProfile ResourceRoot Operation SubagentCapability ToolAccessDecision ResolvedResourceBinding _ALL_ROOTS _READONLY_RESOURCE_ROOTS _TOP_LEVEL_PRINCIPAL_PROFILES _READ_OPS _TOP_LEVEL_PRINCIPAL_POLICY _POLICY _SUBAGENT_CAPABILITY_TO_OPERATION SUBAGENT_CAPABILITIES",
+        "tool_access_paths.py": "_user_files_root _deliverables_root normalize_root path_is_relative_to normalize_root_relative _path_is_relative_to_casefold paths_overlap_casefold workspace_mode_block_reason canonical_data_root normalize_runtime_data_path",
+        "tool_access_roots.py": "_is_subagent_ctx is_external_workspace active_tool_profile predicted_subagent_profile project_room_lens_dir load_bound_skill _skill_payload_base resource_root_path binding_targets_system_repo",
+        "tool_access_user_files.py": "_USER_FILES_SECRET_COMPONENTS _USER_FILES_SECRET_NAMES _USER_FILES_SECRET_RE _USER_FILES_ALLOWED_DOTNAMES _subagent_projects_read_hint user_files_path_block_reason UserFilesPathBlockedError resolve_user_file_path",
+    }
+    tool_access_extraction_rows = {
+        f"ouroboros/tool_access.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in tool_access_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
     implemented.update(registry_core_rows)
     implemented.update(registry_resolution_rows)
     implemented.update(registry_guard_rows)
@@ -617,6 +628,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(git_extraction_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)
+    implemented.update(tool_access_extraction_rows)
     registry_extraction_no_facade_rows = (
         set(registry_core_rows) - {"ouroboros/tools/registry.py::ToolRegistry"}
     ) | set(registry_resolution_rows) | set(registry_guard_rows) | set(

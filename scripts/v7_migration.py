@@ -86,6 +86,7 @@ APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/git_plumbing.py", "ouroboros/tools/git_review_cycle.py", "ouroboros/tools/git_evolution.py", "ouroboros/tools/git_repo_edit.py", "ouroboros/tools/git_vcs_ops.py",
     "ouroboros/tools/shell_process.py", "ouroboros/tools/shell_outputs.py", "ouroboros/tools/shell_effects.py",
     "ouroboros/headless_status.py", "ouroboros/workspace_patch_capture.py",
+    "ouroboros/tool_access_types.py", "ouroboros/tool_access_paths.py", "ouroboros/tool_access_roots.py", "ouroboros/tool_access_user_files.py",
 })
 _PY_LOCAL_KINDS = frozenset({"class", "function", "assignment"})
 def _git(repo: pathlib.Path, *args: str, text: bool = True) -> str | bytes:
