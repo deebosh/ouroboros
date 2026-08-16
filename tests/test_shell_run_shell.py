@@ -431,13 +431,20 @@ class TestEmbeddedShellPipeline:
     # The NEW check: production failure shape (v6.93.2 fix).
     # ------------------------------------------------------------------
     def test_run_shell_blocks_stuffed_pipeline_in_element_zero(self, tmp_path):
-        """The exact shape that hit task 0b7e545d / 352130d1 / 7847c2aa / 91d68bd0."""
+        """The exact shape that hit task 0b7e545d / 352130d1 / 7847c2aa / 91d68bd0.
+
+        As of v6.101.0 this len(cmd)==1 case is now caught EARLIER by the
+        broader single-element metacharacter check (TestSingleElementShellMetachar),
+        which fires on 1+ operators rather than this check's 2+ threshold — so
+        the message text changed from naming "cmd[0]" to "single-element cmd".
+        Still SHELL_CMD_ERROR with the same sh -c remediation; this test stays
+        as a regression guard that the case is caught by *some* cascade step.
+        """
         result = _run_shell(
             _ctx(tmp_path),
             ["curl && -s && https://api.example.com/x"],
         )
         assert "SHELL_CMD_ERROR" in result
-        assert "cmd[0]" in result
         assert '"sh"' in result
 
     def test_run_shell_blocks_stuffed_pipeline_in_middle_element(self, tmp_path):
@@ -517,5 +524,77 @@ class TestEmbeddedShellPipeline:
             ["bash", "-c", "printf '%s' \"$SECRET\" && true"],
         )
         assert "SHELL_ENV_ERROR" not in result
+        assert "SHELL_CMD_ERROR" not in result
+        assert "exit_code=0" in result
+
+
+class TestSingleElementShellMetachar:
+    """v6.101.0 fix: a lone &&/||/|/; in a ONE-element cmd — the coverage gap
+    that let the >=2 stuffed-pipeline check (TestEmbeddedShellPipeline above)
+    still miss the single-operator shape recurring across 11 backlog entries
+    (ibl-5aa29f06571d through ibl-4ecff817c661, 2026-08-11..08-15)."""
+
+    # ------------------------------------------------------------------
+    # The gap this closes: exactly the production failure shapes reported
+    # after the >=2 check (9224e188) had already landed.
+    # ------------------------------------------------------------------
+    def test_run_shell_blocks_single_ampersand_pair(self, tmp_path):
+        """['ls -la && cat file.txt'] — one && in the sole element."""
+        result = _run_shell(_ctx(tmp_path), ["ls -la && cat file.txt"])
+        assert "SHELL_CMD_ERROR" in result
+        assert '"sh"' in result
+
+    def test_run_shell_blocks_single_double_pipe(self, tmp_path):
+        """['find . -name \"*.py\" || echo none'] — one || in the sole element."""
+        result = _run_shell(_ctx(tmp_path), ['find . -name "*.py" || echo none'])
+        assert "SHELL_CMD_ERROR" in result
+
+    def test_run_shell_blocks_bare_pipe_in_sole_element(self, tmp_path):
+        """['echo hello | grep h'] — a bare pipe, not caught by the >=2 check
+        (which deliberately excludes bare | for the multi-arg case) or by
+        _SHELL_OPERATORS.intersection (| here is not its own array element)."""
+        result = _run_shell(_ctx(tmp_path), ["echo hello | grep h"])
+        assert "SHELL_CMD_ERROR" in result
+
+    def test_run_shell_blocks_semicolon_in_sole_element(self, tmp_path):
+        """['echo a; echo b'] — semicolon-chained commands as one element."""
+        result = _run_shell(_ctx(tmp_path), ["echo a; echo b"])
+        assert "SHELL_CMD_ERROR" in result
+
+    # ------------------------------------------------------------------
+    # _SHELL_INTERPRETERS exemption still applies to a bare interpreter name.
+    # ------------------------------------------------------------------
+    def test_run_shell_allows_bare_interpreter_name(self, tmp_path, fake_subprocess):
+        """['bash'] alone (interactive, no -c) is not flagged."""
+        fake_subprocess(stdout="")
+        result = _run_shell(_ctx(tmp_path), ["bash"])
+        assert "SHELL_CMD_ERROR" not in result
+
+    # ------------------------------------------------------------------
+    # False-positive guard: the exact reason bare "|" and threshold 1 stay
+    # OUT of the multi-arg check must still hold for len(cmd) > 1.
+    # ------------------------------------------------------------------
+    def test_run_shell_allows_operator_text_in_multi_arg_value(self, tmp_path, fake_subprocess):
+        """['git', 'commit', '-m', 'step1 && step2 done'] — operator-looking
+        text is legitimate content of a VALUE argument sitting alongside
+        other argv elements; must not be flagged (len(cmd) > 1, out of this
+        check's scope by design)."""
+        fake_subprocess(stdout="")
+        result = _run_shell(
+            _ctx(tmp_path), ["git", "commit", "-m", "step1 && step2 done"]
+        )
+        assert "SHELL_CMD_ERROR" not in result
+
+    def test_run_shell_allows_grep_pipe_alternation_as_separate_arg(self, tmp_path, fake_subprocess):
+        """['grep', '-E', 'a|b', 'file.txt'] — regex alternation as its own
+        argv element, len(cmd) > 1, must not be flagged."""
+        fake_subprocess(stdout="")
+        result = _run_shell(_ctx(tmp_path), ["grep", "-E", "a|b", "file.txt"])
+        assert "SHELL_CMD_ERROR" not in result
+
+    def test_run_shell_allows_ordinary_single_element_no_metachar(self, tmp_path, fake_subprocess):
+        """['echo hello world'] — one element, no shell metacharacter, passes."""
+        fake_subprocess(stdout="hello world")
+        result = _run_shell(_ctx(tmp_path), ["echo hello world"])
         assert "SHELL_CMD_ERROR" not in result
         assert "exit_code=0" in result

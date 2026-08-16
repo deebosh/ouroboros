@@ -791,6 +791,21 @@ _GLUED_REDIRECT_RE = re.compile(
 # pass through (env-ref check at the same cascade location carries the same
 # exemption boundary).
 _EMBEDDED_SHELL_OP_RE = re.compile(r'\s(?:&&|\|\|)\s')
+# A cmd list of length 1 has no "other arguments" for an operator-looking
+# substring to be legitimate content of (the false-positive concern that
+# keeps `|` and the >=1 threshold OUT of the multi-arg check above: a value
+# argument like a commit message or grep pattern can legitimately contain
+# "&&"/"|" text when it sits ALONGSIDE other argv elements). When the WHOLE
+# cmd is one string, that string IS what subprocess treats as the executable
+# name — so ANY shell metacharacter inside it (single "&&"/"||"/"|", or ";")
+# means the caller passed a full pipeline as one un-split argv element
+# instead of splitting it or wrapping ["sh", "-c", ...]. This is the
+# single-most-recurring production failure shape (11 backlog nominations,
+# ibl-5aa29f06571d through ibl-4ecff817c661, 2026-08-11..08-15): the >=2
+# stuffed-pipeline check below only fires on TWO OR MORE operators glued into
+# one element, so a lone "&&"/"|" (arguably the more common typo) passed
+# through silently as a raw [Errno 2] with no actionable guidance.
+_SINGLE_ARG_SHELL_META_RE = re.compile(r'\s(?:&&|\|\|)\s|(?<!\|)\|(?!\|)|;')
 _SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"})
 _ENV_REF_PATTERN = re.compile(r'\$(?:\{[A-Z][A-Z0-9_]*\}|[A-Z][A-Z0-9_]*)')
 _SENSITIVE_OUTPUT_NAMES = frozenset({".env", ".env.local", "credentials.json", "secrets.json", "token.json"})
@@ -909,8 +924,15 @@ def _validate_shell_argv(cmd: List[str]) -> str:
          for cd and a generic sh -c hint for the rest)
       3. standalone shell-operator check (`_SHELL_OPERATORS.intersection`)
       4. glued-redirect check (`_GLUED_REDIRECT_RE`)
-      5. embedded-op check (the cycle #1 fix: 2+ whitespace-bracketed
-         `&&`/`||` inside one argv element — the production failure shape).
+      5. single-element metacharacter check (v6.101.0 fix: a lone `&&`/`||`/
+         `|`/`;` when cmd has EXACTLY ONE element — the whole cmd is then
+         necessarily one full pipeline mistakenly passed as an un-split
+         argv string, so the false-positive concern that keeps this out of
+         the multi-arg checks (a value argument legitimately containing
+         operator-looking text) cannot apply).
+      6. embedded-op check (the cycle #1 fix: 2+ whitespace-bracketed
+         `&&`/`||` inside one argv element among possibly several — the
+         multi-arg production failure shape).
     """
     executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
     if executable_name not in _SHELL_INTERPRETERS:
@@ -959,6 +981,31 @@ def _validate_shell_argv(cmd: List[str]) -> str:
                 'Subprocess does not interpret shell syntax, so it reaches the '
                 'program as a literal argument. '
                 'Use ["sh", "-c", "your command with redirects"] for redirection.'
+            )
+
+    # cmd has exactly ONE element: that element is not "one argument among
+    # several" (where operator-looking text can be legitimate content, e.g.
+    # a commit message `["git", "commit", "-m", "step1 && step2 done"]`) —
+    # it IS the entire cmd, and subprocess treats it as the executable NAME.
+    # A real single-token executable name never legitimately contains a
+    # whitespace-bracketed "&&"/"||", a bare "|", or a ";" — so any of those
+    # here means the caller passed a whole pipeline as one un-split argv
+    # string instead of splitting it or wrapping ["sh", "-c", ...]. Gated by
+    # _SHELL_INTERPRETERS so a bare `["bash"]` (interactive, no -c) is not
+    # flagged. This is scoped tighter than the >=2 check below specifically
+    # so it can safely use a >=1 threshold and include the bare "|" that the
+    # multi-arg check below deliberately excludes (see its comment).
+    if len(cmd) == 1 and executable_name not in _SHELL_INTERPRETERS:
+        single = cmd[0]
+        if _SINGLE_ARG_SHELL_META_RE.search(single):
+            preview = single if len(single) <= 80 else single[:77] + "..."
+            return (
+                f'⚠️ SHELL_CMD_ERROR: Shell syntax found in a single-element cmd: "{preview}". '
+                'A one-element cmd is treated as a literal executable NAME by subprocess, '
+                'not as a shell pipeline, so this fails with [Errno 2] No such file or '
+                'directory. Fix: (1) Split into separate argv elements, one per '
+                'run_command call if the operator was meant to chain commands; '
+                '(2) Wrap the pipeline: ["sh", "-c", "your command here"].'
             )
 
     # A shell pipeline STUFFED into a single argv element (e.g.
