@@ -509,13 +509,14 @@ def test_extension_native_success_preserves_untrusted_body_and_safety_warning(
         assert calls == ["safety"]
         return
     expected_text = f"{safety_msg}\n\n---\n{body}" if safety_msg else body
-    expected_code = "SAFETY_WARNING" if safety_msg else "OK"
     expected_meta = {"dynamic_provider": True}
     if safety_msg:
         expected_meta["safety_warning"] = True
+    # T1 §A.12: the BODY stays byte-exact and untrusted, but `"ok": false` is the
+    # provider's own failure report and must not be overwritten with OK.
     assert result == ToolResult(
-        status="ok",
-        code=expected_code,
+        status="error",
+        code="TOOL_REPORTED_FAILURE",
         text=expected_text,
         meta=expected_meta,
     )

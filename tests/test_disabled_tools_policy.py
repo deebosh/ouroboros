@@ -202,7 +202,7 @@ def test_capability_resource_guard_owner_facades_preserve_identity():
                 "allowed_resources": {"network": False},
             },
             "blocked",
-            "RESOURCE_BLOCKED",
+            "RESOURCE_CONSTRAINT_BLOCKED",
             "resource_constraint_blocked",
             (
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.disabled_tools "
@@ -238,7 +238,7 @@ def test_capability_resource_guard_owner_facades_preserve_identity():
             {"image_url": "https://example.test/image.png"},
             {"allowed_resources": {"web": False}},
             "blocked",
-            "RESOURCE_BLOCKED",
+            "RESOURCE_CONSTRAINT_BLOCKED",
             "resource_constraint_blocked",
             (
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: remote image_url for vlm_query "
@@ -250,7 +250,7 @@ def test_capability_resource_guard_owner_facades_preserve_identity():
             {},
             {"allowed_resources": {"web": False}},
             "blocked",
-            "RESOURCE_BLOCKED",
+            "RESOURCE_CONSTRAINT_BLOCKED",
             "resource_constraint_blocked",
             (
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.web=false "
@@ -262,7 +262,7 @@ def test_capability_resource_guard_owner_facades_preserve_identity():
             {},
             {"allowed_resources": {"network": False}},
             "blocked",
-            "RESOURCE_BLOCKED",
+            "RESOURCE_CONSTRAINT_BLOCKED",
             "resource_constraint_blocked",
             (
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.network=false "
@@ -277,7 +277,7 @@ def test_capability_resource_guard_owner_facades_preserve_identity():
                 "allowed_resources": {"network": False},
             },
             "blocked",
-            "RESOURCE_BLOCKED",
+            "RESOURCE_CONSTRAINT_BLOCKED",
             "resource_constraint_blocked",
             (
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.disabled_tools "
@@ -396,8 +396,8 @@ def test_builtin_availability_bare_registry_skips_runtime_probes(monkeypatch):
     ("provider", "ephemeral", "expected_code", "legacy_error", "legacy_status"),
     (
         ("extension", True, "ACCESS_BLOCKED", False, "ok"),
-        ("extension", False, "RESOURCE_BLOCKED", True, "resource_constraint_blocked"),
-        ("mcp", False, "RESOURCE_BLOCKED", True, "resource_constraint_blocked"),
+        ("extension", False, "RESOURCE_CONSTRAINT_BLOCKED", True, "resource_constraint_blocked"),
+        ("mcp", False, "RESOURCE_CONSTRAINT_BLOCKED", True, "resource_constraint_blocked"),
     ),
 )
 def test_external_resource_guard_precedes_child_policy_and_never_dispatches(
@@ -481,7 +481,7 @@ def test_external_resource_guard_precedes_child_policy_and_never_dispatches(
         "tool_result_code": expected_code,
         "tool_result_meta": {},
     }
-    if expected_code == "RESOURCE_BLOCKED":
+    if expected_code == "RESOURCE_CONSTRAINT_BLOCKED":
         assert row["result"] == (
             "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.network=false "
             f"blocks external tool {name!r}."

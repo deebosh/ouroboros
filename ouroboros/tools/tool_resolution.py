@@ -216,9 +216,12 @@ def _light_binding_failure_result(
     except ValueError:
         root = "active_workspace"
     if root == "active_workspace":
+        # This branch is reached only for the user_files redirect (the cognitive
+        # one needs root=runtime_data), so the code names the demanded root: the
+        # recovery walk credits the retry only against the root it names.
         return ToolResult(
             status="blocked",
-            code="ROOT_REQUIRED",
+            code="ROOT_REQUIRED_USER_FILES",
             text=redirect,
         )
     return redirect

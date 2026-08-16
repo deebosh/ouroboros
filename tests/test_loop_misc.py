@@ -1768,17 +1768,29 @@ def test_auto_attach_skips_a_result_that_declared_failure(tmp_path, monkeypatch)
     from types import SimpleNamespace
 
     from ouroboros.loop_tool_execution import _maybe_auto_attach_image
+    from ouroboros.tools.extension_dispatch import _extension_completion
 
     attached = []
     import ouroboros.tools.vision as vision
     monkeypatch.setattr(vision, "attach_local_image_to_context",
                         lambda ctx, path: attached.append(path) or (True, "ok"))
     tools = SimpleNamespace(_ctx=SimpleNamespace(messages=[], drive_root=str(tmp_path)))
+    body = _json.dumps({"ok": False, "error": "boom", "auto_attach_image": "/x/shot.png"})
+    # The dispatcher types the self-reported failure; the guard reads that code.
+    typed = _extension_completion(body, "")
+    assert typed.code == "TOOL_REPORTED_FAILURE"
     failed = {"fn_name": "ext_1_r_unix_computer_use_screenshot", "is_error": False,
-              "result": _json.dumps({"ok": False, "error": "boom",
-                                     "auto_attach_image": "/x/shot.png"})}
+              "result": body, "tool_result": typed}
     _maybe_auto_attach_image(failed, tools)
     assert attached == [], "an image was attached from a failed result"
+
+    ok_body = _json.dumps({"ok": True, "auto_attach_image": "/x/shot.png"})
+    _maybe_auto_attach_image(
+        {"fn_name": "ext_1_r_unix_computer_use_screenshot", "is_error": False,
+         "result": ok_body, "tool_result": _extension_completion(ok_body, "")},
+        tools,
+    )
+    assert attached == ["/x/shot.png"], "a healthy payload must still attach"
 
 
 def test_undecodable_image_fails_the_attach_not_the_provider_call():

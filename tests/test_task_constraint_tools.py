@@ -427,7 +427,7 @@ def test_registry_native_heal_guard_preserves_order_and_zero_dispatch(tmp_path, 
 
     ctx.task_metadata = {"task_contract": {"disabled_tools": ["search_code"]}}
     earlier = registry.execute_result("search_code", {"query": "ToolRegistry"})
-    assert earlier.code == "RESOURCE_BLOCKED"
+    assert earlier.code == "RESOURCE_CONSTRAINT_BLOCKED"
     ctx.task_metadata = {}
     ctx.is_ephemeral_turn = True
     earlier = registry.execute_result("run_command", {"command": "true"})
@@ -453,7 +453,7 @@ def test_registry_native_heal_guard_preserves_order_and_zero_dispatch(tmp_path, 
     )
     assert root_redirect == ToolResult(
         status="blocked",
-        code="ROOT_REQUIRED",
+        code="ROOT_REQUIRED_ACTIVE_WORKSPACE",
         text=root_redirect_text,
         meta={"required_root": "active_workspace"},
     )

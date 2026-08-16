@@ -9,7 +9,12 @@ import threading
 from typing import Any, Dict, Optional
 
 from ouroboros.tools.tool_context import ToolContext
-from ouroboros.tools.tool_result import ToolResult, ToolStatus, _compose_execute_result
+from ouroboros.tools.tool_result import (
+    ToolResult,
+    ToolStatus,
+    _compose_execute_result,
+    _structured_failure,
+)
 
 
 def _extension_dispatch_candidate(
@@ -96,15 +101,26 @@ def _extension_result(
     return ToolResult(status=status, code=code, text=text, meta=meta)
 
 
-def _extension_success(result: str, safety_msg: str) -> ToolResult:
+def _extension_completion(result: str, safety_msg: str) -> ToolResult:
+    """Type one completed extension body, reading its own failure self-report.
+
+    The dispatcher used to declare success without looking at the body, so a
+    skill that answered honestly with ``{"ok": false}`` was recorded as a clean
+    call (measured on the v6.81.1 OSWorld run: 329 such calls, including HTTP
+    500s from every screenshot after the guest control server died). The
+    structured check is the adapter's, so there is exactly one implementation of
+    what a self-reported failure is."""
+    reported_failure = _structured_failure(result)
     if safety_msg:
         text = f"{safety_msg}\n\n---\n{result}"
         return _extension_result(
-            "ok",
-            "SAFETY_WARNING",
+            "error" if reported_failure else "ok",
+            "TOOL_REPORTED_FAILURE" if reported_failure else "SAFETY_WARNING",
             text,
             safety_warning=True,
         )
+    if reported_failure:
+        return _extension_result("error", "TOOL_REPORTED_FAILURE", result)
     return _extension_result("ok", "OK", result)
 
 
@@ -176,7 +192,7 @@ def _dispatch_extension_tool_result(
                 text,
                 timeout_sec=max(1, int(ext_tool.get("timeout_sec") or 60)) if timed_out else None,
             )
-        return _extension_success(result_str, _ext_safety_msg)
+        return _extension_completion(result_str, _ext_safety_msg)
 
     handler = ext_tool["handler"]
     try:
@@ -263,7 +279,7 @@ def _dispatch_extension_tool_result(
         result = box.get("value", "")
 
     result_str = result if isinstance(result, str) else str(result)
-    return _extension_success(result_str, _ext_safety_msg)
+    return _extension_completion(result_str, _ext_safety_msg)
 
 
 def dispatch_extension_tool(

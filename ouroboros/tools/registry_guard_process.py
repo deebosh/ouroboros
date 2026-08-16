@@ -457,7 +457,10 @@ def _run_shell_safety_check(
     ):
         return ToolResult(
             status="blocked",
-            code="RESOURCE_BLOCKED",
+            # protected_artifact_shell_block_reason emits only the resource-POLICY
+            # refusal; the two resource blocks are distinct codes because only they
+            # demote a block on a read-only tool to ignored telemetry.
+            code="RESOURCE_POLICY_BLOCKED",
             text=protected_artifact_block,
         )
     if writeish and (executor_state_block := workspace_executor_state_write_block(

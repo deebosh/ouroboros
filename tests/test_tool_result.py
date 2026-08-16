@@ -114,8 +114,14 @@ def test_tool_result_validates_code_status_and_defensively_copies_meta() -> None
         ("plain success", "ok", "OK"),
         ("⚠️ TOOL_ACCESS_BLOCKED: denied", "blocked", "ACCESS_BLOCKED"),
         ("⚠️ CORE_PROTECTION_BLOCKED: denied", "blocked", "CORE_PROTECTION_BLOCKED"),
-        ("⚠️ ROOT_REQUIRED_USER_FILES: retry", "blocked", "ROOT_REQUIRED"),
-        ("⚠️ RESOURCE_CONSTRAINT_BLOCKED: denied", "blocked", "RESOURCE_BLOCKED"),
+        # T1 §A.15/§A.16: the demanded root and the two resource blocks keep
+        # DISTINCT codes. The merged parents made the root-required recovery
+        # branch and the read-only resource demotion structurally unreachable
+        # once the loop reads the code instead of the text.
+        ("⚠️ ROOT_REQUIRED_USER_FILES: retry", "blocked", "ROOT_REQUIRED_USER_FILES"),
+        ("⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE: retry", "blocked", "ROOT_REQUIRED_ACTIVE_WORKSPACE"),
+        ("⚠️ RESOURCE_CONSTRAINT_BLOCKED: denied", "blocked", "RESOURCE_CONSTRAINT_BLOCKED"),
+        ("⚠️ RESOURCE_POLICY_BLOCKED: denied", "blocked", "RESOURCE_POLICY_BLOCKED"),
         ("⚠️ WORKSPACE_MODE_BLOCKED: invalid", "blocked", "WORKSPACE_BLOCKED"),
         ("⚠️ TOOL_ARG_ERROR: invalid JSON", "error", "TOOL_ARG_ERROR"),
         ("⚠️ TOOL_TIMEOUT (read_file): exceeded", "timeout", "TOOL_TIMEOUT"),
@@ -322,10 +328,36 @@ def test_legacy_adapter_is_total_for_pathologically_nested_json_and_wrappers() -
     assert _adapt(deep_json).text == deep_json
     safety_result = _adapt(deep_safety)
     assert safety_result.text == deep_safety
-    assert (safety_result.status, safety_result.code) == ("error", "SAFETY_ERROR")
+    # T1 §A.7: the wrapper reveals what it wraps instead of counting separators in
+    # a producer-controlled body, so a pathological stack is bounded by the wrapper
+    # depth guard rather than by a content heuristic. Totality is what this pins.
+    assert (safety_result.status, safety_result.code) == ("error", "LEGACY_TOOL_ERROR")
+    assert safety_result.meta == {"wrapper_depth_exceeded": True, "safety_warning": True}
     deep_result = _adapt(deep_wrappers)
     assert deep_result.text == deep_wrappers
     assert (deep_result.status, deep_result.code) == ("error", "LEGACY_TOOL_ERROR")
+
+
+def test_extension_completion_types_the_body_self_report_without_rewriting_it() -> None:
+    """T1 §A.12/§B.5: the extension dispatcher used to publish OK without reading the
+    body, so a skill that answered `{"ok": false}` was recorded as a clean call. The
+    body itself is never rewritten and the structured check is the adapter's, so the
+    dispatcher and the loop can never disagree about what a self-report is."""
+    from ouroboros.tools.extension_dispatch import _extension_completion
+
+    failed = '{"ok": false, "error": "HTTP 500"}'
+    warning = "⚠️ SAFETY_WARNING: inspect"
+    cases = (
+        (failed, "", "error", "TOOL_REPORTED_FAILURE", failed),
+        (failed, warning, "error", "TOOL_REPORTED_FAILURE", f"{warning}\n\n---\n{failed}"),
+        ('{"ok": true, "path": "/x.png"}', "", "ok", "OK", '{"ok": true, "path": "/x.png"}'),
+        ("plain provider prose", "", "ok", "OK", "plain provider prose"),
+        ('["ok", false]', "", "ok", "OK", '["ok", false]'),
+    )
+    for body, safety_msg, status, code, text in cases:
+        result = _extension_completion(body, safety_msg)
+        assert (result.status, result.code, result.text) == (status, code, text), body
+        assert result.meta.get("dynamic_provider") is True
 
 
 def test_legacy_adapter_does_not_mine_exit_metadata_from_text() -> None:

@@ -1141,8 +1141,11 @@ def _maybe_auto_attach_image(
     if not str(exec_result.get("fn_name") or "").startswith("ext_"):
         return
     # A payload that declares its own failure must not have an image lifted out of
-    # it, even when the executor call itself did not raise.
-    if _structured_tool_failure(exec_result.get("result")):
+    # it, even when the executor call itself did not raise. Read the typed code the
+    # dispatcher published rather than re-deriving the JSON fact here: this guard
+    # is the SECOND consumer of that fact and must not drift from the first.
+    typed = exec_result.get("tool_result")
+    if isinstance(typed, ToolResult) and typed.code == "TOOL_REPORTED_FAILURE":
         return
     raw = exec_result.get("result")
     if not isinstance(raw, str) or '"auto_attach_image"' not in raw:

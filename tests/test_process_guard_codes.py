@@ -54,10 +54,12 @@ def test_process_code_specs_adapter_and_legacy_residuals_are_total():
             text=f"⚠️ {code}: fixture denial.",
         )
 
+    # T1 §B.4: the run-script refusal owns its code so the legacy `run_script_blocked`
+    # status survives the cutover; only genuinely coarse identifiers stay LEGACY_BLOCKED.
     assert LegacyTextResultAdapter.from_text(
         "run_script",
         "⚠️ RUN_SCRIPT_BLOCKED: fixture denial.",
-    ).code == "LEGACY_BLOCKED"
+    ).code == "RUN_SCRIPT_BLOCKED"
     assert LegacyTextResultAdapter.from_text(
         "run_command",
         "⚠️ UNKNOWN_COARSE_BLOCKED: fixture denial.",

@@ -13,7 +13,11 @@ from typing import Any, Literal, Mapping
 ToolStatus = Literal["ok", "error", "blocked", "timeout", "unavailable"]
 _TOOL_STATUSES = frozenset({"ok", "error", "blocked", "timeout", "unavailable"})
 _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-_FIRST_MARKER_RE = re.compile(r"^⚠️ ([A-Z][A-Z0-9_]*)")
+# One or more spaces: the legacy loop scan keyed on ``startswith("⚠️ ")`` and then
+# looked anywhere in the first line, so a two-space warning classified there and
+# would silently read as OK here. No producer emits that shape today; accepting it
+# keeps the single parser from acquiring a blind spot the pair did not have.
+_FIRST_MARKER_RE = re.compile(r"^⚠️ +([A-Z][A-Z0-9_]*)")
 _SAFETY_SEPARATOR = "\n\n---\n"
 _MCP_RESULT_ENVELOPE_PREFIX = "External MCP tool result from "
 _MAX_META_ITEMS = 32
@@ -127,6 +131,15 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "warning",
             "migrate the dynamic producer before consuming typed status",
         ),
+        # Owner decision (batch #4, 2026-08-16): the cognitive redirect is a hint,
+        # not a failure. It carried an `error` flag that the outcome classifier
+        # then had to skip by name; the flag is removed at the source instead.
+        "COGNITIVE_TOOL_REQUIRED": _code_spec(
+            "ok",
+            "ok",
+            "warning",
+            "use the cognitive tool named in the result text",
+        ),
         "ACCESS_BLOCKED": _code_spec(
             "blocked",
             "blocked",
@@ -145,11 +158,40 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "warning",
             "retry against the required resource root",
         ),
+        # The two demanded roots stay DISTINCT codes: the recovery walk credits a
+        # retry only when the write lands on the root the redirect named, and a
+        # merged code makes that branch unreachable.
+        "ROOT_REQUIRED_USER_FILES": _code_spec(
+            "blocked",
+            "root_required_user_files",
+            "warning",
+            "retry the same write with root='user_files'",
+        ),
+        "ROOT_REQUIRED_ACTIVE_WORKSPACE": _code_spec(
+            "blocked",
+            "root_required_active_workspace",
+            "warning",
+            "retry the same write with root='active_workspace'",
+        ),
         "RESOURCE_BLOCKED": _code_spec(
             "blocked",
             "resource_blocked",
             "warning",
             "use a resource allowed by the task contract",
+        ),
+        # Distinct for the same structural reason: only these two names demote a
+        # resource block on a read-only tool to ignored telemetry.
+        "RESOURCE_CONSTRAINT_BLOCKED": _code_spec(
+            "blocked",
+            "resource_constraint_blocked",
+            "warning",
+            "use a resource the task contract allows",
+        ),
+        "RESOURCE_POLICY_BLOCKED": _code_spec(
+            "blocked",
+            "resource_policy_blocked",
+            "warning",
+            "use a resource the resource policy allows",
         ),
         "WORKSPACE_BLOCKED": _code_spec(
             "blocked",
@@ -246,6 +288,57 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "artifact_output_undeclared",
             "warning",
             "declare the produced artifact",
+        ),
+        # Family parents. Each carries the legacy status of the family the loop
+        # chain matched by text prefix, so the whole family keeps landing in the
+        # policy-denial partition instead of degrading execution health.
+        "INTEGRATION_BLOCKED": _code_spec(
+            "blocked",
+            "integration_blocked",
+            "warning",
+            "resolve the patch integration refusal before retrying",
+        ),
+        "WRITE_FILE_BLOCKED": _code_spec(
+            "blocked",
+            "write_file_blocked",
+            "warning",
+            "correct the write target or content and retry",
+        ),
+        "EDIT_TEXT_BLOCKED": _code_spec(
+            "blocked",
+            "edit_text_blocked",
+            "warning",
+            "re-read the file and retry the edit",
+        ),
+        "EDIT_OPS_BLOCKED": _code_spec(
+            "blocked",
+            "edit_ops_blocked",
+            "warning",
+            "re-read the file and retry the patch or batch",
+        ),
+        "DATA_BLOCKED": _code_spec(
+            "blocked",
+            "data_blocked",
+            "warning",
+            "use a data surface the task contract allows",
+        ),
+        "SKILL_PAYLOAD_BLOCKED": _code_spec(
+            "blocked",
+            "skill_payload_blocked",
+            "warning",
+            "write inside the selected skill payload",
+        ),
+        "USER_FILES_PATH_BLOCKED": _code_spec(
+            "blocked",
+            "user_files_path_blocked",
+            "warning",
+            "use a path inside the owner's user files",
+        ),
+        "RUN_SCRIPT_BLOCKED": _code_spec(
+            "blocked",
+            "run_script_blocked",
+            "warning",
+            "use a permitted interpreter and script path",
         ),
         "SAFETY_VIOLATION": _code_spec(
             "blocked",
@@ -379,11 +472,27 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "error",
             "inspect the structured tool failure",
         ),
+        "VLM_ERROR": _code_spec(
+            "error",
+            "vlm_error",
+            "error",
+            "inspect the image or vision-model requirement",
+        ),
         "LEGACY_TOOL_ERROR": _code_spec(
             "error",
             "error",
             "error",
             "follow the legacy failure text",
+        ),
+        # Unreachable from core producers (only SAFETY_VIOLATION spells a
+        # violation today, and it is claimed by an exact branch), but a skill or
+        # MCP payload can emit an arbitrary ``⚠️ X_VIOLATION`` and the legacy
+        # chain gave it its own status. Ported rather than folded into `error`.
+        "LEGACY_VIOLATION": _code_spec(
+            "error",
+            "violation",
+            "error",
+            "follow the reported violation text",
         ),
     }
 )
@@ -576,10 +685,14 @@ _EXACT_IDENTIFIER_CODES = MappingProxyType(
         "LOCAL_READONLY_SUBAGENT_BLOCKED": "ACCESS_BLOCKED",
         "MUTATIVE_SUBAGENTS_DISABLED": "ACCESS_BLOCKED",
         "CORE_PROTECTION_BLOCKED": "CORE_PROTECTION_BLOCKED",
-        "ROOT_REQUIRED_USER_FILES": "ROOT_REQUIRED",
-        "ROOT_REQUIRED_ACTIVE_WORKSPACE": "ROOT_REQUIRED",
-        "RESOURCE_CONSTRAINT_BLOCKED": "RESOURCE_BLOCKED",
-        "RESOURCE_POLICY_BLOCKED": "RESOURCE_BLOCKED",
+        "ROOT_REQUIRED_USER_FILES": "ROOT_REQUIRED_USER_FILES",
+        "ROOT_REQUIRED_ACTIVE_WORKSPACE": "ROOT_REQUIRED_ACTIVE_WORKSPACE",
+        "USER_FILES_PATH_BLOCKED": "USER_FILES_PATH_BLOCKED",
+        "COGNITIVE_TOOL_REQUIRED": "COGNITIVE_TOOL_REQUIRED",
+        "RESOURCE_CONSTRAINT_BLOCKED": "RESOURCE_CONSTRAINT_BLOCKED",
+        "RESOURCE_POLICY_BLOCKED": "RESOURCE_POLICY_BLOCKED",
+        "DATA_READ_BLOCKED": "DATA_BLOCKED",
+        "DATA_LIST_BLOCKED": "DATA_BLOCKED",
         "WORKSPACE_MODE_BLOCKED": "WORKSPACE_BLOCKED",
         "WORKSPACE_GIT_BLOCKED": "WORKSPACE_BLOCKED",
         "WORKSPACE_SHELL_BLOCKED": "WORKSPACE_BLOCKED",
@@ -619,10 +732,33 @@ _EXACT_IDENTIFIER_CODES = MappingProxyType(
         "OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED": "OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED",
         "SKILL_STATE_WRITE_BLOCKED": "SKILL_STATE_WRITE_BLOCKED",
         "GIT_VIA_SHELL_BLOCKED": "GIT_VIA_SHELL_BLOCKED",
-        "RUN_SCRIPT_BLOCKED": "LEGACY_BLOCKED",
+        "RUN_SCRIPT_BLOCKED": "RUN_SCRIPT_BLOCKED",
         "REVIEW_BLOCKED": "REVIEW_BLOCKED",
         "GIT_ERROR": "GIT_ERROR",
     }
+)
+
+# ORDERED families, consulted only after the exact table above so a specific
+# identifier always beats its family (``SHELL_CWD_BLOCKED`` before ``SHELL_``,
+# ``RUN_SCRIPT_BLOCKED`` before ``RUN_SCRIPT_``) and before the generic marker
+# fallbacks below, exactly as the legacy loop chain ordered its branches. Order
+# inside the tuple is load-bearing only where one prefix prefixes another; it is
+# kept in the legacy chain's order regardless so the two can be diffed by eye.
+_FAMILY_PREFIX_CODES: tuple[tuple[str, str], ...] = (
+    ("SHELL_", "SHELL_ERROR"),
+    ("RUN_SCRIPT_", "RUN_SCRIPT_ERROR"),
+    ("VLM_", "VLM_ERROR"),
+    ("INTEGRATE_", "INTEGRATION_BLOCKED"),
+    ("WORKSPACE_", "WORKSPACE_BLOCKED"),
+    ("ELEVATION_", "ELEVATION_BLOCKED"),
+    ("SKILL_STATE_", "SKILL_STATE_WRITE_BLOCKED"),
+    ("SKILL_REDIRECT_", "SKILL_PAYLOAD_BLOCKED"),
+    ("SKILL_PAYLOAD_ARG_", "SKILL_PAYLOAD_BLOCKED"),
+    ("DATA_WRITE_", "DATA_BLOCKED"),
+    ("WRITE_FILE_", "WRITE_FILE_BLOCKED"),
+    ("EDIT_TEXT_", "EDIT_TEXT_BLOCKED"),
+    ("APPLY_PATCH_", "EDIT_OPS_BLOCKED"),
+    ("EDIT_BATCH_", "EDIT_OPS_BLOCKED"),
 )
 
 
@@ -668,11 +804,11 @@ def _classify_legacy_text(
             {"wrapper_depth_exceeded": True},
         )
     if text.startswith("⚠️ SAFETY_WARNING"):
-        if text.count(_SAFETY_SEPARATOR) > 1:
-            return _classification(
-                "SAFETY_ERROR",
-                {"ambiguous_safety_wrapper": True},
-            )
+        # No separator counting: the wrapper reveals whatever it wraps. Counting
+        # ``---`` runs in a producer-controlled body turned a legitimate result
+        # that merely contains the separator into a safety-provider failure, and
+        # the count is a host fact only where the host itself composed the text
+        # (``_compose_execute_result_result``), which still asserts it.
         _warning, separator, inner = text.partition(_SAFETY_SEPARATOR)
         if separator:
             status, code, meta = _classify_legacy_text(
@@ -721,17 +857,18 @@ def _classify_legacy_text(
         if "UNAVAILABLE" in identifier or "NOT_FOUND" in identifier or "DISABLED" in identifier:
             return _classification("EXTENSION_UNAVAILABLE")
         return _classification("EXTENSION_ERROR")
-    if identifier.startswith("SHELL_"):
-        return _classification("SHELL_ERROR")
-    if identifier.startswith("RUN_SCRIPT_"):
-        return _classification("RUN_SCRIPT_ERROR")
+    for prefix, family_code in _FAMILY_PREFIX_CODES:
+        if identifier.startswith(prefix):
+            return _classification(family_code)
     if "_TIMEOUT" in identifier:
         return _classification("TOOL_TIMEOUT")
     if "_UNAVAILABLE" in identifier:
         return _classification("LEGACY_UNAVAILABLE")
     if any(part in identifier for part in ("_BLOCKED", "_FORBIDDEN", "_DISALLOWED")):
         return _classification("LEGACY_BLOCKED")
-    if any(part in identifier for part in ("_ERROR", "_FAILED", "_VIOLATION", "_CORRUPT")):
+    if "_VIOLATION" in identifier:
+        return _classification("LEGACY_VIOLATION")
+    if any(part in identifier for part in ("_ERROR", "_FAILED", "_CORRUPT")):
         return _classification("LEGACY_TOOL_ERROR")
     return _classification("LEGACY_WARNING")
 
@@ -749,6 +886,18 @@ class LegacyTextResultAdapter:
             and text.startswith(_MCP_RESULT_ENVELOPE_PREFIX)
         )
         if dynamic_body_untyped:
+            # A dynamic body still gets the ONE structured self-report read: a
+            # provider that answered ``{"ok": false}`` declared its own failure,
+            # which is a host-readable fact and not a re-typing of untrusted
+            # prose. An MCP body arrives behind the server envelope, so its
+            # payload never starts the string and stays untyped by construction.
+            if _structured_failure(text):
+                return ToolResult(
+                    status="error",
+                    code="TOOL_REPORTED_FAILURE",
+                    text=text,
+                    meta={"dynamic_provider": True},
+                )
             return ToolResult(
                 status="ok",
                 code="LEGACY_UNTYPED",

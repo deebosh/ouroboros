@@ -801,7 +801,7 @@ def test_process_guard_denials_preserve_exact_text(tmp_path, monkeypatch):
     )
     resource = check(["cat", "fixture"])
     assert (resource.code, resource.text) == (
-        "RESOURCE_BLOCKED",
+        "RESOURCE_POLICY_BLOCKED",
         "⚠️ RESOURCE_POLICY_BLOCKED: protected fixture.",
     )
 

@@ -359,7 +359,7 @@ def _capability_resource_guard_result(
     if name in _disabled_tools(ctx):
         return ToolResult(
             status="blocked",
-            code="RESOURCE_BLOCKED",
+            code="RESOURCE_CONSTRAINT_BLOCKED",
             text=(
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.disabled_tools "
                 f"withholds {name!r} for this task."
@@ -378,7 +378,7 @@ def _capability_resource_guard_result(
     ):
         return ToolResult(
             status="blocked",
-            code="RESOURCE_BLOCKED",
+            code="RESOURCE_CONSTRAINT_BLOCKED",
             text=(
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: remote image_url for vlm_query "
                 "requires allowed_resources.web/network."
@@ -387,7 +387,7 @@ def _capability_resource_guard_result(
     if name in _WEB_TOOLS and not _resource_allowed(ctx, "web"):
         return ToolResult(
             status="blocked",
-            code="RESOURCE_BLOCKED",
+            code="RESOURCE_CONSTRAINT_BLOCKED",
             text=(
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.web=false "
                 f"blocks {name!r}."
@@ -396,7 +396,7 @@ def _capability_resource_guard_result(
     if name == "vcs_pull_ff" and not _resource_allowed(ctx, "network"):
         return ToolResult(
             status="blocked",
-            code="RESOURCE_BLOCKED",
+            code="RESOURCE_CONSTRAINT_BLOCKED",
             text=(
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.network=false "
                 "blocks 'vcs_pull_ff'."
@@ -405,7 +405,7 @@ def _capability_resource_guard_result(
     if (is_mcp or ext_tool) and not _resource_allowed(ctx, "network"):
         return ToolResult(
             status="blocked",
-            code="RESOURCE_BLOCKED",
+            code="RESOURCE_CONSTRAINT_BLOCKED",
             text=(
                 "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.network=false "
                 f"blocks external tool {name!r}."
@@ -836,7 +836,7 @@ def _external_workspace_git_block(
     if git_violation.startswith("task_contract.allowed_resources"):
         return ToolResult(
             status="blocked",
-            code="RESOURCE_BLOCKED",
+            code="RESOURCE_CONSTRAINT_BLOCKED",
             text=f"⚠️ RESOURCE_CONSTRAINT_BLOCKED: {git_violation}.",
         )
     return ToolResult(
@@ -1273,7 +1273,7 @@ def _shell_git_and_runtime_block(
             if git_violation.startswith("task_contract.allowed_resources"):
                 return ToolResult(
                     status="blocked",
-                    code="RESOURCE_BLOCKED",
+                    code="RESOURCE_CONSTRAINT_BLOCKED",
                     text=f"⚠️ RESOURCE_CONSTRAINT_BLOCKED: {git_violation}.",
                 )
             return ToolResult(
@@ -1292,7 +1292,7 @@ def _shell_git_and_runtime_block(
             if git_violation.startswith("task_contract.allowed_resources"):
                 return ToolResult(
                     status="blocked",
-                    code="RESOURCE_BLOCKED",
+                    code="RESOURCE_CONSTRAINT_BLOCKED",
                     text=f"⚠️ RESOURCE_CONSTRAINT_BLOCKED: {git_violation}.",
                 )
             subcmd = git_violation.removeprefix("git ").strip() or git_violation
@@ -1343,7 +1343,7 @@ def _shell_git_and_runtime_block(
     if git_violation.startswith("task_contract.allowed_resources"):
         return ToolResult(
             status="blocked",
-            code="RESOURCE_BLOCKED",
+            code="RESOURCE_CONSTRAINT_BLOCKED",
             text=f"⚠️ RESOURCE_CONSTRAINT_BLOCKED: {git_violation}.",
         )
     return ToolResult(

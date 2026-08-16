@@ -851,7 +851,7 @@ class ToolRegistry:
             path_normalization = tool_resolution._normalize_dispatch_path_args_result(self._ctx, name, args)
             _route_note = path_normalization.text
             if path_normalization.required_root == "active_workspace":
-                return ToolResult(status="blocked", code="ROOT_REQUIRED", text=_route_note, meta={"required_root": "active_workspace"})
+                return ToolResult(status="blocked", code="ROOT_REQUIRED_ACTIVE_WORKSPACE", text=_route_note, meta={"required_root": "active_workspace"})
         heal_no_enable = bool(task_constraint and task_constraint.mode == "skill_repair")
         if heal_no_enable:
             heal_block = _heal_mode_guard_result(

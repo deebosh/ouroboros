@@ -211,7 +211,7 @@ def test_active_workspace_root_redirect_is_native_with_legacy_loop_projection(tm
     )
     expected = ToolResult(
         status="blocked",
-        code="ROOT_REQUIRED",
+        code="ROOT_REQUIRED_ACTIVE_WORKSPACE",
         text=expected_text,
         meta={"required_root": "active_workspace"},
     )
@@ -234,7 +234,7 @@ def test_active_workspace_root_redirect_is_native_with_legacy_loop_projection(tm
     assert row["is_error"] is True
     assert row["result_meta"]["status"] == "root_required_active_workspace"
     assert row["result_meta"]["tool_result_status"] == "blocked"
-    assert row["result_meta"]["tool_result_code"] == "ROOT_REQUIRED"
+    assert row["result_meta"]["tool_result_code"] == "ROOT_REQUIRED_ACTIVE_WORKSPACE"
     assert row["result_meta"]["tool_result_meta"] == {"required_root": "active_workspace"}
     assert calls == []
 
@@ -297,7 +297,7 @@ def test_registry_uses_typed_required_root_not_note_or_tool_name(tmp_path, monke
     )
     assert required == ToolResult(
         status="blocked",
-        code="ROOT_REQUIRED",
+        code="ROOT_REQUIRED_ACTIVE_WORKSPACE",
         text="typed required-root fact",
         meta={"required_root": "active_workspace"},
     )
@@ -635,7 +635,7 @@ def test_light_binding_root_redirect_is_native_without_invented_metadata(
         "Pass root='user_files' to write under the owner's home, e.g. "
         "write_file(root='user_files', path='Desktop/file.html', content=...)."
     )
-    expected = ToolResult(status="blocked", code="ROOT_REQUIRED", text=text)
+    expected = ToolResult(status="blocked", code="ROOT_REQUIRED_USER_FILES", text=text)
 
     row = _execute_single_tool(
         registry,
@@ -652,7 +652,7 @@ def test_light_binding_root_redirect_is_native_without_invented_metadata(
     assert row["result_meta"] == {
         "status": "root_required_user_files",
         "tool_result_status": "blocked",
-        "tool_result_code": "ROOT_REQUIRED",
+        "tool_result_code": "ROOT_REQUIRED_USER_FILES",
         "tool_result_meta": {},
     }
     cognitive = tool_resolution._light_binding_failure_result(
@@ -666,8 +666,10 @@ def test_light_binding_root_redirect_is_native_without_invented_metadata(
 @pytest.mark.parametrize(
     ("scenario", "expected_status", "expected_code", "legacy_status"),
     (
-        ("cognitive", "ok", "LEGACY_WARNING", "cognitive_tool_required"),
-        ("user_files", "blocked", "ROOT_REQUIRED", "root_required_user_files"),
+        # T1: the cognitive redirect is its own ok-status code (owner batch #4),
+        # and the root redirect names the root it demands (§A.15).
+        ("cognitive", "ok", "COGNITIVE_TOOL_REQUIRED", "cognitive_tool_required"),
+        ("user_files", "blocked", "ROOT_REQUIRED_USER_FILES", "root_required_user_files"),
     ),
 )
 def test_light_actionable_redirects_keep_legacy_mapping_without_light_remap(

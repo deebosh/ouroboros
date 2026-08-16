@@ -363,7 +363,7 @@ def test_workspace_shell_git_ls_remote_requires_network_contract(tmp_path):
     ):
         result = _run_shell_safety_check(registry, {"cmd": cmd}, "advanced")
         assert result is not None, cmd
-        assert result.code == "RESOURCE_BLOCKED"
+        assert result.code == "RESOURCE_CONSTRAINT_BLOCKED"
         assert "RESOURCE_CONSTRAINT_BLOCKED" in result.text
 
 
