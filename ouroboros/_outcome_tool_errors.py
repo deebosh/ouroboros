@@ -17,6 +17,9 @@ import pathlib
 from typing import Any, Dict, List
 
 _BLOCKING_TOOL_STATUSES = frozenset({
+    # T1: the statuses below the blank line were produced but partitioned nowhere,
+    # so a call could be an honest error while every bucket of the honest breakdown
+    # stayed empty. Each is homed by its nearest existing analogue (owner batch #4).
     "artifact_output_error",
     "artifact_output_undeclared",
     "blocked",
@@ -28,7 +31,6 @@ _BLOCKING_TOOL_STATUSES = frozenset({
     "error",
     "git_via_shell_blocked",
     "heal_mode_blocked",
-    "install_error",
     "integration_blocked",
     "light_mode_blocked",
     "non_zero_exit",
@@ -39,7 +41,6 @@ _BLOCKING_TOOL_STATUSES = frozenset({
     "safety_violation",
     "shell_error",
     "skill_payload_blocked",
-    "skill_payload_control_blocked",
     "skill_state_blocked",
     "timeout",
     "unavailable",
@@ -49,6 +50,29 @@ _BLOCKING_TOOL_STATUSES = frozenset({
     "write_file_blocked",
     "root_required_user_files",
     "root_required_active_workspace",
+
+    "argument_error",            # nearest analogue: `error` (a malformed call)
+    "executor_error",            # nearest analogue: `error` (the executor crashed)
+    "extension_error",           # nearest analogue: `error` (the extension raised)
+    "git_error",                 # nearest analogue: `error`; is_error stays false, so unreachable here
+    "mcp_error",                 # nearest analogue: `error` (the provider reported one)
+    "resource_blocked",          # nearest analogue: the two specific resource blocks
+    "review_blocked",            # nearest analogue: `blocked`; is_error stays false, so unreachable here
+    "root_required",             # nearest analogue: the two specific root redirects
+    "run_script_error",          # nearest analogue: `error`
+    "safety_error",              # nearest analogue: `error` (the safety provider failed)
+    "tool_reported_failure",     # nearest analogue: `error` (the tool declared its own failure)
+    "unknown_tool",              # nearest analogue: `error` (the tool does not exist)
+})
+# Buckets deliberately left OUT of every partition, each with its reason. The
+# totality assertion in tests/test_tool_classification_differential.py fails if a
+# new code acquires a bucket that appears in neither a partition nor this set, so
+# an unclassified outcome can no longer arrive silently.
+_UNPARTITIONED_BUCKETS = frozenset({
+    # `vlm_error` (image too large / no vision model) is unpartitioned TODAY and
+    # T1 preserves that: homing it would newly degrade execution health on two
+    # image refusals that currently affect nothing, which no owner decision covers.
+    "vlm_error",
 })
 _RECOVERY_TOOL_NAMES = frozenset({
     "edit_text", "apply_patch", "edit_batch",
@@ -91,8 +115,9 @@ _POLICY_DENIAL_STATUSES = frozenset({
     "resource_constraint_blocked",
     "resource_policy_blocked",
     "run_script_blocked",
+    "resource_blocked",
+    "review_blocked",
     "skill_payload_blocked",
-    "skill_payload_control_blocked",
     "skill_state_blocked",
     "user_files_path_blocked",
     "workspace_blocked",
@@ -140,7 +165,10 @@ def _is_ignored_readonly_block(tool: str, status: str) -> bool:
 # here, on the leaf, and ``outcomes`` imports them back rather than each side
 # keeping its own copy.
 _ROOT_WRITE_TOOLS = frozenset({"write_file", "edit_text", "apply_patch", "edit_batch"})  # patch/batch refuse scratch roots: any success is a reviewable effect
-_OK_TOOL_STATUSES = frozenset({"", "ok", "ok_autocorrected"})
+# `untyped` is the ok-status a dynamic provider body carries when nothing typed
+# it; leaving it out would disqualify a successful extension call from crediting
+# a recovery, which is not what "we could not type it" means.
+_OK_TOOL_STATUSES = frozenset({"", "ok", "ok_autocorrected", "untyped"})
 
 
 def _user_file_basenames(args: Dict[str, Any]) -> set[str]:
@@ -203,6 +231,8 @@ def _classify_tool_errors(llm_trace: Dict[str, Any]) -> Dict[str, List[Dict[str,
         # a self-initiated cognitive write through the wrong tool must never fail the
         # task (that was the original "Привет fails" regression). Skip it entirely.
         if status == "cognitive_tool_required":
+            # Kept for traces authored before the redirect stopped carrying an
+            # error flag at its source; no live producer reaches this branch.
             continue
         # A2: an access-policy block on a READ-ONLY exploratory tool is honest
         # telemetry, not a degraded execution — fully ignored (recorded for
@@ -257,7 +287,7 @@ def _classify_tool_errors(llm_trace: Dict[str, Any]) -> Dict[str, List[Dict[str,
                 continue
             later_tool = str(later.get("tool") or "")
             later_status = str(later.get("status") or "ok")
-            if later_status not in {"", "ok", "ok_autocorrected"}:
+            if later_status not in _OK_TOOL_STATUSES:
                 continue
             later_args = later.get("args") if isinstance(later.get("args"), dict) else {}
             later_key, later_paths = _call_target_signature(later_args)

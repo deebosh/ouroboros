@@ -215,7 +215,7 @@ def test_capability_resource_guard_owner_facades_preserve_identity():
             {},
             "unavailable",
             "CAPABILITY_UNAVAILABLE",
-            "error",
+            "unavailable",  # T1 §A.18
             (
                 "⚠️ CAPABILITY_UNAVAILABLE: 'create_github_issue' is unavailable: "
                 "missing_credential (GITHUB_TOKEN)."
@@ -227,7 +227,7 @@ def test_capability_resource_guard_owner_facades_preserve_identity():
             {"allowed_resources": {"web": False}},
             "unavailable",
             "CAPABILITY_UNAVAILABLE",
-            "error",
+            "unavailable",  # T1 §A.18
             (
                 "⚠️ CAPABILITY_UNAVAILABLE: 'web_search' is unavailable: "
                 "missing_credential (web_search_backend)."
@@ -395,7 +395,8 @@ def test_builtin_availability_bare_registry_skips_runtime_probes(monkeypatch):
 @pytest.mark.parametrize(
     ("provider", "ephemeral", "expected_code", "legacy_error", "legacy_status"),
     (
-        ("extension", True, "ACCESS_BLOCKED", False, "ok"),
+        # T1 §A.4: the ephemeral-turn denial is a denial, not a clean call.
+        ("extension", True, "ACCESS_BLOCKED", True, "blocked"),
         ("extension", False, "RESOURCE_CONSTRAINT_BLOCKED", True, "resource_constraint_blocked"),
         ("mcp", False, "RESOURCE_CONSTRAINT_BLOCKED", True, "resource_constraint_blocked"),
     ),
@@ -565,10 +566,13 @@ def test_external_discovery_failure_does_not_fabricate_a_resource_denial(
     assert calls["discovery"] > 0
     assert calls["physical"] == 0
     assert calls["safety"] == 0
+    # T1 §A.1/§A.3: an unavailable extension and a tool that does not exist are both
+    # honest failures of the call; the text alone carried no marker, so both used to
+    # be recorded as clean.
     assert row["result"] == expected_text
-    assert row["is_error"] is False
+    assert row["is_error"] is True
     assert row["result_meta"] == {
-        "status": "ok",
+        "status": "unavailable" if expected_status == "unavailable" else "unknown_tool",
         "tool_result_status": expected_status,
         "tool_result_code": expected_code,
         "tool_result_meta": expected_meta,

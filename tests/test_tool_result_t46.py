@@ -459,12 +459,13 @@ def test_native_review_and_git_producers_bypass_adapter_and_keep_legacy_loop_fie
         status="ok", code="REVIEW_BLOCKED", text=review_text,
     )
     assert review_row["is_error"] is False
-    assert review_row["result_meta"]["status"] == "blocked"
+    # T1 §A.17: both refusals get their own bucket; is_error is unchanged.
+    assert review_row["result_meta"]["status"] == "review_blocked"
     assert git_row["tool_result"] == ToolResult(
         status="ok", code="GIT_ERROR", text=git_text,
     )
     assert git_row["is_error"] is False
-    assert git_row["result_meta"]["status"] == "error"
+    assert git_row["result_meta"]["status"] == "git_error"
     trace = {
         "tool_calls": [{
             "tool": "commit_reviewed",

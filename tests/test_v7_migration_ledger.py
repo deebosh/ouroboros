@@ -456,6 +456,19 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "and reuse them by blob id"
     )
     retired_current.update({"ouroboros/loop_tool_execution.py::_parse_plan_review_control": "retired:native plan_task ToolResult metadata replaces textual control parsing", "ouroboros/loop_tool_execution.py::PLAN_REVIEW_CONTROL_PREFIX": "retired:loop no longer imports the display-only plan footer prefix", "ouroboros/loop_tool_execution.py::_PLAN_REVIEW_OUTCOMES": "retired:plan producer validates the closed outcome vocabulary before publication"})
+    # T1: two retirements that DO carry a semantic delta — the loop's ordered
+    # families and generic markers move into the single classifier rather than
+    # disappearing, so their rows name the spec 4.3.3 delta instead of "none".
+    retired_current.update({
+        "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES":
+            "retired:the loop no longer classifies result text; the single classifier owns every family",
+        "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS":
+            "retired:the generic marker fallbacks live once, in the single classifier",
+    })
+    retired_delta_ids = {
+        "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES": "D02",
+        "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS": "D02",
+    }
     existing_process_owner_rows = {
         "tests/test_skill_exec.py::test_run_shell_restores_obfuscated_self_authored_state_marker",
         "ouroboros/tools/registry.py::SKILL_OWNER_STATE_FILENAMES",
@@ -493,7 +506,15 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/tools/registry.py::is_skill_payload_path",
         "ouroboros/tools/registry.py::resolve_skill_payload_target",
     }
-    implemented.update({name: name for name in ("ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS")})
+    # T1: _FAILURE_PREFIXES and _FAILURE_MARKERS are retired rather than re-owned;
+    # the loop pair keeps its names as compatibility wrappers over the typed owners.
+    implemented.update({name: name for name in ("ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS")})
+    implemented["ouroboros/loop_tool_execution.py::_extract_result_metadata"] = "ouroboros/loop_tool_execution.py::_typed_result_metadata"
+    implemented["ouroboros/loop_tool_execution.py::_is_tool_execution_failure"] = "ouroboros/loop_tool_execution.py::_typed_execution_failure"
+    implemented["ouroboros/loop_tool_execution.py::_structured_tool_failure"] = "ouroboros/tools/tool_result.py::_structured_failure"
+    implemented["tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures"] = "tests/test_tool_execution_classification.py::test_shell_and_protected_failures_are_treated_as_tool_failures"
+    existing_process_owner_rows.update({"ouroboros/tools/core.py::_code_search", "ouroboros/loop_tool_execution.py::_structured_tool_failure", "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures", 'ouroboros/tools/core.py::_filter_out_project_store', 'ouroboros/tools/core.py::_policy_is_skill_owner_state_target', 'ouroboros/tools/core.py::active_repo_dir_for', 'ouroboros/tools/core.py::active_tool_profile', 'ouroboros/tools/core.py::build_resolved_resource_binding', 'ouroboros/tools/core.py::decide_tool_access', 'ouroboros/tools/core.py::normalize_root', 'ouroboros/tools/core.py::normalize_runtime_data_path', 'ouroboros/tools/core.py::read_text', 'ouroboros/tools/core.py::SKILL_OWNER_STATE_FILENAMES', "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/loop_tool_execution.py::_is_tool_execution_failure", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
+    registry_extraction_no_facade_rows.update({"ouroboros/loop_tool_execution.py::_structured_tool_failure", "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/loop_tool_execution.py::_is_tool_execution_failure", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     implemented.update(w_stream_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)
@@ -501,8 +522,6 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(test_split_rows)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
-    existing_process_owner_rows.update({"ouroboros/tools/core.py::_code_search", 'ouroboros/tools/core.py::_filter_out_project_store', 'ouroboros/tools/core.py::_policy_is_skill_owner_state_target', 'ouroboros/tools/core.py::active_repo_dir_for', 'ouroboros/tools/core.py::active_tool_profile', 'ouroboros/tools/core.py::build_resolved_resource_binding', 'ouroboros/tools/core.py::decide_tool_access', 'ouroboros/tools/core.py::normalize_root', 'ouroboros/tools/core.py::normalize_runtime_data_path', 'ouroboros/tools/core.py::read_text', 'ouroboros/tools/core.py::SKILL_OWNER_STATE_FILENAMES', "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
-    registry_extraction_no_facade_rows.update({"ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -524,6 +543,12 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 if row["old path/symbol"] in {
                     "ouroboros/tools/registry.py::ToolEntry",
                     "ouroboros/tools/registry.py::ToolRegistry",
+                    # T1: the classification cutover is a spec 4.3.3 tool-domain delta.
+                    "ouroboros/loop_tool_execution.py::_extract_result_metadata",
+                    "ouroboros/loop_tool_execution.py::_is_tool_execution_failure",
+                    "ouroboros/loop_tool_execution.py::_structured_tool_failure",
+                    "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES",
+                    "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
                 }
                 else "none"
             )
@@ -619,14 +644,23 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         elif row["old path/symbol"] in retired_current:
             assert row["new owner/path"] == retired_current[row["old path/symbol"]]
             assert row["facade/public contract"] == "-"
-            assert delta["id"] == "none" and delta["note"]
+            assert delta["id"] == retired_delta_ids.get(row["old path/symbol"], "none")
+            assert delta["note"]
             assert upstream["status"] == "retired"
             assert "v7 WIP" in upstream["note"]
         else:
             assert upstream["status"] == "pending"
             expected_delta = (
                 "D02"
-                if row["old path/symbol"] == "ouroboros/tools/registry.py::ToolRegistry"
+                if row["old path/symbol"] in {
+                    "ouroboros/tools/registry.py::ToolRegistry",
+                    # T1: the classification cutover is a spec 4.3.3 tool-domain delta.
+                    "ouroboros/loop_tool_execution.py::_extract_result_metadata",
+                    "ouroboros/loop_tool_execution.py::_is_tool_execution_failure",
+                    "ouroboros/loop_tool_execution.py::_structured_tool_failure",
+                    "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES",
+                    "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
+                }
                 else "none"
             )
             assert delta["id"] == expected_delta and delta["note"]

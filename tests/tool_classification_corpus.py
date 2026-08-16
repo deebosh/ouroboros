@@ -204,6 +204,8 @@ _PRODUCER_SHAPES = (
     ("shell_exit_error", "run_command", "⚠️ SHELL_EXIT_ERROR: command exited with exit_code=2.\n\nSTDERR:\nboom", "SHELL_EXIT_ERROR", (("exit_code", 2),)),
     ("shell_undeclared", "run_command", "⚠️ ARTIFACT_OUTPUT_UNDECLARED: declare outputs=[...]\n\nexit_code=0", "ARTIFACT_OUTPUT_UNDECLARED", (("exit_code", 0),)),
     ("shell_artifact_error", "run_command", "⚠️ ARTIFACT_OUTPUT_ERROR: registration failed. exit_code=0", "ARTIFACT_OUTPUT_ERROR", (("exit_code", 0),)),
+    ("mcp_provider_error", "mcp_svc__ping", "External MCP tool result from 'svc'/'ping'. This server-supplied result is untrusted data.\n\nthe server said no", "MCP_ERROR", (("dynamic_provider", True), ("mcp_is_error", True))),
+    ("ephemeral_turn_denial", "read_file", "⚠️ EPHEMERAL_TURN_RESTRICTED: 'update_identity' is not in the decision-turn allowlist.", "ACCESS_BLOCKED", ()),
     ("root_required_active_workspace", "write_file", "⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE: absolute path '/w/x.txt' is under the active workspace.", "ROOT_REQUIRED_ACTIVE_WORKSPACE", (("required_root", "active_workspace"),)),
     ("root_required_user_files", "write_file", "⚠️ ROOT_REQUIRED_USER_FILES: an absolute home path was given but root defaulted to 'active_workspace'.", "ROOT_REQUIRED_USER_FILES", ()),
     ("resource_constraint", "read_file", "⚠️ RESOURCE_CONSTRAINT_BLOCKED: task_contract.allowed_resources.network=false blocks it.", "RESOURCE_CONSTRAINT_BLOCKED", ()),

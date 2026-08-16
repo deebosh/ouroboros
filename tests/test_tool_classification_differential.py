@@ -20,6 +20,14 @@ from typing import Mapping, NamedTuple
 
 import pytest
 
+from ouroboros._outcome_tool_errors import (
+    _BLOCKING_TOOL_STATUSES,
+    _NON_BLOCKING_READONLY_BLOCK_STATUSES,
+    _NON_BLOCKING_RECOVERABLE_STATUSES,
+    _OK_TOOL_STATUSES,
+    _POLICY_DENIAL_STATUSES,
+    _UNPARTITIONED_BUCKETS,
+)
 from ouroboros.loop_tool_execution import _typed_execution_failure, _typed_result_metadata
 from ouroboros.tools.tool_result import TOOL_CODE_SPECS, LegacyTextResultAdapter
 from tests.tool_classification_corpus import (
@@ -109,8 +117,12 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "native:CAPABILITY_UNAVAILABLE:PYTHON_INTERPRETER_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "native:HEAL_MODE_BLOCKED:SKILL_REDIRECT_BLOCKED": Delta(True, "skill_payload_blocked", True, "heal_mode_blocked", "A.18", "the publisher's code wins over its text; both statuses are policy denials"),
     "shape:cognitive_redirect": Delta(True, "cognitive_tool_required", False, "ok", "A.11", "owner batch #4, through the native producer"),
+    "shape:ephemeral_turn_denial": Delta(False, "ok", True, "blocked", "A.4",
+        "the decision-turn denial is an access block its own first line never marked"),
     "shape:executor_crash": Delta(True, "error", True, "executor_error", "A.17", "the executor crash gets its own bucket, homed to the blocking partition"),
     "shape:git_error_untyped_text": Delta(False, "error", False, "git_error", "A.17", "same bucket rename through the native code, with no marker in the text"),
+    "shape:mcp_provider_error": Delta(False, "ok", True, "mcp_error", "A.3",
+        "the provider error was already typed; only the status beside it said success"),
     "shape:review_blocked_untyped_text": Delta(False, "blocked", False, "review_blocked", "A.17", "same bucket rename through the native code, with no marker in the text"),
 })
 
@@ -200,6 +212,70 @@ def test_specific_identifiers_beat_their_family_and_families_beat_generic_marker
     # exited non-zero must not read as a plain autocorrected success.
     assert bucket("⚠️ SHELL_REGEX_AUTO_CORRECTED: fixed\n⚠️ SHELL_EXIT_ERROR: exit_code=1") == "non_zero_exit"
     assert bucket("⚠️ SHELL_REGEX_AUTO_CORRECTED: fixed\nexit_code=0") == "ok_autocorrected"
+
+
+def test_every_outcome_bucket_is_partitioned() -> None:
+    """A new code cannot acquire a bucket the outcome classifier does not know.
+
+    Without this, a call can be an honest error while `unresolved`, `policy_denials`,
+    `recovered`, `cosmetic` and `ignored` are all empty — two numbers in one artifact
+    contradicting each other, neither of them wrong."""
+    known = (
+        set(_BLOCKING_TOOL_STATUSES)
+        | set(_POLICY_DENIAL_STATUSES)
+        | set(_NON_BLOCKING_RECOVERABLE_STATUSES)
+        | set(_NON_BLOCKING_READONLY_BLOCK_STATUSES)
+        | set(_OK_TOOL_STATUSES)
+        | set(_UNPARTITIONED_BUCKETS)
+    )
+    unhomed = sorted({spec.outcome_bucket for spec in TOOL_CODE_SPECS.values()} - known)
+    assert not unhomed, f"outcome buckets with no partition: {unhomed}"
+    # Everything deliberately left out is named, and nothing else is.
+    assert set(_UNPARTITIONED_BUCKETS) == {"vlm_error"}
+
+
+# Text inspections that survive OUTSIDE the one classifier, with the reason each
+# cannot be expressed as a tool-result code. The cap may shrink, never grow, and a
+# module absent from this inventory may hold none at all: that is the executable
+# form of "one adapter plus an inventory of residual string producers".
+_RESIDUAL_TEXT_INSPECTIONS: Mapping[str, tuple[int, str]] = MappingProxyType({
+    "ouroboros/outcomes.py": (5, "the FINAL ANSWER and service-teardown text, for which no ToolResult exists"),
+    "ouroboros/reflection.py": (6, "markers emitted INSIDE a result body, which a first-line parser cannot see"),
+    "ouroboros/memory.py": (1, "tools.jsonl rows appended by consciousness carry neither status nor code"),
+    "ouroboros/skill_review.py": (2, "skill review verdict text, not a tool result"),
+    "ouroboros/tools/github.py": (12, "private helper-failure checks between two functions of one tool"),
+    "ouroboros/tools/skill_publish.py": (9, "private helper-failure checks between two functions of one tool"),
+    "ouroboros/tools/claude_advisory_review.py": (8, "private helper-failure checks between two functions of one tool"),
+    "ouroboros/tools/core_file_tools.py": (3, "private helper-failure checks between two functions of one tool"),
+    "ouroboros/tools/services.py": (1, "private helper-failure check between two functions of one tool"),
+    "ouroboros/tools/core.py": (1, "private helper-failure check between two functions of one tool"),
+    "ouroboros/tools/control_delegation.py": (1, "private helper-failure check between two functions of one tool"),
+})
+_RESIDUAL_PATTERNS = ('startswith("⚠️', 'startswith(("⚠️', "_ERROR_MARKERS", "_INFRA_TEXT_PREFIXES")
+
+
+def test_residual_text_inspection_inventory_does_not_grow() -> None:
+    root = pathlib.Path(__file__).resolve().parents[1]
+    counted: dict[str, int] = {}
+    for path in sorted((root / "ouroboros").rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel == "ouroboros/tools/tool_result.py":
+            continue  # the one classifier IS the inspection
+        text = path.read_text(encoding="utf-8")
+        hits = sum(text.count(pattern) for pattern in _RESIDUAL_PATTERNS)
+        if hits:
+            counted[rel] = hits
+
+    new_modules = sorted(set(counted) - set(_RESIDUAL_TEXT_INSPECTIONS))
+    assert not new_modules, f"a new module started classifying result text: {new_modules}"
+    grew = {
+        rel: (hits, _RESIDUAL_TEXT_INSPECTIONS[rel][0])
+        for rel, hits in counted.items()
+        if hits > _RESIDUAL_TEXT_INSPECTIONS[rel][0]
+    }
+    assert not grew, f"residual text inspections grew: {grew}"
+    # The loop is the one that mattered: it holds none.
+    assert "ouroboros/loop_tool_execution.py" not in counted
 
 
 @pytest.mark.parametrize("case_key", ["shape:shell_no_match_autocorrected", "shape:shell_ok"])

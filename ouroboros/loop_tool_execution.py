@@ -28,7 +28,11 @@ from ouroboros.tool_capabilities import (
     tool_result_limit as _tool_result_limit,
 )
 from ouroboros.tools.registry import ToolRegistry
-from ouroboros.tools.tool_result import TOOL_CODE_SPECS, ToolResult
+from ouroboros.tools.tool_result import (
+    TOOL_CODE_SPECS,
+    LegacyTextResultAdapter,
+    ToolResult,
+)
 from ouroboros.usage_accounting import UsageAccountingError
 from ouroboros.utils import (
     append_jsonl,
@@ -42,43 +46,6 @@ from ouroboros.utils import (
 
 log = logging.getLogger(__name__)
 
-_FAILURE_PREFIXES = (
-    "⚠️ TOOL_",
-    "⚠️ SHELL_",
-    "⚠️ RUN_SCRIPT_",
-    "⚠️ VLM_",
-    "⚠️ LIGHT_MODE_",
-    "⚠️ WORKSPACE_",
-    "⚠️ ELEVATION_",
-    "⚠️ SKILL_STATE_",
-    "⚠️ SKILL_REDIRECT_",
-    # The undeclared-outputs nudge: is_error for trace/UI honesty (the ⚠️ is
-    # real), but its typed status is partitioned as a policy denial so it never
-    # degrades execution health ("_UNDECLARED" matches no generic marker).
-    "⚠️ ARTIFACT_OUTPUT_UNDECLARED",
-    "⚠️ SKILL_PAYLOAD_ARG_",
-    "⚠️ DATA_WRITE_",
-    "⚠️ DATA_READ_BLOCKED",
-    "⚠️ DATA_LIST_BLOCKED",
-    "⚠️ WRITE_FILE_",
-    "⚠️ EDIT_TEXT_",
-    "⚠️ ARTIFACT_OUTPUT_ERROR",
-    "⚠️ CORE_PROTECTION_BLOCKED",
-    "⚠️ SKILL_PAYLOAD_CONTROL_BLOCKED",
-    "⚠️ COGNITIVE_TOOL_REQUIRED",
-    "⚠️ ROOT_REQUIRED_USER_FILES",
-    "⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE",
-    "⚠️ RESOURCE_CONSTRAINT_BLOCKED",
-    "⚠️ RESOURCE_POLICY_BLOCKED",
-    "⚠️ INTEGRATE_",
-)
-_FAILURE_MARKERS = (
-    "_BLOCKED",
-    "_ERROR",
-    "_FAILED",
-    "_UNAVAILABLE",
-    "_VIOLATION",
-)
 _PROCESS_RESULT_TOOLS = frozenset(
     {"run_command", "run_script", "start_service", "stop_service"}
 )
@@ -315,59 +282,24 @@ def _truncate_tool_result(
     return s[:limit] + f"\n... (truncated from {len(s)} chars, limit={limit})"
 
 
-def _structured_tool_failure(result: Any) -> bool:
-    """True when a tool's own JSON payload declares the call failed (``ok: false``).
-
-    The ⚠️-prefix convention below only covers results the CORE composes. Extension
-    (skill) tools return a JSON envelope instead, so a failed call arrived carrying
-    `{"ok": false, "error": ...}` with no marker — and was recorded as a SUCCESS.
-    Measured in the v6.81.1 OSWorld run: 329 such rows (302 remote_exec, 20
-    screenshot, 5 key, 2 click), including screenshot HTTP 500s after an agent
-    killed the guest control server and then kept "working" blind. Everything that
-    reads outcomes — the error counter, the anti-loop heuristic, monitoring, the
-    reflection trace — believed those calls worked.
-
-    Deliberately narrow: the payload must be a JSON OBJECT whose top-level `ok` is
-    exactly False. A tool returning prose, a list, or `ok` as data-not-status is
-    untouched.
-    """
-    text = str(result or "").lstrip()
-    if not text.startswith("{") or '"ok"' not in text:
-        return False
-    try:
-        payload = json.loads(text)
-    except Exception:  # noqa: BLE001 - not JSON, not our case
-        return False
-    return isinstance(payload, dict) and payload.get("ok") is False
+def _typed_or_adapted(fn_name: str, result: Any, tool_result: ToolResult | None) -> ToolResult:
+    """The typed result the producer published, or the ONE adapter's reading of its
+    text. A caller holding only text therefore gets the same classification the loop
+    gets, because there is only one place that classification is written."""
+    if isinstance(tool_result, ToolResult):
+        return tool_result
+    return LegacyTextResultAdapter.from_text(fn_name, str(result or ""))
 
 
 def _is_tool_execution_failure(
     tool_ok: bool,
     result: Any,
     tool_result: ToolResult | None = None,
+    *,
+    fn_name: str = "",
 ) -> bool:
-    """Treat only executor/runtime failures as UI tool failures."""
-    if not tool_ok:
-        return True
-    if isinstance(tool_result, ToolResult) and tool_result.code in {
-        "REVIEW_BLOCKED",
-        "GIT_ERROR",
-    }:
-        return False
-    if _structured_tool_failure(result):
-        return True
-    text = str(result or "")
-    if text.startswith("⚠️ SHELL_REGEX_AUTO_CORRECTED"):
-        remainder = text.split("\n", 1)[1] if "\n" in text else ""
-        if any(prefix in remainder for prefix in _FAILURE_PREFIXES):
-            return True
-        return False
-    if text.startswith("⚠️ REVIEW_BLOCKED") or text.startswith("⚠️ GIT_ERROR"):
-        return False
-    if text.startswith(_FAILURE_PREFIXES):
-        return True
-    first_line = text.splitlines()[0] if text.startswith("⚠️ ") else ""
-    return bool(first_line and any(marker in first_line for marker in _FAILURE_MARKERS))
+    """Whether the call failed, read from the published code."""
+    return _typed_execution_failure(tool_ok, _typed_or_adapted(fn_name, result, tool_result))
 
 
 def _extract_result_metadata(
@@ -376,132 +308,13 @@ def _extract_result_metadata(
     is_error: bool,
     tool_result: ToolResult | None = None,
 ) -> Dict[str, Any]:
-    """Extract structured outcome facts for summaries and reflections."""
-    text = str(result or "")
-    status = "error" if is_error else "ok"
-    if isinstance(tool_result, ToolResult) and tool_result.code == "REVIEW_BLOCKED":
-        status = "blocked"
-    elif isinstance(tool_result, ToolResult) and tool_result.code == "GIT_ERROR":
-        status = "error"
-    elif _structured_tool_failure(result):
-        # A typed status, not the generic "error": an extension tool that answered
-        # honestly is a different fact from an executor crash, and the trace should
-        # say which happened.
-        status = "tool_reported_failure"
-    elif text.startswith("⚠️ TOOL_TIMEOUT"):
-        status = "timeout"
-    elif text.startswith("⚠️ SHELL_REGEX_AUTO_CORRECTED") and "⚠️ ARTIFACT_OUTPUT_UNDECLARED" in text:
-        status = "artifact_output_undeclared"
-    elif text.startswith("⚠️ SHELL_REGEX_AUTO_CORRECTED") and "⚠️ ARTIFACT_OUTPUT_ERROR" in text:
-        status = "artifact_output_error"
-    elif text.startswith("⚠️ SHELL_REGEX_AUTO_CORRECTED") and "⚠️ SHELL_EXIT_ERROR" not in text:
-        status = "ok_autocorrected"
-    elif text.startswith("⚠️ SHELL_EXIT_ERROR"):
-        status = "non_zero_exit"
-    elif text.startswith("⚠️ SHELL_CWD_BLOCKED"):
-        status = "cwd_blocked"
-    elif text.startswith("⚠️ SHELL_"):
-        status = "shell_error"
-    elif text.startswith("⚠️ RUN_SCRIPT_BLOCKED"):
-        status = "run_script_blocked"
-    elif text.startswith("⚠️ VLM_"):
-        status = "vlm_error"
-    elif text.startswith("⚠️ CORE_PROTECTION_BLOCKED"):
-        status = "protected_blocked"
-    elif text.startswith("⚠️ SKILL_PAYLOAD_CONTROL_BLOCKED"):
-        status = "skill_payload_control_blocked"
-    elif text.startswith("⚠️ LIGHT_MODE_REPO_WRITE_BLOCKED") or text.startswith("⚠️ LIGHT_MODE_BLOCKED"):
-        status = "light_mode_blocked"
-    elif text.startswith("⚠️ COGNITIVE_TOOL_REQUIRED"):
-        status = "cognitive_tool_required"
-    elif text.startswith("⚠️ ROOT_REQUIRED_USER_FILES"):
-        status = "root_required_user_files"
-    elif text.startswith("⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE"):
-        status = "root_required_active_workspace"
-    elif text.startswith("⚠️ RESOURCE_CONSTRAINT_BLOCKED"):
-        status = "resource_constraint_blocked"
-    elif text.startswith("⚠️ RESOURCE_POLICY_BLOCKED"):
-        status = "resource_policy_blocked"
-    elif text.startswith("⚠️ INTEGRATE_"):
-        status = "integration_blocked"
-    elif text.startswith("⚠️ WORKSPACE_"):
-        status = "workspace_blocked"
-    elif text.startswith("⚠️ ELEVATION_"):
-        status = "elevation_blocked"
-    elif text.startswith("⚠️ SKILL_STATE_"):
-        status = "skill_state_blocked"
-    elif text.startswith("⚠️ SKILL_REDIRECT_") or text.startswith("⚠️ SKILL_PAYLOAD_ARG_"):
-        status = "skill_payload_blocked"
-    elif text.startswith("⚠️ DATA_WRITE_") or text.startswith("⚠️ DATA_READ_BLOCKED") or text.startswith("⚠️ DATA_LIST_BLOCKED"):
-        status = "data_blocked"
-    elif text.startswith("⚠️ WRITE_FILE_"):
-        status = "write_file_blocked"
-    elif text.startswith("⚠️ EDIT_TEXT_"):
-        status = "edit_text_blocked"
-    elif text.startswith("⚠️ APPLY_PATCH_") or text.startswith("⚠️ EDIT_BATCH_"):
-        # Counted/context refusals are these tools' DESIGNED path (a miscount is
-        # an atomic refusal, not a corruption) and are user-correctable exactly
-        # like edit_text's "old_str not found". Without a typed status they fall
-        # through to the generic `error` and become an execution-health failure,
-        # which is the false `tool_failure` headline v6.57.0 removed for writes.
-        status = "edit_ops_blocked"
-    elif text.startswith("⚠️ ARTIFACT_OUTPUT_UNDECLARED"):
-        # The undeclared-outputs NUDGE on a SUCCEEDED (exit_code=0) command —
-        # split from the real registration failure below so the policy-denial
-        # partition can absorb it (v6.57.0 class).
-        status = "artifact_output_undeclared"
-    elif text.startswith("⚠️ ARTIFACT_OUTPUT_ERROR"):
-        status = "artifact_output_error"
-    elif text.startswith("⚠️ USER_FILES_PATH_BLOCKED"):
-        status = "user_files_path_blocked"
-    elif text.startswith("⚠️ SAFETY_VIOLATION") or text.startswith("⚠️ CRITICAL SAFETY_VIOLATION"):
-        status = "safety_violation"
-    elif text.startswith("⚠️ HEAL_MODE_BLOCKED"):
-        status = "heal_mode_blocked"
-    elif text.startswith("⚠️ GIT_VIA_SHELL_BLOCKED"):
-        status = "git_via_shell_blocked"
-    elif text.startswith("⚠️ ") and "_BLOCKED" in text.splitlines()[0]:
-        status = "blocked"
-    elif text.startswith("⚠️ ") and "_VIOLATION" in text.splitlines()[0]:
-        status = "violation"
-    elif text.startswith("⚠️ ") and any(marker in text.splitlines()[0] for marker in ("_ERROR", "_FAILED", "_UNAVAILABLE")):
-        status = "error"
-
-    meta: Dict[str, Any] = {"status": status}
-    # Legacy non-process deliverable fallback reads the FULL result before trace
-    # truncation. Process producers must supply the typed fact below.
-    if (
-        fn_name not in _PROCESS_RESULT_TOOLS
-        and not is_error
-        and "ARTIFACT_OUTPUTS" in text
-    ):
-        meta["artifact_registered"] = True
-    if fn_name == "plan_task" and not is_error and isinstance(tool_result, ToolResult):
-        plan_outcome = tool_result.meta.get("plan_review_outcome")
-        plan_closed = tool_result.meta.get("plan_review_closed")
-        if (
-            plan_outcome in {"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN"}
-            and type(plan_closed) is bool
-            and not (plan_outcome == "GREEN" and not plan_closed)
-            and not (plan_outcome == "REVISE_PLAN" and plan_closed)
-        ):
-            meta["plan_review_outcome"] = plan_outcome
-            meta["plan_review_closed"] = plan_closed
-    if fn_name in _PROCESS_RESULT_TOOLS and isinstance(tool_result, ToolResult):
-        exit_code = tool_result.meta.get("exit_code")
-        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
-            meta["exit_code"] = exit_code
-        signal_name = tool_result.meta.get("signal")
-        if isinstance(signal_name, str) and signal_name:
-            meta["signal"] = signal_name
-        if tool_result.meta.get("artifact_registered") is True:
-            meta["artifact_registered"] = True
-    if fn_name == "run_command" and not is_error and meta.get("exit_code") == 0:
-        if status == "ok_autocorrected":
-            meta["status"] = "ok_autocorrected"
-        else:
-            meta["status"] = "ok"
-    return meta
+    """Structured outcome facts for summaries and reflections."""
+    return _typed_result_metadata(
+        fn_name,
+        result,
+        is_error,
+        _typed_or_adapted(fn_name, result, tool_result),
+    )
 
 
 def _typed_execution_failure(tool_ok: bool, tool_result: ToolResult | None) -> bool:

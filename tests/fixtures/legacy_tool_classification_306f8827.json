@@ -2627,6 +2627,10 @@
    "is_error": true,
    "status": "cognitive_tool_required"
   },
+  "shape:ephemeral_turn_denial": {
+   "is_error": false,
+   "status": "ok"
+  },
   "shape:executor_crash": {
    "is_error": true,
    "status": "error"
@@ -2638,6 +2642,10 @@
   "shape:git_error_untyped_text": {
    "is_error": false,
    "status": "error"
+  },
+  "shape:mcp_provider_error": {
+   "is_error": false,
+   "status": "ok"
   },
   "shape:outer_timeout": {
    "is_error": true,

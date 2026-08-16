@@ -609,20 +609,22 @@ def test_registry_native_guards_precede_safety_and_physical_dispatch(
 @pytest.mark.parametrize(
     ("typed", "legacy_error", "legacy_status"),
     (
-        (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_EPHEMERAL_BUILTIN_TEXT), False, "ok"),
+        # T1 §A.4: every one of these guards DENIED the call. The three whose first
+        # line happened to carry no generic marker were recorded as clean successes.
+        (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_EPHEMERAL_BUILTIN_TEXT), True, "blocked"),
         (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_LOCAL_READONLY_TEXT), True, "blocked"),
-        (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_ACTING_EXTERNAL_TEXT), False, "ok"),
-        (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_MANAGED_ACTIVE_TEXT), False, "ok"),
+        (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_ACTING_EXTERNAL_TEXT), True, "blocked"),
+        (ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_MANAGED_ACTIVE_TEXT), True, "blocked"),
         (ToolResult(status="blocked", code="SAFETY_VIOLATION", text=_SAFETY_DENIAL_TEXT), True, "safety_violation"),
         (ToolResult(status="blocked", code="SAFETY_VIOLATION", text=_SAFETY_DENIAL_TEXT, meta={"dynamic_provider": True}), True, "safety_violation"),
         (
             ToolResult(status="unavailable", code="CAPABILITY_UNAVAILABLE", text=_MANAGED_UNAVAILABLE_TEXT),
             True,
-            "error",
+            "unavailable",  # T1 §A.18: unavailability is named; the report bucket is unchanged
         ),
     ),
 )
-def test_loop_keeps_legacy_guard_outcomes_during_native_cutover(
+def test_loop_reads_the_guard_code_not_its_denial_text(
     typed: ToolResult,
     legacy_error: bool,
     legacy_status: str,
@@ -661,19 +663,20 @@ def test_loop_keeps_legacy_guard_outcomes_during_native_cutover(
     }
 
 
-def test_loop_consumer_dispatches_typed_result_once_and_keeps_legacy_fallback(
+def test_loop_dispatches_typed_result_once_and_reads_the_published_code(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """The self-reported failure is typed where the body is produced (extension
+    dispatch and the adapter's dynamic path), so the loop consumes ONE fact instead
+    of re-deriving it. A producer that publishes OK is therefore believed: the
+    ownership, not the check, is what moved."""
     import ouroboros.loop_tool_execution as execution
+    from ouroboros.tools.extension_dispatch import _extension_completion
 
     calls: list[tuple[str, dict[str, object]]] = []
-    typed = ToolResult(
-        status="ok",
-        code="OK",
-        text='{"ok":false,"error":"provider refused"}',
-        meta={"dynamic_provider": True},
-    )
+    body = '{"ok":false,"error":"provider refused"}'
+    typed = _extension_completion(body, "")
 
     class FakeRegistry:
         CODE_TOOLS = frozenset()
@@ -701,15 +704,15 @@ def test_loop_consumer_dispatches_typed_result_once_and_keeps_legacy_fallback(
     )
 
     assert calls == [("ext_fixture", {"value": 1})]
-    assert (typed.status, typed.code) == ("ok", "OK")
-    assert row["result"] == typed.text
+    assert (typed.status, typed.code) == ("error", "TOOL_REPORTED_FAILURE")
+    assert row["result"] == typed.text == body
     assert row["is_error"] is True
     assert row["result_meta"]["status"] == "tool_reported_failure"
     assert row["tool_result"] is typed
     assert row["result_meta"] == {
         "status": "tool_reported_failure",
-        "tool_result_status": "ok",
-        "tool_result_code": "OK",
+        "tool_result_status": "error",
+        "tool_result_code": "TOOL_REPORTED_FAILURE",
         "tool_result_meta": {"dynamic_provider": True},
     }
 
@@ -736,8 +739,8 @@ def test_loop_consumer_dispatches_typed_result_once_and_keeps_legacy_fallback(
         "is_error": True,
         "trace_ref": {},
         "status": "tool_reported_failure",
-        "tool_result_status": "ok",
-        "tool_result_code": "OK",
+        "tool_result_status": "error",
+        "tool_result_code": "TOOL_REPORTED_FAILURE",
         "tool_result_meta": {"dynamic_provider": True},
     }]
 
@@ -781,10 +784,13 @@ def test_loop_records_native_mcp_error_without_reclassifying_untrusted_body(
         "task-mcp",
     )
 
+    # T1 §A.3: the MCP failure was ALREADY typed correctly; the trace row carried the
+    # right code beside a status that called the same call a success. The untrusted
+    # body is still never re-read — the provider's own code is what governs.
     assert row["result"] == text
-    assert row["is_error"] is False
+    assert row["is_error"] is True
     assert row["result_meta"] == {
-        "status": "ok",
+        "status": "mcp_error",
         "tool_result_status": "error",
         "tool_result_code": "MCP_ERROR",
         "tool_result_meta": {
@@ -837,7 +843,7 @@ def test_loop_native_argument_error_preserves_legacy_projection(tmp_path, monkey
         text=expected,
     )
     assert row["result_meta"] == {
-        "status": "error",
+        "status": "argument_error",
         "tool_result_status": "error",
         "tool_result_code": "TOOL_ARG_ERROR",
         "tool_result_meta": {},
@@ -882,7 +888,7 @@ def test_loop_native_executor_error_dispatches_once_and_preserves_text(tmp_path,
         text=expected,
     )
     assert row["result_meta"] == {
-        "status": "error",
+        "status": "executor_error",
         "tool_result_status": "error",
         "tool_result_code": "EXECUTOR_ERROR",
         "tool_result_meta": {},
@@ -1027,7 +1033,7 @@ def test_loop_parallel_executor_crash_preserves_input_order_and_typed_trace(
             "result": expected,
             "is_error": True,
             "trace_ref": None,
-            "status": "error",
+            "status": "executor_error",
             "tool_result_status": "error",
             "tool_result_code": "EXECUTOR_ERROR",
             "tool_result_meta": {},

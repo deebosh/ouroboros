@@ -538,7 +538,9 @@ def test_loop_preserves_legacy_heal_projection_with_native_code(tmp_path):
                 "skill_name": "alpha",
             },
             "⚠️ SKILL_REDIRECT_BLOCKED: active skill_repair task is scoped to the selected skill payload.",
-            "skill_payload_blocked",
+            # T1 §A.18: the publisher's code wins over its own first line; both
+            # statuses sit in the policy-denial partition, so the report is unchanged.
+            "heal_mode_blocked",
             "blocked",
             "HEAL_MODE_BLOCKED",
         ),
@@ -550,7 +552,7 @@ def test_loop_preserves_legacy_heal_projection_with_native_code(tmp_path):
                 "path": "SKILL.md",
             },
             short_redirect,
-            "skill_payload_blocked",
+            "heal_mode_blocked",
             "blocked",
             "HEAL_MODE_BLOCKED",
         ),

@@ -486,11 +486,11 @@ def test_stable_host_predispatch_denials_are_native_and_keep_legacy_projection(
     ("tool_name", "args", "detail", "status", "code", "text", "legacy_status", "is_error", "adapter_calls"),
     (
         ("read_file", {"path": "x"}, "profile=acting cannot read active_workspace.", "blocked", "ACCESS_BLOCKED", "⚠️ TOOL_ACCESS_BLOCKED: profile=acting cannot read active_workspace.", "blocked", True, 0),
-        ("query_code", {"op": "digest"}, "binding failed", "error", "TOOL_ARG_ERROR", "⚠️ TOOL_ARG_ERROR (query_code): RuntimeError: binding failed", "error", True, 0),
+        ("query_code", {"op": "digest"}, "binding failed", "error", "TOOL_ARG_ERROR", "⚠️ TOOL_ARG_ERROR (query_code): RuntimeError: binding failed", "argument_error", True, 0),
         ("apply_patch", {"patch": "*** Begin Patch\n*** End Patch"}, "binding failed", "error", "TOOL_ERROR", "⚠️ TOOL_ERROR: RuntimeError: binding failed", "error", True, 0),
         ("edit_batch", {"edits": [{"path": "x", "old_str": "a", "new_str": "b", "count": 1}]}, "binding failed", "error", "TOOL_ERROR", "⚠️ TOOL_ERROR: RuntimeError: binding failed", "error", True, 0),
-        ("vcs_status", {}, "binding failed", "ok", "GIT_ERROR", "⚠️ GIT_ERROR: RuntimeError: binding failed", "error", False, 0),
-        ("vcs_diff", {}, "binding failed", "ok", "GIT_ERROR", "⚠️ GIT_ERROR: RuntimeError: binding failed", "error", False, 0),
+        ("vcs_status", {}, "binding failed", "ok", "GIT_ERROR", "⚠️ GIT_ERROR: RuntimeError: binding failed", "git_error", False, 0),
+        ("vcs_diff", {}, "binding failed", "ok", "GIT_ERROR", "⚠️ GIT_ERROR: RuntimeError: binding failed", "git_error", False, 0),
         ("read_file", {"path": "x"}, "binding failed", "error", "LEGACY_TOOL_ERROR", "⚠️ READ_FILE_ERROR: RuntimeError: binding failed", "error", True, 1),
     ),
 )
@@ -668,7 +668,7 @@ def test_light_binding_root_redirect_is_native_without_invented_metadata(
     (
         # T1: the cognitive redirect is its own ok-status code (owner batch #4),
         # and the root redirect names the root it demands (§A.15).
-        ("cognitive", "ok", "COGNITIVE_TOOL_REQUIRED", "cognitive_tool_required"),
+        ("cognitive", "ok", "COGNITIVE_TOOL_REQUIRED", "ok"),
         ("user_files", "blocked", "ROOT_REQUIRED_USER_FILES", "root_required_user_files"),
     ),
 )
@@ -764,7 +764,9 @@ def test_light_actionable_redirects_keep_legacy_mapping_without_light_remap(
     )
     assert row["tool_result"] == expected
     assert row["result"] == expected_text
-    assert row["is_error"] is True
+    # T1 §A.11 (owner batch #4): the cognitive redirect names a better tool, so it
+    # is no longer an error row; the root redirect is still a real refusal.
+    assert row["is_error"] is (expected_status != "ok")
     assert row["result_meta"] == {
         "status": legacy_status,
         "tool_result_status": expected_status,

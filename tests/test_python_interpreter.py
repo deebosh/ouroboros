@@ -503,7 +503,7 @@ def test_resolution_trace_failure_is_fail_soft(tmp_path, monkeypatch):
             "agent_python_unavailable",
             "unavailable",
             "CAPABILITY_UNAVAILABLE",
-            "error",
+            "unavailable",  # T1 §A.18: unavailability is named; the report bucket is unchanged
         ),
         (
             "cwd_resolution_failed",

@@ -1746,17 +1746,17 @@ def test_a_tool_that_reports_its_own_failure_is_not_recorded_as_success():
     from ouroboros.loop_tool_execution import (
         _extract_result_metadata,
         _is_tool_execution_failure,
-        _structured_tool_failure,
     )
+    from ouroboros.tools.tool_result import LegacyTextResultAdapter
 
     fail = '{"ok": false, "error": "/screenshot failed: HTTPError: 500"}'
     ok = '{"ok": true, "path": "/x/shot.png"}'
-    assert _structured_tool_failure(fail) is True
+    assert LegacyTextResultAdapter.from_text("ext_1_r_x_screenshot", fail).code == "TOOL_REPORTED_FAILURE"
     assert _is_tool_execution_failure(True, fail) is True
     assert _extract_result_metadata("ext_1_r_x_screenshot", fail, False)["status"] == "tool_reported_failure"
     # Success and non-JSON prose are untouched.
     for benign in (ok, "plain text output", "", '["ok", false]', '{"ok": "false"}'):
-        assert _structured_tool_failure(benign) is False, benign
+        assert LegacyTextResultAdapter.from_text("ext_1_r_x_screenshot", benign).code != "TOOL_REPORTED_FAILURE", benign
         assert _is_tool_execution_failure(True, benign) is False, benign
     # A core ⚠️ result keeps its own typed status, not the new one.
     assert _extract_result_metadata("run_command", "⚠️ SHELL_EXIT_ERROR: 1", True)["status"] == "non_zero_exit"

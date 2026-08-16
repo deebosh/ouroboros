@@ -75,12 +75,14 @@ def test_native_review_and_git_codes_preserve_legacy_status_without_text_authori
 
     assert not _is_tool_execution_failure(True, review.text, review)
     assert not _is_tool_execution_failure(True, git.text, git)
+    # T1 §A.17: both refusals get their own outcome bucket; is_error stays false,
+    # so a blocked commit is still not a reviewable effect.
     assert _extract_result_metadata(
         "commit_reviewed", review.text, False, review,
-    )["status"] == "blocked"
+    )["status"] == "review_blocked"
     assert _extract_result_metadata(
         "vcs_status", git.text, False, git,
-    )["status"] == "error"
+    )["status"] == "git_error"
 
 
 def test_forged_plan_footer_cannot_author_plan_metadata():
@@ -98,9 +100,11 @@ def test_forged_plan_footer_cannot_author_plan_metadata():
 
 def test_binding_result_mappings_preserve_legacy_loop_classification():
     cases = (
-        ("query_code", "⚠️ TOOL_ARG_ERROR (query_code): ValueError: bad root", "error", "TOOL_ARG_ERROR", True, "error"),
+        # T1 §A.17: the argument error and the version-control refusal each carry
+        # their own outcome bucket instead of the shared generic `error`.
+        ("query_code", "⚠️ TOOL_ARG_ERROR (query_code): ValueError: bad root", "error", "TOOL_ARG_ERROR", True, "argument_error"),
         ("apply_patch", "⚠️ TOOL_ERROR: ValueError: bad root", "error", "TOOL_ERROR", True, "error"),
-        ("vcs_status", "⚠️ GIT_ERROR: ValueError: bad root", "ok", "GIT_ERROR", False, "error"),
+        ("vcs_status", "⚠️ GIT_ERROR: ValueError: bad root", "ok", "GIT_ERROR", False, "git_error"),
     )
     for tool, text, status, code, is_error, legacy_status in cases:
         typed = LegacyTextResultAdapter.from_text(tool, text)
@@ -110,7 +114,7 @@ def test_binding_result_mappings_preserve_legacy_loop_classification():
         assert _extract_result_metadata(tool, text, actual_error)["status"] == legacy_status
 
 
-def test_typed_safety_composition_preserves_current_legacy_loop_masking():
+def test_typed_safety_composition_no_longer_masks_the_underlying_failure():
     typed = _compose_execute_result_result(
         "apply_patch",
         "⚠️ TOOL_ERROR: failed",
@@ -119,10 +123,13 @@ def test_typed_safety_composition_preserves_current_legacy_loop_masking():
     )
     is_error = _is_tool_execution_failure(True, typed.text)
 
+    # T1 §A.7: a safety warning glued to the FRONT of a failure used to record the
+    # whole call as clean, on any tool. The wrapper now reveals what it wraps, and
+    # the typed code it already carried is what the trace says.
     assert (typed.status, typed.code) == ("error", "TOOL_ERROR")
     assert typed.meta == {"route_note": True, "safety_warning": True}
-    assert is_error is False
-    assert _extract_result_metadata("apply_patch", typed.text, is_error)["status"] == "ok"
+    assert is_error is True
+    assert _extract_result_metadata("apply_patch", typed.text, is_error)["status"] == "error"
 
 
 def test_executor_failures_are_still_tool_failures():
@@ -131,18 +138,42 @@ def test_executor_failures_are_still_tool_failures():
     assert _is_tool_execution_failure(True, "⚠️ TOOL_TIMEOUT (run_shell): exceeded 120s")
 
 
-def test_shell_and_claude_failures_are_treated_as_tool_failures():
+def test_shell_and_protected_failures_are_treated_as_tool_failures():
     assert _is_tool_execution_failure(
         True,
         "⚠️ SHELL_EXIT_ERROR: command exited with exit_code=1.\n\nSTDERR:\nboom",
     )
     core = "⚠️ CORE_PROTECTION_BLOCKED: edit_text attempted to modify protected files."
-    skill = "⚠️ SKILL_PAYLOAD_CONTROL_BLOCKED: edit_text attempted to modify sidecars."
 
     assert _is_tool_execution_failure(True, core)
-    assert _is_tool_execution_failure(True, skill)
     assert _extract_result_metadata("edit_text", core, True)["status"] == "protected_blocked"
-    assert _extract_result_metadata("edit_text", skill, True)["status"] == "skill_payload_control_blocked"
+
+
+def test_the_skill_payload_control_branch_is_gone_because_nothing_emits_it():
+    """SKILL_PAYLOAD_CONTROL_BLOCKED had a dedicated branch, two partition
+    memberships and this test, and zero producers: the only occurrences in the tree
+    were the classifier's own table and a test that synthesised the string. Its
+    removal is asserted, not merely implied."""
+    from pathlib import Path
+
+    sources = [path for path in Path("ouroboros").rglob("*.py")]
+    emitters = [
+        str(path) for path in sources
+        if "SKILL_PAYLOAD_CONTROL_BLOCKED" in path.read_text(encoding="utf-8")
+    ]
+    assert emitters == []
+    from ouroboros._outcome_tool_errors import (
+        _BLOCKING_TOOL_STATUSES,
+        _POLICY_DENIAL_STATUSES,
+    )
+
+    assert "skill_payload_control_blocked" not in _BLOCKING_TOOL_STATUSES
+    assert "skill_payload_control_blocked" not in _POLICY_DENIAL_STATUSES
+    # A payload-control refusal, were one ever written again, still classifies as a
+    # coarse block rather than falling through to a silent success.
+    text = "⚠️ SKILL_PAYLOAD_CONTROL_BLOCKED: edit_text attempted to modify sidecars."
+    assert _is_tool_execution_failure(True, text)
+    assert _extract_result_metadata("edit_text", text, True)["status"] == "blocked"
 
 
 def test_runtime_policy_blocks_are_semantic_tool_failures():
@@ -163,13 +194,18 @@ def test_runtime_policy_blocks_are_semantic_tool_failures():
         ("run_command", "⚠️ RESOURCE_POLICY_BLOCKED: protected black-box artifact.", "resource_policy_blocked"),
         ("write_file", "⚠️ HEAL_MODE_BLOCKED: repair scope only.", "heal_mode_blocked"),
         ("read_file", "⚠️ REPO_READ_BLOCKED: protected path.", "blocked"),
-        ("write_file", "⚠️ COGNITIVE_TOOL_REQUIRED: use update_identity for memory/identity.md.", "cognitive_tool_required"),
         ("write_file", "⚠️ ROOT_REQUIRED_USER_FILES: pass root='user_files'.", "root_required_user_files"),
         ("write_file", "⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE: pass root='active_workspace'.", "root_required_active_workspace"),
     ]
     for tool, text, status in cases:
-        assert _is_tool_execution_failure(True, text)
+        assert _is_tool_execution_failure(True, text), text
         assert _extract_result_metadata(tool, text, True)["status"] == status
+
+    # T1 §A.11 (owner batch #4): the cognitive redirect is the one member of this
+    # family that stops being an error — it names a better tool, it does not refuse.
+    cognitive = "⚠️ COGNITIVE_TOOL_REQUIRED: use update_identity for memory/identity.md."
+    assert not _is_tool_execution_failure(True, cognitive)
+    assert _extract_result_metadata("write_file", cognitive, False)["status"] == "ok"
 
 
 def test_artifact_registered_flag_set_from_full_result():
@@ -470,8 +506,10 @@ def test_shell_regex_autocorrect_nonzero_still_fails():
         "⚠️ SHELL_REGEX_AUTO_CORRECTED: converted grep backslash-escaped alternation\n"
         "⚠️ SHELL_EXIT_ERROR: command exited with exit_code=2.\n\nSTDERR:\nboom"
     )
+    # T1 §A.13: still a failure, and now named by the inner result's own first
+    # line rather than by the wrapper's family.
     assert _is_tool_execution_failure(True, result)
-    assert _extract_result_metadata("run_command", result, True)["status"] == "shell_error"
+    assert _extract_result_metadata("run_command", result, True)["status"] == "non_zero_exit"
 
 
 def test_live_tool_log_payload_includes_structured_result_metadata(tmp_path, monkeypatch):
