@@ -48,7 +48,7 @@ _POPEN_ALLOWLIST = {
     "ouroboros/server_control.py",        # restart exec path
     "ouroboros/headless.py",              # waited synchronous child
     "ouroboros/preflight_runner.py",      # waited hermetic pytest child
-    "ouroboros/tools/shell.py",           # bounded foreground commands (waited + tracked)
+    "ouroboros/tools/shell_process.py",   # bounded foreground commands (waited + tracked)
     "ouroboros/tools/skill_exec.py",      # bounded skill run (waited + tracked)
     "ouroboros/tools/skill_preflight.py", # waited preflight child
     "ouroboros/marketplace/isolated_deps.py",  # waited installer child

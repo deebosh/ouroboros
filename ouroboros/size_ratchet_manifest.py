@@ -78,7 +78,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/tools/review_helpers.py",
     "ouroboros/tools/review_synthesis.py",
     "ouroboros/tools/scope_review.py",
-    "ouroboros/tools/shell.py",
     "ouroboros/tools/subagent_integration.py",
     "ouroboros/usage_accounting.py",
     "server.py",
