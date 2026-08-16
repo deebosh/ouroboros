@@ -967,6 +967,96 @@ def test_api_extension_settings_section_returns_only_requested_skill(tmp_path, m
         _stop_patches(patches)
 
 
+def test_api_extension_settings_section_includes_skill_own_saved_values(tmp_path, monkeypatch):
+    """D31: the Settings UI form had no source for current field values at all
+    (settings.js hardcoded {} into renderSafeField), so submitting it — even to
+    change one field — serialized every field at its blank default and
+    overwrote the skill's settings.json wholesale. The endpoint must attach the
+    skill's OWN state-scoped settings.json (never core settings.json) so the
+    frontend can pre-fill the form with what is actually saved."""
+    from ouroboros import extension_loader
+    from ouroboros.skill_loader import (
+        SkillReviewState,
+        compute_content_hash,
+        find_skill,
+        save_enabled,
+        save_review_state,
+        skill_state_dir,
+    )
+    from ouroboros.utils import atomic_write_json
+
+    skills_root = tmp_path / "skills"
+    plugin = (
+        "def register(api):\n"
+        "    api.register_settings_section('config', 'Config', schema={'components': [\n"
+        "        {'type': 'form', 'route': 'settings/save', 'method': 'POST', 'fields': [\n"
+        "            {'name': 'FOO', 'label': 'Foo', 'type': 'text'}\n"
+        "        ]}\n"
+        "    ]})\n"
+    )
+    skill_dir = _write_ext(skills_root, "settings_saved", permissions=["widget"], plugin=plugin)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    client, drive_root, patches = _make_client(tmp_path, monkeypatch)
+    try:
+        content_hash = compute_content_hash(skill_dir, manifest_entry="plugin.py")
+        save_enabled(drive_root, "settings_saved", True)
+        save_review_state(drive_root, "settings_saved", SkillReviewState(status="pass", content_hash=content_hash))
+        loaded = find_skill(drive_root, "settings_saved", repo_path=str(skills_root))
+        assert loaded is not None
+        err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+        assert err is None, err
+
+        # The skill's own settings.json, as its own settings/save route would write it.
+        atomic_write_json(
+            skill_state_dir(drive_root, "settings_saved") / "settings.json",
+            {"FOO": "bar"},
+        )
+
+        resp = client.get("/api/extensions/settings_saved/settings_section")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["sections"][0]["saved_values"] == {"FOO": "bar"}
+    finally:
+        _stop_patches(patches)
+
+
+def test_api_extension_settings_section_saved_values_empty_when_no_settings_file(tmp_path, monkeypatch):
+    from ouroboros import extension_loader
+    from ouroboros.skill_loader import (
+        SkillReviewState,
+        compute_content_hash,
+        find_skill,
+        save_enabled,
+        save_review_state,
+    )
+
+    skills_root = tmp_path / "skills"
+    plugin = (
+        "def register(api):\n"
+        "    api.register_settings_section('config', 'Config', schema={'components': [\n"
+        "        {'type': 'markdown', 'text': 'A'}\n"
+        "    ]})\n"
+    )
+    skill_dir = _write_ext(skills_root, "settings_empty", permissions=["widget"], plugin=plugin)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    client, drive_root, patches = _make_client(tmp_path, monkeypatch)
+    try:
+        content_hash = compute_content_hash(skill_dir, manifest_entry="plugin.py")
+        save_enabled(drive_root, "settings_empty", True)
+        save_review_state(drive_root, "settings_empty", SkillReviewState(status="pass", content_hash=content_hash))
+        loaded = find_skill(drive_root, "settings_empty", repo_path=str(skills_root))
+        assert loaded is not None
+        err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+        assert err is None, err
+
+        resp = client.get("/api/extensions/settings_empty/settings_section")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["sections"][0]["saved_values"] == {}
+    finally:
+        _stop_patches(patches)
+
+
 def test_api_extension_dispatcher_allows_head_for_get_route(tmp_path, monkeypatch):
     from ouroboros import extension_loader
     from ouroboros.skill_loader import (

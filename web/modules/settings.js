@@ -212,9 +212,10 @@ function renderExtensionSettingsSections(root, sections) {
                 inlineClass: 'settings-extension-checkbox',
                 helpClass: 'settings-inline-note',
             };
+            const savedValues = (section.saved_values && typeof section.saved_values === 'object') ? section.saved_values : {};
             return `
                 <form class="settings-extension-form" data-extension-settings-form data-extension-settings-key="${escapeHtml(formKey)}" data-skill="${escapeHtml(section.skill || '')}" data-route="${escapeHtml(rawRoute)}">
-                    <div class="form-grid two">${fields.map((field) => renderSafeField(field, {}, fieldOptions)).join('')}</div>
+                    <div class="form-grid two">${fields.map((field) => renderSafeField(field, savedValues, fieldOptions)).join('')}</div>
                     <button class="btn btn-primary btn-sm" type="submit"${disabled ? ' disabled' : ''}>${escapeHtml(component.submit_label || component.label || 'Save')}</button>
                     <div class="settings-inline-status" data-extension-settings-status></div>
                 </form>

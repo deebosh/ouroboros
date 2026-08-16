@@ -39,9 +39,10 @@ from ouroboros.skill_loader import (
     save_skill_grants,
     skill_conflict_status,
     skill_review_gate,
+    skill_state_dir,
     _sanitize_skill_name,
 )
-from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.utils import append_jsonl, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
 _CHILD_DISPATCH_HEADER_DENYLIST = {
@@ -507,7 +508,19 @@ async def api_extension_module(request: Request) -> Response:
 
 
 async def api_extension_settings_section(request: Request) -> JSONResponse:
-    """Return declarative Settings sections registered by one extension."""
+    """Return declarative Settings sections registered by one extension,
+    together with the skill's OWN currently saved values.
+
+    Without this, the Settings UI form always rendered blank (D31: the
+    frontend had no source for current values at all), so submitting it —
+    even to change a single field — serialized every field at its blank
+    default and overwrote the skill's real settings.json wholesale. Only
+    the skill's own state-scoped settings.json is read here (never core
+    settings.json, never a secret/grant store); this is exactly the file
+    the skill's own registered POST route already writes to, so exposing
+    it back through the same read path discloses nothing the skill did not
+    already persist through an owner-facing form.
+    """
     skill_name = str(request.path_params.get("skill") or "").strip()
     if not skill_name:
         return json_error("missing skill name", 400)
@@ -517,6 +530,12 @@ async def api_extension_settings_section(request: Request) -> JSONResponse:
         for item in live.get("settings_sections", [])
         if str(item.get("skill") or "") == skill_name
     ]
+    if sections:
+        drive_root = _request_drive_root(request)
+        saved = read_json_dict(skill_state_dir(drive_root, skill_name) / "settings.json")
+        saved_values = saved if isinstance(saved, dict) else {}
+        for item in sections:
+            item["saved_values"] = saved_values
     return JSONResponse({"skill": skill_name, "sections": sections})
 
 
