@@ -279,9 +279,12 @@ def test_chat_scrolls_to_bottom_after_first_history_load():
     assert "anchor: captureVisibleTimelineAnchor()" in source
     assert "restoreVisibleTimelineAnchor(scrollBeforeSync.anchor)" in source, \
         "Reconnect must restore a visible DOM anchor, not apply total height growth"
-    assert "taskId: card.dataset?.taskId || ''" in source, \
+    # The anchor pair is owned by web/modules/chat_timeline_anchor.js; the
+    # behavioural counterparts live in web/tests/timeline_anchor.test.js.
+    anchors = _read("web/modules/chat_timeline_anchor.js")
+    assert "taskId: card.dataset?.taskId || ''" in anchors, \
         "Nested viewport anchors must retain stable task identity"
-    assert "liveCardRecords.get(entry.taskId)" in source, \
+    assert "liveCardRecords.get(entry.taskId)" in anchors, \
         "A rebuilt live card whose earliest timestamp changed needs canonical task lookup"
     assert "reorderExisting: anchorMovedEarlier" in source, \
         "A mounted task card must be re-sorted if a later event lowers its anchor"
