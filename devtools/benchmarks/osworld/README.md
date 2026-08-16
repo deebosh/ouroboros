@@ -67,7 +67,14 @@ Files:
   backend until it finishes. `reset()`/`evaluate()` are the official ones. This
   is the Terminal-Bench / Pointer shape — see the cu_bridge details below and
   METHODOLOGY.md §7 for the protocol deltas that make it NOT the official
-  step-loop.
+  step-loop. Its owner leaves carry the parts that are not the launcher itself
+  and are re-exported by it, so behaviour, flags and reward semantics are
+  unchanged: `cu_bridge_runtime.py` (shared bench-server call and terminal-answer
+  reading), `cu_bridge_prompts.py` (gate/working preambles and acceptance
+  claims), `cu_bridge_tool_policy.py` (core-tool allowlist, computed host
+  denylist, GUI action set, denied connection tools), `cu_bridge_gate.py` (the
+  read-only premise gate) and `cu_bridge_budget.py` (step/round budgets, proxy
+  configuration, dataset and step-claim refusals, disclosure counters).
 
 Important step-loop details:
 

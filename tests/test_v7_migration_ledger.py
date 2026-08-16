@@ -432,6 +432,34 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     }
     implemented.update({name: name for name in ("ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS")})
     implemented.update(unix_computer_use_extraction_rows)
+    cu_bridge_symbols_by_owner = {
+        "cu_bridge_runtime.py":
+            "SKILL_NAME _api _text_declares_infeasible _terminal_answer_text "
+            "_final_answer_declares_infeasible",
+        "cu_bridge_prompts.py":
+            "GATE_PREAMBLE GATE_SUFFIX OSWORLD_PREAMBLE _ACCEPTANCE_CLAIMS",
+        "cu_bridge_tool_policy.py":
+            "_ALLOWED_CORE_TOOLS _core_tool_names _host_denied_tools _GUI_ACTION_TOOLS "
+            "_DENIED_SKILL_EXT_TOOLS _effective_disabled_tools _COMPUTER_USE_SHORT_TOOLS",
+        "cu_bridge_gate.py":
+            "_gate_window_sec _gate_claim_window_sec _gate_verdict _DesktopEnvLogCapture "
+            "ResetUnverified _reset_verified _live_policy_turns _policy_turns "
+            "_await_gate_task _gate_round _GATE_TURN_RESERVE _GUEST_DOWN_GRACE_SEC "
+            "_guest_endpoint_healthy _gate_cancel_unconfirmed _gate_tool_trace "
+            "_gate_turn_budget",
+        "cu_bridge_budget.py":
+            "_effective_max_rounds _step_budget _official_evaluate_cwd _worker_round_cap "
+            "_publish_worker_round_cap _proxy_trace_shows_exhaustion _verify_setup_effect "
+            "_task_scoped_proxy_config _proxy_config_is_live _refuse_wrong_dataset_commit "
+            "_refuse_uncapped_step_claim _audit_step_budget _collect_budget_counters",
+    }
+    cu_bridge_extraction_rows = {
+        f"devtools/benchmarks/osworld/run_cu_bridge_agent.py::{symbol}":
+            f"devtools/benchmarks/osworld/{owner}::{symbol}"
+        for owner, symbols in cu_bridge_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    implemented.update(cu_bridge_extraction_rows)
     existing_process_owner_rows.update({"ouroboros/tools/core.py::_code_search", 'ouroboros/tools/core.py::_filter_out_project_store', 'ouroboros/tools/core.py::_policy_is_skill_owner_state_target', 'ouroboros/tools/core.py::active_repo_dir_for', 'ouroboros/tools/core.py::active_tool_profile', 'ouroboros/tools/core.py::build_resolved_resource_binding', 'ouroboros/tools/core.py::decide_tool_access', 'ouroboros/tools/core.py::normalize_root', 'ouroboros/tools/core.py::normalize_runtime_data_path', 'ouroboros/tools/core.py::read_text', 'ouroboros/tools/core.py::SKILL_OWNER_STATE_FILENAMES', "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     registry_extraction_no_facade_rows.update({"ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     for row in rows:

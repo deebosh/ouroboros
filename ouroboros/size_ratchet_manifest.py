@@ -3,7 +3,6 @@
 BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 
 GIANT_PATHS = (
-    "devtools/benchmarks/osworld/run_cu_bridge_agent.py",
     "devtools/benchmarks/osworld/run_step_agent.py",
     "ouroboros/extension_loader.py",
     "ouroboros/llm.py",
@@ -52,7 +51,6 @@ GIANT_PATHS = (
 )
 
 MODULE_DEBT_1500 = (
-    "devtools/benchmarks/osworld/run_cu_bridge_agent.py",
     "devtools/benchmarks/osworld/run_step_agent.py",
     "ouroboros/agent.py",
     "ouroboros/agent_task_pipeline.py",
@@ -192,6 +190,7 @@ BAND_BASELINE_PATHS = (
 )
 
 BAND_PATHS = {
+    "devtools/benchmarks/osworld/run_cu_bridge_agent.py": "OSWorld persistent-agent launcher: main(), the admission/finalization seams the launcher gate walks, and the single run/outcome path, after the prompt, tool-policy, gate and budget leaves were extracted verbatim",
     "devtools/benchmarks/swe_bench_pro/e1v2/run_pro.py": None,
     "devtools/benchmarks/terminal_bench/harbor_installed_agent.py": None,
     "devtools/benchmarks/terminal_bench/run_tb.py": None,
