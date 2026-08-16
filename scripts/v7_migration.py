@@ -64,7 +64,17 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Iterable
+# The campaign's immutable provenance anchor: the tree the v7 plan was written
+# against. The frozen prologue evidence (census, source hashes, contract and
+# safety-differential snapshots) is bound to it and must never move, or the
+# campaign loses the baseline its acceptance is measured from.
 BASELINE_SHA = "a191e1cc21a380176bcedc9b8edd86078fc87fa1"
+# The exact merge-base the branch is currently built on. The migration ledger
+# records v7-AUTHORED moves only, so this pin travels with every tactical rebase
+# (owner decision, 2026-08-16): left behind, ordinary upstream refactors become
+# phantom "missing migration" demands and bury the real rows. Update it in the
+# same commit as the rebase.
+MERGE_BASE_SHA = "353fd97495060a2ade55e04010f899e68babc1d9"
 MIGRATION_PATH = pathlib.PurePosixPath("MIGRATION_v7.md")
 MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contract", "semantic delta", "characterization test", "upstream-transfer status/note")
 APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D01", "D02"})
@@ -493,7 +503,7 @@ def _baseline_symbol_surface(repo: pathlib.Path, path: str, js_supported: bool, 
     if not (path.endswith(".py") or (path.endswith(".js") and js_supported)):
         return None, []
     try:
-        text = _source_text(repo, BASELINE_SHA, path)
+        text = _source_text(repo, MERGE_BASE_SHA, path)
     except (OSError, subprocess.CalledProcessError, UnicodeDecodeError):
         return None, [f"migration completeness unverifiable for {path}: baseline source unreadable"]
     if path.endswith(".py"):
@@ -594,7 +604,7 @@ def validate_migration(repo: pathlib.Path) -> list[str]:
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         return [str(exc)]
     seen: set[str] = set()
-    baseline_paths = frozenset(_tracked_paths(repo, BASELINE_SHA))
+    baseline_paths = frozenset(_tracked_paths(repo, MERGE_BASE_SHA))
     for index, row in enumerate(rows, start=1):
         prefix = f"row {index}"
         old = row[MIGRATION_HEADERS[0]]
@@ -617,7 +627,7 @@ def validate_migration(repo: pathlib.Path) -> list[str]:
         old_path, old_symbol = _parse_ref(old)
         if old_path not in baseline_paths and not (repo / old_path).exists():
             errors.append(f"{prefix}: old path does not exist at baseline/current: {old_path}")
-        elif old_symbol and not _symbol_exists(repo, old_path, old_symbol, BASELINE_SHA):
+        elif old_symbol and not _symbol_exists(repo, old_path, old_symbol, MERGE_BASE_SHA):
             errors.append(f"{prefix}: old symbol does not resolve at baseline: {old}")
         retired = owner.startswith("retired:")
         external = owner.startswith("external:")
@@ -668,8 +678,8 @@ def validate_migration(repo: pathlib.Path) -> list[str]:
             if "\n" in cell or "\r" in cell or "|" in cell:
                 errors.append(f"{prefix}: {header} is not compact")
     diffs = (
-        str(_git(repo, "diff", "--name-status", "-M", f"{BASELINE_SHA}..HEAD", "--")),
-        str(_git(repo, "diff", "--name-status", "-M", BASELINE_SHA, "--")),
+        str(_git(repo, "diff", "--name-status", "-M", f"{MERGE_BASE_SHA}..HEAD", "--")),
+        str(_git(repo, "diff", "--name-status", "-M", MERGE_BASE_SHA, "--")),
     )
     candidates: set[str] = set(); modified: set[str] = set()
     for line in "\n".join(diffs).splitlines():
@@ -693,9 +703,9 @@ def validate_migration(repo: pathlib.Path) -> list[str]:
         elif not any(identity.startswith(old_path + "::") for identity in seen):
             errors.append(f"tracked migration missing for moved/removed path: {old_path}")
     rows_by_old = {row[MIGRATION_HEADERS[0]]: row for row in rows}
-    python_transitions, python_vanished, python_errors = _python_symbol_drift(repo, BASELINE_SHA, modified, baseline_paths)
+    python_transitions, python_vanished, python_errors = _python_symbol_drift(repo, MERGE_BASE_SHA, modified, baseline_paths)
     errors.extend(python_errors)
-    js_transitions, js_vanished, js_errors = _js_symbol_drift(repo, BASELINE_SHA, sorted(gated_js & modified))
+    js_transitions, js_vanished, js_errors = _js_symbol_drift(repo, MERGE_BASE_SHA, sorted(gated_js & modified))
     errors.extend(js_errors)
     for identity, (owner_ref, facade_required) in sorted({**python_transitions, **js_transitions}.items()):
         row = rows_by_old.get(identity)

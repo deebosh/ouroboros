@@ -698,6 +698,7 @@ def test_loop_consumer_dispatches_typed_result_once_and_keeps_legacy_fallback(
     }]
     assert trace["tool_calls"] == [{
         "tool": "ext_fixture",
+        "tool_call_id": "call-typed",
         "args": {"value": 1},
         "result": typed.text,
         "is_error": True,
@@ -989,6 +990,7 @@ def test_loop_parallel_executor_crash_preserves_input_order_and_typed_trace(
         expected = f"⚠️ TOOL_ERROR: Unexpected error: boom-{call_id}"
         assert row == {
             "tool": "read_file" if call_id == "call-first" else "list_files",
+            "tool_call_id": call_id,
             "args": {},
             "result": expected,
             "is_error": True,

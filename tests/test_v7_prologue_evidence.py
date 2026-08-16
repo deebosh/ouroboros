@@ -51,6 +51,9 @@ def _committed_fixture_repo(tmp_path: pathlib.Path, monkeypatch, files: dict[str
     subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
     baseline = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
     monkeypatch.setattr(v7_migration, "BASELINE_SHA", baseline)
+    # The synthetic repository is its own merge base: the ledger checks diff
+    # against MERGE_BASE_SHA, which no fixture commit would otherwise contain.
+    monkeypatch.setattr(v7_migration, "MERGE_BASE_SHA", baseline)
     return repo
 
 
@@ -88,6 +91,10 @@ def test_protected_dispatch_channels_are_sha_bound_to_baseline_symbols():
     fixture = _fixture(); channels = fixture["runtime_probe"]["protected_surfaces"]["channels"]
     assert {name: channels[name] for name in expected} == expected
     assert v7_migration.BASELINE_SHA == fixture["baseline_source_sha"] == "a191e1cc21a380176bcedc9b8edd86078fc87fa1"
+    # The provenance anchor is immutable; the ledger's merge base travels with
+    # each tactical rebase and must stay an ancestor of the branch it validates.
+    assert v7_migration.MERGE_BASE_SHA != v7_migration.BASELINE_SHA
+    subprocess.run(["git", "merge-base", "--is-ancestor", v7_migration.MERGE_BASE_SHA, "HEAD"], cwd=REPO, check=True)
     for reference in expected.values():
         path, symbol = reference.split("::"); source = v7_migration._source_text(REPO, v7_migration.BASELINE_SHA, path)
         assert symbol.rsplit(".", 1)[-1] in source and v7_migration._symbol_exists(REPO, path, symbol, ref=v7_migration.BASELINE_SHA)
@@ -300,15 +307,7 @@ def test_updater_probe_fails_when_only_the_python_c_import_is_removed(monkeypatc
 def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     assert v7_evidence.validate_migration(REPO) == []
     rows = v7_evidence._parse_migration(REPO / "MIGRATION_v7.md")
-    assert len(rows) == 259
     assert len({row["old path/symbol"] for row in rows}) == len(rows)
-    realized = {
-        "tests/test_smoke.py::test_function_count_reasonable": "ouroboros/review.py::validate_size_ratchet",
-        "tests/test_osworld_cu_bridge.py::test_module_grandfather_matcher_basename_and_relpath":
-            "tests/test_osworld_cu_bridge.py::test_module_grandfather_matcher_uses_exact_repo_relative_paths",
-        "ouroboros/review.py::_HEALTH_SKIP_DIR_PREFIXES": "ouroboros/review.py::_MODULE_SKIP_DIR_NAMES",
-        "tests/test_smoke.py::_SKIP_DIRS": "ouroboros/review.py::iter_gated_modules",
-    }
     implemented = {
         "ouroboros/tools/registry.py::BrowserState": "ouroboros/tools/tool_context.py::BrowserState",
         "ouroboros/tools/registry.py::ToolContext": "ouroboros/tools/tool_context.py::ToolContext",
@@ -594,6 +593,10 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "retired:unused payload-control alias removed with registry core extraction",
         "tests/test_commit_gate.py::_get_registry_module": "retired:test-only registry import helper removed when CORE_TOOL_NAMES characterization moved to its canonical owner",
     }
+    retired_current["ouroboros/review.py::_git_source_snapshot"] = (
+        "retired:ref inventories read blobs directly through _iter_ref_gated_blobs "
+        "and reuse them by blob id"
+    )
     retired_current.update({"ouroboros/loop_tool_execution.py::_parse_plan_review_control": "retired:native plan_task ToolResult metadata replaces textual control parsing", "ouroboros/loop_tool_execution.py::PLAN_REVIEW_CONTROL_PREFIX": "retired:loop no longer imports the display-only plan footer prefix", "ouroboros/loop_tool_execution.py::_PLAN_REVIEW_OUTCOMES": "retired:plan producer validates the closed outcome vocabulary before publication"})
     existing_process_owner_rows = {
         "tests/test_skill_exec.py::test_run_shell_restores_obfuscated_self_authored_state_marker",
@@ -635,106 +638,12 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update({name: name for name in ("ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS")})
     existing_process_owner_rows.update({"ouroboros/tools/core.py::_code_search", 'ouroboros/tools/core.py::_filter_out_project_store', 'ouroboros/tools/core.py::_policy_is_skill_owner_state_target', 'ouroboros/tools/core.py::active_repo_dir_for', 'ouroboros/tools/core.py::active_tool_profile', 'ouroboros/tools/core.py::build_resolved_resource_binding', 'ouroboros/tools/core.py::decide_tool_access', 'ouroboros/tools/core.py::normalize_root', 'ouroboros/tools/core.py::normalize_runtime_data_path', 'ouroboros/tools/core.py::read_text', 'ouroboros/tools/core.py::SKILL_OWNER_STATE_FILENAMES', "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     registry_extraction_no_facade_rows.update({"ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
-    inherited_managed = {
-        "docs/assets/home-ZhS5_vhA.js": (
-            "docs/assets/home-sxLf4sZL.js", "transferred"
-        ),
-        "docs/assets/ouroboros-nV-KSBC2.css": (
-            "docs/assets/ouroboros-CMTHrJbp.css", "transferred"
-        ),
-        "scripts/run_external_review.py::_CONTRIBUTOR_DEFAULT_KEYS": (
-            "retired:target-base reviewer-default whitelist removed by route-neutral contributor review",
-            "retired",
-        ),
-        "scripts/run_external_review.py::_assert_contributor_openrouter_config": (
-            "scripts/run_external_review.py::_assert_contributor_review_config",
-            "transferred",
-        ),
-        "scripts/run_external_review.py::_git_file_at_ref": (
-            "scripts/contributor_review_evidence.py::_git_file_at_ref", "transferred"
-        ),
-        "scripts/run_external_review.py::_release_carrier_projection": (
-            "scripts/contributor_review_evidence.py::_release_carrier_projection",
-            "transferred",
-        ),
-        "scripts/run_external_review.py::_release_sensitive_changes": (
-            "scripts/contributor_review_evidence.py::release_sensitive_changes",
-            "transferred",
-        ),
-        "scripts/run_external_review.py::_settings_defaults_at_ref": (
-            "retired:target-base literal reviewer-default extraction removed by route-neutral contributor review",
-            "retired",
-        ),
-        "scripts/run_external_review.py::_split_models": (
-            "retired:target-base reviewer-list parsing removed with target-default routing",
-            "retired",
-        ),
-        "tests/test_context_layout.py::test_nav_map_is_fence_aware": (
-            "tests/test_context_layout.py::test_nav_map_is_fence_aware_at_every_supported_depth",
-            "transferred",
-        ),
-        "tests/test_context_layout.py::test_nav_map_lists_headings_with_line_ranges_and_omits_body": (
-            "tests/test_context_layout.py::test_nav_map_lists_h2_through_h4_as_inclusive_complete_subtrees",
-            "transferred",
-        ),
-        "tests/test_contributor_flow.py::test_public_contributor_flow_targets_working_branch_and_real_review_profile": (
-            "tests/test_contributor_flow.py::test_public_contributor_flow_is_agent_first_and_route_neutral",
-            "transferred",
-        ),
-        "tests/test_contributor_flow.py::test_pull_request_template_collects_fast_path_evidence_without_version_bump": (
-            "tests/test_contributor_flow.py::test_pull_request_template_has_one_universal_agent_review_block",
-            "transferred",
-        ),
-        "tests/test_external_review_script.py::_assert_contributor_openrouter_config": (
-            "scripts/run_external_review.py::_assert_contributor_review_config",
-            "transferred",
-        ),
-        "tests/test_external_review_script.py::_settings_defaults_at_ref": (
-            "retired:test-only target-default import removed with route-neutral contributor review",
-            "retired",
-        ),
-        "tests/test_external_review_script.py::test_contributor_defaults_reject_explicit_direct_provider_route": (
-            "tests/test_external_review_script.py::test_contributor_policy_preserves_configured_routes",
-            "transferred",
-        ),
-        "tests/test_external_review_script.py::test_contributor_resolved_config_rejects_direct_provider_actors": (
-            "tests/test_external_review_script.py::test_contributor_policy_preserves_configured_routes",
-            "transferred",
-        ),
-        "tests/test_external_review_script.py::test_contributor_snapshot_flags_release_carrier_changes_without_version_file": (
-            "tests/test_external_review_script.py::test_contributor_snapshot_rejects_release_carrier_changes_without_version_file",
-            "pending",
-        ),
-        "tests/test_external_review_script.py::test_contributor_snapshot_rejects_version_bump": (
-            "tests/test_external_review_script.py::test_contributor_snapshot_rejects_every_version_carrier",
-            "transferred",
-        ),
-        "tests/test_external_review_script.py::test_target_base_defaults_override_local_review_settings": (
-            "tests/test_external_review_script.py::test_contributor_policy_preserves_configured_routes",
-            "transferred",
-        ),
-        "tests/test_public_site_metadata.py::test_install_page_does_not_promise_native_packages_on_older_releases": (
-            "tests/test_public_site_metadata.py::test_install_page_has_version_bound_direct_downloads_before_advanced_setup",
-            "transferred",
-        ),
-    }
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
         assert upstream["note"]
         assert row["characterization test"] != "-"
-        if row["old path/symbol"] in realized:
-            assert upstream == {
-                "status": "transferred",
-                "note": (
-                    "landed upstream in release 6.101.0 merge "
-                    "05c30d175ce6269fa7b04b6199fef4a9e2c2ccda"
-                ),
-            }
-            assert row["new owner/path"] == realized[row["old path/symbol"]]
-            assert delta["id"] == "D01" and delta["note"]
-            assert row["facade/public contract"] == "-"
-        elif row["old path/symbol"] in implemented:
+        if row["old path/symbol"] in implemented:
             assert upstream["status"] == "pending"
             assert row["new owner/path"] == implemented[row["old path/symbol"]]
             owner_path = row["new owner/path"].split("::", 1)[0]
@@ -848,14 +757,6 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             assert delta["id"] == "none" and delta["note"]
             assert upstream["status"] == "retired"
             assert "v7 WIP" in upstream["note"]
-        elif row["old path/symbol"] in inherited_managed:
-            owner, status = inherited_managed[row["old path/symbol"]]
-            assert row["new owner/path"] == owner
-            assert row["facade/public contract"] == "-"
-            assert delta["id"] == "none"
-            assert delta["note"].startswith("no v7-authored semantic delta;")
-            assert upstream["status"] == status
-            assert "upstream" in upstream["note"]
         else:
             assert upstream["status"] == "pending"
             expected_delta = (
@@ -866,10 +767,12 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             assert delta["id"] == expected_delta and delta["note"]
             assert row["new owner/path"] in v7_evidence.APPROVED_PENDING_OWNERS
             assert row["facade/public contract"] == row["old path/symbol"]
-    assert sum(row["old path/symbol"] in realized for row in rows) == 4
-    assert sum(row["old path/symbol"] in implemented for row in rows) == 229
-    assert sum(row["old path/symbol"] in retired_current for row in rows) == 5
-    assert sum(row["old path/symbol"] in inherited_managed for row in rows) == 21
+    # Enumerated rows are pinned by MEMBERSHIP, not by a total: every name listed
+    # above must still be in the ledger. A literal grand total would churn on
+    # every extraction slice and says nothing about correctness — the real
+    # contract is that no row escapes classification, asserted below.
+    assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
+    assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
     assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02"})
 
 

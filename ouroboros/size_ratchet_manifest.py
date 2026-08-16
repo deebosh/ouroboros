@@ -260,6 +260,7 @@ BAND_PATHS = {
     "tests/test_swe_pro_e1v2.py": None,
     "tests/test_telegram_miniapp_lifecycle.py": None,
     "tests/test_tool_api_v2_public_surface.py": None,
+    "tests/test_tool_result.py": "typed tool-result characterization suite; two upstream tool_call_id trace fields crossed it into the band",
     "tests/test_usage_accounting.py": None,
     "tests/test_v647_megacommit.py": None,
     "tests/test_v6730_origin_invariant.py": None,
