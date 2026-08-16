@@ -2,6 +2,7 @@
 
 from supervisor.update_merge_policy import (
     assisted_objective, classify_conflicts, is_document_path, is_hot_code,
+    semantic_overlap_note,
 )
 
 
@@ -93,3 +94,51 @@ def test_objective_ignores_malformed_or_pathless_progress_rescue():
         objective = assisted_objective({"target_sha": "a" * 40, "progress_rescue": bad})
 
         assert "was rescued to" not in objective, bad
+
+
+# ``semantic_overlap_note`` — advisory only, additive to assisted_objective.
+
+
+def test_semantic_overlap_note_empty_without_flags():
+    assert semantic_overlap_note({}) == ""
+    assert semantic_overlap_note({"semantic_overlap_flags": []}) == ""
+
+
+def test_semantic_overlap_note_excludes_related_not_duplicate():
+    note = semantic_overlap_note({
+        "semantic_overlap_flags": [
+            {"path": "x.py", "verdict": "related_not_duplicate", "local_shas": ["a" * 40]},
+        ],
+    })
+    assert note == ""
+
+
+def test_semantic_overlap_note_names_path_and_shas():
+    note = semantic_overlap_note({
+        "semantic_overlap_flags": [
+            {
+                "path": "ouroboros/loop.py",
+                "verdict": "likely_duplicate",
+                "local_shas": ["a" * 40],
+                "upstream_shas": ["b" * 40],
+                "note": "both fix the same race",
+            },
+        ],
+    })
+    assert "ouroboros/loop.py" in note
+    assert ("a" * 12) in note
+    assert ("b" * 12) in note
+    assert "likely_duplicate" in note
+    assert "both fix the same race" in note
+
+
+def test_objective_appends_semantic_overlap_note():
+    objective = assisted_objective({
+        "target_sha": "a" * 40,
+        "conflict_paths": ["x.py"],
+        "semantic_overlap_flags": [
+            {"path": "x.py", "verdict": "unclear", "local_shas": ["c" * 40], "upstream_shas": ["d" * 40]},
+        ],
+    })
+    assert "semantic-overlap pre-check" in objective
+    assert "x.py" in objective

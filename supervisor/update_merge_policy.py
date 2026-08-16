@@ -72,6 +72,30 @@ def rescue_pointer_note(tx: Dict[str, Any]) -> str:
     )
 
 
+def semantic_overlap_note(tx: Dict[str, Any]) -> str:
+    """Advisory note flagging local/upstream commits that touched the same
+    file for possibly-related reasons. "" when nothing was flagged."""
+    flags = list(tx.get("semantic_overlap_flags") or [])
+    relevant = [f for f in flags if str(f.get("verdict") or "") != "related_not_duplicate"]
+    if not relevant:
+        return ""
+    lines = []
+    for f in relevant[:8]:
+        local = ", ".join(str(s)[:12] for s in (f.get("local_shas") or [])[:3])
+        upstream = ", ".join(str(s)[:12] for s in (f.get("upstream_shas") or [])[:3])
+        lines.append(
+            f"- {f.get('path','')}: local commit(s) {local} may already address the same "
+            f"issue upstream commit(s) {upstream} touch ({f.get('verdict','unclear')}). {f.get('note','')}"
+        )
+    return (
+        "\n\nA semantic-overlap pre-check (advisory, not authoritative) flagged file(s) "
+        "touched by BOTH your local history and this update's upstream history for "
+        "possibly-related reasons — check whether upstream's approach should win, be "
+        "merged with the local fix, or be intentionally dropped, rather than blindly "
+        "reconciling text:\n" + "\n".join(lines)
+    )
+
+
 def assisted_objective(tx: Dict[str, Any]) -> str:
     """Objective text for the single authorized assisted-resolution task."""
     target = str(tx.get("target_sha") or "")[:12]
@@ -94,4 +118,5 @@ def assisted_objective(tx: Dict[str, Any]) -> str:
         "run `advisory_review` with the commit message, then `commit_reviewed` (it will create the reviewed "
         "2-parent merge commit), then `request_restart` to finish landing the update."
         f"{rescue_pointer_note(tx)}"
+        f"{semantic_overlap_note(tx)}"
     )

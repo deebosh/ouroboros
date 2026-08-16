@@ -535,6 +535,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         });
         syncHeavyModelPlaceholder();
         applyCheckboxValue('s-auto-grant-reviewed-skills', s.OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS);
+        applyCheckboxValue('s-update-autocheck-enabled', s.OUROBOROS_UPDATE_AUTOCHECK_ENABLED);
         // Owner-facing mutative-subagents control shows the EFFECTIVE state when it
         // is binary-representable: an explicit value, or unset in advanced/pro
         // (every acting surface on = "On"). Unset in LIGHT mode is surface-aware
@@ -712,6 +713,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         const mutativeTouched = mutativeInput?.dataset?.effortTouched === '1';
         const body = {
             OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS: byId('s-auto-grant-reviewed-skills')?.checked ? 'true' : 'false',
+            OUROBOROS_UPDATE_AUTOCHECK_ENABLED: byId('s-update-autocheck-enabled')?.checked ? 'true' : 'false',
             OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS: mutativeTouched
                 ? ({ on: 'true', off: 'false' }[mutativeInput?.value] ?? '')
                 : (rawMutative ? ({ true: 'true', false: 'false' }[rawMutative] ?? rawMutative) : ''),

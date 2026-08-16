@@ -337,6 +337,9 @@ class UpdateMergePlan(TypedDict, total=False):
     doc_conflict_paths: List[str]
     hot_code_paths: List[str]
     recommended_strategy: Literal["auto_merge", "assisted"]
+    recommended_strategy_downgraded_reason: str
+    overlap_candidates: Dict[str, Any]
+    semantic_overlap: Dict[str, Any]
 
 
 class UpdatePreflightRequest(TypedDict, total=False):

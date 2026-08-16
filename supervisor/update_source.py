@@ -13,6 +13,20 @@ MANAGED_TAG_NAMESPACE = "refs/ouroboros-managed/tags"
 _RELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 
+def git_run(
+    cmd: List[str], *, repo_dir: os.PathLike[str] | str,
+    cwd: Optional[str] = None, extra_env: Optional[dict] = None,
+) -> Tuple[int, str, str]:
+    """Run a git command with an optional cwd / extra env (e.g. GIT_INDEX_FILE), WITHOUT
+    the REPO_DIR pin and index-repair retry of ``git_ops.git_capture``. For merge-planning
+    in a temp index / temp worktree only — never the live-repo control path."""
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    r = subprocess.run(cmd, cwd=str(cwd or repo_dir), capture_output=True, text=True, env=env)
+    return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+
+
 def official_ref_has_constitution(
     ref: str, *, repo_dir: os.PathLike[str] | str | None = None
 ) -> bool:

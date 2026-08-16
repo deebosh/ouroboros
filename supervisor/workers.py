@@ -80,6 +80,9 @@ def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, max_workers: int,
     queue.init(drive_root, soft_timeout, hard_timeout)
     queue.init_queue_refs(PENDING, RUNNING, QUEUE_SEQ_COUNTER_REF)
 
+    from supervisor.update_watch import ensure_update_watch_started
+    ensure_update_watch_started()
+
 @dataclass
 class Worker:
     wid: int

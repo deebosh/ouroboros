@@ -544,6 +544,10 @@ export function renderSettingsPage() {
                                 ],
                             })}
                         </div>
+                        <label class="local-toggle" title="Read-only: checks for a new upstream release and sends a chat notification. Never applies anything automatically — apply always stays owner-initiated.">
+                            <input type="checkbox" id="s-update-autocheck-enabled">
+                            Notify me when a new official release is available (checks every 24h; off by default)
+                        </label>
                     </div>
 
                     <div class="form-section">

@@ -34,14 +34,9 @@ def managed_update_constitution_present(ref: str = "HEAD") -> bool:
 def _git_run(
     cmd: List[str], *, cwd: Optional[str] = None, extra_env: Optional[Dict[str, str]] = None
 ) -> Tuple[int, str, str]:
-    """Run a git command with an optional cwd / extra env (e.g. GIT_INDEX_FILE), WITHOUT
-    the REPO_DIR pin and index-repair retry of ``git_capture``. For merge-planning in a
-    temp index / temp worktree only — never the live-repo control path."""
-    env = dict(os.environ)
-    if extra_env:
-        env.update(extra_env)
-    r = subprocess.run(cmd, cwd=str(cwd or _g.REPO_DIR), capture_output=True, text=True, env=env)
-    return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+    """Temp index/worktree git runner — see ``update_source.git_run`` for the contract."""
+    from supervisor.update_source import git_run
+    return git_run(cmd, repo_dir=_g.REPO_DIR, cwd=cwd, extra_env=extra_env)
 
 
 def _build_clean_merge_commit(
@@ -230,6 +225,8 @@ def plan_managed_update_merge(
             "error": fast_forward_error or "could not compare HEAD with target",
             **pins,
         }
+    from supervisor.update_semantic_overlap import compute_overlap_candidates
+    overlap_candidates = compute_overlap_candidates(base_sha, target_sha)  # reused below
     if fast_forward_rc == 0 and local_dirty_count == 0:
         return {
             "available": True,
@@ -241,6 +238,7 @@ def plan_managed_update_merge(
             "local_snapshot": base_sha,
             "merge_commit": target_sha if build else "",
             "recommended_strategy": "auto_merge",
+            "overlap_candidates": overlap_candidates,
             **pins,
         }
 
@@ -346,6 +344,7 @@ def plan_managed_update_merge(
                         "local_snapshot": local_snapshot,
                         "merge_commit": "",
                         "recommended_strategy": "assisted",
+                        "overlap_candidates": overlap_candidates,
                         **pins,
                     }
                 return {"available": True, "kind": "unknown", **pins,
@@ -363,6 +362,7 @@ def plan_managed_update_merge(
             "merge_commit": merge_commit,
             # Git owns clean merges. Ouroboros is needed only for a real conflict.
             "recommended_strategy": "auto_merge" if kind == "clean" else "assisted",
+            "overlap_candidates": overlap_candidates,
             **pins,
         }
     except Exception as exc:  # pragma: no cover — planning is best-effort

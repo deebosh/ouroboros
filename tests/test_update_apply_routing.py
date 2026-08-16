@@ -150,6 +150,177 @@ def test_preflight_returns_only_merge_plan(monkeypatch):
     assert payload == {"merge_plan": _plan()}
 
 
+def test_preflight_skips_semantic_overlap_when_no_candidate_files(monkeypatch):
+    import supervisor.update_merge as update_merge
+
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", lambda **_kwargs: _plan())
+
+    def _boom(*_a, **_k):
+        raise AssertionError("must not call detect_semantic_overlap with no candidate files")
+
+    monkeypatch.setattr(
+        "supervisor.update_semantic_overlap.detect_semantic_overlap", _boom, raising=False,
+    )
+
+    payload = _body(asyncio.run(control.api_update_preflight(None)))
+
+    assert "semantic_overlap" not in payload["merge_plan"]
+
+
+def test_preflight_downgrades_clean_auto_merge_on_relevant_flag(monkeypatch):
+    import supervisor.update_merge as update_merge
+    import supervisor.update_semantic_overlap as uso
+
+    plan = _plan(
+        recommended_strategy="auto_merge",
+        overlap_candidates={"files": [{"path": "x.py", "local_shas": [], "upstream_shas": []}]},
+    )
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", lambda **_kwargs: plan)
+    monkeypatch.setattr(
+        uso, "detect_semantic_overlap",
+        lambda *_a, **_k: {"available": True, "flags": [{"path": "x.py", "verdict": "likely_duplicate"}]},
+    )
+    monkeypatch.setattr(uso, "write_semantic_overlap_cache", lambda *_a, **_k: None)
+
+    payload = _body(asyncio.run(control.api_update_preflight(None)))
+
+    merged = payload["merge_plan"]
+    assert merged["recommended_strategy"] == "assisted"
+    assert merged["recommended_strategy_downgraded_reason"] == "semantic_overlap_flagged"
+
+
+def test_preflight_does_not_downgrade_when_only_related_not_duplicate(monkeypatch):
+    import supervisor.update_merge as update_merge
+    import supervisor.update_semantic_overlap as uso
+
+    plan = _plan(
+        recommended_strategy="auto_merge",
+        overlap_candidates={"files": [{"path": "x.py", "local_shas": [], "upstream_shas": []}]},
+    )
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", lambda **_kwargs: plan)
+    monkeypatch.setattr(
+        uso, "detect_semantic_overlap",
+        lambda *_a, **_k: {"available": True, "flags": [{"path": "x.py", "verdict": "related_not_duplicate"}]},
+    )
+    monkeypatch.setattr(uso, "write_semantic_overlap_cache", lambda *_a, **_k: None)
+
+    payload = _body(asyncio.run(control.api_update_preflight(None)))
+
+    merged = payload["merge_plan"]
+    assert merged["recommended_strategy"] == "auto_merge"
+    assert "recommended_strategy_downgraded_reason" not in merged
+
+
+def test_preflight_does_not_downgrade_conflicting_plan(monkeypatch):
+    import supervisor.update_merge as update_merge
+    import supervisor.update_semantic_overlap as uso
+
+    plan = _plan(
+        kind="conflicting",
+        recommended_strategy="assisted",
+        overlap_candidates={"files": [{"path": "x.py", "local_shas": [], "upstream_shas": []}]},
+    )
+    monkeypatch.setattr(update_merge, "plan_managed_update_merge", lambda **_kwargs: plan)
+    monkeypatch.setattr(
+        uso, "detect_semantic_overlap",
+        lambda *_a, **_k: {"available": True, "flags": [{"path": "x.py", "verdict": "likely_duplicate"}]},
+    )
+    monkeypatch.setattr(uso, "write_semantic_overlap_cache", lambda *_a, **_k: None)
+
+    payload = _body(asyncio.run(control.api_update_preflight(None)))
+
+    merged = payload["merge_plan"]
+    assert merged["recommended_strategy"] == "assisted"
+    assert "recommended_strategy_downgraded_reason" not in merged
+
+
+def test_assisted_fenced_uses_cached_semantic_overlap_without_recompute(monkeypatch):
+    import supervisor.git_ops as git_ops
+    import supervisor.state as state
+    import supervisor.update_merge as update_merge
+    import supervisor.update_semantic_overlap as uso
+    import supervisor.workers as workers
+
+    monkeypatch.setattr(git_ops, "BRANCH_DEV", "ouroboros")
+    monkeypatch.setattr(git_ops, "_create_rescue_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(git_ops, "git_capture", lambda cmd: (
+        (0, "ouroboros", "") if "--abbrev-ref" in cmd else (0, "", "")
+    ))
+    monkeypatch.setattr(state, "load_state", lambda: {"owner_chat_id": 1})
+    monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 10.0)
+    monkeypatch.setattr(update_merge, "create_rescue_local_ref", lambda _sha: True)
+    monkeypatch.setattr(update_merge, "ensure_assisted_resolver_ready", lambda _sha: True)
+    tx_writes = []
+    monkeypatch.setattr(update_merge, "write_update_tx", lambda tx: tx_writes.append(dict(tx)))
+    monkeypatch.setattr(update_merge, "materialize_assisted_merge_live", lambda *_a: (True, "ok"))
+    monkeypatch.setattr(update_merge, "enqueue_assisted_resolution_task", lambda _tx: "resolver-task")
+    monkeypatch.setattr(workers, "close_repo_writer_admission", lambda _reason: None)
+
+    cached_flags = [{"path": "x.py", "verdict": "likely_duplicate"}]
+    monkeypatch.setattr(uso, "read_semantic_overlap_cache", lambda *_a, **_k: {"flags": cached_flags})
+
+    def _boom(*_a, **_k):
+        raise AssertionError("must not recompute when the cache already has this base/target pair")
+
+    monkeypatch.setattr(uso, "compute_overlap_candidates", _boom)
+    monkeypatch.setattr(uso, "detect_semantic_overlap", _boom)
+
+    response = control._start_assisted_merge_fenced(_plan(
+        kind="conflicting", local_dirty_count=1,
+        local_snapshot=BASE, code_conflict_paths=["ouroboros/config.py"],
+    ))
+
+    assert response.status_code == 200
+    assert tx_writes[0]["semantic_overlap_flags"] == cached_flags
+
+
+def test_assisted_fenced_recomputes_on_cache_miss_and_survives_model_outage(monkeypatch):
+    """Cache miss -> bounded recompute. ``detect_semantic_overlap`` is fail-soft by
+    its own contract (proven in test_update_semantic_overlap.py); this exercises
+    the fence code path around it with the fail-soft ``{"flags": []}`` result a
+    real model outage would produce, and confirms the fence still lands."""
+    import supervisor.git_ops as git_ops
+    import supervisor.state as state
+    import supervisor.update_merge as update_merge
+    import supervisor.update_semantic_overlap as uso
+    import supervisor.workers as workers
+
+    monkeypatch.setattr(git_ops, "BRANCH_DEV", "ouroboros")
+    monkeypatch.setattr(git_ops, "_create_rescue_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(git_ops, "git_capture", lambda cmd: (
+        (0, "ouroboros", "") if "--abbrev-ref" in cmd else (0, "", "")
+    ))
+    monkeypatch.setattr(state, "load_state", lambda: {"owner_chat_id": 1})
+    monkeypatch.setattr(state, "budget_remaining", lambda *_a, **_k: 10.0)
+    monkeypatch.setattr(update_merge, "create_rescue_local_ref", lambda _sha: True)
+    monkeypatch.setattr(update_merge, "ensure_assisted_resolver_ready", lambda _sha: True)
+    tx_writes = []
+    monkeypatch.setattr(update_merge, "write_update_tx", lambda tx: tx_writes.append(dict(tx)))
+    monkeypatch.setattr(update_merge, "materialize_assisted_merge_live", lambda *_a: (True, "ok"))
+    monkeypatch.setattr(update_merge, "enqueue_assisted_resolution_task", lambda _tx: "resolver-task")
+    monkeypatch.setattr(workers, "close_repo_writer_admission", lambda _reason: None)
+
+    recompute_calls = []
+    monkeypatch.setattr(uso, "read_semantic_overlap_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        uso, "compute_overlap_candidates",
+        lambda *a, **k: recompute_calls.append("candidates") or {"files": [{"path": "x.py"}]},
+    )
+    monkeypatch.setattr(
+        uso, "detect_semantic_overlap",
+        lambda *a, **k: recompute_calls.append("detect") or {"available": False, "flags": []},
+    )
+
+    response = control._start_assisted_merge_fenced(_plan(
+        kind="conflicting", local_dirty_count=1,
+        local_snapshot=BASE, code_conflict_paths=["ouroboros/config.py"],
+    ))
+
+    assert response.status_code == 200
+    assert recompute_calls == ["candidates", "detect"]
+    assert tx_writes[0]["semantic_overlap_flags"] == []
+
+
 def test_fetching_update_endpoints_leave_the_event_loop(monkeypatch):
     calls = []
 

@@ -324,6 +324,26 @@ async def api_update_preflight(_request: Request) -> JSONResponse:
         from supervisor.update_merge import plan_managed_update_merge
 
         plan = await asyncio.to_thread(plan_managed_update_merge, fetch=True)
+        candidates = plan.get("overlap_candidates") or {}
+        if candidates.get("files"):
+            from supervisor.update_semantic_overlap import (
+                detect_semantic_overlap,
+                write_semantic_overlap_cache,
+            )
+
+            overlap = await asyncio.to_thread(
+                detect_semantic_overlap, plan.get("base_sha", ""), plan.get("target_sha", ""), candidates,
+            )
+            write_semantic_overlap_cache(plan.get("base_sha", ""), plan.get("target_sha", ""), overlap)
+            plan["semantic_overlap"] = overlap
+            # Advisory only: does not change what api_update_apply/_plan_is_clean
+            # actually do, only the UI's default recommendation. The owner can
+            # still choose auto_merge explicitly.
+            if plan.get("kind") == "clean" and plan.get("recommended_strategy") == "auto_merge":
+                relevant = [f for f in overlap.get("flags", []) if f.get("verdict") != "related_not_duplicate"]
+                if relevant:
+                    plan["recommended_strategy"] = "assisted"
+                    plan["recommended_strategy_downgraded_reason"] = "semantic_overlap_flagged"
         return JSONResponse({"merge_plan": plan})
     except Exception as exc:
         return json_exception(exc)
@@ -531,6 +551,25 @@ def _start_assisted_merge_fenced(plan: dict) -> JSONResponse:
         "resolution_attempts": 0,
         "requested_at": utc_now_iso(),
     }
+    from supervisor.update_semantic_overlap import (
+        compute_overlap_candidates,
+        detect_semantic_overlap,
+        read_semantic_overlap_cache,
+    )
+
+    cached_overlap = read_semantic_overlap_cache(base_sha, target_sha)
+    if cached_overlap is None:
+        # No prior preflight (e.g. scripted/API-only apply). Bounded best-effort
+        # recompute — detect_semantic_overlap is fail-soft by construction, so
+        # this cannot become a new hang/failure mode inside the writer fence,
+        # only add up to its timeout of latency and yield an empty flags list.
+        overlap_candidates = compute_overlap_candidates(base_sha, target_sha)
+        cached_overlap = (
+            detect_semantic_overlap(base_sha, target_sha, overlap_candidates)
+            if overlap_candidates.get("files")
+            else {"flags": []}
+        )
+    tx["semantic_overlap_flags"] = cached_overlap.get("flags") or []
     close_repo_writer_admission(assisted_writer_gate_reason(tx))
     if not ensure_assisted_resolver_ready(base_sha):
         blockers = kill_workers_for_update(
