@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import ast
-import contextlib
 import os
 import pathlib
 import subprocess
-import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dataclass_replace
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Tuple
 
 from ouroboros.tools.review_helpers import _VENDORED_NAMES, _VENDORED_SUFFIXES
@@ -175,6 +173,17 @@ def candidate_repo_paths(repo_dir: pathlib.Path) -> tuple[str, ...]:
     return tuple(sorted(path for path in paths if root.joinpath(*pathlib.PurePosixPath(path).parts).exists()))
 
 
+def _gated_module_from_bytes(path: str, raw: bytes) -> GatedModule:
+    """Build one inventory module from exact source bytes.
+
+    Canonical POSIX line endings are applied before counting so checkout policy
+    cannot change the inventory. This is the single decoding/counting owner for
+    both the working tree and immutable Git blobs.
+    """
+    text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    return GatedModule(path, len(text.splitlines()), len(text.encode("utf-8")), text)
+
+
 def iter_gated_modules(
     repo_dir: pathlib.Path,
     *,
@@ -207,9 +216,7 @@ def iter_gated_modules(
             path.resolve().relative_to(root)
         except ValueError as exc:
             raise ValueError(f"gated source path escapes repository: {rel}") from exc
-        raw = path.read_bytes()
-        text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-        yield GatedModule(rel, len(text.splitlines()), len(text.encode("utf-8")), text)
+        yield _gated_module_from_bytes(rel, path.read_bytes())
 
 
 def _iter_lexical_functions(tree: ast.AST, path: str) -> Iterator[GatedFunction]:
@@ -281,6 +288,69 @@ def collect_size_ratchet_inventory(
     injected = tuple(repo_paths) if repo_paths is not None else None
     modules = tuple(iter_gated_modules(repo_dir, repo_paths=injected))
     functions = tuple(_iter_gated_functions_from_modules(modules))
+    return _inventory_from_members(modules, functions)
+
+
+def _iter_ref_gated_blobs(root: pathlib.Path, ref: str) -> list[tuple[str, str, bytes]]:
+    """Return ``(path, blob id, exact bytes)`` for every gated module at ``ref``."""
+    tree = subprocess.run(
+        ["git", "ls-tree", "-rz", "--full-tree", ref],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    entries: list[tuple[str, bytes]] = []
+    for record in tree.stdout.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+            mode, object_type, object_id = metadata.split(b" ", 2)
+        except ValueError as exc:
+            raise ValueError(f"git ls-tree returned a malformed entry at {ref}") from exc
+        path = _exact_repo_relative_path(raw_path.decode("utf-8"))
+        if not _is_gated_module_path(path):
+            continue
+        if object_type != b"blob" or mode not in {b"100644", b"100755"}:
+            raise ValueError(f"gated source at {ref} must be a regular file: {path}")
+        entries.append((path, object_id))
+
+    batch = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        cwd=root,
+        check=True,
+        input=b"".join(object_id + b"\n" for _path, object_id in entries),
+        capture_output=True,
+    ).stdout
+    blobs: list[tuple[str, str, bytes]] = []
+    cursor = 0
+    for path, expected_id in entries:
+        header_end = batch.find(b"\n", cursor)
+        if header_end < 0:
+            raise ValueError(f"git cat-file omitted the header for {path} at {ref}")
+        header = batch[cursor:header_end].split(b" ")
+        if len(header) != 3 or header[0] != expected_id or header[1] != b"blob":
+            raise ValueError(f"git cat-file returned the wrong object for {path} at {ref}")
+        try:
+            size = int(header[2])
+        except ValueError as exc:
+            raise ValueError(f"git cat-file returned an invalid size for {path} at {ref}") from exc
+        blob_start = header_end + 1
+        blob_end = blob_start + size
+        if blob_end >= len(batch) or batch[blob_end : blob_end + 1] != b"\n":
+            raise ValueError(f"git cat-file returned a truncated blob for {path} at {ref}")
+        blobs.append((path, expected_id.decode("ascii"), batch[blob_start:blob_end]))
+        cursor = blob_end + 1
+    if cursor != len(batch):
+        raise ValueError(f"git cat-file returned unexpected trailing data at {ref}")
+    return blobs
+
+
+def _inventory_from_members(
+    modules: tuple[GatedModule, ...],
+    functions: tuple[GatedFunction, ...],
+) -> SizeRatchetInventory:
+    """Assemble the exact inventory projections from one module/function set."""
     return SizeRatchetInventory(
         modules=modules,
         functions=functions,
@@ -296,71 +366,43 @@ def collect_size_ratchet_inventory(
     )
 
 
-@contextlib.contextmanager
-def _git_source_snapshot(repo_dir: pathlib.Path, ref: str) -> Iterator[tuple[pathlib.Path, tuple[str, ...]]]:
+def collect_size_ratchet_inventory_at_ref(
+    repo_dir: pathlib.Path,
+    ref: str,
+    *,
+    blob_facts: dict[str, tuple[int, int, tuple[GatedFunction, ...]]] | None = None,
+) -> SizeRatchetInventory:
+    """Collect the canonical inventory from immutable Git blobs at ``ref``.
+
+    ``blob_facts`` is an optional caller-owned cache keyed by Git blob id. A
+    blob id is content-addressed, so a cached entry is the same bytes by
+    construction; reusing it across refs makes a multi-commit audit cost only
+    the blobs that actually changed. The projections are byte-identical to a
+    cold walk.
+    """
     root = pathlib.Path(repo_dir).resolve()
-    with tempfile.TemporaryDirectory(prefix="ouroboros-size-ratchet-") as raw_temp:
-        snapshot = pathlib.Path(raw_temp)
-        tree = subprocess.run(
-            ["git", "ls-tree", "-rz", "--full-tree", ref],
-            cwd=root,
-            check=True,
-            capture_output=True,
-        )
-        entries: list[tuple[str, bytes]] = []
-        for record in tree.stdout.split(b"\0"):
-            if not record:
-                continue
-            try:
-                metadata, raw_path = record.split(b"\t", 1)
-                mode, object_type, object_id = metadata.split(b" ", 2)
-            except ValueError as exc:
-                raise ValueError(f"git ls-tree returned a malformed entry at {ref}") from exc
-            path = _exact_repo_relative_path(raw_path.decode("utf-8"))
-            if not _is_gated_module_path(path):
-                continue
-            if object_type != b"blob" or mode not in {b"100644", b"100755"}:
-                raise ValueError(f"gated source at {ref} must be a regular file: {path}")
-            entries.append((path, object_id))
-
-        batch = subprocess.run(
-            ["git", "cat-file", "--batch"],
-            cwd=root,
-            check=True,
-            input=b"".join(object_id + b"\n" for _path, object_id in entries),
-            capture_output=True,
-        ).stdout
-        cursor = 0
-        paths: list[str] = []
-        for path, expected_id in entries:
-            header_end = batch.find(b"\n", cursor)
-            if header_end < 0:
-                raise ValueError(f"git cat-file omitted the header for {path} at {ref}")
-            header = batch[cursor:header_end].split(b" ")
-            if len(header) != 3 or header[0] != expected_id or header[1] != b"blob":
-                raise ValueError(f"git cat-file returned the wrong object for {path} at {ref}")
-            try:
-                size = int(header[2])
-            except ValueError as exc:
-                raise ValueError(f"git cat-file returned an invalid size for {path} at {ref}") from exc
-            blob_start = header_end + 1
-            blob_end = blob_start + size
-            if blob_end >= len(batch) or batch[blob_end : blob_end + 1] != b"\n":
-                raise ValueError(f"git cat-file returned a truncated blob for {path} at {ref}")
-            destination = snapshot.joinpath(*pathlib.PurePosixPath(path).parts)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(batch[blob_start:blob_end])
-            paths.append(path)
-            cursor = blob_end + 1
-        if cursor != len(batch):
-            raise ValueError(f"git cat-file returned unexpected trailing data at {ref}")
-        yield snapshot, tuple(paths)
-
-
-def collect_size_ratchet_inventory_at_ref(repo_dir: pathlib.Path, ref: str) -> SizeRatchetInventory:
-    """Collect the canonical inventory from immutable Git blobs at ``ref``."""
-    with _git_source_snapshot(repo_dir, ref) as (snapshot, paths):
-        return collect_size_ratchet_inventory(snapshot, repo_paths=paths)
+    cache = blob_facts if blob_facts is not None else {}
+    modules: list[GatedModule] = []
+    functions: list[GatedFunction] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for path, object_id, raw in sorted(_iter_ref_gated_blobs(root, ref)):
+        cached = cache.get(object_id)
+        if cached is None:
+            module = _gated_module_from_bytes(path, raw)
+            parsed = tuple(_iter_gated_functions_from_modules((module,)))
+            cache[object_id] = (module.line_count, module.utf8_bytes, parsed)
+        else:
+            line_count, utf8_bytes, parsed = cached
+            module = GatedModule(path, line_count, utf8_bytes)
+        modules.append(module)
+        for function in parsed:
+            stamped = function if function.path == path else _dataclass_replace(function, path=path)
+            key = (stamped.path, stamped.qualname)
+            if key in seen_keys:
+                raise ValueError(f"duplicate function ratchet key: {key!r}")
+            seen_keys.add(key)
+            functions.append(stamped)
+    return _inventory_from_members(tuple(modules), tuple(functions))
 
 
 def module_is_grandfathered(path: str) -> bool:
@@ -691,8 +733,12 @@ def _audit_committed_manifest_history(
             None,
             None,
         )
+    # One content-addressed cache for the whole first-parent walk: consecutive
+    # commits share nearly every blob, so each commit costs only its own
+    # changed sources instead of a full re-census of the tree.
+    blob_facts: dict[str, tuple[int, int, tuple[GatedFunction, ...]]] = {}
     try:
-        baseline_inventory = collect_size_ratchet_inventory_at_ref(repo_dir, baseline)
+        baseline_inventory = collect_size_ratchet_inventory_at_ref(repo_dir, baseline, blob_facts=blob_facts)
     except (OSError, ValueError, subprocess.CalledProcessError):
         errors.append("size-ratchet transition authority unavailable: BASELINE_SOURCE_SHA tree is not accessible")
         return errors, None, None, None
@@ -744,7 +790,7 @@ def _audit_committed_manifest_history(
             )
         inventory: SizeRatchetInventory | None = None
         try:
-            inventory = collect_size_ratchet_inventory_at_ref(repo_dir, commit)
+            inventory = collect_size_ratchet_inventory_at_ref(repo_dir, commit, blob_facts=blob_facts)
         except (OSError, ValueError, subprocess.CalledProcessError):
             errors.append(f"{commit[:12]}: committed source tree is not accessible")
         else:

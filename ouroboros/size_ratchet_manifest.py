@@ -220,6 +220,7 @@ BAND_PATHS = {
     "ouroboros/platform_layer.py": None,
     "ouroboros/preflight_runner.py": None,
     "ouroboros/protected_artifacts.py": None,
+    "ouroboros/review.py": "v7 size-gate owner: blob-id-cached ref inventory keeps the exact per-commit history audit affordable (204s->21s) without sampling commits",
     "ouroboros/skill_loader.py": None,
     "ouroboros/skill_review_runner.py": None,
     "ouroboros/subagents.py": None,

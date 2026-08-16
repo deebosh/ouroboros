@@ -506,6 +506,44 @@ def test_clean_committed_tree_validates_transition_against_parent(tmp_path: Path
     assert validate_size_ratchet(repo) == [f"{swap[:12]}: new module debt above 1600 lines: new.py"]
 
 
+def test_ref_inventory_blob_cache_is_exactly_a_cold_walk(tmp_path: Path) -> None:
+    """A shared blob cache may only make the audit cheaper, never different.
+
+    The cache is keyed by Git blob id, which is content-addressed, so a hit is
+    the same bytes by construction. This pins that promise: the same ref walked
+    with a warm cache yields byte-identical projections to a cold walk, and a
+    path whose content moved is re-stamped rather than inherited.
+    """
+    repo = tmp_path / "repo"
+    _bootstrap_repo(repo, files={"kept.py": "def a():\n    return 1\n"})
+    _write_lines(repo / "grown.py", MAX_MODULE_LINES + 1)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "add giant")
+    first = _git(repo, "rev-parse", "HEAD")
+    # Same content, different path: the cache must not leak the old path.
+    (repo / "moved.py").write_text((repo / "kept.py").read_text(encoding="utf-8"), encoding="utf-8")
+    _write_lines(repo / "grown.py", 3)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "move content and shrink")
+    second = _git(repo, "rev-parse", "HEAD")
+
+    cache: dict[str, tuple[int, int, tuple]] = {}
+    for ref in (first, second, first):
+        cold = collect_size_ratchet_inventory_at_ref(repo, ref)
+        warm = collect_size_ratchet_inventory_at_ref(repo, ref, blob_facts=cache)
+        assert warm.modules == cold.modules
+        assert warm.functions == cold.functions
+        assert warm.giant_paths == cold.giant_paths
+        assert warm.band_paths == cold.band_paths
+        assert warm.module_debt_1500 == cold.module_debt_1500
+        assert warm.function_debt == cold.function_debt
+        assert dict(warm.byte_debt) == dict(cold.byte_debt)
+
+    assert cache, "the cache must actually retain blob facts"
+    warm_second = collect_size_ratchet_inventory_at_ref(repo, second, blob_facts=cache)
+    assert {item.path for item in warm_second.functions} == {"kept.py", "moved.py"}
+
+
 def test_full_history_rejects_add_and_carry_bypass(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     baseline = _bootstrap_repo(repo)

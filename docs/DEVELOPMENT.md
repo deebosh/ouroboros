@@ -355,6 +355,13 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   reviewer checklist 2(c), not a deterministic size-test gate. Existing
   baseline debt is not retroactively a failing tree. Any advisory ratchet must
   publish its AST counting scope and bind its baseline to the final SHA.
+- The committed first-parent history is audited with the same exact inventory
+  as the live tree: every commit's manifest must match its own tree, so a
+  giant that appears and disappears inside history is still caught. The walk
+  reuses one cache keyed by Git blob id — content-addressed, therefore a hit is
+  the same bytes by construction — so a multi-commit audit costs only the blobs
+  that changed rather than a full census per commit. Sampling commits instead
+  would be cheaper and wrong: it would retire that transient-giant guard.
 - Prefer deleting dead/duplicate authority before raising a cap. Add an
   abstraction only when it removes concrete coupling or preserves a stable
   extension seam.
