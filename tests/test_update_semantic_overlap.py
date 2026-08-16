@@ -4,6 +4,8 @@ import subprocess
 
 import supervisor.git_ops as git_ops
 from supervisor.update_semantic_overlap import (
+    _diffstat_order,
+    build_semantic_overlap_prompt,
     compute_overlap_candidates,
     detect_semantic_overlap,
     read_semantic_overlap_cache,
@@ -155,3 +157,83 @@ def test_semantic_overlap_cache_roundtrip(tmp_path, monkeypatch):
 
     # A stale sha pair (different target) must never return a mismatched cache.
     assert read_semantic_overlap_cache(base_sha, "c" * 40) is None
+
+
+def test_diffstat_order_puts_largest_change_first(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "local")
+    (repo / "shared.txt").write_text("base\n" + "line\n" * 20)  # big change
+    (repo / "other.txt").write_text("untouched\ntiny change\n")  # small change
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "local: mixed-size edits")
+    local_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    monkeypatch.setattr(git_ops, "REPO_DIR", repo)
+    ordered = _diffstat_order(f"HEAD~1..{local_sha}", ["other.txt", "shared.txt"])
+    assert ordered == ["shared.txt", "other.txt"]
+
+
+def test_diffstat_order_empty_paths_short_circuits():
+    assert _diffstat_order("HEAD~1..HEAD", []) == []
+
+
+def test_diffstat_order_fails_soft_keeping_original_order(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(git_ops, "REPO_DIR", repo)
+    # Bogus rev-range -> git fails -> original relative order is preserved.
+    ordered = _diffstat_order("not-a-real..range", ["b.txt", "a.txt"])
+    assert ordered == ["b.txt", "a.txt"]
+
+
+def test_build_semantic_overlap_prompt_includes_header_and_each_file(monkeypatch):
+    import supervisor.update_semantic_overlap as uso
+
+    monkeypatch.setattr(uso, "_commit_diff_excerpt", lambda sha, path, **_k: f"diff for {path}@{sha[:4]}")
+    candidates = {
+        "files": [
+            {
+                "path": "a.py",
+                "local_shas": ["a" * 40],
+                "upstream_shas": ["b" * 40],
+                "local_subjects": {"a" * 40: "local fix"},
+                "upstream_subjects": {"b" * 40: "upstream fix"},
+            },
+            {
+                "path": "c.py",
+                "local_shas": ["c" * 40],
+                "upstream_shas": ["d" * 40],
+                "local_subjects": {"c" * 40: "local fix 2"},
+                "upstream_subjects": {"d" * 40: "upstream fix 2"},
+            },
+        ],
+    }
+    prompt = build_semantic_overlap_prompt(candidates, "base" * 10, "target" * 6)
+
+    assert prompt.startswith("You are reviewing a managed self-update")
+    assert "## a.py" in prompt and "## c.py" in prompt
+    assert "local fix" in prompt and "upstream fix" in prompt
+    assert "diff for a.py@" in prompt
+
+
+def test_build_semantic_overlap_prompt_discloses_truncation_over_budget(monkeypatch):
+    import supervisor.update_semantic_overlap as uso
+
+    monkeypatch.setattr(uso, "_MAX_PROMPT_CHARS", len(uso._OVERLAP_PROMPT_HEADER) + 200)
+    monkeypatch.setattr(uso, "_commit_diff_excerpt", lambda *_a, **_k: "")
+    candidates = {
+        "files": [
+            {"path": f"f{i}.py", "local_shas": [], "upstream_shas": [],
+             "local_subjects": {}, "upstream_subjects": {}}
+            for i in range(20)
+        ],
+    }
+    prompt = build_semantic_overlap_prompt(candidates, "a" * 40, "b" * 40)
+
+    assert "more candidate file(s) omitted for prompt size" in prompt
+    assert not all(f"## f{i}.py" in prompt for i in range(20))
+
+
+def test_build_semantic_overlap_prompt_empty_files_is_just_the_header():
+    prompt = build_semantic_overlap_prompt({"files": []}, "a" * 40, "b" * 40)
+    assert prompt.startswith("You are reviewing a managed self-update")
+    assert "##" not in prompt

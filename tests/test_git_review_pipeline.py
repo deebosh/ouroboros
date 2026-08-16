@@ -1006,6 +1006,58 @@ class TestAutoPushBehavior:
         assert marked == [("post_tests", "rollback failed for post_tests")]
 
 
+# --- _reestablish_user_merge_head (ibl-1561d99048bb): a blocked review's index
+# reset can clear the live MERGE_HEAD for a USER-initiated merge (the managed-
+# update path has its own, separately-tested re-establish); the next `git
+# commit` would silently drop the merge parent unless this restores it first. ---
+
+class TestReestablishUserMergeHead:
+    def test_noop_without_a_merge_parent(self, git_ctx):
+        git_mod, ctx = git_ctx
+        git_mod._reestablish_user_merge_head(ctx, {"binding": {"parents": ["a" * 40]}})
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", "MERGE_HEAD"],
+            cwd=str(ctx.repo_dir), capture_output=True, text=True,
+        )
+        assert result.returncode != 0  # no MERGE_HEAD was ever written
+
+    def test_noop_without_any_parents_recorded(self, git_ctx):
+        git_mod, ctx = git_ctx
+        git_mod._reestablish_user_merge_head(ctx, {"binding": {}})
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", "MERGE_HEAD"],
+            cwd=str(ctx.repo_dir), capture_output=True, text=True,
+        )
+        assert result.returncode != 0
+
+    def test_writes_merge_head_to_the_second_parent(self, git_ctx):
+        git_mod, ctx = git_ctx
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(ctx.repo_dir), capture_output=True, text=True,
+        ).stdout.strip()
+        target = "b" * 40
+        git_mod._reestablish_user_merge_head(ctx, {"binding": {"parents": [head, target]}})
+
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", "MERGE_HEAD"],
+            cwd=str(ctx.repo_dir), capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == target
+
+    def test_is_fail_soft_on_git_path_lookup_failure(self, git_ctx, monkeypatch):
+        """A `run_cmd` failure (e.g. transient git error) must not raise —
+        merge-head re-establishment is best-effort, never a hard failure."""
+        git_mod, ctx = git_ctx
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("git unavailable")
+
+        monkeypatch.setattr(git_mod, "run_cmd", _boom)
+        # Must not raise.
+        git_mod._reestablish_user_merge_head(ctx, {"binding": {"parents": ["a" * 40, "b" * 40]}})
+
+
 # --- configure_remote failure surfacing ---
 
 class TestRemoteConfigSurfacing:
