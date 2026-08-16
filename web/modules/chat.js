@@ -53,6 +53,7 @@ import {
     projectCollapsedActivity,
 } from './chat_card_state.js';
 import { confirmAndSendPanic, shouldFirePanic } from './chat_controls.js';
+import { createMessageIdentity } from './chat_message_identity.js';
 import { createTimelineAnchors } from './chat_timeline_anchor.js';
 import {
     headerBudgetPresentation,
@@ -564,31 +565,13 @@ export function createChatInstance({
         return ephemeralDecisionTaskIds.has(taskId);
     }
 
-    function buildMessageKey(role, text, timestamp, opts = {}) {
-        if (opts.clientMessageId) return `client|${opts.clientMessageId}`;
-        if (role !== 'user' && !opts.isProgress && opts.taskId) {
-            return [
-                'task',
-                role,
-                opts.systemType || '',
-                opts.source || '',
-                opts.taskId,
-                text,
-            ].join('|');
-        }
-        if (!timestamp) return '';
-        return [
-            role,
-            opts.isProgress ? '1' : '0',
-            opts.systemType || '',
-            opts.source || '',
-            opts.senderLabel || '',
-            opts.senderSessionId || '',
-            opts.taskId || '',
-            timestamp,
-            text,
-        ].join('|');
-    }
+    const {
+        buildMessageKey,
+        rememberMessageKey,
+        formatMsgTime,
+        stampNodeTimestamp,
+        getSenderLabel,
+    } = createMessageIdentity({ chatSessionId, seenMessageKeys, messageKeyOrder });
 
     function reconnectBannerText(reason = '') {
         if (reason === 'sha-change') return '♻️ Restart complete';
@@ -613,71 +596,6 @@ export function createChatInstance({
             url.searchParams.delete('_ouro_refresh');
             window.history.replaceState({}, '', url);
         } catch {}
-    }
-
-    function rememberMessageKey(key) {
-        if (!key || seenMessageKeys.has(key)) return;
-        seenMessageKeys.add(key);
-        messageKeyOrder.push(key);
-        if (messageKeyOrder.length > 2000) {
-            const oldest = messageKeyOrder.shift();
-            if (oldest) seenMessageKeys.delete(oldest);
-        }
-    }
-
-    function formatMsgTime(isoStr) {
-        if (!isoStr) return null;
-        try {
-            const d = new Date(isoStr);
-            if (isNaN(d)) return null;
-            const now = new Date();
-            const pad = n => String(n).padStart(2, '0');
-            const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-            const todayStr = now.toDateString();
-            const yesterday = new Date(now);
-            yesterday.setDate(now.getDate() - 1);
-            let short;
-            if (d.toDateString() === todayStr) short = hhmm;
-            else if (d.toDateString() === yesterday.toDateString()) short = `Yesterday, ${hhmm}`;
-            else short = `${months[d.getMonth()]} ${d.getDate()}, ${hhmm}`;
-            const full = `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} at ${hhmm}`;
-            return { short, full };
-        } catch {
-            return null;
-        }
-    }
-
-    function stampNodeTimestamp(node, raw, { anchor = false } = {}) {
-        if (!node) return false;
-        const epoch = rawTimestampEpoch(raw);
-        if (!Number.isFinite(epoch)) return false;
-        if (anchor && node.dataset.ts) {
-            const current = Number(node.dataset.ts);
-            const next = Number.isFinite(current) ? Math.min(current, epoch) : epoch;
-            node.dataset.ts = String(next);
-            return Number.isFinite(current) && next < current;
-        } else {
-            node.dataset.ts = String(epoch);
-        }
-        return false;
-    }
-
-    function getSenderLabel(role, isProgress = false, systemType = '', opts = {}) {
-        if (role === 'user') {
-            if (opts.source === 'telegram') return opts.senderLabel || 'Telegram';
-            if (opts.senderSessionId && opts.senderSessionId !== chatSessionId) {
-                return `WebUI (${opts.senderSessionId.slice(0, 8)})`;
-            }
-            return opts.senderLabel || 'You';
-        }
-        if (role === 'system') {
-            if (systemType === 'task_summary') return '📋 Task Summary';
-            if (systemType === 'skill_review') return '📋 Skill Review';
-            return '📋 System';
-        }
-        if (isProgress) return '💬 Thought';
-        return 'Ouroboros';
     }
 
     function setStatus(kind, text) {

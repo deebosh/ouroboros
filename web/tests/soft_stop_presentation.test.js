@@ -16,8 +16,10 @@ import {
     taskStoppedWithSummary,
     taskTerminalPhase,
 } from '../modules/log_events.js';
+import { createMessageIdentity } from '../modules/chat_message_identity.js';
 
 const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+const messageIdentity = readFileSync(new URL('../modules/chat_message_identity.js', import.meta.url), 'utf8');
 
 // The terminal frame shape a soft-stopped task actually publishes: best_effort
 // execution (the generic warn trigger) plus the typed owner-requested reason.
@@ -85,7 +87,12 @@ test('a system cancel_receipt row renders the 📋 System sender label', () => {
     // (supervisor/terminal_delivery.py). getSenderLabel has no special case for
     // it, so it must fall through to the generic system label — pin the branch
     // so a future mapping cannot silently restyle receipts as assistant text.
-    const senderFn = chat.slice(chat.indexOf('function getSenderLabel'));
+    // getSenderLabel is owned by web/modules/chat_message_identity.js.
+    const { getSenderLabel } = createMessageIdentity({
+        chatSessionId: 'session-a', seenMessageKeys: new Set(), messageKeyOrder: [],
+    });
+    assert.equal(getSenderLabel('system', false, 'cancel_receipt'), '📋 System');
+    const senderFn = messageIdentity.slice(messageIdentity.indexOf('function getSenderLabel'));
     const systemBranch = senderFn.slice(0, senderFn.indexOf("if (isProgress)"));
     assert.match(systemBranch, /if \(role === 'system'\) \{/);
     assert.match(systemBranch, /return '📋 System';/);
