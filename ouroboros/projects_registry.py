@@ -512,6 +512,66 @@ def create_project(
         return dict(entry)
 
 
+def resolve_external_session_chat_id(
+    drive_root: Any,
+    *,
+    source: str,
+    external_chat_id: int,
+    sender_label: str = "",
+) -> int:
+    """Translate an external transport's OWN numeric chat id into the internal
+    per-project chat id of an auto-provisioned session, so every distinct
+    (source, external_chat_id) pair — two different Telegram chats, or two
+    different senders through the same skill — threads into its own isolated
+    Project instead of collapsing into the single shared main chat.
+
+    Deliberately does NOT reuse the raw external chat id as the project's own
+    chat_id: Telegram group/supergroup ids are negative, and this system
+    reserves every negative chat id for synthetic internal A2A traffic
+    (``contracts.chat_id_policy.is_a2a_chat_id``) — binding a project's
+    chat_id there would misclassify a real human conversation as hidden
+    internal traffic. Every project's chat_id stays the ordinary hash-derived
+    positive value (``project_chat_id``); only the ROUTING is keyed on the
+    external identity, via a fully deterministic project id, so this stays
+    idempotent across restarts with no separate mapping file to keep in sync.
+
+    Falls back to the raw external_chat_id (the shared main chat, exactly
+    today's behavior) rather than raising when: the id is falsy (0, the
+    existing "unidentified sender" sentinel other callers already rely on —
+    see ``supervisor.message_bus.enqueue_local_message``), or the
+    deterministic project id collides with a project the owner already
+    deleted (never resurrect a tombstoned room; never lose the message
+    either).
+    """
+    cid = int(external_chat_id or 0)
+    source_clean = str(source or "").strip()
+    if not cid or not source_clean:
+        return cid
+    import hashlib
+
+    digest = hashlib.sha256(f"{source_clean}:{cid}".encode("utf-8")).hexdigest()[:16]
+    pid = f"session-{digest}"
+    existing = get_reserved_project(drive_root, pid)
+    if existing is not None:
+        if existing.get("lifecycle") != PROJECT_ACTIVE:
+            return cid
+        return int(existing.get("chat_id") or 0) or cid
+    display_source = source_clean[len("skill:"):] if source_clean.startswith("skill:") else source_clean
+    label = str(sender_label or "").strip()
+    name = f"{display_source}: {label}" if label else f"{display_source} session"
+    try:
+        project = create_project(
+            drive_root,
+            pid,
+            name=name[:PROJECT_NAME_MAX],
+            origin="external_session",
+        )
+    except ValueError:
+        log.debug("Auto-session project creation failed for pid=%s", pid, exc_info=True)
+        return cid
+    return int(project.get("chat_id") or 0) or cid
+
+
 def update_project(drive_root: Any, project_id: str, **updates: Any) -> Optional[Dict[str, Any]]:
     """Update mutable fields. v6.59.0 adds the additive source-provenance facts:
     ``provenance`` (attached|cloned|genesis|none — how the working_dir came to be),
@@ -867,6 +927,11 @@ def projects_summary(drive_root: Any, *, limit: int = 50) -> List[Dict[str, Any]
             "chat_id": project.get("chat_id"),
             "working_dir": project.get("working_dir") or "",
             "provenance": project.get("provenance") or "",
+            # v6.102.0: distinguishes an auto-provisioned external-transport
+            # session (Telegram chat, etc. — see resolve_external_session_chat_id)
+            # from an owner-created Project, so the sidebar can mark it as a
+            # lightweight conversation thread rather than a folder-backed room.
+            "origin": project.get("origin") or "",
             "last_active_at": project.get("last_active_at") or "",
             "lifecycle": project.get("lifecycle") or PROJECT_ACTIVE,
             "routing_generation": int(project.get("routing_generation") or 0),

@@ -280,15 +280,40 @@ class LocalChatBridge:
             clean_text = caption_text
         if not clean_text and not image_b64:
             return
+        source_clean = str(source or "web")
+        resolved_chat_id = coerce_chat_identity(chat_id, 1)
+        # Session isolation by external identity (v6.102.0): each distinct
+        # (source, chat_id) pair from an external transport threads into its
+        # own auto-provisioned Project instead of collapsing into the single
+        # shared main chat — two different Telegram chats (or two senders
+        # through the same skill) no longer mix into one conversation. The web
+        # UI's own chat_id=1 owner thread is untouched (source == "web" is
+        # never translated). See projects_registry.resolve_external_session_chat_id
+        # for why the raw external id itself is never reused as the project's
+        # chat_id (negative Telegram group ids collide with the reserved A2A
+        # range).  DATA_DIR may be unset only in narrow test/bootstrap paths
+        # that never carry a real external transport; treated as a no-op.
+        if source_clean != "web" and DATA_DIR is not None:
+            try:
+                from ouroboros.projects_registry import resolve_external_session_chat_id
+
+                resolved_chat_id = resolve_external_session_chat_id(
+                    DATA_DIR,
+                    source=source_clean,
+                    external_chat_id=resolved_chat_id,
+                    sender_label=str(sender_label or ""),
+                )
+            except Exception:
+                log.debug("External session resolution failed for source=%s", source_clean, exc_info=True)
         # Invariant: the default chat/user id is the web owner (1). External
         # transports (source != "web") MUST pass explicit ids — the Host Service
         # injects 0 for unidentified senders so they can never bind/own the web
         # owner. coerce_chat_identity preserves an explicit 0 sentinel.
         self._inbox.put({
-            "chat_id": coerce_chat_identity(chat_id, 1),
+            "chat_id": resolved_chat_id,
             "user_id": coerce_chat_identity(user_id, 1),
             "text": clean_text,
-            "source": str(source or "web"),
+            "source": source_clean,
             "sender_label": str(sender_label or ""),
             "sender_session_id": str(sender_session_id or ""),
             "client_message_id": str(client_message_id or ""),

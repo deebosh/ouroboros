@@ -462,7 +462,14 @@ function paintProjectsNav() {
         btn.disabled = deleting;
         const label = document.createElement('span');
         label.className = 'nav-row-label';
-        label.textContent = project.name || project.id;
+        // Auto-provisioned external-transport sessions (v6.102.0, session
+        // isolation by identity — Telegram chats etc.) get a small marker so
+        // they read as lightweight conversation threads, distinct from a
+        // manually-created Project with a working folder. Purely cosmetic:
+        // same row, same switch/delete affordances, no separate UI surface.
+        label.textContent = project.origin === 'external_session'
+            ? `💬 ${project.name || project.id}`
+            : (project.name || project.id);
         btn.appendChild(label);
         if (project._unread && !deleting) {
             const dot = document.createElement('span');

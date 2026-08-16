@@ -284,3 +284,80 @@ def test_budget_line_marks_quarantined_tail_nonfinal(monkeypatch, tmp_path):
 
     assert "cost_final no" in line
     assert "ledger_integrity DEGRADED (quarantined ledger tail)" in line
+
+
+# ---------------------------------------------------------------------------
+# Session isolation by external identity (v6.102.0): enqueue_local_message
+# translates an external transport's chat_id into an auto-provisioned
+# Project's own chat_id, so distinct external conversations no longer
+# collapse into the single shared main chat. See
+# ouroboros.projects_registry.resolve_external_session_chat_id for the
+# unit-level coverage; these tests cover the wiring into enqueue_local_message.
+# ---------------------------------------------------------------------------
+
+def test_enqueue_local_message_web_source_is_never_translated(monkeypatch, tmp_path):
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    bridge = _make_bridge(monkeypatch)
+
+    bridge.enqueue_local_message("hi", chat_id=1, user_id=1, source="web")
+    updates = bridge.get_updates(offset=0, timeout=1)
+
+    assert updates[0]["message"]["chat"]["id"] == 1
+    # No project must have been provisioned for the web owner thread.
+    from ouroboros.projects_registry import list_projects
+
+    assert list_projects(tmp_path) == []
+
+
+def test_enqueue_local_message_external_source_translates_chat_id(monkeypatch, tmp_path):
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    bridge = _make_bridge(monkeypatch)
+
+    bridge.enqueue_local_message(
+        "hello", chat_id=344067595, user_id=1, source="skill:telegram-bridge",
+        sender_label="Owner", transport={"kind": "telegram", "conversation_id": "344067595"},
+    )
+    updates = bridge.get_updates(offset=0, timeout=1)
+    resolved = updates[0]["message"]["chat"]["id"]
+
+    assert resolved != 344067595
+    assert resolved > 0
+    # The REAL Telegram id survives untouched inside transport — this is what
+    # the telegram-bridge skill's own outbound routing (_target_chats) reads
+    # to actually deliver the reply to the right chat.
+    assert updates[0]["message"]["transport"]["conversation_id"] == "344067595"
+
+
+def test_enqueue_local_message_different_external_chats_stay_isolated(monkeypatch, tmp_path):
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    bridge = _make_bridge(monkeypatch)
+
+    bridge.enqueue_local_message("a", chat_id=111, user_id=1, source="skill:telegram-bridge")
+    bridge.enqueue_local_message("b", chat_id=222, user_id=1, source="skill:telegram-bridge")
+    updates = bridge.get_updates(offset=0, timeout=1)
+    # get_updates may batch or return one at a time depending on queue timing;
+    # drain until both are collected.
+    while len(updates) < 2:
+        updates += bridge.get_updates(offset=0, timeout=1)
+
+    chat_ids = {u["message"]["chat"]["id"] for u in updates[:2]}
+    assert len(chat_ids) == 2
+
+
+def test_enqueue_local_message_populates_chat_transports_under_resolved_id(monkeypatch, tmp_path):
+    """The _chat_transports cache (used by every outbound send helper) must be
+    keyed by the RESOLVED (project) chat_id, not the raw external one — this
+    is what lets outbound sends for that project thread find the real
+    Telegram transport again later."""
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    bridge = _make_bridge(monkeypatch)
+
+    bridge.enqueue_local_message(
+        "hello", chat_id=987654321, user_id=1, source="skill:telegram-bridge",
+        transport={"kind": "telegram", "conversation_id": "987654321"},
+    )
+    updates = bridge.get_updates(offset=0, timeout=1)
+    resolved = updates[0]["message"]["chat"]["id"]
+
+    assert resolved in bridge._chat_transports
+    assert bridge._chat_transports[resolved]["conversation_id"] == "987654321"
