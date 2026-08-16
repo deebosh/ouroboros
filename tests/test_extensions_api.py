@@ -223,6 +223,60 @@ def test_api_extensions_index_lists_extension_skills(tmp_path, monkeypatch):
         _stop_patches(patches)
 
 
+def test_api_extensions_index_settings_sections_include_saved_values(tmp_path, monkeypatch):
+    """D31 regression guard on the code path the Settings page ACTUALLY reads
+    (apiClient.extensions() -> GET /api/extensions -> data.live.settings_sections),
+    not only the separate per-skill settings_section route: the earlier fix
+    landed on api_extension_settings_section alone, which the frontend does
+    not call for this panel, so the form kept rendering blank even after that
+    fix shipped. saved_values must be present here too."""
+    from ouroboros import extension_loader
+    from ouroboros.skill_loader import (
+        SkillReviewState,
+        compute_content_hash,
+        find_skill,
+        save_enabled,
+        save_review_state,
+        skill_state_dir,
+    )
+    from ouroboros.utils import atomic_write_json
+
+    skills_root = tmp_path / "skills"
+    plugin = (
+        "def register(api):\n"
+        "    api.register_settings_section('config', 'Config', schema={'components': [\n"
+        "        {'type': 'form', 'route': 'settings/save', 'method': 'POST', 'fields': [\n"
+        "            {'name': 'FOO', 'label': 'Foo', 'type': 'text'}\n"
+        "        ]}\n"
+        "    ]})\n"
+    )
+    skill_dir = _write_ext(skills_root, "settings_index", permissions=["widget"], plugin=plugin)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    client, drive_root, patches = _make_client(tmp_path, monkeypatch)
+    try:
+        content_hash = compute_content_hash(skill_dir, manifest_entry="plugin.py")
+        save_enabled(drive_root, "settings_index", True)
+        save_review_state(drive_root, "settings_index", SkillReviewState(status="pass", content_hash=content_hash))
+        loaded = find_skill(drive_root, "settings_index", repo_path=str(skills_root))
+        assert loaded is not None
+        err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+        assert err is None, err
+
+        atomic_write_json(
+            skill_state_dir(drive_root, "settings_index") / "settings.json",
+            {"FOO": "bar"},
+        )
+
+        resp = client.get("/api/extensions")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        sections = [s for s in data["live"]["settings_sections"] if s.get("skill") == "settings_index"]
+        assert len(sections) == 1
+        assert sections[0]["saved_values"] == {"FOO": "bar"}
+    finally:
+        _stop_patches(patches)
+
+
 def test_extensions_index_collision_row_skips_lifecycle_projections(
     tmp_path, monkeypatch
 ):

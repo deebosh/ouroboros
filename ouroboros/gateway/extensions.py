@@ -234,6 +234,7 @@ def _build_extensions_index(drive_root, repo_path):
     from ouroboros.extension_loader import extension_name_prefix, runtime_state_for_loaded_skill
 
     live_snapshot = snapshot()
+    _attach_settings_section_saved_values(live_snapshot.get("settings_sections", []), drive_root)
     # Scan data plane plus optional external checkout; bootstrap copies native refs.
     skills = discover_skills(drive_root, repo_path=repo_path)
     unique_skills = [
@@ -507,20 +508,43 @@ async def api_extension_module(request: Request) -> Response:
     )
 
 
-async def api_extension_settings_section(request: Request) -> JSONResponse:
-    """Return declarative Settings sections registered by one extension,
-    together with the skill's OWN currently saved values.
+def _attach_settings_section_saved_values(sections: list, drive_root) -> None:
+    """Mutate each settings-section item in place with its skill's OWN
+    currently saved values (skill_state_dir(...)/settings.json — never core
+    settings.json, never a secret/grant store).
 
     Without this, the Settings UI form always rendered blank (D31: the
     frontend had no source for current values at all), so submitting it —
     even to change a single field — serialized every field at its blank
-    default and overwrote the skill's real settings.json wholesale. Only
-    the skill's own state-scoped settings.json is read here (never core
-    settings.json, never a secret/grant store); this is exactly the file
-    the skill's own registered POST route already writes to, so exposing
-    it back through the same read path discloses nothing the skill did not
-    already persist through an owner-facing form.
+    default and overwrote the skill's real settings.json wholesale. This is
+    exactly the file the skill's own registered POST route already writes
+    to, so exposing it back through the same read path discloses nothing
+    the skill did not already persist through an owner-facing form.
+
+    Shared by BOTH producers of a settings-section list — the per-skill
+    `settings_section` route below AND the general `/api/extensions` index
+    (`_build_extensions_index`), which is the one the Settings page's
+    `apiClient.extensions()` call actually consumes — so a section reaching
+    either JSON response through this helper carries the same guarantee.
+    Each `sections` item is already `snapshot()`'s own deep copy, so
+    mutating it in place cannot corrupt the shared live registry.
     """
+    cache: Dict[str, Dict[str, Any]] = {}
+    for item in sections:
+        skill_name = str(item.get("skill") or "")
+        if not skill_name:
+            item["saved_values"] = {}
+            continue
+        if skill_name not in cache:
+            saved = read_json_dict(skill_state_dir(drive_root, skill_name) / "settings.json")
+            cache[skill_name] = saved if isinstance(saved, dict) else {}
+        item["saved_values"] = cache[skill_name]
+
+
+async def api_extension_settings_section(request: Request) -> JSONResponse:
+    """Return declarative Settings sections registered by one extension,
+    together with the skill's OWN currently saved values (see
+    _attach_settings_section_saved_values)."""
     skill_name = str(request.path_params.get("skill") or "").strip()
     if not skill_name:
         return json_error("missing skill name", 400)
@@ -531,11 +555,7 @@ async def api_extension_settings_section(request: Request) -> JSONResponse:
         if str(item.get("skill") or "") == skill_name
     ]
     if sections:
-        drive_root = _request_drive_root(request)
-        saved = read_json_dict(skill_state_dir(drive_root, skill_name) / "settings.json")
-        saved_values = saved if isinstance(saved, dict) else {}
-        for item in sections:
-            item["saved_values"] = saved_values
+        _attach_settings_section_saved_values(sections, _request_drive_root(request))
     return JSONResponse({"skill": skill_name, "sections": sections})
 
 
