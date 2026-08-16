@@ -388,6 +388,27 @@ export function renderSettingsPage() {
                     </div>
 
                     <div class="form-section">
+                        <h3>Reasoning Narration</h3>
+                        <div class="settings-section-copy">
+                            When a tool-only round leaves no visible answer text, <code>Auto</code> (default) narrates that
+                            otherwise-empty chat bubble with the readable reasoning summary the model already returned.
+                            <code>Off</code> shows a plain progress indicator instead. Display-only either way &mdash; never
+                            added to the conversation transcript or sent back to the model.
+                        </div>
+                        <div class="settings-effort-card">
+                            <label>Reasoning Narration</label>
+                            <input id="s-reasoning-summary" type="hidden" value="auto">
+                            ${renderSegmentedField({
+                                target: 's-reasoning-summary',
+                                options: [
+                                    { value: 'auto', label: 'Auto' },
+                                    { value: 'off', label: 'Off' },
+                                ],
+                            })}
+                        </div>
+                    </div>
+
+                    <div class="form-section">
                         <h3>Review Enforcement</h3>
                         <div class="settings-section-copy"><code>Advisory</code> keeps review visible but non-blocking. <code>Blocking</code> stops commits and reviewed-skill activation when critical findings remain unresolved.</div>
                         <div class="settings-effort-card">
