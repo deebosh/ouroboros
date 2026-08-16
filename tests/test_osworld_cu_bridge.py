@@ -1338,14 +1338,21 @@ def test_osworld_methodology_preregisters_the_dedup_rule_and_defers_the_lane_gen
 
 
 def test_module_grandfather_matcher_uses_exact_repo_relative_paths():
-    from ouroboros.review import module_is_grandfathered
+    from ouroboros.review import GIANT_PATHS, module_is_grandfathered
     # Exact runtime helpers accept only actual repo-relative paths. Compatibility
     # section-prefix decoding belongs solely to compute_complexity_metrics.
-    assert module_is_grandfathered("skills/unix_computer_use/plugin.py")
-    assert not module_is_grandfathered("repo/skills/unix_computer_use/plugin.py")
-    # a DIFFERENT plugin.py (future skill) is NOT exempted by the path-qualified entry
-    assert not module_is_grandfathered("skills/other_skill/plugin.py")
-    assert not module_is_grandfathered("repo/skills/other_skill/plugin.py")
+    # The nested samples come from the LIVE manifest rather than one hardcoded
+    # debt path: this contract used to be pinned on skills/unix_computer_use/
+    # plugin.py, and the day that module was paid down the assertion would have
+    # gone vacuous instead of red.
+    nested = sorted(path for path in GIANT_PATHS if "/" in path)
+    assert nested
+    for path in nested:
+        assert module_is_grandfathered(path), path
+        # A repo/-prefixed variant is a DIFFERENT path and is not exempted.
+        assert not module_is_grandfathered("repo/" + path), path
+        # A same-basename module in another directory is not exempted either.
+        assert not module_is_grandfathered("other_dir/" + path.rsplit("/", 1)[1]), path
     # Root server.py is an exact manifest path; a nested same-basename is not.
     assert module_is_grandfathered("server.py")
     assert not module_is_grandfathered("repo/server.py")
@@ -1807,7 +1814,7 @@ def test_the_bench_agent_cannot_reach_the_bridge_url():
     remote_exec runs inside the guest, where that port is not the host's: containment by
     luck of topology, not by design. Two things must hold: the screenshot result must not
     carry the URL, and the connection tools that echo it must be denied to the agent."""
-    import skills.unix_computer_use.plugin as plugin
+    import skills.unix_computer_use.lib.cu_remote_backends as cu_remote_backends
 
     denied = set(rcb._DENIED_SKILL_EXT_TOOLS)
     assert {"list_connections", "test_connection"} <= denied, denied
@@ -1815,7 +1822,8 @@ def test_the_bench_agent_cannot_reach_the_bridge_url():
     for tool in ("list_connections", "test_connection"):
         assert extension_surface_name(rcb.SKILL_NAME, tool) in disabled, tool
     # The success path of the remote screenshot must not emit the bridge URL.
-    src = pathlib.Path(plugin.__file__).read_text(encoding="utf-8")
+    # The remote backends moved to the skill's cu_remote_backends leaf (v7 W).
+    src = pathlib.Path(cu_remote_backends.__file__).read_text(encoding="utf-8")
     shot = src[src.index("def _osworld_screenshot"):src.index("def _test_osworld")]
     assert '"target": target' not in shot, "the bridge URL is back in the screenshot result"
 

@@ -334,6 +334,34 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in tool_access_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
+    cu_runtime_symbols = (
+        "_TIMEOUT_SEC _MAX_IMAGE_W _MAX_IMAGE_H _CONNECTIONS_FILE _ACTIVE_CONNECTION_FILE "
+        "_REMOTE_BACKENDS _MAX_REMOTE_SHOT_BYTES _OSWORLD_PKGS_PREFIX _osworld_result_ok "
+        "_png_dimensions _png_intact _json _run"
+    )
+    cu_mixin_symbols_by_owner = {
+        ("cu_connections.py", "_ConnectionRegistryMixin"):
+            "_connections_path _active_connection_path _read_connections _atomic_write "
+            "_write_connections _active_connection _disabled_connection_error "
+            "_active_backend_name _is_remote list_connections add_connection "
+            "activate_connection use_local clear_active_connection test_connection",
+        ("cu_remote_backends.py", "_RemoteBackendMixin"):
+            "_connection_target _osworld_execute _ssh_macos_key_name "
+            "_ssh_macos_cliclick_for_pyautogui _remote_pyautogui _remote_screenshot_result "
+            "_osworld_screenshot _test_osworld _ssh_destination _ssh_scp_source _ssh_run "
+            "_ssh_macos_screenshot _test_ssh_macos",
+    }
+    unix_computer_use_extraction_rows = {
+        f"skills/unix_computer_use/plugin.py::{symbol}":
+            f"skills/unix_computer_use/lib/cu_runtime.py::{symbol}"
+        for symbol in cu_runtime_symbols.split()
+    }
+    unix_computer_use_extraction_rows.update({
+        f"skills/unix_computer_use/plugin.py::_ComputerUse.{symbol}":
+            f"skills/unix_computer_use/lib/{owner}::{mixin}.{symbol}"
+        for (owner, mixin), symbols in cu_mixin_symbols_by_owner.items()
+        for symbol in symbols.split()
+    })
     implemented.update(registry_core_rows)
     implemented.update(registry_resolution_rows)
     implemented.update(registry_guard_rows)
@@ -348,6 +376,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     ) | set(registry_resolution_rows) | set(registry_guard_rows) | set(
         registry_dispatch_method_rows
     ) | set(registry_dependency_owners) | set(core_extraction_rows)
+    # _ComputerUse methods move into mixin classes: the class inherits the exact
+    # same function object, so the compatibility contract is inheritance, not a
+    # module-level re-export, and the facade cell is "-".
+    registry_extraction_no_facade_rows |= {
+        identity for identity in unix_computer_use_extraction_rows
+        if "::_ComputerUse." in identity
+    }
     retired_current = {
         "ouroboros/tools/registry.py::_HEAL_PROTECTED_PAYLOAD_FILENAMES":
             "retired:unused payload-control alias removed with registry core extraction",
@@ -396,6 +431,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/tools/registry.py::resolve_skill_payload_target",
     }
     implemented.update({name: name for name in ("ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS")})
+    implemented.update(unix_computer_use_extraction_rows)
     existing_process_owner_rows.update({"ouroboros/tools/core.py::_code_search", 'ouroboros/tools/core.py::_filter_out_project_store', 'ouroboros/tools/core.py::_policy_is_skill_owner_state_target', 'ouroboros/tools/core.py::active_repo_dir_for', 'ouroboros/tools/core.py::active_tool_profile', 'ouroboros/tools/core.py::build_resolved_resource_binding', 'ouroboros/tools/core.py::decide_tool_access', 'ouroboros/tools/core.py::normalize_root', 'ouroboros/tools/core.py::normalize_runtime_data_path', 'ouroboros/tools/core.py::read_text', 'ouroboros/tools/core.py::SKILL_OWNER_STATE_FILENAMES', "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     registry_extraction_no_facade_rows.update({"ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES", "ouroboros/loop_tool_execution.py::_extract_result_metadata", "ouroboros/_outcome_tool_errors.py::_BLOCKING_TOOL_STATUSES", "ouroboros/reflection.py::_ERROR_MARKERS"})
     for row in rows:
