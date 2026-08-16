@@ -1336,7 +1336,7 @@ def test_workspace_patch_excludes_binary_junk_and_oversize(tmp_path, monkeypatch
     """T7 (v6.35.0): the real-usage workspace patch drops untracked build/runtime
     binaries, junk artifacts, and oversize blobs (recorded, not silently lost),
     while keeping real source additions."""
-    import ouroboros.headless as headless
+    import ouroboros.workspace_patch_capture as workspace_patch_capture
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1355,7 +1355,7 @@ def test_workspace_patch_excludes_binary_junk_and_oversize(tmp_path, monkeypatch
     (repo / "run.log").write_text("noise\n", encoding="utf-8")
     (repo / "htmlcov").mkdir()
     (repo / "htmlcov" / "index.html").write_text("<html></html>\n", encoding="utf-8")  # top-level coverage junk
-    monkeypatch.setattr(headless, "_PATCH_MAX_UNTRACKED_FILE_BYTES", 100)
+    monkeypatch.setattr(workspace_patch_capture, "_PATCH_MAX_UNTRACKED_FILE_BYTES", 100)
     (repo / "big.txt").write_text("x" * 200, encoding="utf-8")  # 200 bytes > cap; small files pass size
 
     artifacts, manifest = write_workspace_patch_artifacts(repo, tmp_path / "artifacts", task={})

@@ -60,7 +60,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/config.py",
     "ouroboros/delegate_custody.py",
     "ouroboros/extension_loader.py",
-    "ouroboros/headless.py",
     "ouroboros/llm.py",
     "ouroboros/loop.py",
     "ouroboros/review_evidence.py",

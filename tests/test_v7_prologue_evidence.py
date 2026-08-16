@@ -600,6 +600,15 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in shell_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
+    headless_extraction_symbols_by_owner = {
+        "headless_status.py": "ARTIFACT_STATUS_PENDING ARTIFACT_STATUS_FINALIZING ARTIFACT_STATUS_READY ARTIFACT_STATUS_READY_WITH_CHANGES ARTIFACT_STATUS_READY_NO_CHANGES ARTIFACT_STATUS_MISSING ARTIFACT_STATUS_FAILED ARTIFACT_TERMINAL_STATUSES _FINAL_STATUSES _LOCAL_READONLY_SUBAGENT_MODE _ARTIFACT_LIFECYCLE_FIELDS",
+        "workspace_patch_capture.py": "SCRATCH_MANIFEST_NAME _GIT_UNBORN_HEAD build_workspace_patch write_workspace_patch_artifacts _git_stdout _workspace_patch_base _git_empty_tree_oid _head_reflog_exists _looks_like_git_oid _git_path_list _git_bytes _append_git_output _write_patch_separator _untracked_blob_exclude_reason untracked_capture_veto_reason _preflight_head_from_task _preflight_head_present _acting_constraint_from_task _empty_patch_manifest",
+    }
+    headless_extraction_rows = {
+        f"ouroboros/headless.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in headless_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
     implemented.update(registry_core_rows)
     implemented.update(registry_resolution_rows)
     implemented.update(registry_guard_rows)
@@ -607,6 +616,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(registry_dependency_owners | core_extraction_rows)
     implemented.update(git_extraction_rows)
     implemented.update(shell_extraction_rows)
+    implemented.update(headless_extraction_rows)
     registry_extraction_no_facade_rows = (
         set(registry_core_rows) - {"ouroboros/tools/registry.py::ToolRegistry"}
     ) | set(registry_resolution_rows) | set(registry_guard_rows) | set(
