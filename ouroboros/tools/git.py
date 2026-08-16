@@ -2132,6 +2132,120 @@ def _publish_reviewed_commit(
     return result + ci_note
 
 
+def _reestablish_user_merge_head(ctx: ToolContext, pre_fingerprint: Dict[str, Any]) -> None:
+    """User-initiated (non-managed-update) merge counterpart of the managed-update
+    re-establish above: a blocked review's index reset can clear the live MERGE_HEAD,
+    and the next `git commit` would silently drop the merge parent. The pre-fingerprint's
+    parents list captures the original merge vector before the review reset the index."""
+    merge_parents = pre_fingerprint.get("binding", {}).get("parents") or []
+    if len(merge_parents) <= 1:
+        return
+    try:
+        target = merge_parents[1]
+        mh_path_str = run_cmd(
+            ["git", "rev-parse", "--git-path", "MERGE_HEAD"], cwd=ctx.repo_dir,
+        ).strip()
+        mh_path = pathlib.Path(mh_path_str)
+        if not mh_path.is_absolute():
+            mh_path = pathlib.Path(ctx.repo_dir) / mh_path
+        mh_path.parent.mkdir(parents=True, exist_ok=True)
+        mh_path.write_text(target + "\n", encoding="utf-8")
+    except Exception:
+        log.debug("reestablish_merge_head for user-initiated merge failed", exc_info=True)
+
+
+def _perform_review_commit(
+    ctx: ToolContext, commit_message: str, managed_tx: Dict[str, Any], commit_start: float,
+) -> Tuple[str, str]:
+    """Run the actual `git commit` for a passed review, plus the synchronous
+    state.current_sha write. Returns (commit_sha, "") on success, or ("", error_message)
+    on failure — the caller returns the error message verbatim to stay tool-compatible."""
+    try:
+        run_cmd(["git", "commit", "-m", commit_message], cwd=ctx.repo_dir)
+        commit_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=ctx.repo_dir).strip()
+        # Synchronous state.current_sha write: campaign supervisor sees the actual HEAD
+        # immediately instead of waiting for reconciliation. Uses
+        # supervisor.state.update_state(mutator) for atomicity — one lock acquisition
+        # covers load+mutate+save, so a concurrent writer (supervisor reconciliation at
+        # git_ops.py:1185/1631) cannot drop this write the way the racy
+        # load_state->save_state pattern did. Mirrors supervisor/git_ops.py:1480 (managed
+        # update) and supervisor/update_recovery.py:50 (rollback restore).
+        # Backlog: ibl-ff22eb63afe2.
+        try:
+            from supervisor.state import update_state  # type: ignore
+            update_state(lambda _st: _st.__setitem__("current_sha", commit_sha))
+        except Exception:
+            log.debug("synchronous state.current_sha write after commit failed", exc_info=True)
+        return commit_sha, ""
+    except Exception as e:
+        err_msg = f"⚠️ GIT_ERROR (commit): {_sanitize_git_error(str(e))}"
+        if managed_tx:
+            from supervisor.update_merge import restore_assisted_resolution_after_commit_error
+            restore_assisted_resolution_after_commit_error(managed_tx)
+        _record_commit_attempt(ctx, commit_message, "failed",
+                               block_reason="infra_failure", block_details=err_msg,
+                               duration_sec=time.time() - commit_start,
+                               triad_models=getattr(ctx, "_last_triad_models", []),
+                               scope_model=getattr(ctx, "_last_scope_model", ""),
+                               triad_raw_results=getattr(ctx, "_last_triad_raw_results", []),
+                               scope_raw_result=getattr(ctx, "_last_scope_raw_result", {}),
+                               degraded_reasons=list(getattr(ctx, "_review_degraded_reasons", []) or []))
+        return "", err_msg
+
+
+def _tag_and_verify_reviewed_commit(
+    ctx: ToolContext, commit_message: str, commit_sha: str, commit_start: float,
+    managed_tx: Dict[str, Any], evolution_claim: Dict[str, str],
+    reviewed_binding: Dict[str, Any],
+    fingerprints: Tuple[Dict[str, Any], Dict[str, Any]],
+) -> Tuple[str, str, str]:
+    """Auto-tag on a version bump (skipped for a managed-update merge — the official
+    version tag is handled on the owner's terms) then re-verify the reviewed binding
+    including the tag. Returns (tag_info, created_tag, error_message_or_empty)."""
+    pre_fingerprint, post_fingerprint = fingerprints
+    tag_info = ""
+    created_tag = ""
+    if not managed_tx:
+        if evolution_claim:
+            _, authority_error = _check_evolution_commit_stage(
+                ctx, commit_message, commit_start, phase="pre_tag_authority", commit_sha=commit_sha,
+            )
+            if authority_error:
+                containment = _preserve_evolution_orphan(ctx, commit_sha)
+                return tag_info, created_tag, f"{authority_error}\n\n{containment}"
+        reviewed_tag = str(reviewed_binding.get("expected_tag") or "")
+        tag_info = _auto_tag_on_version_bump(
+            pathlib.Path(ctx.repo_dir),
+            commit_message,
+            expected_commit_sha=commit_sha,
+            expected_tag=reviewed_tag,
+        )
+        created_tag = reviewed_tag if tag_info == f" [tagged: {reviewed_tag}]" else ""
+    binding_ok, binding_detail = _verify_reviewed_commit_binding(
+        pathlib.Path(ctx.repo_dir),
+        commit_sha,
+        post_fingerprint,
+        verify_expected_tag=not bool(managed_tx),
+    )
+    if not binding_ok:
+        binding_msg = (
+            "⚠️ REVIEW_BINDING_FAILED: the reviewed commit was created locally, but "
+            "release-tag verification failed. Nothing was pushed; immutable tags are "
+            f"never retargeted. Detail: {binding_detail}"
+        )
+        if evolution_claim:
+            binding_msg += " " + _preserve_evolution_orphan(
+                ctx, commit_sha, created_tag=created_tag,
+            )
+        return tag_info, created_tag, _review_binding_failure(
+            ctx, commit_message, commit_start, binding_msg,
+            binding_kind="tag",
+            fingerprints=(pre_fingerprint, post_fingerprint),
+            managed_tx=managed_tx,
+        )
+    return tag_info, created_tag, ""
+
+
 def _repo_commit_push(ctx: ToolContext, commit_message: str,
                        paths: Optional[List[str]] = None,
                        skip_tests: bool = False,
@@ -2271,53 +2385,11 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
         # (the pre-fingerprint's parents list captures the original merge
         # vector before the review reset the index).
         if not _managed_tx:
-            _merge_parents = pre_fingerprint.get("binding", {}).get("parents") or []
-            if len(_merge_parents) > 1:
-                try:
-                    _target = _merge_parents[1]
-                    _mh_path_str = run_cmd(
-                        ["git", "rev-parse", "--git-path", "MERGE_HEAD"],
-                        cwd=ctx.repo_dir,
-                    ).strip()
-                    _mh_path = pathlib.Path(_mh_path_str)
-                    if not _mh_path.is_absolute():
-                        _mh_path = pathlib.Path(ctx.repo_dir) / _mh_path
-                    _mh_path.parent.mkdir(parents=True, exist_ok=True)
-                    _mh_path.write_text(_target + "\n", encoding="utf-8")
-                except Exception:
-                    log.debug("reestablish_merge_head for user-initiated merge failed", exc_info=True)
+            _reestablish_user_merge_head(ctx, pre_fingerprint)
 
-        try:
-            run_cmd(["git", "commit", "-m", commit_message], cwd=ctx.repo_dir)
-            commit_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=ctx.repo_dir).strip()
-            # Synchronous state.current_sha write: campaign supervisor sees the
-            # actual HEAD immediately instead of waiting for reconciliation.
-            # Uses supervisor.state.update_state(mutator) for atomicity —
-            # one lock acquisition covers load+mutate+save, so a concurrent
-            # writer (supervisor reconciliation at git_ops.py:1185/1631)
-            # cannot drop this write the way the racy load_state->save_state
-            # pattern did. Mirrors supervisor/git_ops.py:1480 (managed
-            # update) and supervisor/update_recovery.py:50 (rollback restore).
-            # Backlog: ibl-ff22eb63afe2.
-            try:
-                from supervisor.state import update_state  # type: ignore
-                update_state(lambda _st: _st.__setitem__("current_sha", commit_sha))
-            except Exception:
-                log.debug("synchronous state.current_sha write after commit failed", exc_info=True)
-        except Exception as e:
-            err_msg = f"⚠️ GIT_ERROR (commit): {_sanitize_git_error(str(e))}"
-            if _managed_tx:
-                from supervisor.update_merge import restore_assisted_resolution_after_commit_error
-                restore_assisted_resolution_after_commit_error(_managed_tx)
-            _record_commit_attempt(ctx, commit_message, "failed",
-                                   block_reason="infra_failure", block_details=err_msg,
-                                   duration_sec=time.time() - _commit_start,
-                                   triad_models=getattr(ctx, "_last_triad_models", []),
-                                   scope_model=getattr(ctx, "_last_scope_model", ""),
-                                   triad_raw_results=getattr(ctx, "_last_triad_raw_results", []),
-                                   scope_raw_result=getattr(ctx, "_last_scope_raw_result", {}),
-                                   degraded_reasons=list(getattr(ctx, "_review_degraded_reasons", []) or []))
-            return err_msg
+        commit_sha, commit_err = _perform_review_commit(ctx, commit_message, _managed_tx, _commit_start)
+        if commit_err:
+            return commit_err
         binding_ok, binding_detail = _verify_reviewed_commit_binding(
             pathlib.Path(ctx.repo_dir),
             commit_sha,
@@ -2349,44 +2421,12 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
         # A managed-update merge commit must NOT auto-tag/auto-push pre-restart (an un-smoked
         # update would otherwise reach origin / create a version tag, and a later rollback would
         # diverge from origin). The official version tag is handled on the owner's terms.
-        tag_info = ""
-        created_tag = ""
-        if not _managed_tx:
-            if evolution_claim:
-                _, authority_error = _check_evolution_commit_stage(ctx, commit_message, _commit_start, phase="pre_tag_authority", commit_sha=commit_sha)
-                if authority_error:
-                    containment = _preserve_evolution_orphan(ctx, commit_sha)
-                    return f"{authority_error}\n\n{containment}"
-            reviewed_tag = str(reviewed_binding.get("expected_tag") or "")
-            tag_info = _auto_tag_on_version_bump(
-                pathlib.Path(ctx.repo_dir),
-                commit_message,
-                expected_commit_sha=commit_sha,
-                expected_tag=reviewed_tag,
-            )
-            created_tag = reviewed_tag if tag_info == f" [tagged: {reviewed_tag}]" else ""
-        binding_ok, binding_detail = _verify_reviewed_commit_binding(
-            pathlib.Path(ctx.repo_dir),
-            commit_sha,
-            post_fingerprint,
-            verify_expected_tag=not bool(_managed_tx),
+        tag_info, created_tag, tag_error = _tag_and_verify_reviewed_commit(
+            ctx, commit_message, commit_sha, _commit_start, _managed_tx, evolution_claim,
+            reviewed_binding, (pre_fingerprint, post_fingerprint),
         )
-        if not binding_ok:
-            binding_msg = (
-                "⚠️ REVIEW_BINDING_FAILED: the reviewed commit was created locally, but "
-                "release-tag verification failed. Nothing was pushed; immutable tags are "
-                f"never retargeted. Detail: {binding_detail}"
-            )
-            if evolution_claim:
-                binding_msg += " " + _preserve_evolution_orphan(
-                    ctx, commit_sha, created_tag=created_tag,
-                )
-            return _review_binding_failure(
-                ctx, commit_message, _commit_start, binding_msg,
-                binding_kind="tag",
-                fingerprints=(pre_fingerprint, post_fingerprint),
-                managed_tx=_managed_tx,
-            )
+        if tag_error:
+            return tag_error
         if evolution_claim:
             receipt_error = _record_evolution_commit_receipt(
                 ctx, commit_message, _commit_start, evolution_claim, commit_sha,

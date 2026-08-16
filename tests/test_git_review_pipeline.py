@@ -976,7 +976,7 @@ class TestAutoPushBehavior:
         # The managed BLOCKING gate (extracted helper) runs before tagging;
         # ordinary warning-only tests run after the tag and before the push.
         managed_tests_pos = source.index("_managed_post_commit_tests_gate(")
-        tag_pos = source.index("tag_info =")
+        tag_pos = source.index("_tag_and_verify_reviewed_commit(")
         ordinary_tests_pos = source.index("_post_commit_result(ctx, commit_message")
         push_pos = source.rindex("push_status = _auto_push")
         assert managed_tests_pos < tag_pos < ordinary_tests_pos < push_pos
