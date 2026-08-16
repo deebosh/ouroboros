@@ -735,32 +735,6 @@ def _restore_protected_runtime_paths(repo_dir: pathlib.Path, paths: list[str]) -
     return restored
 
 
-def _tree_fingerprint(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    root = pathlib.Path(path)
-    if not root.exists():
-        return ""
-    for child in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
-        try:
-            st = child.lstat()
-        except OSError:
-            continue
-        try:
-            rel = child.relative_to(root).as_posix()
-        except ValueError:
-            rel = safe_relpath(str(child))
-        digest.update(rel.encode("utf-8", errors="replace"))
-        digest.update(str(st.st_mode).encode())
-        digest.update(str(st.st_size).encode())
-        digest.update(str(st.st_mtime_ns).encode())
-        if stat.S_ISLNK(st.st_mode):
-            try:
-                digest.update(os.readlink(child).encode("utf-8", errors="replace"))
-            except OSError:
-                pass
-    return digest.hexdigest()
-
-
 _SHELL_BUILTINS = frozenset([
     "cd", "source", ".", "export", "alias", "eval",
     "set", "unset", "pushd", "popd", "read", "ulimit",
@@ -1466,20 +1440,6 @@ def _get_changed_files(repo_dir: pathlib.Path) -> list:
     except Exception:
         pass
     return []
-
-
-def _get_diff_stat(repo_dir: pathlib.Path) -> str:
-    """Return git diff --stat output."""
-    try:
-        res = subprocess.run(
-            ["git", "diff", "--stat"],
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=5,
-        )
-        if res.returncode == 0:
-            return res.stdout.strip()
-    except Exception:
-        pass
-    return ""
 
 
 def _run_script(
