@@ -63,7 +63,6 @@ MODULE_DEBT_1500 = (
     "supervisor/workers.py",
     "tests/test_agent_task_pipeline.py",
     "tests/test_cancel_intents_phase_a.py",
-    "tests/test_delegated_run_isolation.py",
     "tests/test_devtools_benchmarks.py",
     "tests/test_evolution_state_integrity_v3.py",
     "tests/test_extension_loader.py",
