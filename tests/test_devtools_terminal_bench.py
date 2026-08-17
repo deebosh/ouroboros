@@ -117,6 +117,13 @@ def test_terminal_bench_metadata_declares_all_assisting_models(monkeypatch):
     monkeypatch.setitem(_sys.modules, spec.name, module)  # dataclass field resolution needs this
     spec.loader.exec_module(module)
     monkeypatch.delenv("OUROBOROS_REVIEW_MODELS", raising=False)
+    # Both reviewer keys have to be owned, not just the triad one: the assertions below
+    # read the SSOT defaults, while leaderboard_metadata reads the environment, and
+    # ouroboros/reviewer_slot_config.py assigns OUROBOROS_SCOPE_REVIEW_MODELS through
+    # os.environ directly — a write no fixture undoes, so any earlier test in the same
+    # worker that reaches that code leaves this one comparing a leaked slot to the default.
+    monkeypatch.delenv("OUROBOROS_SCOPE_REVIEW_MODELS", raising=False)
+    monkeypatch.delenv("OUROBOROS_SCOPE_REVIEW_MODEL", raising=False)
     meta = module.leaderboard_metadata(
         agent_name="Ouroboros", org_name="Ouroboros",
         model="openai/gpt-5.5", light_model="google/gemini-3.5-flash")
