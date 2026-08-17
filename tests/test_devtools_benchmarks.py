@@ -3565,7 +3565,7 @@ def test_gaia_audit_gold_verbatim_alone_is_weak_only(tmp_path):
 
 
 def test_gaia_events_serializer_carries_web_search_sources():
-    src = (REPO_ROOT / "supervisor" / "events.py").read_text(encoding="utf-8")
+    src = (REPO_ROOT / "supervisor/events_budget.py").read_text("utf-8")
     assert "web_search_sources" in src
 
 

@@ -496,7 +496,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/launcher_onboarding.py::save_settings": "D03",
         "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES": "D02",
         "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS": "D02",
+        # S3, spec 4.3.8: the safety module's import-time supervisor edge.
+        "ouroboros/safety.py::update_budget_from_usage": "D05",
+        "ouroboros/safety.py::update_budget_from_usage": "D05",
     }
+    retired_current["ouroboros/safety.py::update_budget_from_usage"] = (
+        "retired:the ledger writer is injected by the context, or reached at call time"
+    )
     existing_process_owner_rows = {
         "tests/test_skill_exec.py::test_run_shell_restores_obfuscated_self_authored_state_marker",
         "ouroboros/tools/registry.py::SKILL_OWNER_STATE_FILENAMES",
@@ -795,4 +801,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D06"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06"})
