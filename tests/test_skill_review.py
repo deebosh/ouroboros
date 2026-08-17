@@ -877,7 +877,9 @@ def test_review_skill_keeps_distinct_fail_reasons_for_same_item(tmp_path, monkey
             ]
         }
     )
-    with patch("ouroboros.skill_review._run_skill_advisory_pre_review", return_value={"status": "empty"}):
+    # The advisory pre-review moved to the prompt owner with the per-attempt
+    # assembly that calls it; patch it where that caller reads it.
+    with patch("ouroboros.skill_review_prompt._run_skill_advisory_pre_review", return_value={"status": "empty"}):
         with _patch_review(canned):
             outcome = review_skill(ctx, "weather")
     bug_reasons = [
@@ -991,7 +993,7 @@ def test_review_skill_prompt_includes_rebuttal_and_history(tmp_path, monkeypatch
 
 
 def test_review_skill_quorum_failure_on_one_responder(tmp_path, monkeypatch):
-    import ouroboros.skill_review as skill_review
+    import ouroboros.skill_review_prompt as skill_review_prompt
 
     skills_root = _build_skill(tmp_path)
     monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
@@ -1010,8 +1012,10 @@ def test_review_skill_quorum_failure_on_one_responder(tmp_path, monkeypatch):
         "session_id": "sess-skill",
         "raw_result": "advisory raw",
     }
+    # The advisory pre-review moved to the prompt owner with the per-attempt
+    # assembly that calls it; patch it where that caller reads it.
     monkeypatch.setattr(
-        skill_review,
+        skill_review_prompt,
         "_run_skill_advisory_pre_review",
         lambda *args, **kwargs: dict(advisory_evidence),
     )
@@ -1216,7 +1220,9 @@ def test_skill_packs_chunks_when_over_budget(tmp_path, monkeypatch):
     """When the WHOLE skill payload exceeds the reviewer TOKEN budget, the files are
     split into multiple budget-sized packs (every byte reviewed in a separate pass),
     NOT refused — the P5 over-budget fallback. No silent truncation."""
-    import ouroboros.skill_review as sr
+    # The pack budget and its only reader moved together to the pack owner, so
+    # the budget seam is patched where _build_skill_file_packs reads it.
+    import ouroboros.skill_review_packs as sr
     from ouroboros.skill_review import _build_skill_file_packs
 
     skill_dir = tmp_path / "huge"
@@ -1236,7 +1242,9 @@ def test_skill_packs_chunks_when_over_budget(tmp_path, monkeypatch):
 def test_skill_packs_single_file_over_budget_refused(tmp_path, monkeypatch):
     """A SINGLE file that alone exceeds the budget cannot be chunked without truncating
     it, so review fails closed loudly (_SkillFileOverBudget) — never silent truncation."""
-    import ouroboros.skill_review as sr
+    # The pack budget and its only reader moved together to the pack owner, so
+    # the budget seam is patched where _build_skill_file_packs reads it.
+    import ouroboros.skill_review_packs as sr
     from ouroboros.skill_review import _SkillFileOverBudget, _build_skill_file_packs
 
     skill_dir = tmp_path / "mono"

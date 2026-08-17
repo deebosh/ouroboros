@@ -334,7 +334,7 @@ _RESIDUAL_TEXT_INSPECTIONS: Mapping[str, tuple[int, str]] = MappingProxyType({
     "ouroboros/outcomes.py": (5, "the FINAL ANSWER and service-teardown text, for which no ToolResult exists"),
     "ouroboros/reflection.py": (6, "markers emitted INSIDE a result body, which a first-line parser cannot see"),
     "ouroboros/memory.py": (1, "tools.jsonl rows appended by consciousness carry neither status nor code"),
-    "ouroboros/skill_review.py": (2, "skill review verdict text, not a tool result"),
+    "ouroboros/skill_review_prompt.py": (2, "skill review verdict text, not a tool result"),
     "ouroboros/tools/github.py": (12, "private helper-failure checks between two functions of one tool"),
     "ouroboros/tools/skill_publish.py": (9, "private helper-failure checks between two functions of one tool"),
     "ouroboros/tools/claude_advisory_review.py": (8, "private helper-failure checks between two functions of one tool"),

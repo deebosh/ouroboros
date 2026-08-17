@@ -752,6 +752,18 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for symbol in l2b_evidence_extraction_symbols.split()
     }
     implemented.update(l2b_evidence_extraction_rows)
+    l2b_skill_review_symbols_by_owner = {
+        "skill_review_packs.py": "_SKILL_PACK_TOKEN_HEADROOM _skill_pack_token_budget _LOADABLE_BINARY_EXTENSIONS _SkillFileOverBudget _SkillFileUnreadable _SkillBinaryPayload _read_skill_text _build_skill_file_packs",
+        "skill_review_rebuttals.py": "_review_history_path _accepted_rebuttals_path _load_accepted_rebuttals _persist_rebuttal_flips _fail_items_from_history_entry _record_accepted_rebuttal _build_skill_review_history_section _convergence_hint _render_accepted_rebuttals_section",
+        "skill_review_prompt.py": "_SKILL_CHECKLIST_SECTION _SKILL_REVIEW_ITEMS _CRITICAL_ITEMS _load_governance_artifact _REPO_ROOT _build_review_prompt _emit_skill_advisory_warning _run_skill_advisory_pre_review _review_wave_budget_block _build_review_prompt_for_attempt",
+        "skill_review_output.py": "render_skill_review_block _extract_actor_findings _parse_json_array _aggregate_status",
+    }
+    l2b_skill_review_rows = {
+        f"ouroboros/skill_review.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in l2b_skill_review_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    implemented.update(l2b_skill_review_rows)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(s2_panic_delta_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)

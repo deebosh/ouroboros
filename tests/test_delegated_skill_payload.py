@@ -593,8 +593,10 @@ def test_registry_golden_e2e_start_wait_apply_review_stale(tmp_path, monkeypatch
     # the APPLIED content — reviewer LLM faked deterministically, no live model.
     from tests.test_skill_review_persist_guard import _pass_actor
 
+    # The advisory pre-review moved to the prompt owner with the per-attempt
+    # assembly that calls it; patch it where that caller reads it.
     monkeypatch.setattr(
-        "ouroboros.skill_review._run_skill_advisory_pre_review",
+        "ouroboros.skill_review_prompt._run_skill_advisory_pre_review",
         lambda *_a, **_kw: {"status": "empty"})
     monkeypatch.setattr(
         "ouroboros.tools.review._handle_multi_model_review",
