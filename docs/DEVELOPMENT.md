@@ -344,9 +344,13 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
 - Every non-grandfathered Python function or method fails the deterministic gate
   above 300 lines; exceptions live in
   exact `(repo-relative path, lexical qualname)` keys in
-  `ouroboros/size_ratchet_manifest.py::FUNCTION_DEBT`. Methods above 150
-  lines are a decomposition signal. JavaScript currently has only the module
-  line-count gate.
+  `ouroboros/size_ratchet_manifest.py::FUNCTION_DEBT`. The set is shrink-only,
+  with one non-growing move allowed: a debt function whose exact qualname leaves
+  one path and appears at exactly one other path in the same transition keeps
+  its row (an extraction may carry it into a leaf); a fresh oversized function,
+  a swap onto another qualname, or an ambiguous many-to-one move is refused.
+  Methods above 150 lines are a decomposition signal. JavaScript currently has
+  only the module line-count gate.
 - Runtime Python function/method count is checked against
   `ouroboros/review.py::MAX_TOTAL_FUNCTIONS`; the function iterator preserves
   the runtime scope it always had (tests/devtools excluded) while module gates include
