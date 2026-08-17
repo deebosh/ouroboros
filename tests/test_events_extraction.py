@@ -151,7 +151,7 @@ def test_dispatch_table_inventory_and_handler_owners_are_exact():
         "deep_self_review_request", "ensure_project_scope", "external_wait_lease",
         "llm_usage", "log_event", "owner_message_injected", "project_digest",
         "promote_chat_to_task", "promote_to_stable", "review_wave_budget_insufficient",
-        "routing_manual_target", "schedule_subagent", "schedule_task", "send_document",
+        "routing_manual_target", "schedule_subagent", "send_document",
         "send_message", "send_photo", "send_video", "skill_exec_failed",
         "skill_exec_finished", "steer_task", "task_dispatch_resolved", "task_done",
         "task_heartbeat", "task_metrics", "toggle_consciousness", "toggle_evolution",
@@ -165,7 +165,6 @@ def test_dispatch_table_inventory_and_handler_owners_are_exact():
     assert owners["promote_chat_to_task"] == "supervisor.events_project_routing"
     assert owners["toggle_evolution"] == "supervisor.events_runtime_controls"
     assert owners["steer_task"] == "supervisor.steering"
-    assert owners["schedule_task"] == "supervisor.events"
     assert owners["schedule_subagent"] == "supervisor.events"
 
 

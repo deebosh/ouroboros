@@ -35,6 +35,7 @@ HOT_CODE_PATHS = frozenset({
     "ouroboros/settings_defaults.py",
     "ouroboros/settings_scales.py",
     "supervisor/queue.py",
+    "supervisor/event_taxonomy.py",
     "supervisor/events.py",
     "supervisor/events_budget.py",
     "supervisor/events_chat_delivery.py",

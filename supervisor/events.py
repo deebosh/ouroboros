@@ -34,6 +34,10 @@ from ouroboros.cost_projection import carry_cost_meta, with_cost_aliases  # noqa
 from ouroboros.outcomes import infra_failed_axes, normalize_outcome_axes  # noqa: F401
 from ouroboros.subagents import intended_lane as intended_subagent_lane
 from ouroboros.contracts.task_contract import build_task_contract, normalize_allowed_resources
+# The declared disposition of every event kind the runtime can produce. Data only:
+# the dispatch table below stays the single execution authority, and the taxonomy
+# answers the one question the table cannot — what a MISS means.
+from supervisor.event_taxonomy import disposition_for
 
 # Handler families owned by their own modules (module-size boundary). Each
 # family is re-imported here so this module keeps ONE public surface for the
@@ -610,7 +614,6 @@ EVENT_HANDLERS = {
     "task_metrics": _handle_task_metrics,
     "deep_self_review_request": _handle_deep_self_review_request,
     "promote_to_stable": _handle_promote_to_stable,
-    "schedule_task": _handle_schedule_task,
     "schedule_subagent": _handle_schedule_task,
     "promote_chat_to_task": _handle_promote_chat_to_task,
     "ensure_project_scope": _handle_ensure_project_scope,
@@ -661,6 +664,24 @@ def dispatch_event(evt: Dict[str, Any], ctx: Any) -> None:
 
     handler = EVENT_HANDLERS.get(event_type)
     if handler is None:
+        disposition = disposition_for(event_type)
+        if disposition is not None:
+            # Declared, just not dispatched here: the server intercepts it, the log
+            # envelope already answered it, or it is a fact for the ledger. Record
+            # the fact under its declared tier instead of dropping it as unknown.
+            log.debug(
+                "Worker event %r has no dispatch handler by design (%s)",
+                event_type, disposition.tier,
+            )
+            ctx.append_jsonl(
+                ctx.DRIVE_ROOT / "logs" / "events.jsonl",
+                {
+                    "ts": utc_now_iso(),
+                    **{key: value for key, value in evt.items() if key != "ts"},
+                    "event_disposition": disposition.tier,
+                },
+            )
+            return
         log.warning("No handler for worker event type %r — event dropped", event_type)
         ctx.append_jsonl(
             ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",

@@ -588,6 +588,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             _finish_captured_running _finalize_cancel_intent_on_miss""".split()
     }
     implemented.update(s3_custody_rows)
+    # v7 stream S3, spec 4.3.12: the dispatch table and its miss path carry a
+    # semantic delta at their own path — the retired key and the declared miss
+    # disposition — so they are implemented rows with a D06 id, not moves.
+    s3_semantic_delta_ids = {
+        "supervisor/events.py::EVENT_HANDLERS": "D06",
+        "supervisor/events.py::dispatch_event": "D06",
+    }
+    implemented.update({name: name for name in s3_semantic_delta_ids})
+    existing_process_owner_rows.update(s3_semantic_delta_ids)
+    registry_extraction_no_facade_rows.update(s3_semantic_delta_ids)
     implemented.update(w_stream_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)
@@ -661,7 +671,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                     "ouroboros/reflection.py::should_generate_reflection",
                     "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
                 }
-                else "none"
+                else s3_semantic_delta_ids.get(row["old path/symbol"], "none")
             )
             assert delta["id"] == expected_delta and delta["note"]
             expected_facade = (
@@ -785,4 +795,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D06"})
