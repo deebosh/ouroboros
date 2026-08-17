@@ -1743,6 +1743,23 @@ When adding a new opt-in lane, register the marker in `pyproject.toml`, add
 a collect-only zero-test guard in CI, and keep the default local addopts
 token-safe and Docker-safe.
 
+An opt-in lane may also be gated by an environment variable instead of a
+marker of its own, for a suite whose cost is a real server rather than a
+provider key. `tests/test_e2e_cancellation_scenarios.py` (E1-E12: cancel,
+cascade, graceful stop, hurry) is gated by `OUROBOROS_E2E_CANCEL`:
+`mock` spawns a real isolated `server.py` against a LOCAL stub model
+(`tests/fixtures_e2e_cancellation.py`) and contacts no external host, while
+`paid` adds the scenarios whose subject is a real delegated-run transport or
+real cost accounting and needs one provider credential, named through
+`OUROBOROS_E2E_PAID_KEY_ENV` and a slug in `OUROBOROS_E2E_PAID_MODEL`. Unset,
+the whole server-driven part skips and only the driver/gateway contract tests
+run. Every scenario asserts the durable artifacts — `state/cancel_intents.json`,
+the `cancel_intent` forensics in `logs/supervisor.jsonl`, `task_results/<id>.json`,
+`state/terminal_deliveries.json`, the `owner_hurry` projection — never an HTTP
+status alone. The driver is `devtools/benchmarks/common/server_runner.py`
+(`IsolatedServer.cancel_task` / `hurry_task`), which posts the same bodies
+`web/modules/api_client.js` does.
+
 ### Parallel CI and the `serial` marker
 
 CI runs the full default suite **in parallel** — `pytest -m "not serial" -n auto --dist loadscope
