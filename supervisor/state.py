@@ -765,8 +765,15 @@ def reconstruct_task_cost(
 
 
 def status_text(workers_dict: Dict[int, Any], pending_list: list, running_dict: Dict[str, Dict[str, Any]],
-                soft_timeout_sec: int, hard_timeout_sec: int) -> str:
-    """Build status text from worker and queue state."""
+                soft_timeout_sec: int = 0, hard_timeout_sec: int = 0) -> str:
+    """Build status text from worker and queue state.
+
+    The two timeout arguments are accepted and ignored. They are the retired
+    liveness keys, and printing their numbers told the owner a story about
+    controls that stopped existing: the live rails are idle, deadline, absolute
+    ceiling and the reaper, which the line below names instead. They stay in the
+    signature until the caller that still passes them is updated.
+    """
     st = load_state()
     now = time.time()
     lines = []
@@ -902,11 +909,7 @@ def status_text(workers_dict: Dict[int, Any], pending_list: list, running_dict: 
         + f"enabled={int(bool(st.get('evolution_mode_enabled')))}, "
         + f"cycle={int(st.get('evolution_cycle') or 0)}")
     lines.append(f"last_owner_message_at: {st.get('last_owner_message_at') or '-'}")
-    lines.append(
-        "legacy_timeouts_ignored: "
-        f"soft={soft_timeout_sec}s, hard={hard_timeout_sec}s; "
-        "active_liveness=idle+deadline+absolute_ceiling+reaper"
-    )
+    lines.append("active_liveness: idle+deadline+absolute_ceiling+reaper")
     return "\n".join(lines)
 
 

@@ -55,6 +55,8 @@ log = logging.getLogger(__name__)
 
 
 DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
+# Retired: constants no rail consults and nothing rebinds, kept importable for
+# the owner status command, which is their last reader.
 SOFT_TIMEOUT_SEC: int = 600
 HARD_TIMEOUT_SEC: int = 1800
 HEARTBEAT_STALE_SEC: int = 120
@@ -87,7 +89,13 @@ def _task_deadline_ts(task: Dict[str, Any]) -> float:
 
 
 def init(drive_root: pathlib.Path, soft_timeout: int, hard_timeout: int) -> None:
-    global DRIVE_ROOT, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC, FINALIZATION_GRACE_SEC, QUEUE_SNAPSHOT_PATH
+    """Bind the queue to its drive; inspect the retired timeouts, never store them.
+
+    A non-default legacy value raises the deprecation notice once and is then
+    discarded: no rail has consulted either since idle, deadline, absolute
+    ceiling and the reaper replaced them.
+    """
+    global DRIVE_ROOT, FINALIZATION_GRACE_SEC, QUEUE_SNAPSHOT_PATH
     DRIVE_ROOT = drive_root
     QUEUE_SNAPSHOT_PATH = drive_root / "state" / "queue_snapshot.json"
     legacy_keys = []
@@ -97,7 +105,6 @@ def init(drive_root: pathlib.Path, soft_timeout: int, hard_timeout: int) -> None
         legacy_keys.append("OUROBOROS_HARD_TIMEOUT_SEC")
     if str(os.environ.get("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "120")) != "120":
         legacy_keys.append("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC")
-    SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC = 600, 1800
     FINALIZATION_GRACE_SEC = get_finalization_grace_sec()
     BUDGET_ROOT_FENCES.clear()
     _emit_timeout_deprecation_once(legacy_keys)

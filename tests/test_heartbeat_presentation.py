@@ -69,6 +69,61 @@ def test_retired_planning_heartbeat_default_is_quiet_but_custom_value_is_loud(
     assert row["keys"] == ["OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC"]
 
 
+def test_status_text_names_the_live_rails_and_not_the_retired_numbers(tmp_path, monkeypatch) -> None:
+    """The owner status line printed `soft=600s, hard=1800s` beside a note that
+    they were ignored — two numbers no rail has read since idle/deadline/ceiling/
+    reaper replaced them. Naming the live rails is the whole truth; the numbers
+    were an invitation to tune something that does not exist."""
+    from supervisor import state
+
+    monkeypatch.setattr(state, "load_state", lambda: {"owner_id": 1, "session_id": "s"})
+    monkeypatch.setattr(state, "budget_remaining", lambda: (0.0, 0.0, 0.0))
+    text = state.status_text({}, [], {})
+
+    assert "active_liveness: idle+deadline+absolute_ceiling+reaper" in text
+    assert "soft=" not in text and "hard=" not in text
+    assert "legacy_timeouts_ignored" not in text
+    # The two arguments the last caller still passes are accepted and ignored.
+    assert state.status_text({}, [], {}, 601, 1801) == text
+
+
+def test_the_worker_pool_keeps_no_copy_of_the_retired_or_budget_globals() -> None:
+    """Three module globals nothing read: two retired liveness keys and a third
+    copy of the budget limit whose live authority is supervisor.state. A global
+    that is written and never read reads as configuration to the next person."""
+    from supervisor import workers
+
+    for name in ("SOFT_TIMEOUT_SEC", "HARD_TIMEOUT_SEC", "TOTAL_BUDGET_LIMIT"):
+        assert not hasattr(workers, name), name
+    source = inspect.getsource(workers.init)
+    for name in ("SOFT_TIMEOUT_SEC", "HARD_TIMEOUT_SEC", "TOTAL_BUDGET_LIMIT"):
+        assert name not in source, name
+    # The queue still receives them, which is what raises the deprecation notice.
+    assert "queue.init(drive_root, soft_timeout, hard_timeout)" in source
+
+
+def test_the_queue_never_rebinds_the_retired_timeout_constants() -> None:
+    """They are constants, not state: whatever settings carry, the rails see the
+    same two numbers, so ``init`` must not perform a binding that suggests it
+    could be otherwise."""
+    from supervisor import queue
+
+    source = inspect.getsource(queue.init)
+    assert "SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC = 600, 1800" not in source
+    assert "global DRIVE_ROOT, FINALIZATION_GRACE_SEC, QUEUE_SNAPSHOT_PATH" in source
+    assert queue.SOFT_TIMEOUT_SEC == 600 and queue.HARD_TIMEOUT_SEC == 1800
+
+
+def test_the_bench_container_no_longer_carries_the_retired_liveness_keys() -> None:
+    """A forwarded no-op key makes a benchmark run look configured when it is not."""
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    source = (repo / "devtools" / "benchmarks" / "terminal_bench"
+              / "harbor_installed_agent.py").read_text("utf-8")
+    assert '"OUROBOROS_SOFT_TIMEOUT_SEC"' not in source
+    assert '"OUROBOROS_HARD_TIMEOUT_SEC"' not in source
+    assert '"OUROBOROS_TOOL_TIMEOUT_SEC"' in source  # the live one stays
+
+
 def test_owner_visible_incidents_use_canonical_message_seam() -> None:
     repo = pathlib.Path(__file__).resolve().parents[1]
     for relpath in ("server.py", "supervisor/workers.py"):

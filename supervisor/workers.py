@@ -25,11 +25,8 @@ from ouroboros.utils import utc_now_iso
 REPO_DIR: pathlib.Path = pathlib.Path(CONFIG_REPO_DIR)
 DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
 MAX_WORKERS: int = 10
-SOFT_TIMEOUT_SEC: int = 600
-HARD_TIMEOUT_SEC: int = 1800
 HEARTBEAT_STALE_SEC: int = 120
 QUEUE_MAX_RETRIES: int = 1
-TOTAL_BUDGET_LIMIT: float = 0.0
 BRANCH_DEV: str = "ouroboros"
 BRANCH_STABLE: str = "ouroboros-stable"
 
@@ -65,14 +62,17 @@ def _get_ctx():
 def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, max_workers: int,
          soft_timeout: int, hard_timeout: int, total_budget_limit: float,
          branch_dev: str = "ouroboros", branch_stable: str = "ouroboros-stable") -> None:
-    global REPO_DIR, DRIVE_ROOT, MAX_WORKERS, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC
-    global TOTAL_BUDGET_LIMIT, BRANCH_DEV, BRANCH_STABLE
+    """Bind the worker pool to its repo, drive, size and branch defaults.
+
+    Nothing here reads ``soft_timeout``/``hard_timeout`` (the retired liveness
+    keys, handed to the queue so a legacy value still raises its deprecation
+    notice) or ``total_budget_limit`` (``supervisor.state`` is the budget
+    authority). All three stay until their last caller drops them.
+    """
+    global REPO_DIR, DRIVE_ROOT, MAX_WORKERS, BRANCH_DEV, BRANCH_STABLE
     REPO_DIR = repo_dir
     DRIVE_ROOT = drive_root
     MAX_WORKERS = max_workers
-    SOFT_TIMEOUT_SEC = soft_timeout
-    HARD_TIMEOUT_SEC = hard_timeout
-    TOTAL_BUDGET_LIMIT = total_budget_limit
     BRANCH_DEV = branch_dev
     BRANCH_STABLE = branch_stable
 
