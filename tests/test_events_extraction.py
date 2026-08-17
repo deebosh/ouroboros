@@ -71,6 +71,7 @@ _MOVED_OWNERS = {
     "_format_task_for_dedup": events_schedule_task,
     "_reject_if_no_chat_target": events_schedule_task,
     "_reject_schedule_task": events_schedule_task,
+    "_handle_schedule_task": events_schedule_task,
     "_emit_routing_receipt": events_project_routing,
     "_handle_ensure_project_scope": events_project_routing,
     "_handle_project_digest": events_project_routing,
@@ -118,9 +119,10 @@ _MOVED_OWNERS = {
     "_handle_toggle_evolution": events_runtime_controls,
 }
 
-# The dispatcher keeps these: the table, its loop, the one handler the function-size
-# manifest tracks by exact (path, qualname), and the module logger.
-_STAYED = ("EVENT_HANDLERS", "dispatch_event", "_handle_schedule_task", "log")
+# The dispatcher keeps these: the table, its loop, and the module logger. Nothing
+# else — every handler, including the oversized schedule handler the function-size
+# manifest tracks, lives with its family.
+_STAYED = ("EVENT_HANDLERS", "dispatch_event", "log")
 
 
 def test_event_families_never_import_the_dispatcher_they_serve():
@@ -165,7 +167,7 @@ def test_dispatch_table_inventory_and_handler_owners_are_exact():
     assert owners["promote_chat_to_task"] == "supervisor.events_project_routing"
     assert owners["toggle_evolution"] == "supervisor.events_runtime_controls"
     assert owners["steer_task"] == "supervisor.steering"
-    assert owners["schedule_subagent"] == "supervisor.events"
+    assert owners["schedule_subagent"] == "supervisor.events_schedule_task"
 
 
 def test_every_event_family_is_a_hot_code_path_like_its_dispatcher():

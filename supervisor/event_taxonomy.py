@@ -93,7 +93,7 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "routing_manual_target": _handled(
         "supervisor.events_project_routing", "ouroboros/tools/control.py"),
     "schedule_subagent": _handled(
-        "supervisor.events", "ouroboros/tools/control.py",
+        "supervisor.events_schedule_task", "ouroboros/tools/control.py",
         note="the only producer of the schedule handler; the retired schedule_task key had none"),
     "send_document": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),

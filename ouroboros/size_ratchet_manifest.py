@@ -77,7 +77,7 @@ MODULE_DEBT_1500 = (
 
 FUNCTION_DEBT = (
     ("ouroboros/agent_startup_checks.py", "verify_restart"),
-    ("supervisor/events.py", "_handle_schedule_task"),
+    ("supervisor/events_schedule_task.py", "_handle_schedule_task"),
 )
 
 BAND_BASELINE_PATHS = (

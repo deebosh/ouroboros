@@ -1487,6 +1487,7 @@ def test_wait_for_task_reports_rejected_duplicate(tmp_path):
 
 def test_handle_schedule_task_duplicate_writes_rejected_status(tmp_path, monkeypatch):
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_REJECTED_DUPLICATE
 
     captured_identity = {}
@@ -1495,7 +1496,7 @@ def test_handle_schedule_task_duplicate_writes_rejected_status(tmp_path, monkeyp
         captured_identity.update(kwargs.get("dedupe_identity") or {})
         return "orig111"
 
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", _duplicate)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", _duplicate)
 
     sent = []
 
@@ -1803,9 +1804,10 @@ def test_find_duplicate_task_allows_subagent_against_pending_parent_ancestor(mon
 
 def test_handle_schedule_task_accepts_unique_subagent_with_lineage_and_constraint(tmp_path, monkeypatch):
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_SCHEDULED
 
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     enqueued = []
     sent = []
 
@@ -1877,9 +1879,10 @@ def test_handle_schedule_task_accepts_unique_subagent_with_lineage_and_constrain
 
 def test_handle_schedule_task_rejects_internal_subagent_without_child_drive_contract(tmp_path, monkeypatch):
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_FAILED
 
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     sent = []
 
     class FakeCtx:
@@ -1921,9 +1924,10 @@ def test_handle_schedule_task_rejects_internal_subagent_without_child_drive_cont
 
 def test_handle_schedule_task_uses_event_chat_id_without_owner(tmp_path, monkeypatch):
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_SCHEDULED
 
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     enqueued = []
     sent = []
 
@@ -1997,10 +2001,11 @@ def test_handle_schedule_task_uses_event_chat_id_without_owner(tmp_path, monkeyp
 
 def test_handle_schedule_task_depth_rejection_writes_failed_status(tmp_path, monkeypatch):
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.config import get_max_subagent_depth
     from ouroboros.task_results import STATUS_FAILED
 
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     sent = []
 
     class FakeCtx:
@@ -2050,6 +2055,7 @@ def test_configured_zero_subagent_depth_truly_disables_delegation(tmp_path, monk
     facts are pinned together: the resolved setting, the tool-side gate, and the supervisor
     gate — plus the invariant that a ROOT task (depth 0 itself) still runs at depth 0."""
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.config import get_max_subagent_depth
     from ouroboros.task_results import STATUS_FAILED
 
@@ -2067,7 +2073,7 @@ def test_configured_zero_subagent_depth_truly_disables_delegation(tmp_path, monk
     assert "depth limit (0) exceeded" in out
 
     # Supervisor gate: a depth-1 child event is refused; a depth-0 ROOT task is NOT.
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     enqueued = []
 
     class FakeCtx:
@@ -2147,9 +2153,10 @@ def test_settings_ui_carries_a_configured_zero_subagent_depth():
 
 def test_handle_schedule_task_rejects_legacy_subagent_event_schema(tmp_path, monkeypatch):
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_FAILED
 
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     enqueued = []
     sent = []
 
@@ -2196,9 +2203,10 @@ def test_handle_schedule_task_rejects_legacy_subagent_event_schema(tmp_path, mon
 
 def test_handle_schedule_task_queues_when_active_subagent_cap_is_full(tmp_path, monkeypatch):
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_COMPLETED, STATUS_FAILED, STATUS_SCHEDULED, load_task_result, write_task_result
 
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     monkeypatch.setenv("OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT", "3")  # pin cap (v6.20.0 raised default to 6)
     sent = []
     enqueued = []
@@ -2364,9 +2372,10 @@ def test_handle_schedule_task_fails_fast_when_worker_pool_unavailable(tmp_path, 
     schedule must NOT be left as a 'scheduled' ghost — it gets a terminal
     workers_unavailable result so the parent can act."""
     from supervisor import events as ev_module
+    from supervisor import events_schedule_task as schedule_module
     from ouroboros.task_results import STATUS_FAILED
 
-    monkeypatch.setattr(ev_module, "_find_duplicate_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(schedule_module, "_find_duplicate_task", lambda *args, **kwargs: None)
     sent = []
 
     class FakeCtx:
