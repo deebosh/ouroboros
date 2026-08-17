@@ -19,6 +19,7 @@ import {
 import { ownerHurryProjection, summarizeChatLiveEvent, taskSoftStopPending } from '../modules/log_events.js';
 
 const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+const cardActions = readFileSync(new URL('../modules/chat_card_actions.js', import.meta.url), 'utf8');
 const activity = readFileSync(new URL('../modules/activity.js', import.meta.url), 'utf8');
 const menuSrc = readFileSync(new URL('../modules/task_control_menu.js', import.meta.url), 'utf8');
 
@@ -81,13 +82,13 @@ test('the hurry path never creates a chat bubble in either surface', () => {
 // --- both surfaces share the ONE control module (owner parity) ---
 
 test('Chat and Activity both wire the shared dropdown', () => {
-    for (const source of [chat, activity]) {
+    for (const source of [cardActions, activity]) {
         assert.match(source, /openTaskControlMenu\(/);
         assert.match(source, /hurryTaskAction\(/);
         assert.match(source, /requestStop\(/);
     }
     // The trigger renders the shared label on both surfaces.
-    assert.match(chat, /TASK_CONTROL_TRIGGER_LABEL/);
+    assert.match(cardActions, /TASK_CONTROL_TRIGGER_LABEL/);
     assert.match(activity, /TASK_CONTROL_TRIGGER_LABEL/);
     assert.equal(typeof TASK_CONTROL_TRIGGER_LABEL, 'string');
 });
@@ -96,6 +97,7 @@ test('the dropdown replaced the old cancel confirm dialogs (dismiss = continue)'
     // Q2: dismissing the menu continues the run — no separate confirm dialog
     // remains on either cancel path (Activity keeps its schedule-delete one).
     assert.doesNotMatch(chat, /Cancel this run and all its subagents\?/);
+    assert.doesNotMatch(cardActions, /Cancel this run and all its subagents\?/);
     assert.doesNotMatch(activity, /Cancel this task and all its subagents\?/);
     assert.match(menuSrc, /Escape/);
 });
@@ -116,6 +118,6 @@ test('the chat card re-offers the escalation during a pending soft stop', () => 
     // Q1 pinned at source: after a soft 202 the trigger is re-enabled (the
     // pending menu offers only "Stop now"), while an immediate
     // stop keeps the button disabled until the terminal frame.
-    assert.match(chat, /record\.cancelPendingPolicy === 'finalize'/);
-    assert.match(chat, /cancelPending: Boolean\(record\.cancelPendingPolicy\)/);
+    assert.match(cardActions, /record\.cancelPendingPolicy === 'finalize'/);
+    assert.match(cardActions, /cancelPending: Boolean\(record\.cancelPendingPolicy\)/);
 });

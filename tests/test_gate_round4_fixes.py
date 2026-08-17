@@ -374,7 +374,7 @@ def test_gr4_4_cascade_digest_reports_the_current_durable_child_state(tmp_path, 
 
 
 def test_gr4_5_failed_detail_fetch_keeps_cancel_disabled_and_pending():
-    src = (REPO_ROOT / "web" / "modules" / "chat.js").read_text(encoding="utf-8")
+    src = (REPO_ROOT / "web" / "modules" / "chat_card_actions.js").read_text(encoding="utf-8")
     body_at = src.index("async function cancelRunFromCard")
     guard_at = src.index("if (stored === null) {", body_at)
     restore_at = src.index("restoreLiveCardPhase(record, priorPhase);", body_at)

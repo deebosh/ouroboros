@@ -120,9 +120,9 @@ def test_project_panel_composer_and_welcome_contracts():
     assert ".project-panel.open" in css
     assert "left: var(--sidebar-width);" in css  # sidebar stays clickable under backdrop
     assert ".chat-header-actions {\n        display: none;" not in css
-    # Gateway Boundary: chat.js consumes the endpoint via the api_client wrapper,
-    # and the raw route lives in api_client.js (not a raw fetch in chat.js).
-    assert "projectFromTask" in chat_js
+    # Gateway Boundary: the conversion owner consumes the endpoint via the
+    # api_client wrapper, and the raw route lives in api_client.js (not a raw fetch).
+    assert "projectFromTask" in _read("web/modules/chat_card_actions.js")
     assert "/api/projects/from-task" in _read("web/modules/api_client.js")
 
 

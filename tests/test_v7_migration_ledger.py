@@ -450,7 +450,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                               "tests/test_git_review_pipeline.py::_get_git_ops_module",
                               "tests/test_git_review_pipeline.py::_get_registry_module",
                               "tests/test_git_review_pipeline.py::_make_ctx"}
-    web_extractions = {f"web/modules/chat.js::{symbol}": f"web/modules/{owner}::{symbol}" for owner, symbols in {"chat_card_state.js": "liveLineRowToggleKey clearStickyCardState COLLAPSED_ACTIVITY_MAX boundActivityPreview projectCollapsedActivity isTerminalTaskPhase", "chat_controls.js": "shouldFirePanic confirmAndSendPanic", "chat_render_batch.js": "insertTimelineNode", "costs.js": "headerBudgetPresentation taskCostMeta taskCostProjection mergeStickyCostMeta", "utils.js": "rawTimestampEpoch"}.items() for symbol in symbols.split()}
+    web_extractions = {f"web/modules/chat.js::{symbol}": f"web/modules/{owner}::{symbol}" for owner, symbols in {"chat_card_state.js": "liveLineRowToggleKey clearStickyCardState COLLAPSED_ACTIVITY_MAX boundActivityPreview projectCollapsedActivity isTerminalTaskPhase", "chat_controls.js": "shouldFirePanic confirmAndSendPanic", "chat_render_batch.js": "insertTimelineNode", "costs.js": "headerBudgetPresentation taskCostMeta taskCostProjection mergeStickyCostMeta", "utils.js": "rawTimestampEpoch", "chat_card_actions.js": "projectIdFromTask"}.items() for symbol in symbols.split()}
     # createChatInstance closure helpers moved into per-instance factories (no facade: they were never exported)
     web_extractions.update({f"web/modules/chat.js::createChatInstance.{symbol}": f"web/modules/{owner}::{factory}.{symbol}" for owner, factory, symbols in (
         ("chat_timeline_anchor.js", "createTimelineAnchors", "NEAR_BOTTOM_THRESHOLD_PX isNearBottom captureVisibleTimelineAnchor restoreVisibleTimelineAnchor"),
@@ -463,6 +463,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # these helpers was ever exported, so the ledger identity is the only address.
     w3_chat_extraction_symbols_by_owner = (
         ("chat_task_ui_state.js", "createTaskUiStateTracker", "isBackgroundTaskId shouldAlwaysShowTaskCard isForegroundLiveCard createTaskUiState getTaskUiState scheduleTaskUiCleanup bufferLiveUpdate markTaskToolCall forceTaskCard markAssistantReply markTaskComplete"),
+        ("chat_card_actions.js", "createCardActions", "turnTaskIntoProject ensureLiveActionsEl syncCancelRunButton syncCancelRunButtonMutation markLiveCardCancelPending captureLiveCardPhase restoreLiveCardPhase reconcileCancelCardFromDetail cancelRunFromCard markTaskCancelable markCardConverted markCardConvertedMutation"),
     )
     web_extractions.update({f"web/modules/chat.js::createChatInstance.{symbol}": f"web/modules/{owner}::{factory}.{symbol}" for owner, factory, symbols in w3_chat_extraction_symbols_by_owner for symbol in symbols.split()})
     implemented.update(registry_core_rows)
@@ -909,6 +910,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     registry_extraction_no_facade_rows.update(git_ops_delta_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
+    # W3: a module-private chat.js helper that moved with its only caller — never exported, so no facade.
+    registry_extraction_no_facade_rows.add("web/modules/chat.js::projectIdFromTask")
     registry_extraction_no_facade_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
     # S6 (delegation/cancellation targeted fixes): no symbol moves — every row
     # is the SAME identity with a stated behaviour delta, so the owner is the
