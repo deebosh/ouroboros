@@ -68,7 +68,7 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "cancel_task": _handled(
         "supervisor.events_runtime_controls", "ouroboros/tools/join_ledger.py"),
     "deep_self_review_request": _handled(
-        "supervisor.events_runtime_controls", "ouroboros/tools/control.py"),
+        "supervisor.events_runtime_controls", "ouroboros/tools/control_runtime.py"),
     "ensure_project_scope": _handled(
         "supervisor.events_project_routing", "ouroboros/tools/control_delegation.py"),
     "external_wait_lease": _handled(
@@ -85,22 +85,22 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "project_digest": _handled(
         "supervisor.events_project_routing", "ouroboros/agent_task_pipeline.py"),
     "promote_chat_to_task": _handled(
-        "supervisor.events_project_routing", "ouroboros/tools/control.py"),
+        "supervisor.events_project_routing", "ouroboros/tools/control_routing.py"),
     "promote_to_stable": _handled(
-        "supervisor.events_runtime_controls", "ouroboros/tools/control.py"),
+        "supervisor.events_runtime_controls", "ouroboros/tools/control_runtime.py"),
     "review_wave_budget_insufficient": _handled(
         "supervisor.events_budget", "ouroboros/tools/review_helpers.py"),
     "routing_manual_target": _handled(
-        "supervisor.events_project_routing", "ouroboros/tools/control.py"),
+        "supervisor.events_project_routing", "ouroboros/tools/control_routing.py"),
     "schedule_subagent": _handled(
-        "supervisor.events_schedule_task", "ouroboros/tools/control.py",
+        "supervisor.events_schedule_task", "ouroboros/tools/control_scheduling.py",
         note="the only producer of the schedule handler; the retired schedule_task key had none"),
     "send_document": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
     "send_message": _handled(
         "supervisor.events_chat_delivery", "ouroboros/agent.py",
         "ouroboros/agent_task_pipeline.py", "ouroboros/consciousness.py",
-        "ouroboros/tools/control.py", "supervisor/task_reaper.py",
+        "ouroboros/tools/control_runtime.py", "supervisor/task_reaper.py",
         "supervisor/terminal_delivery.py"),
     "send_photo": _handled(
         "supervisor.events_chat_delivery", "ouroboros/tools/core_artifacts.py"),
@@ -111,7 +111,7 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "skill_exec_finished": _handled(
         "supervisor.events_worker_reports", "ouroboros/tools/skill_exec.py"),
     "steer_task": _handled(
-        "supervisor.steering", "ouroboros/tools/control.py"),
+        "supervisor.steering", "ouroboros/tools/control_routing.py"),
     "task_dispatch_resolved": _handled(
         "supervisor.events_worker_reports", "ouroboros/agent.py"),
     "task_done": _handled(
@@ -122,9 +122,9 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "task_metrics": _handled(
         "supervisor.events_worker_reports", "ouroboros/agent_task_pipeline.py"),
     "toggle_consciousness": _handled(
-        "supervisor.events_runtime_controls", "ouroboros/tools/control.py"),
+        "supervisor.events_runtime_controls", "ouroboros/tools/control_runtime.py"),
     "toggle_evolution": _handled(
-        "supervisor.events_runtime_controls", "ouroboros/tools/control.py"),
+        "supervisor.events_runtime_controls", "ouroboros/tools/control_runtime.py"),
     "typing_start": _handled(
         "supervisor.events_chat_delivery", "ouroboros/agent.py"),
 

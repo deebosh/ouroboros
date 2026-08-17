@@ -23,7 +23,7 @@ from tests._promote_chat_shared import _isolated_projects_root  # noqa: F401  (a
 
 def _confirm_promote(monkeypatch):
     monkeypatch.setattr(
-        "ouroboros.tools.control._wait_for_promotion_admission",
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
         lambda *_args, **_kwargs: {"status": "scheduled"},
     )
 
@@ -205,7 +205,7 @@ def test_ephemeral_swarm_unconfirmed_promotion_reuses_one_task_id(tmp_path, monk
     from ouroboros.tools.control import _promote_chat_to_task
 
     monkeypatch.setattr(
-        "ouroboros.tools.control._wait_for_promotion_admission",
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
         lambda *_args, **_kwargs: {"status": "unconfirmed", "reason": "confirmation_timeout"},
     )
     ctx = _swarm_ctx(tmp_path)
@@ -223,7 +223,7 @@ def test_ephemeral_swarm_receipt_error_after_emit_keeps_one_attempt(tmp_path, mo
     from ouroboros.tools.control import _promote_chat_to_task
 
     monkeypatch.setattr(
-        "ouroboros.tools.control._wait_for_promotion_admission",
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("receipt unavailable")),
     )
     event_queue = queue.Queue()
@@ -244,7 +244,7 @@ def test_ephemeral_swarm_rejected_promotion_is_latched_without_event(tmp_path, m
     from ouroboros.tools.control import _promote_chat_to_task
 
     monkeypatch.setattr(
-        "ouroboros.tools.control._promotion_pool_disabled_from_snapshot",
+        "ouroboros.tools.control_routing._promotion_pool_disabled_from_snapshot",
         lambda _ctx: "crash_storm",
     )
     ctx = _swarm_ctx(tmp_path)

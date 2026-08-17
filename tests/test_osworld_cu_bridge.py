@@ -1394,8 +1394,16 @@ def test_module_grandfather_matcher_uses_exact_repo_relative_paths():
         "server.py", "repo/server.py", "ouroboros/server.py", "repo/ouroboros/server.py",
     )
     assert len({_exact_repo_relative_path(name) for name in root_spellings}) == 4
-    # The tools/control.py debt cannot leak to gateway/control.py.
-    assert module_is_grandfathered("ouroboros/tools/control.py")
+    # Two modules that share a basename stay two different keys even when one of
+    # them is in debt, so a debt path can never leak to its namesake. This was
+    # pinned as "ouroboros/tools/control.py is grandfathered, gateway/control.py
+    # is not" until the control catalog split paid the first one out of the giant
+    # layer — a membership claim, not the contract, and the same vacuity trap the
+    # live-derived loops above avoid.
+    assert len({
+        _exact_repo_relative_path(name)
+        for name in ("ouroboros/tools/control.py", "ouroboros/gateway/control.py")
+    }) == 2
     assert not module_is_grandfathered("ouroboros/gateway/control.py")
 
 

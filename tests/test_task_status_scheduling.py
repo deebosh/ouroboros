@@ -83,7 +83,7 @@ def test_schedule_task_live_emits_strict_contract_and_requested_status(tmp_path)
 
 
 def test_schedule_task_falls_back_to_pending_events_when_live_queue_unavailable(tmp_path, monkeypatch):
-    from ouroboros.tools import control as control_mod
+    from ouroboros.tools import control_scheduling as control_mod
     from ouroboros.tools.control import _schedule_task
 
     ctx = SimpleNamespace(

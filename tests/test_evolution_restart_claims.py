@@ -21,7 +21,7 @@ from tests._evolution_state_shared import _active_transaction
 
 
 def test_restart_requires_the_exact_active_commit_receipt(tmp_path, monkeypatch):
-    from ouroboros.tools import control
+    from ouroboros.tools import control_runtime as control
     from supervisor import evolution_lifecycle, state
 
     campaign, tx = _active_transaction(tmp_path)
@@ -448,7 +448,7 @@ def test_boot_exact_claim_never_passes_without_active_transaction(tmp_path):
 
 
 def test_evolution_restart_write_failure_does_not_become_generic_restart(tmp_path, monkeypatch):
-    from ouroboros.tools import control
+    from ouroboros.tools import control_runtime as control
 
     monkeypatch.setattr(control, "_evolution_restart_block_reason", lambda ctx: "")
     monkeypatch.setattr(

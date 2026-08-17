@@ -876,6 +876,23 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for symbol in symbols.split()
     }
     implemented.update(s4_extension_rows)
+    # v7 stream S, lane S4: ouroboros/tools/control.py split into owner leaves.
+    # get_tools() stays with the catalog owner; every handler and helper it wires
+    # gets one. The leaves carry the parent's hot-code label, nothing more.
+    s4_control_symbols_by_owner = {
+        "control_events.py": "_SCHEDULE_EMIT_LOCK _PROMOTE_CONFIRM_TIMEOUT_SEC _PROMOTE_CONFIRM_POLL_SEC _emit_control_event _promotion_pool_disabled_from_snapshot _routing_status_root _wait_for_promotion_admission _wait_for_routing_annotation _emit_and_wait_for_routing",
+        "control_routing.py": "_attach_origin_from_metadata _attach_swarm_intent _cached_swarm_handoff _finish_swarm_handoff _promote_chat_to_task _list_projects _route_to_project _steer_task",
+        "control_subagent_spec.py": "VALID_SUBTASK_MEMORY_MODES schedule_subagent_properties schedule_subagent_param_names _INTERNAL_SCHEDULE_OPTIONS _validated_schedule_fields RETIRED_SCHEDULE_PARAMS",
+        "control_scheduling.py": "_record_scheduled_subagent _emit_swarm_fanout _subagent_slot_note _capability_mismatch_message _finalize_schedule_emission _build_acting_constraint _select_subagent_constraint _populate_subagent_event_extras _prepare_child_drive _earliest_deadline_at _build_child_subagent_contract _resolve_executor_ref _inherited_workspace_from_active_repo _schedule_task",
+        "control_runtime.py": "_evolution_restart_block_reason _request_restart _set_tool_timeout _promote_to_stable _request_deep_self_review _chat_history _update_scratchpad _send_user_message _update_identity _toggle_evolution _toggle_consciousness _switch_model",
+        "control_task_results.py": "disclosable_capability_delta _subtask_outcome_summary _get_task_result _wait_attention_poll cache_horizon_note _wait_for_task _count_live_sibling_children _UNMINTED_WAIT_GRACE_SEC _unminted_wait_ids _children_roster_projection _wait_for_tasks",
+    }
+    s4_control_rows = {
+        f"ouroboros/tools/control.py::{symbol}": f"ouroboros/tools/{owner}::{symbol}"
+        for owner, symbols in s4_control_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    implemented.update(s4_control_rows)
     # The broadcaster slot is REBOUND by set_ws_broadcaster, so a re-export would be
     # a snapshot that stops tracking its owner: the setter is the facade, the binding
     # is not.

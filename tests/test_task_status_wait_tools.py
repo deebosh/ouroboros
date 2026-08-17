@@ -354,14 +354,14 @@ def test_wait_for_tasks_phantom_only_set_short_circuits_the_window(tmp_path, mon
     grace instead of blocking the whole requested window — and says so."""
     import json as _json
 
-    from ouroboros.tools import control
+    from ouroboros.tools import control, control_task_results
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "queue_snapshot.json").write_text(
         _json.dumps({"pending": [], "running": []}), encoding="utf-8"
     )
-    monkeypatch.setattr(control, "_UNMINTED_WAIT_GRACE_SEC", 0.1)
+    monkeypatch.setattr(control_task_results, "_UNMINTED_WAIT_GRACE_SEC", 0.1)
 
     ctx = SimpleNamespace(drive_root=tmp_path, task_id="waitparent3", task_metadata={})
     started = time.monotonic()
@@ -381,17 +381,17 @@ def test_wait_for_tasks_id_minted_during_grace_keeps_waiting(tmp_path, monkeypat
     import json as _json
 
     from ouroboros.task_results import STATUS_COMPLETED, write_task_result
-    from ouroboros.tools import control
+    from ouroboros.tools import control, control_task_results
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "queue_snapshot.json").write_text(
         _json.dumps({"pending": [], "running": []}), encoding="utf-8"
     )
-    monkeypatch.setattr(control, "_UNMINTED_WAIT_GRACE_SEC", 0.1)
+    monkeypatch.setattr(control_task_results, "_UNMINTED_WAIT_GRACE_SEC", 0.1)
 
     real_calls = {"n": 0}
-    original = control._unminted_wait_ids
+    original = control_task_results._unminted_wait_ids
 
     def _mint_after_grace(ctx, drive_root, task_ids):
         real_calls["n"] += 1
@@ -404,7 +404,7 @@ def test_wait_for_tasks_id_minted_during_grace_keeps_waiting(tmp_path, monkeypat
             )
         return original(ctx, drive_root, task_ids)
 
-    monkeypatch.setattr(control, "_unminted_wait_ids", _mint_after_grace)
+    monkeypatch.setattr(control_task_results, "_unminted_wait_ids", _mint_after_grace)
     ctx = SimpleNamespace(drive_root=tmp_path, task_id="waitparent4", task_metadata={})
     payload = json.loads(control._wait_for_tasks(ctx, ["latechild1"], timeout_sec=5))
 
