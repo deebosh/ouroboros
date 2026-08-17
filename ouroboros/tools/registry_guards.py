@@ -763,10 +763,10 @@ def _protected_shell_block(
 
 def _git_protected_roots(self) -> list:
     """Ouroboros runtime roots the target-aware git resolver protects, by
-        enumeration: the system repo + EVERY data drive the task touches (parent
-        drive plus any child / budget drive in task_metadata). Missing a child
-        drive here would let git escape into the control plane. ONE enumeration
-        for the external-workspace lane and the default (non-workspace) lane."""
+    enumeration: the system repo + EVERY data drive the task touches (parent
+    drive plus any child / budget drive in task_metadata). Missing a child
+    drive here would let git escape into the control plane. ONE enumeration
+    for the external-workspace lane and the default (non-workspace) lane."""
     git_protected_roots = [
         pathlib.Path(getattr(self._ctx, "system_repo_dir", None) or self._ctx.repo_dir),
         pathlib.Path(self._ctx.repo_dir),
@@ -844,12 +844,12 @@ def _external_runtime_protected_paths(
     self, binding: Any = None,
 ) -> tuple[list, list, list, list]:
     """Ouroboros runtime roots that an EXTERNAL-workspace task must not touch via
-        shell (system repo + EVERY data drive incl child/budget + owner credential
-        locations) plus the task's own exempt task_drive/artifact_store roots. Returns
-        (protected_texts, allowed_texts, protected_paths, allowed_paths): the *_texts
-        feed the embedded-string boundary check; the *_paths feed token resolution
-        (relative->cwd, ~->home, symlink canonicalization) so relative/symlink bypasses
-        are closed. SSOT for the read + write guards."""
+    shell (system repo + EVERY data drive incl child/budget + owner credential
+    locations) plus the task's own exempt task_drive/artifact_store roots. Returns
+    (protected_texts, allowed_texts, protected_paths, allowed_paths): the *_texts
+    feed the embedded-string boundary check; the *_paths feed token resolution
+    (relative->cwd, ~->home, symlink canonicalization) so relative/symlink bypasses
+    are closed. SSOT for the read + write guards."""
     meta = getattr(self._ctx, "task_metadata", {}) if isinstance(getattr(self._ctx, "task_metadata", {}), dict) else {}
     protected_values = [getattr(self._ctx, "system_repo_dir", None) or getattr(self._ctx, "repo_dir", None),
                         getattr(self._ctx, "drive_root", None)]
