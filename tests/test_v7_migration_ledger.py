@@ -334,6 +334,21 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in tool_access_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
+    # v7 stream S, lane S1: config.py splits into the settings vocabulary, the closed
+    # scales, the model slots, the reviewer routes and the numeric knobs. The parent keeps
+    # the settings-file lifecycle, the path roots and the owner-only ratchets.
+    config_extraction_symbols_by_owner = {
+        "settings_defaults.py": "FINALIZATION_GRACE_DEFAULT_SEC OWNER_STOP_OUTER_CAP_SEC PACING_INTERVAL_DEFAULT_SEC SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC SETTINGS_DEFAULTS RETIRED_SETTING_KEYS _DISK_AUTHORED_SETTINGS ENDPOINT_AUTHORED_SETTINGS SETTINGS_KEYS_NOT_EXPORTED_TO_ENV settings_env_keys",
+        "settings_scales.py": "EFFORT_SCALE effort_rank clamp_effort_to effort_one_step_down resolve_effort PROMPT_CACHE_TTL_SCALE resolve_prompt_cache_ttl VALID_RUNTIME_MODES _RUNTIME_MODE_RANK normalize_runtime_mode VALID_SAFETY_MODES normalize_safety_mode _SAFETY_MODE_RANK",
+        "model_slots.py": "_parse_model_list _main_model get_light_model get_heavy_model get_vision_model get_image_input_mode parse_fallback_chain get_fallback_models _LEGACY_SLOT_RENAMES migrate_legacy_slot_keys get_consciousness_model get_deep_self_review_model",
+        "review_model_routes.py": "_DIRECT_PROVIDER_REVIEW_RUNS _exclusive_direct_remote_provider_env direct_provider_review_models_fallback adaptive_quorum get_review_models get_review_enforcement get_scope_review_models",
+        "runtime_limits.py": "_clamped_number_setting _bounded_positive_int_setting get_max_workers get_task_idle_timeout_sec get_task_abs_ceiling_sec get_per_call_timeout_ceiling_sec get_plan_task_swarm_timeout_sec get_plan_task_swarm_max_wait_sec get_restart_drain_max_sec get_safety_max_tokens get_safety_call_timeout_sec get_websearch_timeout_sec get_llm_transport_read_timeout_sec get_acceptance_review_est_sec get_acceptance_max_improvement_passes get_acceptance_reserve_pct get_plan_task_deadline_min_sec get_vision_caption_timeout_sec get_pacing_interval_sec get_supervisor_liveness_deadline_sec get_post_task_evolution_budget_usd MAX_ACTIVE_SUBAGENTS_HARD_CAP get_max_active_subagents_per_root get_max_subagent_depth DELEGATE_WAIT_CEILING_SEC DELEGATE_WAIT_WINDOW_MAX_SEC get_delegate_wait_max_sec get_delegate_wait_sec get_search_code_wall_sec",
+    }
+    config_extraction_rows = {
+        f"ouroboros/config.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in config_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
     # v7 stream W periphery extractions. Owner -> symbols, one row per symbol.
     w_stream_owners = {
         ("skills/unix_computer_use/plugin.py", "skills/unix_computer_use/lib/cu_runtime.py"):
@@ -540,6 +555,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(tool_access_extraction_rows)
     implemented.update(test_split_rows)
     implemented.update(web_extractions)
+    implemented.update(config_extraction_rows)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)

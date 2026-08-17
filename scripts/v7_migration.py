@@ -86,6 +86,8 @@ APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/git_plumbing.py", "ouroboros/tools/git_review_cycle.py", "ouroboros/tools/git_evolution.py", "ouroboros/tools/git_repo_edit.py", "ouroboros/tools/git_vcs_ops.py",
     "ouroboros/tools/shell_process.py", "ouroboros/tools/shell_outputs.py", "ouroboros/tools/shell_effects.py",
     "ouroboros/headless_status.py", "ouroboros/workspace_patch_capture.py",
+    "ouroboros/settings_defaults.py", "ouroboros/settings_scales.py", "ouroboros/model_slots.py",
+    "ouroboros/review_model_routes.py", "ouroboros/runtime_limits.py",
     "ouroboros/tool_access_types.py", "ouroboros/tool_access_paths.py", "ouroboros/tool_access_roots.py", "ouroboros/tool_access_user_files.py",
     "skills/unix_computer_use/lib/cu_runtime.py", "skills/unix_computer_use/lib/cu_connections.py", "skills/unix_computer_use/lib/cu_remote_backends.py",
     "devtools/benchmarks/osworld/cu_bridge_runtime.py", "devtools/benchmarks/osworld/cu_bridge_prompts.py", "devtools/benchmarks/osworld/cu_bridge_tool_policy.py",

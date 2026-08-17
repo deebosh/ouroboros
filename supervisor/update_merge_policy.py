@@ -29,6 +29,11 @@ HOT_CODE_PATHS = frozenset({
     "ouroboros/tools/tool_context.py",
     "ouroboros/tools/tool_result.py",
     "ouroboros/config.py",
+    "ouroboros/model_slots.py",
+    "ouroboros/review_model_routes.py",
+    "ouroboros/runtime_limits.py",
+    "ouroboros/settings_defaults.py",
+    "ouroboros/settings_scales.py",
     "supervisor/queue.py",
     "supervisor/events.py",
 })

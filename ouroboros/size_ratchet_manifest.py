@@ -48,7 +48,6 @@ GIANT_PATHS = (
 MODULE_DEBT_1500 = (
     "ouroboros/agent.py",
     "ouroboros/agent_task_pipeline.py",
-    "ouroboros/config.py",
     "ouroboros/delegate_custody.py",
     "ouroboros/extension_loader.py",
     "ouroboros/llm.py",

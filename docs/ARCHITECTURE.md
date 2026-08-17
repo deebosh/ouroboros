@@ -43,7 +43,12 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
   │   └── update_merge_policy.py ← Presentation-only doc/code/hot conflict labels; every conflict uses the same reviewed assisted path
   │
   └── ouroboros/               ← Agent core (runs inside worker processes)
-      ├── config.py            ← SSOT: paths, settings defaults, load/save, PID lock
+      ├── config.py            ← SSOT import surface for settings knowledge: paths, the locked settings-file lifecycle (load/normalize/save/env projection), the owner-only mode ratchets, PID lock
+      ├── settings_defaults.py ← The settings vocabulary: shipped values, keys a release retired, and the disk-only/never-exported key classification
+      ├── settings_scales.py   ← Closed scales a settings value is clamped to: reasoning effort, prompt-cache tier, runtime mode, safety-supervisor coverage
+      ├── model_slots.py       ← Model slot resolution (Main/Heavy/Light/Vision/Consciousness/deep review), the ordered fallback chain, and the slot rename-alias migration
+      ├── review_model_routes.py ← Reviewer model lists per lane: local-only Main inheritance, exclusive-direct-provider rewriting, and the shared reviewer quorum rule
+      ├── runtime_limits.py    ← Numeric runtime knobs and their clamps: worker count, liveness windows, per-call ceilings, acceptance budgets, subagent caps, delegation windows
       ├── secret_masking.py    ← Exact Settings/MCP wire-placeholder emitters and recognizers, plus top-level known/custom secret repair before env overlay and persistence
       ├── update_channels.py   ← Closed Stable/QA/Development mapping and update-network defaults
       ├── colab_bootstrap.py   ← Google Colab source-mode bootstrap helpers: selected official update source, stable local `ouroboros` branch, Drive-backed settings/data, personal origin, no-UI server command, and native Telegram setup
@@ -2121,10 +2126,26 @@ For a root task, `GET /api/tasks/{id}` derives `cost_breakdown` at read time fro
 `state.json`, task results, `llm_usage`, `/api/state`, and `/api/cost-breakdown` are compatibility projections only. Startup's resumable importer records source hashes, archives non-secret legacy evidence, imports only attributable usage, and represents ambiguous or residual history explicitly without rewriting source logs or fabricating attempts.
 ## 7. Configuration (ouroboros/config.py)
 
+`ouroboros/config.py` is the one import surface for settings knowledge, and it owns the
+part of that knowledge which cannot be answered without touching the settings FILE: the
+path roots, the locked load/normalize/save lifecycle, the environment projection, and the
+owner-only context/safety/runtime-mode ratchets. The vocabularies it consults own
+themselves, each in a leaf that holds no settings-file knowledge and therefore never
+imports its parent — `settings_defaults.py` (which keys exist, what they ship as, which a
+release retired, which never travel between disk and env), `settings_scales.py` (the closed
+effort / prompt-cache / runtime-mode / safety-mode scales and their clamps),
+`model_slots.py` (slot resolution and the slot rename aliases), `review_model_routes.py`
+(the reviewer lists a review lane runs) and `runtime_limits.py` (the clamped numeric
+knobs). `provider_models.py` reads the defaults and the fallback chain from those same
+leaves, which is what keeps the provider registry and the configuration surface free of a
+cycle. Every moved name is re-exported from `config`, so `from ouroboros.config import …`
+and `monkeypatch.setattr(config, …)` keep working unchanged.
+
 Single source of truth for:
 - **Paths**: HOME, APP_ROOT, REPO_DIR, DATA_DIR, SETTINGS_PATH, PID_FILE, PORT_FILE
 - **Constants**: RESTART_EXIT_CODE (42), AGENT_SERVER_PORT (8765)
-- **Settings defaults**: all model names, budget, timeouts, worker count
+- **Settings defaults**: all model names, budget, timeouts, worker count (owned by
+  `settings_defaults.SETTINGS_DEFAULTS`, re-exported here)
 - **Functions**: `load_settings()`, `save_settings()`,
   `apply_settings_to_env()` (copies hot-reloadable/runtime keys — models, API keys,
   GitHub integration settings, update channel, review/effort settings, local-model config,
