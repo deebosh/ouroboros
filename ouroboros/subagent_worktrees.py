@@ -311,12 +311,21 @@ def provision_worktree(
             created_at=time.time(),
             parent_task_id=str(parent_task_id or ""),
         )
-        entries = [
-            e for e in _load_registry(data_dir, strict=True, op="provision_worktree")
-            if e.get("path") != str(wt_path)
-        ]
-        entries.append(asdict(handle))
-        _save_registry(entries, data_dir)
+        try:
+            entries = [
+                e for e in _load_registry(data_dir, strict=True, op="provision_worktree")
+                if e.get("path") != str(wt_path)
+            ]
+            entries.append(asdict(handle))
+            _save_registry(entries, data_dir)
+        except Exception:
+            # Registration is INSIDE the cleanup scope, mirroring the snapshot
+            # branches below: a worktree nothing registered is invisible to
+            # disposal and retention, so a corrupt registry (strict load) or a
+            # failed write would otherwise strand the checkout AND its branch
+            # on every retry, without bound.
+            _remove_paths(repo_dir, wt_path, branch, allowed_root=root)
+            raise
         return handle
 
 

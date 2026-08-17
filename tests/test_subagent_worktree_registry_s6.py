@@ -213,6 +213,46 @@ def test_c4_a_git_branch_registry_write_failure_leaves_no_worktree_or_ref(
     assert _git(target, "worktree", "list").stdout.count("dlg_t1_snapFail") == 0
 
 
+def test_c4_b_the_acting_worktree_branch_cleans_up_on_registry_failure(
+    tmp_path, monkeypatch,
+):
+    """C4/O3, the third provisioning branch: ``provision_worktree`` creates a
+    checkout AND a task branch before it registers either. A corrupt registry
+    (strict read) or a failed write must remove both — otherwise every retry
+    strands one more unreclaimable worktree+branch pair, without bound."""
+    target = _seed_target(tmp_path)
+    snaps, data = tmp_path / "snaps", tmp_path / "data"
+
+    # Leg 1: corrupt registry — the strict read refuses AFTER the checkout
+    # exists; the refused attempt must leave neither checkout nor branch.
+    (data / "state").mkdir(parents=True)
+    _registry(data).write_text(MALFORMED, encoding="utf-8")
+    with pytest.raises(wt.SubagentWorktreeRegistryCorrupt):
+        wt.provision_worktree(
+            repo_dir=target, task_id="acting9", worktree_root=snaps, data_dir=data)
+    assert not (snaps / "acting9").exists(), "the refused attempt cleans up"
+    assert _git(
+        target, "rev-parse", "--verify", f"{wt._BRANCH_PREFIX}acting9", check=False,
+    ).returncode != 0, "and takes the task branch with it"
+    assert _registry(data).read_text(encoding="utf-8") == MALFORMED
+
+    # Leg 2: registry write failure over a healthy registry — same symmetry.
+    _registry(data).unlink()
+
+    def _boom(*_a, **_k):
+        raise OSError("registry disk full")
+
+    monkeypatch.setattr(wt, "_save_registry", _boom)
+    with pytest.raises(OSError, match="registry disk full"):
+        wt.provision_worktree(
+            repo_dir=target, task_id="acting9", worktree_root=snaps, data_dir=data)
+    assert not (snaps / "acting9").exists()
+    assert _git(
+        target, "rev-parse", "--verify", f"{wt._BRANCH_PREFIX}acting9", check=False,
+    ).returncode != 0
+    assert _git(target, "worktree", "list").stdout.count("acting9") == 0
+
+
 # ---------------------------------------------------------------------------
 # Disclosure — the registry's own shape
 # ---------------------------------------------------------------------------
