@@ -186,6 +186,17 @@ _SERIAL_TEST_FILES = frozenset({
     # trees / sweeps processes referencing a temp root → can collateral-damage sibling xdist
     # workers under -n (their unrelated tests then fail as a crashed-worker batch).
     "test_preflight_runner.py",
+    # Themed siblings of test_preflight_runner.py. The whole family stays in the serial
+    # lane: the gate they cover is one subject, several of them spawn the same real pytest
+    # subprocesses and reapers, and letting the split decide the lane per theme would move
+    # tests out of the serial pass as a side effect of tidying the file.
+    "test_preflight_diagnosis.py",
+    "test_preflight_pass_orchestration.py",
+    "test_preflight_candidate_capture.py",
+    "test_preflight_commit_gate.py",
+    "test_preflight_hermetic_runs.py",
+    "test_preflight_process_containment.py",
+    "test_preflight_process_reaping.py",
     # Imports/mutates the process-global server settings facade; when xdist
     # reuses a worker after unrelated server tests, cached route/probe state can
     # escape monkeypatch restoration and turn the mocked capability probe into
