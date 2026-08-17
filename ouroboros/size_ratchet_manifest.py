@@ -7,7 +7,6 @@ GIANT_PATHS = (
     "ouroboros/tools/claude_advisory_review.py",
     "supervisor/git_ops.py",
     "tests/test_agent_task_pipeline.py",
-    "tests/test_devtools_benchmarks.py",
     "tests/test_extension_loader.py",
     "tests/test_git_ops_recovery.py",
     "tests/test_loop_misc.py",
@@ -38,7 +37,6 @@ MODULE_DEBT_1500 = (
     "supervisor/git_ops.py",
     "supervisor/update_merge.py",
     "tests/test_agent_task_pipeline.py",
-    "tests/test_devtools_benchmarks.py",
     "tests/test_extension_loader.py",
     "tests/test_git_ops_recovery.py",
     "tests/test_loop_misc.py",
@@ -213,5 +211,4 @@ BYTE_BASELINE_DEBT = {
 
 BYTE_DEBT = {
     "ouroboros/loop.py": 321064,
-    "tests/test_devtools_benchmarks.py": 328775,
 }
