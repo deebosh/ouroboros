@@ -126,6 +126,11 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     # Same shape, same reason: `TASK_FORBIDDEN` is already approved above under A.4,
     # and `forward_to_worker` now publishes the code the adapter gave that text.
     "native:LEGACY_BLOCKED:TASK_FORBIDDEN": Delta(False, "ok", True, "blocked", "A.4", "same denial as the TASK_FORBIDDEN identifier row, through the native code the worker-forwarding guard publishes"),
+    # Owner batch #10 item 2 (A.20): refusing a write because the room's files belong
+    # to a promoted task is a policy denial, and it is answered by the tool whose
+    # family the caller asked for, so each surface keeps its own bucket.
+    "native:WRITE_FILE_BLOCKED:ROOM_WRITE_VIA_TASK": Delta(False, "ok", True, "write_file_blocked", "A.20", "a refused room write is a denial, not a written file"),
+    "native:EDIT_TEXT_BLOCKED:ROOM_WRITE_VIA_TASK": Delta(False, "ok", True, "edit_text_blocked", "A.20", "a refused room edit is a denial, not an edited file"),
     "shape:cognitive_redirect": Delta(True, "cognitive_tool_required", False, "ok", "A.11", "owner batch #4, through the native producer"),
     "shape:ephemeral_turn_denial": Delta(False, "ok", True, "blocked", "A.4",
         "the decision-turn denial is an access block its own first line never marked"),

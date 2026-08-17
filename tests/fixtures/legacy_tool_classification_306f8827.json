@@ -2651,6 +2651,10 @@
    "is_error": true,
    "status": "edit_text_blocked"
   },
+  "native:EDIT_TEXT_BLOCKED:ROOM_WRITE_VIA_TASK": {
+   "is_error": false,
+   "status": "ok"
+  },
   "native:ELEVATION_BLOCKED:ELEVATION_BLOCKED": {
    "is_error": true,
    "status": "elevation_blocked"
@@ -2700,10 +2704,6 @@
    "status": "ok"
   },
   "native:LEGACY_WARNING:NOT_FOUND": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "native:LEGACY_WARNING:ROOM_WRITE_VIA_TASK": {
    "is_error": false,
    "status": "ok"
   },
@@ -2782,6 +2782,10 @@
   "native:WORKSPACE_BLOCKED:WORKSPACE_SHELL_BLOCKED": {
    "is_error": true,
    "status": "workspace_blocked"
+  },
+  "native:WRITE_FILE_BLOCKED:ROOM_WRITE_VIA_TASK": {
+   "is_error": false,
+   "status": "ok"
   },
   "native:WRITE_FILE_BLOCKED:WRITE_FILE_BLOCKED": {
    "is_error": true,

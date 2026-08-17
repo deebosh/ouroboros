@@ -444,12 +444,12 @@ def test_payload_selector_and_search_refusals_keep_their_own_codes(tmp_path):
     assert write_failure.text.startswith("⚠️ WRITE_FILE_ERROR: IsADirectoryError: ")
 
 
-def test_room_write_redirects_and_worker_denials_keep_their_current_answer(tmp_path, monkeypatch):
-    """Both families still report through codes whose status is what it always was.
+def test_room_write_refusals_are_policy_denials(tmp_path, monkeypatch):
+    """Owner item A.20: a room write that was refused is not a write.
 
-    The room redirect is `LEGACY_WARNING` (ok) and the forwarding denial is
-    `LEGACY_BLOCKED` — the adapter's answers for those exact sentences, preserved
-    here rather than corrected, because changing either is an owner decision.
+    The redirect answered `ok`, so a task told to stop writing here looked like a
+    task that had written. It is a policy denial now, in the bucket of the tool the
+    caller actually asked for, and the sentence itself is unchanged.
     """
     repo, drive = _tree(tmp_path)
     room = tmp_path / "room"
@@ -457,21 +457,32 @@ def test_room_write_redirects_and_worker_denials_keep_their_current_answer(tmp_p
     monkeypatch.setattr(core, "project_room_lens_dir", lambda _ctx: room)
     ctx = ToolContext(repo_dir=repo, drive_root=drive)
 
-    write_room = _published(ctx, "write_file", lambda: core._write_file(ctx, path="a.txt", content="x"))
-    assert write_room.code == "LEGACY_WARNING"
+    write_room = _published(
+        ctx, "write_file", lambda: core._write_file(ctx, path="a.txt", content="x"),
+        owner_delta="A.20",
+    )
+    assert write_room.code == "WRITE_FILE_BLOCKED"
     assert write_room.text == (
         f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {room} and are edited by "
         "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
         "workspace) for real work there. For a deliberate write to the Ouroboros system "
         'repo, pass root="system_repo" explicitly.'
     )
-    edit_room = _published(ctx, "edit_text", lambda: core._edit_text(ctx, path="a.txt", old_str="a", new_str="b"))
-    assert edit_room.code == "LEGACY_WARNING"
+    edit_room = _published(
+        ctx, "edit_text", lambda: core._edit_text(ctx, path="a.txt", old_str="a", new_str="b"),
+        owner_delta="A.20",
+    )
+    assert edit_room.code == "EDIT_TEXT_BLOCKED"
     assert "For a deliberate edit of the Ouroboros system " in edit_room.text
+
+
+def test_worker_forwarding_denials_are_typed(tmp_path, monkeypatch):
+    """The undelivered-message family, pinned where the loop will read it."""
+    repo, drive = _tree(tmp_path)
+    ctx = ToolContext(repo_dir=repo, drive_root=drive)
 
     import ouroboros.task_status as task_status
 
-    monkeypatch.setattr(core, "project_room_lens_dir", lambda _ctx: None)
     for record, expected_code, expected_text in (
         ({"status": "completed"}, "LEGACY_WARNING", "⚠️ TASK_NOT_ACTIVE: task abc123 is already completed."),
         ({"status": "queued"}, "LEGACY_WARNING", "⚠️ TASK_NOT_ACTIVE: task abc123 is queued, not running."),

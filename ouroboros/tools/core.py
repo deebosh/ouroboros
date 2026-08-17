@@ -537,8 +537,8 @@ def _write_file(
         # repo). Mutations belong to promoted tasks; deliberate self-repo writes
         # stay available via the explicit root.
         return _publish_tool_result(ctx, ToolResult(
-            status="ok",
-            code="LEGACY_WARNING",
+            status="blocked",
+            code="WRITE_FILE_BLOCKED",
             text=(
                 f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {_room} and are edited by "
                 "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
@@ -698,8 +698,8 @@ def _edit_text(
         # Room write-guard (v6.61.3) — same rule as write_file: room mutations go
         # through promoted tasks; explicit root="system_repo" for the self-repo.
         return _publish_tool_result(ctx, ToolResult(
-            status="ok",
-            code="LEGACY_WARNING",
+            status="blocked",
+            code="EDIT_TEXT_BLOCKED",
             text=(
                 f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {_room} and are edited by "
                 "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
