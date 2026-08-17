@@ -4,7 +4,6 @@ BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 
 GIANT_PATHS = (
     "ouroboros/extension_loader.py",
-    "ouroboros/llm.py",
     "ouroboros/loop.py",
     "ouroboros/review_state.py",
     "ouroboros/tools/claude_advisory_review.py",
@@ -39,7 +38,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/agent_task_pipeline.py",
     "ouroboros/delegate_custody.py",
     "ouroboros/extension_loader.py",
-    "ouroboros/llm.py",
     "ouroboros/loop.py",
     "ouroboros/review_evidence.py",
     "ouroboros/review_execution.py",
@@ -243,7 +241,6 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "ouroboros/llm.py": 200307,
     "ouroboros/loop.py": 321064,
     "tests/test_devtools_benchmarks.py": 328775,
 }

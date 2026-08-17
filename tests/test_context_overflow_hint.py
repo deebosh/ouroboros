@@ -105,6 +105,7 @@ def test_local_transport_stops_unchanged_retry_on_any_overflow_shape(monkeypatch
     every structured overflow code and message marker — an identical over-window
     payload is never resent (the old path matched one literal code only)."""
     from ouroboros import llm as llm_mod
+    from ouroboros import llm_local as llm_local_mod
 
     calls = {"n": 0}
 
@@ -112,8 +113,8 @@ def test_local_transport_stops_unchanged_retry_on_any_overflow_shape(monkeypatch
         calls["n"] += 1
         raise overflow_exc
 
-    monkeypatch.setattr(llm_mod, "_execute_candidate", _fake_execute)
-    monkeypatch.setattr(llm_mod, "_attempt_request", lambda *a, **k: None)
+    monkeypatch.setattr(llm_local_mod, "_execute_candidate", _fake_execute)
+    monkeypatch.setattr(llm_local_mod, "_attempt_request", lambda *a, **k: None)
     client = llm_mod.LLMClient.__new__(llm_mod.LLMClient)
     monkeypatch.setattr(client, "_get_local_client", lambda: object(), raising=False)
     monkeypatch.setattr(
@@ -135,6 +136,7 @@ def test_local_output_limit_error_takes_normal_retry_path_not_overflow(monkeypat
     transport: no LocalContextTooLargeError, ordinary bounded retry, and the
     original provider error surfaces (S1 N-1 misclassification probe)."""
     from ouroboros import llm as llm_mod
+    from ouroboros import llm_local as llm_local_mod
 
     output_limit_exc = RuntimeError("max_tokens 65536 exceeds maximum context length 32768")
     calls = {"n": 0}
@@ -143,9 +145,9 @@ def test_local_output_limit_error_takes_normal_retry_path_not_overflow(monkeypat
         calls["n"] += 1
         raise output_limit_exc
 
-    monkeypatch.setattr(llm_mod, "_execute_candidate", _fake_execute)
-    monkeypatch.setattr(llm_mod, "_attempt_request", lambda *a, **k: None)
-    monkeypatch.setattr(llm_mod.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(llm_local_mod, "_execute_candidate", _fake_execute)
+    monkeypatch.setattr(llm_local_mod, "_attempt_request", lambda *a, **k: None)
+    monkeypatch.setattr(llm_local_mod.time, "sleep", lambda _s: None)
     client = llm_mod.LLMClient.__new__(llm_mod.LLMClient)
     monkeypatch.setattr(client, "_get_local_client", lambda: object(), raising=False)
     monkeypatch.setattr(

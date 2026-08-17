@@ -764,6 +764,43 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(s7a_test_split_rows)
     existing_process_owner_rows.update(s7a_test_split_rows)
     registry_extraction_no_facade_rows.update(set(s7a_test_split_rows) - s7a_test_split_facade_rows)
+    # v7 stream L: llm.py splits into ten owner leaves. Module-level names keep a
+    # facade on llm.py; LLMClient members move into owner mixins the class
+    # composes, so the class inherits the exact same function objects.
+    llm_extraction_symbols_by_owner = {
+        "llm_attempt.py": "_CACHE_TTL_SECONDS _VALID_CACHE_TTLS _applied_payload_cache_ttl _attempt_request _candidate_before_dispatch _canonical_candidate_bytes _execute_candidate _execute_candidate_async _is_structured_context_overflow_body _is_structured_context_overflow_exception _physical_candidate _route_normalizes_cache_breakpoints _structured_error_values cache_ttl_seconds supports_message_cache_control",
+        "llm_capability_policy.py": "_MANDATORY_VALUE_MARKERS _OPTIONAL_DROPPABLE_PARAMS _OPTIONAL_SAMPLING_PARAMS normalize_reasoning_effort",
+        "llm_routing.py": "_OR_PROVIDER_PRESETS _resolve_or_provider",
+        "llm_messages.py": "_reasoning_signature_portable_across_or_providers",
+        "llm_local.py": "LocalContextTooLargeError _LOCAL_COMPACTION_MODES _compact_local_text _compact_markdown_sections _estimate_message_chars _split_markdown_sections",
+        "llm_openai_compatible.py": "_FALSE_LIKE_ENV_VALUES",
+        "llm_pricing.py": "add_usage fetch_cloudru_pricing fetch_openrouter_pricing",
+    }
+    llm_extraction_rows = {
+        f"ouroboros/llm.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in llm_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    llm_mixin_symbols_by_owner = {
+        ("llm_attempt.py", "_PayloadCachePolicyMixin"): "_normalize_payload_cache_ttl _payload_cache_breakpoints _pop_cache_breakpoint_disclosure",
+        ("llm_capability_policy.py", "_CapabilityPolicyMixin"): "_apply_rejected_param_cache _clamp_effort_for_model _effort_ceiling_for _effort_floor_for _fetch_openrouter_capabilities _get_supported_parameters _known_rejected_params _mandatory_value_rejection _parameter_rejection_error _payload_effort _pop_effort_clamp_disclosure _record_effort_ceiling _record_effort_floor _remember_rejected_params _retry_without_optional_sampling _set_payload_effort clamp_effort_for_route metadata_fetch_attempted_and_failed openrouter_context_length",
+        ("llm_routing.py", "_ProviderRoutingMixin"): "_explicit_cache_affinity_identity _get_async_remote_client _get_client _get_local_client _get_remote_client _make_no_proxy_async_client _make_no_proxy_client _no_proxy_timeout _openrouter_session_identity _parse_provider_model _prompt_cache_identity _qualified_model_name _resolve_remote_target probe_oversized_context",
+        ("llm_messages.py", "_MessageShapingMixin"): "_content_with_system_notice_marker _copy_messages_with_cache_policy _has_openrouter_reasoning_details _has_replayed_reasoning_metadata _is_deferrable_image_user_turn _model_family _normalize_system_message_placement _replace_image_blocks_with_placeholder _strip_openrouter_roundtrip_metadata sanitize_reasoning_on_model_switch",
+        ("llm_fallback.py", "_RecoveryLadderMixin"): "_create_chat_completion_with_retries _create_chat_completion_with_retries_async _is_http_status _is_transient_body_error _openrouter_signature_retry_kwargs _param_retry_kwargs_for_body_error _provider_body_error _reroute_kwargs_for_body_error _reroute_same_model_kwargs _retry_without_prompt_cache_parameter _rotate_openrouter_session_affinity _strip_kwargs_for_encrypted_body_error",
+        ("llm_anthropic.py", "_AnthropicLaneMixin"): "_anthropic_blocks_from_content _anthropic_image_block _build_anthropic_messages _build_anthropic_tool_choice _cache_write_split _chat_anthropic _coalesce_anthropic_message _normalize_anthropic_response _sanitize_anthropic_tool_result_content _stringify_anthropic_content",
+        ("llm_gigachat.py", "_GigaChatLaneMixin"): "_chat_gigachat _get_gigachat_client _gigachat_function_result _gigachat_messages _gigachat_text _normalize_gigachat_response",
+        ("llm_local.py", "_LocalLaneMixin"): "_chat_local _prepare_messages_for_local_context",
+        ("llm_openai_compatible.py", "_OpenAICompatibleLaneMixin"): "_build_remote_kwargs _normalize_remote_response _openrouter_main_web_search_tool extract_display_reasoning",
+        ("llm_pricing.py", "_GenerationCostMixin"): "_fetch_generation_cost",
+    }
+    llm_mixin_rows = {
+        f"ouroboros/llm.py::LLMClient.{symbol}": f"ouroboros/{owner}::{mixin}.{symbol}"
+        for (owner, mixin), symbols in llm_mixin_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    implemented.update(llm_extraction_rows)
+    implemented.update(llm_mixin_rows)
+    registry_extraction_no_facade_rows.update(llm_mixin_rows)
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
