@@ -158,6 +158,50 @@ def test_panic_teardown_order_ends_with_the_port_sweep_then_the_hard_exit(monkey
     assert (tmp_path / "state" / "panic_stop.flag").read_text(encoding="utf-8") == "panic"
 
 
+def test_the_server_passes_its_bound_port_instead_of_the_leaf_reaching_back(monkeypatch):
+    """Emergency Stop 2A: the composition root owns the bound-port fact and hands
+    it down as a keyword-only argument with a default, so the panic leaf never has
+    to reach back into the server module for it."""
+    import inspect
+
+    import server
+    from ouroboros import server_control
+
+    parameter = inspect.signature(server_control.execute_panic_stop).parameters["bound_port"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is None
+
+    captured: dict = {}
+    monkeypatch.setattr(server, "_execute_panic_stop_impl", lambda *a, **kw: captured.update(kw))
+    monkeypatch.setattr(server, "_ACTUAL_BOUND_PORT", 9123)
+
+    server._execute_panic_stop(SimpleNamespace(stop=lambda: None), lambda **kw: None)
+
+    assert captured["bound_port"] == 9123
+
+
+def test_no_server_host_leaf_imports_the_composition_root():
+    """The lazy `import server` inside the panic port sweep was the last back-edge
+    from a host leaf to the composition root. Scanned as a class, at any depth, so
+    a future lazy import inside a function cannot quietly restore it."""
+    import ast
+    import pathlib
+
+    import server
+
+    leaves = sorted((pathlib.Path(server.__file__).parent / "ouroboros").glob("server_*.py"))
+    assert len(leaves) >= 11
+    for leaf in leaves:
+        for node in ast.walk(ast.parse(leaf.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                assert not any(
+                    alias.name == "server" or alias.name.startswith("server.")
+                    for alias in node.names
+                ), leaf.name
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "server", leaf.name
+
+
 def test_emergency_process_cleanup_stays_a_separate_path_from_panic(monkeypatch, tmp_path):
     """The uvicorn-hang cleanup is NOT the panic: it finalizes running tasks with an
     honest interrupted reason and returns, where panic hard-exits. Keeping them

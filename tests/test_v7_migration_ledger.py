@@ -673,7 +673,18 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(settings_seam_rows)
     existing_process_owner_rows.update(settings_seam_rows)
     implemented.update(server_extraction_rows)
+    # v7 stream S lane S2, spec 4.3.11 (Emergency Stop 2A): execute_panic_stop keeps
+    # its path, name and public identity; only how it learns the bound port changes.
+    s2_panic_delta_rows = {
+        "ouroboros/server_control.py::execute_panic_stop":
+            "ouroboros/server_control.py::execute_panic_stop",
+    }
+    implemented.update(s2_panic_delta_rows)
+    existing_process_owner_rows.update(s2_panic_delta_rows)
+    # No facade row: the symbol keeps its own path and name, so there is nothing to
+    # re-export — only its keyword surface gained an optional argument.
     existing_process_owner_rows.update(test_split_rows)
+    registry_extraction_no_facade_rows.update(s2_panic_delta_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
     registry_extraction_no_facade_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
@@ -711,6 +722,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 # plan 1.9 batch 8: the ratchet-transition test renamed with its relaxed contract.
                 else "D11"
                 if row["old path/symbol"] == "tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality"
+                else "D07"
+                if row["old path/symbol"] in s2_panic_delta_rows
                 else "D02"
                 if row["old path/symbol"] in {
                     "ouroboros/tools/registry.py::ToolEntry",
@@ -848,4 +861,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D11"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D11"})
