@@ -1360,7 +1360,11 @@ def test_osworld_methodology_preregisters_the_dedup_rule_and_defers_the_lane_gen
 
 
 def test_module_grandfather_matcher_uses_exact_repo_relative_paths():
-    from ouroboros.review import GIANT_PATHS, module_is_grandfathered
+    from ouroboros.review import (
+        GIANT_PATHS,
+        _exact_repo_relative_path,
+        module_is_grandfathered,
+    )
     # Exact runtime helpers accept only actual repo-relative paths. Compatibility
     # section-prefix decoding belongs solely to compute_complexity_metrics.
     # The nested samples come from the LIVE manifest rather than one hardcoded
@@ -1375,11 +1379,21 @@ def test_module_grandfather_matcher_uses_exact_repo_relative_paths():
         assert not module_is_grandfathered("repo/" + path), path
         # A same-basename module in another directory is not exempted either.
         assert not module_is_grandfathered("other_dir/" + path.rsplit("/", 1)[1]), path
-    # Root server.py is an exact manifest path; a nested same-basename is not.
-    assert module_is_grandfathered("server.py")
-    assert not module_is_grandfathered("repo/server.py")
-    assert not module_is_grandfathered("ouroboros/server.py")
-    assert not module_is_grandfathered("repo/ouroboros/server.py")
+    # A ROOT-level manifest path is an exact key too; a nested same-basename is
+    # not. Live-derived for the same reason the nested loop is.
+    for path in sorted(path for path in GIANT_PATHS if "/" not in path):
+        assert module_is_grandfathered(path), path
+        assert not module_is_grandfathered("repo/" + path), path
+        assert not module_is_grandfathered("ouroboros/" + path), path
+        assert not module_is_grandfathered("repo/ouroboros/" + path), path
+    # The four spellings of a root module remain four DIFFERENT keys even while
+    # no root module is in debt, so the contract does not retire itself when that
+    # loop runs empty. server.py was the sample until its composition split paid
+    # it down out of the giant layer.
+    root_spellings = (
+        "server.py", "repo/server.py", "ouroboros/server.py", "repo/ouroboros/server.py",
+    )
+    assert len({_exact_repo_relative_path(name) for name in root_spellings}) == 4
     # The tools/control.py debt cannot leak to gateway/control.py.
     assert module_is_grandfathered("ouroboros/tools/control.py")
     assert not module_is_grandfathered("ouroboros/gateway/control.py")

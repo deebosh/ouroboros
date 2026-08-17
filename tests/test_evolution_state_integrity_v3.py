@@ -2287,6 +2287,7 @@ def test_supervisor_blocks_evolution_restart_if_marker_disappears_during_drain(t
 
 def test_generic_restart_ignores_stale_evolution_marker(tmp_path, monkeypatch):
     import server
+    from ouroboros import server_restart
 
     marker = tmp_path / "state" / "pending_restart_verify.json"
     marker.parent.mkdir(parents=True)
@@ -2296,7 +2297,7 @@ def test_generic_restart_ignores_stale_evolution_marker(tmp_path, monkeypatch):
     }))
     restarted = []
     exited = []
-    monkeypatch.setattr(server, "_request_restart_exit", lambda: exited.append(True))
+    monkeypatch.setattr(server_restart, "_request_restart_exit", lambda: exited.append(True))
     ctx = SimpleNamespace(
         DRIVE_ROOT=tmp_path,
         load_state=lambda: {},

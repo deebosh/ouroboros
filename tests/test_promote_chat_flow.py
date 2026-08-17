@@ -774,10 +774,11 @@ def test_restart_drain_defers_then_completes_without_sleeping(tmp_path, monkeypa
     import types
 
     import server
+    from ouroboros import server_restart
 
     monkeypatch.setenv("OUROBOROS_RESTART_DRAIN_MAX_SEC", "120")
     performed = []
-    monkeypatch.setattr(server, "_perform_supervisor_restart", lambda ctx, **kw: performed.append(True))
+    monkeypatch.setattr(server_restart, "_perform_supervisor_restart", lambda ctx, **kw: performed.append(True))
     server._pending_restart.clear()
 
     now = __import__("time").time()
@@ -808,10 +809,11 @@ def test_restart_drain_no_live_tasks_restarts_immediately(tmp_path, monkeypatch)
     import types
 
     import server
+    from ouroboros import server_restart
 
     monkeypatch.setenv("OUROBOROS_RESTART_DRAIN_MAX_SEC", "120")
     performed = []
-    monkeypatch.setattr(server, "_perform_supervisor_restart", lambda ctx, **kw: performed.append(True))
+    monkeypatch.setattr(server_restart, "_perform_supervisor_restart", lambda ctx, **kw: performed.append(True))
     server._pending_restart.clear()
 
     ctx = types.SimpleNamespace(
@@ -834,12 +836,13 @@ def test_restart_drain_uses_generic_queue_heartbeat_not_retired_planning_knob(
     import types
 
     import server
+    from ouroboros import server_restart
     from supervisor.queue import HEARTBEAT_STALE_SEC
 
     monkeypatch.setenv("OUROBOROS_RESTART_DRAIN_MAX_SEC", "120")
     monkeypatch.setenv("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "999999")
     performed = []
-    monkeypatch.setattr(server, "_perform_supervisor_restart", lambda ctx, **kw: performed.append(True))
+    monkeypatch.setattr(server_restart, "_perform_supervisor_restart", lambda ctx, **kw: performed.append(True))
     server._pending_restart.clear()
 
     ctx = types.SimpleNamespace(

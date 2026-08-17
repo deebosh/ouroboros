@@ -9,7 +9,6 @@ GIANT_PATHS = (
     "ouroboros/review_state.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/control.py",
-    "server.py",
     "supervisor/git_ops.py",
     "supervisor/workers.py",
     "tests/test_agent_task_pipeline.py",
@@ -67,7 +66,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/tools/scope_review.py",
     "ouroboros/tools/subagent_integration.py",
     "ouroboros/usage_accounting.py",
-    "server.py",
     "supervisor/git_ops.py",
     "supervisor/queue.py",
     "supervisor/update_merge.py",
@@ -213,6 +211,7 @@ BAND_PATHS = {
     "ouroboros/utils.py": None,
     "ouroboros/workspace_executor.py": None,
     "scripts/run_external_review.py": None,
+    "server.py": "composition root of the server host: it keeps the lifespan, the supervisor loop, the owner-command dispatch and the process state those three need (bound event loop, bound port, supervisor-generation handles, panic entry), which cannot move to a leaf without a back-edge",
     "skills/telegram/plugin.py": None,
     "skills/telegram/scripts/companion.py": None,
     "skills/telegram/scripts/sidecar.py": None,
@@ -264,6 +263,6 @@ BYTE_BASELINE_DEBT = {
 BYTE_DEBT = {
     "ouroboros/llm.py": 200307,
     "ouroboros/loop.py": 321064,
-    "tests/test_delegated_subagent_transport.py": 320438,
+    "tests/test_delegated_subagent_transport.py": 320428,
     "tests/test_devtools_benchmarks.py": 328775,
 }

@@ -1163,8 +1163,10 @@ class TestStartupGCFailClosed:
         monkeypatch.setenv("OUROBOROS_DATA_DIR", str(data))
         monkeypatch.setenv("OUROBOROS_SUBAGENT_WORKTREE_ROOT", str(snaps))
         import server as srv
+        from ouroboros import server_maintenance
 
-        monkeypatch.setattr(srv, "DATA_DIR", data)
+        # The prune reads its drive root from its owner module.
+        monkeypatch.setattr(server_maintenance, "DATA_DIR", data)
         return srv, data, snaps
 
     @pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0,

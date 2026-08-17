@@ -349,6 +349,21 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in config_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
+    # v7 stream S lane S2: the server.py composition split. Every moved name keeps
+    # its server.py facade, so no row belongs to the no-facade set.
+    server_extraction_symbols_by_owner = {
+        "server_process.py": "DATA_DIR log _restart_requested _owner_restart_requested _request_restart_exit",
+        "server_routing_context.py": "_task_belongs_to_chat _active_direct_root _addressable_root_tasks _clip_marked _chat_running_tasks _task_result_ground_truth _latest_project_task_result _main_routing_manifest _decision_turn_metadata _scoped_task_metadata _owner_binding_chat_id _project_id_for_registered_chat _reserved_project_for_chat",
+        "server_owner_routing.py": "_stage_mailbox_attachments _route_project_chat_to_running_task _owner_evolution_stop _record_routing_receipt _route_owner_message",
+        "server_liveness.py": "_supervisor_loop_stalled _chat_turn_wedged _alert_chat_turn_wedge _start_supervisor_liveness_watchdog",
+        "server_maintenance.py": "_installed_skill_names _LAST_CANCEL_INTENT_SWEEP _periodic_supervisor_maintenance _reconcile_delegated_runs _startup_custody_sweep _prune_delegated_snapshots _periodic_zombie_reconcile _resume_interrupted_project_deletions _run_startup_task_recovery",
+        "server_restart.py": "_pending_restart _live_running_task_ids _handle_restart_in_supervisor _check_pending_restart_drain _perform_supervisor_restart _managed_update_pending_kwargs _safe_restart_serialized _shutdown_task_cleanup_args _shutdown_supervisor_event_bus",
+    }
+    server_extraction_rows = {
+        f"server.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in server_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
     # v7 stream W periphery extractions. Owner -> symbols, one row per symbol.
     w_stream_owners = {
         ("skills/unix_computer_use/plugin.py", "skills/unix_computer_use/lib/cu_runtime.py"):
@@ -452,6 +467,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)
     implemented.update(tool_access_extraction_rows)
+    implemented.update(server_extraction_rows)
     registry_extraction_no_facade_rows = (
         set(registry_core_rows) - {"ouroboros/tools/registry.py::ToolRegistry"}
     ) | set(registry_resolution_rows) | set(registry_guard_rows) | set(
@@ -656,6 +672,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     }
     implemented.update(settings_seam_rows)
     existing_process_owner_rows.update(settings_seam_rows)
+    implemented.update(server_extraction_rows)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)

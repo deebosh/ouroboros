@@ -16,6 +16,7 @@ from ouroboros.config import (
     CLAUDEXOR_PROTOCOL_MAJOR,
 )
 from ouroboros.gateways import claudexor as cx
+import ouroboros.server_maintenance as sm
 from ouroboros.loop_llm_call import SUBSCRIPTION_WINDOW_EXHAUSTED, classify_llm_exception
 from ouroboros.provider_models import MODEL_SETTING_KEYS
 from ouroboros.tool_capabilities import (
@@ -4687,7 +4688,6 @@ def test_the_startup_sweep_reconciles_delegated_runs_too(monkeypatch):
     definition ownerless. The only server-side test covered the PERIODIC tick, so the
     startup half could be deleted without a single failure — and it is the half that
     catches the runs the generation that died was watching."""
-    import server
     import ouroboros.delegate_custody as dc
     import ouroboros.process_custody as pc
 
@@ -4695,8 +4695,8 @@ def test_the_startup_sweep_reconciles_delegated_runs_too(monkeypatch):
     monkeypatch.setattr(pc, "reap_orphaned_processes", lambda root, **kw: [])
     monkeypatch.setattr(dc, "reconcile_orphaned_runs",
                         lambda root, **kw: seen.setdefault("live", kw.get("running_task_ids")) or [])
-    monkeypatch.setattr(server, "_installed_skill_names", lambda: None)
-    server._startup_custody_sweep()
+    monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
+    sm._startup_custody_sweep()
     assert seen["live"] == set(), "an empty live set is the point: nothing survived the restart"
 
 
@@ -4706,7 +4706,6 @@ def test_both_custody_surfaces_see_the_same_live_task_set(monkeypatch):
     custody surface ends up reaping while its twin does not."""
     import time
 
-    import server
     import ouroboros.delegate_custody as dc
     import ouroboros.process_custody as pc
     import supervisor.queue as queue
@@ -4716,9 +4715,9 @@ def test_both_custody_surfaces_see_the_same_live_task_set(monkeypatch):
                         lambda root, **kw: seen.__setitem__("processes", kw.get("running_task_ids")) or [])
     monkeypatch.setattr(dc, "reconcile_orphaned_runs",
                         lambda root, **kw: seen.__setitem__("delegated", kw.get("running_task_ids")) or [])
-    monkeypatch.setattr(server, "_installed_skill_names", lambda: None)
+    monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
     monkeypatch.setitem(queue.RUNNING, "t-live", {})
-    server._periodic_supervisor_maintenance([0.0], [time.time()])
+    sm._periodic_supervisor_maintenance([0.0], [time.time()])
     assert seen["processes"] == seen["delegated"] == {"t-live"}, seen
 
 

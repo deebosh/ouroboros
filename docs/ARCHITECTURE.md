@@ -189,6 +189,12 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── server_auth.py       ← Non-localhost auth gate (OUROBOROS_NETWORK_PASSWORD)
       ├── server_control.py    ← Process-control helpers: restart, panic stop
       ├── server_entrypoint.py ← CLI argument parsing, port-binding helpers
+      ├── server_liveness.py   ← Supervisor-loop and chat-turn wedge predicates plus the watchdog thread that raises the owner alert
+      ├── server_maintenance.py ← Startup and periodic upkeep a supervisor generation owes the drive: custody reaping, delegated-run reconciliation, snapshot GC, zombie reconciles, startup task recovery
+      ├── server_owner_routing.py ← Where one owner message goes: attachment staging, single-candidate mailbox delivery, routing receipts, decision-lane dispatch, `/evolve off`
+      ├── server_process.py    ← Facts every server leaf shares: drive root, the `server` logger, the restart-request signals and their setter
+      ├── server_restart.py    ← The restart transaction: deferred drain across loop ticks, receipt/checkout re-checks, worker teardown, exit signal
+      ├── server_routing_context.py ← Bounded projections one owner turn may address (addressable roots, project ground truth, Main manifest, decision-turn metadata)
       ├── server_runtime.py    ← Server startup/onboarding and WebSocket liveness helpers
       ├── server_web.py        ← Static web file helpers (NoCacheStaticFiles, web dir resolver)
       ├── task_continuation.py ← Durable per-task review continuation state across restart/outage
@@ -854,6 +860,8 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | WS | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/events` | `gateway.host_service._ws_events` |
 
 Rationale: `server.py` should own process startup/lifespan/static mounting, while `gateway/*` owns browser-facing HTTP/WS contracts. This keeps UI and runtime coupling explicit and testable.
+
+`server.py` is the composition root of the server host. It builds the ASGI app and its route table, owns the lifespan (event-loop binding, boot reconciles, Host Service, extension reload, teardown), runs the supervisor generation on its background thread, dispatches owner commands arriving from the transport bridge, and holds the process-scoped state nothing else may hold: the bound event loop, the actually bound port, the supervisor-generation handles, and the panic entry point. Everything that does not need that state lives in sibling leaves under `ouroboros/`, and no leaf imports `server` back. `server_process.py` holds the facts the leaves share — the drive root, the `server` logger every server module writes to, and the restart-request signals with their setter. `server_routing_context.py` projects the bounded facts one owner turn may address; `server_owner_routing.py` decides where a single owner message goes and delivers it. `server_liveness.py` detects the two silent-wedge classes and alerts the owner. `server_maintenance.py` runs the startup and periodic upkeep a supervisor generation owes the drive. `server_restart.py` owns the restart transaction from request through the loop-tick drain to the exit signal. `server_auth.py`, `server_control.py`, `server_entrypoint.py`, `server_runtime.py`, and `server_web.py` remain the host's auth gate, process-control, CLI/port, startup-helper, and static-file leaves.
 
 ### WebSocket protocol
 
