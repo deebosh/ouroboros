@@ -324,8 +324,8 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   iterator drives smoke, health, census, and the 200,000-byte ratchet. Sources
   decode as strict UTF-8 and normalize line endings to canonical POSIX LF before
   line and UTF-8-byte counts, so checkout policy cannot change the inventory.
-- The v7 second module layer is the optional `MODULE_DEBT_1500` manifest field:
-  absent on pre-v7 manifests (absence means "not activated"; presence, even as
+- The second module layer is the optional `MODULE_DEBT_1500` manifest field:
+  absent until activated (absence means "not activated"; presence, even as
   an empty tuple, means active). Once active, every exact path above 1500 lines
   must be listed there, so new/non-debt paths are capped at 1500 while every
   path above 1600 additionally stays in legacy `GIANT_PATHS`; both layers are
@@ -349,7 +349,7 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   line-count gate.
 - Runtime Python function/method count is checked against
   `ouroboros/review.py::MAX_TOTAL_FUNCTIONS`; the function iterator preserves
-  the pre-v7 runtime scope (tests/devtools excluded) while module gates include
+  the runtime scope it always had (tests/devtools excluded) while module gates include
   those trees.
 - More than eight parameters is a decomposition signal applied by BIBLE and
   reviewer checklist 2(c), not a deterministic size-test gate. Existing

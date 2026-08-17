@@ -761,7 +761,7 @@ def _compose_execute_result(result: str, route_note: str, safety_msg: str) -> st
     The auto-route note TRAILS the result: failure classification
     (``LegacyTextResultAdapter`` in this module) inspects the FIRST line, so a
     leading note would mask an underlying tool error on the auto-routed read
-    path (review round 3). The
+    path. The
     safety warning keeps its historical leading position — its ``---`` separator
     is an established transcript convention the metadata scan already handles."""
     if route_note:
