@@ -2493,6 +2493,32 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
         return _format_commit_result(ctx, commit_message, "", test_warning_ref[0]) + "\n\n" + _msg_pc
     if not evolution_claim:
         push_status = _auto_push(ctx.repo_dir)
+    # Bypass-path auto-restart hook (closes ibl-7ac44b7cd6d8): queue a
+    # pending_restart_verify.json after a successful skip_advisory_review=True
+    # commit so the supervisor reloads on the next boot. Owner-authorized and
+    # constitutionally bounded per plan §5 — only fires on bypass path, no
+    # effect on reviewed-path restart machinery.
+    if not _managed_tx:
+        try:
+            from ouroboros.tools.commit_post_commit import (
+                maybe_request_restart_after_bypass,
+            )
+            _bypass_restart_notice = maybe_request_restart_after_bypass(
+                repo_dir=pathlib.Path(ctx.repo_dir),
+                drive_root=pathlib.Path(ctx.drive_root),
+                task_type=str(ctx.current_task_type or ""),
+                skip_advisory_review=bool(skip_advisory_pre_review),
+                commit_sha=str(commit_sha or ""),
+                commit_message=str(commit_message or ""),
+                push_succeeded=(" [pushed:" in str(push_status or "")),
+            )
+            if _bypass_restart_notice:
+                push_status = f"{push_status}\n{_bypass_restart_notice}"
+        except Exception as _bypass_hook_exc:  # noqa: BLE001
+            log.debug(
+                "bypass-post-commit restart hook failed (non-fatal): %s",
+                _bypass_hook_exc,
+            )
     return _publish_reviewed_commit(
         ctx, commit_message, commit_sha, tag_info, test_warning_ref[0], paths, push_status,
     )
