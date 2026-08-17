@@ -15,7 +15,6 @@ GIANT_PATHS = (
     "tests/test_cancel_intents_phase_a.py",
     "tests/test_claudexor_owned_daemon.py",
     "tests/test_context.py",
-    "tests/test_delegated_subagent_transport.py",
     "tests/test_delivery_forced_finalization.py",
     "tests/test_devtools_benchmarks.py",
     "tests/test_evolution_state_integrity_v3.py",
@@ -75,7 +74,6 @@ MODULE_DEBT_1500 = (
     "tests/test_claudexor_owned_daemon.py",
     "tests/test_context.py",
     "tests/test_delegated_run_isolation.py",
-    "tests/test_delegated_subagent_transport.py",
     "tests/test_delivery_forced_finalization.py",
     "tests/test_devtools_benchmarks.py",
     "tests/test_evolution_state_integrity_v3.py",
@@ -264,6 +262,5 @@ BYTE_BASELINE_DEBT = {
 BYTE_DEBT = {
     "ouroboros/llm.py": 200307,
     "ouroboros/loop.py": 321064,
-    "tests/test_delegated_subagent_transport.py": 320428,
     "tests/test_devtools_benchmarks.py": 328775,
 }
