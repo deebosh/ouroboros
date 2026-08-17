@@ -115,6 +115,11 @@ def test_every_verbatim_ledger_row_moves_byte_identical_source() -> None:
             problems.append(f"{old_ref} -> {new_ref}: note says verbatim but the declaration text differs")
     # Both resolvers must stay live: a silent regression in either one turns its rows
     # into skips, and a single total would let the JavaScript half vanish unnoticed.
-    assert checked > 100, f"the verbatim pin should cover the extraction rows; only {checked} compared"
-    assert checked_javascript > 20, f"the JavaScript rows stopped resolving; only {checked_javascript} compared"
+    # Floors sit just under the measured coverage (1583 Python / 41 JS at the S/L
+    # gate), not two orders below it: a resolver regression that silently turned
+    # most rows into skips would otherwise stay green. The ledger only grows, so
+    # raise these when coverage grows; lower them only with a phase that
+    # deliberately shrinks the ledger.
+    assert checked > 1400, f"the verbatim pin should cover the extraction rows; only {checked} compared"
+    assert checked_javascript > 35, f"the JavaScript rows stopped resolving; only {checked_javascript} compared"
     assert problems == [], "\n".join(problems)
