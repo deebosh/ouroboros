@@ -858,6 +858,28 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for symbol in symbols.split()
     }
     implemented.update(l2b_skill_review_rows)
+    # v7 stream S, lane S4: ouroboros/extension_loader.py split into owner leaves.
+    # The loader keeps the extension lifecycle; the registries, the namespace
+    # encoding, the child-catalog re-validation, the staged import trees, the
+    # liveness projection and the PluginAPI object each get one owner.
+    s4_extension_symbols_by_owner = {
+        "extension_registry_state.py": "_ExtensionRegistrations _ExtensionLoadFailure _PluginAPIConfig _lock _extensions _extension_modules _load_failures _unloading _lifecycle_locks _tools _routes _ws_handlers _ui_tabs _settings_sections _lifecycle_lock_for _record_companion_name",
+        "extension_surface_names.py": "_EXTENSION_NAME_PREFIX _EXTENSION_SKILL_TOKEN_MAX _EXTENSION_SHORT_MAX _EXTENSION_NAME_RE _extension_skill_token extension_name_prefix extension_surface_name parse_extension_surface_name _widget_span_from_render _assert_namespace_path _assert_tool_name",
+        "extension_child_catalog.py": "_out_of_process_handler_proxy _validate_child_catalog_namespace _validate_child_tool_descriptor _validate_child_route_descriptor _validate_child_ws_descriptor _validate_child_ui_descriptor _validate_child_settings_descriptor",
+        "extension_import_staging.py": "_plugin_entry_path _module_key _purge_extension_bytecode _stage_extension_import_tree _IMPORT_SWEEP_GRACE_SEC _sweep_stale_extension_imports",
+        "extension_liveness.py": "_extension_runtime_state _deps_block_reason _apply_deps_block runtime_state_for_skill_name runtime_state_for_loaded_skill is_extension_live _revert_enabled_after_load_error",
+        "extension_plugin_api.py": "PluginAPIImpl current_execution_mode _reject_extension_child_side_effect mint_skill_token set_ws_broadcaster _ws_broadcaster",
+    }
+    s4_extension_rows = {
+        f"ouroboros/extension_loader.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in s4_extension_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    implemented.update(s4_extension_rows)
+    # The broadcaster slot is REBOUND by set_ws_broadcaster, so a re-export would be
+    # a snapshot that stops tracking its owner: the setter is the facade, the binding
+    # is not.
+    registry_extraction_no_facade_rows.add("ouroboros/extension_loader.py::_ws_broadcaster")
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(s2_panic_delta_rows)
     registry_extraction_no_facade_rows.update(git_ops_delta_rows)

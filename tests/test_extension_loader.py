@@ -15,6 +15,7 @@ from typing import Any, Dict
 import pytest
 
 from ouroboros import extension_loader
+from ouroboros import extension_plugin_api
 from ouroboros.extension_companion import CompanionSupervisor, init_server_process_pid
 from ouroboros.extension_reconcile_queue import (
     MAX_ATTEMPTS,
@@ -238,6 +239,9 @@ def test_server_pickup_spawns_stops_and_redrives_missing_companion(
             }
 
     fake = FakeSupervisor()
+    # The companion supervisor is read by PluginAPIImpl (its owner) at register
+    # time and by the loader's ensure_companions_running/unload paths.
+    monkeypatch.setattr(extension_plugin_api, "get_global_supervisor", lambda: fake)
     monkeypatch.setattr(extension_loader, "get_global_supervisor", lambda: fake)
 
     request_extension_reconcile(drive_root, loaded.name, reason="test")
