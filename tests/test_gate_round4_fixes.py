@@ -266,7 +266,7 @@ def _fault_ctx(tmp_path, running):
 
 
 def _fault_probes(monkeypatch):
-    import supervisor.events as events_mod
+    import supervisor.events_task_done as task_done_mod
     import supervisor.update_merge as um
 
     probes = {"abort": 0, "gate": 0, "root_done": 0, "quiesce": 0}
@@ -279,11 +279,11 @@ def _fault_probes(monkeypatch):
         lambda meta: probes.__setitem__("gate", probes["gate"] + 1),
     )
     monkeypatch.setattr(
-        events_mod, "_checkpoint_coop_roots_on_root_done",
+        task_done_mod, "_checkpoint_coop_roots_on_root_done",
         lambda ctx, task, tid: probes.__setitem__("root_done", probes["root_done"] + 1),
     )
     monkeypatch.setattr(
-        events_mod, "_maybe_checkpoint_coop_on_tree_quiescence",
+        task_done_mod, "_maybe_checkpoint_coop_on_tree_quiescence",
         lambda ctx, task, tid: probes.__setitem__("quiesce", probes["quiesce"] + 1),
     )
     return probes

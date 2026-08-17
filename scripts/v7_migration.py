@@ -96,6 +96,11 @@ APPROVED_PENDING_OWNERS = frozenset({
     "devtools/benchmarks/osworld/step_agent_actions.py", "devtools/benchmarks/osworld/step_agent_policy.py",
     "web/tests/harness_accounts_helpers.js", "web/tests/harness_accounts_cards.test.js",
     "web/tests/harness_accounts_custody.test.js", "web/tests/harness_accounts_panel.test.js",
+    "supervisor/events_chat_delivery.py", "supervisor/events_subagent_admission.py",
+    "supervisor/events_schedule_task.py", "supervisor/events_project_routing.py",
+    "supervisor/events_coop_checkpoint.py", "supervisor/events_evolution_done.py",
+    "supervisor/events_task_done.py", "supervisor/events_budget.py",
+    "supervisor/events_worker_reports.py", "supervisor/events_runtime_controls.py",
 })
 _PY_LOCAL_KINDS = frozenset({"class", "function", "assignment"})
 def _git(repo: pathlib.Path, *args: str, text: bool = True) -> str | bytes:

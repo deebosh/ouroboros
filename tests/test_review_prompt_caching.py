@@ -1345,10 +1345,10 @@ def test_emit_review_usage_carries_scope_lineage():
 
 
 def test_supervisor_backfills_lineage_from_running(monkeypatch):
-    from supervisor import events as sup_events
+    from supervisor import events_budget as sup_budget
 
     captured = {}
-    monkeypatch.setattr(sup_events, "append_jsonl", lambda path, row: captured.update(row))
+    monkeypatch.setattr(sup_budget, "append_jsonl", lambda path, row: captured.update(row))
 
     class _Ctx:
         RUNNING = {
@@ -1366,7 +1366,7 @@ def test_supervisor_backfills_lineage_from_running(monkeypatch):
             return None
 
     evt = {"type": "llm_usage", "task_id": "t1", "usage": {"prompt_tokens": 1}}
-    sup_events._handle_llm_usage(evt, _Ctx())
+    sup_budget._handle_llm_usage(evt, _Ctx())
     assert captured.get("root_task_id") == "rootX"
     assert captured.get("parent_task_id") == "pX"
     assert captured.get("delegation_role") == "subagent"
@@ -1527,10 +1527,11 @@ def test_extended_ttl_scales_cache_write_estimate(monkeypatch):
 
 def test_supervisor_handles_review_wave_budget_event(monkeypatch):
     from supervisor import events as sup_events
+    from supervisor import events_budget as sup_budget
 
     assert "review_wave_budget_insufficient" in sup_events.EVENT_HANDLERS
     captured = {}
-    monkeypatch.setattr(sup_events, "append_jsonl", lambda path, row: captured.update(row))
+    monkeypatch.setattr(sup_budget, "append_jsonl", lambda path, row: captured.update(row))
 
     class _Ctx:
         DRIVE_ROOT = pathlib.Path("/tmp")
