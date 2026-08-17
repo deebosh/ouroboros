@@ -123,6 +123,7 @@ _REVIEW_SUBSTRATE_PATHS = frozenset({
     "ouroboros/delegate_output.py",
     "ouroboros/gateways/claudexor.py",
     "ouroboros/review_evidence.py",
+    "ouroboros/review_evidence_sections.py",
     "ouroboros/subagents.py",
 })
 _RELEASE_MACHINERY_PATHS = frozenset({

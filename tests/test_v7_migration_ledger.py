@@ -737,6 +737,21 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for symbol in symbols.split()
     }
     implemented.update(l2b_review_extraction_rows)
+    l2b_evidence_extraction_symbols = (
+        "collect_turn_diff _ACCEPT_RESULT_CAP _ACCEPT_ARGS_CAP _ACCEPT_NOTES_CAP "
+        "_ACCEPT_TRAJECTORY_MAX_CALLS _ACCEPT_ARTIFACT_PREVIEW_CAP _ACCEPT_ARTIFACT_PREVIEW_MAX_BYTES "
+        "_ACCEPT_TOTAL_BUDGET _ACCEPT_OBLIGATIONS_MAX _ACCEPT_RETRIEVAL_URLS_MAX obligation_is_pending "
+        "_accept_obligation_row task_acceptance_evidence_revision _accept_redact_cap _accept_task_contract "
+        "_accept_protected_set _accept_verification_summary _accept_receipt_exhibits _accept_effective_claims "
+        "_accept_claim_support_refs _accept_trajectory _accept_artifact_manifest _accept_enforce_budget "
+        "_owner_content_projection _accept_owner_directives _ACCEPT_DELTA_CHILD_CAP _accept_capability_deltas"
+    )
+    l2b_evidence_extraction_rows = {
+        f"ouroboros/review_evidence.py::{symbol}":
+            f"ouroboros/review_evidence_sections.py::{symbol}"
+        for symbol in l2b_evidence_extraction_symbols.split()
+    }
+    implemented.update(l2b_evidence_extraction_rows)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(s2_panic_delta_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)

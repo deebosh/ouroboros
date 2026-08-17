@@ -103,6 +103,7 @@ APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/llm_gigachat.py", "ouroboros/llm_local.py", "ouroboros/llm_openai_compatible.py",
     "ouroboros/llm_pricing.py",
     "ouroboros/review_records.py", "ouroboros/review_verdict.py", "ouroboros/review_projection.py",
+    "ouroboros/review_evidence_sections.py",
     "skills/unix_computer_use/lib/cu_runtime.py", "skills/unix_computer_use/lib/cu_connections.py", "skills/unix_computer_use/lib/cu_remote_backends.py",
     "devtools/benchmarks/osworld/cu_bridge_runtime.py", "devtools/benchmarks/osworld/cu_bridge_prompts.py", "devtools/benchmarks/osworld/cu_bridge_tool_policy.py",
     "devtools/benchmarks/osworld/cu_bridge_gate.py", "devtools/benchmarks/osworld/cu_bridge_budget.py",
