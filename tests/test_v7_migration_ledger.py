@@ -801,12 +801,12 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(llm_extraction_rows)
     implemented.update(llm_mixin_rows)
     registry_extraction_no_facade_rows.update(llm_mixin_rows)
-    # spec 4.3.2 semantic delta rides the row of the symbol it changed: the local
-    # lane moved into its mixin AND lost its nested attempt loop.
-    llm_semantic_delta_ids = {"ouroboros/llm.py::LLMClient._chat_local": "D03"}
-    # spec 7 stream L: the recovery ladder stops consuming a typed policy refusal.
+    # Shared delta registry: D09 is spec 4.3.2 (LLM local retry) and its
+    # typed-refusal companion. The id rides the row of each symbol it changed.
+    llm_semantic_delta_ids = {"ouroboros/llm.py::LLMClient._chat_local": "D09"}
+    # The recovery ladder stops consuming a typed policy refusal (same id).
     llm_semantic_delta_ids.update({
-        f"ouroboros/llm.py::LLMClient.{symbol}": "D04"
+        f"ouroboros/llm.py::LLMClient.{symbol}": "D09"
         for symbol in (
             "_create_chat_completion_with_retries",
             "_create_chat_completion_with_retries_async",
