@@ -354,12 +354,43 @@ def test_pre_server_normalization_never_writes_the_settings_file(monkeypatch, tm
     assert len(applied) == 2
 
 
-def test_server_boot_normalization_carries_the_same_guard():
-    """Mirror of the launcher guard: with the server now starting BEFORE
-    onboarding, its own boot normalization must not author the file either."""
-    source = (REPO / "server.py").read_text(encoding="utf-8")
+def test_server_boot_never_writes_the_settings_file():
+    """The server's boot normalization is APPLIED in-process and persisted
+    nowhere (spec 4.3.5: start-time mutators are retired). Every reader
+    re-derives the same normalization through the shared read seam, so a
+    start-time write would only make boot a second author of settings.json —
+    on a host where the server now starts BEFORE first-run onboarding, that
+    author would create the file the wizard is proved not to have yet."""
+    import ast
+    import inspect
+    import textwrap
 
-    assert "if provider_defaults_changed and _settings_path.exists():" in source
+    import server
+
+    source = inspect.getsource(server.lifespan)
+    tree = ast.parse(textwrap.dedent(source))
+
+    # Asserted on the syntax, not on the text: a comment that merely mentions
+    # save_settings must not be able to fail or to satisfy this.
+    called = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert "save_settings" not in called
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    assert "SETTINGS_PATH" not in imported
+    # The normalization still runs, still reaches the environment, and only then
+    # is the owner's runtime-mode baseline pinned against it.
+    applied_at = source.index("apply_runtime_provider_defaults(load_settings())")
+    env_at = source.index("_apply_settings_to_env(settings)")
+    baseline_at = source.index("initialize_runtime_mode_baseline()")
+    assert applied_at < env_at < baseline_at
 
 
 # --------------------------------------------------------------------------

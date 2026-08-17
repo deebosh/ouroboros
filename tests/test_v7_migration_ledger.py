@@ -669,6 +669,10 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "ouroboros/launcher_onboarding.py::prepare_first_run_settings",
         "tests/test_onboarding_host.py::test_pre_server_normalization_never_creates_the_settings_file":
             "tests/test_onboarding_host.py::test_pre_server_normalization_never_writes_the_settings_file",
+        # Lane S2: the last start-time mutator, inside the server lifespan.
+        "server.py::lifespan": "server.py::lifespan",
+        "tests/test_onboarding_host.py::test_server_boot_normalization_carries_the_same_guard":
+            "tests/test_onboarding_host.py::test_server_boot_never_writes_the_settings_file",
     }
     implemented.update(settings_seam_rows)
     existing_process_owner_rows.update(settings_seam_rows)
