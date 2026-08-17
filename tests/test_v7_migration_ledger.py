@@ -645,10 +645,23 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             _log_worker_crash""".split()
     }
     implemented.update(s3_worker_process_rows)
+    # v7 stream L-A: the scope reviewer keeps the run; its prompt budget/window
+    # authority and its pack assembly become owners. Every row is a facade row —
+    # the parent re-exports the same objects under their historical private names.
+    scope_review_extraction_symbols_by_owner = {
+        "scope_review_budget.py": "_SCOPE_MAX_TOKENS _SCOPE_REVIEW_SLOT_TIMEOUT_SEC _SCOPE_OUTPUT_MARGIN_TOKENS _SCOPE_INPUT_TOKEN_LIMIT _SCOPE_MODEL_DEFAULT _SCOPE_BUDGET_TOKEN_LIMIT _SCOPE_FAILCLOSED_WINDOW _SCOPE_MODEL_CONTEXT_WINDOW _calibrated_input_token_limit _shared_window_scaled_reserves _window_scaled_reserves _effective_scope_input_limit _get_scope_model _is_provider_oversize_error _provider_error_is_oversize",
+        "scope_review_pack.py": "_DELETED_INLINE_MAX_BYTES _SCOPE_CONTEXT_MANIFEST _SCOPE_STABLE_PREFIX_LEN _ScopeAtlasNotAssembled _current_scope_context_manifest _CANONICAL_CONTEXT_DOCS _CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES _load_canonical_context_docs _should_skip_current_touched_context _build_review_history_section _parse_staged_name_status _classify_deleted_for_inline _degradable_diff_only_paths _inline_deleted_file_pack _gather_scope_packs _record_ladder_steps _render_touched_section _build_scope_history_section _ScopePromptContext _build_scope_prompt",
+    }
+    scope_review_extraction_rows = {
+        f"ouroboros/tools/scope_review.py::{symbol}": f"ouroboros/tools/{owner}::{symbol}"
+        for owner, symbols in scope_review_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
     implemented.update(w_stream_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)
     implemented.update(tool_access_extraction_rows)
+    implemented.update(scope_review_extraction_rows)
     implemented.update(test_split_rows)
     implemented.update(web_extractions)
     implemented.update(config_extraction_rows)

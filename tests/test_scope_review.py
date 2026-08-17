@@ -540,6 +540,7 @@ class TestRunScopeReviewFailClosed:
         subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
         mod = _get_module("ouroboros.tools.scope_review")
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
         calls = []
 
         def fake_gather(_repo_dir, _paths, **kwargs):
@@ -548,7 +549,7 @@ class TestRunScopeReviewFailClosed:
                 raise mod._ScopeAtlasNotAssembled({"estimated_total_tokens": 900_000})
             return "COMPACT ATLAS"
 
-        monkeypatch.setattr(mod, "_gather_scope_packs", fake_gather)
+        monkeypatch.setattr(scope_pack, "_gather_scope_packs", fake_gather)
 
         prompt, omitted = mod._build_scope_prompt(tmp_path, "test commit")
 
@@ -579,6 +580,7 @@ class TestRunScopeReviewFailClosed:
         subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
         mod = _get_module("ouroboros.tools.scope_review")
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
         calls = []
 
         def fake_gather(_repo_dir, _paths, fixed_prompt_tokens=0, compact=False, **_kw):
@@ -587,8 +589,8 @@ class TestRunScopeReviewFailClosed:
                 raise mod._ScopeAtlasNotAssembled({"estimated_total_tokens": 900_001})
             return "OVERSIZED ATLAS"
 
-        monkeypatch.setattr(mod, "_gather_scope_packs", fake_gather)
-        monkeypatch.setattr(mod, "estimate_tokens", lambda _text: 800_000)
+        monkeypatch.setattr(scope_pack, "_gather_scope_packs", fake_gather)
+        monkeypatch.setattr(scope_pack, "estimate_tokens", lambda _text: 800_000)
 
         prompt, status = mod._build_scope_prompt(tmp_path, "test commit")
 
@@ -618,6 +620,7 @@ class TestRunScopeReviewFailClosed:
         subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
         mod = _get_module("ouroboros.tools.scope_review")
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
         large_diff = "diff --git a/tiny.py b/tiny.py\n" + (" unchanged context\n" * 30_000)
         compact_diff = "diff --git a/tiny.py b/tiny.py\n@@ -1 +1 @@\n-old\n+new\n"
         compact_calls = []
@@ -628,9 +631,9 @@ class TestRunScopeReviewFailClosed:
                 return compact_diff
             return large_diff
 
-        monkeypatch.setattr(mod, "capture_staged_diff", fake_capture)
-        monkeypatch.setattr(mod, "_effective_scope_input_limit", lambda **_kw: 100_000)
-        monkeypatch.setattr(mod, "_gather_scope_packs", lambda *_a, **_k: "COMPACT ATLAS")
+        monkeypatch.setattr(scope_pack, "capture_staged_diff", fake_capture)
+        monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 100_000)
+        monkeypatch.setattr(scope_pack, "_gather_scope_packs", lambda *_a, **_k: "COMPACT ATLAS")
 
         prompt, status = mod._build_scope_prompt(tmp_path, "test commit")
 
@@ -698,16 +701,17 @@ class TestRunScopeReviewFailClosed:
         subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
         mod = _get_module("ouroboros.tools.scope_review")
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
         monkeypatch.setattr(
-            mod, "_gather_scope_packs",
+            scope_pack, "_gather_scope_packs",
             lambda *_a, **_k: (_ for _ in ()).throw(
                 mod._ScopeAtlasNotAssembled({"estimated_total_tokens": 999_999})
             ),
         )
-        monkeypatch.setattr(mod, "estimate_tokens", lambda _text: 800_000)
+        monkeypatch.setattr(scope_pack, "estimate_tokens", lambda _text: 800_000)
         # Capability Evidence: gigachat KNOWN sub-floor (131K), fable-5 >=1M.
         monkeypatch.setattr(
-            mod, "_scope_window",
+            scope_pack, "_scope_window",
             lambda m, **_k: mod.ReviewerWindow(
                 131_072 if "gigachat" in str(m).lower() else 1_000_000, "confirmed",
             ),
@@ -753,9 +757,10 @@ class TestRunScopeReviewFailClosed:
         subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
         mod = _get_module("ouroboros.tools.scope_review")
-        monkeypatch.setattr(mod, "_gather_scope_packs", lambda *_a, **_k: "TINY ATLAS")
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
+        monkeypatch.setattr(scope_pack, "_gather_scope_packs", lambda *_a, **_k: "TINY ATLAS")
         monkeypatch.setattr(
-            mod, "_effective_scope_input_limit", lambda **_kw: 30_000
+            scope_pack, "_effective_scope_input_limit", lambda **_kw: 30_000
         )
 
         prompt, status = mod._build_scope_prompt(tmp_path, "test commit")
@@ -1125,6 +1130,7 @@ class TestRunScopeReviewFailClosed:
         otherwise hard-block as empty_response. With independent size evidence it must
         produce the same visible evidence while still blocking the default floor."""
         mod = _get_module("ouroboros.tools.scope_review")
+        scope_budget = _get_module("ouroboros.tools.scope_review_budget")
 
         class MockCtx:
             repo_dir = str(tmp_path)
@@ -1142,7 +1148,7 @@ class TestRunScopeReviewFailClosed:
             lambda *a, **k: ("", {"prompt_tokens": 0, "completion_tokens": 0,
                                   "provider_error": {"code": 400, "kind": "provider_error", "message": ""}}, ""),
         )
-        monkeypatch.setattr(mod, "_effective_scope_input_limit", lambda *a, **k: 10)
+        monkeypatch.setattr(scope_budget, "_effective_scope_input_limit", lambda *a, **k: 10)
 
         monkeypatch.setattr(mod, "_scope_window",
                             lambda _m, **_k: mod.ReviewerWindow(1_000_000, "confirmed"))
@@ -1158,6 +1164,7 @@ class TestRunScopeReviewFailClosed:
         fail-closed empty_response block, so a misconfiguration never silently skips the
         blocking scope review."""
         mod = _get_module("ouroboros.tools.scope_review")
+        scope_budget = _get_module("ouroboros.tools.scope_review_budget")
 
         class MockCtx:
             repo_dir = str(tmp_path)
@@ -1176,7 +1183,7 @@ class TestRunScopeReviewFailClosed:
         # Even a large prompt near the resolved window must stay fail-closed when the
         # provider gives a concrete non-size message. Size proximity is reserved for
         # opaque/empty gateway 400 bodies.
-        monkeypatch.setattr(mod, "_effective_scope_input_limit", lambda *a, **k: 10)
+        monkeypatch.setattr(scope_budget, "_effective_scope_input_limit", lambda *a, **k: 10)
 
         result = mod.run_scope_review(MockCtx(), "test commit", scope_model="test-scope")
 
@@ -1189,10 +1196,11 @@ class TestRunScopeReviewFailClosed:
         instead of a deterministic provider 400. The limit is computed PER CALL from
         the measured/cold density (v6.80.0), never from an import-time constant."""
         mod = _get_module("ouroboros.tools.scope_review")
+        scope_budget = _get_module("ouroboros.tools.scope_review_budget")
         from ouroboros.tools.review_helpers import calibrated_input_token_limit
         # opus-4.8 KNOWN sub-floor (200K) via evidence; everything else >=1M.
         monkeypatch.setattr(
-            mod, "_scope_window",
+            scope_budget, "_scope_window",
             lambda m, **_k: mod.ReviewerWindow(
                 200_000 if "opus" in str(m) else 1_000_000, "confirmed",
             ),
@@ -1341,8 +1349,9 @@ class TestScopeReviewModule:
         subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
         mod = _get_module("ouroboros.tools.scope_review")
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
         monkeypatch.setattr(
-            mod,
+            scope_pack,
             "compile_review_context_atlas",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("inventory failed")),
         )
@@ -2505,15 +2514,16 @@ def test_ladder_steps_are_recorded_once_aggregated(tmp_path, monkeypatch):
     """RS5: the guaranteed-fit ladder leaves ONE aggregated field in the existing
     context manifest — not an event per step, and not silence."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
-    monkeypatch.setattr(sr, "run_cmd", lambda cmd, cwd=None: (
+    monkeypatch.setattr(scope_pack, "run_cmd", lambda cmd, cwd=None: (
         "M\ta.py" if "--name-status" in cmd else "diff --git a/a.py b/a.py\n+x = 1\n"
     ))
-    monkeypatch.setattr(sr, "capture_staged_diff",
+    monkeypatch.setattr(scope_pack, "capture_staged_diff",
                         lambda _repo, **_k: "diff --git a/a.py b/a.py\n+x = 1\n")
-    monkeypatch.setattr(sr, "_gather_scope_packs", lambda *a, **k: "ATLAS")
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_k: 900_000)
+    monkeypatch.setattr(scope_pack, "_gather_scope_packs", lambda *a, **k: "ATLAS")
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_k: 900_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -2559,11 +2569,13 @@ def test_unassembled_required_terminal_names_the_artifact_not_a_phantom_overflow
     staged diff") cannot shrink an UNCHANGED artifact. The refusal is also a
     ladder STEP: a terminal with an empty trace explains nothing after the fact."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     _repo_with_oversized_required_prompt(tmp_path)
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 200_000)
-    monkeypatch.setattr(sr, "_scope_window",
-                        lambda _m, **_k: sr.ReviewerWindow(window_tokens=1_000_000, status="confirmed"))
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 200_000)
+    for _module in (sr, scope_pack):  # the ladder terminal and the block message read it
+        monkeypatch.setattr(_module, "_scope_window",
+                            lambda _m, **_k: sr.ReviewerWindow(window_tokens=1_000_000, status="confirmed"))
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -2618,14 +2630,16 @@ def test_mixed_terminal_reports_both_causes_and_the_mixed_remedy(tmp_path, monke
     which is false for, and cannot resolve, the overflow half. Both causes ride
     the terminal, the trace, and the owner-facing block."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
     from ouroboros.tools.review_context_atlas import ATLAS_MIXED_ASSEMBLY_REMEDY
 
     _repo_with_oversized_required_prompt(tmp_path)
     # An input budget so small the atlas hard allowance is zero: ANY rendered
     # manifest overflows, while required prompts/huge.md was already dropped.
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 6_000)
-    monkeypatch.setattr(sr, "_scope_window",
-                        lambda _m, **_k: sr.ReviewerWindow(window_tokens=1_000_000, status="confirmed"))
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 6_000)
+    for _module in (sr, scope_pack):  # the ladder terminal and the block message read it
+        monkeypatch.setattr(_module, "_scope_window",
+                            lambda _m, **_k: sr.ReviewerWindow(window_tokens=1_000_000, status="confirmed"))
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -2678,6 +2692,7 @@ def test_diff_only_degradation_is_not_reported_as_fully_included(tmp_path, monke
     import subprocess
 
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "CHECKLISTS.md").write_text(
@@ -2697,7 +2712,7 @@ def test_diff_only_degradation_is_not_reported_as_fully_included(tmp_path, monke
     (tmp_path / "big_b.py").write_text("z = 0\n" + "y = 1\n" * 39_999, encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 120_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 120_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -2836,13 +2851,14 @@ def test_constrained_budget_degrades_touched_test_to_diff_only(tmp_path, monkeyp
     `diff_only_included` mechanism, assembly SUCCEEDS, and the manifest row
     carries the disclosure."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     _ladder_repo(
         tmp_path,
         files={"tests/test_big.py": _BIG_TEST_BODY, "mod.py": "x = 1\n"},
         changes={"tests/test_big.py": _BIG_TEST_CHANGED, "mod.py": "x = 2\n"},
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 45_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 45_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -2876,6 +2892,7 @@ def test_touched_test_degrades_before_the_required_tier_and_zero_context_diff(
     the required tier: the required-beyond-diff artifact keeps its full
     snapshot in the fixed part and no zero-context-diff step is recorded."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     _ladder_repo(
         tmp_path,
@@ -2889,7 +2906,7 @@ def test_touched_test_degrades_before_the_required_tier_and_zero_context_diff(
             "prompts/mini_prompt.md": "CHANGED\n" + "word here\n" * 3_999,
         },
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 45_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 45_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -2916,6 +2933,7 @@ def test_canonical_doc_is_never_ladder_degraded_to_diff_only(tmp_path, monkeypat
     alone overflows the budget the ladder exhausts its free rungs (including
     -U0) and fails CLOSED — it never hands the doc to diff-only."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     _ladder_repo(
         tmp_path,
@@ -2929,8 +2947,8 @@ def test_canonical_doc_is_never_ladder_degraded_to_diff_only(tmp_path, monkeypat
             "mod.py": "x = 2\n",
         },
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 45_000)
-    monkeypatch.setattr(sr, "_scope_window",
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 45_000)
+    monkeypatch.setattr(scope_pack, "_scope_window",
                         lambda _m, **_k: sr.ReviewerWindow(window_tokens=1_000_000, status="confirmed"))
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
@@ -2958,6 +2976,7 @@ def test_binary_test_fixture_is_never_degraded_to_diff_only(tmp_path, monkeypatc
     so a candidates list without the binary filter would degrade the binary
     first and fail the note assertions below."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     _ladder_repo(
         tmp_path,
@@ -2970,7 +2989,7 @@ def test_binary_test_fixture_is_never_degraded_to_diff_only(tmp_path, monkeypatc
             "tests/test_big.py": _BIG_TEST_CHANGED,
         },
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 45_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 45_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -3001,6 +3020,7 @@ def test_deleted_text_test_degrades_to_diff_only_under_pressure(tmp_path, monkey
     refusal-branch deficit has a pre-existing 50K floor that outsizes the
     deleted test — a ladder property, not an effect of this fix."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     # ~30K tokens of deleted test: inline + its diff minus-lines both ride the
     # fixed part (~65K total), overflowing the 45K budget; dropping the inline
@@ -3023,7 +3043,7 @@ def test_deleted_text_test_degrades_to_diff_only_under_pressure(tmp_path, monkey
             "mod.py": "x = 2\n",
         },
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 45_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 45_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -3050,6 +3070,7 @@ def test_degraded_test_gets_no_false_atlas_delegation_phrase(tmp_path, monkeypat
     note, budget-degraded ones move to the degradation note, and the
     unconditional phrase is gone."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     _ladder_repo(
         tmp_path,
@@ -3064,7 +3085,7 @@ def test_degraded_test_gets_no_false_atlas_delegation_phrase(tmp_path, monkeypat
             ),
         },
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 45_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 45_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -3095,6 +3116,7 @@ def test_deleted_non_test_file_is_never_degraded(tmp_path, monkeypatch):
     deleted branch would degrade it and assemble, flipping every assert below.
     The named `diff_only_paths` ladder trace proves it was never degraded."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     gone_body = "\n".join(["def helper():"] + ["    filler = 1"] * 8_000) + "\n"
     _ladder_repo(
@@ -3102,8 +3124,8 @@ def test_deleted_non_test_file_is_never_degraded(tmp_path, monkeypatch):
         files={"mod_big.py": gone_body, "mod.py": "x = 1\n"},
         changes={"mod_big.py": None, "mod.py": "x = 2\n"},
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 45_000)
-    monkeypatch.setattr(sr, "_scope_window",
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 45_000)
+    monkeypatch.setattr(scope_pack, "_scope_window",
                         lambda _m, **_k: sr.ReviewerWindow(window_tokens=1_000_000, status="confirmed"))
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
@@ -3124,6 +3146,7 @@ def test_deleted_test_token_estimate_orders_largest_first(tmp_path, monkeypatch)
     estimates the LARGER deleted test alone covers the deficit and the smaller
     one keeps its HEAD inline."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     big_gone = "\n".join(["def test_gone_big():"] + ["    filler = 1"] * 16_000) + "\n"
     small_gone = "\n".join(["def test_gone_small():"] + ["    filler = 1"] * 2_100) + "\n"
@@ -3140,7 +3163,7 @@ def test_deleted_test_token_estimate_orders_largest_first(tmp_path, monkeypatch)
             "mod.py": "x = 2\n",
         },
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 135_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 135_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -3166,6 +3189,7 @@ def test_oversized_deleted_test_keeps_suppressed_marker_not_diff_only(
     relieved by the genuine candidate (the big CURRENT test), and the oversized
     deletion keeps its own typed suppression marker."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     huge_gone = "\n".join(["def test_huge_gone():"] + ["    filler = 1"] * 74_000) + "\n"
     assert len(huge_gone.encode()) > 1_048_576  # over the inline cap
@@ -3174,7 +3198,7 @@ def test_oversized_deleted_test_keeps_suppressed_marker_not_diff_only(
         files={"tests/test_huge_gone.py": huge_gone, "tests/test_big.py": _BIG_TEST_BODY},
         changes={"tests/test_huge_gone.py": None, "tests/test_big.py": _BIG_TEST_CHANGED},
     )
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 330_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 330_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -3198,6 +3222,7 @@ def test_a_renamed_test_fixture_is_not_degraded(tmp_path, monkeypatch):
     its content entirely. Renamed touched tests keep their snapshot; the plain
     modified test still rides the diff-only rung."""
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     _ladder_repo(
         tmp_path,
@@ -3208,7 +3233,7 @@ def test_a_renamed_test_fixture_is_not_degraded(tmp_path, monkeypatch):
     subprocess.run(["git", "mv", "tests/old_name.bin", "tests/new_name.bin"],
                    cwd=str(tmp_path), capture_output=True)
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 45_000)
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 45_000)
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
 
@@ -3245,13 +3270,14 @@ def test_unavailable_staged_diff_blocks_instead_of_reviewing_a_placeholder(tmp_p
     a placeholder that says the evidence is missing."""
     from ouroboros.tools import review_binary_context as rbc
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     _ladder_repo(tmp_path, files={"mod.py": "x = 1\n"}, changes={"mod.py": "x = 2\n"})
 
     def broken(*_a, **_k):
         raise rbc.StagedDiffUnavailable("staged diff capture failed (rc 128): fatal")
 
-    monkeypatch.setattr(sr, "capture_staged_diff", broken)
+    monkeypatch.setattr(scope_pack, "capture_staged_diff", broken)
 
     assert issubclass(rbc.StagedDiffUnavailable, RuntimeError)
     with pytest.raises(RuntimeError):
@@ -3271,6 +3297,7 @@ def test_ladder_cannot_degrade_a_required_beyond_diff_artifact_to_diff_only(
     import subprocess
 
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "CHECKLISTS.md").write_text(
@@ -3295,8 +3322,8 @@ def test_ladder_cannot_degrade_a_required_beyond_diff_artifact_to_diff_only(
     (tmp_path / "big_b.py").write_text("z = 0\n" + "y = 1\n" * 39_999, encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 120_000)
-    monkeypatch.setattr(sr, "_scope_window",
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 120_000)
+    monkeypatch.setattr(scope_pack, "_scope_window",
                         lambda _m, **_k: sr.ReviewerWindow(window_tokens=1_000_000, status="confirmed"))
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
@@ -3344,6 +3371,7 @@ def test_ladder_degrades_ordinary_files_before_a_required_artifact(tmp_path, mon
     import subprocess
 
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as scope_pack
 
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "CHECKLISTS.md").write_text(
@@ -3373,8 +3401,8 @@ def test_ladder_degrades_ordinary_files_before_a_required_artifact(tmp_path, mon
         (tmp_path / name).write_text("z = 0\n" + "y = 1\n" * 13_333, encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
-    monkeypatch.setattr(sr, "_effective_scope_input_limit", lambda **_kw: 90_000)
-    monkeypatch.setattr(sr, "_scope_window",
+    monkeypatch.setattr(scope_pack, "_effective_scope_input_limit", lambda **_kw: 90_000)
+    monkeypatch.setattr(scope_pack, "_scope_window",
                         lambda _m, **_k: sr.ReviewerWindow(window_tokens=1_000_000, status="confirmed"))
 
     prompt, status = sr._build_scope_prompt(tmp_path, "test commit")
@@ -3399,10 +3427,11 @@ def test_cold_start_sizes_down_and_passes_instead_of_400ing(tmp_path, monkeypatc
     never larger (pack draws a deterministic provider 400)."""
     from ouroboros.capability_evidence import _DENSITY_MEMO, record_token_density
     from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_budget as scope_budget
 
     _DENSITY_MEMO.clear()
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(sr, "_scope_window",
+    monkeypatch.setattr(scope_budget, "_scope_window",
                         lambda _m, **_k: sr.ReviewerWindow(1_000_000, "confirmed"))
 
     cold = sr._effective_scope_input_limit(scope_model="unknown/brand-new-model")

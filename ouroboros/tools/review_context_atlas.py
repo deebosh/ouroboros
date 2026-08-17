@@ -52,7 +52,7 @@ _REVIEW_STACK_PATHS = frozenset({
     "ouroboros/tools/tool_catalog.py",
     "ouroboros/tools/tool_context.py",
     "ouroboros/tools/tool_result.py",
-    "ouroboros/tools/scope_review.py",
+    "ouroboros/tools/scope_review.py", "ouroboros/tools/scope_review_budget.py", "ouroboros/tools/scope_review_pack.py",  # the scope reviewer's own owners: prompt-budget/window authority and pack assembly both decide what the blocking scope gate sees
     "ouroboros/tools/parallel_review.py",
     "ouroboros/tools/review_helpers.py",
     "ouroboros/tools/review_revalidation.py",

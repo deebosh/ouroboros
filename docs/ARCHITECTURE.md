@@ -298,7 +298,9 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── review_helpers.py  ← Shared review helpers (section loader, touched/head packs, intent, pytest preflight via agent interpreter)
       │   ├── review_binary_context.py ← Exact staged/parent Git object metadata, including deletions, for binary files carried by the transaction-authorized managed-update resolver; ordinary commits keep the existing binary omission/block policy
       │   ├── review_revalidation.py ← Reviewed-commit fingerprint revalidation helpers (blocks when staged diff changes after review)
-      │   ├── scope_review.py   ← Scope reviewer (enforcement-aware, budget-aware)
+      │   ├── scope_review.py   ← Scope reviewer (enforcement-aware, budget-aware): the run itself — dispatch of the configured row, the typed `ScopeReviewResult` vocabulary, the owner low-context-mode skip record, the pack-status and provider-oversize translations, and the one-pass P3 blocking-authority decision
+      │   ├── scope_review_budget.py ← Scope-prompt BUDGET owner: the per-call input cap from the reviewer's window and measured tokenizer density, the window-scaled output/tokenizer reserves, the configured reviewer identity, the owner context-mode predicate, and gateway-route oversize classification — `scope_review` re-imports every name under its historical private aliases
+      │   ├── scope_review_pack.py ← Scope-pack ASSEMBLY owner: canonical governance docs, touched-file snapshots and deleted-file HEAD content, the Generated Scope Atlas request, prior triad/scope history sections, and the guaranteed-fit ladder that degrades the fixed part or refuses; records the context manifest and the assembled prompt's stable-prefix boundary
       │   ├── scope_review_session.py ← Scope SESSION delivery (phase 5.2/5.6/5.7): the same task/checklist/contract via the same builder, retrieval pointers instead of assembled packs, governance docs as H2-H4 inclusive complete-subtree navigation maps, forensic (non-gating) coverage manifest
       │   ├── scope_window.py  ← Scope-reviewer WINDOW authority (extracted at the v6.89.0 synthesis for the module-size gate): the evidence-typed `scope_window` resolution (ReviewerWindow; sizing vs blocking authority split), the five-way provenance vocabulary + honest wording, the designated-default identity, and the 1M/200K window constants — `scope_review` re-imports every name under its historical private aliases
       │   ├── scope_review_contract.py ← Pure scope-output parser and one-pass validity contract; owns no routing, retries, or reviewer state
@@ -1826,7 +1828,7 @@ BIBLE supplies review authority, CHECKLISTS supplies criteria, and Development s
   the audited skip covers only advisory admission and never authoritative
   review, independently applicable test policy, or snapshot binding.
 - Triad diff review (`tools/review.py`) asks configured reviewer slots to cover the Repo Commit Checklist with JSON findings. Quorum is adaptive to the configured reviewer count via `config.adaptive_quorum` (v6.36.0): 2-of-N for N≥3, both for N=2, and a single configured reviewer for N=1 — the latter runs as a loud `single_reviewer_no_diversity` degraded mode (owner's explicit small-config choice), while a configured-≥quorum-but-fewer-responded shortfall stays a loud infra quorum failure. The same SSOT governs scope/plan/skill/acceptance review.
-- Scope review (`tools/scope_review.py`) sees touched context plus a Generated Scope Atlas and checks intent/scope/coupling. The Atlas target is an 850K estimated-token assembled prompt under the 920K hard review budget; it raw-inlines selected protected/central files and accounts for every tracked path as full, already included, manifest-only, excluded, sensitive, binary/media, vendored/minified, oversized, read-error, or budget-omitted. Scope review is fail-closed on unreadable touched files and budget-aware on oversized prompts; whether findings block or downgrade to advisory follows `OUROBOROS_REVIEW_ENFORCEMENT`.
+- Scope review (`tools/scope_review.py`, whose pack is assembled by `tools/scope_review_pack.py` within the cap `tools/scope_review_budget.py` computes) sees touched context plus a Generated Scope Atlas and checks intent/scope/coupling. The Atlas target is an 850K estimated-token assembled prompt under the 920K hard review budget; it raw-inlines selected protected/central files and accounts for every tracked path as full, already included, manifest-only, excluded, sensitive, binary/media, vendored/minified, oversized, read-error, or budget-omitted. Scope review is fail-closed on unreadable touched files and budget-aware on oversized prompts; whether findings block or downgrade to advisory follows `OUROBOROS_REVIEW_ENFORCEMENT`.
 - Parallel orchestration (`tools/parallel_review.py`) launches triad and scope concurrently so the agent receives all findings in one round.
 - Shared helpers (`review_helpers.py`, `triad_review.py`) own pack building, checklist loading, JSON extraction, usage events, obligations/history prompt scaffolding, and reviewer actor records.
 
@@ -1888,7 +1890,7 @@ a stored owner setting but is enforcement-inert and consulted by nothing. The on
 owner control over scope review is the context mode: `low` means whole-repository
 scope review is declaredly not performed (typed `skipped_low_context_mode` row), and
 `max` means this fail-closed gate. So
-`scope_review.py` gates the assembled INPUT prompt on
+`scope_review_budget.py` gates the assembled INPUT prompt on
 `_SCOPE_INPUT_TOKEN_LIMIT = min(920K, 1M − _SCOPE_MAX_TOKENS − margin)`, with a
 substantial tokenizer headroom margin (currently 155K tokens) — the 920K
 SSOT itself is left untouched. The cap is additionally DENSITY-CALIBRATED: the chars/4
@@ -1914,7 +1916,7 @@ disappears. There is no independently refreshed running-maximum scalar.
 `review_helpers.calibrated_input_token_limit` still returns the STRICTEST of the 920K
 budget cap, density form `(window − output_reserve) / density`, and historical
 absolute-margin form, so expiry may loosen only within those existing conservative
-bounds. Provenance reports the reducer branch. `scope_review._effective_scope_input_limit` computes it PER CALL
+bounds. Provenance reports the reducer branch. `scope_review_budget._effective_scope_input_limit` computes it PER CALL
 (an import-time constant froze the pre-measurement value for the whole process, so a
 measurement could never reach it), and the triad (`tools/review.py`),
 `plan_review.py`, and `deep_self_review.run_deep_self_review` consume the same helper. The scope cap is WINDOW-AWARE: a known reviewer window from
