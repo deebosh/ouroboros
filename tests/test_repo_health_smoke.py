@@ -542,6 +542,13 @@ def test_ref_inventory_blob_cache_is_exactly_a_cold_walk(tmp_path: Path) -> None
     assert cache, "the cache must actually retain blob facts"
     warm_second = collect_size_ratchet_inventory_at_ref(repo, second, blob_facts=cache)
     assert {item.path for item in warm_second.functions} == {"kept.py", "moved.py"}
+    # Cached modules carry no source text; re-deriving functions from them must
+    # fail closed instead of silently yielding an empty function inventory.
+    from ouroboros.review import _iter_gated_functions_from_modules
+    cached_module = next(module for module in warm_second.modules if module.path == "kept.py")
+    assert cached_module.line_count > 0 and not cached_module._source_text
+    with pytest.raises(ValueError, match="carries no source text"):
+        list(_iter_gated_functions_from_modules((cached_module,)))
 
 
 def test_full_history_rejects_add_and_carry_bypass(tmp_path: Path) -> None:

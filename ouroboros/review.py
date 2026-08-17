@@ -258,6 +258,10 @@ def _iter_gated_functions_from_modules(modules: Iterable[GatedModule]) -> Iterat
             continue
         if any(part in _FUNCTION_SKIP_DIR_NAMES for part in posix.parts[:-1]):
             continue
+        if module.line_count > 0 and not module._source_text:
+            # A ref inventory served from the blob cache carries no source; a
+            # caller re-deriving functions from it must fail here, not report zero.
+            raise ValueError(f"gated Python module carries no source text: {module.path}")
         try:
             tree = ast.parse(module._source_text, filename=module.path)
         except SyntaxError as exc:
@@ -378,7 +382,9 @@ def collect_size_ratchet_inventory_at_ref(
     blob id is content-addressed, so a cached entry is the same bytes by
     construction; reusing it across refs makes a multi-commit audit cost only
     the blobs that actually changed. The projections are byte-identical to a
-    cold walk.
+    cold walk; only ``GatedModule._source_text`` is not carried for cached
+    blobs, so functions are always taken from the cached parse (re-deriving
+    them from a cached module raises rather than reporting zero).
     """
     root = pathlib.Path(repo_dir).resolve()
     cache = blob_facts if blob_facts is not None else {}
