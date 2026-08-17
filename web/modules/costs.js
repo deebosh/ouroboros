@@ -392,3 +392,22 @@ export function initCosts({ state, mount }) {
         refreshCostsPanel();
     });
 }
+
+// Presentation of one live frame's task-scope cost evidence: a `replace` frame
+// (task_done/task_cost_finalized) drops the summarizer's own meta strings, and a
+// summarizer-built `cost=` string is dropped unconditionally — money renders ONLY
+// from the card's sticky projection, never from a bare per-call number.
+export function withTaskCostMeta(summary, payload, { replace = false, rawTs = '' } = {}) {
+    const projection = taskCostProjection(payload, rawTs);
+    // `replace` frames (task_done/task_cost_finalized) never keep the
+    // summarizer's own meta strings. Cost renders ONLY from the card's sticky
+    // record.costMeta (applyLiveCardState); summarizer-built `cost=` strings
+    // are dropped UNCONDITIONALLY — a frame without task-scope accounting
+    // evidence must show no money at all, not a bare per-call number.
+    const base = replace ? { ...summary, meta: [] } : summary;
+    const out = projection ? { ...base, costProjection: projection } : { ...base };
+    if (Array.isArray(out.meta) && out.meta.length) {
+        out.meta = out.meta.filter((entry) => !String(entry || '').startsWith('cost='));
+    }
+    return out;
+}

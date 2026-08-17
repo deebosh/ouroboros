@@ -42,10 +42,13 @@ import {
 import { confirmAndSendPanic, shouldFirePanic } from './chat_controls.js';
 import { createCardActions } from './chat_card_actions.js';
 import { createComposer } from './chat_composer.js';
+import { createFrameRouting } from './chat_frame_routing.js';
+import { createHeaderControls } from './chat_header_controls.js';
 import { createDocumentBubbles } from './chat_document_bubble.js';
 import { createMessageIdentity } from './chat_message_identity.js';
 import { createLiveCardView } from './chat_live_card_view.js';
 import { createMessageAnnotations } from './chat_message_annotations.js';
+import { showContextFitToast, showTaskIncidentToast } from './chat_notices.js';
 import { createSubagentRouting } from './chat_subagent_routing.js';
 import { createTaskUiStateTracker } from './chat_task_ui_state.js';
 import { createTimelineAnchors } from './chat_timeline_anchor.js';
@@ -54,6 +57,7 @@ import {
     mergeStickyCostMeta,
     taskCostMeta,
     taskCostProjection,
+    withTaskCostMeta,
 } from './costs.js';
 
 // Compatibility facade: chat.js keeps publishing every helper it used to own,
@@ -83,50 +87,6 @@ const CHAT_SESSION_ID_KEY = 'ouro_chat_session_id';
 const MAX_PENDING_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_PENDING_ATTACHMENT_BYTES = 100 * 1024 * 1024;
-// Shared by every Main/Project chat instance on the page: a Project incident is
-// mirrored into Main, but must still produce exactly one toast.
-const shownIncidentToastKeys = new Set();
-
-function withTaskCostMeta(summary, payload, { replace = false, rawTs = '' } = {}) {
-    const projection = taskCostProjection(payload, rawTs);
-    // `replace` frames (task_done/task_cost_finalized) never keep the
-    // summarizer's own meta strings. Cost renders ONLY from the card's sticky
-    // record.costMeta (applyLiveCardState); summarizer-built `cost=` strings
-    // are dropped UNCONDITIONALLY — a frame without task-scope accounting
-    // evidence must show no money at all, not a bare per-call number.
-    const base = replace ? { ...summary, meta: [] } : summary;
-    const out = projection ? { ...base, costProjection: projection } : { ...base };
-    if (Array.isArray(out.meta) && out.meta.length) {
-        out.meta = out.meta.filter((entry) => !String(entry || '').startsWith('cost='));
-    }
-    return out;
-}
-
-function showTaskIncidentToast(msg) {
-    const incident = String(msg?.task_incident || '').trim();
-    if (!incident) return;
-    const key = String(msg?.toast_once || `${msg?.task_id || ''}:${incident}`).trim();
-    if (!key || shownIncidentToastKeys.has(key)) return;
-    shownIncidentToastKeys.add(key);
-    if (shownIncidentToastKeys.size > 500) {
-        const oldest = shownIncidentToastKeys.values().next().value;
-        shownIncidentToastKeys.delete(oldest);
-    }
-    showToast(String(msg?.content || msg?.text || incident), 'error');
-}
-
-function showContextFitToast(evt) {
-    if (evt?.checkpoint_kind !== 'context_fit_low_retry') return;
-    const key = `context-fit:${String(evt?.toast_once || `${evt?.task_id || ''}:${evt?.round || ''}`)}`;
-    if (shownIncidentToastKeys.has(key)) return;
-    shownIncidentToastKeys.add(key);
-    if (shownIncidentToastKeys.size > 500) {
-        const oldest = shownIncidentToastKeys.values().next().value;
-        shownIncidentToastKeys.delete(oldest);
-    }
-    showToast('Context exceeded this route. Retrying the same model once with the task-local Low view.', 'warn');
-}
-
 function getOrCreateChatSessionId() {
     try {
         const existing = sessionStorage.getItem(CHAT_SESSION_ID_KEY);
@@ -596,49 +556,9 @@ export function createChatInstance({
         statusBadge.textContent = text;
     }
 
-    function syncHeaderControlState(data) {
-        headerActions?.querySelectorAll('[data-chat-command]').forEach((button) => {
-            const cmd = button.dataset.chatCommand;
-            if (cmd === 'evolve') {
-                button.classList.toggle('on', !!data?.evolution_enabled);
-                if (data?.evolution_state?.detail) button.title = data.evolution_state.detail;
-            } else if (cmd === 'bg') {
-                button.classList.toggle('on', !!data?.bg_consciousness_enabled);
-                if (data?.bg_consciousness_state?.detail) button.title = data.bg_consciousness_state.detail;
-            }
-        });
-        // Evolve/Consciousness now live inside the More menu; surface a small dot
-        // on the More summary so an active mode stays visible without opening it.
-        const moreSummary = headerActions?.querySelector('.chat-header-more > summary');
-        if (moreSummary) {
-            const anyActive = !!data?.evolution_enabled || !!data?.bg_consciousness_enabled;
-            moreSummary.classList.toggle('has-active', anyActive);
-        }
-        const ctxBtn = byId('context-mode');
-        if (ctxBtn && typeof data?.context_mode === 'string') {
-            ctxBtn.dataset.contextMode = data.context_mode === 'low' ? 'low' : 'max';
-        }
-        const budget = headerBudgetPresentation(data);
-        const budgetText = byId('budget-text');
-        const budgetFill = byId('budget-bar-fill');
-        if (budgetText) budgetText.textContent = budget.label;
-        if (budgetFill) budgetFill.style.width = `${budget.fillPct}%`;
-    }
-
-    async function refreshHeaderControlState(force = false) {
-        if (!force && state.activePage !== 'chat') return;
-        try {
-            const resp = await apiFetch('/api/state', { cache: 'no-store' });
-            if (!resp.ok) {
-                syncHeaderControlState({ accounting: { available: false } });
-                return;
-            }
-            syncHeaderControlState(await resp.json());
-        } catch {
-            syncHeaderControlState({ accounting: { available: false } });
-        }
-    }
-
+    const { syncHeaderControlState, refreshHeaderControlState } = createHeaderControls({
+        byId, headerActions, state,
+    });
     function persistVisibleHistory() {
         try {
             sessionStorage.setItem(storeKey(CHAT_STORAGE_KEY), JSON.stringify(persistedHistory.slice(-200)));
@@ -2853,49 +2773,16 @@ export function createChatInstance({
         }
     }
 
-    const isKnownProjectFrame = (msg) => {
-        const cid = Number(msg?.chat_id ?? 1);
-        return state.projectChatIds instanceof Set && state.projectChatIds.has(cid);
-    };
-
-    function incrementUnreadIfNeeded(msg) {
-        if (!isMain) return;  // the global unread badge tracks the main chat
-        // Project visible_revision is the sole unread authority for a Project.
-        // Main may mirror its summary/progress/log into the штаб live card, but
-        // that presentation mirror must not create a second Main unread.
-        if (isKnownProjectFrame(msg)) return;
-        if (state.activePage === 'chat') return;
-        state.unreadCount++;
-        updateUnreadBadge();
-    }
-
+    const {
+        isKnownProjectFrame,
+        incrementUnreadIfNeeded,
+        isProjectMirrorFrame,
+        isMyThread,
+    } = createFrameRouting({ state, isMain, chatId, updateUnreadBadge });
     onWs('typing', (msg) => {
         if (!isMyThread(msg)) return;  // each column shows typing only for its own thread
         showTyping();
     });
-
-    // One socket, client-side fan-out: project instances take only their own
-    // thread. The MAIN instance keeps ordinary non-project traffic AND mirrors
-    // project progress/digests/logs as the "штаб", but never raw project chat
-    // user/assistant messages.
-    const isProjectMirrorFrame = (msg) => {
-        if (!msg) return false;
-        if (msg.type === 'log') return true;
-        if (msg.is_progress) return true;
-        if (msg.system_type === 'task_summary' || msg.system_type === 'project_digest') return true;
-        return false;
-    };
-
-    const isMyThread = (msg, { mirrorProject = false } = {}) => {
-        const cid = Number(msg?.chat_id ?? 1);
-        if (isMain) {
-            if (isKnownProjectFrame(msg)) {
-                return mirrorProject && isProjectMirrorFrame(msg);
-            }
-            return true;
-        }
-        return cid === chatId;
-    };
 
     onWs('chat', (msg) => {
         if (!isMyThread(msg, { mirrorProject: true })) return;

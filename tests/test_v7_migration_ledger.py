@@ -467,7 +467,19 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         ("chat_live_card_view.js", "createLiveCardView", "applySuggestedName applySuggestedNameMutation renderCollapsedActivity ensureSubagentContainer setLiveCardTypingVisible formatLiveCardPhaseLabel setLiveCardExpanded isLiveLineExpandable syncLiveCardToggle directSubagentCount buildTimelineItemHtml isTimelinePinnedToBottom deferCollapsedTimeline renderLiveCardTimeline appendTimelineItem patchLastTimelineItem patchTimelineItemAt renderLiveCardMeta"),
         ("chat_message_annotations.js", "createMessageAnnotations", "routingAnnotationText renderRoutingAnnotation updateMessageAnnotation clearTransientRoutingAnnotations markPendingDelivered"),
         ("chat_composer.js", "createComposer", "resizeChatInput swarmArmed setSwarm setSendBusy scrollToBottom updateScrollButton updateMessagesPadding"),
+        ("chat_header_controls.js", "createHeaderControls", "syncHeaderControlState refreshHeaderControlState"),
+        ("chat_frame_routing.js", "createFrameRouting", "isKnownProjectFrame incrementUnreadIfNeeded isProjectMirrorFrame isMyThread"),
     )
+    # The same wave's chat.js module-scope primitives: three closure helpers with no
+    # closure reads at all became plain top-level owners, and the cost presentation
+    # joined the existing costs owner.
+    w3_chat_primitive_rows = {
+        "web/modules/chat.js::withTaskCostMeta": "web/modules/costs.js::withTaskCostMeta",
+        "web/modules/chat.js::shownIncidentToastKeys": "web/modules/chat_notices.js::shownIncidentToastKeys",
+        "web/modules/chat.js::showTaskIncidentToast": "web/modules/chat_notices.js::showTaskIncidentToast",
+        "web/modules/chat.js::showContextFitToast": "web/modules/chat_notices.js::showContextFitToast",
+    }
+    web_extractions.update(w3_chat_primitive_rows)
     web_extractions.update({f"web/modules/chat.js::createChatInstance.{symbol}": f"web/modules/{owner}::{factory}.{symbol}" for owner, factory, symbols in w3_chat_extraction_symbols_by_owner for symbol in symbols.split()})
     implemented.update(registry_core_rows)
     implemented.update(registry_resolution_rows)
@@ -915,6 +927,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
     # W3: a module-private chat.js helper that moved with its only caller — never exported, so no facade.
     registry_extraction_no_facade_rows.add("web/modules/chat.js::projectIdFromTask")
+    registry_extraction_no_facade_rows.update(w3_chat_primitive_rows)
     registry_extraction_no_facade_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
     # S6 (delegation/cancellation targeted fixes): no symbol moves — every row
     # is the SAME identity with a stated behaviour delta, so the owner is the

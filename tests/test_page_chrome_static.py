@@ -207,8 +207,9 @@ def test_server_navigation_and_chat_static_contracts():
     assert 'request.query_params.get("force")' in control_source
     assert "window.dispatchEvent(new CustomEvent('ouro:page-shown', { detail: { page: pageName } }));" in app_source
     assert "evo-runtime-detail" in evo_source
-    assert "data?.evolution_state?.detail" in chat_source
-    assert "data?.bg_consciousness_state?.detail" in chat_source
+    header_controls = _read("web/modules/chat_header_controls.js")
+    assert "data?.evolution_state?.detail" in header_controls
+    assert "data?.bg_consciousness_state?.detail" in header_controls
     assert re.search(r'<input[^>]+id="chat-file-input"[^>]+multiple', chat_source)
     assert "MAX_PENDING_ATTACHMENTS = 10" in chat_source
     assert "MAX_ATTACHMENT_FILE_BYTES = 50 * 1024 * 1024" in chat_source

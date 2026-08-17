@@ -8,6 +8,7 @@ import {
     mergeStickyCostMeta,
     taskCostMeta,
     taskCostProjection,
+    withTaskCostMeta,
 } from '../modules/costs.js';
 import { summarizeLogEvent } from '../modules/log_events.js';
 import {
@@ -267,4 +268,32 @@ test('log events read the shared cost names and stop hiding a real $0', () => {
         cost_accounting_status: 'available',
     });
     assert.ok(done.meta.includes('$0.0000'), JSON.stringify(done.meta));
+});
+
+// A live frame's cost evidence, presented for the card. Money renders ONLY from
+// the card's sticky projection, so any summarizer-built `cost=` string is
+// dropped — a frame without task-scope accounting shows no money at all rather
+// than a bare per-call number.
+function presentedFrame(summary, payload, options) {
+    return withTaskCostMeta(summary, payload, options);
+}
+
+test('a summarizer cost string is dropped unconditionally; other meta survives', () => {
+    const out = presentedFrame(
+        { headline: 'Working', meta: ['cost=$0.02', 'rounds=3'] },
+        { cost_usd: 0.5, cost_accounting_status: 'available', cost_final: true },
+        { rawTs: '2026-08-17T00:00:00Z' },
+    );
+    assert.deepEqual(out.meta, ['rounds=3']);
+    assert.deepEqual(out.costProjection.meta, taskCostMeta({
+        cost_usd: 0.5, cost_accounting_status: 'available', cost_final: true,
+    }));
+});
+
+test('a replace frame keeps no summarizer meta at all, and the source object is untouched', () => {
+    const summary = { headline: 'Done', meta: ['rounds=3'] };
+    const out = presentedFrame(summary, {}, { replace: true });
+    assert.deepEqual(out.meta, []);
+    assert.deepEqual(summary.meta, ['rounds=3'], 'the presentation never mutates the summarizer output');
+    assert.equal('costProjection' in out, false, 'no accounting evidence attaches no projection');
 });

@@ -227,9 +227,10 @@ def test_project_main_mirror_never_creates_second_unread_static_contract():
     root = Path(__file__).resolve().parents[1]
     chat = (root / "web" / "modules" / "chat.js").read_text(encoding="utf-8")
 
-    unread_fn = chat[
-        chat.index("function incrementUnreadIfNeeded"):
-        chat.index("onWs('typing'")
+    routing = (root / "web" / "modules" / "chat_frame_routing.js").read_text(encoding="utf-8")
+    unread_fn = routing[
+        routing.index("function incrementUnreadIfNeeded"):
+        routing.index("const isProjectMirrorFrame")
     ]
     project_guard = unread_fn.index("if (isKnownProjectFrame(msg)) return;")
     increment = unread_fn.index("state.unreadCount++;")
@@ -238,11 +239,11 @@ def test_project_main_mirror_never_creates_second_unread_static_contract():
 
     # The useful Main штаб/live-card mirror remains, but every unread call keeps
     # the original frame so the Project-origin guard can classify it.
+    assert "mirrorProject && isProjectMirrorFrame(msg)" in routing
     fanout = chat[
-        chat.index("const isProjectMirrorFrame"):
+        chat.index("onWs('typing'"):
         chat.index("onWs('message_annotation'")
     ]
-    assert "mirrorProject && isProjectMirrorFrame(msg)" in fanout
     assert "appendTaskSummaryToLiveCard(msg);" in fanout
     assert "updateLiveCardFromProgressMessage(msg);" in fanout
     assert "incrementUnreadIfNeeded(msg);" in fanout
