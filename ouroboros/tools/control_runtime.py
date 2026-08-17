@@ -155,10 +155,13 @@ def _request_deep_self_review(ctx: ToolContext, reason: str) -> str:
     from ouroboros.deep_self_review import is_review_available
     available, model = is_review_available()
     if not available:
-        return (
-            "❌ Deep self-review unavailable: configure OUROBOROS_MODEL_DEEP_SELF_REVIEW "
-            "and the matching provider API key."
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="unavailable", code="CAPABILITY_UNAVAILABLE",
+            text=(
+                "❌ Deep self-review unavailable: configure OUROBOROS_MODEL_DEEP_SELF_REVIEW "
+                "and the matching provider API key."
+            ),
+        ))
     ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": model, "ts": utc_now_iso()})
     return f"Deep self-review requested (model: {model}). It will be queued and executed asynchronously."
 
@@ -181,12 +184,15 @@ def _update_scratchpad(ctx: ToolContext, content: str) -> str:
         return ("OK: scratchpad is not used for project-scoped tasks (no per-project "
                 "scratchpad). Persist durable project facts with knowledge_write.")
     if not content or not isinstance(content, str) or len(content.strip()) < 10:
-        return (
-            "⚠️ REJECTED: content is empty or too short "
-            f"(got {type(content).__name__}, len={len(content) if isinstance(content, str) else 'N/A'}). "
-            "Scratchpad must have meaningful content (10+ chars). "
-            "This likely means the tool call was malformed — check your arguments."
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text=(
+                "⚠️ REJECTED: content is empty or too short "
+                f"(got {type(content).__name__}, len={len(content) if isinstance(content, str) else 'N/A'}). "
+                "Scratchpad must have meaningful content (10+ chars). "
+                "This likely means the tool call was malformed — check your arguments."
+            ),
+        ))
     from ouroboros.memory import Memory
     mem = Memory(drive_root=ctx.drive_root)
     mem.ensure_files()
@@ -202,7 +208,9 @@ def _update_scratchpad(ctx: ToolContext, content: str) -> str:
         )
     except RuntimeError as exc:
         if "LEGACY_SCRATCHPAD_REQUIRES_MANUAL_UPGRADE" in str(exc):
-            return f"⚠️ {exc}"
+            return _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="LEGACY_BLOCKED", text=f"⚠️ {exc}",
+            ))
         raise
     return f"OK: scratchpad block appended ({len(content)} chars, ts={block.get('ts', '?')[:16]})"
 
@@ -214,9 +222,14 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "") -> str:
     a question, a status update, or an invitation to collaborate.
     """
     if not ctx.current_chat_id:
-        return "⚠️ No active chat — cannot send proactive message."
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ No active chat — cannot send proactive message.",
+        ))
     if not text or not text.strip():
-        return "⚠️ Empty message."
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR", text="⚠️ Empty message.",
+        ))
 
     from ouroboros.utils import append_jsonl
     ctx.pending_events.append({
@@ -244,12 +257,15 @@ def _update_identity(ctx: ToolContext, content: str) -> str:
         return ("OK: identity is global and is never modified from a project-scoped "
                 "task (identity stays continuous across projects — P1).")
     if not content or not isinstance(content, str) or len(content.strip()) < 50:
-        return (
-            "⚠️ REJECTED: content is empty or too short "
-            f"(got {type(content).__name__}, len={len(content) if isinstance(content, str) else 'N/A'}). "
-            "Identity must be a substantial text (50+ chars). "
-            "This likely means the tool call was malformed — check your arguments."
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text=(
+                "⚠️ REJECTED: content is empty or too short "
+                f"(got {type(content).__name__}, len={len(content) if isinstance(content, str) else 'N/A'}). "
+                "Identity must be a substantial text (50+ chars). "
+                "This likely means the tool call was malformed — check your arguments."
+            ),
+        ))
     from ouroboros.memory import Memory
     mem = Memory(drive_root=ctx.drive_root)
     mem.ensure_files()
@@ -335,7 +351,10 @@ def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
 
     if model:
         if model not in available:
-            return f"⚠️ Unknown model: {model}. Available: {', '.join(available)}"
+            return _publish_tool_result(ctx, ToolResult(
+                status="error", code="TOOL_ARG_ERROR",
+                text=f"⚠️ Unknown model: {model}. Available: {', '.join(available)}",
+            ))
 
         import os
         use_local = False

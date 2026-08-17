@@ -119,7 +119,10 @@ def _get_task_result(ctx: ToolContext, task_id: str) -> str:
     status_drive_root = Path(str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
     data = load_effective_task_result(status_drive_root, task_id)
     if not data:
-        return f"Task {task_id}: unknown or not yet registered"
+        return _publish_tool_result(ctx, ToolResult(
+            status="unavailable", code="LEGACY_UNAVAILABLE",
+            text=f"Task {task_id}: unknown or not yet registered",
+        ))
     status = data.get("status", "unknown")
     result = data.get("result", "")
     trace = data.get("trace_summary", "")

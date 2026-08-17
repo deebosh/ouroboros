@@ -558,7 +558,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     new_depth = current_depth + 1
     max_depth = get_max_subagent_depth()
     if new_depth > max_depth:
-        return f"ERROR: Subtask depth limit ({max_depth}) exceeded. Simplify your approach."
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="RESOURCE_CONSTRAINT_BLOCKED",
+            text=f"ERROR: Subtask depth limit ({max_depth}) exceeded. Simplify your approach.",
+        ))
 
     if getattr(ctx, 'is_direct_chat', False):
         from ouroboros.utils import append_jsonl
@@ -624,7 +627,12 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     selected_profile = profile_from_task_constraint(task_constraint)
     ok, missing_caps = subagent_profile_satisfies(selected_profile, required_caps)
     if not ok:
-        return _capability_mismatch_message(selected_profile, missing_caps)
+        # Decided entirely by two arguments of THIS call, with a remedy that changes
+        # one of them: the same argument error the sibling refusal above already is.
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text=_capability_mismatch_message(selected_profile, missing_caps),
+        ))
     allowed_resources = normalize_allowed_resources(
         (parent_contract.get("allowed_resources") if isinstance(parent_contract, dict) else {})
         or metadata.get("allowed_resources")
@@ -643,7 +651,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     child_drive, _drive_err = _prepare_child_drive(
         tid, status_drive_root, memory_mode, parent_project_id)
     if _drive_err:
-        return _drive_err
+        # Same shape as the validator: one caller, and the invocation is here.
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ERROR", text=_drive_err,
+        ))
 
     # C3.1: propagate and narrow the parent's typed delegation intent.
     child_delegation_budget = child_budget_for_schedule(
@@ -752,7 +763,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             pass
         if child_drive is not None:
             shutil.rmtree(child_drive, ignore_errors=True)
-        return f"⚠️ SUBTASK_STATUS_ERROR: failed to persist requested status for {tid}; subagent was not scheduled."
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ERROR",
+            text=f"⚠️ SUBTASK_STATUS_ERROR: failed to persist requested status for {tid}; subagent was not scheduled.",
+        ))
 
     emitted_modes: List[str] = [_emit_control_event(ctx, evt)]
     return _finalize_schedule_emission(ctx, {

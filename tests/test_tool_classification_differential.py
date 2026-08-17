@@ -154,6 +154,11 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "native:LEGACY_UNAVAILABLE:ROUTING_UNCONFIRMED": Delta(False, "ok", True, "unavailable", "A.21", "no route was dispatched and the manual-target delivery was never confirmed"),
     "native:LEGACY_BLOCKED:STEER_REJECTED": Delta(False, "ok", True, "blocked", "A.21", "a steer the supervisor declined delivered nothing to the target's mailbox"),
     "native:LEGACY_UNAVAILABLE:STEER_UNCONFIRMED": Delta(False, "ok", True, "unavailable", "A.21", "an unconfirmed mailbox delivery must not be reported as delivered"),
+    # A.21, the memory writers: `REJECTED` ends in none of the suffixes the family
+    # chain reads, so a scratchpad or identity write that was refused for a
+    # malformed argument reported ok — the one answer that tells the caller its
+    # arguments were fine.
+    "native:TOOL_ARG_ERROR:REJECTED": Delta(False, "ok", True, "argument_error", "A.21", "a memory write refused for empty or too-short content is an argument error, not a write"),
     "shape:cognitive_redirect": Delta(True, "cognitive_tool_required", False, "ok", "A.11", "owner batch #4, through the native producer"),
     "shape:ephemeral_turn_denial": Delta(False, "ok", True, "blocked", "A.4",
         "the decision-turn denial is an access block its own first line never marked"),
@@ -194,6 +199,17 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:promote_unconfirmed": Delta(False, "ok", True, "unavailable", "A.21", "an unconfirmed admission must not be reported as a created task"),
     "shape:route_rejected": Delta(False, "ok", True, "blocked", "A.21", "a project route the supervisor refused scheduled nothing"),
     "shape:route_unconfirmed": Delta(False, "ok", True, "unavailable", "A.21", "an unconfirmed project route must not be reported as routed"),
+    # A.21 across the remaining control leaves. Same blindness as above: a
+    # markerless sentence, or one that reaches its result through a helper the
+    # publication wraps, has no (code, first line) pair to harvest.
+    "shape:deep_self_review_unavailable": Delta(False, "ok", True, "unavailable", "A.21", "a deep self-review nobody can run is an unavailable capability, not a queued review"),
+    "shape:scratchpad_legacy_upgrade": Delta(False, "ok", True, "blocked", "A.21", "a scratchpad that needs a manual upgrade refused the append"),
+    "shape:proactive_message_no_chat": Delta(False, "ok", True, "argument_error", "A.21", "no chat to deliver into means nothing was queued"),
+    "shape:proactive_message_empty": Delta(False, "ok", True, "argument_error", "A.21", "an empty message was never queued"),
+    "shape:switch_model_unknown": Delta(False, "ok", True, "argument_error", "A.21", "an unknown model name switched nothing"),
+    "shape:subtask_depth_limit": Delta(False, "ok", True, "resource_constraint_blocked", "A.21", "a child beyond the depth limit was never scheduled; the limit is the constraint"),
+    "shape:subagent_capability_mismatch": Delta(False, "ok", True, "argument_error", "A.21", "a profile that cannot satisfy the declared capabilities scheduled no child"),
+    "shape:task_result_unknown_id": Delta(False, "ok", True, "unavailable", "A.21", "an id this tree never registered has no result to read"),
 })
 
 # Deltas the classifier WOULD produce for which no producer exists, recorded so a

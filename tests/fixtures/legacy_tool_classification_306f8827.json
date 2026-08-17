@@ -2795,11 +2795,19 @@
    "is_error": true,
    "status": "blocked"
   },
+  "native:TOOL_ARG_ERROR:REJECTED": {
+   "is_error": false,
+   "status": "ok"
+  },
   "native:TOOL_ARG_ERROR:TOOL_ARG_ERROR": {
    "is_error": true,
    "status": "error"
   },
   "native:TOOL_ERROR:PROJECTS_ERROR": {
+   "is_error": true,
+   "status": "error"
+  },
+  "native:TOOL_ERROR:SUBTASK_STATUS_ERROR": {
    "is_error": true,
    "status": "error"
   },
@@ -2842,6 +2850,10 @@
   "shape:cognitive_redirect": {
    "is_error": true,
    "status": "cognitive_tool_required"
+  },
+  "shape:deep_self_review_unavailable": {
+   "is_error": false,
+   "status": "ok"
   },
   "shape:ephemeral_turn_denial": {
    "is_error": false,
@@ -2895,6 +2907,14 @@
    "is_error": true,
    "status": "timeout"
   },
+  "shape:proactive_message_empty": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:proactive_message_no_chat": {
+   "is_error": false,
+   "status": "ok"
+  },
   "shape:promote_rejected": {
    "is_error": false,
    "status": "ok"
@@ -2932,6 +2952,10 @@
    "status": "ok"
   },
   "shape:route_unconfirmed": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:scratchpad_legacy_upgrade": {
    "is_error": false,
    "status": "ok"
   },
@@ -2994,6 +3018,22 @@
   "shape:shell_undeclared": {
    "is_error": true,
    "status": "artifact_output_undeclared"
+  },
+  "shape:subagent_capability_mismatch": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:subtask_depth_limit": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:switch_model_unknown": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:task_result_unknown_id": {
+   "is_error": false,
+   "status": "ok"
   },
   "shape:unknown_tool_extension_down": {
    "is_error": false,

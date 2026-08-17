@@ -488,6 +488,200 @@ def test_the_project_listing_failure_names_the_tool_error_it_is(tmp_path, monkey
     )
 
 
+# --- Table 2 / owner item A.21: the remaining control refusals ---
+
+
+def test_a_memory_write_refused_for_its_argument_is_an_argument_error(tmp_path):
+    """Owner item A.21: the `REJECTED` identifier ends in none of the suffixes the
+    family chain reads, so a scratchpad or identity write refused for a malformed
+    argument answered `ok` — the one answer that says the arguments were fine."""
+    ctx = _ctx(tmp_path)
+
+    for tool, call, tail in (
+        ("update_scratchpad", lambda: control_runtime._update_scratchpad(ctx, "short"),
+         "Scratchpad must have meaningful content (10+ chars). "
+         "This likely means the tool call was malformed — check your arguments."),
+        ("update_identity", lambda: control_runtime._update_identity(ctx, "too short to be identity"),
+         "Identity must be a substantial text (50+ chars). "
+         "This likely means the tool call was malformed — check your arguments."),
+    ):
+        published = _published(ctx, tool, call, owner_delta="A.21")
+        assert (published.code, published.status) == ("TOOL_ARG_ERROR", "error")
+        assert published.text.startswith("⚠️ REJECTED: content is empty or too short (got str, len=")
+        assert published.text.endswith(tail)
+
+
+def test_a_scratchpad_that_needs_a_manual_upgrade_refuses_the_append(tmp_path, monkeypatch):
+    """Owner item A.21: the refusal reported `ok` while appending nothing."""
+    import ouroboros.memory as memory
+
+    message = (
+        "LEGACY_SCRATCHPAD_REQUIRES_MANUAL_UPGRADE: "
+        "memory/scratchpad.md exists without scratchpad_blocks.json. "
+        "Move preserved notes manually before appending new scratchpad blocks."
+    )
+
+    def _refuse(self, *_args, **_kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(memory.Memory, "append_scratchpad_block", _refuse)
+    ctx = _ctx(tmp_path)
+
+    published = _published(
+        ctx, "update_scratchpad",
+        lambda: control_runtime._update_scratchpad(ctx, "a genuinely long enough note"),
+        owner_delta="A.21",
+    )
+
+    assert (published.code, published.status) == ("LEGACY_BLOCKED", "blocked")
+    assert published.text == f"⚠️ {message}"
+
+
+@pytest.mark.parametrize(
+    ("label", "tool", "text"),
+    [
+        ("no_chat", "send_user_message", "⚠️ No active chat — cannot send proactive message."),
+        ("empty", "send_user_message", "⚠️ Empty message."),
+    ],
+)
+def test_a_proactive_message_that_queued_nothing_is_not_a_message(tmp_path, label, tool, text):
+    """Owner item A.21: neither sentence carries an identifier, so both said `ok`."""
+    ctx = _ctx(tmp_path)
+    if label == "empty":
+        ctx.current_chat_id = 7
+    calls = {
+        "no_chat": lambda: control_runtime._send_user_message(ctx, "hello"),
+        "empty": lambda: control_runtime._send_user_message(ctx, "   "),
+    }
+
+    published = _published(ctx, tool, calls[label], owner_delta="A.21")
+
+    assert (published.code, published.status) == ("TOOL_ARG_ERROR", "error")
+    assert published.text == text
+    assert ctx.pending_events == []
+
+
+def test_an_unknown_model_switches_nothing(tmp_path, monkeypatch):
+    """Owner item A.21: the refusal named no identifier and reported `ok`."""
+    import ouroboros.llm as llm
+
+    monkeypatch.setattr(
+        llm.LLMClient, "available_models", lambda _self: ["gpt-5.6-luna", "sonnet-4.6"])
+    ctx = _ctx(tmp_path)
+
+    published = _published(
+        ctx, "switch_model", lambda: control_runtime._switch_model(ctx, model="gpt-9"),
+        owner_delta="A.21",
+    )
+
+    assert (published.code, published.status) == ("TOOL_ARG_ERROR", "error")
+    assert published.text == "⚠️ Unknown model: gpt-9. Available: gpt-5.6-luna, sonnet-4.6"
+    assert getattr(ctx, "active_model_override", "") in ("", None)
+
+
+def test_a_deep_self_review_nobody_can_run_is_unavailable(tmp_path, monkeypatch):
+    """Owner item A.21: the notice reported `ok` and queued no review."""
+    import ouroboros.deep_self_review as deep_self_review
+
+    monkeypatch.setattr(deep_self_review, "is_review_available", lambda: (False, ""))
+    ctx = _ctx(tmp_path)
+
+    published = _published(
+        ctx, "request_deep_self_review",
+        lambda: control_runtime._request_deep_self_review(ctx, "audit myself"),
+        owner_delta="A.21",
+    )
+
+    assert (published.code, published.status) == ("CAPABILITY_UNAVAILABLE", "unavailable")
+    assert published.text == (
+        "❌ Deep self-review unavailable: configure OUROBOROS_MODEL_DEEP_SELF_REVIEW "
+        "and the matching provider API key."
+    )
+    assert ctx.pending_events == []
+
+
+def test_a_child_beyond_the_depth_limit_is_a_resource_refusal(tmp_path, monkeypatch):
+    """Owner item A.21: the depth refusal reported `ok` and scheduled nothing.
+
+    The limit is a configured budget on the tree, not a malformed argument, so it is
+    the constraint code rather than the argument one the sibling refusals publish.
+    """
+    monkeypatch.setattr(control_scheduling, "get_max_subagent_depth", lambda: 3)
+    ctx = _ctx(tmp_path)
+    ctx.task_depth = 3
+
+    published = _published(
+        ctx, "schedule_subagent",
+        lambda: control_scheduling._schedule_task(ctx, objective="o", expected_output="e"),
+        owner_delta="A.21",
+    )
+
+    assert (published.code, published.status) == ("RESOURCE_CONSTRAINT_BLOCKED", "blocked")
+    assert published.text == "ERROR: Subtask depth limit (3) exceeded. Simplify your approach."
+
+
+def test_a_capability_mismatch_is_the_argument_error_its_remedy_describes(tmp_path):
+    """Owner item A.21, and the choice the owner table left to the adapter's evidence.
+
+    Both inputs are arguments of THIS call — `required_capabilities` and the surface
+    implied by `write_surface` — and the message's own remedy is to change one of
+    them, exactly like the malformed-`required_capabilities` refusal a few lines
+    above it, which already publishes `TOOL_ARG_ERROR`. Nothing in the environment
+    constrains the spawn, so `RESOURCE_CONSTRAINT_BLOCKED` ("use a resource the task
+    contract allows") would name a constraint that does not exist here.
+    """
+    ctx = _ctx(tmp_path)
+
+    published = _published(
+        ctx, "schedule_subagent",
+        lambda: control_scheduling._schedule_task(
+            ctx, objective="o", expected_output="e", required_capabilities=["shell"]),
+        owner_delta="A.21",
+    )
+
+    assert (published.code, published.status) == ("TOOL_ARG_ERROR", "error")
+    assert published.text.startswith(
+        "⚠️ SUBAGENT_CAPABILITY_MISMATCH: selected child profile 'local_readonly_subagent' "
+        "cannot satisfy required_capabilities=['shell']. These need an ACTING child: "
+    )
+
+
+def test_an_id_this_tree_never_registered_has_no_result_to_read(tmp_path):
+    """Owner item A.21: the read reported `ok` for a task it could not find."""
+    ctx = _ctx(tmp_path)
+
+    published = _published(
+        ctx, "get_task_result",
+        lambda: control_task_results._get_task_result(ctx, "4f2a1c"),
+        owner_delta="A.21",
+    )
+
+    assert (published.code, published.status) == ("LEGACY_UNAVAILABLE", "unavailable")
+    assert published.text == "Task 4f2a1c: unknown or not yet registered"
+
+
+def test_a_wait_that_embeds_the_unknown_read_keeps_the_wait_result(tmp_path):
+    """The embedded read publishes, but the wait returns a LONGER string.
+
+    The registry accepts a published result only when its text is exactly what the
+    handler returned, so the wait's own answer is never replaced by the read's
+    `unavailable` — the guard that keeps a helper's publication from escaping its
+    caller, asserted rather than assumed.
+    """
+    ctx = _ctx(tmp_path)
+    sentinel = object()
+    token = _install_tool_result_sidecar(ctx, sentinel)
+    try:
+        text = control_task_results._wait_for_task(ctx, "4f2a1c", timeout_sec=0)
+        published = _published_tool_result(ctx, sentinel)
+    finally:
+        _restore_tool_result_sidecar(token)
+
+    assert text.startswith("Task wait timed out after ")
+    assert text.endswith("Task 4f2a1c: unknown or not yet registered")
+    assert isinstance(published, ToolResult) and published.text != text
+
+
 def test_the_wait_set_cap_refusal_names_the_configured_cap(tmp_path):
     from ouroboros.config import MAX_ACTIVE_SUBAGENTS_HARD_CAP
 

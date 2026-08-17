@@ -354,6 +354,36 @@ _PRODUCER_SHAPES = (
      "⚠️ ROUTE_UNCONFIRMED: task 4f2a1c routing to project 'dinosaurs' was not durably "
      "confirmed. Do not report it as routed and do not retry automatically.",
      "LEGACY_UNAVAILABLE", ()),
+    # tools/control_runtime.py, control_scheduling.py, control_task_results.py —
+    # owner item A.21 again. Every sentence below is either markerless (the deep
+    # self-review notice, the depth-limit refusal, the unknown-task read, both
+    # proactive-message refusals, the unknown-model refusal) or reaches its result
+    # through a helper the publication wraps (the capability mismatch, the legacy
+    # scratchpad upgrade), so no (code, first line) pair can be harvested for any of
+    # them and the text corpus reads them all as ordinary warnings or successes.
+    ("deep_self_review_unavailable", "request_deep_self_review",
+     "❌ Deep self-review unavailable: configure OUROBOROS_MODEL_DEEP_SELF_REVIEW "
+     "and the matching provider API key.", "CAPABILITY_UNAVAILABLE", ()),
+    ("scratchpad_legacy_upgrade", "update_scratchpad",
+     "⚠️ LEGACY_SCRATCHPAD_REQUIRES_MANUAL_UPGRADE: memory/scratchpad.md exists without "
+     "scratchpad_blocks.json. Move preserved notes manually before appending new "
+     "scratchpad blocks.", "LEGACY_BLOCKED", ()),
+    ("proactive_message_no_chat", "send_user_message",
+     "⚠️ No active chat — cannot send proactive message.", "TOOL_ARG_ERROR", ()),
+    ("proactive_message_empty", "send_user_message", "⚠️ Empty message.", "TOOL_ARG_ERROR", ()),
+    ("switch_model_unknown", "switch_model",
+     "⚠️ Unknown model: gpt-9. Available: gpt-5.6-luna, sonnet-4.6", "TOOL_ARG_ERROR", ()),
+    ("subtask_depth_limit", "schedule_subagent",
+     "ERROR: Subtask depth limit (3) exceeded. Simplify your approach.",
+     "RESOURCE_CONSTRAINT_BLOCKED", ()),
+    ("subagent_capability_mismatch", "schedule_subagent",
+     "⚠️ SUBAGENT_CAPABILITY_MISMATCH: selected child profile 'local_readonly_subagent' "
+     "cannot satisfy required_capabilities=['shell']. These need an ACTING child: pass "
+     "write_surface (self_worktree for a throwaway checkout to run shell/build in; "
+     "external_workspace for the shared project tree; genesis for a from-scratch project). "
+     "A read-only child has no shell/writable roots.", "TOOL_ARG_ERROR", ()),
+    ("task_result_unknown_id", "get_task_result",
+     "Task 4f2a1c: unknown or not yet registered", "LEGACY_UNAVAILABLE", ()),
 )
 
 
