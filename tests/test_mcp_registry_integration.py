@@ -54,7 +54,7 @@ class _FakeTransport:
         self.list_calls = []
         self.call_calls = []
 
-    async def list_tools(self, cfg, timeout):
+    async def list_tools(self, cfg, timeout, stderr_buffer=None):
         self.list_calls.append((cfg.id, timeout))
         return list(self.response)
 

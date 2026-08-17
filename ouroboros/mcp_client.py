@@ -17,6 +17,7 @@ import io
 import ipaddress
 import json
 import logging
+import os
 import re
 import threading
 import urllib.parse
@@ -501,6 +502,139 @@ def _wrap_schema_text_fields(value: Any) -> Any:
 # Async transport.
 
 
+class _StderrPipeCapture(io.TextIOBase):
+    """TextIO backed by a real OS pipe, suitable for Python 3.14's
+    ``subprocess.Popen(stderr=...)``.
+
+    Why this exists (closes ``ibl-mcp-discovery-fileno``):
+    Python 3.14's ``subprocess._get_handles`` calls
+    ``stderr.fileno()`` unconditionally — even when ``stderr`` is a
+    TextIO passed through the MCP SDK's ``stdio_client(errlog=...)``.
+    ``io.StringIO`` raises ``io.UnsupportedOperation: fileno`` there,
+    which aborts the MCP discovery handshake before the subprocess even
+    starts and surfaces as ``error_kind="unknown"`` with an empty tool
+    list. The SDK only accepts TextIO-shaped objects that expose a real
+    file descriptor; this class provides one by bridging bytes from a
+    pipe write end into a caller-provided StringIO via a daemon thread.
+
+    Lifecycle:
+    * The transport factory hands this object to ``stdio_client``.
+    * The SDK spawns the subprocess, which writes to our pipe write end.
+    * A daemon thread drains the read end into ``stderr_buffer``.
+    * When the SDK closes us (stdio_client context exit), the pipe write
+      end closes; the drain thread sees EOF and terminates.
+
+    Surface: only what ``subprocess.Popen`` and the SDK actually use —
+    ``fileno``, ``write``, ``flush``, ``close``, ``writable``,
+    ``readable``, ``isatty``, plus ``name`` for diagnostics.
+    """
+
+    __slots__ = ("_writer", "_buffer", "_closed", "_thread", "_write_fd")
+
+    def __init__(self, stderr_buffer: io.StringIO) -> None:
+        self._write_fd: int = -1
+        read_fd, write_fd = os.pipe()
+        self._write_fd = write_fd
+        # Line-buffered so subprocess line writes flush promptly; the
+        # drain thread reads line-by-line into stderr_buffer.
+        self._writer = os.fdopen(
+            write_fd,
+            "w",
+            buffering=1,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self._buffer = stderr_buffer
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._drain,
+            args=(read_fd,),
+            name="mcp-stderr-drain",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _drain(self, read_fd: int) -> None:
+        # Read every line until EOF (the write end is closed by close()).
+        # We do NOT break on ``self._closed`` — bytes already in the pipe
+        # still belong to the caller, and the natural EOF on the for-loop
+        # is the right termination condition. Checking ``_closed`` here
+        # would race against close() and drop bytes that landed in the
+        # pipe between the last write and our read.
+        try:
+            with os.fdopen(read_fd, "r", encoding="utf-8", errors="replace") as r:
+                for line in r:
+                    try:
+                        self._buffer.write(line)
+                    except Exception:  # pragma: no cover - defensive
+                        break
+        except Exception:  # pragma: no cover - drain must never raise
+            pass
+
+    # --- TextIO surface used by subprocess.Popen and the MCP SDK -------
+
+    def fileno(self) -> int:
+        if self._closed:
+            raise ValueError("I/O operation on closed pipe")
+        return self._writer.fileno()
+
+    def write(self, s: str) -> int:
+        if self._closed:
+            return 0
+        try:
+            return self._writer.write(s)
+        except (ValueError, OSError):
+            return 0
+
+    def flush(self) -> None:
+        if self._closed:
+            return
+        try:
+            self._writer.flush()
+        except (ValueError, OSError):
+            pass
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._writer.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    def writable(self) -> bool:
+        return not self._closed
+
+    def readable(self) -> bool:
+        return False
+
+    def isatty(self) -> bool:
+        return False
+
+    @property
+    def name(self) -> str:
+        return f"<mcp-stderr-pipe fd={self._write_fd}>"
+
+
+def _build_stdio_subprocess_env() -> Dict[str, str]:
+    """Env dict passed to the MCP subprocess via ``StdioServerParameters.env``.
+
+    The MCP SDK's ``get_default_environment()`` whitelist (HOME, PATH,
+    SHELL, TERM, USER, LOGNAME) silently strips MCP-server config vars
+    such as ``MINIMAX_API_KEY`` and ``OPENAI_API_KEY`` — every real
+    MCP server we have shipped needs at least one such var. We pass
+    through the full parent env so the subprocess starts cleanly; the
+    SDK still merges our dict over its whitelist (our values win).
+
+    The MCP server is owner-configured (``MCP_SERVERS`` in settings);
+    opting into the integration is consent for that subprocess to see
+    the same env the owner would expose by running the command from a
+    shell. Same posture as the wrapper scripts we have shipped.
+    """
+    return dict(os.environ)
+
+
 def _transport_factory(cfg: MCPServerConfig, stderr_buffer: Optional[TextIO] = None):
     if cfg.transport == "streamable_http":
         headers = {cfg.auth_header: cfg.auth_token} if cfg.has_auth() else {}
@@ -509,17 +643,28 @@ def _transport_factory(cfg: MCPServerConfig, stderr_buffer: Optional[TextIO] = N
         headers = {cfg.auth_header: cfg.auth_token} if cfg.has_auth() else {}
         return sse_client(cfg.url, headers=headers)
     if cfg.transport == "stdio":
-        # Leaving env/cwd unset uses the SDK's small cross-platform default
-        # environment and its context-managed process shutdown sequence.
-        params = StdioServerParameters(command=cfg.command, args=list(cfg.args))
+        # Pass through the parent env via StdioServerParameters.env —
+        # the SDK's default whitelist (HOME/PATH/SHELL/TERM/USER/LOGNAME)
+        # strips MCP-server config like MINIMAX_API_KEY, which makes
+        # every real MCP server we ship fail to start. Owners consent
+        # to the subprocess seeing their env by configuring the server.
+        params = StdioServerParameters(
+            command=cfg.command,
+            args=list(cfg.args),
+            env=_build_stdio_subprocess_env(),
+        )
         if stderr_buffer is None:
             stderr_buffer = io.StringIO()
-        # Try the modern errlog= kwarg first (mcp>=1.29); fall back silently
-        # (with a debug log) for older SDKs that don't accept it. The captured
-        # buffer is attached to the returned context manager as a non-SDK
-        # attribute so refresh_server can surface a diagnostic tail on failure.
+        # Python 3.14's subprocess.Popen calls stderr.fileno() unconditionally
+        # in _get_handles — io.StringIO raises UnsupportedOperation there,
+        # which breaks the SDK's stdio_client handshake entirely and surfaces
+        # as error_kind="unknown" with an empty tool list
+        # (ibl-mcp-discovery-fileno). _StderrPipeCapture bridges a real OS
+        # pipe into our StringIO so the SDK accepts the errlog= argument AND
+        # we keep the diagnostic capture that _stringify_mcp_failure reads.
         try:
-            ctx = stdio_client(params, errlog=stderr_buffer)
+            capture = _StderrPipeCapture(stderr_buffer)
+            ctx = stdio_client(params, errlog=capture)
         except TypeError:
             log.debug("mcp SDK stdio_client lacks errlog=; degrading to default stderr")
             ctx = stdio_client(params)

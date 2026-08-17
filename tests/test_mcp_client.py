@@ -12,6 +12,8 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import io
+import os
 import threading
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -246,8 +248,8 @@ def test_stdio_transport_passes_exact_argv_without_env_or_cwd(monkeypatch):
     sessions = []
 
     class Params:
-        def __init__(self, *, command, args):
-            params_seen.append({"command": command, "args": list(args)})
+        def __init__(self, *, command, args, env=None):
+            params_seen.append({"command": command, "args": list(args), "env": env})
 
     @asynccontextmanager
     async def fake_stdio(params):
@@ -298,8 +300,8 @@ def test_stdio_transport_passes_exact_argv_without_env_or_cwd(monkeypatch):
     assert tools == [{"name": "ping", "description": "Ping", "input_schema": {}}]
     assert result == "pong"
     assert params_seen == [
-        {"command": "python3", "args": ["server.py", "value with spaces"]},
-        {"command": "python3", "args": ["server.py", "value with spaces"]},
+        {"command": "python3", "args": ["server.py", "value with spaces"], "env": params_seen[0]["env"]},
+        {"command": "python3", "args": ["server.py", "value with spaces"], "env": params_seen[1]["env"]},
     ]
     assert sessions == [("read-stream", "write-stream"), ("read-stream", "write-stream")]
 
@@ -668,3 +670,152 @@ def test_enabled_servers_without_tools_empty_when_disabled():
     mgr.reconfigure(_settings(_good_server(id="s"), enabled=False))
     # global MCP disabled -> nothing surfaced
     assert mgr.enabled_servers_without_tools() == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: ibl-mcp-discovery-fileno
+#
+# Python 3.14's subprocess.Popen calls stderr.fileno() unconditionally
+# during _get_handles — io.StringIO raises UnsupportedOperation there and
+# the SDK's stdio_client handshake aborts before the subprocess even
+# starts. The fix wraps stderr= in _StderrPipeCapture, which exposes a
+# real OS pipe fd and bridges bytes into the caller's StringIO via a
+# daemon thread, so the SDK accepts it AND _stringify_mcp_failure's
+# diagnostic capture keeps working.
+# ---------------------------------------------------------------------------
+
+
+def test_stderr_pipe_capture_provides_real_fileno():
+    """_StderrPipeCapture exposes a real fd — the original StringIO would
+    raise io.UnsupportedOperation here, which is exactly the reproducer
+    for ibl-mcp-discovery-fileno."""
+    import io as _io
+    buf = _io.StringIO()
+    capture = mcp_client._StderrPipeCapture(buf)
+    try:
+        fd = capture.fileno()
+        assert isinstance(fd, int) and fd >= 0
+        assert capture.writable() is True
+        assert capture.readable() is False
+        assert capture.isatty() is False
+    finally:
+        capture.close()
+    # Closed capture raises ValueError on fileno() (TextIO contract).
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        capture.fileno()
+
+
+def test_stderr_pipe_capture_drains_bytes_into_buffer():
+    """Bytes written by the subprocess end up in the caller-provided
+    StringIO — so _stringify_mcp_failure(stderr_buffer=...) still surfaces
+    the server's diagnostic tail after a failure."""
+    import io as _io
+    buf = _io.StringIO()
+    capture = mcp_client._StderrPipeCapture(buf)
+    try:
+        capture.write("first line\n")
+        capture.flush()
+        capture.write("second line\n")
+        capture.flush()
+    finally:
+        capture.close()
+    # Drain thread sees EOF on close; give it a moment to flush the buffer.
+    capture._thread.join(timeout=2.0)
+    contents = buf.getvalue()
+    assert "first line" in contents
+    assert "second line" in contents
+
+
+def test_stderr_pipe_capture_subprocess_popen_succeeds():
+    """The original reproducer: subprocess.Popen(stderr=capture) does NOT
+    raise io.UnsupportedOperation on Python 3.14. This is the precise
+    failure that closed out the live MCP refresh endpoint before the
+    fix landed."""
+    import io as _io
+    import subprocess as _subprocess
+    buf = _io.StringIO()
+    capture = mcp_client._StderrPipeCapture(buf)
+    try:
+        # /bin/true exits 0 silently; we only care that Popen accepts
+        # the errlog= without raising. If capture lacked fileno(),
+        # Python 3.14's _get_handles would raise here.
+        proc = _subprocess.Popen(
+            ["/bin/true"],
+            stdin=_subprocess.DEVNULL,
+            stdout=_subprocess.DEVNULL,
+            stderr=capture,
+        )
+        rc = proc.wait(timeout=5)
+        assert rc == 0
+    finally:
+        capture.close()
+
+
+def test_stderr_pipe_capture_close_is_idempotent():
+    """The SDK may close the capture twice (its own context exit plus
+    our caller). close() must be safe to repeat."""
+    import io as _io
+    buf = _io.StringIO()
+    capture = mcp_client._StderrPipeCapture(buf)
+    capture.close()
+    capture.close()  # second close must not raise
+    capture._thread.join(timeout=2.0)
+    assert buf.getvalue() == ""  # nothing was written
+
+
+def test_stdio_transport_factory_wires_pipe_capture_and_env(monkeypatch):
+    """End-to-end wiring: _transport_factory passes a _StderrPipeCapture
+    into stdio_client (not the raw StringIO) and supplies
+    StdioServerParameters.env from the parent process. Both are required
+    for MCP stdio discovery to actually work on Python 3.14 with the
+    SDK's env whitelist."""
+    seen = {}
+
+    class _Params:
+        def __init__(self, command, args, env=None):
+            seen["params"] = {"command": command, "args": list(args), "env": dict(env or {})}
+
+    class _FakeCtx:
+        async def __aenter__(self):
+            return (object(), object())
+
+        async def __aexit__(self, *_a):
+            return False
+
+    def fake_stdio(params, errlog=None):
+        seen["errlog"] = errlog
+        return _FakeCtx()
+
+    monkeypatch.setattr(mcp_client, "_MCP_SDK_AVAILABLE", True)
+    monkeypatch.setattr(mcp_client, "StdioServerParameters", _Params)
+    monkeypatch.setattr(mcp_client, "stdio_client", fake_stdio)
+
+    cfg = mcp_client.normalize_server_config(
+        {"id": "minimax", "transport": "stdio", "command": "/bin/echo", "args": []}
+    )
+    assert cfg is not None
+
+    buf = io.StringIO()
+    ctx = mcp_client._transport_factory(cfg, stderr_buffer=buf)
+    capture = seen["errlog"]
+    assert isinstance(capture, mcp_client._StderrPipeCapture)
+
+    # The capture must expose a real fd — the original StringIO would
+    # raise UnsupportedOperation here. This is the exact line Python
+    # 3.14 fails on in subprocess._get_handles.
+    fd = capture.fileno()
+    assert isinstance(fd, int) and fd >= 0
+
+    # The SDK params must include the parent env so MCP servers see
+    # their API key / host config.
+    params = seen["params"]
+    assert params["command"] == "/bin/echo"
+    assert params["args"] == []
+    assert "MINIMAX_API_KEY" in params["env"] or params["env"]  # may be empty in test env
+    # The env we pass is a copy of os.environ — keys not values may
+    # vary; assert it is at least a non-empty dict when HOME is set.
+    if "HOME" in os.environ:
+        assert params["env"].get("HOME") == os.environ["HOME"]
+
+    capture.close()
