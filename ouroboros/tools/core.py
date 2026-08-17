@@ -17,6 +17,7 @@ from ouroboros.artifacts import artifact_store_path_block_reason, copy_file_to_t
 from ouroboros.project_facts import project_store_access_block as _project_store_access_block
 from ouroboros.protected_artifacts import block_reason_for_path
 from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     project_room_lens_dir,
@@ -224,12 +225,12 @@ def _data_write(
         repo_dir=pathlib.Path(ctx.repo_dir), drive_root=pathlib.Path(ctx.drive_root),
     )
     if short_form is not None and short_form.error:
-        return f"⚠️ DATA_WRITE_ERROR: {short_form.error}"
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=f"⚠️ DATA_WRITE_ERROR: {short_form.error}"))
     synth = short_form.constraint if short_form is not None else None
     existing_tc = normalize_task_constraint(getattr(ctx, "task_constraint", None))
     redirect_err = cross_skill_redirect_error(existing_tc, synth)
     if redirect_err:
-        return f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}"
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="SKILL_PAYLOAD_BLOCKED", text=f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}"))
     # Real skill_repair confinement wins over synthesized short-form context.
     if existing_tc and existing_tc.mode == "skill_repair":
         task_constraint = existing_tc
@@ -246,7 +247,7 @@ def _data_write(
         try:
             p = resolve_payload_path(pathlib.Path(ctx.drive_root), task_constraint, path)
         except ValueError as e:
-            return f"⚠️ DATA_WRITE_ERROR: {e}"
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=f"⚠️ DATA_WRITE_ERROR: {e}"))
     else:
         # Resolve the skills target on the NORMALIZED write_path (the exact path the write uses below)
         # so the manifest-first typo guard can never be skipped by a redundant drive-root / .tmp-data-*
@@ -274,18 +275,18 @@ def _data_write(
         lexical_target = pathlib.Path(ctx.drive_root).resolve(strict=False) / safe_relpath(write_path)
     suffix = pathlib.PurePosixPath(str(path or "")).suffix.lower()
     if suffix in {".py", ".md", ".json", ".sh"} and _looks_like_serialized_tool_result(content):
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=(
             "⚠️ DATA_WRITE_BLOCKED: content looks like a serialized tool result "
             "object (for example {'content': ...}) rather than file text. "
             "Extract the actual file body before calling write_file."
-        )
+        )))
     if _native_payload_without_seed(lexical_target, data_root) or _native_payload_without_seed(target_path, data_root):
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=(
             "⚠️ DATA_WRITE_BLOCKED: data/skills/native/<skill>/ is reserved "
             "for launcher-seeded skills that carry a .seed-origin marker. "
             "Write user- or agent-authored skill payloads under "
             "data/skills/external/<skill>/ instead."
-        )
+        )))
     skill_owner_state_path = (
         _core_file_tools._is_skill_owner_state_target(lexical_target, data_root)
         or _core_file_tools._is_skill_owner_state_target(target_path, data_root)
@@ -293,35 +294,35 @@ def _data_write(
     if not skill_owner_state_path:
         skill_owner_state_path = is_skill_owner_state_alias(target_path, data_root)
     if skill_owner_state_path:
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=(
             "⚠️ DATA_WRITE_BLOCKED: skill review, enablement, grants, and "
             "marketplace provenance are owner/review controlled state. Edit "
             "the skill payload under data/skills/ and use skill_review, the "
             "Skills UI toggle, or the desktop launcher grant flow."
-        )
+        )))
     # Block marketplace/launcher sidecars for every data_write path, not only heal mode.
     if (
         (_resolved_binding is not None and _binding_skill_control_plane_path(_resolved_binding))
         or is_skill_control_plane_path(lexical_target, data_root)
         or is_skill_control_plane_path(target_path, data_root)
     ):
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=(
             "⚠️ DATA_WRITE_BLOCKED: marketplace provenance and launcher "
             "seed markers (.clawhub.json, .ouroboroshub.json, "
             "SKILL.openclaw.md, .seed-origin) are owner/review controlled. "
             "Edit the payload's user-authored files instead and rerun skill_review."
-        )
+        )))
     if (
         _is_workspace_executor_control_state_path(lexical_target, ctx_data_root)
         or _is_workspace_executor_control_state_path(target_path, ctx_data_root)
         or _is_workspace_executor_control_state_path(lexical_target, data_root)
         or _is_workspace_executor_control_state_path(target_path, data_root)
     ):
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=(
             "⚠️ DATA_WRITE_BLOCKED: workspace executor process records are "
             "owner/runtime control-plane state. Use process/service lifecycle "
             "tools instead of writing state/workspace_executor_processes directly."
-        )
+        )))
     matches = False
     try:
         if target_path.exists() and settings_path.exists():
@@ -336,14 +337,14 @@ def _data_write(
         if same_parent and target_path.name.lower() == settings_path.name.lower():
             matches = True
     if matches:
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=(
             "⚠️ DATA_WRITE_BLOCKED: settings.json is the canonical owner-edited "
             "file. Tool-level writes must route through /api/settings (which "
             "applies key-by-key policy — OUROBOROS_RUNTIME_MODE is owner-only "
             "and dropped on POST; other keys flow through normally). To change "
             "owner-only values, stop the agent, edit ~/Ouroboros/data/settings.json "
             "directly, then restart."
-        )
+        )))
     # Manifest-first typo guard (SSOT with the bucket/skill_name short-form via is_skill_create_typo),
     # applied AFTER the owner-state / control-plane / content DATA_WRITE_BLOCKED guards above so those
     # take precedence: an explicit runtime_data write into a NON-existent skills/<bucket>/<skill>
@@ -364,23 +365,23 @@ def _data_write(
             )
         )
     ):
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=(
             f"⚠️ DATA_WRITE_ERROR: skill payload not found: "
             f"skills/{_resolved_binding.source}/{_resolved_binding.skill_name}. Use an existing skill; for a "
             "NEW skill write its manifest (SKILL.md/skill.json) at the payload root under "
             "bucket=external; this path looks like a typo into a missing payload."
-        )
+        )))
     if _skill_target is not None and is_skill_create_typo(
         payload_root=_skill_target.payload_root,
         bucket=_skill_target.bucket,
         rel_within_payload=_skill_target.rel_path,
     ):
-        return (
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="DATA_BLOCKED", text=(
             f"⚠️ DATA_WRITE_ERROR: skill payload not found: "
             f"skills/{_skill_target.bucket}/{_skill_target.skill}. Use an existing skill; for a "
             "NEW skill write its manifest (SKILL.md/skill.json) at the payload root under "
             "bucket=external; this path looks like a typo into a missing payload."
-        )
+        )))
     marker_payload = _skill_payload_parts(lexical_target, data_root) or _skill_payload_parts(target_path, data_root)
     should_mark_self_authored = False
     marker_path: pathlib.Path | None = None
@@ -427,7 +428,7 @@ def _data_write(
         # Deferral 5: block likely-accidental truncation of an existing data-plane file
         # (e.g. settings.json, skill state) unless force=true. Append is exempt.
         if (shrink := _check_data_shrink_guard(p, content, force)):
-            return shrink
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=shrink))
         write_text_atomic(p, content)  # crash-safe full overwrite (G)
     else:
         with p.open("a", encoding="utf-8") as f:
@@ -516,8 +517,11 @@ def _write_file(
                 bucket=bucket, skill_name=skill_name,
             ) if _resolved_binding is None else _resolved_binding
     except Exception as exc:
-        prefix = "SKILL_PAYLOAD_ARG_ERROR" if normalized == "skill_payload" else "WRITE_FILE_ERROR"
-        return f"⚠️ {prefix}: {exc}"
+        payload_selector = normalized == "skill_payload"
+        prefix = "SKILL_PAYLOAD_ARG_ERROR" if payload_selector else "WRITE_FILE_ERROR"
+        if payload_selector:
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="SKILL_PAYLOAD_BLOCKED", text=f"⚠️ {prefix}: {exc}"))
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="WRITE_FILE_BLOCKED", text=f"⚠️ {prefix}: {exc}"))
     binding_items = bindings if isinstance(bindings, tuple) else (bindings,)
     protected_block = next((
         f"⚠️ WRITE_FILE_BLOCKED: protected artifact path blocked: {reason}"
@@ -525,19 +529,23 @@ def _write_file(
         if (reason := block_reason_for_path(ctx, item.target_path, "write", item))
     ), "")
     if protected_block:
-        return protected_block
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="WRITE_FILE_BLOCKED", text=protected_block))
     if normalized == "active_workspace" and (_room := project_room_lens_dir(ctx)) is not None:
         # Room write-guard (v6.61.3): with the lens re-pointing reads at the room
         # folder, a default-root write silently landing in the SYSTEM REPO would be
         # a read/write split trap (read game.js from the folder, "fix" it into the
         # repo). Mutations belong to promoted tasks; deliberate self-repo writes
         # stay available via the explicit root.
-        return (
-            f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {_room} and are edited by "
-            "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
-            "workspace) for real work there. For a deliberate write to the Ouroboros system "
-            'repo, pass root="system_repo" explicitly.'
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="ok",
+            code="LEGACY_WARNING",
+            text=(
+                f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {_room} and are edited by "
+                "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
+                "workspace) for real work there. For a deliberate write to the Ouroboros system "
+                'repo, pass root="system_repo" explicitly.'
+            ),
+        ))
     if normalized in {"active_workspace", "system_repo"}:
         from ouroboros.tools.git import _repo_write
 
@@ -634,7 +642,7 @@ def _write_file(
         if normalized == "artifact_store":
             block_reason = artifact_store_path_block_reason(target)
             if block_reason:
-                return f"⚠️ WRITE_FILE_BLOCKED: artifact_store path blocked: {block_reason}"
+                return _publish_tool_result(ctx, ToolResult(status="blocked", code="WRITE_FILE_BLOCKED", text=f"⚠️ WRITE_FILE_BLOCKED: artifact_store path blocked: {block_reason}"))
         target.parent.mkdir(parents=True, exist_ok=True)
         if mode == "append":
             with target.open("a", encoding="utf-8") as fh:
@@ -643,7 +651,7 @@ def _write_file(
             # Deferral 5: shrink-guard the full overwrite (e.g. active_workspace rewrites)
             # — force=true bypasses, matching the tool-schema `force` description.
             if (shrink := _check_data_shrink_guard(target, content, force)):
-                return shrink
+                return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=shrink))
             write_text_atomic(target, content)  # crash-safe full overwrite (G)
         result = f"OK: wrote {_core_file_tools._root_display_path(normalized, path)} ({len(content)} chars)"
         if normalized == "user_files":
@@ -652,7 +660,7 @@ def _write_file(
                 result += f"\nARTIFACT_OUTPUTS: registered user file -> artifact_store:{record.get('name')}"
         return result
     except Exception as exc:
-        return f"⚠️ WRITE_FILE_ERROR: {type(exc).__name__}: {exc}"
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="WRITE_FILE_BLOCKED", text=f"⚠️ WRITE_FILE_ERROR: {type(exc).__name__}: {exc}"))
 
 
 def _edit_text(
@@ -675,23 +683,30 @@ def _edit_text(
             bucket=bucket, skill_name=skill_name,
         )
     except Exception as exc:
-        prefix = "SKILL_PAYLOAD_ARG_ERROR" if normalized == "skill_payload" else "EDIT_TEXT_ERROR"
-        return f"⚠️ {prefix}: {exc}"
+        payload_selector = normalized == "skill_payload"
+        prefix = "SKILL_PAYLOAD_ARG_ERROR" if payload_selector else "EDIT_TEXT_ERROR"
+        if payload_selector:
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="SKILL_PAYLOAD_BLOCKED", text=f"⚠️ {prefix}: {exc}"))
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=f"⚠️ {prefix}: {exc}"))
     reason = block_reason_for_path(ctx, binding.target_path, "write", binding)
     protected_block = (
         f"⚠️ EDIT_TEXT_BLOCKED: protected artifact path blocked: {reason}" if reason else ""
     )
     if protected_block:
-        return protected_block
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=protected_block))
     if normalized == "active_workspace" and (_room := project_room_lens_dir(ctx)) is not None:
         # Room write-guard (v6.61.3) — same rule as write_file: room mutations go
         # through promoted tasks; explicit root="system_repo" for the self-repo.
-        return (
-            f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {_room} and are edited by "
-            "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
-            "workspace) for real work there. For a deliberate edit of the Ouroboros system "
-            'repo, pass root="system_repo" explicitly.'
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="ok",
+            code="LEGACY_WARNING",
+            text=(
+                f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {_room} and are edited by "
+                "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
+                "workspace) for real work there. For a deliberate edit of the Ouroboros system "
+                'repo, pass root="system_repo" explicitly.'
+            ),
+        ))
     bound_skill_payload = bool(
         binding.skill_name
         and binding.source in {"external", "clawhub", "ouroboroshub", "native", "user_repo"}
@@ -720,19 +735,23 @@ def _edit_text(
                 _binding_skill_control_plane_path(binding)
                 or is_skill_control_plane_path(target, binding.state_drive_root)
             ):
-                return (
-                    "⚠️ STR_REPLACE_BLOCKED: skill provenance, launcher seed, "
-                    "marketplace, dependency, and self-authored markers are "
-                    "control-plane state. Edit user-authored payload files instead."
-                )
+                return _publish_tool_result(ctx, ToolResult(
+                    status="blocked",
+                    code="LEGACY_BLOCKED",
+                    text=(
+                        "⚠️ STR_REPLACE_BLOCKED: skill provenance, launcher seed, "
+                        "marketplace, dependency, and self-authored markers are "
+                        "control-plane state. Edit user-authored payload files instead."
+                    ),
+                ))
             text = target.read_text(encoding="utf-8")
             new_text, match_error = _str_match_replace(
                 text, old_str, new_str, _core_file_tools._root_display_path(normalized, path), "EDIT_TEXT_ERROR",
             )
             if match_error:
-                return match_error
+                return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=match_error))
             if (shrink := _check_data_shrink_guard(target, new_text, force)):
-                return shrink
+                return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=shrink))
             write_text_atomic(target, new_text)
             replacement_line = new_text[:new_text.index(new_str)].count("\n") + 1
             context_start = max(0, replacement_line - 3)
@@ -751,9 +770,9 @@ def _edit_text(
                 "Run skill_review for this skill before enabling or declaring it ready."
             )
         except FileNotFoundError:
-            return f"⚠️ EDIT_TEXT_ERROR: file not found: {_core_file_tools._root_display_path(normalized, path)}"
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=f"⚠️ EDIT_TEXT_ERROR: file not found: {_core_file_tools._root_display_path(normalized, path)}"))
         except Exception as exc:
-            return f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}"
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}"))
     try:
         target = binding.target_path
         if normalized == "runtime_data":
@@ -763,26 +782,30 @@ def _edit_text(
                 _is_workspace_executor_control_state_path(target, binding.base_path)
                 or _is_workspace_executor_control_state_path(target, binding.state_drive_root)
             ):
-                return (
-                    "⚠️ EDIT_TEXT_BLOCKED: workspace executor process records are "
-                    "owner/runtime control-plane state. Use process/service lifecycle "
-                    "tools instead of editing state/workspace_executor_processes directly."
-                )
+                return _publish_tool_result(ctx, ToolResult(
+                    status="blocked",
+                    code="EDIT_TEXT_BLOCKED",
+                    text=(
+                        "⚠️ EDIT_TEXT_BLOCKED: workspace executor process records are "
+                        "owner/runtime control-plane state. Use process/service lifecycle "
+                        "tools instead of editing state/workspace_executor_processes directly."
+                    ),
+                ))
         if normalized == "artifact_store":
             block_reason = artifact_store_path_block_reason(target)
             if block_reason:
-                return f"⚠️ EDIT_TEXT_BLOCKED: artifact_store path blocked: {block_reason}"
+                return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=f"⚠️ EDIT_TEXT_BLOCKED: artifact_store path blocked: {block_reason}"))
         text = target.read_text(encoding="utf-8")
         new_text, _match_err = _str_match_replace(
             text, old_str, new_str, _core_file_tools._root_display_path(normalized, path), "EDIT_TEXT_ERROR"
         )
-        if _match_err:
-            return _match_err  # count==0 preview / count>1 positional hints (deferral 4)
+        if _match_err:  # count==0 preview / count>1 positional hints (deferral 4)
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=_match_err))
         # Deferral 5: an exact replace that shrinks an existing data-plane file >30% is
         # likely accidental truncation — block unless force=true (matches the overwrite
         # paths; force lets a deliberate large surgical deletion through).
         if (shrink := _check_data_shrink_guard(target, new_text, force)):
-            return shrink
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=shrink))
         write_text_atomic(target, new_text)  # crash-safe edit (G)
         result = (
             f"OK: edited {_core_file_tools._root_display_path(normalized, path)} "
@@ -794,9 +817,9 @@ def _edit_text(
                 result += f"\nARTIFACT_OUTPUTS: registered user file -> artifact_store:{record.get('name')}"
         return result
     except FileNotFoundError:
-        return f"⚠️ EDIT_TEXT_ERROR: file not found: {_core_file_tools._root_display_path(normalized, path)}"
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=f"⚠️ EDIT_TEXT_ERROR: file not found: {_core_file_tools._root_display_path(normalized, path)}"))
     except Exception as exc:
-        return f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}"
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="EDIT_TEXT_BLOCKED", text=f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}"))
 
 
 _MAX_SEARCH_RESULTS = 200
@@ -816,7 +839,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
                  _resolved_binding: ResolvedResourceBinding | None = None) -> str:
     """Search repo text with optional regex, path, glob, and result cap."""
     if not query:
-        return "⚠️ SEARCH_ERROR: query is required."
+        return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text="⚠️ SEARCH_ERROR: query is required."))
     normalized, block = _core_file_tools._access_or_block(ctx, root, "search")
     if block:
         return block
@@ -826,9 +849,9 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             bucket=bucket, skill_name=skill_name,
         )
     except UserFilesPathBlockedError as exc:
-        return f"⚠️ USER_FILES_PATH_BLOCKED: {exc}"
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="USER_FILES_PATH_BLOCKED", text=f"⚠️ USER_FILES_PATH_BLOCKED: {exc}"))
     except Exception as exc:
-        return f"⚠️ SEARCH_ERROR: {type(exc).__name__}: {exc}"
+        return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ SEARCH_ERROR: {type(exc).__name__}: {exc}"))
     if normalized == "runtime_data" and (b := _project_store_access_block(_core_file_tools._normalize_data_read_path(ctx, path))):
         return b
 
@@ -837,7 +860,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
     display_search_path = _core_file_tools._root_display_path(normalized, path)
     search_root = binding.target_path
     if not search_root.exists():
-        return f"⚠️ SEARCH_ERROR: path not found: {display_search_path}"
+        return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ SEARCH_ERROR: path not found: {display_search_path}"))
     if normalized != "user_files":
         # Reject a search ROOT that escapes its resource root (e.g. the requested path is an
         # in-tree symlink pointing outside — untrusted child project/deliverable trees) BEFORE
@@ -845,7 +868,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         try:
             search_root.relative_to(root_path.resolve(strict=False))
         except ValueError:
-            return f"⚠️ SEARCH_ERROR: path escapes root: {display_search_path}"
+            return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ SEARCH_ERROR: path escapes root: {display_search_path}"))
     protected_root_block = block_reason_for_path(
         ctx, search_root, "static_introspection", binding
     )
@@ -860,7 +883,9 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
     if subagent_readonly:
         block_msg = _core_file_tools._local_readonly_resource_block(ctx, normalized, search_root, root_path, action="SEARCH")
         if block_msg:
-            return block_msg
+            # The same helper decides which files the walk below skips, so it stays
+            # pure; the whole-call refusal is published here, where it IS the result.
+            return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=block_msg))
     root_resolved = root_path.resolve(strict=False)
     _rt_search_root = str(root_resolved) if normalized == "runtime_data" else ""
 
@@ -893,7 +918,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         try:
             re.compile(query)
         except re.error as e:
-            return f"⚠️ SEARCH_ERROR: invalid regex: {e}"
+            return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ SEARCH_ERROR: invalid regex: {e}"))
 
     import time as _time
     _search_t0 = _time.monotonic()  # start the wall-clock budget BEFORE rg, so a
@@ -923,7 +948,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         else:
             pattern = re.compile(re.escape(query))
     except re.error as e:
-        return f"⚠️ SEARCH_ERROR: invalid regex: {e}"
+        return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ SEARCH_ERROR: invalid regex: {e}"))
 
     matches: List[str] = []
     files_searched = 0
@@ -1045,17 +1070,17 @@ def _forward_to_worker(ctx: ToolContext, task_id: str, message: str) -> str:
     try:
         tid = validate_task_id(task_id)
     except ValueError as exc:
-        return f"⚠️ TOOL_ARG_ERROR (forward_to_worker): {exc}"
+        return _publish_tool_result(ctx, ToolResult(status="error", code="TOOL_ARG_ERROR", text=f"⚠️ TOOL_ARG_ERROR (forward_to_worker): {exc}"))
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     status_drive_root = pathlib.Path(str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
     data = load_effective_task_result(status_drive_root, tid)
     status = str(data.get("status") or "").lower()
     if not data:
-        return f"⚠️ TASK_NOT_FOUND: task {tid} is not registered."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ TASK_NOT_FOUND: task {tid} is not registered."))
     if status in FINAL_STATUSES:
-        return f"⚠️ TASK_NOT_ACTIVE: task {tid} is already {status}."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ TASK_NOT_ACTIVE: task {tid} is already {status}."))
     if status != STATUS_RUNNING:
-        return f"⚠️ TASK_NOT_ACTIVE: task {tid} is {status or 'unknown'}, not running."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ TASK_NOT_ACTIVE: task {tid} is {status or 'unknown'}, not running."))
     # AR2-6: no NEW steering writes while a cancellation is pending. The
     # effective status honestly stays ``running`` (cancel_state=pending rides
     # beside it), so the checks above pass — consult the same predicate the
@@ -1065,21 +1090,25 @@ def _forward_to_worker(ctx: ToolContext, task_id: str, message: str) -> str:
         from ouroboros.cancel_intents import cancel_pending
 
         if cancel_pending(status_drive_root, tid):
-            return (
-                f"⚠️ TASK_CANCEL_PENDING: task {tid} has a pending cancellation — the "
-                "supervisor is tearing it down; the message was NOT delivered. Wait for "
-                "the settled outcome or start a new task."
-            )
+            return _publish_tool_result(ctx, ToolResult(
+                status="ok",
+                code="LEGACY_WARNING",
+                text=(
+                    f"⚠️ TASK_CANCEL_PENDING: task {tid} has a pending cancellation — the "
+                    "supervisor is tearing it down; the message was NOT delivered. Wait for "
+                    "the settled outcome or start a new task."
+                ),
+            ))
     except Exception:
         log.debug("forward_to_worker cancel-pending check failed for %s", tid, exc_info=True)
     current_task_id = str(getattr(ctx, "task_id", "") or "").strip()
     target_parent = str(data.get("parent_task_id") or "").strip()
     target_root = str(data.get("root_task_id") or "").strip()
     if not current_task_id:
-        return "⚠️ TASK_FORBIDDEN: forward_to_worker requires an active task context."
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text="⚠️ TASK_FORBIDDEN: forward_to_worker requires an active task context."))
     allowed = target_parent == current_task_id or target_root == current_task_id
     if not allowed:
-        return f"⚠️ TASK_FORBIDDEN: task {tid} is not a child or descendant of the current task."
+        return _publish_tool_result(ctx, ToolResult(status="blocked", code="LEGACY_BLOCKED", text=f"⚠️ TASK_FORBIDDEN: task {tid} is not a child or descendant of the current task."))
     child_drive = str(data.get("child_drive_root") or data.get("headless_child_drive_root") or data.get("drive_root") or "").strip()
     mailbox_drive = pathlib.Path(child_drive) if child_drive else pathlib.Path(ctx.drive_root)
     write_owner_message(mailbox_drive, message, task_id=tid, msg_id=uuid.uuid4().hex)

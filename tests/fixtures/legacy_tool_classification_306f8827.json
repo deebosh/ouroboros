@@ -2635,6 +2635,22 @@
    "is_error": true,
    "status": "data_blocked"
   },
+  "native:DATA_BLOCKED:DATA_WRITE_BLOCKED": {
+   "is_error": true,
+   "status": "data_blocked"
+  },
+  "native:DATA_BLOCKED:DATA_WRITE_ERROR": {
+   "is_error": true,
+   "status": "data_blocked"
+  },
+  "native:EDIT_TEXT_BLOCKED:EDIT_TEXT_BLOCKED": {
+   "is_error": true,
+   "status": "edit_text_blocked"
+  },
+  "native:EDIT_TEXT_BLOCKED:EDIT_TEXT_ERROR": {
+   "is_error": true,
+   "status": "edit_text_blocked"
+  },
   "native:ELEVATION_BLOCKED:ELEVATION_BLOCKED": {
    "is_error": true,
    "status": "elevation_blocked"
@@ -2659,6 +2675,14 @@
    "is_error": true,
    "status": "blocked"
   },
+  "native:LEGACY_BLOCKED:STR_REPLACE_BLOCKED": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "native:LEGACY_BLOCKED:TASK_FORBIDDEN": {
+   "is_error": false,
+   "status": "ok"
+  },
   "native:LEGACY_TOOL_ERROR:LIST_FILES_ERROR": {
    "is_error": true,
    "status": "error"
@@ -2667,11 +2691,31 @@
    "is_error": true,
    "status": "error"
   },
+  "native:LEGACY_TOOL_ERROR:SEARCH_ERROR": {
+   "is_error": true,
+   "status": "error"
+  },
   "native:LEGACY_WARNING:DATA_NOT_YET_CREATED": {
    "is_error": false,
    "status": "ok"
   },
   "native:LEGACY_WARNING:NOT_FOUND": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "native:LEGACY_WARNING:ROOM_WRITE_VIA_TASK": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "native:LEGACY_WARNING:TASK_CANCEL_PENDING": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "native:LEGACY_WARNING:TASK_NOT_ACTIVE": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "native:LEGACY_WARNING:TASK_NOT_FOUND": {
    "is_error": false,
    "status": "ok"
   },
@@ -2700,6 +2744,10 @@
    "status": "blocked"
   },
   "native:SKILL_PAYLOAD_BLOCKED:SKILL_PAYLOAD_ARG_ERROR": {
+   "is_error": true,
+   "status": "skill_payload_blocked"
+  },
+  "native:SKILL_PAYLOAD_BLOCKED:SKILL_REDIRECT_BLOCKED": {
    "is_error": true,
    "status": "skill_payload_blocked"
   },
@@ -2734,6 +2782,14 @@
   "native:WORKSPACE_BLOCKED:WORKSPACE_SHELL_BLOCKED": {
    "is_error": true,
    "status": "workspace_blocked"
+  },
+  "native:WRITE_FILE_BLOCKED:WRITE_FILE_BLOCKED": {
+   "is_error": true,
+   "status": "write_file_blocked"
+  },
+  "native:WRITE_FILE_BLOCKED:WRITE_FILE_ERROR": {
+   "is_error": true,
+   "status": "write_file_blocked"
   },
   "shape:binding_arg_error": {
    "is_error": true,

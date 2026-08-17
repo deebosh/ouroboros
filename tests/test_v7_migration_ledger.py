@@ -766,6 +766,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "tests/test_onboarding_host.py::test_server_boot_never_writes_the_settings_file",
     }
     implemented.update(settings_seam_rows)
+    # v7 stream T, lane T2: the write/edit/search/forward producers that never left
+    # core.py publish their own result code. Same identity, same bytes, and the code
+    # IS the answer the adapter already gave for those bytes, so the id is "none".
+    t2_core_native_rows = {
+        f"ouroboros/tools/core.py::{symbol}": f"ouroboros/tools/core.py::{symbol}"
+        for symbol in "_data_write _write_file _edit_text _forward_to_worker".split()
+    }
+    implemented.update(t2_core_native_rows)
+    existing_process_owner_rows.update(t2_core_native_rows)
+    registry_extraction_no_facade_rows.update(t2_core_native_rows)
     # The ratchet relocation contract renamed its own pin in place (commit 73360232)
     # without recording the rename; the row is the ledger half of that change.
     ratchet_relocation_rename = {

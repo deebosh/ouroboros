@@ -123,6 +123,9 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     # assigned to its text. The golden is the RETIRED LOOP, so reaching the same
     # answer through the producer's own code shows up as a second row.
     "native:TOOL_ARG_ERROR:TOOL_ARG_ERROR": Delta(True, "error", True, "argument_error", "A.17", "same bucket as the TOOL_ARG_ERROR identifier row, through the native code the read/list/write/edit/search root guard publishes"),
+    # Same shape, same reason: `TASK_FORBIDDEN` is already approved above under A.4,
+    # and `forward_to_worker` now publishes the code the adapter gave that text.
+    "native:LEGACY_BLOCKED:TASK_FORBIDDEN": Delta(False, "ok", True, "blocked", "A.4", "same denial as the TASK_FORBIDDEN identifier row, through the native code the worker-forwarding guard publishes"),
     "shape:cognitive_redirect": Delta(True, "cognitive_tool_required", False, "ok", "A.11", "owner batch #4, through the native producer"),
     "shape:ephemeral_turn_denial": Delta(False, "ok", True, "blocked", "A.4",
         "the decision-turn denial is an access block its own first line never marked"),

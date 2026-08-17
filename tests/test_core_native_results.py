@@ -21,7 +21,7 @@ import types
 import pytest
 
 from ouroboros.contracts.task_constraint import TaskConstraint
-from ouroboros.tools import core_artifacts, core_file_tools
+from ouroboros.tools import core, core_artifacts, core_file_tools
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.tools.tool_result import (
     LegacyTextResultAdapter,
@@ -310,3 +310,177 @@ def test_owner_chat_delivery_terminals_are_native(tmp_path, label, tool, code, t
     assert published.text == text
     # A refused delivery queues nothing; a published success queues exactly one event.
     assert len(ctx.pending_events) == (1 if code == "OK" else 0)
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "code", "text"),
+    [
+        (
+            "write_file",
+            {"path": "skills/native/demo/x.py", "root": "runtime_data", "content": "x"},
+            "DATA_BLOCKED",
+            "⚠️ DATA_WRITE_BLOCKED: data/skills/native/<skill>/ is reserved "
+            "for launcher-seeded skills that carry a .seed-origin marker. "
+            "Write user- or agent-authored skill payloads under "
+            "data/skills/external/<skill>/ instead.",
+        ),
+        (
+            "write_file",
+            {"path": "notes.txt", "root": "runtime_data", "content": "x"},
+            "LEGACY_BLOCKED",
+            "⚠️ WRITE_BLOCKED: new content for 'notes.txt' is 9% of original "
+            "(11 -> 1 chars). This looks like accidental truncation. "
+            "Use edit_text for surgical edits, or pass force=true to confirm an "
+            "intentional rewrite.",
+        ),
+        (
+            "edit_text",
+            {"path": "gone.txt", "root": "runtime_data", "old_str": "a", "new_str": "b"},
+            "EDIT_TEXT_BLOCKED",
+            "⚠️ EDIT_TEXT_ERROR: file not found: runtime_data:gone.txt",
+        ),
+        (
+            "edit_text",
+            {"path": "notes.txt", "root": "runtime_data", "old_str": "zeta", "new_str": "q"},
+            "EDIT_TEXT_BLOCKED",
+            "⚠️ EDIT_TEXT_ERROR: old_str not found in runtime_data:notes.txt.\n"
+            "File preview (first 2000 chars):\nalpha\nbeta\n",
+        ),
+        (
+            "edit_text",
+            {"path": "notes.txt", "root": "runtime_data", "old_str": "alpha\nbeta\n", "new_str": "x"},
+            "LEGACY_BLOCKED",
+            "⚠️ WRITE_BLOCKED: new content for 'notes.txt' is 9% of original "
+            "(11 -> 1 chars). This looks like accidental truncation. "
+            "Use edit_text for surgical edits, or pass force=true to confirm an "
+            "intentional rewrite.",
+        ),
+        ("search_code", {"query": ""}, "LEGACY_TOOL_ERROR", "⚠️ SEARCH_ERROR: query is required."),
+        (
+            "search_code",
+            {"query": "x", "path": "nope"},
+            "LEGACY_TOOL_ERROR",
+            "⚠️ SEARCH_ERROR: path not found: active_workspace:nope",
+        ),
+        (
+            "search_code",
+            {"query": "[", "regex": True},
+            "LEGACY_TOOL_ERROR",
+            "⚠️ SEARCH_ERROR: invalid regex: unterminated character set at position 0",
+        ),
+        (
+            "forward_to_worker",
+            {"task_id": "not a task id!", "message": "m"},
+            "TOOL_ARG_ERROR",
+            "⚠️ TOOL_ARG_ERROR (forward_to_worker): task_id must match "
+            "[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
+        ),
+        (
+            "forward_to_worker",
+            {"task_id": "abc123", "message": "m"},
+            "LEGACY_WARNING",
+            "⚠️ TASK_NOT_FOUND: task abc123 is not registered.",
+        ),
+    ],
+)
+def test_write_edit_search_and_forward_terminals_are_native(tmp_path, tool, args, code, text):
+    repo, drive = _tree(tmp_path)
+    (drive / "notes.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    tools = ToolRegistry(repo_dir=repo, drive_root=drive)
+
+    result = tools.execute_result(tool, dict(args))
+
+    assert result.text == text
+    assert result.code == code
+    assert result.code == LegacyTextResultAdapter.from_text(tool, text).code
+
+
+def test_payload_selector_and_search_refusals_keep_their_own_codes(tmp_path):
+    repo, drive = _tree(tmp_path)
+    plain = ToolContext(repo_dir=repo, drive_root=drive)
+    readonly = _readonly_ctx(repo, drive)
+
+    for tool, call in (
+        ("write_file", lambda: core._write_file(
+            plain, path="../escape.py", content="x", root="skill_payload",
+            bucket="external", skill_name="demo")),
+        ("edit_text", lambda: core._edit_text(
+            plain, path="../escape.py", old_str="a", new_str="b", root="skill_payload",
+            bucket="external", skill_name="demo")),
+    ):
+        published = _published(plain, tool, call)
+        assert published.code == "SKILL_PAYLOAD_BLOCKED"
+        assert published.text == "⚠️ SKILL_PAYLOAD_ARG_ERROR: skill 'demo' was not found in location 'external'"
+
+    blocked_search = _published(
+        readonly, "search_code",
+        lambda: core._code_search(readonly, "x", path=".env", root="system_repo"),
+    )
+    assert blocked_search.code == "LEGACY_BLOCKED"
+    assert blocked_search.text == (
+        "⚠️ SEARCH_BLOCKED: this subagent cannot access repo secret or control paths."
+    )
+
+    directory = drive / "task_drives" / "interactive" / "adir"
+    directory.mkdir(parents=True)
+    write_failure = _published(
+        plain, "write_file",
+        lambda: core._write_file(plain, path="adir", content="x", root="task_drive"),
+    )
+    assert write_failure.code == "WRITE_FILE_BLOCKED"
+    assert write_failure.text.startswith("⚠️ WRITE_FILE_ERROR: IsADirectoryError: ")
+
+
+def test_room_write_redirects_and_worker_denials_keep_their_current_answer(tmp_path, monkeypatch):
+    """Both families still report through codes whose status is what it always was.
+
+    The room redirect is `LEGACY_WARNING` (ok) and the forwarding denial is
+    `LEGACY_BLOCKED` — the adapter's answers for those exact sentences, preserved
+    here rather than corrected, because changing either is an owner decision.
+    """
+    repo, drive = _tree(tmp_path)
+    room = tmp_path / "room"
+    room.mkdir()
+    monkeypatch.setattr(core, "project_room_lens_dir", lambda _ctx: room)
+    ctx = ToolContext(repo_dir=repo, drive_root=drive)
+
+    write_room = _published(ctx, "write_file", lambda: core._write_file(ctx, path="a.txt", content="x"))
+    assert write_room.code == "LEGACY_WARNING"
+    assert write_room.text == (
+        f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {room} and are edited by "
+        "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
+        "workspace) for real work there. For a deliberate write to the Ouroboros system "
+        'repo, pass root="system_repo" explicitly.'
+    )
+    edit_room = _published(ctx, "edit_text", lambda: core._edit_text(ctx, path="a.txt", old_str="a", new_str="b"))
+    assert edit_room.code == "LEGACY_WARNING"
+    assert "For a deliberate edit of the Ouroboros system " in edit_room.text
+
+    import ouroboros.task_status as task_status
+
+    monkeypatch.setattr(core, "project_room_lens_dir", lambda _ctx: None)
+    for record, expected_code, expected_text in (
+        ({"status": "completed"}, "LEGACY_WARNING", "⚠️ TASK_NOT_ACTIVE: task abc123 is already completed."),
+        ({"status": "queued"}, "LEGACY_WARNING", "⚠️ TASK_NOT_ACTIVE: task abc123 is queued, not running."),
+        ({"status": "running"}, "LEGACY_BLOCKED",
+         "⚠️ TASK_FORBIDDEN: forward_to_worker requires an active task context."),
+    ):
+        monkeypatch.setattr(task_status, "load_effective_task_result", lambda _root, _tid, _r=record: dict(_r))
+        published = _published(
+            ctx, "forward_to_worker", lambda: core._forward_to_worker(ctx, "abc123", "hello")
+        )
+        assert (published.code, published.text) == (expected_code, expected_text)
+
+    owned = ToolContext(repo_dir=repo, drive_root=drive, task_metadata={})
+    owned.task_id = "mine"
+    monkeypatch.setattr(
+        task_status, "load_effective_task_result",
+        lambda _root, _tid: {"status": "running", "parent_task_id": "someone-else"},
+    )
+    foreign = _published(
+        owned, "forward_to_worker", lambda: core._forward_to_worker(owned, "abc123", "hello")
+    )
+    assert foreign.code == "LEGACY_BLOCKED"
+    assert foreign.text == (
+        "⚠️ TASK_FORBIDDEN: task abc123 is not a child or descendant of the current task."
+    )
