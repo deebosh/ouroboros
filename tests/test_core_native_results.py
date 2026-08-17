@@ -133,6 +133,16 @@ def _readonly_ctx(repo: pathlib.Path, drive: pathlib.Path) -> ToolContext:
             "LEGACY_TOOL_ERROR",
             "⚠️ LIST_FILES_ERROR: Directory not found: nope",
         ),
+        # Owner item A.20, and the only approved TEXT change in the lane: this refusal
+        # shipped without the warning marker, so the adapter answered ok and the model
+        # received a policy denial in the position of file content. The marker is now
+        # present and the producer publishes the code the marker implies.
+        (
+            "read_file",
+            {"path": "state/skills/demo/grants.json", "root": "runtime_data"},
+            "DATA_BLOCKED",
+            "⚠️ DATA_READ_BLOCKED: skill owner state is not readable through generic data tools.",
+        ),
     ],
 )
 def test_read_and_list_terminals_are_native_through_the_registry(

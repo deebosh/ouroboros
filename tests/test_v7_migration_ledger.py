@@ -785,7 +785,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/tools/core.py::_send_file",
         "ouroboros/tools/core.py::_write_file",
         "ouroboros/tools/core.py::_edit_text",
-    "ouroboros/tools/core.py::_forward_to_worker",
+        "ouroboros/tools/core.py::_forward_to_worker",
+        "ouroboros/tools/core.py::_data_read",
     }
     # The ratchet relocation contract renamed its own pin in place (commit 73360232)
     # without recording the rename; the row is the ledger half of that change.

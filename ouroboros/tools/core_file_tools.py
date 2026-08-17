@@ -490,7 +490,15 @@ def _data_read(
         else pathlib.Path(ctx.drive_root)
     )
     if _is_skill_owner_state_target(target, state_root) and target.name.lower() != "review.json":
-        return "DATA_READ_BLOCKED: skill owner state is not readable through generic data tools."
+        # Owner item A.20: this refusal was the one in the family that shipped WITHOUT
+        # the warning marker, so the adapter read a policy denial as a successful read
+        # and the model was handed the refusal as if it were file content. The marker
+        # is the approved text change; the code is the one the marker already implies.
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked",
+            code="DATA_BLOCKED",
+            text="⚠️ DATA_READ_BLOCKED: skill owner state is not readable through generic data tools.",
+        ))
     try:
         content = read_text(target)
         start_raw, max_raw = _coerce_line_window(start_line, max_lines)
