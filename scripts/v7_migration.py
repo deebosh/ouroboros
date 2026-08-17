@@ -106,7 +106,7 @@ APPROVED_PENDING_OWNERS = frozenset({
     "supervisor/events_coop_checkpoint.py", "supervisor/events_evolution_done.py",
     "supervisor/events_task_done.py", "supervisor/events_budget.py",
     "supervisor/events_worker_reports.py", "supervisor/events_runtime_controls.py",
-    "supervisor/cancel_custody.py",
+    "supervisor/cancel_custody.py", "supervisor/worker_process.py",
 })
 _PY_LOCAL_KINDS = frozenset({"class", "function", "assignment"})
 def _git(repo: pathlib.Path, *args: str, text: bool = True) -> str | bytes:

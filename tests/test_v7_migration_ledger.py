@@ -624,6 +624,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update({name: name for name in s3_semantic_delta_ids})
     existing_process_owner_rows.update(s3_semantic_delta_ids)
     registry_extraction_no_facade_rows.update(s3_semantic_delta_ids)
+    s3_worker_process_rows = {
+        f"supervisor/workers.py::{symbol}": f"supervisor/worker_process.py::{symbol}"
+        for symbol in """WORKER_LOG_SINK_SUPPRESSED_TYPES _current_custody_session_id
+            _bind_worker_repo_root _prepare_worker_task_runtime worker_main
+            _log_worker_crash""".split()
+    }
+    implemented.update(s3_worker_process_rows)
     implemented.update(w_stream_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)

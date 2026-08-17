@@ -22,7 +22,8 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
   │
   ├── supervisor/              ← Background thread inside server.py
   │   ├── message_bus.py       ← Queue-based local message bus (Web UI + reviewed transport skills)
-  │   ├── workers.py           ← Multiprocessing worker pool (fork/spawn by platform)
+  │   ├── workers.py           ← Multiprocessing worker pool (fork/spawn by platform): the pool's own state — repo/drive roots, size, the worker table, the shared PENDING/RUNNING refs, the crash clock — plus spawn, respawn, kill, health and task assignment. Everything here reads that state, which is why the pool is one module and not several
+  │   ├── worker_process.py    ← What runs INSIDE a worker child process: the entry point, the repo/drive root binding it performs before it can read anything, the log-sink filter that keeps types with a dedicated event sibling from double-broadcasting, and the crash record the parent would otherwise never see. None of it reads pool state, because in that process none of it exists; `worker_main` stays a module-level function so platforms that spawn rather than fork can re-import it by name
   │   ├── state.py             ← Persistent state (state.json) with file locking
   │   ├── queue.py             ← Task queue management (PENDING/RUNNING lists) + activity-based timeout enforcement
   │   ├── task_admission.py    ← Token-owned, in-process reservations that fence duplicate user-ingress ids before Project/workspace/attachment side effects; queue.py remains the state authority
