@@ -657,6 +657,11 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in scope_review_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
+    # S3b: the queue's snapshot-path shadow. The ratchet-transition rename is the
+    # wip's own row (D11), registered beside the other delta expectations.
+    retired_current["supervisor/queue.py::QUEUE_SNAPSHOT_PATH"] = (
+        "retired:supervisor.state owns the queue snapshot path; the queue reads it through the module at use time"
+    )
     implemented.update(w_stream_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)

@@ -262,6 +262,7 @@ def test_drop_cancelled_pending_consults_the_intent_projection(qenv, monkeypatch
 
 
 def test_snapshot_restore_refuses_a_task_with_active_intent(qenv, monkeypatch):
+    from supervisor import state as state_mod
     from ouroboros.utils import utc_now_iso
 
     ci.request_cancel(qenv.drive, "restoreme")
@@ -275,7 +276,7 @@ def test_snapshot_restore_refuses_a_task_with_active_intent(qenv, monkeypatch):
     state_dir = qenv.drive / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "queue_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
-    monkeypatch.setattr(qenv.q, "QUEUE_SNAPSHOT_PATH", state_dir / "queue_snapshot.json",
+    monkeypatch.setattr(state_mod, "QUEUE_SNAPSHOT_PATH", state_dir / "queue_snapshot.json",
                         raising=False)
 
     restored = qenv.q.restore_pending_from_snapshot()
@@ -1855,6 +1856,7 @@ def test_snapshot_restore_consults_the_intent_projection_under_the_queue_lock(
 ):
     """AR2-10 (§8-A1): the projection read at restore holds the queue lock, so
     the "no active intent" view and the enqueue are one serialized step."""
+    from supervisor import state as state_mod
     from ouroboros.utils import utc_now_iso
 
     consults: list = []
@@ -1874,7 +1876,7 @@ def test_snapshot_restore_consults_the_intent_projection_under_the_queue_lock(
     state_dir = qenv.drive / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "queue_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
-    monkeypatch.setattr(qenv.q, "QUEUE_SNAPSHOT_PATH", state_dir / "queue_snapshot.json",
+    monkeypatch.setattr(state_mod, "QUEUE_SNAPSHOT_PATH", state_dir / "queue_snapshot.json",
                         raising=False)
 
     assert qenv.q.restore_pending_from_snapshot() == 0

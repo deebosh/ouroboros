@@ -110,8 +110,32 @@ def test_the_queue_never_rebinds_the_retired_timeout_constants() -> None:
 
     source = inspect.getsource(queue.init)
     assert "SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC = 600, 1800" not in source
-    assert "global DRIVE_ROOT, FINALIZATION_GRACE_SEC, QUEUE_SNAPSHOT_PATH" in source
+    assert "global DRIVE_ROOT, FINALIZATION_GRACE_SEC" in source
     assert queue.SOFT_TIMEOUT_SEC == 600 and queue.HARD_TIMEOUT_SEC == 1800
+
+
+def test_the_queue_snapshot_path_has_one_owner(tmp_path, monkeypatch) -> None:
+    """The queue kept a private copy of the snapshot path, rebound by ITS init.
+    Two inits, two answers: whichever ran last for a given root won, and a test or
+    boot path that ran only one of them read or wrote the wrong file. The path
+    belongs to supervisor.state with the other state paths; the queue reads it
+    through the module at use time."""
+    import inspect
+
+    from supervisor import queue, state
+
+    assert not hasattr(queue, "QUEUE_SNAPSHOT_PATH")
+    assert "QUEUE_SNAPSHOT_PATH" not in inspect.getsource(queue.init)
+    for reader in (queue.persist_queue_snapshot, queue.restore_pending_from_snapshot):
+        assert "_state.QUEUE_SNAPSHOT_PATH" in inspect.getsource(reader), reader.__name__
+
+    # Rebinding the one owner is what the readers see — at use time, not import time.
+    monkeypatch.setattr(state, "QUEUE_SNAPSHOT_PATH", tmp_path / "state" / "snap.json")
+    monkeypatch.setattr(queue, "PENDING", [])
+    monkeypatch.setattr(queue, "RUNNING", {})
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    assert queue.persist_queue_snapshot(reason="one-owner-probe") is True
+    assert (tmp_path / "state" / "snap.json").is_file()
 
 
 def test_the_bench_container_no_longer_carries_the_retired_liveness_keys() -> None:

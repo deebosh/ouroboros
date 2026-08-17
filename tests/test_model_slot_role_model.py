@@ -1422,6 +1422,7 @@ def test_queue_snapshot_projects_every_scheduling_intent_field(monkeypatch, tmp_
     auto+harness⇒light default over a gate-verified lane. Walk
     SUBAGENT_INTENT_FIELDS against the REAL projection so no future intent
     field can be dropped the same way."""
+    from supervisor import state as state_mod
     import json as _json
 
     from ouroboros.subagents import SUBAGENT_INTENT_FIELDS
@@ -1430,7 +1431,7 @@ def test_queue_snapshot_projects_every_scheduling_intent_field(monkeypatch, tmp_
     pending: list = []
     running: dict = {}
     queue_mod.init_queue_refs(pending, running, {"value": 0})
-    monkeypatch.setattr(queue_mod, "QUEUE_SNAPSHOT_PATH",
+    monkeypatch.setattr(state_mod, "QUEUE_SNAPSHOT_PATH",
                         tmp_path / "queue_snapshot.json")
     task = {"id": "t-intent-pin", "type": "task"}
     sentinels = {name: f"sentinel-{i}" for i, name in enumerate(SUBAGENT_INTENT_FIELDS)}

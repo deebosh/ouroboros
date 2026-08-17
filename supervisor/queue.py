@@ -16,9 +16,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from supervisor.state import (
     load_state, append_jsonl, atomic_write_text,
-    QUEUE_SNAPSHOT_PATH, budget_remaining, EVOLUTION_BUDGET_RESERVE,
+    budget_remaining, EVOLUTION_BUDGET_RESERVE,
     reconstruct_task_cost as reconstruct_task_cost,
 )
+# The queue snapshot's path has ONE owner: supervisor.state, which binds it in its
+# own init beside the other state paths. The queue reads it through the module at
+# use time rather than copying it, because a copy is a second answer to the same
+# question and the two drifted apart whenever only one init ran.
+from supervisor import state as _state
 from supervisor.message_bus import send_with_budget
 from ouroboros.config import (
     DATA_DIR,
@@ -95,9 +100,8 @@ def init(drive_root: pathlib.Path, soft_timeout: int, hard_timeout: int) -> None
     discarded: no rail has consulted either since idle, deadline, absolute
     ceiling and the reaper replaced them.
     """
-    global DRIVE_ROOT, FINALIZATION_GRACE_SEC, QUEUE_SNAPSHOT_PATH
+    global DRIVE_ROOT, FINALIZATION_GRACE_SEC
     DRIVE_ROOT = drive_root
-    QUEUE_SNAPSHOT_PATH = drive_root / "state" / "queue_snapshot.json"
     legacy_keys = []
     if int(soft_timeout) != 600:
         legacy_keys.append("OUROBOROS_SOFT_TIMEOUT_SEC")
@@ -788,7 +792,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         "pending": pending_rows, "running": running_rows,
     }
     try:
-        atomic_write_text(QUEUE_SNAPSHOT_PATH, json.dumps(payload, ensure_ascii=False, indent=2))
+        atomic_write_text(_state.QUEUE_SNAPSHOT_PATH, json.dumps(payload, ensure_ascii=False, indent=2))
         return True
     except Exception:
         log.warning("Failed to persist queue snapshot (reason=%s)", reason, exc_info=True)
@@ -812,9 +816,9 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
     if PENDING:
         return 0
     try:
-        if not QUEUE_SNAPSHOT_PATH.exists():
+        if not _state.QUEUE_SNAPSHOT_PATH.exists():
             return 0
-        snap = json.loads(QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        snap = json.loads(_state.QUEUE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
         if not isinstance(snap, dict):
             return 0
         ts = str(snap.get("ts") or "")

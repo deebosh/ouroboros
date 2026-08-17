@@ -2467,11 +2467,12 @@ def test_handle_task_done_skips_workspace_readonly_subagent_artifacts(tmp_path, 
 
 
 def test_queue_snapshot_preserves_subagent_contract_fields(tmp_path, monkeypatch):
+    from supervisor import state as state_mod
     from supervisor import queue as queue_module
 
     snapshot_path = tmp_path / "state" / "queue_snapshot.json"
     monkeypatch.setattr(queue_module, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(queue_module, "QUEUE_SNAPSHOT_PATH", snapshot_path)
+    monkeypatch.setattr(state_mod, "QUEUE_SNAPSHOT_PATH", snapshot_path)
     monkeypatch.setattr(queue_module, "PENDING", [])
     monkeypatch.setattr(queue_module, "RUNNING", {})
     monkeypatch.setattr(queue_module, "QUEUE_SEQ_COUNTER_REF", {"value": 0})

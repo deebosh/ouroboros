@@ -441,13 +441,14 @@ def test_terminal_bench_harbor_adapter_imports_without_harbor():
 
 
 def test_queue_restore_accepts_headless_chat_zero(tmp_path, monkeypatch):
+    from supervisor import state as state_mod
     import supervisor.queue as queue
 
     monkeypatch.setattr(queue, "PENDING", [])
     monkeypatch.setattr(queue, "RUNNING", {})
     monkeypatch.setattr(queue, "QUEUE_SEQ_COUNTER_REF", {"value": 0})
     monkeypatch.setattr(queue, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(queue, "QUEUE_SNAPSHOT_PATH", tmp_path / "queue_snapshot.json")
+    monkeypatch.setattr(state_mod, "QUEUE_SNAPSHOT_PATH", tmp_path / "queue_snapshot.json")
     monkeypatch.setattr(queue, "append_jsonl", lambda *args, **kwargs: None)
     monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": True)
     (tmp_path / "queue_snapshot.json").write_text(

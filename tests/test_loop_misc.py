@@ -519,6 +519,7 @@ def test_task_acceptance_agent_tool_is_advisory_before_auto_host_gate(monkeypatc
 
 
 def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, direct: bool):
+    from supervisor import state as state_mod
     import ouroboros.review_substrate as rs
     from ouroboros.owner_mailbox import drain_owner_entries
     from supervisor import events as events_mod
@@ -537,7 +538,7 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
     pending = []
     running = {} if direct else {root_id: {"task": task}}
     monkeypatch.setattr(queue_mod, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(queue_mod, "QUEUE_SNAPSHOT_PATH", tmp_path / "state" / "queue_snapshot.json")
+    monkeypatch.setattr(state_mod, "QUEUE_SNAPSHOT_PATH", tmp_path / "state" / "queue_snapshot.json")
     monkeypatch.setattr(queue_mod, "PENDING", pending)
     monkeypatch.setattr(queue_mod, "RUNNING", running)
     monkeypatch.setattr(queue_mod, "ACCEPTANCE_FENCES", {})
