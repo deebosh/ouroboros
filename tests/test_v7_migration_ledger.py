@@ -762,7 +762,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 if row["old path/symbol"] == "tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality"
                 else "D07"
                 if row["old path/symbol"] in s2_panic_delta_rows
-                else "D03"
+                else "D08"
                 if row["old path/symbol"] in s6_delta_rows
                 else "D02"
                 if row["old path/symbol"] in {
@@ -878,7 +878,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         else:
             assert upstream["status"] == "pending"
             expected_delta = (
-                "D03"
+                "D08"
                 if row["old path/symbol"] in s6_delta_rows
                 else "D02"
                 if row["old path/symbol"] in {
@@ -903,4 +903,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D11"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D11"})
