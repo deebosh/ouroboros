@@ -661,7 +661,19 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)
     implemented.update(tool_access_extraction_rows)
+    # v7 stream L-A: review_helpers keeps the shared plumbing; the reviewer vocabulary
+    # and the reviewable-file classification/packs become owners. All facade rows.
+    review_helpers_extraction_symbols_by_owner = {
+        "review_prompt_text.py": "_SECRET_LINE_RE _JSON_SECRET_RE CRITICAL_FINDING_CALIBRATION REVIEW_PREAMBLE REVIEW_THOROUGHNESS_BLOCK REVIEW_SEVERITY_THRESHOLDS REPO_ANTI_PATTERN_LOCK_GUARD _ANTI_THRASHING_RULE_VERDICT _ANTI_THRASHING_RULE_ITEM_NAME _CONVERGENCE_RULE_TEXT _HISTORY_VERIFICATION_ONLY_RULE single_line format_review_history_entry build_review_history_section build_obligations_block build_anti_thrashing_rules_section build_self_verification_template _OBLIGATION_SUFFIX_RE normalize_reviewer_obligation_id strip_obligation_suffix normalize_reviewer_item normalize_reviewer_items build_rebuttal_section format_obligation_excerpt redact_prompt_secrets _make_fence format_prompt_code_block",
+        "review_file_pack.py": "BINARY_EXTENSIONS _FILE_SIZE_LIMIT _SENSITIVE_EXTENSIONS _SENSITIVE_NAMES _VENDORED_SUFFIXES _VENDORED_NAMES _FULL_REPO_BINARY_EXTENSIONS _FULL_REPO_SKIP_DIR_PREFIXES _MAX_FULL_REPO_FILE_BYTES _BINARY_SNIFF_BYTES parse_changed_paths_from_porcelain_z list_changed_paths_from_git_status parse_changed_paths_from_porcelain paths_from_porcelain_line parse_git_name_status format_name_status_for_preflight paths_from_name_status build_touched_file_pack build_advisory_changed_context _is_probably_binary _raw_bytes_binary list_git_tracked_paths iter_repo_pack_entries build_full_repo_pack build_head_snapshot_section",
+    }
+    review_helpers_extraction_rows = {
+        f"ouroboros/tools/review_helpers.py::{symbol}": f"ouroboros/tools/{owner}::{symbol}"
+        for owner, symbols in review_helpers_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
     implemented.update(scope_review_extraction_rows)
+    implemented.update(review_helpers_extraction_rows)
     implemented.update(test_split_rows)
     implemented.update(web_extractions)
     implemented.update(config_extraction_rows)
