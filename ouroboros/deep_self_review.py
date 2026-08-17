@@ -35,7 +35,19 @@ _SKIP_DIR_PREFIXES = (
 # scope_review._SCOPE_INPUT_TOKEN_LIMIT): 920K input + 100K output exceeds 1M
 # and yields a deterministic provider 400, so the assembled INPUT prompt is
 # gated on min(SSOT budget, window − output − tokenizer margin).
-_DEEP_MAX_OUTPUT_TOKENS = 100_000
+#
+# v6.103.8 — cap lowered from 100_000 → 10_000. The 100k default was the rot
+# captured by ibl-be9ba2d99b25: a single deep-review call burned $11.00 on
+# task c7862982 because OpenRouter's account-level credit pool 402'd at
+# "you can only afford 56 tokens of 100000 requested" — the entire spend was
+# the failed request itself, not the review work. 10k covers any honest
+# deep-review output (the reviewer's prose section is bounded by the atlas
+# itself; only the findings enumeration needs slack, and 10k is ~7x what
+# the largest historical review used). The cap is provider-agnostic — direct
+# google_genai::gemini-3.7-flash now reaches the same review at a sane budget
+# without a per-provider special case. If a future review genuinely needs more
+# output, raise it WITH a backpressure rationale, not by accident.
+_DEEP_MAX_OUTPUT_TOKENS = 10_000
 _DEEP_MODEL_CONTEXT_WINDOW = 1_000_000
 _DEEP_OUTPUT_MARGIN_TOKENS = 155_000
 _DEEP_INPUT_TOKEN_LIMIT = min(

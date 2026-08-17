@@ -79,6 +79,12 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "ANTHROPIC_API_KEY": "",
     "MINIMAX_API_KEY": "",
     "MINIMAX_REGION": "",
+    # v6.103.8 — Google Generative AI direct provider. The base URL is the
+    # only persistable knob (env override allowed). The API key has no
+    # SETTINGS_DEFAULTS row by design — env-only, never written to disk,
+    # never surfaced through the Settings UI. SEE provider_models.py::
+    # PROVIDER_CREDENTIAL_GROUPS["google_genai"].
+    "OUROBOROS_GEMINI_BASE_URL": "https://generativelanguage.googleapis.com",
 
     "OUROBOROS_NETWORK_PASSWORD": "",
     "OUROBOROS_SERVER_HOST": "127.0.0.1",

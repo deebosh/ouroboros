@@ -31,6 +31,7 @@ PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
     ("minimax::", "minimax"),
     ("cloudru::", "cloudru"),
     ("gigachat::", "gigachat"),
+    ("google_genai::", "google_genai"),
     ("openai-compatible::", "openai-compatible"),
     ("openrouter::", "openrouter"),
 )
@@ -41,6 +42,7 @@ PROVIDER_ENV_KEYS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "minimax": "MINIMAX_API_KEY",
     "cloudru": "CLOUDRU_FOUNDATION_MODELS_API_KEY",
+    "google_genai": "OUROBOROS_GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
@@ -69,6 +71,14 @@ PROVIDER_CREDENTIAL_GROUPS: dict[str, tuple[str, ...]] = {
     "gigachat": (
         "GIGACHAT_CREDENTIALS", "GIGACHAT_PASSWORD", "GIGACHAT_USER",
         "GIGACHAT_BASE_URL", "GIGACHAT_SCOPE", "GIGACHAT_VERIFY_SSL_CERTS",
+    ),
+    "google_genai": (
+        # OUROBOROS_GEMINI_API_KEY is env-only by design (v6.103.8 — the key
+        # never appears in settings.json, never reaches the Settings UI, and
+        # has no SETTINGS_DEFAULTS row). OUROBOROS_GEMINI_BASE_URL is the
+        # persistable endpoint; it defaults to Google's public generativelanguage
+        # host so an env override is a per-install choice, not a prerequisite.
+        "OUROBOROS_GEMINI_API_KEY", "OUROBOROS_GEMINI_BASE_URL",
     ),
     "openai-compatible": (
         "OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_BASE_URL",
@@ -141,7 +151,7 @@ def local_only_review_route_env() -> bool:
         provider_has_credentials(provider)
         for provider in (
             "openrouter", "openai", "anthropic", "minimax", "cloudru", "gigachat",
-            "openai-compatible",
+            "google_genai", "openai-compatible",
         )
     )
 
@@ -321,12 +331,33 @@ ANTHROPIC_DIRECT_DEFAULTS = {
     "deep_self_review": "anthropic::claude-opus-5",
 }
 
+GOOGLE_GENAI_DIRECT_DEFAULTS = {
+    # v6.103.8 — added as the deep-self-review escape route after OpenRouter
+    # exhausted its credit pool on task c7862982 (a 100k-token review attempt
+    # 402'd for $11.00 of pure waste). Default to a single flash-class model
+    # owners have ALREADY proven reachable on the API (the live list-models
+    # probe against the owner's AIza key returned gemini-3.7-flash with a 1M
+    # input / 65K output window). Heavier Gemini tiers (pro/ultra) carry the
+    # same 1M input window but cost more; owners who need them override the
+    # slot directly.
+    "main": "google_genai::gemini-3.7-flash",
+    "heavy": "google_genai::gemini-3.7-flash",
+    "light": "google_genai::gemini-3.5-flash",
+    "fallback": "google_genai::gemini-3.5-flash",
+    # Deep self-review ships as the SAME model that lit up the c7862982
+    # trace — a thinking model (Gemini returns thoughtsTokenCount separately,
+    # so reasoning shows up in usage accounting) with a 1M input window that
+    # fits the deep-review pack budget without the 100k->402 trap.
+    "deep_self_review": "google_genai::gemini-3.7-flash",
+}
+
 _DIRECT_PROVIDER_DEFAULTS = {
     "openai": OPENAI_DIRECT_DEFAULTS,
     "anthropic": ANTHROPIC_DIRECT_DEFAULTS,
     "cloudru": CLOUDRU_DIRECT_DEFAULTS,
     "gigachat": GIGACHAT_DIRECT_DEFAULTS,
     "minimax": MINIMAX_DIRECT_DEFAULTS,
+    "google_genai": GOOGLE_GENAI_DIRECT_DEFAULTS,
 }
 
 _ANTHROPIC_MODEL_ALIASES = {
@@ -365,6 +396,18 @@ def migrate_model_value(provider: str, value: str) -> str:
             return text
         if text.startswith("minimax/"):
             return f"minimax::{text[len('minimax/'):]}"
+        return text
+    if provider == "google_genai":
+        if text.startswith("google_genai::"):
+            return text
+        # OpenRouter ships Gemini models under the "google/" prefix; lift them
+        # to the direct prefix so an owner carrying an OpenRouter-style default
+        # (e.g. "google/gemini-3.7-flash") still routes to google_genai when the
+        # provider says so. NOTE: this is intentionally NOT applied when the
+        # bare id already begins with "google/" but provider is NOT google_genai
+        # — migrate_model_value is keyed by provider, not by id shape.
+        if text.startswith("google/"):
+            return f"google_genai::{text[len('google/'):]}"
         return text
     return text
 
@@ -455,6 +498,8 @@ def normalize_model_identity(model: str) -> str:
         return f"gigachat/{text[len('gigachat::'):]}"
     if text.startswith("minimax::"):
         return f"minimax/{text[len('minimax::'):]}"
+    if text.startswith("google_genai::"):
+        return f"google/{text[len('google_genai::'):]}"
     if text.startswith("anthropic::"):
         return f"anthropic/{normalize_anthropic_model_id(text[len('anthropic::'):])}"
     if text.startswith("anthropic/"):
