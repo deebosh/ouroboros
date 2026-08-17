@@ -15,6 +15,7 @@ from hashlib import sha256
 
 from ouroboros.config import apply_settings_to_env, load_settings, save_settings
 from ouroboros.tools.registry import ToolContext
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from ouroboros.utils import append_jsonl, atomic_write_json, run_cmd, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -56,7 +57,10 @@ def _evolution_restart_block_reason(ctx: ToolContext) -> str:
 def _request_restart(ctx: ToolContext, reason: str) -> str:
     block_reason = _evolution_restart_block_reason(ctx)
     if block_reason:
-        return f"⚠️ RESTART_BLOCKED: in evolution mode, {block_reason}."
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="LEGACY_BLOCKED",
+            text=f"⚠️ RESTART_BLOCKED: in evolution mode, {block_reason}.",
+        ))
     is_evolution = str(ctx.current_task_type or "") == "evolution"
     restart_reason = str(reason or "").strip() or "agent_requested_restart"
     # Persist expected ref for post-restart verification.
@@ -98,10 +102,13 @@ def _request_restart(ctx: ToolContext, reason: str) -> str:
     except Exception as exc:
         log.debug("Failed to read VERSION file or git ref for restart verification", exc_info=True)
         if is_evolution:
-            return (
-                "⚠️ RESTART_BLOCKED: the exact evolution restart receipt could not "
-                f"be persisted ({exc})."
-            )
+            return _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="LEGACY_BLOCKED",
+                text=(
+                    "⚠️ RESTART_BLOCKED: the exact evolution restart receipt could not "
+                    f"be persisted ({exc})."
+                ),
+            ))
     ctx.pending_restart_reason = restart_reason
     ctx.last_push_succeeded = False
     ctx.last_reviewed_commit_sha = ""

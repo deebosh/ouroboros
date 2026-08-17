@@ -112,6 +112,12 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "envelope:string_false": Delta(False, "ok", False, "untyped", "A.17", "a dynamic provider body is untyped rather than assumed ok; is_error is unchanged"),
     "envelope:true": Delta(False, "ok", False, "untyped", "A.17", "a dynamic provider body is untyped rather than assumed ok; is_error is unchanged"),
     "native:ACCESS_BLOCKED:ACTING_SUBAGENT_TOOL_NOT_GRANTED": Delta(False, "ok", True, "blocked", "A.4", "same denial through its native code"),
+    # Same shape again: the `MUTATIVE_SUBAGENTS_DISABLED` identifier is already
+    # approved above under A.4, and the two subagent-constraint guards in
+    # `control_scheduling` now publish the code the adapter already assigned to
+    # their text. The golden is the RETIRED LOOP, so the same answer reached
+    # through the producer's own code shows up as a second row.
+    "native:ACCESS_BLOCKED:MUTATIVE_SUBAGENTS_DISABLED": Delta(False, "ok", True, "blocked", "A.4", "same denial as the MUTATIVE_SUBAGENTS_DISABLED identifier row, through the native code the subagent-constraint guards publish"),
     "native:ACCESS_BLOCKED:MANAGED_UPDATE_IN_PROGRESS": Delta(False, "ok", True, "blocked", "A.4", "the managed-update denial is an access block its text never marked"),
     "native:CAPABILITY_UNAVAILABLE:CAPABILITY_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "native:CAPABILITY_UNAVAILABLE:MANAGED_UPDATE_STATE_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),

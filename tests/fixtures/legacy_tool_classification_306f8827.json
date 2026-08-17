@@ -2607,6 +2607,10 @@
    "is_error": false,
    "status": "ok"
   },
+  "native:ACCESS_BLOCKED:MUTATIVE_SUBAGENTS_DISABLED": {
+   "is_error": false,
+   "status": "ok"
+  },
   "native:ACCESS_BLOCKED:TOOL_ACCESS_BLOCKED": {
    "is_error": true,
    "status": "blocked"
@@ -2676,6 +2680,10 @@
    "status": "blocked"
   },
   "native:LEGACY_BLOCKED:REPO_READ_BLOCKED": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "native:LEGACY_BLOCKED:RESTART_BLOCKED": {
    "is_error": true,
    "status": "blocked"
   },

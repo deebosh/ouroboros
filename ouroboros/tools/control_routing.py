@@ -22,6 +22,7 @@ from ouroboros.tools.control_events import (
     _promotion_pool_disabled_from_snapshot,
 )
 from ouroboros.tools.registry import ToolContext
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -110,7 +111,10 @@ def _promote_chat_to_task(
     """
     goal = str(objective or "").strip()
     if not goal:
-        return "⚠️ TOOL_ARG_ERROR (promote_chat_to_task): objective is required"
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ TOOL_ARG_ERROR (promote_chat_to_task): objective is required",
+        ))
     cached = _cached_swarm_handoff(ctx)
     if cached:
         return cached
@@ -152,10 +156,13 @@ def _promote_chat_to_task(
     pid = ""
     if str(project_id or "").strip():
         if not explicit_project_id_ok(project_id):
-            return (
-                f"⚠️ TOOL_ARG_ERROR (promote_chat_to_task): project_id {project_id!r} is not "
-                "filesystem-clean; use lowercase alphanumeric/_/-/. (<=64 chars)"
-            )
+            return _publish_tool_result(ctx, ToolResult(
+                status="error", code="TOOL_ARG_ERROR",
+                text=(
+                    f"⚠️ TOOL_ARG_ERROR (promote_chat_to_task): project_id {project_id!r} is not "
+                    "filesystem-clean; use lowercase alphanumeric/_/-/. (<=64 chars)"
+                ),
+            ))
         pid = sanitize_project_id(project_id)
     elif display_name:
         # LLM-first "create a NAMED project and work there": derive a filesystem
@@ -317,7 +324,10 @@ def _route_to_project(
 
     msg = str(message or "").strip()
     if not msg:
-        return "⚠️ TOOL_ARG_ERROR (route_to_project): message is required"
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ TOOL_ARG_ERROR (route_to_project): message is required",
+        ))
     cached = _cached_swarm_handoff(ctx)
     if cached:
         return cached
@@ -449,12 +459,18 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
     target = str(task_id or "").strip()
     msg = str(message or "").strip()
     if not target:
-        return (
-            "⚠️ TOOL_ARG_ERROR (steer_task): task_id is required — pick one from "
-            "current_chat.running_tasks (or promote_chat_to_task to start new work)."
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text=(
+                "⚠️ TOOL_ARG_ERROR (steer_task): task_id is required — pick one from "
+                "current_chat.running_tasks (or promote_chat_to_task to start new work)."
+            ),
+        ))
     if not msg:
-        return "⚠️ TOOL_ARG_ERROR (steer_task): message is required."
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ TOOL_ARG_ERROR (steer_task): message is required.",
+        ))
     try:
         current_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
     except (TypeError, ValueError):
