@@ -663,63 +663,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "retired:supervisor.state owns the queue snapshot path; the queue reads it through the module at use time"
     )
     # S3b: the module-handle extraction of the queue (delta D10).
+    s3b_queue_handle_symbols_by_owner = {
+        "queue_snapshot.py": "_kept_service_pids parse_iso_to_ts persist_queue_snapshot restore_pending_from_snapshot",
+        "queue_timeouts.py": "_enforce_task_timeouts_locked _has_live_descendant _has_pending_descendant _is_descendant_of _subtree_progressing _task_deadline_ts _task_drive_for_task enforce_task_timeouts",
+        "queue_schedules.py": "_SKILL_SCHEDULE_SYNC_INTERVAL_SEC _last_skill_schedule_sync _schedule_running_or_queued _scheduled_tasks_path _task_from_schedule _write_scheduled_tasks check_scheduled_tasks list_scheduled_tasks remove_scheduled_task resync_skill_schedules sync_skill_schedules upsert_scheduled_task",
+        "queue_evolution.py": "_deliver_pending_owner_report enqueue_evolution_task_if_needed get_evolution_status_snapshot queue_deep_self_review_task",
+    }
     s3b_queue_handle_rows = {
-        "supervisor/queue.py::_SKILL_SCHEDULE_SYNC_INTERVAL_SEC":
-            "supervisor/queue_schedules.py::_SKILL_SCHEDULE_SYNC_INTERVAL_SEC",
-        "supervisor/queue.py::_deliver_pending_owner_report":
-            "supervisor/queue_evolution.py::_deliver_pending_owner_report",
-        "supervisor/queue.py::_enforce_task_timeouts_locked":
-            "supervisor/queue_timeouts.py::_enforce_task_timeouts_locked",
-        "supervisor/queue.py::_has_live_descendant":
-            "supervisor/queue_timeouts.py::_has_live_descendant",
-        "supervisor/queue.py::_has_pending_descendant":
-            "supervisor/queue_timeouts.py::_has_pending_descendant",
-        "supervisor/queue.py::_is_descendant_of":
-            "supervisor/queue_timeouts.py::_is_descendant_of",
-        "supervisor/queue.py::_kept_service_pids":
-            "supervisor/queue_snapshot.py::_kept_service_pids",
-        "supervisor/queue.py::_last_skill_schedule_sync":
-            "supervisor/queue_schedules.py::_last_skill_schedule_sync",
-        "supervisor/queue.py::_schedule_running_or_queued":
-            "supervisor/queue_schedules.py::_schedule_running_or_queued",
-        "supervisor/queue.py::_scheduled_tasks_path":
-            "supervisor/queue_schedules.py::_scheduled_tasks_path",
-        "supervisor/queue.py::_subtree_progressing":
-            "supervisor/queue_timeouts.py::_subtree_progressing",
-        "supervisor/queue.py::_task_deadline_ts":
-            "supervisor/queue_timeouts.py::_task_deadline_ts",
-        "supervisor/queue.py::_task_drive_for_task":
-            "supervisor/queue_timeouts.py::_task_drive_for_task",
-        "supervisor/queue.py::_task_from_schedule":
-            "supervisor/queue_schedules.py::_task_from_schedule",
-        "supervisor/queue.py::_write_scheduled_tasks":
-            "supervisor/queue_schedules.py::_write_scheduled_tasks",
-        "supervisor/queue.py::check_scheduled_tasks":
-            "supervisor/queue_schedules.py::check_scheduled_tasks",
-        "supervisor/queue.py::enforce_task_timeouts":
-            "supervisor/queue_timeouts.py::enforce_task_timeouts",
-        "supervisor/queue.py::enqueue_evolution_task_if_needed":
-            "supervisor/queue_evolution.py::enqueue_evolution_task_if_needed",
-        "supervisor/queue.py::get_evolution_status_snapshot":
-            "supervisor/queue_evolution.py::get_evolution_status_snapshot",
-        "supervisor/queue.py::list_scheduled_tasks":
-            "supervisor/queue_schedules.py::list_scheduled_tasks",
-        "supervisor/queue.py::parse_iso_to_ts":
-            "supervisor/queue_snapshot.py::parse_iso_to_ts",
-        "supervisor/queue.py::persist_queue_snapshot":
-            "supervisor/queue_snapshot.py::persist_queue_snapshot",
-        "supervisor/queue.py::queue_deep_self_review_task":
-            "supervisor/queue_evolution.py::queue_deep_self_review_task",
-        "supervisor/queue.py::remove_scheduled_task":
-            "supervisor/queue_schedules.py::remove_scheduled_task",
-        "supervisor/queue.py::restore_pending_from_snapshot":
-            "supervisor/queue_snapshot.py::restore_pending_from_snapshot",
-        "supervisor/queue.py::resync_skill_schedules":
-            "supervisor/queue_schedules.py::resync_skill_schedules",
-        "supervisor/queue.py::sync_skill_schedules":
-            "supervisor/queue_schedules.py::sync_skill_schedules",
-        "supervisor/queue.py::upsert_scheduled_task":
-            "supervisor/queue_schedules.py::upsert_scheduled_task",
+        f"supervisor/queue.py::{symbol}": f"supervisor/{owner}::{symbol}"
+        for owner, symbols in s3b_queue_handle_symbols_by_owner.items()
+        for symbol in symbols.split()
     }
     implemented.update(s3b_queue_handle_rows)
     s3b_queue_no_facade = {
@@ -727,6 +680,37 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "supervisor/queue.py::_last_skill_schedule_sync",
     }
     registry_extraction_no_facade_rows.update(s3b_queue_no_facade)
+    # S3b: the module-handle extraction of the worker pool (delta D10).
+    s3b_pool_handle_symbols_by_owner = {
+        "worker_promotion.py": "_admit_promoted_workspace _canonical_promoted_repair_constraint _fail_promoted_task_loudly _origin_from_mapping _origin_from_task_record _promote_duplicate_reason _promoted_force_plan_metadata _report_binding_failure ensure_project_scope promote_chat_to_task",
+        "worker_chat_lane.py": "_broadcast_task_named _handle_chat_direct_locked _run_chat_task auto_resume_after_restart handle_chat_direct handle_chat_ephemeral",
+        "worker_health.py": "_emit_task_done_terminal _ensure_workers_healthy_locked ensure_workers_healthy terminal_task_metadata",
+        "worker_pool_lifecycle.py": "_WORKER_LIFECYCLE_LOCK _first_worker_boot_event_since _first_worker_event_since _kill_survivors _record_worker_pids _serialized_worker_lifecycle _verify_worker_sha_after_spawn _worker_pids_path _write_failure_result kill_workers_for_update reap_orphaned_workers respawn_worker",
+        "worker_assignment.py": "_cancel_unauthorized_evolution _evolution_assignment_error assign_tasks",
+    }
+    s3b_pool_handle_rows = {
+        f"supervisor/workers.py::{symbol}": f"supervisor/{owner}::{symbol}"
+        for owner, symbols in s3b_pool_handle_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    implemented.update(s3b_pool_handle_rows)
+    # S3b: the retired liveness knobs leave the signatures they were ferried through.
+    s3b_retired_signature_rows = {
+        "supervisor/queue.py::refresh_timeouts_from_settings":
+            "supervisor/queue.py::refresh_timeouts_from_settings",
+    }
+    implemented.update(s3b_retired_signature_rows)
+    existing_process_owner_rows.update(s3b_retired_signature_rows)
+    registry_extraction_no_facade_rows.update(s3b_retired_signature_rows)
+    s3_semantic_delta_ids["supervisor/queue.py::refresh_timeouts_from_settings"] = "D04"
+    retired_current.update({
+        "supervisor/queue.py::SOFT_TIMEOUT_SEC":
+            "retired:no rail consulted it and its last reader, the owner status line, stopped printing it",
+        "supervisor/queue.py::HARD_TIMEOUT_SEC":
+            "retired:no rail consulted it and its last reader, the owner status line, stopped printing it",
+    })
+    retired_delta_ids["supervisor/queue.py::SOFT_TIMEOUT_SEC"] = "D04"
+    retired_delta_ids["supervisor/queue.py::HARD_TIMEOUT_SEC"] = "D04"
     implemented.update(w_stream_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)
@@ -1013,7 +997,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                     "ouroboros/reflection.py::should_generate_reflection",
                     "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
                 }
-                else "D10" if row["old path/symbol"] in s3b_queue_handle_rows
+                else "D10" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows)
                 else s3_semantic_delta_ids.get(row["old path/symbol"], "none")
             )
             assert delta["id"] == expected_delta and delta["note"]

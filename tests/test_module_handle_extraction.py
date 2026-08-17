@@ -37,26 +37,31 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # leaf -> (parent, handle, declared substitution set)
 LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
-        "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock",
-        "append_jsonl", "atomic_write_text", "enqueue_task",
+        "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),
     "supervisor/queue_timeouts.py": ("supervisor/queue.py", "_queue", frozenset({
-        "DRIVE_ROOT", "FINALIZATION_GRACE_SEC", "HEARTBEAT_STALE_SEC", "PENDING",
-        "QUEUE_MAX_RETRIES", "RUNNING", "_ensure_reaper_started", "_queue_lock",
-        "_reap_queue", "_request_finalization_grace", "get_per_call_timeout_ceiling_sec",
-        "get_task_abs_ceiling_sec", "get_task_idle_timeout_sec", "load_state",
-        "persist_queue_snapshot",
+        "DRIVE_ROOT", "FINALIZATION_GRACE_SEC", "HEARTBEAT_STALE_SEC", "PENDING", "QUEUE_MAX_RETRIES", "RUNNING", "_ensure_reaper_started", "_queue_lock", "_reap_queue", "_request_finalization_grace", "get_per_call_timeout_ceiling_sec", "get_task_abs_ceiling_sec", "get_task_idle_timeout_sec", "load_state", "persist_queue_snapshot",
     })),
     "supervisor/queue_schedules.py": ("supervisor/queue.py", "_queue", frozenset({
-        "DRIVE_ROOT", "PENDING", "RUNNING", "SCHEDULED_TASKS_FILE", "_queue_lock",
-        "enqueue_task", "load_state", "persist_queue_snapshot",
+        "DRIVE_ROOT", "PENDING", "RUNNING", "SCHEDULED_TASKS_FILE", "_queue_lock", "enqueue_task", "load_state", "persist_queue_snapshot",
     })),
     "supervisor/queue_evolution.py": ("supervisor/queue.py", "_queue", frozenset({
-        "DRIVE_ROOT", "OBJECTIVE_REPEAT_CAP", "PENDING", "RUNNING",
-        "_read_evolution_campaign", "append_jsonl", "begin_evolution_transaction",
-        "enqueue_task", "load_state", "notify_owner_cycle_outcome",
-        "persist_queue_snapshot", "queue_has_task_type", "send_with_budget",
-        "budget_remaining",
+        "DRIVE_ROOT", "OBJECTIVE_REPEAT_CAP", "PENDING", "RUNNING", "_read_evolution_campaign", "append_jsonl", "begin_evolution_transaction", "budget_remaining", "enqueue_task", "load_state", "notify_owner_cycle_outcome", "persist_queue_snapshot", "queue_has_task_type", "send_with_budget",
+    })),
+    "supervisor/worker_promotion.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "PENDING", "REPO_DIR", "RUNNING",
+    })),
+    "supervisor/worker_chat_lane.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "REPO_DIR", "_chat_agent_lock", "_ephemeral_chat_lock", "_get_chat_agent", "_origin_from_mapping", "_repo_writer_turn_allowed", "_report_binding_failure", "get_event_q", "load_state", "send_with_budget",
+    })),
+    "supervisor/worker_health.py": ("supervisor/workers.py", "_pool", frozenset({
+        "CRASH_TS", "DRIVE_ROOT", "QUEUE_MAX_RETRIES", "RUNNING", "WORKERS", "_LAST_SPAWN_TIME", "_SPAWN_GRACE_SEC", "get_event_q", "kill_workers", "load_state", "reconstruct_task_cost", "respawn_worker", "send_with_budget",
+    })),
+    "supervisor/worker_pool_lifecycle.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "REPO_DIR", "WORKERS", "Worker", "_WORKER_PIDS_FILENAME", "_get_ctx", "get_event_q", "kill_workers", "load_state", "reconstruct_task_cost", "send_with_budget",
+    })),
+    "supervisor/worker_assignment.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "PENDING", "RUNNING", "WORKERS", "_drop_cancelled_pending", "_emit_task_done_terminal", "load_state", "reconstruct_task_cost", "repo_writer_task_allowed", "send_with_budget",
     })),
 }
 
@@ -139,6 +144,36 @@ def test_no_leaf_reads_a_parent_owned_name_directly(leaf: str) -> None:
         and node.id in parent_defs and node.id not in own
     }
     assert direct == set(), f"{leaf} reads {sorted(direct)} directly instead of through the handle"
+
+
+def test_the_pool_still_owns_its_state_and_worker_main_stays_picklable() -> None:
+    """The split moved responsibilities, not state — and not the one function the
+    spawn platforms have to re-import by name."""
+    import pickle
+
+    from supervisor import workers
+
+    for name in ("REPO_DIR", "DRIVE_ROOT", "MAX_WORKERS", "WORKERS", "PENDING", "RUNNING",
+                 "CRASH_TS", "QUEUE_SEQ_COUNTER_REF", "_CTX", "_LAST_SPAWN_TIME"):
+        assert hasattr(workers, name), name
+    assert workers.worker_main.__module__ == "supervisor.worker_process"
+    assert pickle.loads(pickle.dumps(workers.worker_main)) is workers.worker_main
+    for leaf in LEAVES:
+        if not leaf.startswith("supervisor/worker"):
+            continue
+        module = __import__(leaf[:-3].replace("/", "."), fromlist=["_"])
+        for name in ("WORKERS", "PENDING", "RUNNING", "DRIVE_ROOT"):
+            assert not hasattr(module, name), f"{leaf} kept its own {name}"
+
+
+def test_the_decorator_primitive_is_imported_not_handled() -> None:
+    """A decorator runs at IMPORT time, so the one name a call-time handle cannot
+    carry is the lifecycle serializer; it lives with its heaviest user and the pool
+    imports it back."""
+    from supervisor import worker_pool_lifecycle, workers
+
+    assert workers._serialized_worker_lifecycle is worker_pool_lifecycle._serialized_worker_lifecycle
+    assert "_serialized_worker_lifecycle" not in LEAVES["supervisor/worker_pool_lifecycle.py"][2]
 
 
 def test_the_parent_still_owns_the_state_and_the_lock_stays_reentrant() -> None:
