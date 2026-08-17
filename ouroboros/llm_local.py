@@ -16,7 +16,6 @@ import copy
 import logging
 
 
-import time
 
 
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -269,36 +268,27 @@ class _LocalLaneMixin:
 
         candidate = _physical_candidate(kwargs)
         local_target = {"provider": "local", "usage_model": "local-model"}
-        last_exc: Optional[Exception] = None
-        for attempt in range(3):
-            try:
-                request = _attempt_request(local_target, candidate, source="llm.local")
-                resp = _execute_candidate(
-                    request,
-                    lambda: client.chat.completions.create(**candidate),
-                    _candidate_before_dispatch(candidate, request),
-                )
-                last_exc = None
-                break
-            except UsageAccountingError:
-                raise
-            except Exception as exc:
-                last_exc = exc
-                err = str(exc)
-                if (_is_structured_context_overflow_exception(exc)
-                        or context_overflow_message(err)):
-                    raise LocalContextTooLargeError(err) from exc
-                if attempt == 2:
-                    log.warning("Local model request failed: %s", exc)
-                    raise
-                log.warning(
-                    "Local model request failed (attempt %d/3): %s",
-                    attempt + 1,
-                    exc,
-                )
-                time.sleep(0.5 * (attempt + 1))
-        if last_exc is not None:
-            raise last_exc
+        # ONE physical attempt per call. Re-sending here spent the caller's
+        # physical-attempt budget without the caller authorising it, so a
+        # transient local failure now surfaces to the single retry policy that
+        # owns the decision (``loop_llm_call.call_llm_with_retry``), which counts
+        # the attempts it authorises.
+        try:
+            request = _attempt_request(local_target, candidate, source="llm.local")
+            resp = _execute_candidate(
+                request,
+                lambda: client.chat.completions.create(**candidate),
+                _candidate_before_dispatch(candidate, request),
+            )
+        except UsageAccountingError:
+            raise
+        except Exception as exc:
+            err = str(exc)
+            if (_is_structured_context_overflow_exception(exc)
+                    or context_overflow_message(err)):
+                raise LocalContextTooLargeError(err) from exc
+            log.warning("Local model request failed: %s", exc)
+            raise
 
         resp_dict = resp.model_dump()
         usage = resp_dict.get("usage") or {}

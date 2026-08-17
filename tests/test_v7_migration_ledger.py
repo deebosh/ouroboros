@@ -801,6 +801,9 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(llm_extraction_rows)
     implemented.update(llm_mixin_rows)
     registry_extraction_no_facade_rows.update(llm_mixin_rows)
+    # spec 4.3.2 semantic delta rides the row of the symbol it changed: the local
+    # lane moved into its mixin AND lost its nested attempt loop.
+    llm_semantic_delta_ids = {"ouroboros/llm.py::LLMClient._chat_local": "D03"}
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -824,7 +827,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 assert delta["id"] == "D03" and delta["note"]
                 assert row["facade/public contract"] == "-"
                 continue
-            expected_delta = (
+            expected_delta = llm_semantic_delta_ids.get(row["old path/symbol"]) or (
                 # spec 4.3.6: the settings vocabulary moved as-is, then the three no-op
                 # knobs were retired from it (an approved observable delta).
                 "D04"
@@ -978,4 +981,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D11"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11"})

@@ -194,8 +194,8 @@
       }
     },
     {
-      "id": "local.dispatch.transient_failure_then_success",
-      "route": "the local lane's nested attempt loop retries a transient failure in-process",
+      "id": "local.dispatch.transient_failure_surfaces_after_one_attempt",
+      "route": "local lane: a transient failure surfaces to the caller's retry policy after ONE physical attempt — no in-lane resend, no sleep",
       "spec": {
         "env": {
           "LOCAL_MODEL_PORT": "8799"
@@ -205,26 +205,6 @@
           {
             "kind": "error",
             "message": "connection reset by peer"
-          },
-          {
-            "kind": "response",
-            "body": {
-              "id": "local-2",
-              "choices": [
-                {
-                  "index": 0,
-                  "finish_reason": "stop",
-                  "message": {
-                    "role": "assistant",
-                    "content": "second try"
-                  }
-                }
-              ],
-              "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 2
-              }
-            }
           }
         ],
         "call": {
@@ -247,18 +227,9 @@
         }
       },
       "expected": {
-        "returned": {
-          "message": {
-            "role": "assistant",
-            "content": "second try"
-          },
-          "usage": {
-            "prompt_tokens": 10,
-            "completion_tokens": 2,
-            "cost": 0.0,
-            "cost_final": true
-          },
-          "ledger_attempt_count": 2
+        "raised": {
+          "type": "FixtureProviderError",
+          "message": "connection reset by peer"
         },
         "sends": [
           {
@@ -285,35 +256,7 @@
               "max_tokens": 2048
             },
             "payload_sha256": "7ecca22acedaaa8ee40464b2cbb1738b638e637950bdc029942931429919f427"
-          },
-          {
-            "transport": "openai.chat.completions.create",
-            "client": {
-              "api_key": "local",
-              "base_url": "http://127.0.0.1:8799/v1",
-              "default_headers": null,
-              "max_retries": 0,
-              "http_client": null
-            },
-            "payload": {
-              "model": "local-model",
-              "messages": [
-                {
-                  "role": "system",
-                  "content": "stable policy prefix"
-                },
-                {
-                  "role": "user",
-                  "content": "hello"
-                }
-              ],
-              "max_tokens": 2048
-            },
-            "payload_sha256": "7ecca22acedaaa8ee40464b2cbb1738b638e637950bdc029942931429919f427"
           }
-        ],
-        "transport_sleeps": [
-          0.5
         ],
         "physical_attempts": [
           {
@@ -328,29 +271,14 @@
               "dispatched",
               "unresolved"
             ]
-          },
-          {
-            "source": "llm.local",
-            "model": "local-model",
-            "provider": "local",
-            "candidate_raw_sha256": "7ecca22acedaaa8ee40464b2cbb1738b638e637950bdc029942931429919f427",
-            "candidate_raw_size_bytes": 139,
-            "candidate_measurement_kind": "canonical_json_v1",
-            "states": [
-              "reserved",
-              "dispatched",
-              "settled"
-            ],
-            "prompt_cache_ttl": "",
-            "cost_final": true
           }
         ],
         "unused_script_steps": 0
       }
     },
     {
-      "id": "local.dispatch.exhausted_attempts",
-      "route": "the local lane raises after its nested attempts are spent",
+      "id": "local.dispatch.no_second_physical_attempt",
+      "route": "local lane: the second and third scripted failures are never reached because the lane never re-sends a candidate itself",
       "spec": {
         "env": {
           "LOCAL_MODEL_PORT": "8799"
@@ -419,61 +347,7 @@
               "max_tokens": 2048
             },
             "payload_sha256": "7ecca22acedaaa8ee40464b2cbb1738b638e637950bdc029942931429919f427"
-          },
-          {
-            "transport": "openai.chat.completions.create",
-            "client": {
-              "api_key": "local",
-              "base_url": "http://127.0.0.1:8799/v1",
-              "default_headers": null,
-              "max_retries": 0,
-              "http_client": null
-            },
-            "payload": {
-              "model": "local-model",
-              "messages": [
-                {
-                  "role": "system",
-                  "content": "stable policy prefix"
-                },
-                {
-                  "role": "user",
-                  "content": "hello"
-                }
-              ],
-              "max_tokens": 2048
-            },
-            "payload_sha256": "7ecca22acedaaa8ee40464b2cbb1738b638e637950bdc029942931429919f427"
-          },
-          {
-            "transport": "openai.chat.completions.create",
-            "client": {
-              "api_key": "local",
-              "base_url": "http://127.0.0.1:8799/v1",
-              "default_headers": null,
-              "max_retries": 0,
-              "http_client": null
-            },
-            "payload": {
-              "model": "local-model",
-              "messages": [
-                {
-                  "role": "system",
-                  "content": "stable policy prefix"
-                },
-                {
-                  "role": "user",
-                  "content": "hello"
-                }
-              ],
-              "max_tokens": 2048
-            },
-            "payload_sha256": "7ecca22acedaaa8ee40464b2cbb1738b638e637950bdc029942931429919f427"
           }
-        ],
-        "transport_sleeps": [
-          0.5,
-          1.0
         ],
         "physical_attempts": [
           {
@@ -488,35 +362,9 @@
               "dispatched",
               "unresolved"
             ]
-          },
-          {
-            "source": "llm.local",
-            "model": "local-model",
-            "provider": "local",
-            "candidate_raw_sha256": "7ecca22acedaaa8ee40464b2cbb1738b638e637950bdc029942931429919f427",
-            "candidate_raw_size_bytes": 139,
-            "candidate_measurement_kind": "canonical_json_v1",
-            "states": [
-              "reserved",
-              "dispatched",
-              "unresolved"
-            ]
-          },
-          {
-            "source": "llm.local",
-            "model": "local-model",
-            "provider": "local",
-            "candidate_raw_sha256": "7ecca22acedaaa8ee40464b2cbb1738b638e637950bdc029942931429919f427",
-            "candidate_raw_size_bytes": 139,
-            "candidate_measurement_kind": "canonical_json_v1",
-            "states": [
-              "reserved",
-              "dispatched",
-              "unresolved"
-            ]
           }
         ],
-        "unused_script_steps": 0
+        "unused_script_steps": 2
       }
     },
     {
