@@ -11,24 +11,12 @@ only callers that decide how far down the ladder a call walks.
 
 from __future__ import annotations
 
-
 import copy
-
-
 import hashlib
-
-
 import logging
-
-
 import re
-
-
 import time
-
-
 from typing import Any, Dict, Optional
-
 
 from ouroboros.llm_attempt import (
     _attempt_request,
@@ -39,11 +27,7 @@ from ouroboros.llm_attempt import (
     _is_structured_context_overflow_exception,
     _physical_candidate,
 )
-
-
 from ouroboros.llm_messages import _reasoning_signature_portable_across_or_providers
-
-
 from ouroboros.usage_accounting import UsageAccountingError
 
 

@@ -9,12 +9,8 @@ module owns that translation and the client whose auth the library refreshes.
 
 from __future__ import annotations
 
-
 import json
-
-
 from typing import Any, Dict, List, Optional, Tuple
-
 
 from ouroboros.llm_attempt import (
     _attempt_request,

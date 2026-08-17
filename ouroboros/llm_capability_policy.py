@@ -12,25 +12,13 @@ it.
 
 from __future__ import annotations
 
-
 import copy
-
-
 import logging
-
-
 import threading
-
-
 import time
-
-
 from typing import Any, Dict, Optional, Set
 
-
 from ouroboros.llm_attempt import _is_structured_context_overflow_exception
-
-
 from ouroboros.provider_models import normalize_model_identity
 
 

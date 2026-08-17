@@ -13,28 +13,14 @@ candidate-attached facts rather than provider prose.
 
 from __future__ import annotations
 
-
 import copy
-
-
 import hashlib
-
-
 import inspect
-
-
 import json
-
-
 import threading
-
-
 from typing import Any, Dict, List, Optional, Set
 
-
 from ouroboros.context_budget import CONTEXT_OVERFLOW_CODES
-
-
 from ouroboros.usage_accounting import (
     AttemptRequest,
     PhysicalAttemptPreconditionFailed,

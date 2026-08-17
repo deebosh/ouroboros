@@ -10,18 +10,10 @@ it answers that question about a route without being a chat turn.
 
 from __future__ import annotations
 
-
 import hashlib
-
-
 import json
-
-
 import os
-
-
 from typing import Any, Dict, List, Optional, Tuple
-
 
 from ouroboros.llm_attempt import (
     _attempt_request,
@@ -29,16 +21,12 @@ from ouroboros.llm_attempt import (
     _execute_candidate,
     _physical_candidate,
 )
-
-
 from ouroboros.provider_models import (
     PROVIDER_PREFIXES,
     normalize_anthropic_model_id,
     normalize_model_identity,
     resolve_minimax_base_url,
 )
-
-
 from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
 

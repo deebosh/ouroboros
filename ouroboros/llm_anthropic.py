@@ -10,12 +10,8 @@ shape never leaks into the native wire format or back out of it.
 
 from __future__ import annotations
 
-
 import json
-
-
 from typing import Any, Dict, List, Optional, Tuple
-
 
 from ouroboros.llm_attempt import (
     _VALID_CACHE_TTLS,
@@ -24,11 +20,7 @@ from ouroboros.llm_attempt import (
     _execute_candidate,
     _physical_candidate,
 )
-
-
 from ouroboros.llm_capability_policy import normalize_reasoning_effort
-
-
 from ouroboros.usage_accounting import UsageAccountingError
 
 

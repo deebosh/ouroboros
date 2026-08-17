@@ -11,16 +11,10 @@ transform copies before touching.
 
 from __future__ import annotations
 
-
 import copy
-
-
 from typing import Any, Dict, List
 
-
 from ouroboros.llm_attempt import _VALID_CACHE_TTLS
-
-
 from ouroboros.provider_models import normalize_model_identity
 
 

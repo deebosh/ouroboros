@@ -9,21 +9,11 @@ compaction rules live beside the send that depends on them.
 
 from __future__ import annotations
 
-
 import copy
-
-
 import logging
-
-
-
-
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-
 from ouroboros.context_budget import context_overflow_message
-
-
 from ouroboros.llm_attempt import (
     _attempt_request,
     _candidate_before_dispatch,
@@ -31,8 +21,6 @@ from ouroboros.llm_attempt import (
     _is_structured_context_overflow_exception,
     _physical_candidate,
 )
-
-
 from ouroboros.usage_accounting import UsageAccountingError
 
 

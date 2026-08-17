@@ -11,28 +11,16 @@ every caller consumes.
 
 from __future__ import annotations
 
-
 import logging
-
-
 import os
-
-
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-
 from ouroboros.llm_attempt import supports_message_cache_control
-
-
 from ouroboros.llm_capability_policy import (
     _OPTIONAL_DROPPABLE_PARAMS,
     normalize_reasoning_effort,
 )
-
-
 from ouroboros.llm_messages import _reasoning_signature_portable_across_or_providers
-
-
 from ouroboros.llm_routing import _resolve_or_provider
 
 
