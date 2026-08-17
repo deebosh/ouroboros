@@ -1,0 +1,168 @@
+"""The module-handle extraction (spec §1.9 batch №8, delta D10) and its invariants.
+
+`supervisor/queue.py` and `supervisor/workers.py` could not be split the way every
+other v7 module was. Their bodies read module globals that ``init`` /
+``init_queue_refs`` REBIND — PENDING, RUNNING, DRIVE_ROOT, WORKERS and the rest —
+so a leaf holding `from supervisor.queue import PENDING` would freeze the object it
+saw at import time, and a leaf keeping its own copy would be a second answer to the
+same question (67 test sites rebind these names on the parent and must keep
+working). The owner approved ONE mechanical exception: a declared parent name X is
+read as ``_queue().X`` / ``_pool().X`` — a function-local import of the parent — so
+the binding is resolved at call time.
+
+The one-time proof that each moved body is otherwise unchanged (AST-equal modulo
+exactly that substitution, over the declared set, with zero other differences) is
+recorded in the extraction commits. What is pinned HERE is the property that has to
+survive every later edit:
+
+* the parent is reached only through a call-time handle, never a top-level import;
+* every declared name is really bound by the parent (a typo would silently match
+  nothing and make the proof vacuous);
+* the declared set is exactly the set the leaf actually reads through the handle —
+  neither a stale name nor an undeclared one;
+* and, the load-bearing one, NO leaf reads a parent-owned name directly. That is
+  the bug class the handle exists to prevent, and it is the one a later "tidy-up"
+  would reintroduce by adding an innocent-looking from-import.
+"""
+
+from __future__ import annotations
+
+import ast
+import pathlib
+
+import pytest
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
+# leaf -> (parent, handle, declared substitution set)
+LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
+    "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
+        "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock",
+        "append_jsonl", "atomic_write_text", "enqueue_task",
+    })),
+    "supervisor/queue_timeouts.py": ("supervisor/queue.py", "_queue", frozenset({
+        "DRIVE_ROOT", "FINALIZATION_GRACE_SEC", "HEARTBEAT_STALE_SEC", "PENDING",
+        "QUEUE_MAX_RETRIES", "RUNNING", "_ensure_reaper_started", "_queue_lock",
+        "_reap_queue", "_request_finalization_grace", "get_per_call_timeout_ceiling_sec",
+        "get_task_abs_ceiling_sec", "get_task_idle_timeout_sec", "load_state",
+        "persist_queue_snapshot",
+    })),
+    "supervisor/queue_schedules.py": ("supervisor/queue.py", "_queue", frozenset({
+        "DRIVE_ROOT", "PENDING", "RUNNING", "SCHEDULED_TASKS_FILE", "_queue_lock",
+        "enqueue_task", "load_state", "persist_queue_snapshot",
+    })),
+    "supervisor/queue_evolution.py": ("supervisor/queue.py", "_queue", frozenset({
+        "DRIVE_ROOT", "OBJECTIVE_REPEAT_CAP", "PENDING", "RUNNING",
+        "_read_evolution_campaign", "append_jsonl", "begin_evolution_transaction",
+        "enqueue_task", "load_state", "notify_owner_cycle_outcome",
+        "persist_queue_snapshot", "queue_has_task_type", "send_with_budget",
+        "budget_remaining",
+    })),
+}
+
+
+def _tree(rel: str) -> ast.Module:
+    return ast.parse((REPO / rel).read_text(encoding="utf-8"))
+
+
+def _module_bindings(tree: ast.Module) -> set[str]:
+    bound: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            bound.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound.update(a.asname or a.name.split(".")[0] for a in node.names)
+    return bound
+
+
+def _handle_reads(tree: ast.AST, handle: str) -> set[str]:
+    reads: set[str] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name) and node.value.func.id == handle):
+            reads.add(node.attr)
+    return reads
+
+
+@pytest.mark.parametrize("leaf", sorted(LEAVES))
+def test_each_leaf_reaches_its_parent_only_through_a_call_time_handle(leaf: str) -> None:
+    parent, handle, _declared = LEAVES[leaf]
+    parent_module = parent[:-3].replace("/", ".")
+    tree = _tree(leaf)
+    for node in tree.body:  # module scope only: a lazy import inside the handle is the point
+        if isinstance(node, ast.ImportFrom):
+            assert node.module != parent_module, f"{leaf} imports its parent at module scope"
+        if isinstance(node, ast.Import):
+            assert all(a.name != parent_module for a in node.names), leaf
+    handles = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == handle]
+    assert len(handles) == 1, f"{leaf}: expected exactly one {handle}() definition"
+    assert [n for n in ast.walk(handles[0]) if isinstance(n, (ast.Import, ast.ImportFrom))], (
+        f"{leaf}: {handle}() must import the parent at call time"
+    )
+
+
+@pytest.mark.parametrize("leaf", sorted(LEAVES))
+def test_the_declared_set_is_exactly_what_the_leaf_reads_through_the_handle(leaf: str) -> None:
+    parent, handle, declared = LEAVES[leaf]
+    actual = _handle_reads(_tree(leaf), handle)
+    assert actual == set(declared), (
+        f"{leaf}: declared {sorted(declared)} but reads {sorted(actual)}"
+    )
+    bound = _module_bindings(_tree(parent))
+    missing = sorted(set(declared) - bound)
+    assert missing == [], f"{leaf}: declared names absent from {parent}: {missing}"
+
+
+@pytest.mark.parametrize("leaf", sorted(LEAVES))
+def test_no_leaf_reads_a_parent_owned_name_directly(leaf: str) -> None:
+    """The bug the handle exists to prevent: a direct read freezes the binding the
+    leaf saw at import time, so `init` rebinding the parent's name — or a test doing
+    the same — would leave this module looking at the old object forever."""
+    parent, _handle, _declared = LEAVES[leaf]
+    leaf_tree = _tree(leaf)
+    parent_defs: set[str] = set()
+    for node in _tree(parent).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            parent_defs.add(node.name)
+        elif isinstance(node, ast.Assign):
+            parent_defs.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            parent_defs.add(node.target.id)
+    own = _module_bindings(leaf_tree)
+    direct = {
+        node.id for node in ast.walk(leaf_tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        and node.id in parent_defs and node.id not in own
+    }
+    assert direct == set(), f"{leaf} reads {sorted(direct)} directly instead of through the handle"
+
+
+def test_the_parent_still_owns_the_state_and_the_lock_stays_reentrant() -> None:
+    """The split moved responsibilities, not state: one binding, one lock."""
+    from supervisor import queue
+
+    for name in ("PENDING", "RUNNING", "QUEUE_SEQ_COUNTER_REF", "ACCEPTANCE_FENCES",
+                 "ADMISSION_RESERVATIONS", "DRIVE_ROOT", "FINALIZATION_GRACE_SEC"):
+        assert hasattr(queue, name), name
+    assert hasattr(queue._queue_lock, "_is_owned")
+    for leaf in LEAVES:
+        module = __import__(leaf[:-3].replace("/", "."), fromlist=["_"])
+        assert not hasattr(module, "PENDING"), f"{leaf} kept its own PENDING"
+        assert not hasattr(module, "RUNNING"), f"{leaf} kept its own RUNNING"
+
+
+def test_the_queue_facade_still_exports_everything_that_moved() -> None:
+    """`supervisor.queue` is the single public import surface; the split must not
+    make a caller learn which leaf a name landed in."""
+    from supervisor import queue
+
+    for name in ("persist_queue_snapshot", "restore_pending_from_snapshot", "parse_iso_to_ts",
+                 "enforce_task_timeouts", "check_scheduled_tasks", "list_scheduled_tasks",
+                 "upsert_scheduled_task", "remove_scheduled_task", "sync_skill_schedules",
+                 "resync_skill_schedules", "queue_deep_self_review_task",
+                 "get_evolution_status_snapshot", "enqueue_evolution_task_if_needed"):
+        assert hasattr(queue, name), name

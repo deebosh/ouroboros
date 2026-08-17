@@ -83,7 +83,7 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   D07 §4.3.11 Emergency Stop 2A · D08 §4.3.13 cancellation/delegation fail-closed registries ·
 #   D09 §4.3.2 LLM local retry (one physical attempt) · D10 §1.9/№8 module-handle reads of rebound
 #   supervisor globals in extracted leaves · D11 §1.9/№8 FUNCTION_DEBT same-qualname relocation rule.
-APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11"})
+APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D10", "D11"})
 UPSTREAM_STATUSES = frozenset({"not_applicable", "pending", "transferred", "retired"})
 APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_result.py",
@@ -121,6 +121,8 @@ APPROVED_PENDING_OWNERS = frozenset({
     "supervisor/cancel_custody.py", "supervisor/worker_process.py",
     "ouroboros/server_process.py", "ouroboros/server_routing_context.py", "ouroboros/server_owner_routing.py",
     "ouroboros/server_liveness.py", "ouroboros/server_maintenance.py", "ouroboros/server_restart.py",
+    "supervisor/queue_snapshot.py", "supervisor/queue_timeouts.py",
+    "supervisor/queue_schedules.py", "supervisor/queue_evolution.py",
 })
 _PY_LOCAL_KINDS = frozenset({"class", "function", "assignment"})
 def _git(repo: pathlib.Path, *args: str, text: bool = True) -> str | bytes:

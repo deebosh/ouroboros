@@ -49,7 +49,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/tools/subagent_integration.py",
     "ouroboros/usage_accounting.py",
     "supervisor/git_ops.py",
-    "supervisor/queue.py",
     "supervisor/update_merge.py",
     "supervisor/workers.py",
     "tests/test_agent_task_pipeline.py",
