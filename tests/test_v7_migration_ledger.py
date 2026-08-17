@@ -458,6 +458,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         ("chat_document_bubble.js", "createDocumentBubbles", "buildDocumentBubble documentMessageKey appendDocumentBubble"),
         ("chat_subagent_routing.js", "createSubagentRouting", "setSubagentParent summarizeSubagentCardFrame updateSubagentCardFromEvent routeSubagentProgressToCard routeSubagentFinalMessageToCard routeSubagentTerminalToCard"),
     ) for symbol in symbols.split()})
+    # v7 wave C, lane W3: the remaining createChatInstance closure clusters, each moved
+    # whole into a per-instance factory of its own sibling owner. No facade: none of
+    # these helpers was ever exported, so the ledger identity is the only address.
+    w3_chat_extraction_symbols_by_owner = (
+        ("chat_task_ui_state.js", "createTaskUiStateTracker", "isBackgroundTaskId shouldAlwaysShowTaskCard isForegroundLiveCard createTaskUiState getTaskUiState scheduleTaskUiCleanup bufferLiveUpdate markTaskToolCall forceTaskCard markAssistantReply markTaskComplete"),
+    )
+    web_extractions.update({f"web/modules/chat.js::createChatInstance.{symbol}": f"web/modules/{owner}::{factory}.{symbol}" for owner, factory, symbols in w3_chat_extraction_symbols_by_owner for symbol in symbols.split()})
     implemented.update(registry_core_rows)
     implemented.update(registry_resolution_rows)
     implemented.update(registry_guard_rows)

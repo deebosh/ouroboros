@@ -55,6 +55,7 @@ import { confirmAndSendPanic, shouldFirePanic } from './chat_controls.js';
 import { createDocumentBubbles } from './chat_document_bubble.js';
 import { createMessageIdentity } from './chat_message_identity.js';
 import { createSubagentRouting } from './chat_subagent_routing.js';
+import { createTaskUiStateTracker } from './chat_task_ui_state.js';
 import { createTimelineAnchors } from './chat_timeline_anchor.js';
 import {
     headerBudgetPresentation,
@@ -718,63 +719,18 @@ export function createChatInstance({
         updateScrollButton();
     }
 
-    function isBackgroundTaskId(taskId = '') {
-        return taskId === 'bg-consciousness';
-    }
-
-    function shouldAlwaysShowTaskCard(taskId = '') {
-        return isBackgroundTaskId(taskId);
-    }
-
-    function isForegroundLiveCard(record) {
-        return Boolean(record?.root?.isConnected && !record.finished && !isBackgroundTaskId(record.groupId));
-    }
-
-    function createTaskUiState(taskId) {
-        if (!taskId) return null;
-        const taskState = {
-            taskId,
-            toolCalls: 0,
-            forceCard: false,
-            cardVisible: false,
-            completed: false,
-            completedPhase: '',
-            bufferedLiveUpdates: [],
-            cleanupTimer: null,
-        };
-        taskUiStates.set(taskId, taskState);
-        return taskState;
-    }
-
-    function getTaskUiState(taskId = '', createIfMissing = true) {
-        if (!taskId) return null;
-        if (taskUiStates.has(taskId)) return taskUiStates.get(taskId);
-        return createIfMissing ? createTaskUiState(taskId) : null;
-    }
-
-    function scheduleTaskUiCleanup(taskState, delayMs = 120000) {
-        if (!taskState) return;
-        if (taskState.cleanupTimer) clearTimeout(taskState.cleanupTimer);
-        taskState.cleanupTimer = setTimeout(() => {
-            taskUiStates.delete(taskState.taskId);
-            // Keep the finished card interactive, but mark it retired so routine
-            // syncs do not rebuild duplicates. Reload/reconnect clears this set.
-            if (!REUSABLE_TASK_IDS.has(taskState.taskId) && taskState.taskId !== '') {
-                retiredTaskIds.add(taskState.taskId);
-            }
-        }, delayMs);
-    }
-
-    function bufferLiveUpdate(taskState, summary, ts, dedupeKey = '', rawTs = '') {
-        if (!taskState || !summary) return;
-        taskState.bufferedLiveUpdates.push({
-            summary,
-            ts,
-            rawTs,
-            dedupeKey: dedupeKey || summary.dedupeKey || '',
-        });
-
-    }
+    const {
+        isBackgroundTaskId,
+        shouldAlwaysShowTaskCard,
+        isForegroundLiveCard,
+        getTaskUiState,
+        scheduleTaskUiCleanup,
+        bufferLiveUpdate,
+        markTaskToolCall,
+        forceTaskCard,
+        markAssistantReply,
+        markTaskComplete,
+    } = createTaskUiStateTracker({ taskUiStates, retiredTaskIds, revealBufferedCardIfNeeded });
 
     function reanchorTaskCard(
         record,
@@ -853,48 +809,6 @@ export function createChatInstance({
         if (taskState.completed) {
             finishLiveCard(taskState.taskId, taskState.completedPhase || 'done');
         }
-    }
-
-    function markTaskToolCall(taskId, count = 1, minimumOnly = false, rawTs = '') {
-        const taskState = getTaskUiState(taskId, true);
-        if (!taskState) return null;
-        const safeCount = Math.max(0, Number(count) || 0);
-        if (minimumOnly) {
-            taskState.toolCalls = Math.max(taskState.toolCalls, safeCount);
-        } else {
-            taskState.toolCalls += safeCount;
-        }
-        revealBufferedCardIfNeeded(taskState, { rawTs });
-        return taskState;
-    }
-
-    function forceTaskCard(taskId, rawTs = '') {
-        const taskState = getTaskUiState(taskId, true);
-        if (!taskState) return null;
-        taskState.forceCard = true;
-        revealBufferedCardIfNeeded(taskState, { rawTs });
-        return taskState;
-    }
-
-    function markAssistantReply(taskId = '') {
-        const resolvedTaskId = taskId || '';
-        if (!resolvedTaskId) return;
-        const taskState = getTaskUiState(resolvedTaskId, false);
-        if (!taskState) return;
-        taskState.completed = true;
-        taskState.completedPhase = taskState.completedPhase || 'done';
-        if (!taskState.cardVisible) {
-            scheduleTaskUiCleanup(taskState, 30000);
-            return;
-        }
-        scheduleTaskUiCleanup(taskState);
-    }
-
-    function markTaskComplete(taskId = '', phase = '') {
-        const taskState = getTaskUiState(taskId, false);
-        if (!taskState) return;
-        taskState.completed = true;
-        if (phase) taskState.completedPhase = phase;
     }
 
     // v6.82 (P5): task ids whose progress carried the supervisor's host-attested
