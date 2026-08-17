@@ -61,15 +61,15 @@ TERMINAL_WRITERS = {
     ('ouroboros/task_results.py::fail_tasks', 'STATUS_CANCELLED'): 'terminal',
     ('ouroboros/task_results.py::fail_tasks', 'STATUS_FAILED'): 'terminal',
     ('ouroboros/task_status.py::reconcile_orphaned_running_tasks', 'eff_status'): 'dynamic',
-    ('supervisor/events.py::_finish_task_done_dispatch', 'STATUS_FAILED'): 'terminal',
-    ('supervisor/events.py::_handle_task_done', 'str(existing.get("status") or "")'): 'dynamic',
-    ('supervisor/events.py::_persist_promote_rejection', 'STATUS_FAILED'): 'terminal',
-    ('supervisor/events.py::_reject_schedule_task', 'status'): 'dynamic',
-    ('supervisor/events.py::_resolve_lifecycle_fault', 'STATUS_FAILED'): 'terminal',
+    ('supervisor/events_task_done.py::_finish_task_done_dispatch', 'STATUS_FAILED'): 'terminal',
+    ('supervisor/events_task_done.py::_handle_task_done', 'str(existing.get("status") or "")'): 'dynamic',
+    ('supervisor/events_project_routing.py::_persist_promote_rejection', 'STATUS_FAILED'): 'terminal',
+    ('supervisor/events_schedule_task.py::_reject_schedule_task', 'status'): 'dynamic',
+    ('supervisor/events_task_done.py::_resolve_lifecycle_fault', 'STATUS_FAILED'): 'terminal',
     ('supervisor/queue.py::restore_pending_from_snapshot', 'STATUS_CANCELLED'): 'terminal',
-    ('supervisor/task_lifecycle.py::_finalize_cancel_intent_on_miss', 'STATUS_CANCELLED'): 'terminal',
-    ('supervisor/task_lifecycle.py::_finish_captured_pending', 'STATUS_CANCELLED'): 'terminal',
-    ('supervisor/task_lifecycle.py::_finish_captured_running', 'STATUS_CANCELLED'): 'terminal',
+    ('supervisor/cancel_custody.py::_finalize_cancel_intent_on_miss', 'STATUS_CANCELLED'): 'terminal',
+    ('supervisor/cancel_custody.py::_finish_captured_pending', 'STATUS_CANCELLED'): 'terminal',
+    ('supervisor/cancel_custody.py::_finish_captured_running', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/task_lifecycle.py::record_scheduled_admission', 'STATUS_FAILED'): 'terminal',
     ('supervisor/task_reaper.py::_enqueue_retry', 'STATUS_FAILED'): 'terminal',
     ('supervisor/task_reaper.py::reap_timed_out_task', 'STATUS_INTERRUPTED if will_retry else STATUS_FAILED'): 'terminal',
@@ -87,7 +87,7 @@ TERMINAL_WRITERS = {
 # cascade postcondition, which owes the tree's one summary before it settles.
 SETTLE_INTENT_CALLERS = {
     'ouroboros/task_results.py::fail_tasks': False,
-    'supervisor/task_lifecycle.py::_settle_intent': False,
+    'supervisor/cancel_custody.py::_settle_intent': False,
     'supervisor/task_lifecycle.py::cancel_task_by_id': True,
     'supervisor/workers.py::_drop_cancelled_pending': False,
 }
@@ -95,7 +95,7 @@ SETTLE_INTENT_CALLERS = {
 # C9 — lanes that terminalize a task and deliberately register NOTHING as owed,
 # each with the reason there is nothing to deliver.
 NO_DELIVERABLE_LANES = {
-    'supervisor/task_lifecycle.py::_finish_captured_pending':
+    'supervisor/cancel_custody.py::_finish_captured_pending':
         'cancelled before it ever started: no answer exists',
     'supervisor/task_lifecycle.py::record_scheduled_admission':
         'a cron dispatch refused at admission never had an owner answer',
@@ -105,13 +105,13 @@ NO_DELIVERABLE_LANES = {
         'budget drain before start',
     'supervisor/queue.py::restore_pending_from_snapshot':
         'restore-time reconciliation of a task cancelled while the server was down',
-    'supervisor/events.py::_finish_task_done_dispatch':
+    'supervisor/events_task_done.py::_finish_task_done_dispatch':
         'lifecycle fault: the durable row, not a message, is the disclosure',
-    'supervisor/events.py::_resolve_lifecycle_fault':
+    'supervisor/events_task_done.py::_resolve_lifecycle_fault':
         'same fault class, resolved into a terminal',
-    'supervisor/events.py::_reject_schedule_task':
+    'supervisor/events_schedule_task.py::_reject_schedule_task':
         'a refused schedule never became a task with an answer',
-    'supervisor/events.py::_persist_promote_rejection':
+    'supervisor/events_project_routing.py::_persist_promote_rejection':
         'a refused promotion never became a task with an answer',
 }
 
@@ -301,8 +301,8 @@ def test_c9_the_natural_path_owes_before_the_durable_result_write():
 
 
 @pytest.mark.parametrize("module, qualname", [
-    ("supervisor/task_lifecycle.py", "_finish_captured_running"),
-    ("supervisor/task_lifecycle.py", "_finalize_cancel_intent_on_miss"),
+    ("supervisor/cancel_custody.py", "_finish_captured_running"),
+    ("supervisor/cancel_custody.py", "_finalize_cancel_intent_on_miss"),
     ("supervisor/task_lifecycle.py", "cancel_task_by_id"),
 ])
 def test_c9_every_cancelled_settle_is_preceded_by_an_owed_registration(module, qualname):
@@ -353,7 +353,7 @@ def test_c9_the_registration_failure_rule_is_the_one_shared_helper():
     }
     assert callers, "the helper is actually used"
     assert all(
-        identity.startswith("supervisor/task_lifecycle.py::") for identity in callers
+        identity.startswith("supervisor/cancel_custody.py::") for identity in callers
     ), callers
 
 
