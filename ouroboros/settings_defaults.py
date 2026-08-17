@@ -84,9 +84,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_GC_RETENTION_DAYS": 7,
     "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC": 120,
     "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC": 900,
-    # One-minor deprecated no-op: the v6.65 shared terminal-or-cutoff boundary
-    # no longer stops on heartbeat staleness, but custom saved values stay loud.
-    "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC": 120,
     "TOTAL_BUDGET": 10.0,
     "OUROBOROS_PER_TASK_COST_USD": 20.0,
     # cloud.ru catalog prices are RUB per 1M while the budget is USD. No implicit
@@ -114,12 +111,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC": 8,
     # Skill lifecycle lane deadline (wedged-job loud-failure bound).
     "OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC": 1800,
-    "OUROBOROS_SOFT_TIMEOUT_SEC": 600,
-    # NOTE: OUROBOROS_HARD_TIMEOUT_SEC no longer terminates tasks — the flat wall-clock
-    # kill was replaced by the activity model below (idle + subtree-liveness, abs ceiling).
-    # It survives only as a soft-warning/status display input; runtime is governed by
-    # OUROBOROS_TASK_IDLE_TIMEOUT_SEC and OUROBOROS_TASK_ABS_CEILING_SEC.
-    "OUROBOROS_HARD_TIMEOUT_SEC": 1800,
     # Activity-based liveness (replaces flat wall-clock as the primary stop):
     # idle window = no real progress AND no progressing subtree; abs ceiling = the
     # unconditional per-task backstop (budget/cost stays a separate hard axis).
@@ -299,6 +290,16 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
 RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # v6.87.7: the depth cap conflated how DEEP delegation nests with how STRONG a descendant is.
     "OUROBOROS_SUBAGENT_CAPABILITY_DEPTH_LIMIT",
+    # The flat wall-clock stop these two named was replaced by the activity model
+    # (idle window + subtree liveness + absolute ceiling), and their one-minor
+    # deprecation window — during which a customized value still emitted a
+    # deprecated_settings_ignored event — ended. A knob whose only remaining job is
+    # to announce that it does nothing is a knob the settings surface still offers.
+    "OUROBOROS_SOFT_TIMEOUT_SEC",
+    "OUROBOROS_HARD_TIMEOUT_SEC",
+    # Same window, same reason: the shared terminal-or-cutoff planning boundary never
+    # stopped on heartbeat staleness.
+    "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
 )
 
 

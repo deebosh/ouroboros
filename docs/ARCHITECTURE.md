@@ -2184,6 +2184,13 @@ never about the migrations. The normalization is pure and idempotent: it touches
 file and no environment, which is what lets a read stay a read and lets a
 read-modify-write apply it on every save.
 
+A read is otherwise a read: neither reader touches the file. The one exception is the
+one-window context compatibility migration, which resolves a document carrying a context
+mode without its false provenance marker — ambiguous for the BIBLE P3 scope gate — by
+writing the canonical pair back under the settings lock. `load_settings()` performs that
+migration once per file and is stable afterwards; `_owner_read_settings_raw()` uses the
+non-persisting normalizer, so an owner GET never writes.
+
 Three surfaces persist a settings document: `config.save_settings()`,
 `gateway/owner_settings._owner_update_settings()` (which `_owner_write_settings()` is one
 caller of), and the packaged bootstrap's `packaged_cli._save_settings()`. All three pass
@@ -2191,6 +2198,15 @@ through `prepare_settings_for_persist()` — the single point where the disk-aut
 silence rule and the owner-only context/safety ratchets are enforced against the value
 ON DISK — and serialize through `serialize_settings()`, so the same document has one
 spelling on disk whichever surface wrote it.
+
+A key a release deletes leaves a ghost: `settings.json` is the owner's file, so an
+unrecognized key is kept rather than dropped, and a removed key would otherwise live there
+forever and keep being served by `GET /api/settings`. `RETIRED_SETTING_KEYS` is the list
+that ends a key's life — `normalize_settings_raw` removes each entry from every read, and
+because every writer persists what a reader produced, the ghost leaves the file the first
+time any surface saves. Retirement is therefore a two-part statement: the key is absent
+from `SETTINGS_DEFAULTS` (so nothing offers or defaults it) and present in
+`RETIRED_SETTING_KEYS` (so nothing carries it).
 
 An owner endpoint changes one decision inside a document it does not otherwise own, so it
 must write the whole document back. `_owner_update_settings(transform, expected_digest)`
@@ -2285,7 +2301,6 @@ Runtime floors:
 | OUROBOROS_GC_RETENTION_DAYS | 7 | Unified age (days) for startup garbage collection of ALL disposable runtime artifacts: acting worktrees, terminal task drives, and leftover service logs (hard max 365; math SSOT in `ouroboros/retention.py`). Deprecated per-subsystem retention keys are migrated into this on settings load. |
 | OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC | 120 | Poll slice for required `plan_task` planning subagents; every started scout remains eligible until terminal state or the shared max-wait cutoff. |
 | OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC | 900 | Shared terminal-or-cutoff ceiling for one planning fingerprint. At the boundary every ready non-empty handoff and every precise omission go directly to the configured reviewer panel; capacity, scheduling failure, and a normal cutoff do not trigger an extra inline model call. Lower values apply as-is; values above the default are clamped to the `plan_task` tool/wrapper budget (raise those module constants to extend the real ceiling). |
-| OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC | 120 | One-minor deprecated no-op retained for settings/env compatibility. The shared planning boundary never stops on heartbeat staleness; a non-default legacy value emits `deprecated_settings_ignored`. |
 | OUROBOROS_RESTART_DRAIN_MAX_SEC | 120 | Agent-requested restarts drain first: while any RUNNING task still heartbeats, the restart waits up to this many seconds before proceeding fail-closed (0 = restart immediately). Owner restarts are not drained. |
 | TOTAL_BUDGET | 10.0 | Total budget in USD |
 | OUROBOROS_PER_TASK_COST_USD | 20.0 | Hard per-task cost cap in USD over the WHOLE task tree (own calls + subagents): wired as `UsageScope.root_limit_usd`, enforced pre-dispatch by the physical-attempt ledger (`reserve_attempt`), and latched as the durable root budget fence on first refusal. Since v6.91 the in-task graceful stop (`task_pacing.resolve_cost_ceiling`) also binds to it — min(pct-of-global, cap − absolute planning margin) against TREE-accounted spend — so a best-effort wrap-up fires before the fence. The cap stops the task on its own even when no finite global budget exists (`TOTAL_BUDGET` unset): the two axes are independent components of the ceiling, not a gate on one another. (The pre-v6.64 "soft threshold" semantics is gone; the label was stale from 2026-07-14 to v6.91.) |
@@ -2344,8 +2359,6 @@ Runtime floors:
 | OUROBOROS_EFFORT_CONSCIOUSNESS | high | Reasoning effort for background consciousness |
 | OUROBOROS_RETURN_REASONING | true | OpenRouter reasoning continuity switch. Unset means return reasoning payloads by default; false-like values or an explicit empty string opt out. Direct/local routes strip OpenRouter-only reasoning fields on copied payloads. |
 | OUROBOROS_REASONING_SUMMARY | auto | Narration display switch. `auto` (default) narrates an otherwise-empty tool-round bubble with readable reasoning the provider already returned (`LLMClient.extract_display_reasoning`, shape-based: flat `reasoning` / `reasoning_details` of readable types / Anthropic `thinking` / Gemini `part.thought`; opaque/encrypted skipped). `off` disables the fallback. DISPLAY-ONLY — never added to the transcript or sent back to a provider, so it cannot affect round-trip. Verified against live gpt-5.5, which returns a readable `reasoning.summary` alongside the encrypted block. |
-| OUROBOROS_SOFT_TIMEOUT_SEC | 600 | One-minor deprecated no-op retained for settings/env compatibility; a non-default legacy value emits a deprecation event. No user heartbeat/status control is rendered from it. |
-| OUROBOROS_HARD_TIMEOUT_SEC | 1800 | One-minor deprecated no-op retained for settings/env compatibility; a non-default legacy value emits a deprecation event. Task termination is governed by idle/absolute-ceiling/deadline/budget rails. |
 | OUROBOROS_TASK_IDLE_TIMEOUT_SEC | 900 | (v6.38.0) Activity-based idle window: a task is stopped only after it has made NO real progress (`llm_usage`/progress events — NOT the unconditional 30s liveness heartbeat) AND has no progressing/queued subtree for this long. Effective value is floored to the per-call timeout ceiling (`max(idle, per_call_ceiling+120)`) so a single legitimate long tool/LLM call is never idle-killed mid-work. A child's settled terminal result stamps the PARENT's own progress at task_done dispatch (`events._finish_task_done_dispatch`): delivery is the cue to integrate, so a coordinator is never idle-killed exactly when its last child delivers, and an outstanding finalization-grace episode is withdrawn by the existing own-progress spare machinery. |
 | OUROBOROS_TASK_ABS_CEILING_SEC | 21600 | (v6.38.0) Absolute per-task wall-clock backstop (6h), independent of activity — the unconditional safety ceiling. Together with an explicit `deadline_at` (a deliberate cap, honored promptly even while progressing) and the budget axis, these are the ONLY hard task-termination axes. |
 | OUROBOROS_SUPERVISOR_LIVENESS_DEADLINE_SEC | 90 | (v6.34.0, WS3) Dedicated-thread liveness watchdog deadline. If the supervisor loop tick OR an in-process direct-chat turn's heartbeat goes silent for longer than this, the watchdog surfaces the stall to the owner (detect + alert + `/restart` recommendation). It does NOT free the chat-agent lock / lane admission in-process (the wedged turn holds the lock; out-of-process kill deferred). Must exceed the ~0.5s tick / 30s healthy heartbeat cadence. |

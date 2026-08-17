@@ -151,6 +151,44 @@ def test_reading_settings_writes_nothing_to_disk(isolated_settings):
     assert not pathlib.Path(str(isolated_settings) + ".lock").exists()
 
 
+def test_the_one_read_that_writes_is_the_context_compatibility_migration(isolated_settings):
+    """The single, deliberate exception, pinned rather than assumed.
+
+    A document that carries a context mode WITHOUT the false provenance marker is
+    ambiguous for the BIBLE P3 scope gate, and the one-window compatibility migration
+    resolves it by writing the canonical pair back — under the settings lock, through
+    the live-data guard. So `load_settings` on such a file performs exactly ONE write
+    and is stable from then on. `_owner_read_settings_raw` performs NONE even on the
+    same file: it uses the non-persisting normalizer, so an owner GET is always a read.
+
+    This is easy to miss because a fixture whose document has no context keys makes any
+    "a read writes nothing" assertion pass vacuously — which is how a live settings file
+    got rewritten by what looked like a read-only smoke."""
+    from ouroboros import config as cfg
+    from ouroboros.gateway.owner_settings import _owner_read_settings_raw
+
+    ambiguous = {"TOTAL_BUDGET": 10.0, "OUROBOROS_CONTEXT_MODE": "low"}
+
+    _seed(isolated_settings, ambiguous)
+    before = isolated_settings.read_bytes()
+    for _ in range(3):
+        _owner_read_settings_raw()
+    assert isolated_settings.read_bytes() == before, "an owner read migrated the file"
+
+    settings = cfg.load_settings()
+    after_first = isolated_settings.read_bytes()
+    assert after_first != before, "the compatibility migration did not converge"
+    stored = json.loads(after_first.decode("utf-8"))
+    assert stored["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] == "false"
+    assert stored["OUROBOROS_CONTEXT_MODE"] == "max", "ambiguous Low is not owner Low"
+    assert stored["TOTAL_BUDGET"] == 10.0, "the migration rewrote more than the pair"
+    assert settings["OUROBOROS_CONTEXT_MODE"] == "max"
+
+    for _ in range(3):
+        cfg.load_settings()
+    assert isolated_settings.read_bytes() == after_first, "the migration is not idempotent"
+
+
 def test_owner_read_settings_raw_applies_the_same_normalization_as_load_settings(
         isolated_settings):
     """The seam: "raw" means "without the RATCHETS", never "without the migrations".
@@ -389,3 +427,104 @@ def test_the_three_settings_writers_are_exactly_these_three():
         "ouroboros/context_mode_compat.py::normalize_and_persist_context_mode_compat",
         "ouroboros/colab_bootstrap.py::write_colab_settings",
     }, writers
+
+
+# ---------------------------------------------------------------------------
+# The retired-key seam. It had no test at all: nothing proved a retired key ever
+# leaves the owner's file, and nothing proved a live key cannot be retired by
+# accident. Both halves matter — `settings.json` is the owner's document, so an
+# unrecognized key is deliberately KEPT, and only membership in this list makes a
+# key's absence intentional rather than data loss.
+# ---------------------------------------------------------------------------
+
+
+def test_a_retired_key_is_absent_from_the_defaults_that_offer_it():
+    """Retirement is a two-part statement. A key still in ``SETTINGS_DEFAULTS``
+    would be dropped by the read and re-supplied by the defaults merge on the very
+    same call — a loop that reads as "retired" and behaves as "live"."""
+    from ouroboros import config as cfg
+
+    assert cfg.RETIRED_SETTING_KEYS, "the seam exists"
+    overlap = set(cfg.RETIRED_SETTING_KEYS) & set(cfg.SETTINGS_DEFAULTS)
+    assert not overlap, overlap
+    assert not set(cfg.RETIRED_SETTING_KEYS) & set(cfg.settings_env_keys())
+
+
+def test_a_retired_key_is_dropped_by_every_reader(isolated_settings):
+    from ouroboros import config as cfg
+    from ouroboros.gateway.owner_settings import _owner_read_settings_raw
+
+    stored = {key: "9999" for key in cfg.RETIRED_SETTING_KEYS}
+    stored["TOTAL_BUDGET"] = 12.0
+    _seed(isolated_settings, stored)
+
+    for reader in (cfg.load_settings, _owner_read_settings_raw):
+        settings = reader()
+        assert settings["TOTAL_BUDGET"] == 12.0
+        for key in cfg.RETIRED_SETTING_KEYS:
+            assert key not in settings, f"{reader.__name__} still serves {key}"
+
+
+def test_a_retired_key_leaves_the_file_on_the_next_owner_write(isolated_settings):
+    """A read that drops the ghost is only half the retirement: the file the owner
+    keeps must stop carrying it too. It does, without a migration step, because
+    every writer persists what a reader produced — including the owner-endpoint
+    path, which is the one that previously wrote the ghost straight back."""
+    from ouroboros import config as cfg
+
+    stored = {key: "9999" for key in cfg.RETIRED_SETTING_KEYS}
+    stored["TOTAL_BUDGET"] = 12.0
+    _seed(isolated_settings, stored)
+
+    app = _owner_app("api_owner_auto_grant", "/api/owner/auto-grant", isolated_settings.parent)
+    response = TestClient(app).post("/api/owner/auto-grant", json={"enabled": True})
+    assert response.status_code == 200, response.text
+
+    on_disk = json.loads(isolated_settings.read_text(encoding="utf-8"))
+    assert on_disk["TOTAL_BUDGET"] == 12.0
+    for key in cfg.RETIRED_SETTING_KEYS:
+        assert key not in on_disk, f"{key} survived an owner-endpoint write"
+
+
+def test_the_three_retired_timeout_knobs_are_gone_from_every_owner_surface():
+    """The two flat wall-clock timeouts and the planning heartbeat-staleness knob
+    stopped governing anything a release ago and spent their deprecation window
+    announcing it. Nothing may still offer them: not the defaults, not the
+    environment projection, not the hot-reload classification, not the docs."""
+    import pathlib as _pathlib
+
+    from ouroboros import config as cfg
+    from ouroboros.gateway import settings as settings_mod
+
+    retired = (
+        "OUROBOROS_SOFT_TIMEOUT_SEC",
+        "OUROBOROS_HARD_TIMEOUT_SEC",
+        "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
+    )
+    for key in retired:
+        assert key in cfg.RETIRED_SETTING_KEYS, key
+        assert key not in cfg.SETTINGS_DEFAULTS, key
+        assert key not in settings_mod._IMMEDIATE_KEYS, key
+        assert key not in settings_mod._RESTART_REQUIRED_KEYS, key
+
+    architecture = (_pathlib.Path(__file__).resolve().parents[1] / "docs" / "ARCHITECTURE.md")
+    table_rows = [
+        line for line in architecture.read_text(encoding="utf-8").splitlines()
+        if any(line.startswith(f"| {key} |") for key in retired)
+    ]
+    assert table_rows == [], table_rows
+
+
+def test_a_live_setting_cannot_be_retired_by_accident():
+    """The inverse tripwire: three keys that look retired and are not. A behavioural
+    no-op is not the test — `until_deadline` lifts a real cap, the singular fallback
+    env alias is a live benchmark contract, and the frozen-compat stall threshold is a
+    true no-op the contract surface still declares."""
+    from ouroboros import config as cfg
+    from ouroboros.contracts import __name__ as _contracts_package  # noqa: F401
+
+    assert "OUROBOROS_MODEL_FALLBACK" not in cfg.RETIRED_SETTING_KEYS
+    assert cfg.parse_fallback_chain is not None
+    for key in ("OUROBOROS_TASK_IDLE_TIMEOUT_SEC", "OUROBOROS_TASK_ABS_CEILING_SEC"):
+        assert key in cfg.SETTINGS_DEFAULTS
+        assert key not in cfg.RETIRED_SETTING_KEYS

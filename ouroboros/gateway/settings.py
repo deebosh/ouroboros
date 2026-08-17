@@ -182,8 +182,6 @@ def _rehydrate_mcp_servers_payload(incoming: Any, current: Any) -> list:
 
 _IMMEDIATE_KEYS = frozenset({
     "TOTAL_BUDGET",
-    "OUROBOROS_SOFT_TIMEOUT_SEC",
-    "OUROBOROS_HARD_TIMEOUT_SEC",
     "OUROBOROS_TOOL_TIMEOUT_SEC",
     "GITHUB_TOKEN",
     "GITHUB_REPO",

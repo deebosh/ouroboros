@@ -3208,10 +3208,12 @@ class TestPlanReviewToolRegistration(unittest.TestCase):
         self.assertIn("one shared", description)
         self.assertNotIn("heartbeat", description)
         self.assertNotIn("inline", description)
-        self.assertEqual(
-            SETTINGS_DEFAULTS["OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC"],
-            120,
-        )
+        # The knob is RETIRED, not merely inert: a compatibility tombstone that had
+        # to be defaulted was still a knob the settings surface offered.
+        from ouroboros.config import RETIRED_SETTING_KEYS
+
+        self.assertNotIn("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", SETTINGS_DEFAULTS)
+        self.assertIn("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", RETIRED_SETTING_KEYS)
         self.assertNotIn(
             "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
             inspect.getsource(plan_review._collect_planning_handoffs),
