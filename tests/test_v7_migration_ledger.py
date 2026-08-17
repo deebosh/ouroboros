@@ -488,7 +488,12 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS":
             "retired:the generic marker fallbacks live once, in the single classifier",
     })
+    retired_current["ouroboros/launcher_onboarding.py::save_settings"] = (
+        "retired:the launcher persists nothing at startup; the pre-server provider "
+        "normalization is applied to the environment and re-derived by every reader"
+    )
     retired_delta_ids = {
+        "ouroboros/launcher_onboarding.py::save_settings": "D03",
         "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES": "D02",
         "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS": "D02",
     }
@@ -556,6 +561,25 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(test_split_rows)
     implemented.update(web_extractions)
     implemented.update(config_extraction_rows)
+    # v7 stream S, lane S1: the spec 4.3.5 settings seam. One normalization for every
+    # reader, one locked read-modify-write for the owner endpoints, one serializer for
+    # the three writers, and the start-time mutator removed.
+    settings_seam_rows = {
+        "ouroboros/gateway/onboarding.py::_settings_fingerprint":
+            "ouroboros/gateway/owner_settings.py::settings_document_digest",
+        "ouroboros/config.py::load_settings_lock_held":
+            "ouroboros/config.py::normalize_settings_raw",
+        "ouroboros/gateway/owner_settings.py::_owner_write_settings":
+            "ouroboros/gateway/owner_settings.py::_owner_update_settings",
+        "ouroboros/config.py::save_settings": "ouroboros/config.py::serialize_settings",
+        "ouroboros/packaged_cli.py::_save_settings": "ouroboros/packaged_cli.py::_save_settings",
+        "ouroboros/launcher_onboarding.py::prepare_first_run_settings":
+            "ouroboros/launcher_onboarding.py::prepare_first_run_settings",
+        "tests/test_onboarding_host.py::test_pre_server_normalization_never_creates_the_settings_file":
+            "tests/test_onboarding_host.py::test_pre_server_normalization_never_writes_the_settings_file",
+    }
+    implemented.update(settings_seam_rows)
+    existing_process_owner_rows.update(settings_seam_rows)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
@@ -575,6 +599,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 assert (REPO / owner_path).is_file()
             else:
                 assert owner_path in v7_evidence.APPROVED_PENDING_OWNERS
+            if row["old path/symbol"] in settings_seam_rows:
+                # In-place semantic changes: the old identity keeps working because it
+                # is still implemented at the old path (a caller, a wrapper, or the same
+                # function with a new body), not because a re-export forwards it.
+                assert delta["id"] == "D03" and delta["note"]
+                assert row["facade/public contract"] == "-"
+                continue
             expected_delta = (
                 "D02"
                 if row["old path/symbol"] in {
@@ -713,4 +744,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03"})

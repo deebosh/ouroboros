@@ -1,23 +1,24 @@
-"""Characterization of the settings READ path, before the normalization seam lands.
+"""The settings READ path: one normalization, applied by every reader.
 
-`load_settings` does five things to a raw settings document before the shipped
-defaults are merged over it: it coerces every known key to its declared type,
-folds the deprecated per-subsystem retention keys into the unified one, drops the
-keys a release retired, promotes the renamed model slots (and the singular
-scope-review pin), and repairs secret placeholders. Every one of those five is a
-migration that PRESERVES an owner customization written under a former key.
+A settings document on disk is written by whatever release the owner last used, so
+reading one starts by translating it into today's vocabulary: coerce every known key
+to its declared type, fold the deprecated per-subsystem retention keys into the
+unified one, drop the keys a release retired, promote the renamed model slots (and
+the singular scope-review pin), and repair secret placeholders. Every one of those
+steps exists to PRESERVE an owner customization written under a former key.
 
-`_owner_read_settings_raw` — the reader behind every owner endpoint and behind the
-context-fit route resolver — merges the defaults over the RAW document instead, so
-it sees none of them. On its own that is a wrong read; combined with the
-read-modify-write those endpoints perform it is destructive, because the defaults
-the merge invented get written back as if the owner had chosen them, and the
-migration that would have rescued the legacy value then finds the new key already
-present and leaves it alone. Forever.
+That normalization used to live inside `load_settings`. `_owner_read_settings_raw` —
+the reader behind every owner endpoint and behind the context-fit route resolver —
+merged the shipped defaults over the RAW document instead and got none of it. On its
+own that was a wrong read; combined with the read-modify-write those endpoints
+perform it was destructive, because the defaults the merge invented were written back
+as if the owner had chosen them, and the migration that would have rescued the legacy
+value then found the new key already present and left it alone. Forever.
 
-The tests below pin BOTH sides as they behave today. The ones named
-``..._defect_...`` are the defect, kept only until the seam lands so that the fix
-is visible as a diff rather than asserted from scratch.
+`config.normalize_settings_raw` is now that step, and both readers apply it. These
+tests pin the golden it must keep producing, the property that lets a locked
+read-modify-write apply it on every save (idempotence), the fact that a read writes
+nothing, and the closed inventory of readers and writers that keeps the seam single.
 """
 
 from __future__ import annotations
@@ -150,38 +151,32 @@ def test_reading_settings_writes_nothing_to_disk(isolated_settings):
     assert not pathlib.Path(str(isolated_settings) + ".lock").exists()
 
 
-def test_owner_read_settings_raw_defect_skips_the_read_normalization(isolated_settings):
-    """DEFECT (superseded by the normalization seam): the owner reader merges the
-    shipped defaults over the RAW document, so every renamed slot answers the
-    default while the legacy key it should have been promoted from is still there,
-    and a retired key is served as if it were live."""
+def test_owner_read_settings_raw_applies_the_same_normalization_as_load_settings(
+        isolated_settings):
+    """The seam: "raw" means "without the RATCHETS", never "without the migrations".
+    Both readers answer the same owner values for the same document."""
     from ouroboros import config as cfg
     from ouroboros.gateway.owner_settings import _owner_read_settings_raw
 
     _seed(isolated_settings, LEGACY_OWNER_DOCUMENT)
     raw = _owner_read_settings_raw()
+    loaded = cfg.load_settings()
 
-    assert raw["OUROBOROS_MODEL_HEAVY"] == cfg.SETTINGS_DEFAULTS["OUROBOROS_MODEL_HEAVY"]
-    assert raw["OUROBOROS_MODEL_VISION"] == cfg.SETTINGS_DEFAULTS["OUROBOROS_MODEL_VISION"]
-    assert raw["OUROBOROS_MODEL_FALLBACKS"] == cfg.SETTINGS_DEFAULTS["OUROBOROS_MODEL_FALLBACKS"]
-    assert raw["OUROBOROS_SCOPE_REVIEW_MODELS"] == (
-        cfg.SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODELS"])
-    assert raw["USE_LOCAL_HEAVY"] == cfg.SETTINGS_DEFAULTS["USE_LOCAL_HEAVY"]
-    assert raw["OUROBOROS_MODEL_CODE"] == "owner/heavy-choice"
-    assert raw[RETIRED_GHOST] == 1
+    for key, expected in MIGRATED_OWNER_VALUES.items():
+        assert raw[key] == expected, key
+        assert raw[key] == loaded[key], key
+    assert "OUROBOROS_MODEL_CODE" not in raw
+    assert "OUROBOROS_VISION_MODEL" not in raw
+    assert RETIRED_GHOST not in raw
 
 
-def test_one_owner_endpoint_write_defect_erases_six_owner_customizations(isolated_settings):
-    """DEFECT (superseded by the normalization seam): the smallest possible owner
-    action — turning auto-grant off, which touches ONE unrelated boolean — writes
-    the un-normalized read back and destroys the heavy, vision, fallback, local-heavy,
-    scope-pin and retention customizations, permanently: the next load finds the
-    renamed keys already present at their defaults and no longer migrates them."""
+def test_one_owner_endpoint_write_preserves_every_owner_customization(isolated_settings):
+    """The defect, gone: turning auto-grant off changes auto-grant and nothing else,
+    and the retired ghost leaves the file on the way through."""
     from ouroboros import config as cfg
 
     _seed(isolated_settings, LEGACY_OWNER_DOCUMENT)
     before = cfg.load_settings()
-    assert before["OUROBOROS_MODEL_HEAVY"] == "owner/heavy-choice"
 
     app = _owner_app("api_owner_auto_grant", "/api/owner/auto-grant", isolated_settings.parent)
     response = TestClient(app).post("/api/owner/auto-grant", json={"enabled": False})
@@ -189,38 +184,40 @@ def test_one_owner_endpoint_write_defect_erases_six_owner_customizations(isolate
 
     after = cfg.load_settings()
     assert after["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] == "false", "the intended change"
-    erased = {
-        key: (before[key], after[key])
-        for key in MIGRATED_OWNER_VALUES
-        if after[key] != before[key]
-    }
-    assert set(erased) == set(MIGRATED_OWNER_VALUES), erased
-    for key, (_owner_value, now) in erased.items():
-        assert now == cfg.SETTINGS_DEFAULTS[key], key
+    changed = {key for key in before if before[key] != after.get(key)}
+    assert changed == {"OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"}, changed
+    for key, expected in MIGRATED_OWNER_VALUES.items():
+        assert after[key] == expected, key
     stored = json.loads(isolated_settings.read_text(encoding="utf-8"))
-    assert RETIRED_GHOST in stored, "the retired ghost was re-persisted"
+    assert RETIRED_GHOST not in stored, "the retired ghost survived a full rewrite"
 
 
-def test_every_owner_endpoint_reaches_the_same_unnormalized_read(isolated_settings):
-    """The defect is one seam, not five bugs: each single-decision owner endpoint,
-    and the generic save, take their document from ``_owner_read_settings_raw``."""
+def test_every_owner_endpoint_reaches_the_same_normalized_read(isolated_settings):
+    """The fix is one seam, not six patches: each single-decision owner endpoint,
+    and the generic save, take their document from ``_owner_read_settings_raw`` —
+    directly, or through the locked read-modify-write primitive built on it."""
     import ast
 
+    from ouroboros.gateway import owner_settings as owner_mod
     from ouroboros.gateway import settings as settings_mod
 
-    source = pathlib.Path(settings_mod.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    readers = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and any(
-            isinstance(inner, ast.Call)
-            and isinstance(inner.func, ast.Name)
-            and inner.func.id == "_owner_read_settings_raw"
-            for inner in ast.walk(node)
-        )
-    }
+    def _callers(module, callee: str) -> set:
+        source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+        return {
+            node.name
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name)
+                and inner.func.id == callee
+                for inner in ast.walk(node)
+            )
+        }
+
+    assert _callers(owner_mod, "_owner_read_settings_raw") == {"_owner_update_settings"}
+    readers = _callers(settings_mod, "_owner_read_settings_raw") | _callers(
+        settings_mod, "_owner_update_settings")
     assert readers == {
         "api_owner_runtime_mode",
         "api_owner_auto_grant",
@@ -231,9 +228,134 @@ def test_every_owner_endpoint_reaches_the_same_unnormalized_read(isolated_settin
     }, readers
 
 
+def test_normalize_settings_raw_is_idempotent(isolated_settings):
+    """Property: a reader may apply the normalization to an already-normalized
+    document — which is what the owner endpoints' locked read-modify-write does on
+    every save — and get the same document back. A migration that fired twice would
+    otherwise re-promote a value it had already consumed."""
+    from ouroboros import config as cfg
+
+    documents = [
+        LEGACY_OWNER_DOCUMENT,
+        {},
+        dict(cfg.SETTINGS_DEFAULTS),
+        {"OUROBOROS_MODEL_HEAVY": "already/new", "OUROBOROS_MODEL_CODE": "old/loser"},
+        {"OUROBOROS_SCOPE_REVIEW_MODEL": "pin", "OUROBOROS_SCOPE_REVIEW_MODELS": "a,b"},
+        {"OUROBOROS_SUBAGENT_WORKTREE_RETENTION_DAYS": 30,
+         "OUROBOROS_SERVICE_LOG_RETENTION_DAYS": 14},
+        {"OUROBOROS_MAX_WORKERS": "3", "MCP_SERVERS": '[{"name": "one"}]', "unknown_key": {"a": 1}},
+        {RETIRED_GHOST: 9},
+    ]
+    for document in documents:
+        once = cfg.normalize_settings_raw(document)
+        assert cfg.normalize_settings_raw(once) == once, document
+        assert cfg.normalize_settings_raw(dict(once)) == once, document
+        # Pure: the caller's mapping is never mutated and nothing reaches the disk.
+        snapshot = dict(document)
+        cfg.normalize_settings_raw(document)
+        assert document == snapshot
+    assert not isolated_settings.exists()
+
+
+def test_a_stale_owner_read_cannot_overwrite_a_change_it_never_saw(isolated_settings):
+    """The unlocked read-modify-write, closed: a decision taken from an earlier read
+    is bound to the document that read saw."""
+    from ouroboros import config as cfg
+    from ouroboros.gateway.owner_settings import (
+        SettingsPreconditionFailed,
+        _owner_update_settings,
+        settings_document_digest,
+    )
+
+    _seed(isolated_settings, {"TOTAL_BUDGET": 10.0})
+    stale = settings_document_digest()
+    _seed(isolated_settings, {"TOTAL_BUDGET": 10.0, "OUROBOROS_MAX_ROUNDS": 42})
+
+    with pytest.raises(SettingsPreconditionFailed):
+        _owner_update_settings(lambda current: {**current, "TOTAL_BUDGET": 99.0}, stale)
+    assert cfg.load_settings()["OUROBOROS_MAX_ROUNDS"] == 42, "the other change was reverted"
+    assert cfg.load_settings()["TOTAL_BUDGET"] == 10.0
+
+    _owner_update_settings(lambda current: {**current, "TOTAL_BUDGET": 99.0},
+                           settings_document_digest())
+    assert cfg.load_settings()["TOTAL_BUDGET"] == 99.0
+    assert cfg.load_settings()["OUROBOROS_MAX_ROUNDS"] == 42
+
+
+def test_a_transform_that_returns_nothing_writes_nothing(isolated_settings):
+    """A no-change decision must not rewrite the file — the rewrite would race a
+    concurrent save for zero information gain."""
+    from ouroboros.gateway.owner_settings import _owner_update_settings
+
+    _seed(isolated_settings, {"TOTAL_BUDGET": 10.0})
+    before = isolated_settings.read_bytes()
+    before_mtime = isolated_settings.stat().st_mtime_ns
+
+    _owner_update_settings(lambda _current: None)
+
+    assert isolated_settings.read_bytes() == before
+    assert isolated_settings.stat().st_mtime_ns == before_mtime
+
+
+def test_all_three_writers_serialize_a_document_to_the_same_bytes(isolated_settings):
+    """One serializer: the config saver, the owner-endpoint writer's atomic helper and
+    the packaged bootstrap saver produce identical text for identical content. They
+    disagreed on ``ensure_ascii``, so the same document had two spellings on disk."""
+    from ouroboros import config as cfg
+    from ouroboros.packaged_cli import _save_settings
+    from ouroboros.utils import atomic_write_json
+
+    document = {"TOTAL_BUDGET": 10.0, "OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE": "\u043f\u0440\u0438\u043e\u0440\u0438\u0442\u0435\u0442"}
+
+    cfg.save_settings(dict(document))
+    by_config = isolated_settings.read_text(encoding="utf-8")
+    isolated_settings.unlink()
+
+    atomic_write_json(isolated_settings, cfg.prepare_settings_for_persist(dict(document)),
+                      trailing_newline=False)
+    by_owner_endpoint = isolated_settings.read_text(encoding="utf-8")
+    isolated_settings.unlink()
+
+    _save_settings(isolated_settings, dict(document))
+    by_packaged_cli = isolated_settings.read_text(encoding="utf-8")
+
+    assert by_config == by_owner_endpoint == by_packaged_cli
+    assert document["OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE"] in by_config, (
+        "the shared serializer escaped a non-ASCII owner value")
+
+
+def test_the_packaged_bootstrap_writes_the_path_the_prologue_reads(monkeypatch, tmp_path):
+    """The packaged saver owns its own path, and the persistence prologue proves its
+    ratchets against ``config.SETTINGS_PATH``. That is only honest while the two are
+    the same file, which the packaged runtime resolves by construction: both derive
+    from ``Path.home() / "Ouroboros"`` when no path override is set."""
+    import ast
+    import inspect
+    import pathlib as _pathlib
+
+    from ouroboros import config as cfg
+    from ouroboros import packaged_cli
+
+    # Both derivations, side by side, from their own source: config's module-level
+    # default chain and the packaged runtime's data dir.
+    config_source = _pathlib.Path(cfg.__file__).read_text(encoding="utf-8")
+    assert 'APP_ROOT = pathlib.Path(os.environ.get("OUROBOROS_APP_ROOT", HOME / "Ouroboros"))' in config_source
+    assert 'DATA_DIR = pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR", APP_ROOT / "data"))' in config_source
+    assert 'SETTINGS_PATH = pathlib.Path(os.environ.get("OUROBOROS_SETTINGS_PATH", DATA_DIR / "settings.json"))' in config_source
+    assert "HOME = pathlib.Path.home()" in config_source
+
+    resolver = inspect.getsource(packaged_cli.resolve_packaged_runtime)
+    assert 'app_root = pathlib.Path.home() / "Ouroboros"' in resolver
+    assert 'data_dir=app_root / "data"' in resolver
+    # ...and the saver is wired to that data dir, not to some other root.
+    bootstrap = inspect.getsource(packaged_cli._bootstrap_runtime)
+    assert '_save_settings(runtime.data_dir / "settings.json", settings)' in bootstrap
+    assert ast.parse(resolver.strip()) is not None
+
 def test_the_three_settings_writers_are_exactly_these_three():
     """No fourth writer: the persisting surfaces are the config saver, the owner
-    endpoint seam, and the packaged CLI bootstrap saver."""
+    endpoint seam, and the packaged CLI bootstrap saver — and all three go through
+    the same persistence prologue and the same serializer."""
     import ast
 
     repo = pathlib.Path(__file__).resolve().parents[1]
@@ -259,7 +381,8 @@ def test_the_three_settings_writers_are_exactly_these_three():
                     writers.add(f"{relpath}::{node.name}")
     assert writers == {
         "ouroboros/config.py::save_settings",
-        "ouroboros/gateway/owner_settings.py::_owner_write_settings",
+        # The owner endpoints' write lives in the locked read-modify-write primitive.
+        "ouroboros/gateway/owner_settings.py::_owner_update_settings",
         "ouroboros/packaged_cli.py::_save_settings",
         # Not settings documents: the one-window raw context pair migration, written
         # under the load lock, and the Colab bootstrap's own generated file.

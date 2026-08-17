@@ -2169,6 +2169,39 @@ never classified as a mask; `prepare_settings_for_persist()` applies the same
 top-level repair at the common writer boundary. Password, token, and MCP masks
 remain context-specific rather than sharing a suffix heuristic.
 
+### Reading and writing the settings document
+
+A settings document on disk was written by whatever release the owner last used, so
+reading one begins by translating it into today's vocabulary. `normalize_settings_raw()`
+is that translation and the only copy of it: type coercion against the declared
+defaults, the deprecated per-subsystem retention keys folded into the unified one, the
+keys a release retired dropped, the renamed model slots (and the singular scope-review
+pin) promoted, and secret placeholders repaired. Every step preserves an owner
+customization written under a former key, so every reader applies it BEFORE the shipped
+defaults are merged — `load_settings()` and the owner endpoints' `_owner_read_settings_raw()`
+alike. "Raw" in that name is about the runtime-mode ratchets it deliberately skips,
+never about the migrations. The normalization is pure and idempotent: it touches no
+file and no environment, which is what lets a read stay a read and lets a
+read-modify-write apply it on every save.
+
+Three surfaces persist a settings document: `config.save_settings()`,
+`gateway/owner_settings._owner_update_settings()` (which `_owner_write_settings()` is one
+caller of), and the packaged bootstrap's `packaged_cli._save_settings()`. All three pass
+through `prepare_settings_for_persist()` — the single point where the disk-authored
+silence rule and the owner-only context/safety ratchets are enforced against the value
+ON DISK — and serialize through `serialize_settings()`, so the same document has one
+spelling on disk whichever surface wrote it.
+
+An owner endpoint changes one decision inside a document it does not otherwise own, so it
+must write the whole document back. `_owner_update_settings(transform, expected_digest)`
+does that read, change and write inside ONE settings lock: the transform receives the
+document as it is under the lock and returns what to persist, or nothing at all, which is
+how a no-change decision avoids rewriting the file. An endpoint that took a decision from
+an earlier read passes the digest that read saw, and a mismatch refuses before the
+transform runs, so a concurrent owner change can never be reverted key by key while the
+request answers "saved". Startup is a read: the pre-server provider normalization is
+applied to the process environment and re-derived by every reader rather than persisted.
+
 ### LLM output token budgets
 
 Ouroboros uses provider-specific names for the same output-token budget:

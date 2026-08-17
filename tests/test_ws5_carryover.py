@@ -69,7 +69,12 @@ def test_owner_scope_review_floor_endpoint_validates_persists_and_discloses_depr
     monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_FLOOR", "blocking_1m")
     monkeypatch.setattr(smod, "_owner_read_settings_raw", lambda: {})
     written = {}
-    monkeypatch.setattr(smod, "_owner_write_settings", lambda s, **k: written.update(s))
+    # The endpoint hands a TRANSFORM to the locked read-modify-write primitive instead of
+    # handing a finished document to the writer; the stub applies it exactly as the lock
+    # would, so the assertion below is unchanged.
+    monkeypatch.setattr(
+        smod, "_owner_update_settings",
+        lambda transform, *a, **k: written.update(transform(dict(written)) or {}))
     monkeypatch.setattr(smod, "_owner_audit", lambda *a, **k: None)
 
     class _Req:
@@ -104,7 +109,12 @@ def test_owner_floor_write_changes_no_scope_review_behaviour(monkeypatch, tmp_pa
     monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_FLOOR", "blocking_1m")
     monkeypatch.setattr(smod, "_owner_read_settings_raw", lambda: {})
     written = {}
-    monkeypatch.setattr(smod, "_owner_write_settings", lambda s, **k: written.update(s))
+    # The endpoint hands a TRANSFORM to the locked read-modify-write primitive instead of
+    # handing a finished document to the writer; the stub applies it exactly as the lock
+    # would, so the assertion below is unchanged.
+    monkeypatch.setattr(
+        smod, "_owner_update_settings",
+        lambda transform, *a, **k: written.update(transform(dict(written)) or {}))
     monkeypatch.setattr(smod, "_owner_audit", lambda *a, **k: None)
 
     calls: list = []

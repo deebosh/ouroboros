@@ -27,9 +27,11 @@ from ouroboros.gateway.owner_settings import (
     _CONTEXT_MODE_KEYS,
     _owner_audit,
     _owner_read_settings_raw,
+    _owner_update_settings,
     _owner_write_settings,
     owner_write_guard,
     post_commit_failure_response,
+    settings_document_digest,
     unsaved_error,
 )
 from ouroboros.onboarding_wizard import build_onboarding_html
@@ -362,6 +364,9 @@ async def api_owner_runtime_mode(request: Request) -> JSONResponse:
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
     if raw_mode not in set(_config.VALID_RUNTIME_MODES):
         return unsaved_error("'mode' must be one of: light, advanced, pro", 400)
+    # The digest is taken BEFORE the read that decides, so a write landing between the
+    # two is refused rather than silently reverted by this request's write.
+    digest = settings_document_digest()
     old_settings = _owner_read_settings_raw()
     previous_mode = _config.normalize_runtime_mode(old_settings.get("OUROBOROS_RUNTIME_MODE"))
     active_mode = _config.get_runtime_mode()
@@ -371,9 +376,11 @@ async def api_owner_runtime_mode(request: Request) -> JSONResponse:
         # A no-change POST must not rewrite settings.json: the rewrite raced a
         # concurrent generic save (last-writer-wins over a stale read) for zero
         # information gain. The audit and the response stay identical either way.
-        current = dict(old_settings)
-        current["OUROBOROS_RUNTIME_MODE"] = next_mode
-        _owner_write_settings(current)
+        def _set_runtime_mode(current: Dict[str, Any]) -> Dict[str, Any]:
+            current["OUROBOROS_RUNTIME_MODE"] = next_mode
+            return current
+
+        _owner_update_settings(_set_runtime_mode, digest)
     _owner_audit(
         request,
         "runtime_mode",
@@ -398,10 +405,17 @@ async def api_owner_auto_grant(request: Request) -> JSONResponse:
     if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
         return unsaved_error("'enabled' must be a boolean", 400)
     enabled = bool(body.get("enabled"))
-    current = _owner_read_settings_raw()
-    current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = "true" if enabled else "false"
-    _owner_write_settings(current)
-    os.environ["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"]
+    value = "true" if enabled else "false"
+
+    # No digest: this endpoint decides nothing from the stored document — the body
+    # carries the whole decision — so refusing a concurrent unrelated write would
+    # cost the owner a retry and buy nothing.
+    def _set_auto_grant(current: Dict[str, Any]) -> Dict[str, Any]:
+        current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = value
+        return current
+
+    _owner_update_settings(_set_auto_grant)
+    os.environ["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = value
     _owner_audit(request, "auto_grant", {"enabled": enabled})
     return JSONResponse({"ok": True, "enabled": enabled})
 
@@ -662,6 +676,7 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
     if raw_mode not in set(VALID_CONTEXT_MODES):
         return unsaved_error("'mode' must be one of: low, max", 400)
     next_mode = _config.normalize_context_mode(raw_mode)
+    digest = settings_document_digest()
     previous_mode = _config.get_owner_context_mode()
     if previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
         return unsaved_error(
@@ -669,14 +684,19 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
             "Wait until no queued or running work remains, then switch Low/Max.",
             409,
         )
-    current = _owner_read_settings_raw()
-    current["OUROBOROS_CONTEXT_MODE"] = next_mode
-    # The retired marker survives one compatibility window only as explicit false
-    # provenance, so owner Low still means "scope review not performed" while a bare
-    # forwarded env Low remains owner Max.
-    current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+
+    def _set_context_mode(current: Dict[str, Any]) -> Dict[str, Any]:
+        current["OUROBOROS_CONTEXT_MODE"] = next_mode
+        # The retired marker survives one compatibility window only as explicit false
+        # provenance, so owner Low still means "scope review not performed" while a bare
+        # forwarded env Low remains owner Max.
+        current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+        return current
+
     # This endpoint IS the author of both keys, so they persist even at the shipped default.
-    _owner_write_settings(current, authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
+    # The digest binds the idle refusal above to the document this write replaces.
+    _owner_update_settings(_set_context_mode, digest,
+                           authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
     os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
     os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
     _owner_audit(
@@ -713,10 +733,16 @@ async def api_owner_scope_review_floor(request: Request) -> JSONResponse:
     raw = str((body or {}).get("floor") or "").strip().lower()
     if raw not in {"blocking_1m", "advisory"}:
         return unsaved_error("'floor' must be one of: blocking_1m, advisory", 400)
-    current = _owner_read_settings_raw()
-    previous = str(current.get("OUROBOROS_SCOPE_REVIEW_FLOOR") or "blocking_1m").strip().lower()
-    current["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
-    _owner_write_settings(current)
+    digest = settings_document_digest()
+    previous = str(
+        _owner_read_settings_raw().get("OUROBOROS_SCOPE_REVIEW_FLOOR") or "blocking_1m"
+    ).strip().lower()
+
+    def _set_scope_review_floor(current: Dict[str, Any]) -> Dict[str, Any]:
+        current["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
+        return current
+
+    _owner_update_settings(_set_scope_review_floor, digest)
     os.environ["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
     _owner_audit(
         request,
@@ -749,11 +775,16 @@ async def api_owner_safety_mode(request: Request) -> JSONResponse:
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
     if raw_mode not in set(_config.VALID_SAFETY_MODES):
         return unsaved_error("'mode' must be one of: full, light, off", 400)
-    current = _owner_read_settings_raw()
-    previous = _config.normalize_safety_mode(current.get("OUROBOROS_SAFETY_MODE"))
-    current["OUROBOROS_SAFETY_MODE"] = raw_mode
-    _owner_write_settings(
-        current, authored_keys=("OUROBOROS_SAFETY_MODE",), allow_safety_lowering=True)
+    digest = settings_document_digest()
+    previous = _config.normalize_safety_mode(
+        _owner_read_settings_raw().get("OUROBOROS_SAFETY_MODE"))
+
+    def _set_safety_mode(current: Dict[str, Any]) -> Dict[str, Any]:
+        current["OUROBOROS_SAFETY_MODE"] = raw_mode
+        return current
+
+    _owner_update_settings(_set_safety_mode, digest,
+                           authored_keys=("OUROBOROS_SAFETY_MODE",), allow_safety_lowering=True)
     os.environ["OUROBOROS_SAFETY_MODE"] = raw_mode
     _owner_audit(
         request,
