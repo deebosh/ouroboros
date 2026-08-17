@@ -2683,6 +2683,10 @@
    "is_error": true,
    "status": "blocked"
   },
+  "native:LEGACY_BLOCKED:TASK_CANCEL_PENDING": {
+   "is_error": false,
+   "status": "ok"
+  },
   "native:LEGACY_BLOCKED:TASK_FORBIDDEN": {
    "is_error": false,
    "status": "ok"
@@ -2699,23 +2703,19 @@
    "is_error": true,
    "status": "error"
   },
+  "native:LEGACY_UNAVAILABLE:TASK_NOT_ACTIVE": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "native:LEGACY_UNAVAILABLE:TASK_NOT_FOUND": {
+   "is_error": false,
+   "status": "ok"
+  },
   "native:LEGACY_WARNING:DATA_NOT_YET_CREATED": {
    "is_error": false,
    "status": "ok"
   },
   "native:LEGACY_WARNING:NOT_FOUND": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "native:LEGACY_WARNING:TASK_CANCEL_PENDING": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "native:LEGACY_WARNING:TASK_NOT_ACTIVE": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "native:LEGACY_WARNING:TASK_NOT_FOUND": {
    "is_error": false,
    "status": "ok"
   },

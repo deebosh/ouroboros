@@ -388,10 +388,12 @@ def test_owner_chat_delivery_terminals_are_native(tmp_path, label, tool, code, t
             "⚠️ TOOL_ARG_ERROR (forward_to_worker): task_id must match "
             "[A-Za-z0-9][A-Za-z0-9_.-]{0,127}",
         ),
+        # A.20: an unregistered target cannot receive the message, so the call is
+        # `unavailable` rather than the ok the adapter reads from this sentence.
         (
             "forward_to_worker",
             {"task_id": "abc123", "message": "m"},
-            "LEGACY_WARNING",
+            "LEGACY_UNAVAILABLE",
             "⚠️ TASK_NOT_FOUND: task abc123 is not registered.",
         ),
     ],
@@ -405,7 +407,12 @@ def test_write_edit_search_and_forward_terminals_are_native(tmp_path, tool, args
 
     assert result.text == text
     assert result.code == code
-    assert result.code == LegacyTextResultAdapter.from_text(tool, text).code
+    adapter_code = LegacyTextResultAdapter.from_text(tool, text).code
+    if code == "LEGACY_UNAVAILABLE":
+        # Owner item A.20: this one row is a deliberate divergence from the adapter.
+        assert adapter_code == "LEGACY_WARNING"
+    else:
+        assert result.code == adapter_code
 
 
 def test_payload_selector_and_search_refusals_keep_their_own_codes(tmp_path):
@@ -477,21 +484,29 @@ def test_room_write_refusals_are_policy_denials(tmp_path, monkeypatch):
 
 
 def test_worker_forwarding_denials_are_typed(tmp_path, monkeypatch):
-    """The undelivered-message family, pinned where the loop will read it."""
+    """Owner item A.20: a message that was NOT delivered stops reporting success.
+
+    A worker that is unregistered, settled or not yet running is an unavailable
+    target; one under teardown refuses by policy. `TASK_FORBIDDEN` was already a
+    denial and is unchanged. Every sentence is byte-identical.
+    """
     repo, drive = _tree(tmp_path)
     ctx = ToolContext(repo_dir=repo, drive_root=drive)
 
     import ouroboros.task_status as task_status
 
-    for record, expected_code, expected_text in (
-        ({"status": "completed"}, "LEGACY_WARNING", "⚠️ TASK_NOT_ACTIVE: task abc123 is already completed."),
-        ({"status": "queued"}, "LEGACY_WARNING", "⚠️ TASK_NOT_ACTIVE: task abc123 is queued, not running."),
-        ({"status": "running"}, "LEGACY_BLOCKED",
+    for record, expected_code, delta, expected_text in (
+        ({"status": "completed"}, "LEGACY_UNAVAILABLE", "A.20",
+         "⚠️ TASK_NOT_ACTIVE: task abc123 is already completed."),
+        ({"status": "queued"}, "LEGACY_UNAVAILABLE", "A.20",
+         "⚠️ TASK_NOT_ACTIVE: task abc123 is queued, not running."),
+        ({"status": "running"}, "LEGACY_BLOCKED", "",
          "⚠️ TASK_FORBIDDEN: forward_to_worker requires an active task context."),
     ):
         monkeypatch.setattr(task_status, "load_effective_task_result", lambda _root, _tid, _r=record: dict(_r))
         published = _published(
-            ctx, "forward_to_worker", lambda: core._forward_to_worker(ctx, "abc123", "hello")
+            ctx, "forward_to_worker", lambda: core._forward_to_worker(ctx, "abc123", "hello"),
+            owner_delta=delta,
         )
         assert (published.code, published.text) == (expected_code, expected_text)
 

@@ -131,6 +131,12 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     # family the caller asked for, so each surface keeps its own bucket.
     "native:WRITE_FILE_BLOCKED:ROOM_WRITE_VIA_TASK": Delta(False, "ok", True, "write_file_blocked", "A.20", "a refused room write is a denial, not a written file"),
     "native:EDIT_TEXT_BLOCKED:ROOM_WRITE_VIA_TASK": Delta(False, "ok", True, "edit_text_blocked", "A.20", "a refused room edit is a denial, not an edited file"),
+    # Owner batch #10 item 3 (A.20): forward_to_worker reported `ok` for every message
+    # it did NOT deliver. A worker that is gone or finished is an unavailable target;
+    # a worker being torn down refuses by policy. TASK_FORBIDDEN was already blocked.
+    "native:LEGACY_UNAVAILABLE:TASK_NOT_FOUND": Delta(False, "ok", True, "unavailable", "A.20", "an unregistered task cannot receive a message"),
+    "native:LEGACY_UNAVAILABLE:TASK_NOT_ACTIVE": Delta(False, "ok", True, "unavailable", "A.20", "a settled or not-yet-running task cannot receive a message"),
+    "native:LEGACY_BLOCKED:TASK_CANCEL_PENDING": Delta(False, "ok", True, "blocked", "A.20", "steering a task under teardown is refused; the message was explicitly not delivered"),
     "shape:cognitive_redirect": Delta(True, "cognitive_tool_required", False, "ok", "A.11", "owner batch #4, through the native producer"),
     "shape:ephemeral_turn_denial": Delta(False, "ok", True, "blocked", "A.4",
         "the decision-turn denial is an access block its own first line never marked"),

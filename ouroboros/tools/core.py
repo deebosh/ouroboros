@@ -1076,11 +1076,11 @@ def _forward_to_worker(ctx: ToolContext, task_id: str, message: str) -> str:
     data = load_effective_task_result(status_drive_root, tid)
     status = str(data.get("status") or "").lower()
     if not data:
-        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ TASK_NOT_FOUND: task {tid} is not registered."))
+        return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=f"⚠️ TASK_NOT_FOUND: task {tid} is not registered."))
     if status in FINAL_STATUSES:
-        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ TASK_NOT_ACTIVE: task {tid} is already {status}."))
+        return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=f"⚠️ TASK_NOT_ACTIVE: task {tid} is already {status}."))
     if status != STATUS_RUNNING:
-        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ TASK_NOT_ACTIVE: task {tid} is {status or 'unknown'}, not running."))
+        return _publish_tool_result(ctx, ToolResult(status="unavailable", code="LEGACY_UNAVAILABLE", text=f"⚠️ TASK_NOT_ACTIVE: task {tid} is {status or 'unknown'}, not running."))
     # AR2-6: no NEW steering writes while a cancellation is pending. The
     # effective status honestly stays ``running`` (cancel_state=pending rides
     # beside it), so the checks above pass — consult the same predicate the
@@ -1091,8 +1091,8 @@ def _forward_to_worker(ctx: ToolContext, task_id: str, message: str) -> str:
 
         if cancel_pending(status_drive_root, tid):
             return _publish_tool_result(ctx, ToolResult(
-                status="ok",
-                code="LEGACY_WARNING",
+                status="blocked",
+                code="LEGACY_BLOCKED",
                 text=(
                     f"⚠️ TASK_CANCEL_PENDING: task {tid} has a pending cancellation — the "
                     "supervisor is tearing it down; the message was NOT delivered. Wait for "
