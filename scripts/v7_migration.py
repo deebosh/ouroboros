@@ -77,13 +77,23 @@ BASELINE_SHA = "a191e1cc21a380176bcedc9b8edd86078fc87fa1"
 MERGE_BASE_SHA = "353fd97495060a2ade55e04010f899e68babc1d9"
 MIGRATION_PATH = pathlib.PurePosixPath("MIGRATION_v7.md")
 MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contract", "semantic delta", "characterization test", "upstream-transfer status/note")
-# Semantic delta ids are a shared registry, one per plan §4.3 item:
-#   D01 §4.3.1 size-ratchet layers · D02 §4.3.3 typed tool results · D03 §4.3.5 settings seam ·
+# Semantic delta ids are a shared registry, one per plan §4.3 item (legend duplicated in
+# the MIGRATION_v7.md header, which is the reader-facing copy):
+#   D02 §4.3.3 typed tool results · D03 §4.3.5 settings seam ·
 #   D04 §4.3.6 retired settings knobs · D05 §4.3.8 safety host facts · D06 §4.3.12 events taxonomy ·
 #   D07 §4.3.11 Emergency Stop 2A · D08 §4.3.13 cancellation/delegation fail-closed registries ·
-#   D09 §4.3.2 LLM local retry (one physical attempt) · D10 §1.9/№8 module-handle reads of rebound
-#   supervisor globals in extracted leaves · D11 §1.9/№8 FUNCTION_DEBT same-qualname relocation rule.
-APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D10", "D11"})
+#   D09 §4.3.2 LLM local retry (one physical attempt) · D11 §1.9/№8 FUNCTION_DEBT same-qualname
+#   relocation rule · D12 §1.9/№8 module-handle reads of rebound supervisor globals in extracted
+#   leaves · D13 §6.4 supervisor/git_ops pre-init roots follow OUROBOROS_* env (hermetic-isolation
+#   incident fix, disclosed to owner 2026-08-17).
+# "D01" (reserved for §4.3.1 size-ratchet layers) was retired unused: ratchet-layer changes are
+# governed by size_ratchet.json + scripts/regenerate_size_ratchet.py, not by ledger rows.
+# "D10" is deliberately SKIPPED: that label already names the historical owner decision retiring
+# `claude_code_edit` (docs/DEVELOPMENT.md "D10 postmortem", docs/ARCHITECTURE.md, prompts/SYSTEM.md)
+# and must keep that single meaning. Two S3b commit messages on this branch say "D10" for the
+# module-handle delta; commit history is immutable — the ledger and this registry are the
+# id authority, and there the module-handle delta is D12.
+APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D12", "D13"})
 UPSTREAM_STATUSES = frozenset({"not_applicable", "pending", "transferred", "retired"})
 APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_result.py",

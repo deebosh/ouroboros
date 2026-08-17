@@ -662,7 +662,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     retired_current["supervisor/queue.py::QUEUE_SNAPSHOT_PATH"] = (
         "retired:supervisor.state owns the queue snapshot path; the queue reads it through the module at use time"
     )
-    # S3b: the module-handle extraction of the queue (delta D10).
+    # S3b: the module-handle extraction of the queue (delta D12).
     s3b_queue_handle_symbols_by_owner = {
         "queue_snapshot.py": "_kept_service_pids parse_iso_to_ts persist_queue_snapshot restore_pending_from_snapshot",
         "queue_timeouts.py": "_enforce_task_timeouts_locked _has_live_descendant _has_pending_descendant _is_descendant_of _subtree_progressing _task_deadline_ts _task_drive_for_task enforce_task_timeouts",
@@ -680,7 +680,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "supervisor/queue.py::_last_skill_schedule_sync",
     }
     registry_extraction_no_facade_rows.update(s3b_queue_no_facade)
-    # S3b: the module-handle extraction of the worker pool (delta D10).
+    # S3b: the module-handle extraction of the worker pool (delta D12).
     s3b_pool_handle_symbols_by_owner = {
         "worker_promotion.py": "_admit_promoted_workspace _canonical_promoted_repair_constraint _fail_promoted_task_loudly _origin_from_mapping _origin_from_task_record _promote_duplicate_reason _promoted_force_plan_metadata _report_binding_failure ensure_project_scope promote_chat_to_task",
         "worker_chat_lane.py": "_broadcast_task_named _handle_chat_direct_locked _run_chat_task auto_resume_after_restart handle_chat_direct handle_chat_ephemeral",
@@ -1028,7 +1028,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                     "ouroboros/reflection.py::should_generate_reflection",
                     "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
                 }
-                else "D10" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows)
+                else "D12" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows)
                 else s3_semantic_delta_ids.get(row["old path/symbol"], "none")
             )
             assert delta["id"] == expected_delta and delta["note"]
@@ -1155,4 +1155,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D10", "D11"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D12", "D13"})
