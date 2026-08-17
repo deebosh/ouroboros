@@ -724,6 +724,19 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     existing_process_owner_rows.update(s2_panic_delta_rows)
     # No facade row: the symbol keeps its own path and name, so there is nothing to
     # re-export — only its keyword surface gained an optional argument.
+    # v7 stream L-A lane L2b: verbatim extraction of the review substrate's record,
+    # verdict and projection owners out of ouroboros/review_substrate.py.
+    l2b_review_extraction_symbols_by_owner = {
+        "review_records.py": "ReviewSlot ReviewRequest ReviewActorRecord ReviewRunResult HARDNESS_ADVISORY_VISIBLE HARDNESS_LABEL_ONLY HARDNESS_HARD_GATE",
+        "review_verdict.py": "_TIER_ORDER _CRITERION_STATUSES _criteria_have_supported_evidence _criteria_shape_valid _contributing_actors aggregate_outcome_tier task_acceptance_is_clean DIALOGUE_CONTINUE DIALOGUE_UNREACHABLE DIALOGUE_STABLE_DISAGREEMENT DIALOGUE_STATUS_VALUES _contract_valid_actors aggregate_dialogue_status _unresolved_evidence_ref_labels panel_reason dissent_findings build_improvement_capsule",
+        "review_projection.py": "_transport_error_status _public_review_reason _review_actor_projection _response_ref_projection _review_enforcement_impact _review_panel_id build_review_binding compact_review_projection",
+    }
+    l2b_review_extraction_rows = {
+        f"ouroboros/review_substrate.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in l2b_review_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    implemented.update(l2b_review_extraction_rows)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(s2_panic_delta_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
