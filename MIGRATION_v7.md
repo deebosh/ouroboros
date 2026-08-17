@@ -15,9 +15,9 @@ settings seam · D04 §4.3.6 retired settings knobs · D05 §4.3.8 safety host f
 D06 §4.3.12 events taxonomy · D07 §4.3.11 Emergency Stop 2A · D08 §4.3.13
 cancellation/delegation fail-closed registries · D09 §4.3.2 LLM one physical attempt ·
 D11 §1.9/№8 FUNCTION_DEBT same-qualname relocation rule · D13 §6.4 supervisor/git_ops
-pre-init roots follow OUROBOROS_* env · D18 §1.9/№8 module-handle reads of rebound
-supervisor globals in extracted leaves. "D01" was retired unused (§4.3.1 ratchet layers
-are governed by the size-ratchet manifest, not ledger rows). "D10" is skipped: it names
+pre-init roots follow OUROBOROS_* env (owner-ratified, batch №11) · D18 §1.9/№8 module-handle reads of rebound
+supervisor globals in extracted leaves. "D01" was retired unused (owner-ratified; §4.3.1
+ratchet layers are governed by the size-ratchet manifest, not ledger rows). "D10" is skipped: it names
 the historical owner decision retiring `claude_code_edit` (see docs/DEVELOPMENT.md).
 "D12" and "D14"–"D17" are skipped: runtime prose already uses them as sprint-decision
 labels (e.g. review_execution.py "(D12)"); before assigning any new id, prove it free

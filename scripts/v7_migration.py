@@ -84,10 +84,11 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   D07 §4.3.11 Emergency Stop 2A · D08 §4.3.13 cancellation/delegation fail-closed registries ·
 #   D09 §4.3.2 LLM local retry (one physical attempt) · D11 §1.9/№8 FUNCTION_DEBT same-qualname
 #   relocation rule · D13 §6.4 supervisor/git_ops pre-init roots follow OUROBOROS_* env
-#   (hermetic-isolation incident fix, disclosed to owner 2026-08-17) · D18 §1.9/№8 module-handle
+#   (hermetic-isolation incident fix; ratified by owner batch №11, spec §1.12) · D18 §1.9/№8 module-handle
 #   reads of rebound supervisor globals in extracted leaves.
-# "D01" (reserved for §4.3.1 size-ratchet layers) was retired unused: ratchet-layer changes are
-# governed by size_ratchet.json + scripts/regenerate_size_ratchet.py, not by ledger rows.
+# "D01" (reserved for §4.3.1 size-ratchet layers) was retired unused (owner-ratified, batch №11):
+# ratchet-layer changes are governed by size_ratchet.json + scripts/regenerate_size_ratchet.py, not
+# by ledger rows.
 # Before assigning ANY new id, prove it free with `git grep -n "\bDnn\b"`: the runtime prose
 # already uses a two-digit sprint-decision namespace ("(D12)" review context on the fly,
 # "(D14)".."(D17)", "(D19)"+ in reviewer_slot_config/claudexor_daemon/subagents/review_context_atlas),
