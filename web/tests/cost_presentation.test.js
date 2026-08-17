@@ -224,8 +224,9 @@ test('a cost-only frame never moves the card’s Latest clock', () => {
     // no narration, so letting it move the clock would make a silent card look
     // freshly active. Pinned at source: the meta line reads the activity clock, and
     // only a human/activity-bearing frame advances it.
+    const view = readFileSync(new URL('../modules/chat_live_card_view.js', import.meta.url), 'utf8');
     const source = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
-    assert.match(source, /record\.latestActivityTs \? `Latest \$\{record\.latestActivityTs\}`/);
+    assert.match(view, /record\.latestActivityTs \? `Latest \$\{record\.latestActivityTs\}`/);
     assert.match(source, /if \(ts && \(summary\.human \|\| activityCandidate\)\) record\.latestActivityTs = ts/);
 });
 

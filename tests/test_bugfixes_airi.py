@@ -85,7 +85,7 @@ def test_reusable_live_card_preserves_explicit_expansion_across_cycles():
 
 
 def test_live_card_timeline_only_follows_when_pinned():
-    src = _read("web/modules/chat.js")
+    src = _read("web/modules/chat_live_card_view.js")
     assert "function isTimelinePinnedToBottom(record)" in src
     assert "const prevTop = el.scrollTop;" in src
     assert "el.scrollTop = pinned ? el.scrollHeight : prevTop;" in src
