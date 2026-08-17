@@ -376,10 +376,13 @@ def _classify_mcp_error(exc: BaseException) -> str:
     but the real diagnostic value lives in ``_stringify_mcp_failure``'s
     payload (underlying exception class/message + stderr tail).
     """
-    # BaseExceptionGroup / ExceptionGroup cover the SDK's asyncio.TaskGroup
-    # aggregation — without unwrapping them, owners only ever see
-    # "1 sub-exception" which is structurally un-diagnosable.
-    if isinstance(exc, (BaseExceptionGroup, ExceptionGroup)):
+    # ``BaseExceptionGroup`` / ``ExceptionGroup`` (PEP 654) cover the SDK's
+    # ``asyncio.TaskGroup`` aggregation — without unwrapping them, owners
+    # only ever see "1 sub-exception" which is structurally un-diagnosable.
+    # Duck-typed because both names were added in Python 3.11 and the project
+    # targets ``requires-python = ">=3.10"`` — referencing the names directly
+    # would raise ``NameError`` on 3.10 the moment this function runs.
+    if isinstance(getattr(exc, "exceptions", None), tuple):
         return "task_group_failure"
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
@@ -879,7 +882,12 @@ class MCPManager:
                     target.tools = []
             response: Dict[str, Any] = {"ok": False, "error": err_text_redacted, "error_kind": err_kind}
             if stderr_tail:
-                response["stderr_tail"] = stderr_tail
+                # Stdio subprocesses frequently echo their own auth tokens,
+                # command-line URLs, or URL-embedded credentials on auth /
+                # connection failure. Run the captured tail through the same
+                # redaction pass the unwrapped message gets so secrets never
+                # reach the response payload sent to the browser / logs.
+                response["stderr_tail"] = _redact_error_text(stderr_tail, cfg)
             return response
 
         normalized = [

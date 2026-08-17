@@ -272,3 +272,53 @@ def test_stringify_no_stderr_tail_when_buffer_empty():
     assert "plain value error" in msg
     assert kind == "unknown"
     assert tail == ""
+
+
+def test_refresh_redacts_auth_token_from_stderr_tail():
+    """Subprocess stderr that echoes the auth token gets masked before surfacing.
+
+    Many MCP stdio servers echo their own bearer token on auth / connection
+    failure (e.g. ``Authorization: Bearer secret-1234``). The refresh
+    response must run the captured tail through the same redaction pass the
+    unwrapped exception message gets, so the token never reaches the browser
+    or logs.
+    """
+    inner = ValueError("auth failed")
+    mgr = mcp_client.MCPManager()
+    fake = _StderrAwareFake(
+        inner,
+        stderr_text="Authorization: Bearer secret-1234\nConnection refused\n",
+    )
+    _wire(mgr, fake)
+    mgr.reconfigure(_settings(_good_server(id="svc", auth_token="Bearer secret-1234")))
+    outcome = mgr.refresh_server("svc")
+    assert outcome["ok"] is False
+    assert "stderr_tail" in outcome
+    # Token MUST be masked in the surfaced tail.
+    assert "secret-1234" not in outcome["stderr_tail"]
+    assert "<redacted:mcp-auth-token>" in outcome["stderr_tail"]
+    # Non-secret lines still present.
+    assert "Connection refused" in outcome["stderr_tail"]
+
+
+def test_classify_uses_duck_typing_for_exception_group():
+    """``_classify_mcp_error`` recognizes ``BaseExceptionGroup`` without naming it.
+
+    ``BaseExceptionGroup`` and ``ExceptionGroup`` are Python 3.11+ names
+    (PEP 654); the project targets ``requires-python = ">=3.10"``. The
+    classifier must NOT reference those names directly — a 3.10 install
+    would ``NameError`` on first MCP refresh failure. Duck-typing the
+    ``.exceptions`` tuple attribute is the portable path.
+    """
+    # Stub a 3.10-compatible group: any class with a tuple ``.exceptions``
+    # attribute qualifies, no name reference needed.
+    class _PortableGroup(BaseException):
+        def __init__(self, subs):
+            self.exceptions = tuple(subs)
+
+    inner = ValueError("inner")
+    grp = _PortableGroup([inner])
+    assert mcp_client._classify_mcp_error(grp) == "task_group_failure"
+    # Non-group exceptions still classify normally.
+    assert mcp_client._classify_mcp_error(ValueError("x")) == "unknown"
+    assert mcp_client._classify_mcp_error(FileNotFoundError(2, "x")) == "missing_executable"
