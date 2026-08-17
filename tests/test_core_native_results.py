@@ -16,11 +16,12 @@ adapter fails here rather than in a differential run over a regenerated golden.
 from __future__ import annotations
 
 import pathlib
+import types
 
 import pytest
 
 from ouroboros.contracts.task_constraint import TaskConstraint
-from ouroboros.tools import core_file_tools
+from ouroboros.tools import core_artifacts, core_file_tools
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.tools.tool_result import (
     LegacyTextResultAdapter,
@@ -236,3 +237,76 @@ def test_user_files_path_refusal_stays_a_policy_denial(tmp_path, monkeypatch):
             f"is outside the user_files home ({home}). Use root='active_workspace' for "
             "workspace paths, or a home-relative path (e.g. 'Desktop/file.txt') for user files."
         )
+
+
+def _media_ctx(chat_id=123):
+    return types.SimpleNamespace(
+        current_chat_id=chat_id,
+        pending_events=[],
+        browser_state=types.SimpleNamespace(last_screenshot_b64=""),
+    )
+
+
+def _png(tmp_path: pathlib.Path) -> pathlib.Path:
+    image = tmp_path / "shot.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 200)
+    return image
+
+
+def _mp4(tmp_path: pathlib.Path) -> pathlib.Path:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 200)
+    return video
+
+
+@pytest.mark.parametrize(
+    ("label", "tool", "code", "text"),
+    [
+        ("photo_no_chat", "send_photo", "LEGACY_WARNING", "⚠️ No active chat — cannot send photo."),
+        ("photo_no_source", "send_photo", "LEGACY_WARNING", "⚠️ Provide either file_path or image_base64."),
+        ("photo_short", "send_photo", "LEGACY_WARNING", "⚠️ Image data is empty or too short."),
+        ("photo_no_screenshot", "send_photo", "LEGACY_WARNING",
+         "⚠️ No screenshot stored. Take one first with browse_page(output='screenshot')."),
+        ("video_no_chat", "send_video", "LEGACY_WARNING", "⚠️ No active chat — cannot send video."),
+        ("video_no_path", "send_video", "LEGACY_WARNING", "⚠️ Provide a file_path."),
+        ("video_missing", "send_video", "LEGACY_WARNING", "⚠️ File not found: /nonexistent/clip.mp4"),
+        ("file_no_chat", "send_file", "LEGACY_WARNING", "⚠️ No active chat — cannot send file."),
+        ("file_no_path", "send_file", "LEGACY_WARNING", "⚠️ Provide a file_path."),
+        ("file_missing", "send_file", "LEGACY_WARNING", "⚠️ File not found: /nonexistent/report.md"),
+        ("photo_ok", "send_photo", "OK", "OK: photo queued for delivery to owner."),
+        ("video_ok", "send_video", "OK", "OK: video queued for delivery to owner."),
+        ("file_ok", "send_file", "OK", "OK: file 'shot.png' queued for delivery to owner."),
+    ],
+)
+def test_owner_chat_delivery_terminals_are_native(tmp_path, label, tool, code, text):
+    """Every media terminal, including the queued-for-delivery success.
+
+    The refusals carry no uppercase identifier, so the adapter has always read
+    them as `LEGACY_WARNING` — an ok status. That is preserved exactly here and
+    reported as an owner-delta candidate rather than changed in this lane.
+    """
+    chatty = _media_ctx()
+    chatless = _media_ctx(chat_id=None)
+    calls = {
+        "photo_no_chat": (chatless, lambda: core_artifacts._send_photo(chatless, file_path=str(_png(tmp_path)))),
+        "photo_no_source": (chatty, lambda: core_artifacts._send_photo(chatty)),
+        "photo_short": (chatty, lambda: core_artifacts._send_photo(chatty, image_base64="tiny")),
+        "photo_no_screenshot": (chatty, lambda: core_artifacts._send_photo(chatty, image_base64="__last_screenshot__")),
+        "video_no_chat": (chatless, lambda: core_artifacts._send_video(chatless, file_path=str(_mp4(tmp_path)))),
+        "video_no_path": (chatty, lambda: core_artifacts._send_video(chatty)),
+        "video_missing": (chatty, lambda: core_artifacts._send_video(chatty, file_path="/nonexistent/clip.mp4")),
+        "file_no_chat": (chatless, lambda: core_artifacts._send_file(chatless, file_path=str(_png(tmp_path)))),
+        "file_no_path": (chatty, lambda: core_artifacts._send_file(chatty)),
+        "file_missing": (chatty, lambda: core_artifacts._send_file(chatty, file_path="/nonexistent/report.md")),
+        "photo_ok": (chatty, lambda: core_artifacts._send_photo(chatty, file_path=str(_png(tmp_path)))),
+        "video_ok": (chatty, lambda: core_artifacts._send_video(chatty, file_path=str(_mp4(tmp_path)))),
+        "file_ok": (chatty, lambda: core_artifacts._send_file(chatty, file_path=str(_png(tmp_path)))),
+    }
+    ctx, call = calls[label]
+
+    published = _published(ctx, tool, call)
+
+    assert published.code == code
+    assert published.text == text
+    # A refused delivery queues nothing; a published success queues exactly one event.
+    assert len(ctx.pending_events) == (1 if code == "OK" else 0)

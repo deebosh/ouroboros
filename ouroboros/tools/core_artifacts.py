@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 
 from ouroboros.tools.registry import ToolContext
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
 
 _MAX_PHOTO_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -27,7 +28,7 @@ def _send_photo(ctx: ToolContext, file_path: str = "", image_base64: str = "",
                 caption: str = "") -> str:
     """Queue an owner-chat image from a file or legacy base64 payload."""
     if not ctx.current_chat_id:
-        return "⚠️ No active chat — cannot send photo."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text="⚠️ No active chat — cannot send photo."))
 
     actual_b64 = ""
     mime = "image/png"
@@ -35,27 +36,27 @@ def _send_photo(ctx: ToolContext, file_path: str = "", image_base64: str = "",
     if file_path:
         fp = pathlib.Path(file_path).expanduser().resolve()
         if not fp.exists():
-            return f"⚠️ File not found: {file_path}"
+            return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ File not found: {file_path}"))
         if fp.stat().st_size > _MAX_PHOTO_FILE_BYTES:
-            return f"⚠️ File too large ({fp.stat().st_size} bytes). Max: {_MAX_PHOTO_FILE_BYTES} bytes."
+            return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ File too large ({fp.stat().st_size} bytes). Max: {_MAX_PHOTO_FILE_BYTES} bytes."))
         try:
             raw = fp.read_bytes()
             mime = _detect_image_mime(raw)
             actual_b64 = __import__("base64").b64encode(raw).decode()
         except Exception as e:
-            return f"⚠️ Failed to read image file: {e}"
+            return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ Failed to read image file: {e}"))
     elif image_base64:
         if image_base64 == "__last_screenshot__":
             if not ctx.browser_state.last_screenshot_b64:
-                return "⚠️ No screenshot stored. Take one first with browse_page(output='screenshot')."
+                return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text="⚠️ No screenshot stored. Take one first with browse_page(output='screenshot')."))
             actual_b64 = ctx.browser_state.last_screenshot_b64
         else:
             actual_b64 = image_base64
     else:
-        return "⚠️ Provide either file_path or image_base64."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text="⚠️ Provide either file_path or image_base64."))
 
     if not actual_b64 or len(actual_b64) < 100:
-        return "⚠️ Image data is empty or too short."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text="⚠️ Image data is empty or too short."))
 
     _photo_meta = getattr(ctx, "task_metadata", {})
     _photo_meta = _photo_meta if isinstance(_photo_meta, dict) else {}
@@ -70,7 +71,7 @@ def _send_photo(ctx: ToolContext, file_path: str = "", image_base64: str = "",
         "mime": mime,
         "caption": caption or "",
     })
-    return "OK: photo queued for delivery to owner."
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text="OK: photo queued for delivery to owner."))
 
 
 _MAX_VIDEO_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -92,22 +93,22 @@ def _send_video(ctx: ToolContext, file_path: str = "", caption: str = "") -> str
     """Queue an owner-chat video from a file."""
     chat_id = getattr(ctx, "current_chat_id", None)
     if chat_id is None or chat_id == "":
-        return "⚠️ No active chat — cannot send video."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text="⚠️ No active chat — cannot send video."))
     if not file_path:
-        return "⚠️ Provide a file_path."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text="⚠️ Provide a file_path."))
 
     fp = pathlib.Path(file_path).expanduser().resolve()
     if not fp.exists():
-        return f"⚠️ File not found: {file_path}"
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ File not found: {file_path}"))
     if fp.stat().st_size > _MAX_VIDEO_FILE_BYTES:
-        return f"⚠️ File too large ({fp.stat().st_size} bytes). Max: {_MAX_VIDEO_FILE_BYTES} bytes."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ File too large ({fp.stat().st_size} bytes). Max: {_MAX_VIDEO_FILE_BYTES} bytes."))
 
     try:
         raw = fp.read_bytes()
         mime = _detect_video_mime(str(fp), raw)
         actual_b64 = __import__("base64").b64encode(raw).decode()
     except Exception as e:
-        return f"⚠️ Failed to read video file: {e}"
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ Failed to read video file: {e}"))
 
     _video_meta = getattr(ctx, "task_metadata", {})
     _video_meta = _video_meta if isinstance(_video_meta, dict) else {}
@@ -121,7 +122,7 @@ def _send_video(ctx: ToolContext, file_path: str = "", caption: str = "") -> str
         "mime": mime,
         "caption": caption or "",
     })
-    return "OK: video queued for delivery to owner."
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text="OK: video queued for delivery to owner."))
 
 
 _MAX_DOCUMENT_FILE_BYTES = 50 * 1024 * 1024  # 50 MB (Telegram bot sendDocument limit)
@@ -137,22 +138,22 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
     """Queue an owner-chat document/file (report, archive, code, PDF, etc.) from a local path."""
     chat_id = getattr(ctx, "current_chat_id", None)
     if chat_id is None or chat_id == "":
-        return "⚠️ No active chat — cannot send file."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text="⚠️ No active chat — cannot send file."))
     if not file_path:
-        return "⚠️ Provide a file_path."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text="⚠️ Provide a file_path."))
 
     fp = pathlib.Path(file_path).expanduser().resolve()
     if not fp.exists() or not fp.is_file():
-        return f"⚠️ File not found: {file_path}"
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ File not found: {file_path}"))
     if fp.stat().st_size > _MAX_DOCUMENT_FILE_BYTES:
-        return f"⚠️ File too large ({fp.stat().st_size} bytes). Max: {_MAX_DOCUMENT_FILE_BYTES} bytes."
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ File too large ({fp.stat().st_size} bytes). Max: {_MAX_DOCUMENT_FILE_BYTES} bytes."))
 
     try:
         raw = fp.read_bytes()
         mime = _detect_document_mime(str(fp))
         actual_b64 = __import__("base64").b64encode(raw).decode()
     except Exception as e:
-        return f"⚠️ Failed to read file: {e}"
+        return _publish_tool_result(ctx, ToolResult(status="ok", code="LEGACY_WARNING", text=f"⚠️ Failed to read file: {e}"))
 
     # Copy into the task's canonical artifact store so the delivered file stays
     # downloadable after reload even if the original path is temporary / GC'd,
@@ -183,4 +184,4 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
         "caption": caption or "",
         "download_url": download_url,
     })
-    return f"OK: file '{fp.name}' queued for delivery to owner."
+    return _publish_tool_result(ctx, ToolResult(status="ok", code="OK", text=f"OK: file '{fp.name}' queued for delivery to owner."))
