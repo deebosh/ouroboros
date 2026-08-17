@@ -720,6 +720,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         identity: identity for identity in (
             "ouroboros/cancel_intents.py::_SCHEMA_VERSION",
             "ouroboros/subagent_worktrees.py::_KIND_DELEGATED_EXEC",
+            "ouroboros/task_finalization.py::register_final_answer_owed",
         )
     }
     s6_rows = {**s6_delta_rows, **s6_disclosure_rows}
