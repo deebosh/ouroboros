@@ -1,4 +1,4 @@
-"""The module-handle extraction (spec §1.9 batch №8, delta D12) and its invariants.
+"""The module-handle extraction (spec §1.9 batch №8, delta D18) and its invariants.
 
 `supervisor/queue.py` and `supervisor/workers.py` could not be split the way every
 other v7 module was. Their bodies read module globals that ``init`` /

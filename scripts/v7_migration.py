@@ -83,17 +83,21 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   D04 §4.3.6 retired settings knobs · D05 §4.3.8 safety host facts · D06 §4.3.12 events taxonomy ·
 #   D07 §4.3.11 Emergency Stop 2A · D08 §4.3.13 cancellation/delegation fail-closed registries ·
 #   D09 §4.3.2 LLM local retry (one physical attempt) · D11 §1.9/№8 FUNCTION_DEBT same-qualname
-#   relocation rule · D12 §1.9/№8 module-handle reads of rebound supervisor globals in extracted
-#   leaves · D13 §6.4 supervisor/git_ops pre-init roots follow OUROBOROS_* env (hermetic-isolation
-#   incident fix, disclosed to owner 2026-08-17).
+#   relocation rule · D13 §6.4 supervisor/git_ops pre-init roots follow OUROBOROS_* env
+#   (hermetic-isolation incident fix, disclosed to owner 2026-08-17) · D18 §1.9/№8 module-handle
+#   reads of rebound supervisor globals in extracted leaves.
 # "D01" (reserved for §4.3.1 size-ratchet layers) was retired unused: ratchet-layer changes are
 # governed by size_ratchet.json + scripts/regenerate_size_ratchet.py, not by ledger rows.
-# "D10" is deliberately SKIPPED: that label already names the historical owner decision retiring
-# `claude_code_edit` (docs/DEVELOPMENT.md "D10 postmortem", docs/ARCHITECTURE.md, prompts/SYSTEM.md)
-# and must keep that single meaning. Two S3b commit messages on this branch say "D10" for the
-# module-handle delta; commit history is immutable — the ledger and this registry are the
-# id authority, and there the module-handle delta is D12.
-APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D12", "D13"})
+# Before assigning ANY new id, prove it free with `git grep -n "\bDnn\b"`: the runtime prose
+# already uses a two-digit sprint-decision namespace ("(D12)" review context on the fly,
+# "(D14)".."(D17)", "(D19)"+ in reviewer_slot_config/claudexor_daemon/subagents/review_context_atlas),
+# and every collision splits one label across two meanings. Skipped for exactly that reason:
+# "D10" (historical claude_code_edit retirement — docs/DEVELOPMENT.md "D10 postmortem"),
+# "D12" and "D14"–"D17" (occupied by that prose namespace; D12 was briefly used for the
+# module-handle delta by one fix commit before the collision was caught in the delta re-gate).
+# Two S3b commit messages say "D10" and one says "D12" for the module-handle delta; commit
+# history is immutable — the ledger and this registry are the id authority: it is D18.
+APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18"})
 UPSTREAM_STATUSES = frozenset({"not_applicable", "pending", "transferred", "retired"})
 APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_result.py",

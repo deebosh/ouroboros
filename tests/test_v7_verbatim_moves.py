@@ -46,19 +46,21 @@ def _python_declaration_lines(source: str, qualname: str) -> str | None:
     lines = source.splitlines(keepends=True)
     found: list[ast.AST] = []
 
-    def walk(body: list[ast.stmt], scope: tuple[str, ...]) -> None:
+    def walk(body: list[ast.stmt], scope: tuple[str, ...], in_class: bool = False) -> None:
         for node in body:
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 if ".".join((*scope, node.name)) == qualname:
                     found.append(node)
-                walk(node.body, (*scope, node.name))
-            elif not scope and isinstance(node, (ast.Assign, ast.AnnAssign)):
+                walk(node.body, (*scope, node.name), isinstance(node, ast.ClassDef))
+            elif (not scope or in_class) and isinstance(node, (ast.Assign, ast.AnnAssign)):
+                # Module-scope assignments AND class-body attribute assignments are
+                # declarations (the llm mixin split relocated 15 class attributes);
+                # function-body assignments never are. Duplicates fail via len(found).
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 names = [t.id for t in targets if isinstance(t, ast.Name)]
-                if qualname in names:
-                    found.append(node)
+                found.extend(node for name in names if ".".join((*scope, name)) == qualname)
 
-    walk(tree.body, ())
+    walk(tree.body, (), False)
     if len(found) != 1:
         return None
     node = found[0]
@@ -115,11 +117,12 @@ def test_every_verbatim_ledger_row_moves_byte_identical_source() -> None:
             problems.append(f"{old_ref} -> {new_ref}: note says verbatim but the declaration text differs")
     # Both resolvers must stay live: a silent regression in either one turns its rows
     # into skips, and a single total would let the JavaScript half vanish unnoticed.
-    # Floors sit just under the measured coverage (1583 Python / 41 JS at the S/L
-    # gate), not two orders below it: a resolver regression that silently turned
-    # most rows into skips would otherwise stay green. The ledger only grows, so
-    # raise these when coverage grows; lower them only with a phase that
-    # deliberately shrinks the ledger.
+    # Floors sit just under the measured coverage (1639 compared in total after the
+    # class-attribute rows joined: 1598 Python + 41 JS), not two orders below it: a
+    # resolver regression that silently turned most rows into skips would otherwise
+    # stay green. `checked` gates the TOTAL, `checked_javascript` the JS subset.
+    # The ledger only grows, so raise these when coverage grows; lower them only
+    # with a phase that deliberately shrinks the ledger.
     assert checked > 1400, f"the verbatim pin should cover the extraction rows; only {checked} compared"
     assert checked_javascript > 35, f"the JavaScript rows stopped resolving; only {checked_javascript} compared"
     assert problems == [], "\n".join(problems)
