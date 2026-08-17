@@ -317,4 +317,3 @@ test('each row projection is gated by ITS OWN facet, and a stale value says it i
     assert.deepEqual(accountRowFacts(row, payload), fresh);
     assert.deepEqual(verificationBadge(row), fresh.badge);
 });
-

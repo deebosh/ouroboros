@@ -261,4 +261,3 @@ def test_children_unabsorbed_forced_path_never_leaks_protocol_json(tmp_path, mon
     assert "delivery_control" not in text
     assert usage["reason_code"] == "children_unabsorbed"
     assert registry._ctx._delivery_candidate.full_text == text
-

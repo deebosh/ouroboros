@@ -414,4 +414,3 @@ def test_child_result_change_after_host_panel_requires_replacement_and_fresh_pan
     binding = returned_trace["delivery_candidate"]["acceptance_binding"]
     assert binding["authoritative"] is True
     assert binding["acceptance_status"] == "pass"
-

@@ -332,5 +332,3 @@ test('a re-render never STEALS focus, and never focuses a field the code already
     preserveCardFocus(host3, () => { host3.swaps += 1; }, null);
     assert.equal(host3.swaps, 1);
 });
-
-

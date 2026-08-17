@@ -201,3 +201,16 @@ def test_the_queue_facade_still_exports_everything_that_moved() -> None:
                  "resync_skill_schedules", "queue_deep_self_review_task",
                  "get_evolution_status_snapshot", "enqueue_evolution_task_if_needed"):
         assert hasattr(queue, name), name
+
+
+def test_every_queue_leaf_is_a_hot_code_path_like_its_parent() -> None:
+    """Managed-update conflict labelling names ``supervisor/queue.py``; the split
+    must not silently downgrade the label for code that merely moved (the events
+    split pins the same parity). ``workers.py`` is unlabeled at base, so its
+    leaves inherit that — parity, not blanket labelling."""
+    from supervisor.update_merge_policy import HOT_CODE_PATHS
+
+    assert "supervisor/queue.py" in HOT_CODE_PATHS
+    for leaf in ("supervisor/queue_evolution.py", "supervisor/queue_schedules.py",
+                 "supervisor/queue_snapshot.py", "supervisor/queue_timeouts.py"):
+        assert leaf in HOT_CODE_PATHS, leaf

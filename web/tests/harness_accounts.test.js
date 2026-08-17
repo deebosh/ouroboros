@@ -688,4 +688,3 @@ test('the Advanced fallback is due on a disclosure that never comes, or an engin
     assert.equal(attachFallbackDue({ ...base, attachCommand: '' }, 100000 + ATTACH_FALLBACK_MS * 2), false);
     assert.equal(attachFallbackDue(null, 999999), false);
 });
-

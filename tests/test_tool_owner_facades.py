@@ -107,5 +107,3 @@ def test_tool_descriptor_owner_facades_preserve_identity():
         "task_drive_root": "(self) -> 'pathlib.Path'",
         "workspace_executor_ref": "(self) -> 'Dict[str, Any]'",
     }
-
-
