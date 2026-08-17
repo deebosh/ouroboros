@@ -32,7 +32,6 @@ GIANT_PATHS = (
     "tests/test_skill_review.py",
     "tests/test_task_status_flow.py",
     "tests/test_ui_smoke_playwright.py",
-    "tests/test_workspace_executor.py",
     "web/modules/chat.js",
 )
 
@@ -85,7 +84,6 @@ MODULE_DEBT_1500 = (
     "tests/test_skill_review.py",
     "tests/test_task_status_flow.py",
     "tests/test_ui_smoke_playwright.py",
-    "tests/test_workspace_executor.py",
     "web/modules/chat.js",
 )
 
