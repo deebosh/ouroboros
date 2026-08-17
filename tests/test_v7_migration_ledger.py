@@ -673,7 +673,19 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for symbol in symbols.split()
     }
     implemented.update(scope_review_extraction_rows)
+    # v7 stream L-A: review_state keeps the durable store; its record rules and its
+    # in-memory ledger become owners. All facade rows.
+    review_state_extraction_symbols_by_owner = {
+        "review_state_records.py": "_STATE_SCHEMA_VERSION _MAX_RUN_HISTORY _MAX_ATTEMPT_HISTORY _MAX_COMMIT_READINESS_DEBTS _DEFAULT_TOOL_NAME _DEFAULT_ADVISORY_TOOL_NAME _LEGACY_CURRENT_REPO_KEY _REVIEW_ATTEMPT_TTL_SEC _REVIEW_ATTEMPT_GRACE_SEC _OPEN_COMMIT_READINESS_DEBT_STATUSES _CANONICAL_OBLIGATION_ITEM_RE _normalize_fingerprint_text _normalize_obligation_item_key _stable_digest _make_obligation_fingerprint _looks_like_public_obligation_id _max_iso_ts _min_iso_ts _filter_repo_scope _commit_readiness_debts_view _OBLIGATION_STR_DEFAULTS _DEBT_STR_DEFAULTS _RUN_STR_DEFAULTS _ATTEMPT_STR_DEFAULTS _ATTEMPT_MERGE_INCOMING_FIRST _ATTEMPT_MERGE_INCOMING_LISTS _RUN_STATUS_ICONS _filter_lifecycle_records _allocate_prefixed_id _append_finding_lines ObligationItem CommitReadinessDebtItem AdvisoryRunRecord CommitAttemptRecord _attempt_identity_tuple _attempt_order_key _coerce_int _infer_next_prefixed_sequence _normalize_findings _merge_attempt infer_review_phase _parse_iso_ts _dedupe_strings _utc_now",
+        "review_state_model.py": "AdvisoryReviewState",
+    }
+    review_state_extraction_rows = {
+        f"ouroboros/review_state.py::{symbol}": f"ouroboros/{owner}::{symbol}"
+        for owner, symbols in review_state_extraction_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
     implemented.update(review_helpers_extraction_rows)
+    implemented.update(review_state_extraction_rows)
     implemented.update(test_split_rows)
     implemented.update(web_extractions)
     implemented.update(config_extraction_rows)

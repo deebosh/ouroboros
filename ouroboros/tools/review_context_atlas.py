@@ -65,7 +65,7 @@ _REVIEW_STACK_PATHS = frozenset({
     "ouroboros/review_execution.py",
     "ouroboros/tools/plan_review_runtime.py",
     "ouroboros/triad_review.py",
-    "ouroboros/review_state.py",
+    "ouroboros/review_state.py", "ouroboros/review_state_records.py", "ouroboros/review_state_model.py",  # the review ledger's record rules and its in-memory transitions: obligation and attempt lifecycle decide what the gates see
     "ouroboros/review_evidence.py",
     "ouroboros/deep_self_review.py",
 })

@@ -93,6 +93,7 @@ APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/shell_process.py", "ouroboros/tools/shell_outputs.py", "ouroboros/tools/shell_effects.py",
     "ouroboros/tools/scope_review_budget.py", "ouroboros/tools/scope_review_pack.py",
     "ouroboros/tools/review_prompt_text.py", "ouroboros/tools/review_file_pack.py",
+    "ouroboros/review_state_records.py", "ouroboros/review_state_model.py",
     "ouroboros/headless_status.py", "ouroboros/workspace_patch_capture.py",
     "ouroboros/settings_defaults.py", "ouroboros/settings_scales.py", "ouroboros/model_slots.py",
     "ouroboros/review_model_routes.py", "ouroboros/runtime_limits.py",
