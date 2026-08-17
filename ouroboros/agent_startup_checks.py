@@ -377,6 +377,114 @@ def check_stray_server_processes(env: Any) -> Tuple[Dict[str, Any], int]:
         return {"status": "skipped"}, 0
 
 
+def check_worker_memory(env: Any) -> Tuple[Dict[str, Any], int]:
+    """Sample RSS per worker process; warn at >2GB (closes ibl-worker-memory-bloat).
+
+    Reads worker PIDs from state/process_ledger.jsonl (rows where purpose starts
+    with 'worker:'), samples /proc/<pid>/status VmRSS per live worker, returns
+    a WARNING health invariant when any worker exceeds the per-worker threshold
+    defined in ouroboros/context_budget::OUROBOROS_WORKER_MEMORY_WARN_BYTES.
+
+    Workers that vanished between the ledger read and the /proc probe are
+    skipped — they do not contribute a warning (a dead worker is no longer
+    leaking memory). Non-POSIX platforms skip (no /proc). The check is
+    SIGNAL-ONLY: an out-of-process gc.collect() would require the worker to
+    opt into it; see memory/knowledge/ibl-worker-memory-bloat.md for the
+    disclosed residual.
+    """
+    import json as _json
+    import pathlib as _pathlib
+
+    try:
+        from ouroboros.platform_layer import IS_WINDOWS, pid_is_alive
+
+        if IS_WINDOWS:
+            return {"status": "skipped", "reason": "non-posix"}, 0
+
+        from ouroboros.context_budget import OUROBOROS_WORKER_MEMORY_WARN_BYTES
+
+        drive_root = _pathlib.Path(getattr(env, "drive_root", None) or env.drive_path("state").parent)
+        ledger_path = drive_root / "state" / "process_ledger.jsonl"
+        if not ledger_path.exists():
+            return {
+                "status": "ok",
+                "workers_checked": 0,
+                "threshold_bytes": OUROBOROS_WORKER_MEMORY_WARN_BYTES,
+            }, 0
+
+        # Collect unique worker PIDs (purpose starts with 'worker:'). The ledger
+        # appends a row per spawn; the latest row per pid carries the truth.
+        workers: Dict[int, Dict[str, Any]] = {}
+        try:
+            for line in ledger_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                pid = row.get("pid")
+                purpose = str(row.get("purpose") or "")
+                if not isinstance(pid, int) or pid <= 0:
+                    continue
+                if not purpose.startswith("worker:"):
+                    continue
+                workers[pid] = row
+        except Exception:
+            return {"status": "error", "error": "ledger_unreadable"}, 0
+
+        warnings: list = []
+        checked = 0
+        for pid in sorted(workers.keys()):
+            if not pid_is_alive(pid):
+                continue
+            try:
+                with open(f"/proc/{pid}/status", "r", encoding="utf-8") as f:
+                    content = f.read()
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+            vmrss_bytes = None
+            for line in content.splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            # VmRSS reports kB in /proc/PID/status; convert to bytes.
+                            vmrss_bytes = int(parts[1]) * 1024
+                        except ValueError:
+                            pass
+                    break
+            if vmrss_bytes is None:
+                continue
+            checked += 1
+            if vmrss_bytes > OUROBOROS_WORKER_MEMORY_WARN_BYTES:
+                warnings.append({
+                    "pid": pid,
+                    "purpose": workers[pid].get("purpose"),
+                    "rss_bytes": vmrss_bytes,
+                    "rss_mb": round(vmrss_bytes / 1_000_000, 1),
+                    "threshold_bytes": OUROBOROS_WORKER_MEMORY_WARN_BYTES,
+                })
+
+        if warnings:
+            log.warning("Worker(s) over 2GB RSS: %s", warnings)
+            return {
+                "status": "memory_bloat",
+                "workers_checked": checked,
+                "workers_warned": warnings,
+                "threshold_bytes": OUROBOROS_WORKER_MEMORY_WARN_BYTES,
+            }, 1
+
+        return {
+            "status": "ok",
+            "workers_checked": checked,
+            "threshold_bytes": OUROBOROS_WORKER_MEMORY_WARN_BYTES,
+        }, 0
+    except Exception as e:
+        return {"status": "error", "error": str(e)}, 0
+
+
 # Hot-store growth tripwires (perf/lifecycle sprint; BIBLE P2 "autonomy in
 # class detection"): the append-only stores whose interactive readers degrade
 # with file size get a deterministic size WARNING. Thresholds are the justified
@@ -510,6 +618,9 @@ def verify_system_state(env: Any, git_sha: str) -> None:
     issues += issue_count
 
     checks["stray_server_processes"], issue_count = check_stray_server_processes(env)
+    issues += issue_count
+
+    checks["worker_memory"], issue_count = check_worker_memory(env)
     issues += issue_count
 
     # Boot-time surfacing of the same probe context.py::build_health_invariants

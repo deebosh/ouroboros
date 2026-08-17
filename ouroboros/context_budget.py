@@ -138,3 +138,11 @@ TOOLS_LOG_WARN_BYTES = 100_000_000
 # this warning fires only if rotation is broken or missing — a deliberate
 # regression tripwire, not a size preference.
 PROGRESS_LOG_WARN_BYTES = 8_000_000
+
+# Per-worker RSS warning threshold (closes ibl-worker-memory-bloat). Worker
+# OOM-killed at ~3.7GB on 2026-08-15 (task 68310f37 — long reflection/synthesis
+# workload). 2GB leaves headroom for the worker to finalize gracefully before
+# the cgroup limit; the health invariant surfaces a warning to the operator
+# while the worker can still respond to a SIGTERM. Consumed by
+# agent_startup_checks.check_worker_memory.
+OUROBOROS_WORKER_MEMORY_WARN_BYTES = 2 * 1024 ** 3

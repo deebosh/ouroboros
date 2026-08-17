@@ -485,3 +485,151 @@ def test_check_uncommitted_changes_never_commits_even_when_launcher_managed(monk
     assert result["auto_committed"] is False
     assert result["auto_rescue_skipped"] == "supervisor_side_rescue_owns_this"
     assert calls == [["git", "status", "--porcelain"]]
+
+# --- check_worker_memory (closes ibl-worker-memory-bloat) -----------------
+
+def _write_worker_ledger(tmp_path, *, rows):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(exist_ok=True)
+    ledger = state_dir / "process_ledger.jsonl"
+    with ledger.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+
+
+def _mock_proc_status(monkeypatch, rss_kb_by_pid):
+    """Replace open() so /proc/<pid>/status returns synthetic VmRSS lines."""
+    from io import StringIO
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        path_str = str(path)
+        if path_str.startswith("/proc/") and path_str.endswith("/status"):
+            tail = path_str[len("/proc/"):-len("/status")]
+            try:
+                pid = int(tail)
+            except ValueError:
+                return real_open(path, *args, **kwargs)
+            rss_kb = rss_kb_by_pid.get(pid)
+            if rss_kb is None:
+                return real_open(path, *args, **kwargs)
+            return StringIO(f"Name:\tpython\nPid:\t{pid}\nVmRSS:\t{rss_kb} kB\n")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+
+
+def _mock_pid_is_alive(monkeypatch, alive_pids):
+    def fake_is_alive(pid):
+        return pid in alive_pids
+
+    monkeypatch.setattr("ouroboros.platform_layer.pid_is_alive", fake_is_alive)
+
+
+def test_check_worker_memory_warns_when_over_threshold(tmp_path, monkeypatch):
+    """A worker above 2GB RSS returns a WARNING with issues=1."""
+    pid = 99001
+    _write_worker_ledger(tmp_path, rows=[
+        {"ts": "2026-08-17T00:00:00+00:00", "pid": pid, "pgid": pid,
+         "purpose": "worker:0", "scope": "session"},
+    ])
+    env = types.SimpleNamespace(
+        drive_root=tmp_path,
+        drive_path=lambda rel: tmp_path / rel,
+    )
+    _mock_pid_is_alive(monkeypatch, {pid})
+    # 3 GB in kB > 2 GB threshold.
+    _mock_proc_status(monkeypatch, {pid: 3 * 1024 * 1024})
+
+    result, issues = startup_mod.check_worker_memory(env)
+
+    assert issues == 1
+    assert result["status"] == "memory_bloat"
+    assert result["workers_checked"] == 1
+    assert len(result["workers_warned"]) == 1
+    warned = result["workers_warned"][0]
+    assert warned["pid"] == pid
+    assert warned["rss_bytes"] == 3 * 1024 * 1024 * 1024
+    assert warned["rss_mb"] == 3221.2
+
+
+def test_check_worker_memory_ok_below_threshold(tmp_path, monkeypatch):
+    """A worker under 2GB RSS returns ok with issues=0."""
+    pid = 99002
+    _write_worker_ledger(tmp_path, rows=[
+        {"ts": "2026-08-17T00:00:00+00:00", "pid": pid, "pgid": pid,
+         "purpose": "worker:1", "scope": "session"},
+    ])
+    env = types.SimpleNamespace(
+        drive_root=tmp_path,
+        drive_path=lambda rel: tmp_path / rel,
+    )
+    _mock_pid_is_alive(monkeypatch, {pid})
+    # 1 GB in kB < 2 GB threshold.
+    _mock_proc_status(monkeypatch, {pid: 1 * 1024 * 1024})
+
+    result, issues = startup_mod.check_worker_memory(env)
+
+    assert issues == 0
+    assert result["status"] == "ok"
+    assert result["workers_checked"] == 1
+    assert "workers_warned" not in result
+
+
+def test_check_worker_memory_ok_when_ledger_missing(tmp_path, monkeypatch):
+    """No process_ledger.jsonl returns ok (nothing to check)."""
+    env = types.SimpleNamespace(
+        drive_root=tmp_path,
+        drive_path=lambda rel: tmp_path / rel,
+    )
+    _mock_pid_is_alive(monkeypatch, set())
+    _mock_proc_status(monkeypatch, {})
+
+    result, issues = startup_mod.check_worker_memory(env)
+
+    assert issues == 0
+    assert result["status"] == "ok"
+    assert result["workers_checked"] == 0
+
+
+def test_check_worker_memory_skips_dead_workers(tmp_path, monkeypatch):
+    """A worker that vanished since the ledger write is skipped, not warned."""
+    pid = 99003
+    _write_worker_ledger(tmp_path, rows=[
+        {"ts": "2026-08-17T00:00:00+00:00", "pid": pid, "pgid": pid,
+         "purpose": "worker:2", "scope": "session"},
+    ])
+    env = types.SimpleNamespace(
+        drive_root=tmp_path,
+        drive_path=lambda rel: tmp_path / rel,
+    )
+    _mock_pid_is_alive(monkeypatch, set())  # pid NOT in alive set
+    _mock_proc_status(monkeypatch, {pid: 3 * 1024 * 1024})
+
+    result, issues = startup_mod.check_worker_memory(env)
+
+    assert issues == 0
+    assert result["status"] == "ok"
+    assert result["workers_checked"] == 0
+
+
+def test_check_worker_memory_ignores_non_worker_ledger_rows(tmp_path, monkeypatch):
+    """Rows whose purpose does NOT start with 'worker:' are ignored."""
+    env = types.SimpleNamespace(
+        drive_root=tmp_path,
+        drive_path=lambda rel: tmp_path / rel,
+    )
+    _write_worker_ledger(tmp_path, rows=[
+        {"ts": "2026-08-17T00:00:00+00:00", "pid": 100, "pgid": 100,
+         "purpose": "session", "scope": "session"},
+        {"ts": "2026-08-17T00:00:01+00:00", "pid": 101, "pgid": 101,
+         "purpose": "daemon", "scope": "daemon"},
+    ])
+    _mock_pid_is_alive(monkeypatch, {100, 101})
+    _mock_proc_status(monkeypatch, {100: 3 * 1024 * 1024, 101: 3 * 1024 * 1024})
+
+    result, issues = startup_mod.check_worker_memory(env)
+
+    assert issues == 0
+    assert result["status"] == "ok"
+    assert result["workers_checked"] == 0
