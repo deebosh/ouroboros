@@ -295,6 +295,16 @@ When adding or changing a provider, update one coherent route contract:
 5. review and scope routing, including sourced context-window evidence;
 6. direct-provider and single-provider regression tests.
 
+Each route's wire projection is pinned by the golden fixtures in
+`tests/fixtures/llm_golden/`: per route they record the resolved target, the
+client (base url, header set, retry policy, proxy trust), every request payload
+with its canonical digest, the physical-attempt ledger rows, and the returned
+`(message, usage)`. They replay against recording fakes — never the network, and
+never a real credential — so a changed payload byte, header, model-slot
+resolution or fallback order fails `tests/test_llm_provider_golden.py` instead of
+reaching a provider. A deliberate route change re-records them with
+`python tests/test_llm_provider_golden.py --write` and explains every diff.
+
 Local-only installs keep their local route. Unreachable shipped remote defaults
 may be cleared, but explicit owner values are not. Scope authority follows the
 BIBLE P3 policy: in owner-selected Max it requires the applicable sourced window
