@@ -81,8 +81,9 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   D01 §4.3.1 size-ratchet layers · D02 §4.3.3 typed tool results · D03 §4.3.5 settings seam ·
 #   D04 §4.3.6 retired settings knobs · D05 §4.3.8 safety host facts · D06 §4.3.12 events taxonomy ·
 #   D07 §4.3.11 Emergency Stop 2A · D08 §4.3.13 cancellation/delegation fail-closed registries ·
-#   D09 §4.3.2 LLM local retry (one physical attempt).
-APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06"})
+#   D09 §4.3.2 LLM local retry (one physical attempt) · D10 §1.9/№8 module-handle reads of rebound
+#   supervisor globals in extracted leaves · D11 §1.9/№8 FUNCTION_DEBT same-qualname relocation rule.
+APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D11"})
 UPSTREAM_STATUSES = frozenset({"not_applicable", "pending", "transferred", "retired"})
 APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_result.py",

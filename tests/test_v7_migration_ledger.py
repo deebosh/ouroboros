@@ -570,6 +570,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     }
     implemented.update(t1_fix_rows)
     existing_process_owner_rows.update(t1_fix_rows)
+    existing_process_owner_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
     registry_extraction_no_facade_rows.update(t1_fix_rows)
     # v7 stream S3: supervisor/events.py split into per-family owner modules.
     s3_events_symbols_by_owner = {
@@ -635,6 +636,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(test_split_rows)
     implemented.update(web_extractions)
     implemented.update(config_extraction_rows)
+    implemented["tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality"] = "tests/test_repo_health_smoke.py::test_transition_allows_a_same_qualname_relocation_but_not_a_swap"
     # v7 stream S, lane S1: the spec 4.3.5 settings seam. One normalization for every
     # reader, one locked read-modify-write for the owner endpoints, one serializer for
     # the three writers, and the start-time mutator removed.
@@ -657,6 +659,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
+    registry_extraction_no_facade_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -688,6 +691,9 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                     "ouroboros/config.py::SETTINGS_DEFAULTS",
                     "ouroboros/config.py::RETIRED_SETTING_KEYS",
                 }
+                # plan 1.9 batch 8: the ratchet-transition test renamed with its relaxed contract.
+                else "D11"
+                if row["old path/symbol"] == "tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality"
                 else "D02"
                 if row["old path/symbol"] in {
                     "ouroboros/tools/registry.py::ToolEntry",
@@ -825,4 +831,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04", "D05", "D06", "D11"})
