@@ -199,6 +199,7 @@ BAND_PATHS = {
     "ouroboros/review.py": "v7 size-gate owner: blob-id-cached ref inventory keeps the exact per-commit history audit affordable (204s->21s) without sampling commits",
     "ouroboros/skill_loader.py": None,
     "ouroboros/skill_review_runner.py": None,
+    "ouroboros/subagent_worktrees.py": "private-snapshot registry owner: strict-vs-soft reads, the typed corruption refusal and the Git-branch cleanup symmetry keep the acting-worktree and delegated-snapshot lifecycles in the one module that holds their cross-process ops lock",
     "ouroboros/subagents.py": None,
     "ouroboros/task_results.py": None,
     "ouroboros/task_status.py": None,

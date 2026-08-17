@@ -705,11 +705,21 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "ouroboros/cancel_intents.py::mark_intent_scope",
             "ouroboros/cancel_intents.py::mark_finalize_control_drained",
             "ouroboros/cancel_intents.py::_load_intents",
+            "ouroboros/subagent_worktrees.py::_load_registry",
+            "ouroboros/subagent_worktrees.py::find_execution_snapshot",
+            "ouroboros/subagent_worktrees.py::prune_execution_snapshots",
+            "ouroboros/subagent_worktrees.py::prune_orphans",
+            "ouroboros/subagent_worktrees.py::remove_worktree",
+            "ouroboros/subagent_worktrees.py::remove_execution_snapshot",
+            "ouroboros/subagent_worktrees.py::provision_worktree",
+            "ouroboros/subagent_worktrees.py::provision_payload_snapshot",
+            "ouroboros/subagent_worktrees.py::provision_execution_snapshot",
         )
     }
     s6_disclosure_rows = {
         identity: identity for identity in (
             "ouroboros/cancel_intents.py::_SCHEMA_VERSION",
+            "ouroboros/subagent_worktrees.py::_KIND_DELEGATED_EXEC",
         )
     }
     s6_rows = {**s6_delta_rows, **s6_disclosure_rows}
