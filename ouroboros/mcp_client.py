@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -21,7 +22,7 @@ import threading
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TextIO, Tuple
 
 from ouroboros.secret_masking import (
     looks_masked_secret as looks_masked_secret,
@@ -109,6 +110,7 @@ class MCPServerRuntime:
     config: MCPServerConfig
     tools: List[MCPTool] = field(default_factory=list)
     last_error: str = ""
+    last_error_kind: str = ""  # e.g. "task_group_failure" / "missing_executable" / "unknown"
     last_refreshed: str = ""
     last_attempted: str = ""
 
@@ -360,6 +362,100 @@ def _redact_error_text(text: Any, cfg: Optional[MCPServerConfig] = None) -> str:
     return out
 
 
+# Bound for the captured stderr tail we surface to owners. Smaller than the
+# full subprocess log to keep responses sane; an explicit omission marker is
+# appended when the bound clips anything.
+_STDERR_TAIL_MAX_BYTES = 4096
+_STDERR_TAIL_MAX_LINES = 64
+
+
+def _classify_mcp_error(exc: BaseException) -> str:
+    """Map a transport / SDK exception to a stable string kind for diagnostics.
+
+    The kinds are intentionally coarse: callers branch on this for routing,
+    but the real diagnostic value lives in ``_stringify_mcp_failure``'s
+    payload (underlying exception class/message + stderr tail).
+    """
+    # BaseExceptionGroup / ExceptionGroup cover the SDK's asyncio.TaskGroup
+    # aggregation — without unwrapping them, owners only ever see
+    # "1 sub-exception" which is structurally un-diagnosable.
+    if isinstance(exc, (BaseExceptionGroup, ExceptionGroup)):
+        return "task_group_failure"
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timeout"
+    if isinstance(exc, (asyncio.IncompleteReadError, BrokenPipeError, ConnectionResetError)):
+        return "broken_pipe"
+    if isinstance(exc, FileNotFoundError):
+        # Most common stdio failure: the configured command isn't on PATH
+        # or the wrapper script is missing +x.
+        return "missing_executable"
+    if isinstance(exc, ConnectionRefusedError):
+        return "connection_refused"
+    if isinstance(exc, PermissionError):
+        return "permission_denied"
+    return "unknown"
+
+
+def _stringify_mcp_failure(exc: BaseException, stderr_buffer: Optional[TextIO] = None) -> Tuple[str, str, str]:
+    """Return (error_message, error_kind, stderr_tail) for a failed refresh.
+
+    The MCP SDK raises its handshake errors inside an ``asyncio.TaskGroup``
+    whose outer ``str()`` is the uninformative "unhandled errors in a
+    TaskGroup (1 sub-exception)" string. Owners cannot act on that, so we
+    walk ``exc.exceptions`` (falling back to ``__cause__``) and emit one
+    ``f"{type(sub).__name__}: {sub}"`` line per sub-exception. We cap at
+    three sub-exceptions to keep the surfaced message bounded.
+
+    ``stderr_buffer`` is the optional ``TextIO`` allocated by the caller and
+    handed to ``stdio_client(errlog=...)``. When present and non-empty, we
+    append a bounded tail (last ``_STDERR_TAIL_MAX_LINES`` lines OR
+    ``_STDERR_TAIL_MAX_BYTES`` bytes, whichever first) so owners see the
+    subprocess's actual diagnostic — "Error: API key required",
+    "command not found", etc. — without us having to parse or interpret it.
+    An explicit ``⚠️ OMISSION NOTE`` marker is appended when the buffer
+    held more than the bound; silent truncation is forbidden.
+    """
+    parts: List[str] = []
+    # BaseExceptionGroup is the modern name; ExceptionGroup is the older one.
+    sub_excs = getattr(exc, "exceptions", None)
+    if isinstance(sub_excs, tuple) and sub_excs:
+        for sub in sub_excs[:3]:
+            parts.append(f"{type(sub).__name__}: {sub}")
+    elif getattr(exc, "__cause__", None) is not None:
+        # Not a group: walk the cause chain one step — typical for SDK
+        # wrappers that re-raise the underlying transport error.
+        cause = exc.__cause__
+        parts.append(f"{type(exc).__name__}: {exc}")
+        parts.append(f"caused_by: {type(cause).__name__}: {cause}")
+    else:
+        parts.append(f"{type(exc).__name__}: {exc}")
+    err_kind = _classify_mcp_error(exc)
+
+    stderr_tail = ""
+    if stderr_buffer is not None:
+        try:
+            raw = stderr_buffer.getvalue()
+        except Exception:  # pragma: no cover - defensive; getvalue may fail on closed buffers
+            raw = ""
+        if raw:
+            text = raw
+            # Cap by lines first, then by bytes (whichever is reached first).
+            lines = text.splitlines() or [text]
+            tail_lines = lines[-_STDERR_TAIL_MAX_LINES:]
+            tail = "\n".join(tail_lines)
+            if len(tail.encode("utf-8", errors="replace")) > _STDERR_TAIL_MAX_BYTES:
+                tail = tail.encode("utf-8", errors="replace")[:_STDERR_TAIL_MAX_BYTES].decode(
+                    "utf-8", errors="replace"
+                )
+            # Honest omission note when we clipped.
+            clipped = len(raw) > len(tail) or len(lines) > _STDERR_TAIL_MAX_LINES
+            stderr_tail = tail + ("\n⚠️ OMISSION NOTE: stderr truncated to "
+                                   f"{_STDERR_TAIL_MAX_LINES} lines / "
+                                   f"{_STDERR_TAIL_MAX_BYTES} bytes." if clipped else "")
+
+    return ("\n".join(parts), err_kind, stderr_tail)
+
+
 def _model_facing_description(tool: MCPTool) -> str:
     desc = str(tool.description or "").strip()
     prefix = (
@@ -402,7 +498,7 @@ def _wrap_schema_text_fields(value: Any) -> Any:
 # Async transport.
 
 
-def _transport_factory(cfg: MCPServerConfig):
+def _transport_factory(cfg: MCPServerConfig, stderr_buffer: Optional[TextIO] = None):
     if cfg.transport == "streamable_http":
         headers = {cfg.auth_header: cfg.auth_token} if cfg.has_auth() else {}
         return streamablehttp_client(cfg.url, headers=headers)
@@ -413,11 +509,29 @@ def _transport_factory(cfg: MCPServerConfig):
         # Leaving env/cwd unset uses the SDK's small cross-platform default
         # environment and its context-managed process shutdown sequence.
         params = StdioServerParameters(command=cfg.command, args=list(cfg.args))
-        return stdio_client(params)
+        if stderr_buffer is None:
+            stderr_buffer = io.StringIO()
+        # Try the modern errlog= kwarg first (mcp>=1.29); fall back silently
+        # (with a debug log) for older SDKs that don't accept it. The captured
+        # buffer is attached to the returned context manager as a non-SDK
+        # attribute so refresh_server can surface a diagnostic tail on failure.
+        try:
+            ctx = stdio_client(params, errlog=stderr_buffer)
+        except TypeError:
+            log.debug("mcp SDK stdio_client lacks errlog=; degrading to default stderr")
+            ctx = stdio_client(params)
+        try:
+            # Non-SDK attribute used for diagnostic surfacing only. The SDK
+            # returns an async-context-manager object; attribute assignment
+            # is permitted on these (they're not frozen).
+            ctx._ouroboros_stderr_capture = stderr_buffer  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return ctx
     raise RuntimeError(f"Unsupported transport: {cfg.transport!r}")
 
 
-async def _list_tools_async(cfg: MCPServerConfig, *, timeout_sec: int) -> List[Dict[str, Any]]:
+async def _list_tools_async(cfg: MCPServerConfig, *, timeout_sec: int, stderr_buffer: Optional[TextIO] = None) -> List[Dict[str, Any]]:
     """Connect to ``cfg`` and return raw tools; errors surface to status."""
     if not _MCP_SDK_AVAILABLE:
         raise RuntimeError(
@@ -446,7 +560,7 @@ async def _list_tools_async(cfg: MCPServerConfig, *, timeout_sec: int) -> List[D
                 return tools_raw
 
     return await asyncio.wait_for(
-        _do_with_session(_transport_factory(cfg)), timeout=timeout_sec
+        _do_with_session(_transport_factory(cfg, stderr_buffer=stderr_buffer)), timeout=timeout_sec
     )
 
 
@@ -552,9 +666,13 @@ class MCPManager:
         self._settings_fingerprint = ""
         self._settings_mtime_ns: Optional[int] = None
         self._refresh_running = False
-        # Test hook; production uses the real async transports.
-        self._async_list_tools: Callable[[MCPServerConfig, int], Awaitable[List[Dict[str, Any]]]] = (
-            lambda cfg, timeout: _list_tools_async(cfg, timeout_sec=timeout)
+        # Test hook; production uses the real async transports. The optional
+        # ``stderr_buffer`` kwarg is plumbed through so refresh_server can
+        # surface subprocess stderr when the SDK's stdio handshake fails.
+        self._async_list_tools: Callable[..., Awaitable[List[Dict[str, Any]]]] = (
+            lambda cfg, timeout, stderr_buffer=None: _list_tools_async(
+                cfg, timeout_sec=timeout, stderr_buffer=stderr_buffer
+            )
         )
         self._async_call_tool: Callable[
             [MCPServerConfig, str, Dict[str, Any], int], Awaitable[str]
@@ -644,7 +762,11 @@ class MCPManager:
                 if not cfg.enabled:
                     continue
                 if not runtime.tools:
-                    out.append({"id": cfg.id, "last_error": _redact_error_text(runtime.last_error or "", cfg)})
+                    out.append({
+                        "id": cfg.id,
+                        "last_error": _redact_error_text(runtime.last_error or "", cfg),
+                        "last_error_kind": runtime.last_error_kind,
+                    })
             return out
 
     def list_tools_for_registry(self) -> List[Dict[str, Any]]:
@@ -704,6 +826,7 @@ class MCPManager:
                             for tool in runtime.tools
                         ],
                         "last_error": runtime.last_error,
+                        "last_error_kind": runtime.last_error_kind,
                         "last_refreshed": runtime.last_refreshed,
                         "last_attempted": runtime.last_attempted,
                     }
@@ -733,17 +856,31 @@ class MCPManager:
             timeout = self._tool_timeout_sec
 
         attempted_at = datetime.now(timezone.utc).isoformat()
+        # Per-call stderr buffer: handed to stdio_client(errlog=...) when the
+        # SDK supports it. Even if the SDK doesn't, we keep the buffer and
+        # attach it for diagnostic surfacing on the catch path.
+        stderr_buffer = io.StringIO()
         try:
-            tools_raw = _run_async(lambda: self._async_list_tools(cfg, timeout), join_timeout=timeout + 3)
+            tools_raw = _run_async(
+                lambda: self._async_list_tools(cfg, timeout, stderr_buffer),
+                join_timeout=timeout + 3,
+            )
         except BaseException as exc:  # noqa: BLE001 - surface any failure
-            err_text = f"{type(exc).__name__}: {_redact_error_text(exc, cfg)}"
+            err_text, err_kind, stderr_tail = _stringify_mcp_failure(exc, stderr_buffer=stderr_buffer)
+            # Apply existing redaction on top of the unwrapped message so
+            # auth tokens still get masked before reaching UI/LLM/logs.
+            err_text_redacted = _redact_error_text(err_text, cfg)
             with self._lock:
                 target = self._servers.get(server_id)
                 if target is not None:
-                    target.last_error = err_text
+                    target.last_error = err_text_redacted
+                    target.last_error_kind = err_kind
                     target.last_attempted = attempted_at
                     target.tools = []
-            return {"ok": False, "error": err_text}
+            response: Dict[str, Any] = {"ok": False, "error": err_text_redacted, "error_kind": err_kind}
+            if stderr_tail:
+                response["stderr_tail"] = stderr_tail
+            return response
 
         normalized = [
             MCPTool(

@@ -324,7 +324,7 @@ class _FakeTransport:
         self.list_error = None
         self.call_error = None
 
-    async def list_tools(self, cfg, timeout):
+    async def list_tools(self, cfg, timeout, stderr_buffer=None):
         self.list_calls.append((cfg.id, timeout))
         if self.list_error:
             raise self.list_error
@@ -446,7 +446,7 @@ def test_manager_refresh_discards_stale_config_result():
     mgr = mcp_client.MCPManager()
     fake = _FakeTransport()
 
-    async def list_and_reconfigure(cfg, timeout):
+    async def list_and_reconfigure(cfg, timeout, stderr_buffer=None):
         mgr.reconfigure(_settings(_good_server(id="svc", url="https://new.example/mcp")))
         return [{"name": "old", "description": "", "input_schema": {}}]
 
@@ -641,7 +641,7 @@ def test_enabled_servers_without_tools_surfaces_broken_only():
     mgr = mcp_client.MCPManager()
 
     # id-aware transport: 'healthy' returns a tool, 'broken' raises (token to redact)
-    async def _list_tools(cfg, timeout):
+    async def _list_tools(cfg, timeout, stderr_buffer=None):
         if cfg.id == "broken":
             raise RuntimeError("connection refused Bearer secret-1234")
         return [{"name": "ok_tool", "description": "d", "input_schema": {"type": "object", "properties": {}}}]
