@@ -334,6 +334,26 @@ _PRODUCER_SHAPES = (
     ("send_photo_empty_payload", "send_photo", "⚠️ Image data is empty or too short.", "LEGACY_TOOL_ERROR", ()),
     ("send_video_missing_file", "send_video", "⚠️ File not found: /x/clip.mp4", "LEGACY_TOOL_ERROR", ()),
     ("send_file_missing_argument", "send_file", "⚠️ Provide a file_path.", "LEGACY_TOOL_ERROR", ()),
+    # tools/control_routing.py — owner item A.21. The promotion receipts carry no
+    # warning marker at all, and the two project-routing receipts reach their
+    # result through the swarm-handoff latch, so neither the identifier harvest
+    # nor the (code, first line) harvest can see any of the four. Without a shape
+    # the differential is blind to the whole family: a promotion that was refused
+    # could go on reporting ok and no case would move.
+    ("promote_rejected", "promote_chat_to_task",
+     "PROMOTE_REJECTED: task 4f2a1c was not scheduled (admission_rejected). "
+     "Do not report this task as created.", "LEGACY_BLOCKED", ()),
+    ("promote_unconfirmed", "promote_chat_to_task",
+     "PROMOTE_UNCONFIRMED: task 4f2a1c admission was not confirmed within 30 seconds. "
+     "Do not report this task as created and do not retry automatically; keep this task "
+     "id for reconciliation.", "LEGACY_UNAVAILABLE", ()),
+    ("route_rejected", "route_to_project",
+     "⚠️ ROUTE_REJECTED: task 4f2a1c was not routed to project 'dinosaurs' "
+     "(target_not_steerable).", "LEGACY_BLOCKED", ()),
+    ("route_unconfirmed", "route_to_project",
+     "⚠️ ROUTE_UNCONFIRMED: task 4f2a1c routing to project 'dinosaurs' was not durably "
+     "confirmed. Do not report it as routed and do not retry automatically.",
+     "LEGACY_UNAVAILABLE", ()),
 )
 
 

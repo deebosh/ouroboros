@@ -60,8 +60,8 @@ def _published(ctx, tool: str, call, *, owner_delta: str = "") -> ToolResult:
 def _ctx(tmp_path: pathlib.Path) -> ToolContext:
     repo = tmp_path / "repo"
     drive = tmp_path / "drive"
-    repo.mkdir()
-    (drive / "logs").mkdir(parents=True)
+    repo.mkdir(exist_ok=True)
+    (drive / "logs").mkdir(parents=True, exist_ok=True)
     return ToolContext(repo_dir=repo, drive_root=drive, task_metadata={})
 
 
@@ -280,6 +280,212 @@ def test_wait_argument_refusals_publish_their_adapter_code(tmp_path, label, tool
     assert published.code == "TOOL_ARG_ERROR"
     assert published.status == "error"
     assert published.text == text
+
+
+# --- Table 2 / owner item A.21: routing refusals stop reporting ok ---
+
+
+def _routing_ctx(tmp_path: pathlib.Path, monkeypatch, receipt: dict, *, mode: str = "live"):
+    """One promote/route/steer invocation with the supervisor receipt it gets back."""
+    ctx = _ctx(tmp_path)
+    monkeypatch.setattr(control_routing, "_promotion_pool_disabled_from_snapshot", lambda _ctx: "")
+    monkeypatch.setattr(
+        control_routing, "_emit_and_wait_for_routing",
+        lambda _ctx, _evt: (mode, dict(receipt)),
+    )
+    return ctx
+
+
+def test_a_promotion_that_scheduled_nothing_is_not_a_created_task(tmp_path, monkeypatch):
+    """Owner item A.21: PROMOTE_REJECTED/PROMOTE_UNCONFIRMED reported `ok`.
+
+    Their sentences carry no warning marker at all, so the adapter had nothing to
+    key on and a task that was refused — or whose admission was never confirmed —
+    looked to the caller exactly like a task that had been created. The refusal is
+    a policy denial now and the unconfirmed receipt is the `unavailable` it
+    describes; both sentences are byte-identical.
+    """
+    from ouroboros.tools.control_events import _PROMOTE_CONFIRM_TIMEOUT_SEC
+
+    pool_off = _ctx(tmp_path)
+    monkeypatch.setattr(
+        control_routing, "_promotion_pool_disabled_from_snapshot", lambda _ctx: "no workers",
+    )
+    disabled = _published(
+        pool_off, "promote_chat_to_task",
+        lambda: control_routing._promote_chat_to_task(pool_off, "build it"),
+        owner_delta="A.21",
+    )
+    assert (disabled.code, disabled.status) == ("LEGACY_BLOCKED", "blocked")
+    assert disabled.text.startswith("PROMOTE_REJECTED: task ")
+    assert disabled.text.endswith(
+        " was not scheduled (worker_pool_unavailable: no workers). "
+        "No project/workspace admission side effects were started."
+    )
+
+    ctx = _routing_ctx(tmp_path, monkeypatch, {"status": "rejected", "reason": "admission_rejected"})
+    rejected = _published(
+        ctx, "promote_chat_to_task",
+        lambda: control_routing._promote_chat_to_task(ctx, "build it"),
+        owner_delta="A.21",
+    )
+    assert (rejected.code, rejected.status) == ("LEGACY_BLOCKED", "blocked")
+    assert rejected.text.startswith("PROMOTE_REJECTED: task ")
+    assert rejected.text.endswith(
+        " was not scheduled (admission_rejected). Do not report this task as created."
+    )
+
+    unconfirmed_ctx = _routing_ctx(tmp_path, monkeypatch, {})
+    unconfirmed = _published(
+        unconfirmed_ctx, "promote_chat_to_task",
+        lambda: control_routing._promote_chat_to_task(unconfirmed_ctx, "build it"),
+        owner_delta="A.21",
+    )
+    assert (unconfirmed.code, unconfirmed.status) == ("LEGACY_UNAVAILABLE", "unavailable")
+    assert unconfirmed.text.startswith("PROMOTE_UNCONFIRMED: task ")
+    assert unconfirmed.text.endswith(
+        f" admission was not confirmed within {int(_PROMOTE_CONFIRM_TIMEOUT_SEC)} seconds. "
+        "Do not report this task as created and do not retry automatically; keep this "
+        "task id for reconciliation."
+    )
+
+
+def test_a_project_route_that_dispatched_nothing_is_not_a_route(tmp_path, monkeypatch):
+    """Owner item A.21, the same fix on the project-routing receipts."""
+    import ouroboros.projects_registry as projects_registry
+
+    manual_ctx = _routing_ctx(tmp_path, monkeypatch, {"status": "needs_manual_target"})
+    manual = _published(
+        manual_ctx, "route_to_project",
+        lambda: control_routing._route_to_project(manual_ctx, message="continue there"),
+        owner_delta="A.21",
+    )
+    assert (manual.code, manual.status) == ("LEGACY_BLOCKED", "blocked")
+    assert manual.text == (
+        "⚠️ NEEDS_MANUAL_TARGET (target_unspecified, live): no route was dispatched. "
+        "Host-validated options: []"
+    )
+
+    silent_ctx = _routing_ctx(tmp_path, monkeypatch, {}, mode="deferred")
+    silent = _published(
+        silent_ctx, "route_to_project",
+        lambda: control_routing._route_to_project(silent_ctx, message="continue there"),
+        owner_delta="A.21",
+    )
+    assert (silent.code, silent.status) == ("LEGACY_UNAVAILABLE", "unavailable")
+    assert silent.text == (
+        "⚠️ ROUTING_UNCONFIRMED (target_unspecified, deferred): no route was dispatched and "
+        "delivery of the manual target options was not confirmed."
+    )
+
+    monkeypatch.setattr(projects_registry, "get_project", lambda _root, _pid: {"name": "Dinos"})
+    rejected_ctx = _routing_ctx(tmp_path, monkeypatch, {"status": "rejected", "reason": "target_not_found"})
+    rejected = _published(
+        rejected_ctx, "route_to_project",
+        lambda: control_routing._route_to_project(rejected_ctx, project_id="dinos", message="go on"),
+        owner_delta="A.21",
+    )
+    assert (rejected.code, rejected.status) == ("LEGACY_BLOCKED", "blocked")
+    assert rejected.text.startswith("⚠️ ROUTE_REJECTED: task ")
+    assert rejected.text.endswith(" was not routed to project 'Dinos' (target_not_found).")
+
+    unconfirmed_ctx = _routing_ctx(tmp_path, monkeypatch, {})
+    unconfirmed = _published(
+        unconfirmed_ctx, "route_to_project",
+        lambda: control_routing._route_to_project(unconfirmed_ctx, project_id="dinos", message="go on"),
+        owner_delta="A.21",
+    )
+    assert (unconfirmed.code, unconfirmed.status) == ("LEGACY_UNAVAILABLE", "unavailable")
+    assert unconfirmed.text.startswith("⚠️ ROUTE_UNCONFIRMED: task ")
+    assert unconfirmed.text.endswith(
+        " routing to project 'Dinos' was not durably confirmed. Do not report it as "
+        "routed and do not retry automatically."
+    )
+
+
+def test_a_steer_that_delivered_nothing_is_not_a_delivery(tmp_path, monkeypatch):
+    """Owner item A.21: a declined steer and an unconfirmed one both said `ok`."""
+    rejected_ctx = _routing_ctx(tmp_path, monkeypatch, {"status": "rejected"})
+    rejected = _published(
+        rejected_ctx, "steer_task",
+        lambda: control_routing._steer_task(rejected_ctx, "abc123", "hurry"),
+        owner_delta="A.21",
+    )
+    assert (rejected.code, rejected.status) == ("LEGACY_BLOCKED", "blocked")
+    assert rejected.text == "⚠️ STEER_REJECTED: task abc123 was not steered (target_not_steerable)."
+
+    unconfirmed_ctx = _routing_ctx(tmp_path, monkeypatch, {}, mode="deferred")
+    unconfirmed = _published(
+        unconfirmed_ctx, "steer_task",
+        lambda: control_routing._steer_task(unconfirmed_ctx, "abc123", "hurry"),
+        owner_delta="A.21",
+    )
+    assert (unconfirmed.code, unconfirmed.status) == ("LEGACY_UNAVAILABLE", "unavailable")
+    assert unconfirmed.text == (
+        "⚠️ STEER_UNCONFIRMED: mailbox delivery to task abc123 was not durably confirmed "
+        "(deferred). Do not report the message as delivered."
+    )
+
+
+@pytest.mark.parametrize("verb", ["route_to_project", "steer_task"])
+def test_a_swarm_scope_denial_is_a_denial(tmp_path, monkeypatch, verb):
+    """Owner item A.21: both Swarm scope refusals reported `ok`.
+
+    Their identifiers end in neither `_BLOCKED` nor `_ERROR`, so the adapter read
+    them as ordinary warnings and a turn that was refused a route or a steer looked
+    like a turn that had taken one.
+    """
+    ctx = _ctx(tmp_path)
+    ctx.project_id = "dinos"
+    monkeypatch.setattr(control_routing, "swarm_router_turn", lambda _ctx: True)
+    calls = {
+        "route_to_project": lambda: control_routing._route_to_project(ctx, message="continue"),
+        "steer_task": lambda: control_routing._steer_task(ctx, "abc123", "hurry"),
+    }
+    expected = {
+        "route_to_project": (
+            "⚠️ SWARM_PROJECT_SCOPE_OWNED: this Project-room Swarm must create its new "
+            "root with promote_chat_to_task in the current Project."
+        ),
+        "steer_task": (
+            "⚠️ SWARM_NEW_ROOT_REQUIRED: explicit Swarm cannot steer an existing task; "
+            "use promote_chat_to_task or, from Main, route_to_project."
+        ),
+    }
+
+    published = _published(ctx, verb, calls[verb], owner_delta="A.21")
+
+    assert (published.code, published.status) == ("ACCESS_BLOCKED", "blocked")
+    assert published.text == expected[verb]
+
+
+def test_the_project_listing_failure_names_the_tool_error_it_is(tmp_path, monkeypatch):
+    """The registry vocabulary's own `TOOL_ERROR`, not the legacy text fallback.
+
+    This one carries no differential row on purpose: `LEGACY_TOOL_ERROR` and
+    `TOOL_ERROR` share the `error` bucket, so the observable classification does not
+    move and an APPROVED_DELTAS row for it would fail the table's own staleness
+    direction. What changes is which code the trace records.
+    """
+    import ouroboros.projects_registry as projects_registry
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("registry unreadable")
+
+    monkeypatch.setattr(projects_registry, "projects_summary", _boom)
+    ctx = _ctx(tmp_path)
+
+    published = _published(
+        ctx, "list_projects", lambda: control_routing._list_projects(ctx), owner_delta="A.21")
+
+    assert (published.code, published.status) == ("TOOL_ERROR", "error")
+    assert published.text == "⚠️ PROJECTS_ERROR: RuntimeError: registry unreadable"
+    # Same bucket on both sides of the change: the differential cannot see it.
+    from ouroboros.tools.tool_result import TOOL_CODE_SPECS
+
+    assert TOOL_CODE_SPECS["TOOL_ERROR"].outcome_bucket == (
+        TOOL_CODE_SPECS["LEGACY_TOOL_ERROR"].outcome_bucket
+    )
 
 
 def test_the_wait_set_cap_refusal_names_the_configured_cap(tmp_path):

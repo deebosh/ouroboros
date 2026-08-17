@@ -143,6 +143,17 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "native:LEGACY_UNAVAILABLE:TASK_NOT_FOUND": Delta(False, "ok", True, "unavailable", "A.20", "an unregistered task cannot receive a message"),
     "native:LEGACY_UNAVAILABLE:TASK_NOT_ACTIVE": Delta(False, "ok", True, "unavailable", "A.20", "a settled or not-yet-running task cannot receive a message"),
     "native:LEGACY_BLOCKED:TASK_CANCEL_PENDING": Delta(False, "ok", True, "blocked", "A.20", "steering a task under teardown is refused; the message was explicitly not delivered"),
+    # Owner item A.21 (batch #13): the control tools reported `ok` for routing they
+    # REFUSED or could not confirm. A rejected admission, a steer the supervisor
+    # declined and a Swarm scope denial are policy denials; an unconfirmed receipt
+    # is exactly the `unavailable` it describes, because the work may or may not
+    # exist and the caller must not report it as done. Every sentence is unchanged.
+    "native:ACCESS_BLOCKED:SWARM_PROJECT_SCOPE_OWNED": Delta(False, "ok", True, "blocked", "A.21", "a Project-room Swarm refused a project route; the denial was reported as a route"),
+    "native:ACCESS_BLOCKED:SWARM_NEW_ROOT_REQUIRED": Delta(False, "ok", True, "blocked", "A.21", "an explicit Swarm refused to steer an existing task; the denial was reported as a steer"),
+    "native:LEGACY_BLOCKED:NEEDS_MANUAL_TARGET": Delta(False, "ok", True, "blocked", "A.21", "no route was dispatched and the owner must choose the target"),
+    "native:LEGACY_UNAVAILABLE:ROUTING_UNCONFIRMED": Delta(False, "ok", True, "unavailable", "A.21", "no route was dispatched and the manual-target delivery was never confirmed"),
+    "native:LEGACY_BLOCKED:STEER_REJECTED": Delta(False, "ok", True, "blocked", "A.21", "a steer the supervisor declined delivered nothing to the target's mailbox"),
+    "native:LEGACY_UNAVAILABLE:STEER_UNCONFIRMED": Delta(False, "ok", True, "unavailable", "A.21", "an unconfirmed mailbox delivery must not be reported as delivered"),
     "shape:cognitive_redirect": Delta(True, "cognitive_tool_required", False, "ok", "A.11", "owner batch #4, through the native producer"),
     "shape:ephemeral_turn_denial": Delta(False, "ok", True, "blocked", "A.4",
         "the decision-turn denial is an access block its own first line never marked"),
@@ -175,6 +186,14 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:send_photo_empty_payload": Delta(False, "ok", True, "error", "A.20", "an empty payload was never delivered"),
     "shape:send_video_missing_file": Delta(False, "ok", True, "error", "A.20", "a missing video file was never delivered"),
     "shape:send_file_missing_argument": Delta(False, "ok", True, "error", "A.20", "a call with no file_path delivered nothing"),
+    # A.21 control refusals stop reporting ok. These four sentences are the ones no
+    # harvest can reach: the two promotion receipts carry no warning marker for the
+    # identifier scan, and the two project-routing receipts reach their result
+    # through the swarm-handoff latch, so no (code, first line) pair exists either.
+    "shape:promote_rejected": Delta(False, "ok", True, "blocked", "A.21", "a promotion the supervisor refused created no task"),
+    "shape:promote_unconfirmed": Delta(False, "ok", True, "unavailable", "A.21", "an unconfirmed admission must not be reported as a created task"),
+    "shape:route_rejected": Delta(False, "ok", True, "blocked", "A.21", "a project route the supervisor refused scheduled nothing"),
+    "shape:route_unconfirmed": Delta(False, "ok", True, "unavailable", "A.21", "an unconfirmed project route must not be reported as routed"),
 })
 
 # Deltas the classifier WOULD produce for which no producer exists, recorded so a

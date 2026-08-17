@@ -2611,6 +2611,14 @@
    "is_error": false,
    "status": "ok"
   },
+  "native:ACCESS_BLOCKED:SWARM_NEW_ROOT_REQUIRED": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "native:ACCESS_BLOCKED:SWARM_PROJECT_SCOPE_OWNED": {
+   "is_error": false,
+   "status": "ok"
+  },
   "native:ACCESS_BLOCKED:TOOL_ACCESS_BLOCKED": {
    "is_error": true,
    "status": "blocked"
@@ -2675,6 +2683,10 @@
    "is_error": true,
    "status": "skill_payload_blocked"
   },
+  "native:LEGACY_BLOCKED:NEEDS_MANUAL_TARGET": {
+   "is_error": false,
+   "status": "ok"
+  },
   "native:LEGACY_BLOCKED:REPO_LIST_BLOCKED": {
    "is_error": true,
    "status": "blocked"
@@ -2686,6 +2698,10 @@
   "native:LEGACY_BLOCKED:RESTART_BLOCKED": {
    "is_error": true,
    "status": "blocked"
+  },
+  "native:LEGACY_BLOCKED:STEER_REJECTED": {
+   "is_error": false,
+   "status": "ok"
   },
   "native:LEGACY_BLOCKED:STR_REPLACE_BLOCKED": {
    "is_error": true,
@@ -2710,6 +2726,14 @@
   "native:LEGACY_TOOL_ERROR:SEARCH_ERROR": {
    "is_error": true,
    "status": "error"
+  },
+  "native:LEGACY_UNAVAILABLE:ROUTING_UNCONFIRMED": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "native:LEGACY_UNAVAILABLE:STEER_UNCONFIRMED": {
+   "is_error": false,
+   "status": "ok"
   },
   "native:LEGACY_UNAVAILABLE:TASK_NOT_ACTIVE": {
    "is_error": false,
@@ -2772,6 +2796,10 @@
    "status": "blocked"
   },
   "native:TOOL_ARG_ERROR:TOOL_ARG_ERROR": {
+   "is_error": true,
+   "status": "error"
+  },
+  "native:TOOL_ERROR:PROJECTS_ERROR": {
    "is_error": true,
    "status": "error"
   },
@@ -2867,6 +2895,14 @@
    "is_error": true,
    "status": "timeout"
   },
+  "shape:promote_rejected": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:promote_unconfirmed": {
+   "is_error": false,
+   "status": "ok"
+  },
   "shape:protected_write": {
    "is_error": true,
    "status": "protected_blocked"
@@ -2890,6 +2926,14 @@
   "shape:root_required_user_files": {
    "is_error": true,
    "status": "root_required_user_files"
+  },
+  "shape:route_rejected": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:route_unconfirmed": {
+   "is_error": false,
+   "status": "ok"
   },
   "shape:send_file_missing_argument": {
    "is_error": false,

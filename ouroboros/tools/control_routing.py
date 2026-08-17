@@ -188,13 +188,16 @@ def _promote_chat_to_task(
             f"(worker_pool_unavailable: {disabled_reason}). No project/workspace "
             "admission side effects were started."
         )
-        return _finish_swarm_handoff(
-            ctx,
-            {"task_id": tid, "routing_token": routing_token},
-            response,
-            status="rejected",
-            reason=f"worker_pool_unavailable:{disabled_reason}",
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="LEGACY_BLOCKED",
+            text=_finish_swarm_handoff(
+                ctx,
+                {"task_id": tid, "routing_token": routing_token},
+                response,
+                status="rejected",
+                reason=f"worker_pool_unavailable:{disabled_reason}",
+            ),
+        ))
     evt: Dict[str, Any] = {
         "type": "promote_chat_to_task",
         "task_id": tid,
@@ -255,9 +258,12 @@ def _promote_chat_to_task(
             f"{f' ({shown_reason})' if shown_reason else ''}. "
             "Do not report this task as created."
         )
-        return _finish_swarm_handoff(
-            ctx, evt, response, status="rejected", reason=shown_reason or "admission_rejected",
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="LEGACY_BLOCKED",
+            text=_finish_swarm_handoff(
+                ctx, evt, response, status="rejected", reason=shown_reason or "admission_rejected",
+            ),
+        ))
     try:
         root = Path(str(getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
         append_jsonl(
@@ -283,9 +289,12 @@ def _promote_chat_to_task(
         "Do not report this task as "
         "created and do not retry automatically; keep this task id for reconciliation."
     )
-    return _finish_swarm_handoff(
-        ctx, evt, response, status="unconfirmed", reason=reason or "confirmation_timeout",
-    )
+    return _publish_tool_result(ctx, ToolResult(
+        status="unavailable", code="LEGACY_UNAVAILABLE",
+        text=_finish_swarm_handoff(
+            ctx, evt, response, status="unconfirmed", reason=reason or "confirmation_timeout",
+        ),
+    ))
 
 
 def _list_projects(ctx: ToolContext, limit: int = 50) -> str:
@@ -295,7 +304,10 @@ def _list_projects(ctx: ToolContext, limit: int = 50) -> str:
         from ouroboros.projects_registry import projects_summary
         rows = projects_summary(Path(ctx.drive_root), limit=max(1, min(int(limit or 50), 200)))
     except Exception as exc:
-        return f"⚠️ PROJECTS_ERROR: {type(exc).__name__}: {exc}"
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ERROR",
+            text=f"⚠️ PROJECTS_ERROR: {type(exc).__name__}: {exc}",
+        ))
     if not rows:
         return "No projects yet. Create one by promoting work with a fresh project_id, or just answer/spawn a task."
     lines = []
@@ -332,10 +344,13 @@ def _route_to_project(
     if cached:
         return cached
     if swarm_router_turn(ctx) and str(getattr(ctx, "project_id", "") or "").strip():
-        return (
-            "⚠️ SWARM_PROJECT_SCOPE_OWNED: this Project-room Swarm must create its new "
-            "root with promote_chat_to_task in the current Project."
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="ACCESS_BLOCKED",
+            text=(
+                "⚠️ SWARM_PROJECT_SCOPE_OWNED: this Project-room Swarm must create its new "
+                "root with promote_chat_to_task in the current Project."
+            ),
+        ))
     try:
         current_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
     except (TypeError, ValueError):
@@ -380,14 +395,20 @@ def _route_to_project(
                 receipt.get("options") if isinstance(receipt.get("options"), list) else options
             )
             options_text = json.dumps(durable_options, ensure_ascii=False, default=str)
-            return (
-                f"⚠️ NEEDS_MANUAL_TARGET ({failure}, {mode}): no route was dispatched. "
-                f"Host-validated options: {options_text}"
-            )
-        return (
-            f"⚠️ ROUTING_UNCONFIRMED ({failure}, {mode}): no route was dispatched and "
-            "delivery of the manual target options was not confirmed."
-        )
+            return _publish_tool_result(ctx, ToolResult(
+                status="blocked", code="LEGACY_BLOCKED",
+                text=(
+                    f"⚠️ NEEDS_MANUAL_TARGET ({failure}, {mode}): no route was dispatched. "
+                    f"Host-validated options: {options_text}"
+                ),
+            ))
+        return _publish_tool_result(ctx, ToolResult(
+            status="unavailable", code="LEGACY_UNAVAILABLE",
+            text=(
+                f"⚠️ ROUTING_UNCONFIRMED ({failure}, {mode}): no route was dispatched and "
+                "delivery of the manual target options was not confirmed."
+            ),
+        ))
     tid = uuid.uuid4().hex[:16]
     routing_token = uuid.uuid4().hex
     objective = msg if not str(reason or "").strip() else f"{msg}\n\n(routing reason: {str(reason).strip()})"
@@ -424,16 +445,22 @@ def _route_to_project(
             f"⚠️ ROUTE_REJECTED: task {tid} was not routed to project '{name}' "
             f"({reason_text}{(': ' + detail) if detail else ''})."
         )
-        return _finish_swarm_handoff(
-            ctx, evt, response, status="rejected", reason=reason_text,
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="LEGACY_BLOCKED",
+            text=_finish_swarm_handoff(
+                ctx, evt, response, status="rejected", reason=reason_text,
+            ),
+        ))
     response = (
         f"⚠️ ROUTE_UNCONFIRMED: task {tid} routing to project '{name}' was not durably "
         "confirmed. Do not report it as routed and do not retry automatically."
     )
-    return _finish_swarm_handoff(
-        ctx, evt, response, status="unconfirmed", reason=reason_text,
-    )
+    return _publish_tool_result(ctx, ToolResult(
+        status="unavailable", code="LEGACY_UNAVAILABLE",
+        text=_finish_swarm_handoff(
+            ctx, evt, response, status="unconfirmed", reason=reason_text,
+        ),
+    ))
 
 
 def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
@@ -452,10 +479,13 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
     (or none) fits, spawn a fresh task with ``promote_chat_to_task`` instead.
     """
     if swarm_router_turn(ctx):
-        return (
-            "⚠️ SWARM_NEW_ROOT_REQUIRED: explicit Swarm cannot steer an existing task; "
-            "use promote_chat_to_task or, from Main, route_to_project."
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="ACCESS_BLOCKED",
+            text=(
+                "⚠️ SWARM_NEW_ROOT_REQUIRED: explicit Swarm cannot steer an existing task; "
+                "use promote_chat_to_task or, from Main, route_to_project."
+            ),
+        ))
     target = str(task_id or "").strip()
     msg = str(message or "").strip()
     if not target:
@@ -505,11 +535,17 @@ def _steer_task(ctx: ToolContext, task_id: str, message: str) -> str:
             "The task receives it at its next checkpoint."
         )
     if status in {"rejected", "needs_manual_target"}:
-        return (
-            f"⚠️ STEER_REJECTED: task {target} was not steered "
-            f"({str(receipt.get('reason') or 'target_not_steerable')})."
-        )
-    return (
-        f"⚠️ STEER_UNCONFIRMED: mailbox delivery to task {target} was not durably confirmed "
-        f"({mode}). Do not report the message as delivered."
-    )
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="LEGACY_BLOCKED",
+            text=(
+                f"⚠️ STEER_REJECTED: task {target} was not steered "
+                f"({str(receipt.get('reason') or 'target_not_steerable')})."
+            ),
+        ))
+    return _publish_tool_result(ctx, ToolResult(
+        status="unavailable", code="LEGACY_UNAVAILABLE",
+        text=(
+            f"⚠️ STEER_UNCONFIRMED: mailbox delivery to task {target} was not durably confirmed "
+            f"({mode}). Do not report the message as delivered."
+        ),
+    ))

@@ -812,6 +812,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/tools/core.py::_forward_to_worker",
         "ouroboros/tools/core.py::_data_read",
     }
+    # v7 lane A21, owner item A.21 (batch #13): the control producers whose
+    # OBSERVABLE classification the owner changed — refusals that reported ok — so
+    # these rows carry the same tool-domain delta id as the T1 cutover, not "none".
+    # The lane's other rows stay "none": publishing the code the adapter already
+    # assigned to the same text moves nothing a consumer can see.
+    a21_owner_delta_rows = {
+        "ouroboros/tools/control.py::_promote_chat_to_task",
+        "ouroboros/tools/control.py::_route_to_project",
+        "ouroboros/tools/control.py::_steer_task",
+    }
     # The ratchet relocation contract renamed its own pin in place (commit 73360232)
     # without recording the rename; the row is the ledger half of that change.
     ratchet_relocation_rename = {
@@ -1128,7 +1138,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 else "D08"
                 if row["old path/symbol"] in s6_delta_rows
                 else "D02"
-                if row["old path/symbol"] in t2b_owner_delta_rows | {
+                if row["old path/symbol"] in t2b_owner_delta_rows | a21_owner_delta_rows | {
                     "ouroboros/tools/registry.py::ToolEntry",
                     "ouroboros/tools/registry.py::ToolRegistry",
                     # T1: the classification cutover is a spec 4.3.3 tool-domain delta.
