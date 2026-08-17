@@ -109,10 +109,10 @@ def test_remove_subagent_drive_does_not_promote_custom_late_result(tmp_path):
 
 
 def test_cancel_running_subagent_removes_drive_source():
-    # The cancellation custody family lives in task_lifecycle; its settlement
-    # PUBLICATION half (where the drive cleanup runs) was split into
+    # The cancellation custody family lives in supervisor/cancel_custody.py; its
+    # settlement PUBLICATION half (where the drive cleanup runs) was split into
     # supervisor/cancel_publication.py at the module-size boundary.
-    custody_src = _read("supervisor/task_lifecycle.py")
+    custody_src = _read("supervisor/cancel_custody.py")
     publish_src = _read("supervisor/cancel_publication.py")
     assert "remove_subagent_task_drive(q.DRIVE_ROOT, str(task_id))" in publish_src
     assert "delegation_role" in publish_src  # gated on subagent role

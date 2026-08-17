@@ -70,7 +70,6 @@ MODULE_DEBT_1500 = (
     "server.py",
     "supervisor/git_ops.py",
     "supervisor/queue.py",
-    "supervisor/task_lifecycle.py",
     "supervisor/update_merge.py",
     "supervisor/workers.py",
     "tests/test_agent_task_pipeline.py",

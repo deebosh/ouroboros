@@ -955,8 +955,10 @@ def test_custody_raising_mid_teardown_releases_the_reaping_slot(qenv, monkeypatc
     task, _child_drive, proc = _live_split_drive_task(qenv, task_id)
     write_task_result(qenv.drive, task_id, STATUS_RUNNING, result="working")
     ci.request_cancel(qenv.drive, task_id)
+    from supervisor import cancel_custody
+
     monkeypatch.setattr(
-        qenv.tl, "_finish_captured_running",
+        cancel_custody, "_finish_captured_running",
         lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("teardown exploded")),
     )
     try:

@@ -579,6 +579,15 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         identity for identity in s3_events_rows
         if s3_events_rows[identity].startswith("supervisor/queue_transitions.py")
     )
+    s3_custody_rows = {
+        f"supervisor/task_lifecycle.py::{symbol}": f"supervisor/cancel_custody.py::{symbol}"
+        for symbol in """_queue_module _durable_settled_status cancel_task_custody SETTLED_ALREADY
+            _worker_possibly_alive _active_intent _reaping_owner_abandoned
+            _recover_stranded_reaping_slot _claim_intent _settle_intent _release_intent_claim
+            _intent_outcome_fields _restore_custody _finish_captured_pending
+            _finish_captured_running _finalize_cancel_intent_on_miss""".split()
+    }
+    implemented.update(s3_custody_rows)
     implemented.update(w_stream_rows)
     implemented.update(shell_extraction_rows)
     implemented.update(headless_extraction_rows)

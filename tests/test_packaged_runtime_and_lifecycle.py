@@ -735,7 +735,7 @@ def test_revoked_mailbox_control_is_never_delivered(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_cancel_and_timeout_paths_share_one_salvage_helper():
-    lifecycle = (REPO_ROOT / "supervisor" / "task_lifecycle.py").read_text(encoding="utf-8")
+    lifecycle = (REPO_ROOT / "supervisor" / "cancel_custody.py").read_text(encoding="utf-8")
     reaper = (REPO_ROOT / "supervisor" / "task_reaper.py").read_text(encoding="utf-8")
     delivery = (REPO_ROOT / "supervisor" / "terminal_delivery.py").read_text(encoding="utf-8")
     assert "salvaged_output_note" in reaper
