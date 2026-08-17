@@ -146,9 +146,10 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
 # APPROVED_DELTAS: that table fails on rows that do not fire, and these cannot fire.
 _DELTAS_WITHOUT_A_PRODUCER: Mapping[str, str] = MappingProxyType({
     "SKILL_PAYLOAD_CONTROL_BLOCKED": (
-        "would move ok -> blocked. The retired loop branch was its only mention; no "
-        "producer emits the identifier, so the corpus harvest never sees it and the "
-        "generic `_BLOCKED` marker would answer if one ever did."
+        "would move (is_error=True, skill_payload_control_blocked) -> (is_error=True, "
+        "blocked). The retired loop branch was its only mention; no producer emits "
+        "the identifier, so the corpus harvest never sees it and the generic "
+        "`_BLOCKED` marker would answer if one ever did."
     ),
     "four nested SAFETY_WARNING wrappers": (
         "would move ok -> error (LEGACY_TOOL_ERROR, wrapper_depth_exceeded). The "
