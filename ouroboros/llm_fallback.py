@@ -23,6 +23,7 @@ from ouroboros.llm_attempt import (
     _candidate_before_dispatch,
     _execute_candidate,
     _execute_candidate_async,
+    _is_provider_policy_refusal,
     _is_structured_context_overflow_body,
     _is_structured_context_overflow_exception,
     _physical_candidate,
@@ -45,7 +46,7 @@ class _RecoveryLadderMixin:
         exc: BaseException,
     ) -> Optional[Dict[str, Any]]:
         """Remove only an explicitly rejected cache control or affinity once."""
-        if _is_structured_context_overflow_exception(exc):
+        if _is_structured_context_overflow_exception(exc) or _is_provider_policy_refusal(exc):
             return None
         provider = str(target.get("provider") or "").strip().lower()
         extra_body = payload.get("extra_body")
@@ -130,7 +131,7 @@ class _RecoveryLadderMixin:
         exc: Exception,
     ) -> Optional[Dict[str, Any]]:
         """Strip replayed reasoning once for a non-overflow OpenRouter 400."""
-        if _is_structured_context_overflow_exception(exc):
+        if _is_structured_context_overflow_exception(exc) or _is_provider_policy_refusal(exc):
             return None
         if not target.get("supports_openrouter_extensions"):
             return None
@@ -418,7 +419,11 @@ class _RecoveryLadderMixin:
                 resp = _send(reroute_kwargs)
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_provider_policy_refusal(exc):
+                    # A refused call is not a provider answer to fall back FROM.
+                    self._pop_effort_clamp_disclosure()
+                    raise
                 return resp
             kwargs = reroute_kwargs
         # An encrypted-reasoning 400 delivered in the body (directly, or on the
@@ -430,7 +435,10 @@ class _RecoveryLadderMixin:
                 return _send(strip_kwargs)
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_provider_policy_refusal(exc):
+                    self._pop_effort_clamp_disclosure()
+                    raise
                 return resp
         # A parameter/VALUE rejection delivered as a body-400 (v6.73.2, triad
         # r3) gets the same one-shot recovery as the exception path — the floor
@@ -441,8 +449,10 @@ class _RecoveryLadderMixin:
                 return _send(param_kwargs)
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
                 self._pop_effort_clamp_disclosure()
+                if _is_provider_policy_refusal(exc):
+                    raise
                 return resp
         return resp
 
@@ -520,7 +530,11 @@ class _RecoveryLadderMixin:
                 resp = await _send(reroute_kwargs)
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_provider_policy_refusal(exc):
+                    # A refused call is not a provider answer to fall back FROM.
+                    self._pop_effort_clamp_disclosure()
+                    raise
                 return resp
             kwargs = reroute_kwargs
         # An encrypted-reasoning 400 delivered in the body (directly, or on the
@@ -532,7 +546,10 @@ class _RecoveryLadderMixin:
                 return await _send(strip_kwargs)
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_provider_policy_refusal(exc):
+                    self._pop_effort_clamp_disclosure()
+                    raise
                 return resp
         # Sync-driver parity (v6.73.2, triad r3): parameter/VALUE rejections
         # delivered as a body-400 recover through the same seam.
@@ -542,7 +559,9 @@ class _RecoveryLadderMixin:
                 return await _send(param_kwargs)
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
                 self._pop_effort_clamp_disclosure()
+                if _is_provider_policy_refusal(exc):
+                    raise
                 return resp
         return resp

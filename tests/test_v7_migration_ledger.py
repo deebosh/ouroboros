@@ -804,6 +804,17 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # spec 4.3.2 semantic delta rides the row of the symbol it changed: the local
     # lane moved into its mixin AND lost its nested attempt loop.
     llm_semantic_delta_ids = {"ouroboros/llm.py::LLMClient._chat_local": "D03"}
+    # spec 7 stream L: the recovery ladder stops consuming a typed policy refusal.
+    llm_semantic_delta_ids.update({
+        f"ouroboros/llm.py::LLMClient.{symbol}": "D04"
+        for symbol in (
+            "_create_chat_completion_with_retries",
+            "_create_chat_completion_with_retries_async",
+            "_retry_without_prompt_cache_parameter",
+            "_openrouter_signature_retry_kwargs",
+            "_retry_without_optional_sampling",
+        )
+    })
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))

@@ -41,6 +41,36 @@ _VALID_CACHE_TTLS = frozenset({"5m", "1h"})
 _CACHE_TTL_SECONDS = {"5m": 300, "1h": 3600}
 
 
+PROVIDER_POLICY_REFUSAL = "provider_policy_refusal"
+
+
+class ProviderPolicyRefusal(RuntimeError):
+    """Typed refusal: a policy layer would not let this call reach a provider.
+
+    Not a provider failure — nothing upstream answered — so no rung of the
+    recovery ladder can repair it: dropping a parameter, rerouting the endpoint
+    or stripping replayed reasoning all re-attempt a call that was refused, and
+    the caller ends up seeing whatever the re-attempt produced instead of the
+    refusal. It carries the machine-readable ``code`` so the ladder can classify
+    it structurally, exactly as the subscription-window refusal is classified in
+    ``loop_llm_call.classify_llm_exception`` — never by matching prose.
+
+    A transport that cannot import this class states the same fact by setting
+    ``code`` to :data:`PROVIDER_POLICY_REFUSAL` on its own exception type; a
+    family of refusals (connection not permitted, egress denied, tenant blocked)
+    either subclasses this or carries the same code.
+    """
+
+    code = PROVIDER_POLICY_REFUSAL
+
+
+def _is_provider_policy_refusal(exc: BaseException) -> bool:
+    """Structural test: a typed refusal, by class or by the declared ``code``."""
+    return isinstance(exc, ProviderPolicyRefusal) or (
+        str(getattr(exc, "code", "") or "") == PROVIDER_POLICY_REFUSAL
+    )
+
+
 def _structured_error_values(payload: Any) -> Set[str]:
     if not isinstance(payload, dict):
         return set()

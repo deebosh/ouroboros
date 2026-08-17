@@ -18,7 +18,10 @@ import threading
 import time
 from typing import Any, Dict, Optional, Set
 
-from ouroboros.llm_attempt import _is_structured_context_overflow_exception
+from ouroboros.llm_attempt import (
+    _is_provider_policy_refusal,
+    _is_structured_context_overflow_exception,
+)
 from ouroboros.provider_models import normalize_model_identity
 
 
@@ -491,7 +494,7 @@ class _CapabilityPolicyMixin:
         exc: BaseException,
     ) -> Optional[Dict[str, Any]]:
         cls = type(self)
-        if _is_structured_context_overflow_exception(exc):
+        if _is_structured_context_overflow_exception(exc) or _is_provider_policy_refusal(exc):
             return None
         if not cls._parameter_rejection_error(exc):
             return None
