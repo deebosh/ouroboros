@@ -607,7 +607,14 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 assert row["facade/public contract"] == "-"
                 continue
             expected_delta = (
-                "D02"
+                # spec 4.3.6: the settings vocabulary moved as-is, then the three no-op
+                # knobs were retired from it (an approved observable delta).
+                "D04"
+                if row["old path/symbol"] in {
+                    "ouroboros/config.py::SETTINGS_DEFAULTS",
+                    "ouroboros/config.py::RETIRED_SETTING_KEYS",
+                }
+                else "D02"
                 if row["old path/symbol"] in {
                     "ouroboros/tools/registry.py::ToolEntry",
                     "ouroboros/tools/registry.py::ToolRegistry",
@@ -744,4 +751,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D01", "D02", "D03", "D04"})

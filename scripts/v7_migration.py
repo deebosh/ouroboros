@@ -77,7 +77,7 @@ BASELINE_SHA = "a191e1cc21a380176bcedc9b8edd86078fc87fa1"
 MERGE_BASE_SHA = "353fd97495060a2ade55e04010f899e68babc1d9"
 MIGRATION_PATH = pathlib.PurePosixPath("MIGRATION_v7.md")
 MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contract", "semantic delta", "characterization test", "upstream-transfer status/note")
-APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D01", "D02", "D03"})
+APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D01", "D02", "D03", "D04"})
 UPSTREAM_STATUSES = frozenset({"not_applicable", "pending", "transferred", "retired"})
 APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_result.py",
