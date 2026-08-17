@@ -397,6 +397,7 @@ def test_javascript_dotted_identity_resolves_exactly_one_nested_declaration(tmp_
     js.write_text(
         "export function createThing({ el }) {\n"
         "    const LIMIT = 3;\n"
+        "    var dup = 1; if (el) { var dup = 2; }\n"
         "    function inner() { let node = el; return node; }\n"
         "    function other() { let node = null; return node; }\n"
         "    return { inner, other };\n"
@@ -407,12 +408,28 @@ def test_javascript_dotted_identity_resolves_exactly_one_nested_declaration(tmp_
     assert v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.inner")
     assert v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.LIMIT")
     assert v7_migration._symbol_exists(tmp_path, "factory.js", "createTwin.inner")
-    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.node")  # declared twice: ambiguous, fail closed
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.dup")  # declared twice in one scope: ambiguous, fail closed
     assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.missing")
     assert v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.inner.node")  # deeper segments narrow the scope
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.node")  # ...and a nested scope is not searched from above
     assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.other.LIMIT")  # LIMIT is not declared inside other
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.el")  # a parameter / reference is not a declaration
     assert not v7_migration._symbol_exists(tmp_path, "factory.js", "LIMIT.inner")  # head must be a top-level function/class
     assert not v7_migration._facade_exists(tmp_path, "factory.js", "createThing.inner")  # nested helpers are never a facade
+    js.write_text(
+        "export function outer() {\n"
+        "    if (true) { function inBlock() {} }\n"
+        "    function mid() { function deep() {} }\n"
+        "    const { rebound } = make();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert v7_migration._symbol_exists(tmp_path, "factory.js", "outer.inBlock")  # statement blocks belong to the enclosing function scope
+    assert v7_migration._symbol_exists(tmp_path, "factory.js", "outer.mid.deep")
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "outer.deep")  # a nested function scope is skipped, not flattened
+    assert v7_migration._symbol_exists(tmp_path, "factory.js", "outer.rebound")  # a destructuring re-bind is a declaration: resolution is not a move proof
+    js.write_text("export function broken( { function inner() {} }\n", encoding="utf-8")
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "broken.inner")  # parse failure fails closed
 
 
 def test_migration_checker_requires_a_row_for_a_python_symbol_moved_without_facade(tmp_path, monkeypatch):
