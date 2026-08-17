@@ -95,10 +95,6 @@ from supervisor.queue_evolution import (  # noqa: F401 -- supervisor/queue.py fa
 
 
 DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
-# Retired: constants no rail consults and nothing rebinds, kept importable for
-# the owner status command, which is their last reader.
-SOFT_TIMEOUT_SEC: int = 600
-HARD_TIMEOUT_SEC: int = 1800
 HEARTBEAT_STALE_SEC: int = 120
 QUEUE_MAX_RETRIES: int = 1
 FINALIZATION_GRACE_SEC: int = FINALIZATION_GRACE_DEFAULT_SEC
@@ -109,39 +105,45 @@ OBJECTIVE_REPEAT_CAP: int = 3
 _timeout_deprecation_emitted: bool = False
 
 
-def init(drive_root: pathlib.Path, soft_timeout: int, hard_timeout: int) -> None:
-    """Bind the queue to its drive; inspect the retired timeouts, never store them.
+# The three retired liveness keys and the default each one announced. A settings
+# document no longer carries them — `load_settings` drops every RETIRED_SETTING_KEY
+# before any reader sees it — so an environment variable is the only way a
+# non-default value can still exist, and the only place worth looking.
+RETIRED_LIVENESS_ENV_DEFAULTS = (
+    ("OUROBOROS_SOFT_TIMEOUT_SEC", "600"),
+    ("OUROBOROS_HARD_TIMEOUT_SEC", "1800"),
+    ("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "120"),
+)
 
-    A non-default legacy value raises the deprecation notice once and is then
-    discarded: no rail has consulted either since idle, deadline, absolute
-    ceiling and the reaper replaced them.
+
+def init(drive_root: pathlib.Path) -> None:
+    """Bind the queue to its drive and read the live liveness settings.
+
+    The three retired timeout keys are no longer parameters: nothing passed one
+    that any rail read, and the deprecation notice they exist to raise is a fact
+    about the ENVIRONMENT, which this function can read for itself.
     """
     global DRIVE_ROOT, FINALIZATION_GRACE_SEC
     DRIVE_ROOT = drive_root
-    legacy_keys = []
-    if int(soft_timeout) != 600:
-        legacy_keys.append("OUROBOROS_SOFT_TIMEOUT_SEC")
-    if int(hard_timeout) != 1800:
-        legacy_keys.append("OUROBOROS_HARD_TIMEOUT_SEC")
-    if str(os.environ.get("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "120")) != "120":
-        legacy_keys.append("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC")
+    legacy_keys = [
+        key for key, default in RETIRED_LIVENESS_ENV_DEFAULTS
+        if str(os.environ.get(key, default)) != default
+    ]
     FINALIZATION_GRACE_SEC = get_finalization_grace_sec()
     BUDGET_ROOT_FENCES.clear()
     _emit_timeout_deprecation_once(legacy_keys)
 
 
 def refresh_timeouts_from_settings(settings: dict) -> None:
-    """Hot-reload active liveness settings; accept retired keys as typed no-ops."""
+    """Hot-reload the one liveness setting a reload can change.
+
+    The retired keys are NOT probed here: `load_settings` removes them from the
+    document, so a reader that looked for them would be asking a question the
+    settings surface can no longer answer either way. Their one surviving source
+    is the environment, which a reload does not change and `init` already read.
+    """
     global FINALIZATION_GRACE_SEC
     FINALIZATION_GRACE_SEC = get_finalization_grace_sec(settings)
-    legacy_keys = []
-    if str(settings.get("OUROBOROS_SOFT_TIMEOUT_SEC", "600")) != "600":
-        legacy_keys.append("OUROBOROS_SOFT_TIMEOUT_SEC")
-    if str(settings.get("OUROBOROS_HARD_TIMEOUT_SEC", "1800")) != "1800":
-        legacy_keys.append("OUROBOROS_HARD_TIMEOUT_SEC")
-    if str(settings.get("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "120")) != "120":
-        legacy_keys.append("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC")
-    _emit_timeout_deprecation_once(legacy_keys)
 
 
 def _emit_timeout_deprecation_once(keys: List[str]) -> None:

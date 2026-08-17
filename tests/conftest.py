@@ -131,7 +131,7 @@ def _bind_pytest_runtime_roots() -> None:
     config.DATA_DIR = root
     config.SETTINGS_PATH = root / "settings.json"
     state.init(root, state.TOTAL_BUDGET_LIMIT)
-    queue.init(root, queue.SOFT_TIMEOUT_SEC, queue.HARD_TIMEOUT_SEC)
+    queue.init(root)
     workers.DRIVE_ROOT = root
     # spawn_workers hands str(workers.REPO_DIR) to every child, and the child binds git_ops to
     # it — so leaving this at the live default would send workers started BY A TEST back at the

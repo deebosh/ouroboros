@@ -30,7 +30,7 @@ def _active_transaction(tmp_path: pathlib.Path, task_id: str = "evo-task"):
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     queue.init_queue_refs([], {}, {"value": 0})
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     live = state.load_state()
@@ -60,7 +60,7 @@ def _assignment_case(tmp_path, monkeypatch, task_id="assign-evo"):
     pending, running = [], {}
     monkeypatch.setattr(workers, "PENDING", pending)
     monkeypatch.setattr(workers, "RUNNING", running)
-    workers.init(tmp_path, tmp_path, 1, 600, 1800, 0.0)
+    workers.init(tmp_path, tmp_path, 1)
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     state.update_state(lambda live: live.update(
         evolution_mode_enabled=True,
@@ -263,7 +263,7 @@ def test_scheduler_disables_a_bare_flag_without_campaign(tmp_path, monkeypatch):
     from supervisor import queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     pending = []
     queue.init_queue_refs(pending, {}, {"value": 0})
     live = state.load_state()
@@ -290,7 +290,7 @@ def test_scheduler_refuses_active_campaign_without_source(tmp_path, monkeypatch)
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     queue.init_queue_refs([], {}, {"value": 0})
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     campaign.pop("source")
@@ -309,7 +309,7 @@ def test_owner_resume_repairs_missing_legacy_campaign_source(tmp_path):
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     campaign["status"] = "paused"
     campaign.pop("source")
@@ -325,7 +325,7 @@ def test_scheduler_does_not_enqueue_when_transaction_attach_fails(tmp_path, monk
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     pending = []
     queue.init_queue_refs(pending, {}, {"value": 0})
     evolution_lifecycle.start_evolution_campaign("Improve", source="test")
@@ -345,7 +345,7 @@ def test_transaction_attach_rechecks_owner_stop_under_state_lock(tmp_path):
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     live = state.load_state()
     live.update({"evolution_mode_enabled": False, "evolution_owner_stopped": True})
@@ -363,7 +363,7 @@ def test_scheduler_replaces_uncommitted_transaction_lost_before_enqueue(tmp_path
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     pending = []
     queue.init_queue_refs(pending, {}, {"value": 0})
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
@@ -489,7 +489,7 @@ def test_metadata_less_terminal_cannot_mutate_active_campaign(tmp_path):
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
 
     result = evolution_lifecycle.update_evolution_campaign_after_task(
@@ -1291,7 +1291,7 @@ def test_stale_campaign_cannot_overwrite_a_new_campaign(tmp_path):
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     first = evolution_lifecycle.start_evolution_campaign("First", source="test")
     stale = dict(first)
     evolution_lifecycle.complete_evolution_campaign("done", cleanup_worktree=False)
@@ -1306,7 +1306,7 @@ def test_panic_campaign_close_uses_nonblocking_state_lock(tmp_path, monkeypatch)
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     timeouts = []
     monkeypatch.setattr(
@@ -1981,7 +1981,7 @@ def test_new_campaign_is_stamped_for_same_generation_worker_respawns(tmp_path, m
 
     monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "same-server")
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     queue.init_queue_refs([], {}, {"value": 0})
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     assert campaign["last_boot_reconcile_gen"] == "same-server"

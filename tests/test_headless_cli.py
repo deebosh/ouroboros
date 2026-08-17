@@ -181,7 +181,7 @@ def test_cli_run_timeout_waits_through_finalization_grace(monkeypatch):
         return {"status": "completed", "result": "done"}
 
     monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "2")
-    queue.init(pathlib.Path("/tmp/ouroboros-test-data"), 600, 1800)
+    queue.init(pathlib.Path("/tmp/ouroboros-test-data"))
     assert queue.FINALIZATION_GRACE_SEC == 2
     monkeypatch.setattr(cli, "_client", lambda args, start=False: FakeClient())
     monkeypatch.setattr(cli, "_wait_task", fake_wait)

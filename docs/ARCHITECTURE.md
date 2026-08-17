@@ -2262,6 +2262,19 @@ time any surface saves. Retirement is therefore a two-part statement: the key is
 from `SETTINGS_DEFAULTS` (so nothing offers or defaults it) and present in
 `RETIRED_SETTING_KEYS` (so nothing carries it).
 
+Once a key is retired, the settings document can no longer answer a question about it in
+either direction, so a consumer that still probed the document would be asking something
+unanswerable — and a parameter that ferried the value from that document to a consumer
+carries nothing but the default. The three retired liveness knobs
+(`OUROBOROS_SOFT_TIMEOUT_SEC`, `OUROBOROS_HARD_TIMEOUT_SEC`,
+`OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC`) are therefore absent from every signature
+that used to pass them — `queue.init`, `workers.init`, `state.status_text` and the
+supervisor context — and the ENVIRONMENT is the one place a non-default value can still
+exist. `supervisor/queue.py` reads it there once at init, emits a single
+`deprecated_settings_ignored` event naming the keys it found, and stores nothing; no rail
+consults any of them, and the owner status text names the live idle, deadline,
+absolute-ceiling and reaper rails instead of printing numbers that decide nothing.
+
 An owner endpoint changes one decision inside a document it does not otherwise own, so it
 must write the whole document back. `_owner_update_settings(transform, expected_digest)`
 does that read, change and write inside ONE settings lock: the transform receives the

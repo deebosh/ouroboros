@@ -680,10 +680,20 @@ def test_cancelled_sibling_does_not_discard_a_completed_handoff(monkeypatch, tmp
 
 def test_plan_task_timeout_budget_invariant():
     """plan_task tool/wrapper budgets must honor the swarm max-wait ceiling and stay
-    under the supervisor HARD task timeout (WS-T: a healthy long scout is not cut off
-    before the adaptive ceiling)."""
-    from ouroboros.config import SETTINGS_DEFAULTS, get_plan_task_swarm_max_wait_sec
-    from supervisor.queue import HARD_TIMEOUT_SEC
+    under the rail that actually stops a task (WS-T: a healthy long scout is not cut
+    off before the adaptive ceiling).
+
+    The bound used to be the retired flat HARD timeout; the rail that ends an
+    overrunning task is the ABSOLUTE ceiling, so that is what the tool must finish
+    inside. The number it is compared against went UP (1800 -> 21600), so this is
+    the same invariant against its real ceiling, not a loosened one — and the old
+    constant no longer exists to be compared with.
+    """
+    from ouroboros.config import (
+        SETTINGS_DEFAULTS,
+        get_plan_task_swarm_max_wait_sec,
+        get_task_abs_ceiling_sec,
+    )
 
     # The plan_review mirror of the default must match the config SSOT.
     assert pr._PLAN_SWARM_MAX_WAIT_DEFAULT_SEC == SETTINGS_DEFAULTS["OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC"]
@@ -692,8 +702,8 @@ def test_plan_task_timeout_budget_invariant():
     assert pr._PLAN_REVIEW_WRAPPER_TIMEOUT_SEC >= max_wait + pr._PLAN_REVIEW_SLOT_TIMEOUT_SEC
     # The tool future timeout must not fire before the asyncio wrapper.
     assert pr._PLAN_TASK_TOOL_TIMEOUT_SEC > pr._PLAN_REVIEW_WRAPPER_TIMEOUT_SEC
-    # ...and the whole tool must finish before the supervisor hard-kills the task.
-    assert pr._PLAN_TASK_TOOL_TIMEOUT_SEC < HARD_TIMEOUT_SEC
+    # ...and the whole tool must finish before the absolute ceiling ends the task.
+    assert pr._PLAN_TASK_TOOL_TIMEOUT_SEC < get_task_abs_ceiling_sec()
 
 
 def test_effective_swarm_max_wait_clamps_to_supported(monkeypatch):

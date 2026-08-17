@@ -66,21 +66,21 @@ TERMINAL_WRITERS = {
     ('supervisor/events_project_routing.py::_persist_promote_rejection', 'STATUS_FAILED'): 'terminal',
     ('supervisor/events_schedule_task.py::_reject_schedule_task', 'status'): 'dynamic',
     ('supervisor/events_task_done.py::_resolve_lifecycle_fault', 'STATUS_FAILED'): 'terminal',
-    ('supervisor/queue.py::restore_pending_from_snapshot', 'STATUS_CANCELLED'): 'terminal',
+    ('supervisor/queue_snapshot.py::restore_pending_from_snapshot', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/cancel_custody.py::_finalize_cancel_intent_on_miss', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/cancel_custody.py::_finish_captured_pending', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/cancel_custody.py::_finish_captured_running', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/task_lifecycle.py::record_scheduled_admission', 'STATUS_FAILED'): 'terminal',
     ('supervisor/task_reaper.py::_enqueue_retry', 'STATUS_FAILED'): 'terminal',
     ('supervisor/task_reaper.py::reap_timed_out_task', 'STATUS_INTERRUPTED if will_retry else STATUS_FAILED'): 'terminal',
-    ('supervisor/workers.py::_cancel_unauthorized_evolution', 'STATUS_CANCELLED'): 'terminal',
+    ('supervisor/worker_assignment.py::_cancel_unauthorized_evolution', 'STATUS_CANCELLED'): 'terminal',
     ('supervisor/workers.py::_drop_cancelled_pending', 'STATUS_CANCELLED'): 'terminal',
-    ('supervisor/workers.py::_ensure_workers_healthy_locked', 'STATUS_CANCELLED'): 'terminal',
-    ('supervisor/workers.py::_ensure_workers_healthy_locked', 'STATUS_FAILED'): 'terminal',
-    ('supervisor/workers.py::_fail_promoted_task_loudly', 'STATUS_FAILED'): 'terminal',
-    ('supervisor/workers.py::_write_failure_result', 'final_status'): 'dynamic',
-    ('supervisor/workers.py::assign_tasks', 'STATUS_CANCELLED'): 'terminal',
-    ('supervisor/workers.py::assign_tasks', 'STATUS_FAILED'): 'terminal',
+    ('supervisor/worker_health.py::_ensure_workers_healthy_locked', 'STATUS_CANCELLED'): 'terminal',
+    ('supervisor/worker_health.py::_ensure_workers_healthy_locked', 'STATUS_FAILED'): 'terminal',
+    ('supervisor/worker_promotion.py::_fail_promoted_task_loudly', 'STATUS_FAILED'): 'terminal',
+    ('supervisor/worker_pool_lifecycle.py::_write_failure_result', 'final_status'): 'dynamic',
+    ('supervisor/worker_assignment.py::assign_tasks', 'STATUS_CANCELLED'): 'terminal',
+    ('supervisor/worker_assignment.py::assign_tasks', 'STATUS_FAILED'): 'terminal',
 }
 
 # C8 — the settle owners. Exactly one may pass allow_cascade_scope=True: the
@@ -103,7 +103,7 @@ NO_DELIVERABLE_LANES = {
         'dropped before assignment; the salvage receipt belongs to custody',
     'ouroboros/task_results.py::fail_tasks':
         'budget drain before start',
-    'supervisor/queue.py::restore_pending_from_snapshot':
+    'supervisor/queue_snapshot.py::restore_pending_from_snapshot':
         'restore-time reconciliation of a task cancelled while the server was down',
     'supervisor/events_task_done.py::_finish_task_done_dispatch':
         'lifecycle fault: the durable row, not a message, is the disclosure',

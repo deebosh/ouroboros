@@ -764,16 +764,9 @@ def reconstruct_task_cost(
     )
 
 
-def status_text(workers_dict: Dict[int, Any], pending_list: list, running_dict: Dict[str, Dict[str, Any]],
-                soft_timeout_sec: int = 0, hard_timeout_sec: int = 0) -> str:
-    """Build status text from worker and queue state.
-
-    The two timeout arguments are accepted and ignored. They are the retired
-    liveness keys, and printing their numbers told the owner a story about
-    controls that stopped existing: the live rails are idle, deadline, absolute
-    ceiling and the reaper, which the line below names instead. They stay in the
-    signature until the caller that still passes them is updated.
-    """
+def status_text(workers_dict: Dict[int, Any], pending_list: list,
+                running_dict: Dict[str, Dict[str, Any]]) -> str:
+    """Build status text from worker and queue state."""
     st = load_state()
     now = time.time()
     lines = []

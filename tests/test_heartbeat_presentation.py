@@ -40,14 +40,54 @@ def test_retired_timeout_defaults_are_quiet_but_custom_value_is_loud(tmp_path, m
     from supervisor import queue
 
     monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     events = tmp_path / "logs" / "events.jsonl"
     assert not events.exists()
 
-    queue.init(tmp_path, 601, 1800)
+    monkeypatch.setenv("OUROBOROS_SOFT_TIMEOUT_SEC", "601")
+    queue.init(tmp_path)
     row = json.loads(events.read_text(encoding="utf-8"))
     assert row["type"] == "deprecated_settings_ignored"
     assert row["keys"] == ["OUROBOROS_SOFT_TIMEOUT_SEC"]
+
+
+def test_the_deprecation_notice_now_reads_the_environment_not_a_parameter(
+    tmp_path, monkeypatch,
+) -> None:
+    """`load_settings` drops every retired key before a reader sees it, so a
+    settings document can no longer carry a non-default value and the parameters
+    that used to ferry one were always the two defaults. The environment is the
+    only surviving source, so that is where the notice looks."""
+    import json
+
+    from supervisor import queue
+
+    monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
+    for key, default in queue.RETIRED_LIVENESS_ENV_DEFAULTS:
+        monkeypatch.setenv(key, default)
+    queue.init(tmp_path)
+    events = tmp_path / "logs" / "events.jsonl"
+    assert not events.exists(), "the defaults must stay quiet"
+
+    monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
+    monkeypatch.setenv("OUROBOROS_HARD_TIMEOUT_SEC", "1801")
+    queue.init(tmp_path)
+    row = json.loads(events.read_text(encoding="utf-8"))
+    assert row["type"] == "deprecated_settings_ignored"
+    assert row["keys"] == ["OUROBOROS_HARD_TIMEOUT_SEC"]
+
+
+def test_a_reload_no_longer_probes_the_settings_document_for_retired_keys() -> None:
+    """A document cannot answer either way once the key is stripped from it; a
+    probe there would be a question with no possible answer."""
+    import inspect
+
+    from supervisor import queue
+
+    source = inspect.getsource(queue.refresh_timeouts_from_settings)
+    for key, _default in queue.RETIRED_LIVENESS_ENV_DEFAULTS:
+        assert key not in source, key
+    assert "get_finalization_grace_sec(settings)" in source
 
 
 def test_retired_planning_heartbeat_default_is_quiet_but_custom_value_is_loud(
@@ -57,13 +97,13 @@ def test_retired_planning_heartbeat_default_is_quiet_but_custom_value_is_loud(
 
     monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
     monkeypatch.setenv("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "120")
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     events = tmp_path / "logs" / "events.jsonl"
     assert not events.exists()
 
     monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
     monkeypatch.setenv("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "121")
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     row = json.loads(events.read_text(encoding="utf-8"))
     assert row["type"] == "deprecated_settings_ignored"
     assert row["keys"] == ["OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC"]
@@ -83,8 +123,9 @@ def test_status_text_names_the_live_rails_and_not_the_retired_numbers(tmp_path, 
     assert "active_liveness: idle+deadline+absolute_ceiling+reaper" in text
     assert "soft=" not in text and "hard=" not in text
     assert "legacy_timeouts_ignored" not in text
-    # The two arguments the last caller still passes are accepted and ignored.
-    assert state.status_text({}, [], {}, 601, 1801) == text
+    # ...and the two arguments are gone from the signature, not merely ignored.
+    assert set(inspect.signature(state.status_text).parameters) == {
+        "workers_dict", "pending_list", "running_dict"}
 
 
 def test_the_worker_pool_keeps_no_copy_of_the_retired_or_budget_globals() -> None:
@@ -98,8 +139,11 @@ def test_the_worker_pool_keeps_no_copy_of_the_retired_or_budget_globals() -> Non
     source = inspect.getsource(workers.init)
     for name in ("SOFT_TIMEOUT_SEC", "HARD_TIMEOUT_SEC", "TOTAL_BUDGET_LIMIT"):
         assert name not in source, name
-    # The queue still receives them, which is what raises the deprecation notice.
-    assert "queue.init(drive_root, soft_timeout, hard_timeout)" in source
+    # ...and no longer accepts them either: the pool binds what it reads.
+    parameters = set(inspect.signature(workers.init).parameters)
+    assert parameters == {"repo_dir", "drive_root", "max_workers",
+                          "branch_dev", "branch_stable"}
+    assert "queue.init(drive_root)" in source
 
 
 def test_the_queue_never_rebinds_the_retired_timeout_constants() -> None:
@@ -109,9 +153,10 @@ def test_the_queue_never_rebinds_the_retired_timeout_constants() -> None:
     from supervisor import queue
 
     source = inspect.getsource(queue.init)
-    assert "SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC = 600, 1800" not in source
     assert "global DRIVE_ROOT, FINALIZATION_GRACE_SEC" in source
-    assert queue.SOFT_TIMEOUT_SEC == 600 and queue.HARD_TIMEOUT_SEC == 1800
+    assert set(inspect.signature(queue.init).parameters) == {"drive_root"}
+    for name in ("SOFT_TIMEOUT_SEC", "HARD_TIMEOUT_SEC"):
+        assert not hasattr(queue, name), name
 
 
 def test_the_queue_snapshot_path_has_one_owner(tmp_path, monkeypatch) -> None:
