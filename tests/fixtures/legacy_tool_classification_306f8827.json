@@ -2627,6 +2627,14 @@
    "is_error": true,
    "status": "blocked"
   },
+  "native:DATA_BLOCKED:DATA_LIST_BLOCKED": {
+   "is_error": true,
+   "status": "data_blocked"
+  },
+  "native:DATA_BLOCKED:DATA_READ_BLOCKED": {
+   "is_error": true,
+   "status": "data_blocked"
+  },
   "native:ELEVATION_BLOCKED:ELEVATION_BLOCKED": {
    "is_error": true,
    "status": "elevation_blocked"
@@ -2642,6 +2650,30 @@
   "native:HEAL_MODE_BLOCKED:SKILL_REDIRECT_BLOCKED": {
    "is_error": true,
    "status": "skill_payload_blocked"
+  },
+  "native:LEGACY_BLOCKED:REPO_LIST_BLOCKED": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "native:LEGACY_BLOCKED:REPO_READ_BLOCKED": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "native:LEGACY_TOOL_ERROR:LIST_FILES_ERROR": {
+   "is_error": true,
+   "status": "error"
+  },
+  "native:LEGACY_TOOL_ERROR:READ_FILE_ERROR": {
+   "is_error": true,
+   "status": "error"
+  },
+  "native:LEGACY_WARNING:DATA_NOT_YET_CREATED": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "native:LEGACY_WARNING:NOT_FOUND": {
+   "is_error": false,
+   "status": "ok"
   },
   "native:LIGHT_MODE_BLOCKED:LIGHT_MODE_BLOCKED": {
    "is_error": true,
@@ -2682,6 +2714,14 @@
   "native:SUDO_INTERACTIVE_BLOCKED:SUDO_INTERACTIVE_BLOCKED": {
    "is_error": true,
    "status": "blocked"
+  },
+  "native:TOOL_ARG_ERROR:TOOL_ARG_ERROR": {
+   "is_error": true,
+   "status": "error"
+  },
+  "native:USER_FILES_PATH_BLOCKED:USER_FILES_PATH_BLOCKED": {
+   "is_error": true,
+   "status": "user_files_path_blocked"
   },
   "native:WORKSPACE_BLOCKED:WORKSPACE_GIT_BLOCKED": {
    "is_error": true,

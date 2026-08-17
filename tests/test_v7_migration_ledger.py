@@ -766,6 +766,15 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "tests/test_onboarding_host.py::test_server_boot_never_writes_the_settings_file",
     }
     implemented.update(settings_seam_rows)
+    # The ratchet relocation contract renamed its own pin in place (commit 73360232)
+    # without recording the rename; the row is the ledger half of that change.
+    ratchet_relocation_rename = {
+        "tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality":
+            "tests/test_repo_health_smoke.py::test_transition_allows_a_same_qualname_relocation_but_not_a_swap",
+    }
+    implemented.update(ratchet_relocation_rename)
+    existing_process_owner_rows.update(ratchet_relocation_rename)
+    registry_extraction_no_facade_rows.update(ratchet_relocation_rename)
     existing_process_owner_rows.update(settings_seam_rows)
     implemented.update(server_extraction_rows)
     # v7 stream S lane S2, spec 4.3.11 (Emergency Stop 2A): execute_panic_stop keeps

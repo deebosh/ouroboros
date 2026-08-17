@@ -117,6 +117,12 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "native:CAPABILITY_UNAVAILABLE:MANAGED_UPDATE_STATE_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "native:CAPABILITY_UNAVAILABLE:PYTHON_INTERPRETER_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "native:HEAL_MODE_BLOCKED:SKILL_REDIRECT_BLOCKED": Delta(True, "skill_payload_blocked", True, "heal_mode_blocked", "A.18", "the publisher's code wins over its text; both statuses are policy denials"),
+    # Not a new owner decision: the identical move is already approved above for the
+    # `TOOL_ARG_ERROR` identifier, and the root-argument refusal in
+    # `core_file_tools._access_or_block` now publishes the code the adapter already
+    # assigned to its text. The golden is the RETIRED LOOP, so reaching the same
+    # answer through the producer's own code shows up as a second row.
+    "native:TOOL_ARG_ERROR:TOOL_ARG_ERROR": Delta(True, "error", True, "argument_error", "A.17", "same bucket as the TOOL_ARG_ERROR identifier row, through the native code the read/list/write/edit/search root guard publishes"),
     "shape:cognitive_redirect": Delta(True, "cognitive_tool_required", False, "ok", "A.11", "owner batch #4, through the native producer"),
     "shape:ephemeral_turn_denial": Delta(False, "ok", True, "blocked", "A.4",
         "the decision-turn denial is an access block its own first line never marked"),
