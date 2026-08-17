@@ -776,6 +776,14 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(t2_core_native_rows)
     existing_process_owner_rows.update(t2_core_native_rows)
     registry_extraction_no_facade_rows.update(t2_core_native_rows)
+    # v7 lane T2b, owner item A.20 (batch #10): producers whose OBSERVABLE
+    # classification the owner changed, so these rows carry the same tool-domain
+    # delta id as the T1 cutover rather than "none".
+    t2b_owner_delta_rows = {
+        "ouroboros/tools/core.py::_send_photo",
+        "ouroboros/tools/core.py::_send_video",
+        "ouroboros/tools/core.py::_send_file",
+    }
     # The ratchet relocation contract renamed its own pin in place (commit 73360232)
     # without recording the rename; the row is the ledger half of that change.
     ratchet_relocation_rename = {
@@ -1004,7 +1012,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 else "D08"
                 if row["old path/symbol"] in s6_delta_rows
                 else "D02"
-                if row["old path/symbol"] in {
+                if row["old path/symbol"] in t2b_owner_delta_rows | {
                     "ouroboros/tools/registry.py::ToolEntry",
                     "ouroboros/tools/registry.py::ToolRegistry",
                     # T1: the classification cutover is a spec 4.3.3 tool-domain delta.

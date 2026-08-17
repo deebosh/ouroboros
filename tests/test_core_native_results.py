@@ -32,12 +32,17 @@ from ouroboros.tools.tool_result import (
 )
 
 
-def _published(ctx, tool: str, call) -> ToolResult:
+def _published(ctx, tool: str, call, *, owner_delta: str = "") -> ToolResult:
     """Run one producer under the registry's own result-consumption rule.
 
     ``registry_core`` installs a per-invocation sentinel and accepts the published
     result only when its text is exactly the string the handler returned; a helper
     called outside a dispatch must therefore still return that same text.
+
+    Adapter equality is the default contract. ``owner_delta`` names the owner item
+    that authorised a producer to answer something the adapter would not, and it
+    asserts the OPPOSITE — the divergence has to be real, so a site cannot claim an
+    approved delta it no longer has.
     """
     sentinel = object()
     token = _install_tool_result_sidecar(ctx, sentinel)
@@ -48,9 +53,15 @@ def _published(ctx, tool: str, call) -> ToolResult:
         _restore_tool_result_sidecar(token)
     assert isinstance(published, ToolResult), f"{tool}: producer published no typed result"
     assert published.text == text, f"{tool}: published text is not the returned text"
-    assert published.code == LegacyTextResultAdapter.from_text(tool, text).code, (
-        f"{tool}: published code diverges from the adapter answer for the same text"
-    )
+    adapter_code = LegacyTextResultAdapter.from_text(tool, text).code
+    if owner_delta:
+        assert published.code != adapter_code, (
+            f"{tool}: {owner_delta} claims a divergence from the adapter that is not there"
+        )
+    else:
+        assert published.code == adapter_code, (
+            f"{tool}: published code diverges from the adapter answer for the same text"
+        )
     return published
 
 
@@ -262,17 +273,17 @@ def _mp4(tmp_path: pathlib.Path) -> pathlib.Path:
 @pytest.mark.parametrize(
     ("label", "tool", "code", "text"),
     [
-        ("photo_no_chat", "send_photo", "LEGACY_WARNING", "⚠️ No active chat — cannot send photo."),
-        ("photo_no_source", "send_photo", "LEGACY_WARNING", "⚠️ Provide either file_path or image_base64."),
-        ("photo_short", "send_photo", "LEGACY_WARNING", "⚠️ Image data is empty or too short."),
-        ("photo_no_screenshot", "send_photo", "LEGACY_WARNING",
+        ("photo_no_chat", "send_photo", "LEGACY_UNAVAILABLE", "⚠️ No active chat — cannot send photo."),
+        ("photo_no_source", "send_photo", "LEGACY_TOOL_ERROR", "⚠️ Provide either file_path or image_base64."),
+        ("photo_short", "send_photo", "LEGACY_TOOL_ERROR", "⚠️ Image data is empty or too short."),
+        ("photo_no_screenshot", "send_photo", "LEGACY_TOOL_ERROR",
          "⚠️ No screenshot stored. Take one first with browse_page(output='screenshot')."),
-        ("video_no_chat", "send_video", "LEGACY_WARNING", "⚠️ No active chat — cannot send video."),
-        ("video_no_path", "send_video", "LEGACY_WARNING", "⚠️ Provide a file_path."),
-        ("video_missing", "send_video", "LEGACY_WARNING", "⚠️ File not found: /nonexistent/clip.mp4"),
-        ("file_no_chat", "send_file", "LEGACY_WARNING", "⚠️ No active chat — cannot send file."),
-        ("file_no_path", "send_file", "LEGACY_WARNING", "⚠️ Provide a file_path."),
-        ("file_missing", "send_file", "LEGACY_WARNING", "⚠️ File not found: /nonexistent/report.md"),
+        ("video_no_chat", "send_video", "LEGACY_UNAVAILABLE", "⚠️ No active chat — cannot send video."),
+        ("video_no_path", "send_video", "LEGACY_TOOL_ERROR", "⚠️ Provide a file_path."),
+        ("video_missing", "send_video", "LEGACY_TOOL_ERROR", "⚠️ File not found: /nonexistent/clip.mp4"),
+        ("file_no_chat", "send_file", "LEGACY_UNAVAILABLE", "⚠️ No active chat — cannot send file."),
+        ("file_no_path", "send_file", "LEGACY_TOOL_ERROR", "⚠️ Provide a file_path."),
+        ("file_missing", "send_file", "LEGACY_TOOL_ERROR", "⚠️ File not found: /nonexistent/report.md"),
         ("photo_ok", "send_photo", "OK", "OK: photo queued for delivery to owner."),
         ("video_ok", "send_video", "OK", "OK: video queued for delivery to owner."),
         ("file_ok", "send_file", "OK", "OK: file 'shot.png' queued for delivery to owner."),
@@ -281,9 +292,11 @@ def _mp4(tmp_path: pathlib.Path) -> pathlib.Path:
 def test_owner_chat_delivery_terminals_are_native(tmp_path, label, tool, code, text):
     """Every media terminal, including the queued-for-delivery success.
 
-    The refusals carry no uppercase identifier, so the adapter has always read
-    them as `LEGACY_WARNING` — an ok status. That is preserved exactly here and
-    reported as an owner-delta candidate rather than changed in this lane.
+    Owner item A.20: these refusals used to report `ok`, because their sentences
+    carry no uppercase identifier for the adapter to key on — a send that queued
+    nothing looked like a send that worked. Absence of an owner chat is now the
+    `unavailable` surface it describes; everything else that prevented a delivery
+    is an `error`. The text is unchanged, so only the code moved.
     """
     chatty = _media_ctx()
     chatless = _media_ctx(chat_id=None)
@@ -304,7 +317,7 @@ def test_owner_chat_delivery_terminals_are_native(tmp_path, label, tool, code, t
     }
     ctx, call = calls[label]
 
-    published = _published(ctx, tool, call)
+    published = _published(ctx, tool, call, owner_delta="" if code == "OK" else "A.20")
 
     assert published.code == code
     assert published.text == text

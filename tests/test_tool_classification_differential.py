@@ -148,6 +148,16 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:unknown_tool_extension_down": Delta(False, "ok", True, "unavailable", "A.1",
         "a call to a tool whose extension is not live was never a success; the registry publishes the more precise `unavailable` rather than `unknown_tool`"),
     "shape:binding_arg_error": Delta(True, "error", True, "argument_error", "A.17", "same bucket as TOOL_ARG_ERROR, through the interpolated binding-error text"),
+    # Owner batch #10 item 1 (A.20): a media delivery that queued NOTHING reported
+    # `ok` on both axes, because its refusal sentence has no identifier for the
+    # adapter to key on. The three surfaces now name the failure themselves.
+    "shape:send_photo_no_chat": Delta(False, "ok", True, "unavailable", "A.20", "no owner chat to deliver into is an unavailable surface, not a sent photo"),
+    "shape:send_video_no_chat": Delta(False, "ok", True, "unavailable", "A.20", "no owner chat to deliver into is an unavailable surface, not a sent video"),
+    "shape:send_file_no_chat": Delta(False, "ok", True, "unavailable", "A.20", "no owner chat to deliver into is an unavailable surface, not a sent file"),
+    "shape:send_photo_read_failure": Delta(False, "ok", True, "error", "A.20", "an image the tool could not read was never delivered"),
+    "shape:send_photo_empty_payload": Delta(False, "ok", True, "error", "A.20", "an empty payload was never delivered"),
+    "shape:send_video_missing_file": Delta(False, "ok", True, "error", "A.20", "a missing video file was never delivered"),
+    "shape:send_file_missing_argument": Delta(False, "ok", True, "error", "A.20", "a call with no file_path delivered nothing"),
 })
 
 # Deltas the classifier WOULD produce for which no producer exists, recorded so a

@@ -322,6 +322,18 @@ _PRODUCER_SHAPES = (
     # the interpolated prefix table.
     ("binding_arg_error", "query_code", "⚠️ TOOL_ARG_ERROR (query_code): ValueError: unknown root 'nope'", "TOOL_ARG_ERROR", ()),
     ("binding_default_error", "apply_patch", "⚠️ TOOL_ERROR: ValueError: unknown root 'nope'", "TOOL_ERROR", ()),
+    # tools/core_artifacts.py — owner item A.20. These refusals carry no uppercase
+    # identifier, so no (code, first line) pair can be harvested for them and the
+    # text corpus reads every one of them as an ordinary warning. Without a shape
+    # the differential is blind to the whole family: a delivery that queued nothing
+    # could go on reporting ok and no case would move.
+    ("send_photo_no_chat", "send_photo", "⚠️ No active chat — cannot send photo.", "LEGACY_UNAVAILABLE", ()),
+    ("send_video_no_chat", "send_video", "⚠️ No active chat — cannot send video.", "LEGACY_UNAVAILABLE", ()),
+    ("send_file_no_chat", "send_file", "⚠️ No active chat — cannot send file.", "LEGACY_UNAVAILABLE", ()),
+    ("send_photo_read_failure", "send_photo", "⚠️ Failed to read image file: PermissionError: [Errno 13] Permission denied", "LEGACY_TOOL_ERROR", ()),
+    ("send_photo_empty_payload", "send_photo", "⚠️ Image data is empty or too short.", "LEGACY_TOOL_ERROR", ()),
+    ("send_video_missing_file", "send_video", "⚠️ File not found: /x/clip.mp4", "LEGACY_TOOL_ERROR", ()),
+    ("send_file_missing_argument", "send_file", "⚠️ Provide a file_path.", "LEGACY_TOOL_ERROR", ()),
 )
 
 

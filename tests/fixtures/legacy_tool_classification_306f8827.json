@@ -2879,6 +2879,34 @@
    "is_error": true,
    "status": "root_required_user_files"
   },
+  "shape:send_file_missing_argument": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:send_file_no_chat": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:send_photo_empty_payload": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:send_photo_no_chat": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:send_photo_read_failure": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:send_video_missing_file": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:send_video_no_chat": {
+   "is_error": false,
+   "status": "ok"
+  },
   "shape:shell_artifact_error": {
    "is_error": true,
    "status": "artifact_output_error"
