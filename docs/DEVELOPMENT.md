@@ -362,6 +362,16 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   the same bytes by construction — so a multi-commit audit costs only the blobs
   that changed rather than a full census per commit. Sampling commits instead
   would be cheaper and wrong: it would retire that transient-giant guard.
+- Splitting a module records every moved or retired symbol in `MIGRATION_v7.md`,
+  one row per identity, and the row's semantic-delta note is a claim under test.
+  `tests/test_v7_verbatim_moves.py` compares the declaration at the old identity
+  in the ledger's recorded merge base against the declaration at the new identity
+  in the working tree, so a note that calls its move verbatim must hold
+  byte-for-byte — modulo the one indentation level a method legitimately loses
+  when it becomes a module-level function. Text that changes after a move (a
+  widened signature, a typed return, a retargeted call site, an edited docstring)
+  belongs in the note, which names what changed and why; leaving the word on a
+  row whose text has since moved on is the failure this gate exists to catch.
 - Prefer deleting dead/duplicate authority before raising a cap. Add an
   abstraction only when it removes concrete coupling or preserves a stable
   extension seam.

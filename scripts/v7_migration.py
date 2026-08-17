@@ -577,7 +577,15 @@ def _js_scope_root(node: Any, name: str) -> Any:
             return value if value is not None and value.type in (_JS_FUNCTION_VALUE_TYPES | _JS_CLASS_VALUE_TYPES) else None
     return None
 def _js_nested_declaration_exists(text: str, qualname: str) -> bool:
-    """Resolve a dotted JavaScript identity (``outer.inner[.deeper]``) lexically.
+    """True when ``_js_declaration_node`` resolves the dotted identity."""
+    return _js_declaration_node(text, qualname) is not None
+def _js_declaration_node(text: str, qualname: str) -> Any:
+    """Resolve a JavaScript identity to its declaration node, or None.
+
+    A bare name resolves to its top-level declaration statement (the
+    ``declaration`` child of an ``export`` statement, so an exported and a
+    private declaration compare by the same text). A dotted identity
+    (``outer.inner[.deeper]``) resolves lexically:
 
     The JavaScript twin of the Python qualname walk: ``outer`` must be exactly
     one top-level function/class binding, and every further segment exactly one
@@ -593,19 +601,21 @@ def _js_nested_declaration_exists(text: str, qualname: str) -> bool:
     move proofs remain the reviewer's byte comparison, not this resolver.
     """
     parser = _js_parser()
-    if parser is None: return False
+    if parser is None: return None
     tree = parser.parse(text.encode("utf-8", "replace"))
-    if tree.root_node.has_error: return False
+    if tree.root_node.has_error: return None
     head, *rest = qualname.split(".")
-    if not head or not rest or not all(rest): return False
+    if not head or not all(rest): return None
     def declared_kind(node: Any, name: str) -> str:
         return _js_declaration_bindings(node).get(name, "") if node.type in _JS_DECLARATION_STATEMENT_TYPES else ""
     matches, matched_name = [], head
     for statement in tree.root_node.named_children:
         candidate = statement.child_by_field_name("declaration") if statement.type == "export_statement" else statement
-        if candidate is not None and declared_kind(candidate, head) in {"function", "class"}: matches.append(candidate)
+        if candidate is None: continue
+        if (declared_kind(candidate, head) in {"function", "class"}) if rest else bool(declared_kind(candidate, head)):
+            matches.append(candidate)
     for name in rest:
-        if len(matches) != 1: return False
+        if len(matches) != 1: return None
         root = _js_scope_root(matches[0], matched_name)
         found, stack = [], (list(root.named_children) if root is not None else [])
         while stack:
@@ -613,7 +623,7 @@ def _js_nested_declaration_exists(text: str, qualname: str) -> bool:
             if declared_kind(node, name): found.append(node)
             if node.type not in _JS_SCOPE_NODE_TYPES: stack.extend(node.named_children)
         matches, matched_name = found, name
-    return len(matches) == 1
+    return matches[0] if len(matches) == 1 else None
 def _facade_exists(repo: pathlib.Path, path: str, symbol: str) -> bool:
     """Resolve a facade/public-contract cell; JavaScript facades must be exported."""
     if not path.endswith(".js"):
