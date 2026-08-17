@@ -478,6 +478,10 @@ def _ledger_projection(root: pathlib.Path) -> List[Dict[str, Any]]:
 
 
 def _call_route(client: LLMClient, call: Dict[str, Any]) -> Any:
+    # Deep-copied: a route may legitimately mutate an argument in place
+    # (``add_usage`` accumulates into ``total``), and the fixture must describe
+    # the call, not carry the residue of the last replay.
+    call = copy.deepcopy(call)
     kind = str(call.get("kind") or "method")
     if kind == "resolve_target":
         return client._resolve_remote_target(call["model"])

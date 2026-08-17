@@ -872,13 +872,10 @@
           "name": "add_usage",
           "kwargs": {
             "total": {
-              "prompt_tokens": 35,
-              "completion_tokens": 7,
+              "prompt_tokens": 10,
+              "completion_tokens": 2,
               "cost": 0.5,
-              "cost_final": false,
-              "total_tokens": 0,
-              "cached_tokens": 15,
-              "cache_write_tokens": 20
+              "cost_final": true
             },
             "usage": {
               "prompt_tokens": 5,
