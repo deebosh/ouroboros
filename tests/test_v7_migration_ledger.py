@@ -466,6 +466,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         ("chat_card_actions.js", "createCardActions", "turnTaskIntoProject ensureLiveActionsEl syncCancelRunButton syncCancelRunButtonMutation markLiveCardCancelPending captureLiveCardPhase restoreLiveCardPhase reconcileCancelCardFromDetail cancelRunFromCard markTaskCancelable markCardConverted markCardConvertedMutation"),
         ("chat_live_card_view.js", "createLiveCardView", "applySuggestedName applySuggestedNameMutation renderCollapsedActivity ensureSubagentContainer setLiveCardTypingVisible formatLiveCardPhaseLabel setLiveCardExpanded isLiveLineExpandable syncLiveCardToggle directSubagentCount buildTimelineItemHtml isTimelinePinnedToBottom deferCollapsedTimeline renderLiveCardTimeline appendTimelineItem patchLastTimelineItem patchTimelineItemAt renderLiveCardMeta"),
         ("chat_message_annotations.js", "createMessageAnnotations", "routingAnnotationText renderRoutingAnnotation updateMessageAnnotation clearTransientRoutingAnnotations markPendingDelivered"),
+        ("chat_composer.js", "createComposer", "resizeChatInput swarmArmed setSwarm setSendBusy scrollToBottom updateScrollButton updateMessagesPadding"),
     )
     web_extractions.update({f"web/modules/chat.js::createChatInstance.{symbol}": f"web/modules/{owner}::{factory}.{symbol}" for owner, factory, symbols in w3_chat_extraction_symbols_by_owner for symbol in symbols.split()})
     implemented.update(registry_core_rows)

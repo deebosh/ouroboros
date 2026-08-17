@@ -41,6 +41,7 @@ import {
 } from './chat_card_state.js';
 import { confirmAndSendPanic, shouldFirePanic } from './chat_controls.js';
 import { createCardActions } from './chat_card_actions.js';
+import { createComposer } from './chat_composer.js';
 import { createDocumentBubbles } from './chat_document_bubble.js';
 import { createMessageIdentity } from './chat_message_identity.js';
 import { createLiveCardView } from './chat_live_card_view.js';
@@ -2358,15 +2359,6 @@ export function createChatInstance({
         inputDraft = '';
     }
 
-    function resizeChatInput({ preserveStickiness = false } = {}) {
-        const caretAtEnd = input.selectionEnd >= input.value.length - 1;
-        const previousScrollTop = input.scrollTop;
-        input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-        input.scrollTop = caretAtEnd ? input.scrollHeight : previousScrollTop;
-        updateMessagesPadding({ preserveStickiness });
-    }
-
     function restoreInputHistory(step) {
         if (!inputHistory.length) return;
         if (step < 0) {
@@ -2490,25 +2482,28 @@ export function createChatInstance({
     // Swarm is a one-shot arm: the next send goes through plan_task multi-model
     // brainstorm/planning, then the pill auto-disarms so it never sticks.
     const swarmBtn = byId('swarm');
-    function swarmArmed() {
-        return swarmBtn?.dataset.armed === 'true';
-    }
-    function setSwarm(armed) {
-        if (swarmBtn) swarmBtn.dataset.armed = armed ? 'true' : 'false';
-    }
-
-    function setSendBusy(busy, label = '') {
-        sendGroup.dataset.busy = busy ? '1' : '0';
-        sendBtn.disabled = busy;
-        if (busy) {
-            sendBtn.textContent = label || 'Sending';
-            sendBtn.title = label || 'Sending';
-        } else {
-            sendBtn.textContent = 'Send';
-            sendBtn.title = 'Send message';
-        }
-    }
-
+    const {
+        resizeChatInput,
+        swarmArmed,
+        setSwarm,
+        setSendBusy,
+        scrollToBottom,
+        updateScrollButton,
+        updateMessagesPadding,
+    } = createComposer({
+        page,
+        input,
+        inputArea,
+        pageHeader,
+        messagesDiv,
+        sendBtn,
+        sendGroup,
+        swarmBtn,
+        scrollBottomBtn,
+        isInstanceVisible,
+        isNearBottom,
+        scrollToBottomAfterLayout,
+    });
     swarmBtn?.addEventListener('click', () => setSwarm(!swarmArmed()));
 
     // Context-mode quick toggle: the owner endpoint hot-applies the setting
@@ -2558,11 +2553,6 @@ export function createChatInstance({
             restoreInputHistory(1);
         }
     });
-    // Dynamic CSS reserve keeps the absolute composer from covering messages.
-    function scrollToBottom() {
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
-
     function scrollToBottomAfterLayout() {
         requestAnimationFrame(() => {
             if (destroyed) return;
@@ -2590,12 +2580,6 @@ export function createChatInstance({
         updateScrollButton();
     }, { passive: true });
 
-    // Round glass "jump to newest" affordance — shown only when the user has
-    // scrolled up away from the bottom, for both the main chat and panels.
-    function updateScrollButton() {
-        if (!scrollBottomBtn) return;
-        scrollBottomBtn.classList.toggle('visible', isInstanceVisible() && !isNearBottom());
-    }
     scrollBottomBtn?.addEventListener('click', () => {
         _savedStick = true;
         scrollToBottomAfterLayout();
@@ -2624,26 +2608,6 @@ export function createChatInstance({
             else _restoring = false;
         };
         requestAnimationFrame(apply);
-    }
-
-    function updateMessagesPadding(options = {}) {
-        const preserveStickiness = options.preserveStickiness !== false;
-        const shouldStick = preserveStickiness && isNearBottom();
-        if (pageHeader && messagesDiv) {
-            // The main header wraps to two rows on narrow viewports. Reserve its
-            // REAL rendered height so scrollTop=0 never hides the first message
-            // behind the absolute overlay; project panels have no overlay header.
-            const headerReserve = Math.max(56, Math.ceil(pageHeader.offsetHeight || 0));
-            page.style.setProperty('--chat-header-reserve', `${headerReserve}px`);
-        }
-        if (inputArea && messagesDiv) {
-            const reserve = Math.max(92, Math.ceil(inputArea.offsetHeight || 0) + 16);
-            // Set on the instance page root so it cascades to #chat-messages
-            // (padding) AND the sibling scroll-to-bottom button (bottom offset).
-            page.style.setProperty('--chat-input-reserve', `${reserve}px`);
-        }
-        if (shouldStick) scrollToBottomAfterLayout();
-        updateScrollButton();
     }
 
     // Kept on the instance so destroy() can disconnect it (the observer was
