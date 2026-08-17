@@ -19,6 +19,7 @@ from ouroboros.tool_access import (
     normalize_root_relative,
     shell_cwd_block_message,
 )
+from ouroboros.tools.tool_catalog import ToolEntry
 from ouroboros.tools.tool_result import ToolResult
 
 
@@ -137,7 +138,7 @@ def _handler_public_params(handler: Callable[..., Any]) -> list[str]:
     return [name for name in params if name not in {"ctx", "_resolved_binding"}]
 
 
-def _entry_public_params(entry: Any) -> list[str]:
+def _entry_public_params(entry: "ToolEntry") -> list[str]:
     try:
         params = entry.schema.get("parameters") or {}
         props = params.get("properties")
@@ -148,7 +149,7 @@ def _entry_public_params(entry: Any) -> list[str]:
     return _handler_public_params(entry.handler)
 
 
-def _entry_has_public_param_schema(entry: Any) -> bool:
+def _entry_has_public_param_schema(entry: "ToolEntry") -> bool:
     try:
         params = entry.schema.get("parameters") or {}
         return isinstance(params.get("properties"), dict)
@@ -156,7 +157,7 @@ def _entry_has_public_param_schema(entry: Any) -> bool:
         return False
 
 
-def _normalize_tool_call_args(entry: Any, args: dict[str, Any]) -> None:
+def _normalize_tool_call_args(entry: "ToolEntry", args: dict[str, Any]) -> None:
     tool_name = entry.name
     accepted = set(_entry_public_params(entry))
     aliases: dict[str, str] = {}
@@ -169,7 +170,7 @@ def _normalize_tool_call_args(entry: Any, args: dict[str, Any]) -> None:
         args.pop("root", None)
 
 
-def _prepare_public_builtin_args(entry: Any, args: dict[str, Any]) -> str:
+def _prepare_public_builtin_args(entry: "ToolEntry", args: dict[str, Any]) -> str:
     """Normalize and validate only the model-visible builtin argument surface.
 
     This runs after capability/lineage availability checks but before path
@@ -273,7 +274,7 @@ def _binding_error_text(name: str, root: str, exc: Exception) -> str | ToolResul
     return text
 
 
-def _format_tool_arg_error(entry: Any) -> str:
+def _format_tool_arg_error(entry: "ToolEntry") -> str:
     params = _entry_public_params(entry)
     accepted = ", ".join(params) if params else "none"
     return (

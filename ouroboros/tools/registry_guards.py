@@ -261,11 +261,7 @@ def _light_mode_payload_mutation_allowed(
 
 
 def _resource_allowed(ctx: Any, key: str) -> bool:
-    metadata = (
-        getattr(ctx, "task_metadata", {})
-        if isinstance(getattr(ctx, "task_metadata", {}), dict)
-        else {}
-    )
+    metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
     if not contract and isinstance(getattr(ctx, "task_contract", None), dict):
         contract = getattr(ctx, "task_contract")
@@ -302,11 +298,7 @@ def _disabled_tools(ctx: Any) -> frozenset:
     available and the web<->network cross-implication in ``_resource_allowed``
     never fires.
     """
-    metadata = (
-        getattr(ctx, "task_metadata", {})
-        if isinstance(getattr(ctx, "task_metadata", {}), dict)
-        else {}
-    )
+    metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
     if not contract and isinstance(getattr(ctx, "task_contract", None), dict):
         contract = getattr(ctx, "task_contract")
@@ -424,9 +416,11 @@ def _capability_resource_guard_result(
 # that broader set includes child spawning, blocking waits, and browser page
 # interaction. New mutators therefore cannot silently become reachable.
 _EPHEMERAL_ALLOWED_TOOLS = frozenset({
+    # read / inspect
     "read_file", "query_code", "search_code", "list_files", "web_search", "browse_page",
     "chat_history", "recent_tasks", "get_task_result", "vcs_diff", "vcs_status",
     "analyze_screenshot", "vlm_query",
+    # decide / route / spawn-owner-task / reply
     "route_to_project", "promote_chat_to_task", "steer_task", "list_projects", "send_photo",
 })
 
@@ -549,11 +543,7 @@ def _subagent_and_update_guard_result(
     return None
 
 
-def _task_constraint_path_allowed(
-    path_text: str,
-    constraint: Optional[TaskConstraint],
-    drive_root: pathlib.Path,
-) -> bool:
+def _task_constraint_path_allowed(path_text: str, constraint: Optional[TaskConstraint], drive_root: pathlib.Path) -> bool:
     return is_skill_payload_path(
         drive_root,
         path_text or "",

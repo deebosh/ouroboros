@@ -346,7 +346,6 @@ def _detect_owner_skill_attest_self_call(text_lower: str) -> bool:
     — which Starlette decodes back to ``attest-review`` before routing — cannot slip past the
     literal match (decode twice to catch double-encoding)."""
     import urllib.parse
-
     decoded = urllib.parse.unquote(urllib.parse.unquote(text_lower)).lower()
     text = f"{text_lower} {decoded}"
     return "/api/owner/skills/" in text and "attest-review" in text
