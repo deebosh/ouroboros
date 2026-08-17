@@ -1119,7 +1119,11 @@ Before every commit, verify the following:
   normal path — never a silent gap. On the natural path the owed row is
   registered immediately BEFORE the durable result write (projection-over-
   replay: a crash in the window leaves an owed row boot replay delivers; no
-  boot scan over task_results).   The intent and delivery registries read STRICT:
+  boot scan over task_results).   The intent and delivery registries read STRICT
+  in every mutator, not only at the ingress — claim, release, settle and scope
+  fail closed on the same typed error the mint raises, because a mutator that
+  read softly would answer "no active intent" over an unreadable file and drop
+  the claim-first fence:
   a corrupt projection refuses the mutation loudly instead of collapsing to
   `{}` and overwriting every active row — and strictness reaches ROWS, not
   just containers (GR6-3): a malformed pending/intent row or `delivered`

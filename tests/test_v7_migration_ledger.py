@@ -692,6 +692,30 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
     registry_extraction_no_facade_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
+    # S6 (delegation/cancellation targeted fixes): no symbol moves — every row
+    # is the SAME identity with a stated behaviour delta, so the owner is the
+    # old path and the facade cell is "-". D03 is the one class these rows
+    # share: a durable-registry mutator that could not read its file stops
+    # answering as if the record were absent.
+    s6_delta_rows = {
+        identity: identity for identity in (
+            "ouroboros/cancel_intents.py::claim_intent",
+            "ouroboros/cancel_intents.py::release_claim",
+            "ouroboros/cancel_intents.py::settle_intent",
+            "ouroboros/cancel_intents.py::mark_intent_scope",
+            "ouroboros/cancel_intents.py::mark_finalize_control_drained",
+            "ouroboros/cancel_intents.py::_load_intents",
+        )
+    }
+    s6_disclosure_rows = {
+        identity: identity for identity in (
+            "ouroboros/cancel_intents.py::_SCHEMA_VERSION",
+        )
+    }
+    s6_rows = {**s6_delta_rows, **s6_disclosure_rows}
+    implemented.update(s6_rows)
+    existing_process_owner_rows.update(s6_rows)
+    registry_extraction_no_facade_rows.update(s6_rows)
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -728,6 +752,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 if row["old path/symbol"] == "tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality"
                 else "D07"
                 if row["old path/symbol"] in s2_panic_delta_rows
+                else "D03"
+                if row["old path/symbol"] in s6_delta_rows
                 else "D02"
                 if row["old path/symbol"] in {
                     "ouroboros/tools/registry.py::ToolEntry",
@@ -842,7 +868,9 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         else:
             assert upstream["status"] == "pending"
             expected_delta = (
-                "D02"
+                "D03"
+                if row["old path/symbol"] in s6_delta_rows
+                else "D02"
                 if row["old path/symbol"] in {
                     "ouroboros/tools/registry.py::ToolRegistry",
                     # T1: the classification cutover is a spec 4.3.3 tool-domain delta.
