@@ -392,6 +392,29 @@ def test_python_symbol_resolution_is_lexical_and_accepts_only_module_reexports(t
         assert v7_migration._facade_exists(tmp_path, "surface.js", symbol) is is_public
 
 
+def test_javascript_dotted_identity_resolves_exactly_one_nested_declaration(tmp_path):
+    js = tmp_path / "factory.js"
+    js.write_text(
+        "export function createThing({ el }) {\n"
+        "    const LIMIT = 3;\n"
+        "    function inner() { let node = el; return node; }\n"
+        "    function other() { let node = null; return node; }\n"
+        "    return { inner, other };\n"
+        "}\n"
+        "const createTwin = () => { function inner() {} };\n",
+        encoding="utf-8",
+    )
+    assert v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.inner")
+    assert v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.LIMIT")
+    assert v7_migration._symbol_exists(tmp_path, "factory.js", "createTwin.inner")
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.node")  # declared twice: ambiguous, fail closed
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.missing")
+    assert v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.inner.node")  # deeper segments narrow the scope
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "createThing.other.LIMIT")  # LIMIT is not declared inside other
+    assert not v7_migration._symbol_exists(tmp_path, "factory.js", "LIMIT.inner")  # head must be a top-level function/class
+    assert not v7_migration._facade_exists(tmp_path, "factory.js", "createThing.inner")  # nested helpers are never a facade
+
+
 def test_migration_checker_requires_a_row_for_a_python_symbol_moved_without_facade(tmp_path, monkeypatch):
     repo = _committed_fixture_repo(tmp_path, monkeypatch, {
         "MIGRATION_v7.md": EMPTY_MIGRATION_TABLE,

@@ -421,6 +421,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                               "tests/test_git_review_pipeline.py::_get_registry_module",
                               "tests/test_git_review_pipeline.py::_make_ctx"}
     web_extractions = {f"web/modules/chat.js::{symbol}": f"web/modules/{owner}::{symbol}" for owner, symbols in {"chat_card_state.js": "liveLineRowToggleKey clearStickyCardState COLLAPSED_ACTIVITY_MAX boundActivityPreview projectCollapsedActivity isTerminalTaskPhase", "chat_controls.js": "shouldFirePanic confirmAndSendPanic", "chat_render_batch.js": "insertTimelineNode", "costs.js": "headerBudgetPresentation taskCostMeta taskCostProjection mergeStickyCostMeta", "utils.js": "rawTimestampEpoch"}.items() for symbol in symbols.split()}
+    # createChatInstance closure helpers moved into per-instance factories (no facade: they were never exported)
+    web_extractions.update({f"web/modules/chat.js::createChatInstance.{symbol}": f"web/modules/{owner}::{factory}.{symbol}" for owner, factory, symbols in (
+        ("chat_timeline_anchor.js", "createTimelineAnchors", "NEAR_BOTTOM_THRESHOLD_PX isNearBottom captureVisibleTimelineAnchor restoreVisibleTimelineAnchor"),
+        ("chat_message_identity.js", "createMessageIdentity", "buildMessageKey rememberMessageKey formatMsgTime stampNodeTimestamp getSenderLabel"),
+        ("chat_document_bubble.js", "createDocumentBubbles", "buildDocumentBubble documentMessageKey appendDocumentBubble"),
+        ("chat_subagent_routing.js", "createSubagentRouting", "setSubagentParent summarizeSubagentCardFrame updateSubagentCardFromEvent routeSubagentProgressToCard routeSubagentFinalMessageToCard routeSubagentTerminalToCard"),
+    ) for symbol in symbols.split()})
     implemented.update(registry_core_rows)
     implemented.update(registry_resolution_rows)
     implemented.update(registry_guard_rows)
@@ -535,6 +542,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(web_extractions)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
+    registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))

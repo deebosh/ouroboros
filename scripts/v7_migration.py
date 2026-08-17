@@ -555,11 +555,44 @@ def _symbol_exists(repo: pathlib.Path, path: str, symbol: str, ref: str = "") ->
             found.append(symbol)  # module-scope assignment/re-export (ordinary imports stay references)
         return len(found) == 1
     if path.endswith(".js"):
+        if "." in symbol: return _js_nested_declaration_exists(text, symbol)
         surface_js, _reason = _js_module_surface(text)
         if surface_js is None: return False  # fail closed: no structural parser, no resolution
         bindings, exports, _wildcard = surface_js
         return symbol in exports or (symbol in bindings and bindings[symbol][0] != "import")
     return False  # Qualified references require a structural parser for their language.
+_JS_DECLARATION_STATEMENT_TYPES = _JS_FUNCTION_DECLARATION_TYPES | {"class_declaration", "lexical_declaration", "variable_declaration"}
+def _js_nested_declaration_exists(text: str, qualname: str) -> bool:
+    """Resolve a dotted JavaScript identity (``outer.inner[.deeper]``) lexically.
+
+    The JavaScript twin of the Python qualname walk: ``outer`` must be exactly
+    one top-level function/class binding and every further segment exactly one
+    function/class/lexical declaration anywhere inside the previous match, so
+    a closure helper that moved into an instance factory stays ledger-addressable
+    without being exported. Ambiguity (a name declared in two nested scopes) and
+    parse failure resolve to False.
+    """
+    parser = _js_parser()
+    if parser is None: return False
+    tree = parser.parse(text.encode("utf-8", "replace"))
+    if tree.root_node.has_error: return False
+    head, *rest = qualname.split(".")
+    if not head or not rest or not all(rest): return False
+    def declared_kind(node: Any, name: str) -> str:
+        return _js_declaration_bindings(node).get(name, "") if node.type in _JS_DECLARATION_STATEMENT_TYPES else ""
+    scopes = []
+    for statement in tree.root_node.named_children:
+        candidate = statement.child_by_field_name("declaration") if statement.type == "export_statement" else statement
+        if candidate is not None and declared_kind(candidate, head) in {"function", "class"}: scopes.append(candidate)
+    for name in rest:
+        if len(scopes) != 1: return False
+        found, stack = [], list(scopes[0].named_children)
+        while stack:
+            node = stack.pop()
+            if declared_kind(node, name): found.append(node)
+            stack.extend(node.named_children)
+        scopes = found
+    return len(scopes) == 1
 def _facade_exists(repo: pathlib.Path, path: str, symbol: str) -> bool:
     """Resolve a facade/public-contract cell; JavaScript facades must be exported."""
     if not path.endswith(".js"):
