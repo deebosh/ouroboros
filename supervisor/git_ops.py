@@ -17,13 +17,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from supervisor.state import (
     append_jsonl, atomic_write_text, load_state, save_state,
 )
+from ouroboros import config as _config
 from ouroboros.utils import utc_now_iso
 
 log = logging.getLogger(__name__)
 
 
-REPO_DIR: pathlib.Path = pathlib.Path.home() / "Ouroboros" / "repo"
-DRIVE_ROOT: pathlib.Path = pathlib.Path.home() / "Ouroboros" / "data"
+# Pre-``init`` defaults follow the same environment-aware roots as the rest of the
+# runtime (``ouroboros.config``), so a process that never calls ``init`` — an
+# isolated test or smoke — cannot write supervisor rows into the live data drive.
+REPO_DIR: pathlib.Path = pathlib.Path(_config.REPO_DIR)
+DRIVE_ROOT: pathlib.Path = pathlib.Path(_config.DATA_DIR)
 REMOTE_URL: str = ""
 BRANCH_DEV: str = "ouroboros"
 BRANCH_STABLE: str = "ouroboros-stable"
