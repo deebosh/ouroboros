@@ -498,7 +498,6 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS": "D02",
         # S3, spec 4.3.8: the safety module's import-time supervisor edge.
         "ouroboros/safety.py::update_budget_from_usage": "D05",
-        "ouroboros/safety.py::update_budget_from_usage": "D05",
         # S3, spec 4.3.6: three worker-pool globals nothing read.
         "supervisor/workers.py::SOFT_TIMEOUT_SEC": "D04",
         "supervisor/workers.py::HARD_TIMEOUT_SEC": "D04",
@@ -610,8 +609,6 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # semantic delta at their own path — the retired key and the declared miss
     # disposition — so they are implemented rows with a D06 id, not moves.
     s3_semantic_delta_ids = {
-        "supervisor/events.py::EVENT_HANDLERS": "D06",
-        "supervisor/events.py::dispatch_event": "D06",
         "supervisor/events.py::EVENT_HANDLERS": "D06",
         "supervisor/events.py::dispatch_event": "D06",
         # spec 4.3.6: the supervisor half of the three retired no-op settings keys.
