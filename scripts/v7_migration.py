@@ -585,12 +585,19 @@ def _symbol_exists(repo: pathlib.Path, path: str, symbol: str, ref: str = "") ->
         except SyntaxError:
             return False
         found: list[str] = []
-        def walk(body: list[ast.stmt], scope: tuple[str, ...] = ()) -> None:
+        def walk(body: list[ast.stmt], scope: tuple[str, ...] = (), in_class: bool = False) -> None:
             for node in body:
                 if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                     qualname = ".".join((*scope, node.name))
                     if qualname == symbol: found.append(qualname)
-                    walk(node.body, (*scope, node.name))
+                    walk(node.body, (*scope, node.name), isinstance(node, ast.ClassDef))
+                elif in_class and (isinstance(node, ast.Assign) or (isinstance(node, ast.AnnAssign) and node.value is not None)):
+                    # Class-body attribute assignments are declarations too: a ledger row
+                    # may relocate `Owner._ATTR` between class bodies (the llm mixin split
+                    # moved 15 of them). Duplicate assignments fail closed via len(found).
+                    for target in ([node.target] if isinstance(node, ast.AnnAssign) else node.targets):
+                        for name in _assignment_names(target):
+                            if ".".join((*scope, name)) == symbol: found.append(symbol)
         walk(ast.parse(text).body)
         if not found and any(kind in _PY_LOCAL_KINDS or kind == "reexport"
                              for kind, _provider, _symbol in surface.get(symbol, frozenset())):

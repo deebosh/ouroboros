@@ -807,6 +807,15 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     }
     implemented.update(s2_panic_delta_rows)
     existing_process_owner_rows.update(s2_panic_delta_rows)
+    # Integration fix (D13): supervisor/git_ops pre-init module defaults follow the
+    # environment-aware roots from ouroboros.config instead of a hardcoded
+    # ~/Ouroboros; in-place, no facade — same shape as the panic row above.
+    git_ops_delta_rows = {
+        "supervisor/git_ops.py::DRIVE_ROOT": "supervisor/git_ops.py::DRIVE_ROOT",
+        "supervisor/git_ops.py::REPO_DIR": "supervisor/git_ops.py::REPO_DIR",
+    }
+    implemented.update(git_ops_delta_rows)
+    existing_process_owner_rows.update(git_ops_delta_rows)
     # No facade row: the symbol keeps its own path and name, so there is nothing to
     # re-export — only its keyword surface gained an optional argument.
     # v7 stream L-A lane L2b: verbatim extraction of the review substrate's record,
@@ -851,6 +860,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(l2b_skill_review_rows)
     existing_process_owner_rows.update(test_split_rows)
     registry_extraction_no_facade_rows.update(s2_panic_delta_rows)
+    registry_extraction_no_facade_rows.update(git_ops_delta_rows)
     registry_extraction_no_facade_rows.update(set(test_split_rows) - test_split_facade_rows)
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
     registry_extraction_no_facade_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
@@ -944,10 +954,10 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for symbol in symbols.split()
     }
     llm_mixin_symbols_by_owner = {
-        ("llm_attempt.py", "_PayloadCachePolicyMixin"): "_normalize_payload_cache_ttl _payload_cache_breakpoints _pop_cache_breakpoint_disclosure",
-        ("llm_capability_policy.py", "_CapabilityPolicyMixin"): "_apply_rejected_param_cache _clamp_effort_for_model _effort_ceiling_for _effort_floor_for _fetch_openrouter_capabilities _get_supported_parameters _known_rejected_params _mandatory_value_rejection _parameter_rejection_error _payload_effort _pop_effort_clamp_disclosure _record_effort_ceiling _record_effort_floor _remember_rejected_params _retry_without_optional_sampling _set_payload_effort clamp_effort_for_route metadata_fetch_attempted_and_failed openrouter_context_length",
+        ("llm_attempt.py", "_PayloadCachePolicyMixin"): "_MAX_CACHE_BREAKPOINTS _normalize_payload_cache_ttl _payload_cache_breakpoints _pop_cache_breakpoint_disclosure",
+        ("llm_capability_policy.py", "_CapabilityPolicyMixin"): "_CAPABILITIES_FETCH_OK _CONTEXT_LENGTH_CACHE _EFFORT_CEILING_CACHE _EFFORT_CEILING_LOADED _EFFORT_FLOOR_CACHE _EFFORT_FLOOR_LOADED _EFFORT_FLOOR_RELOAD_SEC _NESTED_REASONING_PARAM _REJECTED_PARAMS_CACHE _REJECTED_PARAMS_LOADED _REJECTED_PARAMS_RELOAD_SEC _SUPPORTED_PARAMS_CACHE _SUPPORTED_PARAMS_FETCHED _apply_rejected_param_cache _clamp_effort_for_model _effort_ceiling_for _effort_floor_for _fetch_openrouter_capabilities _get_supported_parameters _known_rejected_params _mandatory_value_rejection _parameter_rejection_error _payload_effort _pop_effort_clamp_disclosure _record_effort_ceiling _record_effort_floor _remember_rejected_params _retry_without_optional_sampling _set_payload_effort clamp_effort_for_route metadata_fetch_attempted_and_failed openrouter_context_length",
         ("llm_routing.py", "_ProviderRoutingMixin"): "_explicit_cache_affinity_identity _get_async_remote_client _get_client _get_local_client _get_remote_client _make_no_proxy_async_client _make_no_proxy_client _no_proxy_timeout _openrouter_session_identity _parse_provider_model _prompt_cache_identity _qualified_model_name _resolve_remote_target probe_oversized_context",
-        ("llm_messages.py", "_MessageShapingMixin"): "_content_with_system_notice_marker _copy_messages_with_cache_policy _has_openrouter_reasoning_details _has_replayed_reasoning_metadata _is_deferrable_image_user_turn _model_family _normalize_system_message_placement _replace_image_blocks_with_placeholder _strip_openrouter_roundtrip_metadata sanitize_reasoning_on_model_switch",
+        ("llm_messages.py", "_MessageShapingMixin"): "_REASONING_CONTENT_BLOCK_TYPES _content_with_system_notice_marker _copy_messages_with_cache_policy _has_openrouter_reasoning_details _has_replayed_reasoning_metadata _is_deferrable_image_user_turn _model_family _normalize_system_message_placement _replace_image_blocks_with_placeholder _strip_openrouter_roundtrip_metadata sanitize_reasoning_on_model_switch",
         ("llm_fallback.py", "_RecoveryLadderMixin"): "_create_chat_completion_with_retries _create_chat_completion_with_retries_async _is_http_status _is_transient_body_error _openrouter_signature_retry_kwargs _param_retry_kwargs_for_body_error _provider_body_error _reroute_kwargs_for_body_error _reroute_same_model_kwargs _retry_without_prompt_cache_parameter _rotate_openrouter_session_affinity _strip_kwargs_for_encrypted_body_error",
         ("llm_anthropic.py", "_AnthropicLaneMixin"): "_anthropic_blocks_from_content _anthropic_image_block _build_anthropic_messages _build_anthropic_tool_choice _cache_write_split _chat_anthropic _coalesce_anthropic_message _normalize_anthropic_response _sanitize_anthropic_tool_result_content _stringify_anthropic_content",
         ("llm_gigachat.py", "_GigaChatLaneMixin"): "_chat_gigachat _get_gigachat_client _gigachat_function_result _gigachat_messages _gigachat_text _normalize_gigachat_response",
@@ -1013,6 +1023,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 if row["old path/symbol"] == "tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality"
                 else "D07"
                 if row["old path/symbol"] in s2_panic_delta_rows
+                else "D13"
+                if row["old path/symbol"] in git_ops_delta_rows
                 else "D08"
                 if row["old path/symbol"] in s6_delta_rows
                 else "D02"
