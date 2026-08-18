@@ -25,6 +25,11 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_server_web_allowed_by_task ACCEPTANCE_REASON_UNSPECIFIED ACCEPTANCE_DECISION_REASONS _set_acceptance_decision _collect_acceptance_obligations "
         "_reopen_obligation_row _open_acceptance_obligations _dispose_obligations_on_clean_pass _format_obligations_clause _record_forced_acceptance_bypass"
     ),
+    "loop_acceptance_review": (
+        "_ACCEPTANCE_REVIEW_CHECKLIST _TaskAcceptanceContext _acceptance_dialogue_quorum _attach_dialogue_to_host_run _mark_agent_acceptance_runs_advisory "
+        "_latest_agent_acceptance_evidence _build_host_acceptance_evidence _execute_task_acceptance_panel _record_host_acceptance_run _set_applied_host_acceptance_impact "
+        "_apply_task_acceptance_result _record_acceptance_infra_failure _prior_acceptance_run _direct_context_fence_state _run_task_acceptance_review_once"
+    ),
 }
 
 

@@ -51,6 +51,20 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_reopen_obligation_row", "_set_acceptance_decision", "_task_acceptance_eligible",
         "get_task_review_mode"
     })),
+    "ouroboros/loop_acceptance_review.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "_ACCEPTANCE_REVIEW_CHECKLIST", "_TaskAcceptanceContext", "_acceptance_dialogue_quorum",
+        "_append_or_merge_user_message", "_apply_task_acceptance_result", "_attach_dialogue_to_host_run",
+        "_begin_task_acceptance_fence", "_build_host_acceptance_evidence", "_collect_acceptance_obligations",
+        "_direct_context_fence_state", "_dispose_obligations_on_clean_pass", "_end_task_acceptance_fence",
+        "_execute_task_acceptance_panel", "_extract_plain_text_from_content", "_format_obligations_clause",
+        "_latch_final_answer_marker", "_latest_agent_acceptance_evidence",
+        "_mark_agent_acceptance_runs_advisory", "_mark_root_acceptance_checkpoint",
+        "_open_acceptance_obligations", "_prior_acceptance_run", "_record_acceptance_infra_failure",
+        "_record_host_acceptance_run", "_set_acceptance_decision", "_set_applied_host_acceptance_impact",
+        "_supersede_task_acceptance_for_evidence_change", "_supersede_task_acceptance_for_owner_followup",
+        "_task_acceptance_eligible", "_task_acceptance_owner_generation_changed",
+        "_task_acceptance_subtree_snapshot", "get_review_enforcement", "get_task_review_mode"
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),
