@@ -90,7 +90,7 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   flag to the 20 review-stack leaves the literal had silently missed) · D33 §1.9/№8-pattern
 #   module-handle reads of monkeypatchable loop facade bindings in the L-B leaves (the ratified
 #   supervisor mechanism applied to the loop stream with its own id per the §1.9-1 "separate delta
-#   id" rule; owner ratification pending — batch №17; leaves hold no mutable state, the handle
+#   id" rule; owner-ratified, batch №17 answer 2=A; leaves hold no mutable state, the handle
 #   exists so tests patching loop.X keep intercepting).
 # "D01" (reserved for §4.3.1 size-ratchet layers) was retired unused (owner-ratified, batch №11):
 # ratchet-layer changes are governed by size_ratchet.json + scripts/regenerate_size_ratchet.py, not

@@ -22,7 +22,7 @@ ratchet layers are governed by the size-ratchet manifest, not ledger rows). "D10
 the historical owner decision retiring `claude_code_edit` (see docs/DEVELOPMENT.md).
 "D12", "D14"–"D17", "D19"–"D22", "D26" and "D28"–"D30" are skipped: runtime prose and
 docs already use them as sprint-decision labels (e.g. review_execution.py "(D12)",
-review_substrate.py "(D19)", ARCHITECTURE.md "(D30)"; upstream v6.103.0 plan_spec.py added "(D32)"+); D33 is the L-B loop module-handle delta (ratification pending, batch №17); the next free id is D34 unless
+review_substrate.py "(D19)", ARCHITECTURE.md "(D30)"; upstream v6.103.0 plan_spec.py added "(D32)"+); D33 is the L-B loop module-handle delta (owner-ratified, batch №17 answer 2=A); the next free id is D34 unless
 a fresh `git grep -n "\bDnn\b"` over the whole tree proves otherwise — always grep
 before assigning. The module-handle delta — called "D10" in two immutable S3b commit
 messages and "D12" in one fix commit — is D18 here, and here is the authority.
