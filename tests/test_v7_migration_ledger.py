@@ -1197,6 +1197,21 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(merge_adopt_rows)
     existing_process_owner_rows.update(merge_adopt_rows)
     registry_extraction_no_facade_rows.update(merge_adopt_no_facade_rows)
+    # D02: the upstream v6.103.0 silent-ignore pin for a vacuous disposition is
+    # re-pointed at the ratified disclosure contract (note + preserved native meta);
+    # the replacement is named in the ledger so the SSOT, not just the commit
+    # message, discloses that an upstream pin was replaced.
+    _d02_repinned_old = (
+        "tests/test_plan_review.py::TestPlanReviewDispositionEnvelope"
+        ".test_vacuous_disposition_beside_a_plan_is_ignored"
+    )
+    implemented[_d02_repinned_old] = (
+        "tests/test_plan_review.py::TestPlanReviewDispositionEnvelope"
+        ".test_vacuous_disposition_beside_a_plan_is_ignored_with_disclosure"
+    )
+    existing_process_owner_rows.add(_d02_repinned_old)
+    registry_extraction_no_facade_rows.add(_d02_repinned_old)
+    s3_semantic_delta_ids[_d02_repinned_old] = "D02"
     # D31 (post-merge batch, spec 1.14-2): the review trust boundary became an anchor
     # set plus classification by name; the hand-list and its issubset test are the
     # replaced identities, both implemented on the WIP with facade "-".
