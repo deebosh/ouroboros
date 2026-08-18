@@ -510,7 +510,9 @@ def test_promote_chat_description_carries_ground_truth_probe():
 def test_degraded_owner_line_bounds_each_reason():
     import inspect
 
-    from ouroboros import loop as loop_mod
+    # v7 L-B split: the degraded-owner-line writer lives with the host
+    # acceptance review owner; loop.py re-exports it.
+    from ouroboros import loop_acceptance_review as loop_mod
 
     src = inspect.getsource(loop_mod)
     assert "more in the task result" in src  # overflow disclosure, not silence

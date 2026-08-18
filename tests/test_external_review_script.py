@@ -116,6 +116,10 @@ def test_the_contributor_flow_import_closure_stays_inside_the_boundary():
     )
     agent_side = {
         "ouroboros/deep_self_review.py",
+        # The task-loop's host acceptance review (v7 L-B split of loop.py): an
+        # agent-side surface like plan_review — same proof, none of the trust-path
+        # modules above import it.
+        "ouroboros/loop_acceptance_review.py",
         "ouroboros/tools/git_review_cycle.py",
         "ouroboros/tools/plan_review.py",
         "ouroboros/tools/plan_review_runtime.py",

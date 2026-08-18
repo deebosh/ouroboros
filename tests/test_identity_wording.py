@@ -20,14 +20,20 @@ def test_prompts_do_not_infer_current_human_from_authors():
 
 def test_live_task_message_marker_uses_my_human_wording():
     system = (REPO_ROOT / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
-    loop = (REPO_ROOT / "ouroboros" / "loop.py").read_text(encoding="utf-8")
+    # v7 L-B split: the drain caller and the marker owner live in loop leaves;
+    # the negative sweeps the whole loop family so no leaf revives the old wording.
+    loop_dir = REPO_ROOT / "ouroboros"
+    loop_family = "".join(
+        path.read_text(encoding="utf-8")
+        for path in [loop_dir / "loop.py", *sorted(loop_dir.glob("loop_*.py"))]
+    )
     tools = (REPO_ROOT / "ouroboros" / "tools" / "core.py").read_text(encoding="utf-8")
 
     assert "[Message from my human]" in system
-    assert "_owner_marked_content(dmsg)" in loop
+    assert "_owner_marked_content(dmsg)" in loop_family
     assert "[Message from my human]" in tools
     assert "[Owner message during task]" not in system
-    assert "[Owner message during task]" not in loop
+    assert "[Owner message during task]" not in loop_family
 
 
 def test_system_prompt_carries_outcome_honesty_and_capability_acquisition():
