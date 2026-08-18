@@ -73,8 +73,10 @@ test('the hurry path never creates a chat bubble in either surface', () => {
     // Pinned at source: the chat handler consumes owner_hurry BEFORE the
     // timeline summarizer and returns; the shared flow acknowledges via toast
     // only; neither surface routes hurry anywhere near addMessage.
-    assert.match(chat, /eventType === 'owner_hurry'/);
-    assert.match(chat, /ownerHurryProjection\(evt\)\.applied/);
+    // The log-event consumer moved into the task-frame router (W3 wave D).
+    const frames = readFileSync(new URL('../modules/chat_task_frames.js', import.meta.url), 'utf8');
+    assert.match(frames, /eventType === 'owner_hurry'/);
+    assert.match(frames, /ownerHurryProjection\(evt\)\.applied/);
     assert.match(menuSrc, /showToast\(/);
     assert.doesNotMatch(menuSrc, /addMessage|send_message|chat\.jsonl/);
 });

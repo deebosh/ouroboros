@@ -165,9 +165,10 @@ test('sticky single-flight never swallows the post-completion resync', () => {
     // awaitInitialHydration shortcut.
     const fn = chatSource.slice(
         chatSource.indexOf('function scheduleHistorySync('),
-        // applyLiveCardState moved to the live-card store (W3 wave D); the
-        // next chat.js declaration bounds the same scheduler region.
-        chatSource.indexOf('function appendTaskSummaryToLiveCard('),
+        // applyLiveCardState and the task-frame router moved to their own
+        // owners (W3 wave D); the next chat.js declaration bounds the same
+        // scheduler region.
+        chatSource.indexOf('function addMessage('),
     );
     assert.match(fn, /syncHistory\(\{ includeUser: false \}\)/);
     assert.doesNotMatch(fn, /awaitInitialHydration/);

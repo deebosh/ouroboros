@@ -166,7 +166,9 @@ test('a timeout-retry root gains Cancel run: the host marker is the truth', () =
     // A retry root's frame carries root_task_id naming the ORIGINAL task, so any
     // structural frameRoot===taskId gate would reject exactly the marker the
     // supervisor attested. Pinned at source: the handler trusts the marker alone.
-    const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+    // The progress handler moved into the task-frame router (W3 wave D); the
+    // pinned patterns are unchanged.
+    const chat = readFileSync(new URL('../modules/chat_task_frames.js', import.meta.url), 'utf8');
     assert.match(chat, /msg\?\.cancelable === true && msg\?\.task_id\) markTaskCancelable/);
     assert.doesNotMatch(chat, /frameRoot === taskId\) *&&[\s\S]{0,80}markTaskCancelable/);
     // ...and the eligibility reducer still refuses subagent/finished/reusable cards,

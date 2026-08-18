@@ -72,12 +72,14 @@ test('an expiry kill still reads Cancelled — honesty outranks the soft-stop la
 test('the chat.js terminal seam consumes the shared soft-stop branch', () => {
     // Pinned at source: the live-card done headline branches through the SAME
     // shared predicate/constants (no divergent inline string), and the details
-    // panel body carries the owner-request marker.
-    assert.match(chat, /taskStoppedWithSummary\(msg \|\| \{\}\)/);
-    assert.match(chat, /\? OWNER_STOP_DONE_HEADLINE/);
-    assert.match(chat, /softStopped \? OWNER_STOP_DETAIL_MARKER : ''/);
-    assert.match(chat, /\[softStopDetail, reviewDetails\]\.filter\(Boolean\)\.join\('\\n'\)/);
-    assert.match(chat, /visible: Boolean\(softStopDetail \|\| reviewDetails\)/);
+    // panel body carries the owner-request marker. The seam moved with
+    // appendTaskSummaryToLiveCard into the task-frame router (W3 wave D).
+    const frames = readFileSync(new URL('../modules/chat_task_frames.js', import.meta.url), 'utf8');
+    assert.match(frames, /taskStoppedWithSummary\(msg \|\| \{\}\)/);
+    assert.match(frames, /\? OWNER_STOP_DONE_HEADLINE/);
+    assert.match(frames, /softStopped \? OWNER_STOP_DETAIL_MARKER : ''/);
+    assert.match(frames, /\[softStopDetail, reviewDetails\]\.filter\(Boolean\)\.join\('\\n'\)/);
+    assert.match(frames, /visible: Boolean\(softStopDetail \|\| reviewDetails\)/);
 });
 
 // --- MINOR 7 (Q4): cancel_receipt rendered as 📋 System, not assistant ---
