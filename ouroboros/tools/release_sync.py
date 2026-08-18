@@ -109,6 +109,11 @@ VERSION_CARRIER_SPANS: Tuple[VersionCarrierSpan, ...] = (
         ),
     ),
     VersionCarrierSpan("architecture_header", "docs/ARCHITECTURE.md", _ARCH_HEADER_RE),
+    # uv.lock mirrors the editable root package version (ARCHITECTURE "Version
+    # carriers"); the descriptor rides the same structural regex sync_version
+    # already writes through, so a managed-update or tactical-rebase conflict in
+    # this section resolves by span policy instead of falling to assisted.
+    VersionCarrierSpan("uv_lock_root_package", "uv.lock", _UV_LOCK_ROOT_RE),
 )
 
 CARRIER_SPAN_PATHS = frozenset(span.path for span in VERSION_CARRIER_SPANS)

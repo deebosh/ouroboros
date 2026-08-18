@@ -150,12 +150,16 @@ def test_the_flag_unions_the_computed_base_flow_closure():
         ).stdout
 
     head = git_bytes(["rev-parse", "HEAD"]).decode().strip()
-    closure = flow_import_closure(head, git_bytes, full_walk=_is_review_substrate_path)
+    hybrid = flow_import_closure(head, git_bytes, full_walk=_is_review_substrate_path)
+    closure = flow_import_closure(head, git_bytes, conservative=True)
     for rel in (
         "ouroboros/tools/git_plumbing.py",
         "ouroboros/context_layout.py",
         "ouroboros/llm.py",
         "ouroboros/tools/git_review_cycle.py",
+        # The audit-proven third-round chain: review_state -> semantic_dedup
+        # lazily imports llm_observability; only the conservative walk sees it.
+        "ouroboros/llm_observability.py",
     ):
         assert rel in closure, rel
     # The gate predicate is the UNION: name-blind closure members flag too.
@@ -166,8 +170,12 @@ def test_the_flag_unions_the_computed_base_flow_closure():
     assert flagged == [
         "ouroboros/tools/git_plumbing.py", "ouroboros/context_layout.py",
     ]
-    # And the closure never quietly shrinks to nothing.
-    assert len(closure) > 80, len(closure)
+    # Machine-derived invariants instead of a bare cardinality floor: the
+    # conservative flag-closure dominates the execution-semantics hybrid, and
+    # the hybrid already contains the whole declared substrate reachable from
+    # the entries -- so a walker regression cannot silently shrink either set.
+    assert closure >= hybrid
+    assert len(hybrid) > 80, len(hybrid)
 
 
 def test_every_review_named_module_carries_a_boundary_decision():

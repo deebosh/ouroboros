@@ -487,7 +487,7 @@ def finalize_contributor_outcome(
     return exit_code, outcome
 
 
-def flow_import_closure(base_sha: str, git_bytes, full_walk=None) -> frozenset[str]:
+def flow_import_closure(base_sha: str, git_bytes, full_walk=None, conservative: bool = False) -> frozenset[str]:
     """Repo-relative import closure of the contributor entry scripts, read from
     the BASE tree (the trusted rerun re-executes the BASE flow, so the protected
     surface is what the BASE flow imports). Entry scripts AND modules the
@@ -495,7 +495,10 @@ def flow_import_closure(base_sha: str, git_bytes, full_walk=None) -> frozenset[s
     their functions) contribute every import they contain, lazy ones included;
     other transitive modules contribute module-level imports only (a deep lazy
     import in a non-executed module is a deliberate execution-path break a
-    static walker cannot prove executed)."""
+    static walker cannot prove executed). ``conservative=True`` walks EVERY
+    import of every module instead -- the over-approximation the trusted-rerun
+    FLAG uses, because over-flagging is safe while a missed executable lazy
+    chain (review_state -> semantic_dedup -> llm_observability) is not."""
     import ast as _ast
 
     entries = (
@@ -530,7 +533,11 @@ def flow_import_closure(base_sha: str, git_bytes, full_walk=None) -> frozenset[s
             tree = _ast.parse(text)
         except SyntaxError:
             continue
-        walk_all = rel in entries or (full_walk is not None and full_walk(rel))
+        walk_all = (
+            conservative
+            or rel in entries
+            or (full_walk is not None and full_walk(rel))
+        )
         nodes = _ast.walk(tree) if walk_all else iter(tree.body)
         for node in nodes:
             mods: list[str] = []

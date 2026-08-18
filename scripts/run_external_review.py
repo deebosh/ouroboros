@@ -333,7 +333,7 @@ def _contributor_snapshot(base_ref: str, head_ref: str) -> dict:
     # module the review executes can weaken it, whatever it is named.
     from scripts.contributor_review_evidence import flow_import_closure
 
-    flow_closure = flow_import_closure(base_sha, _git_bytes, full_walk=_is_review_substrate_path)
+    flow_closure = flow_import_closure(base_sha, _git_bytes, conservative=True)
     substrate_changed = sorted(
         p for p in set(changed_paths)
         if _is_review_substrate_path(p) or p in flow_closure

@@ -33,6 +33,7 @@ CARRIER_FILES = (
     "web/modules/api_types.js",
     "README.md",
     "docs/ARCHITECTURE.md",
+    "uv.lock",
 )
 
 
@@ -74,6 +75,11 @@ def _write_carriers(repo, version, *, history=("7.0.0", "6.104.0"), intro="Intro
     (repo / "docs").mkdir(exist_ok=True)
     (repo / "docs" / "ARCHITECTURE.md").write_text(
         f"# Ouroboros v{version} — Architecture & Reference\n\nArchitecture body.\n"
+    )
+    (repo / "uv.lock").write_text(
+        'version = 1\n\n[[package]]\nname = "ouroboros"\n'
+        f'version = "{version}"\nsource = {{ editable = "." }}\n\n'
+        '[[package]]\nname = "httpx"\nversion = "0.27.0"\n'
     )
 
 
@@ -386,7 +392,11 @@ def test_every_descriptor_matches_the_live_repo_exactly_once():
         assert status == "ok" and location is not None, (span.carrier_id, status)
     readme_spans = carrier_spans_for("README.md")
     assert {span.carrier_id for span in readme_spans} == {"readme_badge", "readme_history"}
-    assert len(VERSION_CARRIER_SPANS) == 7
+    # The 7 ratified carriers plus the uv.lock root-package mirror (the external
+    # audit's addition: the structural regex existed, the descriptor closes the
+    # last assisted-only version conflict).
+    assert len(VERSION_CARRIER_SPANS) == 8
+    assert {s.carrier_id for s in VERSION_CARRIER_SPANS} >= {"uv_lock_root_package"}
 
 
 def test_one_shared_resolver_serves_all_three_insertion_points():
