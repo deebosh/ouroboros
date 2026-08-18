@@ -30,6 +30,12 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_latest_agent_acceptance_evidence _build_host_acceptance_evidence _execute_task_acceptance_panel _record_host_acceptance_run _set_applied_host_acceptance_impact "
         "_apply_task_acceptance_result _record_acceptance_infra_failure _prior_acceptance_run _direct_context_fence_state _run_task_acceptance_review_once"
     ),
+    "loop_round_limits": (
+        "_CompactionRoundContext _provider_failure_hint _provider_recovery_hint _task_deadline_epoch _mark_owner_stop_control_drained "
+        "_owner_stop_window_elapsed _drain_incoming_messages _context_reclaim_passes _context_reclaim_materializations _context_overflow_retries "
+        "_run_round_compaction _RoundLimitContext _account_compaction_usage _handle_round_limit _handle_forced_finalization "
+        "_handle_owner_stop_finalization _handle_provider_unavailable _maybe_deadline_local_finalize _maybe_early_finalize _finalize_limit_ctx"
+    ),
 }
 
 

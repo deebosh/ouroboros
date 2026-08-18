@@ -199,5 +199,5 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "ouroboros/loop.py": 229545,
+    "ouroboros/loop.py": 204302,
 }
