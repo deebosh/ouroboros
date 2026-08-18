@@ -286,6 +286,25 @@ def pytest_runtest_call(item):  # noqa: ARG001
 
 @pytest.fixture(autouse=True)
 def _rebind_runtime_roots_between_tests():
+    """Rebind modules that may have been imported before conftest set the env.
+
+    This fixture is INTENTIONALLY cheap (no I/O, no network, no locks) — it only
+    rebinds ``ouroboros.config``, ``supervisor.state``, ``supervisor.queue``,
+    ``supervisor.workers`` and ``supervisor.git_ops`` globals to the per-session
+    ``_PYTEST_DATA_DIR`` tempdir. The pytest-timeout batch-context hang reported
+    against this fixture (test_web_search.py::test_streaming_direct_openai_cost_remains_nullable,
+    ibl-c094f2f90ec4 / ibl-28f3c68cfaae / ibl-system-test-fragility) is NOT in this
+    body: pytest attributes any setup-time hang to the wrapping autouse fixture,
+    but the actual blocker was ``ouroboros.usage_ledger._fsync_path``'s
+    uninterruptible ``os.fsync`` syscall, called from the streaming completion
+    handler's ``settle_attempt`` chain AFTER this fixture yielded. The structural
+    answer is in the ledger itself (``_fsync_path`` short-circuits when
+    ``OUROBOROS_PYTEST_ACTIVE`` is set) plus ``pyproject.toml``'s default
+    ``timeout = 30``. If a future change here ever adds real I/O, gate it with
+    ``pytest-timeout``'s ``--timeout-method=thread`` BEFORE it can break the
+    preflight budget — signal-method SIGALRM cannot interrupt the primitives
+    that originally hung here.
+    """
     _bind_pytest_runtime_roots()
     yield
 

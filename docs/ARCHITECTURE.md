@@ -1,4 +1,4 @@
-# Ouroboros v6.103.14 — Architecture & Reference
+# Ouroboros v6.103.15 — Architecture & Reference
 
 This file is NOT a changelog. Version history lives in README.md, git tags, and commit log.
 
@@ -758,6 +758,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `/api/owner/runtime-mode` | `gateway.settings.api_owner_runtime_mode` |
 | POST | `/api/owner/auto-grant` | `gateway.settings.api_owner_auto_grant` |
 | POST | `/api/owner/context-mode` | `gateway.settings.api_owner_context_mode` |
+| POST | `/api/owner/temperature` | `gateway.settings.api_owner_temperature` (owner-configurable LLM sampling temperature per task type) |
 | POST | `/api/owner/scope-review-floor` | `gateway.settings.api_owner_scope_review_floor` (DEPRECATED and ENFORCEMENT-INERT since v6.80.0; still mounted, still stores and audits — see below) |
 | POST | `/api/owner/safety-mode` | `gateway.settings.api_owner_safety_mode` |
 | POST | `/api/owner/capability-ack` | `gateway.settings.api_acknowledge_capability` |

@@ -138,7 +138,21 @@ def _fsync_path(path: pathlib.Path) -> None:
     A non-existent file is a no-op: the caller (``_locked_with_fsync``) does
     not know whether any rows were appended, and the first import on a fresh
     drive has not yet created the ledger. There is nothing durable to flush.
+
+    During pytest the data dir is a session-scoped tempdir
+    (``conftest._PYTEST_DATA_DIR``) that the session cleans up at exit —
+    durability of its ledger contents is irrelevant, and the fsync syscall
+    is exactly the kernel-level blocking primitive pytest-timeout's
+    signal-method SIGALRM cannot interrupt. The batch-context hang in
+    ``test_web_search.py::test_streaming_direct_openai_cost_remains_nullable``
+    (ibl-28f3c68cfaae / ibl-c094f2f90ec4 / ibl-system-test-fragility) was
+    this fsync held by the streaming completion handler's ``settle_attempt``
+    chain. Short-circuit here closes that class without weakening
+    non-pytest durability: only the pytest-active env flag opts out, and
+    it is set exclusively by ``conftest.py``'s session-start hook.
     """
+    if os.environ.get("OUROBOROS_PYTEST_ACTIVE") == "1":
+        return
     try:
         fd = os.open(str(path), os.O_WRONLY)
     except FileNotFoundError:

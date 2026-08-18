@@ -297,16 +297,17 @@ def test_streaming_emits_progress_on_search(ctx, patch_env, mock_openai):
     assert call_kwargs["stream"] is True
 
 
-@pytest.mark.timeout(10, method="signal")
 def test_streaming_direct_openai_cost_remains_nullable(ctx, patch_env, mock_openai):
-    # Per-test failsafe: when the FULL FILE batch is run under xdist, an
-    # order-dependent hang past pytest-timeout's signal-method SIGALRM
-    # occurs (not specific to this test; the file's first 6 pass quickly,
-    # then somewhere test 7+ stops returning). This decorator bounds the
-    # blast radius at 10s per test so a single stuck test cannot eat the
-    # preflight budget. Tracked separately as ibl-system-test-fragility.
-    # This test alone completes in ~0.1s; the per-test fail-safe is for
-    # the batch-context hang, not for a hang inside the test itself.
+    # Historical note (ibl-system-test-fragility, ibl-c094f2f90ec4): a previous
+    # version of this test carried a `@pytest.mark.timeout(10, method="signal")`
+    # decorator because the batch-context hang at test 7+ could not be killed by
+    # signal-method SIGALRM (the actual blocker was ``os.fsync`` under flock in
+    # ``ouroboros.usage_ledger._fsync_path``). The structural fix — making
+    # ``_fsync_path`` a no-op when ``OUROBOROS_PYTEST_ACTIVE`` is set, plus the
+    # global ``timeout = 30`` default in ``pyproject.toml`` — closed the class
+    # outright, so the per-test failsafe is no longer needed. The test alone
+    # completes in ~0.1s; under xdist the suite's default timeout now bounds the
+    # blast radius without a per-test decorator leaking into this signature.
     events = [
         _make_event("response.output_text.delta", delta="Answer", content_index=0,
                     item_id="m1", output_index=0, sequence_number=1, logprobs=[]),
