@@ -270,6 +270,64 @@ def test_cap_under_advisory_lets_the_agent_proceed_with_disclosure(harness, monk
     assert "advisory" in plan_review_disclosure(decision)
 
 
+def test_cycles_exhausted_golden_disposition_table_is_ok_legacy_warning(harness, monkeypatch):
+    """Golden PLAN_REVIEW_CYCLES_EXHAUSTED disposition table for gate review (spec §1.13-2).
+
+    Both exhausted shapes — a live open wave held at the cap, and a fresh spec at a
+    spent cap with no wave of its own — are pinned the way
+    ``tests/test_control_native_results.py`` pins control producers: the producer
+    publishes its typed result with the exact returned text, and the single legacy
+    adapter's answer for the same bytes is ``ok``/``LEGACY_WARNING`` — the spent cap
+    is guidance the agent must disposition, never a tool error. The native code is
+    ``OK`` (metadata authors plan control), an approved divergence from the adapter."""
+    from ouroboros.tools.plan_render import _parse_plan_review_control
+    from ouroboros.tools.tool_result import (
+        TOOL_CODE_SPECS,
+        LegacyTextResultAdapter,
+        ToolResult,
+        _install_tool_result_sidecar,
+        _published_tool_result,
+        _restore_tool_result_sidecar,
+    )
+
+    def exhausted(ctx, spec):
+        sentinel = object()
+        token = _install_tool_result_sidecar(ctx, sentinel)
+        try:
+            text = _call(ctx, spec=spec)
+            published = _published_tool_result(ctx, sentinel)
+        finally:
+            _restore_tool_result_sidecar(token)
+        assert text.startswith("⚠️ PLAN_REVIEW_CYCLES_EXHAUSTED")
+        assert isinstance(published, ToolResult), "cap result published no typed result"
+        assert published.text == text, "published text is not the returned text"
+        assert (published.status, published.code) == ("ok", "OK")
+        adapted = LegacyTextResultAdapter.from_text("plan_task", text)
+        assert (adapted.status, adapted.code) == ("ok", "LEGACY_WARNING")
+        assert adapted.code != published.code  # native meta authors the code on purpose
+        return text, published
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    # Shape 1: the live obligation — an open REVISE_PLAN wave held at the spent cap.
+    blocking = json.dumps([_finding("f1", "blocking", breaks="claim_1")])
+    harness.install({"s1": blocking, "s2": blocking, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    _call(ctx)  # spends the single paid cycle; the wave stays open
+    text, published = exhausted(ctx, {**DECK_SPEC, "in_scope": ["a 6-slide deck"]})
+    assert published.meta == {"plan_review_outcome": "REVISE_PLAN", "plan_review_closed": False}
+    assert _parse_plan_review_control(text) == ("REVISE_PLAN", False)
+    # Shape 2: every wave closed — a fresh spec at the spent cap gets the explicit
+    # never-closed control of its own (no wave is rendered).
+    harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    ctx2 = harness.make_ctx(task_id="task-2")
+    _call(ctx2)  # GREEN, closed, the single paid cycle
+    text2, published2 = exhausted(ctx2, {**DECK_SPEC, "in_scope": ["a 6-slide deck"]})
+    assert published2.meta == {"plan_review_outcome": "REVISE_PLAN", "plan_review_closed": False}
+    assert _parse_plan_review_control(text2) == ("REVISE_PLAN", False)
+    # The adapter row itself: ok bucket, warning severity — the gate reads guidance.
+    assert TOOL_CODE_SPECS["LEGACY_WARNING"].outcome_bucket == "ok"
+
+
 def test_degraded_wave_maps_to_review_required_open_and_pays_no_cycle(harness):
     prose = "As a reviewer I think this is fine but here is prose only."
     sub = harness.install({"s1": prose, "s2": prose, "s3": CLEAN})
