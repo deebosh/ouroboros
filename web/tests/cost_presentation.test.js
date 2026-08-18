@@ -226,7 +226,9 @@ test('a cost-only frame never moves the card’s Latest clock', () => {
     // freshly active. Pinned at source: the meta line reads the activity clock, and
     // only a human/activity-bearing frame advances it.
     const view = readFileSync(new URL('../modules/chat_live_card_view.js', import.meta.url), 'utf8');
-    const source = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+    // The clock writer moved with applyLiveCardStateMutation into the
+    // live-card store (W3 wave D); the pinned pattern is unchanged.
+    const source = readFileSync(new URL('../modules/chat_live_cards.js', import.meta.url), 'utf8');
     assert.match(view, /record\.latestActivityTs \? `Latest \$\{record\.latestActivityTs\}`/);
     assert.match(source, /if \(ts && \(summary\.human \|\| activityCandidate\)\) record\.latestActivityTs = ts/);
 });

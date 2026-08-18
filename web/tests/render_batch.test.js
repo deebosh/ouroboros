@@ -165,7 +165,9 @@ test('sticky single-flight never swallows the post-completion resync', () => {
     // awaitInitialHydration shortcut.
     const fn = chatSource.slice(
         chatSource.indexOf('function scheduleHistorySync('),
-        chatSource.indexOf('function applyLiveCardState('),
+        // applyLiveCardState moved to the live-card store (W3 wave D); the
+        // next chat.js declaration bounds the same scheduler region.
+        chatSource.indexOf('function appendTaskSummaryToLiveCard('),
     );
     assert.match(fn, /syncHistory\(\{ includeUser: false \}\)/);
     assert.doesNotMatch(fn, /awaitInitialHydration/);
@@ -270,8 +272,10 @@ test('chat.js wires the replay flag around the replay and keeps live callsites i
     // The LIVE path is untouched: both finished-transition callsites (the
     // task_done frame in applyLiveCardStateMutation and finishLiveCardMutation)
     // still call scheduleHistorySync() unconditionally — the replay decision
-    // lives ONLY behind the scheduler's gate.
-    assert.equal((chatSource.match(/scheduleHistorySync\(\);/g) || []).length, 2);
+    // lives ONLY behind the scheduler's gate. Both callsites moved with their
+    // owners into the live-card store (W3 wave D).
+    const liveCardsSource = readFileSync(new URL('../modules/chat_live_cards.js', import.meta.url), 'utf8');
+    assert.equal((liveCardsSource.match(/scheduleHistorySync\(\);/g) || []).length, 2);
     assert.doesNotMatch(chatSource, /_historyReplayActive[^\n]*scheduleHistorySync/);
 });
 
