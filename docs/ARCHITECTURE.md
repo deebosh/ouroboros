@@ -1657,13 +1657,7 @@ be published as an authoritative nothing.
 
 ### Git and commit review
 
-`tools/git.py` owns repository writes, staging, reviewed commit, rollback or restore, tags, push, and CI follow-up. File-edit tools validate their own atomic write shape; `mutation_attribution.py` captures the root-task baseline and projects only the clean-at-baseline system-repository delta. The resolver (`resolve_attributed_git_paths`) distinguishes omitted, empty, and explicit staging requests:
-
-- **omitted (`paths=None`)** — stages every attributed candidate; a changed pre-existing dirty path, stale or missing baseline, or failed scan blocks automatic staging.
-- **explicit non-empty** — admits a non-empty request only when every named path is a clean-at-baseline candidate and the sole blocker is unrelated `preexisting_dirty_changed`; the unrelated dirt remains visible in returned evidence for reviewers, and an explicit name for a pre-existing dirty file never grants ownership.
-- **empty (`paths=[]`)** — an explicit no-op that returns `GIT_NO_ATTRIBUTED_CHANGES` regardless of blockers; the resolver never falls back to whole-tree staging.
-
-Managed update transactions keep their separate typed whole-tree authority and are deliberately outside the narrow explicit-path exception.
+`tools/git.py` owns repository writes, staging, reviewed commit, rollback or restore, tags, push, and CI follow-up. File-edit tools validate their own atomic write shape; `mutation_attribution.py` captures the root-task baseline and projects only the clean-at-baseline system-repository delta. A changed pre-existing dirty path, stale or missing baseline, or failed scan blocks automatic staging. `commit_reviewed(paths=None)` stages only that attributed candidate, explicit paths must be a subset, and an empty candidate returns `GIT_NO_ATTRIBUTED_CHANGES`; managed update transactions keep their separate typed whole-tree authority.
 
 A reviewed commit is bound to one staged fingerprint. A cheap LLM-first advisory pass may run before the expensive gates; it is intentionally advisory, and Ouroboros may skip it when it judges the lane unhealthy, unhelpful, unavailable, or too slow. Skipping advisory never skips independently applicable tests, triad, applicable scope review, aggregation, or exact-SHA binding. The hermetic preflight runs the candidate in a disposable worktree and data root. Triad and scope inspect the same staged snapshot, aggregation preserves actor evidence and obligations, and any mutation stales the binding. External review wrappers report readiness but do not grant commit authority.
 
@@ -2174,6 +2168,8 @@ Runtime floors:
 | OUROBOROS_HUB_CATALOG_URL | `https://raw.githubusercontent.com/razzant/OuroborosHub/main/catalog.json` | Official static skill catalog. The client fetches only this JSON automatically; selected skill installs download the catalog-listed files and verify sha256. |
 | OUROBOROS_SCOPE_REVIEW_MODEL | openai/gpt-5.6-terra | Legacy singular fallback for `OUROBOROS_SCOPE_REVIEW_MODELS`; kept for existing settings files |
 | OUROBOROS_PROMPT_CACHE_TTL | 1h | Global `default` / `5m` / `1h` policy, consumed only by the final send-time payload normalizer. It stamps existing Anthropic-family breakpoints across main, review, and safety calls before ordering them, but never creates markers; `default` leaves bare/caller TTLs intact and non-Anthropic wire formats unchanged. Usage records the applied tier for honest pricing. |
+| `OUROBOROS_TEMPERATURE_TASK` | `None` (provider default) | Owner-configurable LLM sampling temperature for ordinary task/main-loop calls; closed float range `[0.0, 2.0]` (inclusive); `None` / unset / invalid / out-of-range → no override sent on the wire (LLM layer omits the `temperature` key — provider default applies). Resolved at each LLM call via `resolve_temperature("task")` (`ouroboros/config.py`). Mirrors `OUROBOROS_EFFORT_TASK` plumbing. |
+| `OUROBOROS_TEMPERATURE_CONSCIOUSNESS` | `None` (provider default) | Same shape, for `consciousness.py` chat calls. Resolved via `resolve_temperature("consciousness")`. |
 | OUROBOROS_EFFORT_TASK | medium | Reasoning effort for task/chat. Full scale (config.EFFORT_SCALE, v6.57.0): none, minimal, low, medium, high, xhigh, max — xhigh/max clamp down to each model's learned ceiling, and (v6.73.2) none/minimal clamp UP to a learned floor on reasoning-mandatory endpoints, each with a disclosed `reasoning_effort_clamped` usage note (reason `learned_ceiling`/`learned_floor`); the Settings UI offers all tiers except `minimal` (a per-call tactical tier, not a standing default) |
 | OUROBOROS_EFFORT_EVOLUTION | high | Reasoning effort for evolution tasks |
 | OUROBOROS_EFFORT_REVIEW | high | Reasoning effort for review tasks |

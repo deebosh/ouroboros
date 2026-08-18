@@ -130,6 +130,7 @@ def collect_routes(
         api_owner_safety_mode,
         api_owner_scope_review_floor,
         api_owner_runtime_mode,
+        api_owner_temperature,
         api_settings_get,
         api_settings_post,
     )
@@ -212,6 +213,7 @@ def collect_routes(
         Route("/api/owner/runtime-mode", endpoint=api_owner_runtime_mode, methods=["POST"]),
         Route("/api/owner/auto-grant", endpoint=api_owner_auto_grant, methods=["POST"]),
         Route("/api/owner/context-mode", endpoint=api_owner_context_mode, methods=["POST"]),
+        Route("/api/owner/temperature", endpoint=api_owner_temperature, methods=["POST"]),
         Route("/api/owner/scope-review-floor", endpoint=api_owner_scope_review_floor, methods=["POST"]),
         Route("/api/owner/safety-mode", endpoint=api_owner_safety_mode, methods=["POST"]),
         Route("/api/owner/capability-ack", endpoint=api_acknowledge_capability, methods=["POST"]),

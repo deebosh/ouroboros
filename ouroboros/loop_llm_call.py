@@ -822,6 +822,7 @@ def call_llm_with_retry(
     deadline_ts: Optional[float] = None,
     attempt_cap: Optional[int] = None,
     allow_server_web_search: bool = False,
+    temperature: Optional[float] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
     """Call one model with failure-class retry budgets and usage events.
 
@@ -879,6 +880,12 @@ def call_llm_with_retry(
                 "allow_server_web_search": bool(allow_server_web_search),
                 "bypass_response_cache": response_cache_bypass_requested,
             }
+            # Owner-configurable LLM sampling temperature (POST /api/owner/temperature).
+            # None means "no override" — the LLM layer omits the wire key (see llm.py),
+            # so the provider default applies. Closed range [0.0, 2.0] is validated by
+            # ``config.resolve_temperature`` upstream; this call site just forwards.
+            if temperature is not None:
+                kwargs["temperature"] = temperature
             if tools:
                 kwargs["tools"] = tools
             try:
@@ -897,6 +904,7 @@ def call_llm_with_retry(
                         "use_local": bool(use_local),
                         "allow_server_web_search": bool(allow_server_web_search),
                         "response_cache_bypass_requested": response_cache_bypass_requested,
+                        "temperature": temperature,
                     },
                     manifest={
                         "execution_id": execution_id,

@@ -25,7 +25,7 @@ from ouroboros.utils import (
     truncate_for_log,
     utc_now_iso,
 )
-from ouroboros.config import get_consciousness_model, resolve_effort
+from ouroboros.config import get_consciousness_model, resolve_effort, resolve_temperature
 from ouroboros.pricing import infer_provider_from_model
 from ouroboros.llm import LLMClient
 from ouroboros.memory import Memory
@@ -325,6 +325,7 @@ class BackgroundConsciousness:
                     reasoning_effort=resolve_effort("consciousness"),
                     max_tokens=65536,
                     use_local=_use_local_consciousness,
+                    temperature=resolve_temperature("consciousness"),
                 )
                 cost = float(usage["cost"]) if usage.get("cost") is not None else None
                 if cost is None:
