@@ -43,6 +43,12 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_inject_round_checkpoints _forced_delegation_note _nanny_finalization_message _maybe_inject_finalization_nudges _answer_protocol_active "
         "_contract_expected_output"
     ),
+    "loop_model_call": (
+        "_adopt_fallback_route _snapshot_context_fit_usage _restore_context_fit_usage _run_cross_model_fallback_chain _rebind_context_fit_plan "
+        "_RoundModelCallContext _context_fit_round_id _main_context_profile _remember_main_fit _measure_round_main_fit "
+        "_physical_context_for_fit _dispatch_round_model _run_main_reclaim _measure_after_reclaim _reproject_actual_overflow_low "
+        "_failed_capture_is_comparable _strict_context_shrink_predicate _emit_overflow_retry_skipped _call_round_model"
+    ),
 }
 
 

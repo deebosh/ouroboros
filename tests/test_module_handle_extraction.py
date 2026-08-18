@@ -84,6 +84,18 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_nanny_metered_since_delegate_activity", "_nanny_reminder_due", "_skill_finalization_message",
         "_skill_names_touched_by_trace", "get_review_enforcement"
     })),
+    "ouroboros/loop_model_call.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "_RoundModelCallContext", "_account_compaction_usage", "_adopt_fallback_route", "_call_round_model",
+        "_context_fit_round_id", "_context_overflow_retries", "_context_reclaim_materializations",
+        "_context_reclaim_passes", "_dispatch_round_model", "_emit_checkpoint_event",
+        "_emit_overflow_retry_skipped", "_failed_capture_is_comparable", "_main_context_profile",
+        "_measure_after_reclaim", "_measure_round_main_fit", "_physical_context_for_fit",
+        "_rebind_context_fit_plan", "_remember_main_fit", "_reproject_actual_overflow_low",
+        "_restore_context_fit_usage", "_run_main_reclaim", "_server_web_allowed_by_task",
+        "_snapshot_context_fit_usage", "_strict_context_shrink_predicate", "_task_deadline_epoch",
+        "call_llm_with_retry", "compact_tool_history_llm", "last_physical_attempt_capture",
+        "seal_task_transcript"
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),
