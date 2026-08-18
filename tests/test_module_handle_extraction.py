@@ -165,6 +165,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "supervisor/worker_assignment.py": ("supervisor/workers.py", "_pool", frozenset({
         "DRIVE_ROOT", "PENDING", "RUNNING", "WORKERS", "_drop_cancelled_pending", "_emit_task_done_terminal", "load_state", "reconstruct_task_cost", "repo_writer_task_allowed", "send_with_budget",
     })),
+    "supervisor/update_merge_plan.py": ("supervisor/update_merge.py", "_um", frozenset({
+        "_merge_head_sha", "managed_update_constitution_present",
+    })),
 }
 
 

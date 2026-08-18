@@ -1270,6 +1270,26 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(lb_loop_handle_rows)
     existing_process_owner_rows.update(lb_loop_verbatim_rows)
     existing_process_owner_rows.update(lb_loop_handle_rows)
+    # v7 lane 1A: the update_merge planning/materialization cluster moves to
+    # supervisor/update_merge_plan.py; every moved name keeps its update_merge
+    # facade re-export. Handle rows read the monkeypatch-addressable parent
+    # bindings through the call-time handle _um() (delta D18, set pinned in
+    # tests/test_module_handle_extraction.py); verbatim rows moved byte-identical.
+    lane1a_update_plan_rows = {
+        f"supervisor/update_merge.py::{symbol}": f"supervisor/update_merge_plan.py::{symbol}"
+        for symbol in (
+            "_git_run", "_build_clean_merge_commit",
+            "plan_managed_update_merge", "materialize_assisted_merge_live",
+        )
+    }
+    lane1a_update_handle_rows = {
+        "supervisor/update_merge.py::plan_managed_update_merge",
+        "supervisor/update_merge.py::materialize_assisted_merge_live",
+    }
+    implemented.update(lane1a_update_plan_rows)
+    existing_process_owner_rows.update(lane1a_update_plan_rows)
+    for _lane1a_old in lane1a_update_handle_rows:
+        s3_semantic_delta_ids[_lane1a_old] = "D18"
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
