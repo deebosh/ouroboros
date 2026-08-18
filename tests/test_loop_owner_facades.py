@@ -36,6 +36,13 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_run_round_compaction _RoundLimitContext _account_compaction_usage _handle_round_limit _handle_forced_finalization "
         "_handle_owner_stop_finalization _handle_provider_unavailable _maybe_deadline_local_finalize _maybe_early_finalize _finalize_limit_ctx"
     ),
+    "loop_nudges": (
+        "_skill_names_touched_by_trace _skill_finalization_message _force_plan_decision _force_plan_reminder _force_plan_disclosure "
+        "_build_recent_tool_trace _maybe_inject_self_check _maybe_inject_time_budget_milestone _maybe_inject_cost_budget_milestone _DELEGATE_ACTIVITY_TOOLS "
+        "_note_nanny_delegate_activity _nanny_metered_since_delegate_activity _nanny_reminder_due _nanny_burn_phrase _maybe_inject_nanny_economics_reminder "
+        "_inject_round_checkpoints _forced_delegation_note _nanny_finalization_message _maybe_inject_finalization_nudges _answer_protocol_active "
+        "_contract_expected_output"
+    ),
 }
 
 
