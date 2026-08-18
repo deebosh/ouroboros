@@ -106,8 +106,10 @@ test('the bubble keeps the system style class and the system_type marker', () =>
     // Rendered style, not just transported role: the bubble class is derived
     // from the role (`chat-bubble system`, never the assistant class), and the
     // system_type lands on the dataset for targeted styling.
-    assert.match(chat, /bubble\.className = `chat-bubble \$\{role\}`/);
-    assert.match(chat, /if \(systemType\) bubble\.dataset\.systemType = systemType;/);
+    // addMessage and the history replay moved with the feed owner (W3 wave D).
+    const feed = readFileSync(new URL('../modules/chat_history_sync.js', import.meta.url), 'utf8');
+    assert.match(feed, /bubble\.className = `chat-bubble \$\{role\}`/);
+    assert.match(feed, /if \(systemType\) bubble\.dataset\.systemType = systemType;/);
     // History replay forwards system_type through to the renderer.
-    assert.match(chat, /systemType: msg\.system_type \|\| ''/);
+    assert.match(feed, /systemType: msg\.system_type \|\| ''/);
 });

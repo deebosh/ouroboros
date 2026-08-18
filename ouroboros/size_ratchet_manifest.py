@@ -12,7 +12,6 @@ GIANT_PATHS = (
     "tests/test_review_agent_session_route.py",
     "tests/test_review_substrate_v2.py",
     "tests/test_scope_review.py",
-    "web/modules/chat.js",
 )
 
 MODULE_DEBT_1500 = (
