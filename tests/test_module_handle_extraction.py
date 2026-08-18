@@ -104,6 +104,22 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_forced_swarm_router_result", "_live_delivery_candidate", "_loop_tree_accounting",
         "_publish_delivery_candidate", "_record_forced_finalization", "_service_identity_projection"
     })),
+    "ouroboros/loop_delivery.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "DeliveryCandidate", "_LoopExitContext", "_append_or_merge_user_message", "_arm_delivery_control",
+        "_child_disposition_state", "_compose_delivery_suffix", "_compute_subagent_handoff",
+        "_delivery_acceptance_binding", "_delivery_control_prompt", "_delivery_evidence_state",
+        "_delivery_keep_allowed", "_delivery_replace_required", "_direct_child_results",
+        "_drain_incoming_messages", "_enforce_swarm_actions", "_ensure_explicit_acceptance_binding",
+        "_extract_plain_text_from_content", "_finalize_task_services", "_force_plan_disclosure",
+        "_forced_orphan_note", "_handle_forced_finalization", "_handle_text_response",
+        "_hold_delivery_for_skill_action", "_live_delivery_candidate", "_load_direct_child_results",
+        "_maybe_enforce_child_absorption_gate", "_maybe_inject_finalization_nudges",
+        "_merge_finalization_trace", "_parse_delivery_control_object", "_project_child_result_dispositions",
+        "_publish_delivery_candidate", "_replace_delivery_candidate", "_resolve_delivery_control",
+        "_run_task_acceptance_review_once", "_service_finalization_evidence",
+        "_supersede_delivery_acceptance_binding", "_supersede_task_acceptance_for_evidence_change",
+        "_supersede_task_acceptance_for_owner_followup", "_unaccepted_delivery_binding"
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),
