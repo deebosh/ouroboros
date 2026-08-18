@@ -68,7 +68,12 @@ _CONTRIBUTOR_LANDING_OBLIGATION_ITEMS = frozenset({
     "version_bump",
     "changelog_and_badge",
 })
-_REVIEW_SUBSTRATE_PATHS = frozenset({
+# The review substrate has two halves: ANCHORS, whose names do not declare their
+# role (governing docs, these scripts, the shared runtime the review stack runs
+# through), and the name-declared half -- review/scope/skill_review/triad modules
+# -- classified by NAME so a leaf born from a future split joins the boundary the
+# moment it exists instead of waiting on this list (spec 1.14-2, delta D31).
+_REVIEW_SUBSTRATE_ANCHOR_PATHS = frozenset({
     "BIBLE.md",
     "docs/ARCHITECTURE.md",
     "docs/CHECKLISTS.md",
@@ -86,17 +91,8 @@ _REVIEW_SUBSTRATE_PATHS = frozenset({
     "ouroboros/pricing.py",
     "ouroboros/provider_models.py",
     "ouroboros/preflight_runner.py",
-    "ouroboros/review_execution.py",
-    "ouroboros/review_slot_cancel.py",
-    "ouroboros/reviewer_slot_config.py",
-    "ouroboros/reviewer_window.py",
-    "ouroboros/review_substrate.py",
-    "ouroboros/review_records.py",
-    "ouroboros/review_verdict.py",
-    "ouroboros/review_projection.py",
-    "ouroboros/review_state.py",
-    "ouroboros/runtime_mode_policy.py", "ouroboros/tool_module_inventory.py",
-    "ouroboros/triad_review.py",
+    "ouroboros/runtime_mode_policy.py",
+    "ouroboros/tool_module_inventory.py",
     "ouroboros/usage_accounting.py",
     "ouroboros/observability.py",
     "ouroboros/utils.py",
@@ -104,28 +100,32 @@ _REVIEW_SUBSTRATE_PATHS = frozenset({
     "ouroboros/tools/commit_gate.py",
     "ouroboros/tools/git.py",
     "ouroboros/tools/parallel_review.py",
-    "ouroboros/tools/registry.py", "ouroboros/tools/registry_core.py", "ouroboros/tools/registry_guard_process.py", "ouroboros/tools/registry_guards.py", "ouroboros/tools/tool_resolution.py", "ouroboros/tools/extension_dispatch.py",
-    "ouroboros/tools/tool_catalog.py",
-    "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_result.py",
-    "ouroboros/tools/review.py",
-    "ouroboros/tools/review_context_atlas.py",
-    "ouroboros/tools/review_helpers.py",
-    "ouroboros/tools/review_revalidation.py",
-    "ouroboros/tools/review_binary_context.py",
-    "ouroboros/tools/release_sync.py",
-    "ouroboros/tools/review_synthesis.py",
-    "ouroboros/tools/scope_review.py",
-    "ouroboros/tools/scope_review_contract.py",
-    "ouroboros/tools/scope_review_session.py",
-    "ouroboros/tools/scope_window.py",
+    "ouroboros/tools/registry.py", "ouroboros/tools/registry_core.py",
+    "ouroboros/tools/registry_guard_process.py", "ouroboros/tools/registry_guards.py",
+    "ouroboros/tools/tool_resolution.py", "ouroboros/tools/extension_dispatch.py",
+    "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_context.py",
+    "ouroboros/tools/tool_result.py", "ouroboros/tools/release_sync.py",
     "ouroboros/claudexor_daemon.py",
     "ouroboros/delegate_custody.py",
     "ouroboros/delegate_output.py",
     "ouroboros/gateways/claudexor.py",
-    "ouroboros/review_evidence.py",
-    "ouroboros/review_evidence_sections.py",
     "ouroboros/subagents.py",
 })
+_REVIEW_SUBSTRATE_NAME_PREFIXES = ("review", "reviewer_", "scope_", "skill_review", "triad_review")
+_REVIEW_SUBSTRATE_MODULE_DIRS = ("ouroboros", "ouroboros/tools")
+
+
+def _is_review_substrate_path(path: str) -> bool:
+    """Classify one repo-relative path as review-substrate. Works on the PATH
+    ALONE (no tree lookup), so it covers files a proposal adds or deletes."""
+    if path in _REVIEW_SUBSTRATE_ANCHOR_PATHS:
+        return True
+    parent, _, name = path.rpartition("/")
+    return (
+        parent in _REVIEW_SUBSTRATE_MODULE_DIRS
+        and name.endswith(".py")
+        and name.startswith(_REVIEW_SUBSTRATE_NAME_PREFIXES)
+    )
 _RELEASE_MACHINERY_PATHS = frozenset({
     ".github/workflows/ci.yml", "Ouroboros.spec", "build.sh",
     "build_linux.sh",
@@ -334,7 +334,7 @@ def _contributor_snapshot(base_ref: str, head_ref: str) -> dict:
     target_config = _git_bytes(["show", f"{base_sha}:ouroboros/config.py"])
     base_script = _git_bytes(["show", f"{base_sha}:scripts/run_external_review.py"])
     head_script = _git_bytes(["show", f"{head_sha}:scripts/run_external_review.py"])
-    substrate_changed = sorted(set(changed_paths) & _REVIEW_SUBSTRATE_PATHS)
+    substrate_changed = sorted(p for p in set(changed_paths) if _is_review_substrate_path(p))
     return {
         "base_ref": base_ref,
         "base_sha": base_sha,

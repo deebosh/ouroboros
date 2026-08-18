@@ -13,7 +13,10 @@ import pytest
 from scripts.contributor_review_evidence import finalize_contributor_outcome
 from scripts.run_external_review import (
     _RELEASE_MACHINERY_PATHS,
-    _REVIEW_SUBSTRATE_PATHS,
+    _REVIEW_SUBSTRATE_ANCHOR_PATHS,
+    _REVIEW_SUBSTRATE_MODULE_DIRS,
+    _REVIEW_SUBSTRATE_NAME_PREFIXES,
+    _is_review_substrate_path,
     _apply_contributor_landing_obligations,
     _apply_contributor_review_env,
     _assert_contributor_review_config,
@@ -38,51 +41,40 @@ from scripts.run_external_review import (
 def test_contributor_trust_boundary_covers_functional_review_dependencies():
     from ouroboros.tools.scope_review import _CANONICAL_CONTEXT_DOCS
 
-    assert set(_CANONICAL_CONTEXT_DOCS).issubset(_REVIEW_SUBSTRATE_PATHS)
-    assert {
-        "docs/ARCHITECTURE.md",
-        "ouroboros/capability_evidence.py",
-        "ouroboros/code_intelligence.py",
-        "ouroboros/claudexor_daemon.py",
-        "ouroboros/deadline_utils.py",
-        "ouroboros/delegate_custody.py",
-        "ouroboros/delegate_output.py",
-        "ouroboros/gateways/claudexor.py",
-        "ouroboros/outcomes.py",
-        "ouroboros/platform_layer.py",
-        "ouroboros/pricing.py",
-        # The v6.87.21 seam split moved route vocabulary, transport dispatch and
-        # api_chat prompt rendering BELOW the substrate into review_execution.py;
-        # a PR editing the route/executor seam there must still trip a trusted
-        # rerun, exactly as one editing review_substrate.py does (XG-5R4.1).
-        "ouroboros/review_execution.py",
-        "ouroboros/review_slot_cancel.py",
-        "ouroboros/review_evidence.py",
-        "ouroboros/reviewer_slot_config.py",
-        "ouroboros/reviewer_window.py",
-        "ouroboros/review_substrate.py",
-        "ouroboros/review_state.py",
-        "ouroboros/runtime_mode_policy.py",
-        "ouroboros/tool_module_inventory.py",
-        "ouroboros/usage_accounting.py",
-        "ouroboros/utils.py",
-        "ouroboros/tools/claude_advisory_review.py",
-        "ouroboros/tools/registry.py", "ouroboros/tools/registry_core.py",
-        "ouroboros/tools/registry_guard_process.py",
-        "ouroboros/tools/registry_guards.py",
-        "ouroboros/tools/tool_resolution.py",
-        "ouroboros/tools/extension_dispatch.py",
-        "ouroboros/tools/tool_catalog.py",
-        "ouroboros/tools/tool_context.py",
-        "ouroboros/tools/tool_result.py",
-        "ouroboros/tools/release_sync.py",
-        "ouroboros/tools/review_synthesis.py",
-        "ouroboros/tools/review_binary_context.py",
-        "ouroboros/tools/scope_review_session.py",
-        "ouroboros/tools/scope_window.py",
-        "ouroboros/subagents.py",
-        "scripts/contributor_review_evidence.py",
-    }.issubset(_REVIEW_SUBSTRATE_PATHS)
+    for doc in _CANONICAL_CONTEXT_DOCS:
+        assert _is_review_substrate_path(doc), doc
+
+
+def test_every_live_review_stack_leaf_classifies_as_substrate():
+    """The class fix for the hand-list defect (spec 1.14-2): the trust boundary
+    is DERIVED from the tree, not remembered. Every module whose name declares
+    the review/scope/skill_review/triad role -- including leaves born from a
+    split after this test was written -- must classify as substrate, and the
+    anchor half must stay disjoint from the name-declared half so the split
+    cannot silently regress into a second hand-list."""
+    repo = Path(__file__).resolve().parent.parent
+    declared = sorted(
+        f"{rel_dir}/{p.name}"
+        for rel_dir in _REVIEW_SUBSTRATE_MODULE_DIRS
+        for p in (repo / rel_dir).glob("*.py")
+        if p.name.startswith(_REVIEW_SUBSTRATE_NAME_PREFIXES)
+    )
+    assert len(declared) >= 40, declared  # the live stack; shrinkage means a glob bug
+    missed = [path for path in declared if not _is_review_substrate_path(path)]
+    assert missed == []
+    # The anchors carry ONLY the surfaces the name rule cannot see.
+    overlap = [
+        path for path in _REVIEW_SUBSTRATE_ANCHOR_PATHS
+        if path.rpartition("/")[0] in _REVIEW_SUBSTRATE_MODULE_DIRS
+        and path.rpartition("/")[2].startswith(_REVIEW_SUBSTRATE_NAME_PREFIXES)
+    ]
+    assert overlap == []
+    # And a proposal-side path that does not exist in this tree still classifies:
+    # the gate reads the DIFF, so a leaf a PR adds is inside the boundary too.
+    assert _is_review_substrate_path("ouroboros/review_born_tomorrow.py")
+    assert _is_review_substrate_path("ouroboros/tools/skill_review_born_tomorrow.py")
+    assert not _is_review_substrate_path("ouroboros/loop.py")
+    assert not _is_review_substrate_path("web/modules/review_widget.py")
 
 
 def test_external_review_script_delegates_verdict_to_production_gate():

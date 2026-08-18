@@ -1152,6 +1152,20 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(merge_adopt_rows)
     existing_process_owner_rows.update(merge_adopt_rows)
     registry_extraction_no_facade_rows.update(merge_adopt_no_facade_rows)
+    # D31 (post-merge batch, spec 1.14-2): the review trust boundary became an anchor
+    # set plus classification by name; the hand-list and its issubset test are the
+    # replaced identities, both implemented on the WIP with facade "-".
+    d31_rows = {
+        "scripts/run_external_review.py::_REVIEW_SUBSTRATE_PATHS":
+            "scripts/run_external_review.py::_is_review_substrate_path",
+        "tests/test_external_review_script.py::_REVIEW_SUBSTRATE_PATHS":
+            "tests/test_external_review_script.py::test_every_live_review_stack_leaf_classifies_as_substrate",
+    }
+    implemented.update(d31_rows)
+    existing_process_owner_rows.update(d31_rows)
+    registry_extraction_no_facade_rows.update(d31_rows)
+    for _d31_old in d31_rows:
+        s3_semantic_delta_ids[_d31_old] = "D31"
     # D04 rides the heartbeat row: the retired knob is stripped from the settings document,
     # so the environment is the only surviving source and the test says which half is quiet.
     s3_semantic_delta_ids[
@@ -1344,4 +1358,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31"})

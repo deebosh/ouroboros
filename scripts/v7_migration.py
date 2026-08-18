@@ -85,7 +85,9 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   D09 §4.3.2 LLM local retry (one physical attempt) · D11 §1.9/№8 FUNCTION_DEBT same-qualname
 #   relocation rule · D13 §6.4 supervisor/git_ops pre-init roots follow OUROBOROS_* env
 #   (hermetic-isolation incident fix; ratified by owner batch №11, spec §1.12) · D18 §1.9/№8 module-handle
-#   reads of rebound supervisor globals in extracted leaves.
+#   reads of rebound supervisor globals in extracted leaves · D31 §1.14-2 review trust boundary derived
+#   by name classification instead of the hand-list (owner batch №14, answer 2=A; widens the substrate
+#   flag to the 20 review-stack leaves the literal had silently missed).
 # "D01" (reserved for §4.3.1 size-ratchet layers) was retired unused (owner-ratified, batch №11):
 # ratchet-layer changes are governed by size_ratchet.json + scripts/regenerate_size_ratchet.py, not
 # by ledger rows.
@@ -98,7 +100,7 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 # module-handle delta by one fix commit before the collision was caught in the delta re-gate).
 # Two S3b commit messages say "D10" and one says "D12" for the module-handle delta; commit
 # history is immutable — the ledger and this registry are the id authority: it is D18.
-APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18"})
+APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31"})
 UPSTREAM_STATUSES = frozenset({"not_applicable", "pending", "transferred", "retired"})
 APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_result.py",
