@@ -46,6 +46,11 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_append_or_merge_user_content", "_evict_stale_image_blocks", "_record_owner_directive", "_visible_round_text",
     })),
+    "ouroboros/loop_acceptance.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "ACCEPTANCE_REASON_UNSPECIFIED", "_append_or_merge_user_message", "_end_task_acceptance_fence",
+        "_reopen_obligation_row", "_set_acceptance_decision", "_task_acceptance_eligible",
+        "get_task_review_mode"
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),
@@ -91,6 +96,13 @@ def _module_bindings(tree: ast.Module) -> set[str]:
             bound.add(node.target.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             bound.update(a.asname or a.name.split(".")[0] for a in node.names)
+        elif (isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+                and node.test.id == "TYPE_CHECKING"):
+            # Annotation-only bindings: lazy under future annotations, never
+            # imported at runtime, so nothing is frozen at import time.
+            for sub in node.body:
+                if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                    bound.update(a.asname or a.name.split(".")[0] for a in sub.names)
     return bound
 
 

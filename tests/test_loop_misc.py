@@ -294,7 +294,13 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
 
     from ouroboros.loop import ACCEPTANCE_DECISION_REASONS
 
-    src = pathlib.Path(loop_mod.__file__).read_text(encoding="utf-8").splitlines()
+    # The v7 L-B split spread the writers over loop.py and its leaves; the
+    # inventory below is the union over the whole loop family, so a writer
+    # cannot escape the guard by living in (or moving to) a leaf.
+    loop_file = pathlib.Path(loop_mod.__file__)
+    src = []
+    for path in [loop_file, *sorted(loop_file.parent.glob("loop_*.py"))]:
+        src.extend(path.read_text(encoding="utf-8").splitlines())
     starts = [
         i for i, line in enumerate(src)
         if "_set_acceptance_decision(" in line and not line.lstrip().startswith("def ")

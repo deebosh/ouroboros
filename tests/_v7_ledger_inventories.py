@@ -43,7 +43,9 @@ w5_test_split_symbols_by_owner = {
 # the call-time parent handle _loop() (delta D18). Owner path -> moved symbols.
 lb_loop_verbatim_symbols_by_owner = {
     "ouroboros/loop_messages.py": "_emit_checkpoint_event _extract_plain_text_from_content _evict_stale_image_blocks _owner_marked_content _record_owner_directive _last_assistant_text _visible_round_text",
+    "ouroboros/loop_acceptance.py": "_task_acceptance_eligible _begin_task_acceptance_fence _end_task_acceptance_fence _task_acceptance_owner_generation_changed _task_acceptance_subtree_snapshot _mark_root_acceptance_checkpoint _latch_final_answer_marker _server_web_allowed_by_task ACCEPTANCE_REASON_UNSPECIFIED ACCEPTANCE_DECISION_REASONS _reopen_obligation_row _open_acceptance_obligations _format_obligations_clause",
 }
 lb_loop_handle_symbols_by_owner = {
     "ouroboros/loop_messages.py": "_append_or_merge_user_message _append_or_merge_user_content _initialize_owner_directives _emit_round_progress",
+    "ouroboros/loop_acceptance.py": "_supersede_delivery_acceptance_binding _supersede_task_acceptance_for_owner_followup _supersede_task_acceptance_for_evidence_change _set_acceptance_decision _collect_acceptance_obligations _dispose_obligations_on_clean_pass _record_forced_acceptance_bypass",
 }

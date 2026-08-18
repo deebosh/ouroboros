@@ -19,6 +19,12 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_record_owner_directive _initialize_owner_directives _last_assistant_text "
         "_visible_round_text _emit_round_progress"
     ),
+    "loop_acceptance": (
+        "_task_acceptance_eligible _begin_task_acceptance_fence _end_task_acceptance_fence _supersede_delivery_acceptance_binding _supersede_task_acceptance_for_owner_followup "
+        "_task_acceptance_owner_generation_changed _supersede_task_acceptance_for_evidence_change _task_acceptance_subtree_snapshot _mark_root_acceptance_checkpoint _latch_final_answer_marker "
+        "_server_web_allowed_by_task ACCEPTANCE_REASON_UNSPECIFIED ACCEPTANCE_DECISION_REASONS _set_acceptance_decision _collect_acceptance_obligations "
+        "_reopen_obligation_row _open_acceptance_obligations _dispose_obligations_on_clean_pass _format_obligations_clause _record_forced_acceptance_bypass"
+    ),
 }
 
 
