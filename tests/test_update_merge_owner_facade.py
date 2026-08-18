@@ -14,7 +14,7 @@ from __future__ import annotations
 import importlib
 
 # leaf module -> every member the leaf owns (update_merge re-exports each name).
-UPDATE_MERGE_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
+UPDATE_MERGE_LEAF_OWNERS: dict[str, str] = {
     "update_merge_plan": (
         "_git_run _build_clean_merge_commit plan_managed_update_merge "
         "materialize_assisted_merge_live"
