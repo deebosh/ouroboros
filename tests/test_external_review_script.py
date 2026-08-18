@@ -53,15 +53,37 @@ def test_every_live_review_stack_leaf_classifies_as_substrate():
     anchor half must stay disjoint from the name-declared half so the split
     cannot silently regress into a second hand-list."""
     repo = Path(__file__).resolve().parent.parent
-    declared = sorted(
+    # Deliberately OUTSIDE the boundary: agent-side review surfaces the contributor
+    # trust path has no dependency on (verified: run_external_review,
+    # contributor_review_evidence, claude_advisory_review, triad_review, scope_review,
+    # commit_gate, review_execution and review_substrate import none of them; the
+    # "plan_review" token in review_execution.py is a route label, not an import).
+    # A new review-named module lands RED here until it is either classified
+    # substrate or added to this list with the same dependency proof.
+    agent_side_review_surfaces = {
+        "ouroboros/deep_self_review.py",
+        "ouroboros/tools/git_review_cycle.py",
+        "ouroboros/tools/plan_review.py",
+        "ouroboros/tools/plan_review_runtime.py",
+    }
+    named = sorted(
         f"{rel_dir}/{p.name}"
         for rel_dir in _REVIEW_SUBSTRATE_MODULE_DIRS
-        for p in (repo / rel_dir).glob("*.py")
-        if p.name.startswith(_REVIEW_SUBSTRATE_NAME_PREFIXES)
+        for p in (repo / rel_dir).glob("*review*.py")
     )
-    assert len(declared) >= 40, declared  # the live stack; shrinkage means a glob bug
-    missed = [path for path in declared if not _is_review_substrate_path(path)]
-    assert missed == []
+    assert len(named) >= 44, named  # the live inventory; shrinkage means a glob bug
+    undecided = [
+        path for path in named
+        if not _is_review_substrate_path(path) and path not in agent_side_review_surfaces
+    ]
+    assert undecided == [], (
+        "review-named modules with no trust-boundary decision (classify as substrate "
+        f"or add to agent_side_review_surfaces with a dependency proof): {undecided}"
+    )
+    stale = [p for p in agent_side_review_surfaces if not (repo / p).exists()]
+    assert stale == []
+    # The two halves stay disjoint: nothing in the disclosure list may classify.
+    assert [p for p in agent_side_review_surfaces if _is_review_substrate_path(p)] == []
     # The anchors carry ONLY the surfaces the name rule cannot see.
     overlap = [
         path for path in _REVIEW_SUBSTRATE_ANCHOR_PATHS
