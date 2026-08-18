@@ -35,7 +35,6 @@ MODULE_DEBT_1500 = (
     "tests/test_review_prompt_caching.py",
     "tests/test_review_substrate_v2.py",
     "tests/test_scope_review.py",
-    "web/modules/chat.js",
 )
 
 FUNCTION_DEBT = (
@@ -180,6 +179,7 @@ BAND_PATHS = {
     "tests/test_v6730_origin_invariant.py": None,
     "tests/test_v678_receipt_reconciliation.py": None,
     "tests/test_v7_migration_ledger.py": "the migration-ledger membership test grows one named block per extraction lane by design; the blocks are data (row inventories), and moving them out would recreate the very second-ledger the SSOT rule forbids",
+    "web/modules/chat.js": "chat instance shell after the W3 wave D ownership transfers: mostly factory composition wiring plus the WS routing that binds the extracted owners; still shrinking with the chat.js size campaign",
     "web/modules/harness_accounts.js": None,
     "web/modules/harness_login_cards.js": None,
     "web/modules/log_events.js": None,
