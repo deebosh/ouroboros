@@ -45,6 +45,89 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         assert _is_review_substrate_path(doc), doc
 
 
+def _static_import_closure(repo, entry_rel_paths):
+    """Transitive closure of repo-internal MODULE-LEVEL imports.
+
+    Hybrid depth rule. The ENTRY scripts contribute every import they contain,
+    module-level or function-local: the flow calls its own functions, so their
+    lazy imports are its own execution paths (run_external_review reaches
+    tools.git through exactly such a local import). TRANSITIVE modules
+    contribute only module-level imports: a lazy import deeper in the graph is
+    a deliberate execution-path break (the module-handle idiom) and only
+    executes if the flow calls that specific function, which a static walker
+    cannot prove. The git_review_cycle hop is a module-level re-export in
+    tools/git.py and stays caught."""
+    import ast as _ast
+
+    def module_to_rel(mod: str):
+        cand = mod.replace(".", "/")
+        for rel in (f"{cand}.py", f"{cand}/__init__.py"):
+            if (repo / rel).exists():
+                return rel
+        return None
+
+    seen = set()
+    entries = set(entry_rel_paths)
+    frontier = list(entry_rel_paths)
+    while frontier:
+        rel = frontier.pop()
+        if rel in seen or not (repo / rel).exists():
+            continue
+        seen.add(rel)
+        tree = _ast.parse((repo / rel).read_text(encoding="utf-8"))
+        nodes = _ast.walk(tree) if rel in entries else iter(tree.body)
+        for node in nodes:
+            mods = []
+            if isinstance(node, _ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
+                mods = [node.module]
+                mods += [f"{node.module}.{a.name}" for a in node.names]
+            for mod in mods:
+                target = module_to_rel(mod)
+                if target and target not in seen:
+                    frontier.append(target)
+    return seen
+
+
+def test_the_contributor_flow_import_closure_stays_inside_the_boundary():
+    """The auditor-confirmed class defect behind the git_review_cycle hole: the
+    dependency proof looked at DIRECT imports of the trust-path files, while the
+    contributor flow reaches git_review_cycle.py through the tools.git re-export
+    hop. The proof is now computed, not asserted: walk the transitive static
+    import closure from the two contributor entry scripts, and every
+    review-named module the flow can actually execute must classify as
+    substrate — and must NOT sit in the agent-side disclosure list."""
+    repo = Path(__file__).resolve().parent.parent
+    closure = _static_import_closure(
+        repo,
+        ["scripts/run_external_review.py", "scripts/contributor_review_evidence.py"],
+    )
+    review_named_in_closure = sorted(
+        rel for rel in closure
+        if rel.rpartition("/")[0] in _REVIEW_SUBSTRATE_MODULE_DIRS
+        and "review" in rel.rpartition("/")[2]
+    )
+    assert "ouroboros/tools/git_review_cycle.py" in review_named_in_closure
+    unclassified = [p for p in review_named_in_closure if not _is_review_substrate_path(p)]
+    assert unclassified == [], (
+        "review-named modules the contributor flow transitively imports but the "
+        f"boundary does not classify: {unclassified}"
+    )
+    agent_side = {
+        "ouroboros/deep_self_review.py",
+        "ouroboros/tools/git_review_cycle.py",
+        "ouroboros/tools/plan_review.py",
+        "ouroboros/tools/plan_review_runtime.py",
+        "ouroboros/loop_acceptance_review.py",
+    }
+    inside = sorted(set(agent_side) & set(review_named_in_closure))
+    assert inside == ["ouroboros/tools/git_review_cycle.py"], (
+        "agent-side-disclosed modules that the contributor flow actually imports "
+        f"(the disclosure would be false): {inside}"
+    )
+
+
 def test_every_review_named_module_carries_a_boundary_decision():
     """The class fix for the hand-list defect (spec 1.14-2): the CONTRIBUTOR
     trust boundary is decided for every review-named module, not remembered.
@@ -67,7 +150,6 @@ def test_every_review_named_module_carries_a_boundary_decision():
     # substrate or added to this list with the same dependency proof.
     agent_side_review_surfaces = {
         "ouroboros/deep_self_review.py",
-        "ouroboros/tools/git_review_cycle.py",
         "ouroboros/tools/plan_review.py",
         "ouroboros/tools/plan_review_runtime.py",
     }

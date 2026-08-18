@@ -99,6 +99,7 @@ _REVIEW_SUBSTRATE_ANCHOR_PATHS = frozenset({
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/commit_gate.py",
     "ouroboros/tools/git.py",
+    "ouroboros/tools/git_review_cycle.py",
     "ouroboros/tools/parallel_review.py",
     "ouroboros/tools/registry.py", "ouroboros/tools/registry_core.py",
     "ouroboros/tools/registry_guard_process.py", "ouroboros/tools/registry_guards.py",
