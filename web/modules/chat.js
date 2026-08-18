@@ -39,8 +39,14 @@ import {
     liveLineRowToggleKey,
     projectCollapsedActivity,
 } from './chat_card_state.js';
-import { confirmAndSendPanic, shouldFirePanic } from './chat_controls.js';
+import {
+    computeDerivedChatStatus,
+    computeHydratedDirectActivities,
+    partitionLocalEchoJournal,
+    reconnectBannerText,
+} from './chat_activity.js';
 import { createCardActions } from './chat_card_actions.js';
+import { confirmAndSendPanic, shouldFirePanic } from './chat_controls.js';
 import { createComposer } from './chat_composer.js';
 import { createFrameRouting } from './chat_frame_routing.js';
 import { createHeaderControls } from './chat_header_controls.js';
@@ -67,6 +73,8 @@ export {
     COLLAPSED_ACTIVITY_MAX,
     boundActivityPreview,
     clearStickyCardState,
+    computeDerivedChatStatus,
+    computeHydratedDirectActivities,
     confirmAndSendPanic,
     headerBudgetPresentation,
     insertTimelineNode,
@@ -479,6 +487,41 @@ export function createChatInstance({
     // suppresses the transient card while preserving the typed routing annotation
     // and any non-empty final conversational answer as separate UI roles.
     const ephemeralDecisionTaskIds = new Set();
+    // Server-confirmed in-flight direct/ephemeral turns
+    // (activityId -> { activityId, kind, phase, clientMessageId, startedAt }).
+    const activeDirectActivities = new Map();
+    // Local user submissions awaiting server confirmation (clientMessageId
+    // -> { clientMessageId, timestamp }).
+    const pendingSubmissions = new Map();
+    // Conclusion ledger: ids concluded by a keyed final. Task ids never
+    // restart, so late typing frames / stale snapshots must not resurrect a
+    // concluded turn (project panels hydrate one-shot, no poll). Bounded FIFO.
+    const concludedDirectActivities = new Map();
+    const CONCLUDED_ACTIVITY_LEDGER_MAX = 200;
+    // Local-echo journal: owner rows kept until server history confirms
+    // their client_message_id (partitionLocalEchoJournal).
+    const localEchoJournal = new Map();
+    const LOCAL_ECHO_JOURNAL_MAX = 50;
+
+    function recordLocalEcho(clientMessageId, text, ts) {
+        if (!clientMessageId) return;
+        localEchoJournal.set(clientMessageId, { clientMessageId, text, ts, annotation: null });
+        while (localEchoJournal.size > LOCAL_ECHO_JOURNAL_MAX) {
+            localEchoJournal.delete(localEchoJournal.keys().next().value);
+        }
+    }
+
+    function recordConcludedActivity(activityId) {
+        const aid = String(activityId || '').trim();
+        if (!aid) return;
+        concludedDirectActivities.delete(aid);
+        concludedDirectActivities.set(aid, Date.now());
+        while (concludedDirectActivities.size > CONCLUDED_ACTIVITY_LEDGER_MAX) {
+            const oldest = concludedDirectActivities.keys().next().value;
+            concludedDirectActivities.delete(oldest);
+        }
+    }
+    let lastTerminalAttention = false;
     // Finished task ids hidden from routine syncs until reload/reconnect rebuilds history.
     const retiredTaskIds = new Set();
     // The owner's last main-chat request, handed to the next live card it spawns so a
@@ -519,12 +562,6 @@ export function createChatInstance({
         getSenderLabel,
     } = createMessageIdentity({ chatSessionId, seenMessageKeys, messageKeyOrder });
 
-    function reconnectBannerText(reason = '') {
-        if (reason === 'sha-change') return '♻️ Restart complete';
-        if (reason) return '♻️ Reconnected';
-        return '';
-    }
-
     function readPendingReconnectBanner() {
         try {
             const url = new URL(window.location.href);
@@ -557,7 +594,7 @@ export function createChatInstance({
     }
 
     const { syncHeaderControlState, refreshHeaderControlState } = createHeaderControls({
-        byId, headerActions, state,
+        byId, headerActions, state, hydrateDirectActivities,
     });
     function persistVisibleHistory() {
         try {
@@ -771,6 +808,7 @@ export function createChatInstance({
         turnTaskIntoProject,
         syncCancelRunButton,
         markTaskCancelable,
+        markLiveCardFinalizing,
     } = createCardActions({
         liveCardRecords,
         cancelableTaskIds,
@@ -1176,6 +1214,12 @@ export function createChatInstance({
         if (record.root?.dataset?.projectCreated === '1') return;
         const nextPhase = summary.phase || '';
         if (record.finished && !isTerminalTaskPhase(nextPhase, summary.terminal)) {
+            // A late cost frame still settles the finished card's cost meta.
+            if (summary.costProjection) {
+                record.costMeta = mergeStickyCostMeta(record.costMeta, summary.costProjection);
+                if (_rebuildBatch) _rebuildBatch.touch(record);
+                else renderLiveCardMeta(record);
+            }
             return;
         }
 
@@ -1218,6 +1262,12 @@ export function createChatInstance({
         record.phaseEl.dataset.phase = activePhase;
         record.phaseEl.textContent = formatLiveCardPhaseLabel(activePhase);
         record.phaseEl.className = `chat-live-phase ${activePhase}`;
+        // Sticky hold: post-task frames must not repaint "Working".
+        if (record.finalizingHold && !record.finished && !record.cancelPendingPolicy) {
+            record.phaseEl.dataset.phase = 'working';
+            record.phaseEl.textContent = 'Finalizing…';
+            record.phaseEl.className = 'chat-live-phase working finalizing';
+        }
         // Cluster B: a coined project name takes the title slot; the live activity
         // headline still renders in the timeline lines below. Falls back to the
         // activity headline until the proactive namer has produced a name.
@@ -1353,14 +1403,16 @@ export function createChatInstance({
             }
             syncLiveCardToggle(record);
             if (drivesComposerStatus) {
-                setStatus(summary.phase === 'error' || summary.phase === 'timeout' ? 'error' : 'online', summary.phase === 'error' || summary.phase === 'timeout' ? 'Attention' : 'Online');
+                lastTerminalAttention = (summary.phase === 'error' || summary.phase === 'timeout');
+                syncChatStatus();
             }
         } else {
             setLiveCardTypingVisible(record, true);
             if (drivesComposerStatus) {
-                setStatus('thinking', 'Working...');
-            } else if (!hasActiveLiveCard() && statusBadge && ['Thinking...', 'Working...'].includes(statusBadge.textContent)) {
-                setStatus('online', 'Online');
+                lastTerminalAttention = false;
+                syncChatStatus();
+            } else if (!hasActiveLiveCard()) {
+                syncChatStatus();
             }
         }
         if (summary.expandByDefault) {
@@ -1382,6 +1434,7 @@ export function createChatInstance({
         if (record.root?.dataset?.projectCreated === '1') return;
         const wasFinished = record.finished;
         record.finished = true;
+        record.finalizingHold = false;
         record.root.dataset.finished = '1';
         // A finished task can never be cancelled again; dropping the marker here
         // keeps the set from accumulating every task id of a long session (P3).
@@ -1401,10 +1454,8 @@ export function createChatInstance({
         }
         syncLiveCardToggle(record);
         if (activeLiveGroupId === record.groupId) activeLiveGroupId = '';
-        if (!hasActiveLiveCard()) {
-            setStatus(activePhase === 'error' || activePhase === 'timeout' ? 'error' : 'online',
-                      activePhase === 'error' || activePhase === 'timeout' ? 'Attention' : 'Online');
-        }
+        lastTerminalAttention = (activePhase === 'error' || activePhase === 'timeout');
+        syncChatStatus();
     }
 
     function appendTaskSummaryToLiveCard(msg, { suppressDomInsert = false } = {}) {
@@ -1652,6 +1703,12 @@ export function createChatInstance({
         queueTaskLiveUpdate(presented, taskId, normalizeLogTs(rawTs), presented.dedupeKey || '', rawTs);
         updateSubagentCardFromEvent(evt, rawTs);
         if (eventType === 'task_done') {
+            // The settled task_done concludes the managed activity too: panels
+            // hydrate one-shot (no poll), so the header must not stay Working.
+            if (activeDirectActivities.delete(taskId)) {
+                recordConcludedActivity(taskId);
+                syncChatStatus();
+            }
             const taskState = getTaskUiState(taskId, false);
             revealBufferedCardIfNeeded(taskState, { rawTs });
         }
@@ -1740,7 +1797,15 @@ export function createChatInstance({
         updateMessageAnnotation,
         clearTransientRoutingAnnotations,
         markPendingDelivered,
-    } = createMessageAnnotations({ messagesDiv, pendingUserBubbles });
+    } = createMessageAnnotations({ messagesDiv, pendingUserBubbles, localEchoJournal });
+
+    function markPendingDropped(clientMessageId) {
+        const bubble = pendingUserBubbles.get(clientMessageId || '');
+        if (!bubble) return;
+        const note = bubble.querySelector('.msg-pending');
+        if (note) note.textContent = 'Not delivered — send again';
+        pendingUserBubbles.delete(clientMessageId);
+    }
 
     function ensureWelcomeMessage() {
         if (!isMain) return;
@@ -1902,6 +1967,14 @@ export function createChatInstance({
                 // clearing and the batch mount [GPT#14]. The routine path
                 // (rebuildAll=false) calls it directly — unchanged behavior.
                 const applySyncedMessages = () => {
+                // Server-confirmed rows retire their journal copy; the rest
+                // survive the rebuild below.
+                const localEcho = partitionLocalEchoJournal(localEchoJournal, new Set(messages
+                    .filter((m) => m.role === 'user' && m.client_message_id)
+                    .map((m) => String(m.client_message_id))));
+                for (const entry of localEcho.confirmed) {
+                    localEchoJournal.delete(entry.clientMessageId);
+                }
                 if (rebuildAll) {
                     for (const record of liveCardRecords.values()) record.root?.remove();
                     liveCardRecords.clear();
@@ -1990,10 +2063,18 @@ export function createChatInstance({
                 }
                 for (const msg of messages) {
                     const taskId = msg.task_id || '';
+                    // Reconnect: a durably recorded submission must not stay
+                    // `Sending...` — history + snapshot are the authorities
+                    // (a live turn re-links via hydration / next typing frame).
+                    if (fromReconnect && msg.role === 'user' && msg.client_message_id) {
+                        pendingSubmissions.delete(String(msg.client_message_id));
+                    }
                     if (!renderUser && msg.role === 'user') continue;
                     if (msg.is_progress) {
                         // Progress-only/failed tasks still anchor at their first event.
                         insertCardIfNeeded(taskId);
+                        // Open post-task checkpoint replays as "Finalizing…".
+                        if (msg.task_phase === 'finalizing') markLiveCardFinalizing(taskId);
                         continue;
                     }
                     if (msg.system_type === 'task_summary') continue;
@@ -2016,10 +2097,21 @@ export function createChatInstance({
                             continue;
                         }
                         insertCardIfNeeded(taskId);
-                        const taskState = getTaskUiState(taskId, false);
-                        const record = liveCardRecords.get(taskId);
-                        const preservedPhase = taskState?.completedPhase || record?.phaseEl?.dataset?.phase || 'done';
-                        finishLiveCard(taskId, preservedPhase);
+                        // A replayed early final must not finalize the card.
+                        if (msg.task_phase === 'finalizing') {
+                            markLiveCardFinalizing(taskId);
+                        } else {
+                            const taskState = getTaskUiState(taskId, false);
+                            const record = liveCardRecords.get(taskId);
+                            const preservedPhase = taskState?.completedPhase || record?.phaseEl?.dataset?.phase || 'done';
+                            finishLiveCard(taskId, preservedPhase);
+                        }
+                    }
+                    // A replayed durable routing receipt carries the same
+                    // authority as its live WS frame: a receipt that landed
+                    // while the socket was down still retires `Sending...`.
+                    if (msg.chat_annotation && msg.client_message_id) {
+                        pendingSubmissions.delete(String(msg.client_message_id));
                     }
                     addMessage(msg.text, msg.role, !!msg.markdown, msg.ts || null, false, {
                         systemType: msg.system_type || '',
@@ -2079,6 +2171,20 @@ export function createChatInstance({
                         else insertMessageNode(rec.root);
                     }
                 }
+                // A rebuild replays only what the server returned; re-render
+                // owner rows a stale snapshot has not confirmed yet.
+                if (rebuildAll) {
+                    for (const entry of localEcho.unconfirmed) {
+                        addMessage(entry.text, 'user', false, entry.ts, false, {
+                            // A still-queued offline row keeps its pending mark.
+                            pending: pendingUserBubbles.has(entry.clientMessageId),
+                            source: 'web',
+                            senderSessionId: chatSessionId,
+                            clientMessageId: entry.clientMessageId,
+                            chatAnnotation: entry.annotation,
+                        });
+                    }
+                }
                 };  // end applySyncedMessages
 
                 // perf2 P4 follow-up (double-fetch fix): the replay below marks
@@ -2118,11 +2224,8 @@ export function createChatInstance({
                     _historyReplayActive = false;
                 }
 
-                // After first load, unfinished foreground cards still show typing.
-                if (!historyLoaded) {
-                    const hasOngoingTask = Array.from(liveCardRecords.values()).some(isForegroundLiveCard);
-                    if (hasOngoingTask) showTyping();
-                }
+                // After first load, sync status from live cards/active turns.
+                syncChatStatus();
 
                 // One-shot server recall seed includes other clients without resetting
                 // ArrowUp during reconnect. Merge [server..., local...], newest wins.
@@ -2385,13 +2488,25 @@ export function createChatInstance({
         rememberInput(text);
         input.value = '';
         clearInputDraft();
-        addMessage(text, 'user', false, null, false, {
+        const sentTs = new Date().toISOString();
+        addMessage(text, 'user', false, sentTs, false, {
             pending: result?.status === 'queued',
             source: 'web',
             senderSessionId: chatSessionId,
             clientMessageId: result?.clientMessageId || '',
             forceStick: true,
         });
+        // ws.send always coins a client_message_id for chat frames; guard
+        // only against a non-chat result shape.
+        const pendingId = result?.clientMessageId || '';
+        if (pendingId) {
+            pendingSubmissions.set(pendingId, {
+                clientMessageId: pendingId,
+                timestamp: Date.now(),
+            });
+            recordLocalEcho(pendingId, text, sentTs);
+        }
+        syncChatStatus();
         resizeChatInput({ preserveStickiness: false });
         scrollToBottomAfterLayout();
     }
@@ -2652,6 +2767,10 @@ export function createChatInstance({
         // "Connecting…" (the one-shot WS `open` already fired before it existed;
         // future reconnects still update it via the shared `open` handler).
         if (ws.isConnected?.()) setStatus('online', 'Online');
+        // 1A: a panel created AFTER the socket opened missed the typing frame
+        // and the `open`-driven refresh — hydrate in-flight turns once from
+        // the snapshot (per-instance closure filters to this panel's chat_id).
+        refreshHeaderControlState(true);
     } else {
         refreshHeaderControlState(true);
         headerControlInterval = setInterval(refreshHeaderControlState, 3000);
@@ -2749,12 +2868,60 @@ export function createChatInstance({
         return Array.from(liveCardRecords.values()).some(isForegroundLiveCard);
     }
 
-    function showTyping() {
-        if (!hasActiveLiveCard()) {
+    function deriveChatStatus() {
+        let directCount = 0, managedActive = 0, managedQueued = 0;
+        for (const entry of activeDirectActivities.values()) {
+            if (String(entry?.kind || '') !== 'managed_task') directCount += 1;
+            else if (String(entry?.phase || '') === 'queued') managedQueued += 1;
+            else managedActive += 1;
+        }
+        return computeDerivedChatStatus({
+            isConnected: ws.isConnected ? ws.isConnected() : true,
+            hasActiveLiveCard: hasActiveLiveCard(),
+            activeDirectCount: directCount,
+            activeManagedCount: managedActive,
+            queuedManagedCount: managedQueued,
+            pendingSubmissionsCount: pendingSubmissions.size,
+            lastTerminalAttention,
+        });
+    }
+
+    function syncChatStatus() {
+        const derived = deriveChatStatus();
+        setStatus(derived.kind, derived.text);
+        if (derived.showDots && !hasActiveLiveCard()) {
             typingEl.style.display = '';
             if (isNearBottom()) messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        } else {
+            typingEl.style.display = 'none';
         }
-        setStatus('thinking', 'Thinking...');
+    }
+
+    function showTyping(activityId = '', meta = {}) {
+        const actId = String(activityId || '').trim() || ('direct-' + chatId);
+        // A typing frame after its turn's keyed final must not resurrect the
+        // concluded turn — but it still carries the activity<->cmid link, so
+        // it settles the linked submission (broadcasts are not ordered).
+        if (concludedDirectActivities.has(actId)) {
+            if (meta.clientMessageId && pendingSubmissions.delete(meta.clientMessageId)) {
+                syncChatStatus();
+            }
+            return;
+        }
+        activeDirectActivities.set(actId, {
+            activityId: actId,
+            // '' = not registry-tracked (queued managed task): visible in the
+            // active set but exempt from /api/state snapshot deletion.
+            kind: meta.kind || '',
+            phase: meta.phase || 'thinking',
+            clientMessageId: meta.clientMessageId || '',
+            startedAt: Date.now(),
+        });
+        if (meta.clientMessageId) {
+            pendingSubmissions.delete(meta.clientMessageId);
+        }
+        lastTerminalAttention = false;
+        syncChatStatus();
     }
 
     function hideTypingIndicatorOnly() {
@@ -2766,11 +2933,18 @@ export function createChatInstance({
         typingEl.style.display = 'none';
     }
 
-    function hideTyping() {
-        hideTypingIndicatorOnly();
-        if (statusBadge && ['Thinking...', 'Working...'].includes(statusBadge.textContent)) {
-            setStatus('online', 'Online');
+    function hydrateDirectActivities(turnsList, snapshotBarrierMs = Infinity) {
+        if (!Array.isArray(turnsList)) return;
+        const nextMap = computeHydratedDirectActivities(
+            activeDirectActivities, turnsList, chatId, snapshotBarrierMs, concludedDirectActivities);
+        activeDirectActivities.clear();
+        for (const [k, v] of nextMap.entries()) {
+            activeDirectActivities.set(k, v);
+            if (v.clientMessageId) {
+                pendingSubmissions.delete(v.clientMessageId);
+            }
         }
+        syncChatStatus();
     }
 
     const {
@@ -2781,7 +2955,15 @@ export function createChatInstance({
     } = createFrameRouting({ state, isMain, chatId, updateUnreadBadge });
     onWs('typing', (msg) => {
         if (!isMyThread(msg)) return;  // each column shows typing only for its own thread
-        showTyping();
+        const actId = msg.activity_id || msg.task_id || ('direct-' + (msg.chat_id || chatId));
+        const clientMsgId = msg.client_message_id || '';
+        showTyping(actId, {
+            clientMessageId: clientMsgId,
+            phase: msg.phase || 'thinking',
+            // Server-stamped for registry turns and RUNNING queue roots;
+            // kind-less frames stay outside snapshot deletion authority.
+            kind: msg.kind || '',
+        });
     });
 
     onWs('chat', (msg) => {
@@ -2789,8 +2971,13 @@ export function createChatInstance({
         if (msg.role === 'user') {
             const clientMessageId = msg.client_message_id || '';
             const senderSessionId = msg.sender_session_id || '';
+            // 2A: the user echo is receipt of the user ROW, not turn start —
+            // it settles the bubble but must NOT retire the `Sending...`
+            // submission; that takes a linked typing frame / snapshot turn /
+            // routing receipt or the turn's conclusion.
             if (senderSessionId === chatSessionId && clientMessageId) {
                 markPendingDelivered(clientMessageId);
+                syncChatStatus();
                 return;
             }
             addMessage(msg.content, 'user', false, msg.ts || null, false, {
@@ -2801,33 +2988,74 @@ export function createChatInstance({
                 taskId: msg.task_id || '',
             });
             incrementUnreadIfNeeded(msg);
+            syncChatStatus();
             return;
         }
 
         if (msg.role === 'assistant' || msg.role === 'system') {
-            hideTyping();
             const explicitTaskId = msg.task_id || '';
             const ephemeralDecision = registerEphemeralDecisionFrame(msg);
+            // 3A: Main mirrors Project frames as штаб presentation only — a
+            // mirrored ephemeral turn never enters THIS instance's active set.
+            const isMirror = isMain && isKnownProjectFrame(msg);
+            if (ephemeralDecision && explicitTaskId && !isMirror) {
+                const existing = activeDirectActivities.get(explicitTaskId) || {};
+                activeDirectActivities.set(explicitTaskId, {
+                    activityId: explicitTaskId,
+                    kind: 'ephemeral_decision',
+                    phase: 'thinking',
+                    startedAt: existing.startedAt || Date.now(),
+                    clientMessageId: existing.clientMessageId || '',
+                });
+            }
             if (msg.is_progress) {
                 showTaskIncidentToast(msg);
                 if (ephemeralDecision) return;
                 updateLiveCardFromProgressMessage(msg);
+                syncChatStatus();
                 return;
             }
+
+            // An early final (post-task still running) is NOT the turn's
+            // conclusion; task_done or the queue snapshot concludes it.
+            const finalizing = Boolean(explicitTaskId) && msg.task_phase === 'finalizing';
+            if (!isMirror && !finalizing) {
+                if (explicitTaskId) {
+                    // 4A (active set): a keyed final concludes ITS OWN turn —
+                    // the finished activity + its linked pending — never a
+                    // concurrent turn's state (2A keeps later `Sending...`).
+                    const finished = activeDirectActivities.get(explicitTaskId);
+                    activeDirectActivities.delete(explicitTaskId);
+                    recordConcludedActivity(explicitTaskId);
+                    if (finished?.clientMessageId) {
+                        pendingSubmissions.delete(finished.clientMessageId);
+                    }
+                } else {
+                    // A bare (unkeyed) final cannot be scoped: clear the set
+                    // but NEVER ledger — no proof any specific turn ended; a
+                    // live turn stays restorable by typing frame or snapshot.
+                    activeDirectActivities.clear();
+                    pendingSubmissions.clear();
+                }
+            }
+
             if (msg.system_type === 'task_summary') {
                 appendTaskSummaryToLiveCard(msg);
                 markAssistantReply(explicitTaskId);
                 incrementUnreadIfNeeded(msg);
+                syncChatStatus();
                 return;
             }
             if (explicitTaskId && subagentChildParents.has(explicitTaskId)) {
                 routeSubagentFinalMessageToCard(explicitTaskId, msg);
                 markAssistantReply(explicitTaskId);
                 incrementUnreadIfNeeded(msg);
+                syncChatStatus();
                 return;
             }
-            if (explicitTaskId) finishLiveCard(explicitTaskId);
-            markAssistantReply(explicitTaskId);
+            if (finalizing) markLiveCardFinalizing(explicitTaskId);
+            else if (explicitTaskId) finishLiveCard(explicitTaskId);
+            if (!finalizing) markAssistantReply(explicitTaskId);
             clearTransientRoutingAnnotations();
             addMessage(msg.content, msg.role, msg.markdown, msg.ts || null, false, {
                 systemType: msg.system_type || '',
@@ -2835,6 +3063,7 @@ export function createChatInstance({
                 taskId: explicitTaskId,
             });
             incrementUnreadIfNeeded(msg);
+            syncChatStatus();
         }
     });
 
@@ -2842,6 +3071,23 @@ export function createChatInstance({
         if (!isMyThread(msg)) return;
         if (msg.annotation_type !== 'routing_ack') return;
         updateMessageAnnotation(msg.client_message_id || '', msg);
+        // Any routing receipt is the durable disposition of the submission and
+        // ends its `Sending...` phase; further activity announces itself via
+        // its own typing frame or task card.
+        const receiptCid = String(msg.client_message_id || '');
+        if (receiptCid && pendingSubmissions.delete(receiptCid)) {
+            syncChatStatus();
+        }
+    });
+
+    onWs('outbound_dropped', (msg) => {
+        // Evicted from the offline queue: the submission will never reach
+        // the server, so it can never earn a receipt, a turn, or a journal row.
+        const cid = String(msg?.clientMessageId || '');
+        if (!cid) return;
+        markPendingDropped(cid);
+        localEchoJournal.delete(cid);
+        if (pendingSubmissions.delete(cid)) syncChatStatus();
     });
 
     onWs('log', (msg) => {
@@ -2864,12 +3110,22 @@ export function createChatInstance({
     });
 
     onWs('outbound_sent', (evt) => {
-        markPendingDelivered(evt?.clientMessageId || '');
+        const cid = evt?.clientMessageId || '';
+        if (cid) {
+            // A socket write is not durable acceptance (2A): settle the
+            // bubble only; `Sending...` retires on authoritative evidence.
+            markPendingDelivered(cid);
+            syncChatStatus();
+        }
     });
 
     onWs('photo', (msg) => {
         if (!isMyThread(msg)) return;
-        hideTyping();
+        // Media frames carry no activity identity: hide the dots row for the
+        // incoming bubble but leave the authoritative active set intact (4A) —
+        // syncChatStatus re-derives the header from live state.
+        hideTypingIndicatorOnly();
+        syncChatStatus();
         const role = msg.role === 'user' ? 'user' : 'assistant';
         const sender = role === 'user'
             ? getSenderLabel('user', false, '', {
@@ -2906,7 +3162,8 @@ export function createChatInstance({
 
     onWs('video', (msg) => {
         if (!isMyThread(msg)) return;
-        hideTyping();
+        hideTypingIndicatorOnly();
+        syncChatStatus();
         const role = msg.role === 'user' ? 'user' : 'assistant';
         const sender = role === 'user'
             ? getSenderLabel('user', false, '', {
@@ -2948,15 +3205,21 @@ export function createChatInstance({
 
     onWs('document', (msg) => {
         if (!isMyThread(msg)) return;
-        hideTyping();
+        hideTypingIndicatorOnly();
+        syncChatStatus();
         if (appendDocumentBubble(msg)) incrementUnreadIfNeeded(msg);
     });
 
     let wsHasConnectedOnce = false;
 
     onWs('open', (msg) => {
-        setStatus('online', 'Online');
+        // Reconnect drops kind-less entries (no snapshot source tracks them);
+        // kind-stamped ones reconcile against the refreshed snapshot below.
+        for (const [aid, entry] of activeDirectActivities) {
+            if (!entry.kind) activeDirectActivities.delete(aid);
+        }
         refreshHeaderControlState(true);
+        syncChatStatus();
         // perf2 P4.1 [Gemini#3]: reconnect truth comes from the ws CLIENT
         // (previouslyConnected rides the open event) — a project instance
         // created while the socket was already open must still treat the next
@@ -2997,8 +3260,8 @@ export function createChatInstance({
     });
 
     onWs('close', () => {
-        hideTyping();
-        setStatus('offline', 'Reconnecting...');
+        hideTypingIndicatorOnly();
+        syncChatStatus();
         syncHeaderControlState({ accounting: { available: false } });
     });
 
@@ -3052,6 +3315,7 @@ export function createChatInstance({
             ephemeralDecisionTaskIds.clear();
             retiredTaskIds.clear();
             pendingUserBubbles.clear();
+            localEchoJournal.clear();
             seenMessageKeys.clear();
             messageKeyOrder.length = 0;
             persistedHistory.length = 0;

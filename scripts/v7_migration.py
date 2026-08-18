@@ -74,7 +74,7 @@ BASELINE_SHA = "a191e1cc21a380176bcedc9b8edd86078fc87fa1"
 # (owner decision, 2026-08-16): left behind, ordinary upstream refactors become
 # phantom "missing migration" demands and bury the real rows. Update it in the
 # same commit as the rebase.
-MERGE_BASE_SHA = "353fd97495060a2ade55e04010f899e68babc1d9"
+MERGE_BASE_SHA = "1abea7732750e1430b5f5727b73a5508c1a24645"
 MIGRATION_PATH = pathlib.PurePosixPath("MIGRATION_v7.md")
 MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contract", "semantic delta", "characterization test", "upstream-transfer status/note")
 # Semantic delta ids are a shared registry, one per plan §4.3 item (legend duplicated in

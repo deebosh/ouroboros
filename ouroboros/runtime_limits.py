@@ -66,14 +66,6 @@ def get_per_call_timeout_ceiling_sec() -> int:
     return _clamped_number_setting("OUROBOROS_PER_CALL_TIMEOUT_CEILING_SEC", low=1, cast=int)
 
 
-def get_plan_task_swarm_timeout_sec() -> float:
-    return _clamped_number_setting("OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC", low=0.0)
-
-
-def get_plan_task_swarm_max_wait_sec() -> float:
-    return _clamped_number_setting("OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC", low=0.0)
-
-
 def get_restart_drain_max_sec() -> int:
     return _clamped_number_setting(
         "OUROBOROS_RESTART_DRAIN_MAX_SEC", low=0, cast=lambda v: int(float(v)))
@@ -104,11 +96,6 @@ def get_llm_transport_read_timeout_sec() -> float:
 def get_acceptance_review_est_sec() -> float:
     """Estimated duration of one acceptance review/improvement pass (v6.54.4)."""
     return _clamped_number_setting("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", low=10.0, high=3600.0)
-
-
-def get_acceptance_max_improvement_passes() -> int:
-    """Default COUNT cap for acceptance-review improvement passes (v6.54.4)."""
-    return _clamped_number_setting("OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES", low=0, high=20, cast=int)
 
 
 def get_acceptance_reserve_pct() -> int:

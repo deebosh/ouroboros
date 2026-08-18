@@ -7,7 +7,7 @@ import { headerBudgetPresentation } from './costs.js';
 // single /api/state read, with an unavailable backend rendering as an explicit
 // unavailable accounting rather than a stale number. The instance's header node,
 // its id-scoped lookup and the shared page state are handed over explicitly.
-export function createHeaderControls({ byId, headerActions, state }) {
+export function createHeaderControls({ byId, headerActions, state, hydrateDirectActivities = null }) {
     function syncHeaderControlState(data) {
         headerActions?.querySelectorAll('[data-chat-command]').forEach((button) => {
             const cmd = button.dataset.chatCommand;
@@ -39,13 +39,25 @@ export function createHeaderControls({ byId, headerActions, state }) {
 
     async function refreshHeaderControlState(force = false) {
         if (!force && state.activePage !== 'chat') return;
+        // Snapshot authority barrier: the reply only knows activities that
+        // existed before this instant; later registrations survive hydration.
+        const snapshotRequestedAt = Date.now();
         try {
             const resp = await apiFetch('/api/state', { cache: 'no-store' });
             if (!resp.ok) {
                 syncHeaderControlState({ accounting: { available: false } });
                 return;
             }
-            syncHeaderControlState(await resp.json());
+            const data = await resp.json();
+            syncHeaderControlState(data);
+            // Combined snapshot (direct turns + queue roots); the legacy
+            // direct-only field is the older-server fallback.
+            const activities = Array.isArray(data?.active_chat_activities)
+                ? data.active_chat_activities
+                : data?.active_direct_turns;
+            if (Array.isArray(activities)) {
+                hydrateDirectActivities?.(activities, snapshotRequestedAt);
+            }
         } catch {
             syncHeaderControlState({ accounting: { available: false } });
         }

@@ -447,3 +447,7 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
             pytest.skip(str(exc))
         raise
+
+
+# The in-flight indicator lifecycle smoke test lives in
+# tests/test_ui_smoke_inflight_indicator.py (upstream v6.104.0; size-ratchet byte gate).

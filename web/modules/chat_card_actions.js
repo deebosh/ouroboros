@@ -167,9 +167,22 @@ export function createCardActions({
         const record = liveCardRecords.get(String(taskId || '').trim());
         if (!record || record.finished || !record.phaseEl) return;
         record.cancelPendingPolicy = soft ? 'finalize' : 'immediate';
+        record.finalizingHold = false;  // owner cancel outranks the hold
         record.phaseEl.dataset.phase = 'working';
         record.phaseEl.textContent = soft ? 'Finalizing…' : 'Cancelling…';
         record.phaseEl.className = 'chat-live-phase working cancelling';
+    }
+
+    // Early final on a managed root: hold the card on a sticky "Finalizing…"
+    // until the settled task_done (post-task synthesis still runs).
+    function markLiveCardFinalizing(taskId = '') {
+        const record = liveCardRecords.get(String(taskId || '').trim());
+        if (!record || record.finished || !record.phaseEl) return;
+        if (record.cancelPendingPolicy) return;
+        record.finalizingHold = true;
+        record.phaseEl.dataset.phase = 'working';
+        record.phaseEl.textContent = 'Finalizing…';
+        record.phaseEl.className = 'chat-live-phase working finalizing';
     }
 
     // Snapshot / restore of the live phase element around the optimistic
@@ -354,6 +367,7 @@ export function createCardActions({
         ensureLiveActionsEl,
         syncCancelRunButton,
         markLiveCardCancelPending,
+        markLiveCardFinalizing,
         captureLiveCardPhase,
         restoreLiveCardPhase,
         reconcileCancelCardFromDetail,

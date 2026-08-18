@@ -9,9 +9,7 @@ GIANT_PATHS = (
     "tests/test_agent_task_pipeline.py",
     "tests/test_extension_loader.py",
     "tests/test_loop_misc.py",
-    "tests/test_plan_review.py",
     "tests/test_review_agent_session_route.py",
-    "tests/test_review_prompt_caching.py",
     "tests/test_review_substrate_v2.py",
     "tests/test_scope_review.py",
     "web/modules/chat.js",
@@ -26,9 +24,7 @@ MODULE_DEBT_1500 = (
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/delegate.py",
     "ouroboros/tools/delegate_integration.py",
-    "ouroboros/tools/plan_review.py",
     "ouroboros/tools/review.py",
-    "ouroboros/tools/review_synthesis.py",
     "ouroboros/tools/subagent_integration.py",
     "ouroboros/usage_accounting.py",
     "supervisor/git_ops.py",
@@ -36,7 +32,6 @@ MODULE_DEBT_1500 = (
     "tests/test_agent_task_pipeline.py",
     "tests/test_extension_loader.py",
     "tests/test_loop_misc.py",
-    "tests/test_plan_review.py",
     "tests/test_review_agent_session_route.py",
     "tests/test_review_prompt_caching.py",
     "tests/test_review_substrate_v2.py",
@@ -142,7 +137,6 @@ BAND_PATHS = {
     "ouroboros/skill_review_runner.py": None,
     "ouroboros/subagent_worktrees.py": "private-snapshot registry owner: strict-vs-soft reads, the typed corruption refusal and the Git-branch cleanup symmetry keep the acting-worktree and delegated-snapshot lifecycles in the one module that holds their cross-process ops lock",
     "ouroboros/subagents.py": None,
-    "ouroboros/task_results.py": None,
     "ouroboros/task_status.py": None,
     "ouroboros/tools/browser.py": None,
     "ouroboros/tools/core.py": "retains the direct core tool catalog plus write, edit, text-search, and worker-forwarding implementations after semantic-no-op read/list and delivery extraction",
@@ -173,6 +167,7 @@ BAND_PATHS = {
     "tests/test_onboarding_complete_endpoint.py": None,
     "tests/test_onboarding_wizard.py": None,
     "tests/test_packaged_runtime_and_lifecycle.py": None,
+    "tests/test_plan_review_engine.py": "upstream v6.103.0 plan-review engine characterization suite arrives banded from the release itself; splitting a just-landed upstream suite inside the adoption merge would forfeit verbatim traceability to its source",
     "tests/test_repo_health_smoke.py": "v7 1500-line layer activation regression coverage",
     "tests/test_review_fidelity.py": None,
     "tests/test_review_verification_v6544.py": None,
@@ -192,6 +187,7 @@ BAND_PATHS = {
     "web/modules/onboarding_wizard.js": None,
     "web/modules/settings.js": None,
     "web/modules/widgets.js": None,
+    "web/tests/harness_login_cards.test.js": "upstream v6.104.0 agy login-card suite arrives banded from the release itself; same adoption-merge traceability rule",
 }
 
 BYTE_BASELINE_DEBT = {
@@ -204,5 +200,5 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "ouroboros/loop.py": 321064,
+    "ouroboros/loop.py": 317393,
 }

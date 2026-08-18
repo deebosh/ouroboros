@@ -88,6 +88,10 @@ class ChatOutbound(TypedDict):
     # X3: a repair receipt whose managed task id does not exist yet (the router
     # mints it at promotion). Typed truth instead of an invented id.
     task_id_pending: NotRequired[bool]
+    # "finalizing" on a root's early final answer: the answer is delivered
+    # while post-task synthesis still runs, so the frame is NOT the task's
+    # terminal conclusion — task_done settles the card/turn.
+    task_phase: NotRequired[str]
     ephemeral_decision: NotRequired[bool]
     task_incident: NotRequired[str]
     toast_once: NotRequired[str]
@@ -260,6 +264,13 @@ class TypingOutbound(TypedDict):
     # Multi-project: stamps the thread so the client fan-out routes a project
     # task's typing indicator to its panel instead of defaulting to main.
     chat_id: NotRequired[int]
+    activity_id: NotRequired[str]
+    client_message_id: NotRequired[str]
+    phase: NotRequired[str]
+    # Stamped only for direct-registry-tracked turns ("direct_chat" /
+    # "ephemeral_decision"); queued managed tasks emit typing without it, so the
+    # client exempts their entries from /api/state snapshot deletion authority.
+    kind: NotRequired[str]
 
 
 class LogOutbound(TypedDict):
@@ -493,6 +504,43 @@ class EvolutionStateSnapshot(TypedDict):
     campaign: NotRequired[Dict[str, Any]]
 
 
+class ActiveDirectTurn(TypedDict):
+    """An active in-process direct chat or ephemeral decision turn.
+
+    Snapshot rows in ``StateResponse.active_direct_turns``; every field is
+    always emitted by ``DirectActivityRegistry.snapshot()`` (empty-string for
+    absent optionals), so the mirror marks them all required.
+    """
+
+    activity_id: str
+    chat_id: int
+    project_id: str
+    client_message_id: str
+    kind: str
+    phase: str
+    started_at: float
+
+
+class ActiveChatActivity(TypedDict):
+    """One in-flight chat activity in ``StateResponse.active_chat_activities``.
+
+    The combined snapshot: direct/ephemeral registry turns (same rows as
+    ``active_direct_turns``) plus ROOT managed queue tasks projected as
+    ``kind="managed_task"`` with ``phase`` ``queued`` | ``working`` |
+    ``finalizing`` (final answer stored, post-task synthesis still open).
+    Field shape mirrors ``ActiveDirectTurn`` so one client reducer hydrates
+    both; managed rows carry an empty ``client_message_id``.
+    """
+
+    activity_id: str
+    chat_id: int
+    project_id: str
+    client_message_id: str
+    kind: str
+    phase: str
+    started_at: float
+
+
 class StateResponse(TypedDict):
     """Shape of ``GET /api/state`` (happy path)."""
 
@@ -534,6 +582,11 @@ class StateResponse(TypedDict):
     # project" button (v6.33.0 P2) and render a pointer that opens the bound
     # project's panel (v6.33.0 F4).
     task_bindings: dict
+    active_direct_turns: NotRequired[List[ActiveDirectTurn]]
+    # Combined activity snapshot (direct/ephemeral turns + root managed queue
+    # tasks). Additive beside active_direct_turns, which stays unchanged for
+    # compatibility; new clients hydrate from this field.
+    active_chat_activities: NotRequired[List[ActiveChatActivity]]
 
 
 class SettingsNetworkMeta(TypedDict):
@@ -915,9 +968,12 @@ class ClaudexorLoginJobProblem(TypedDict, total=False):
     ``error`` prose, optional stable machine ``code``, optional bounded
     ``required_actions`` naming the engine's continuation (e.g. reconcile's
     409 ``setup_termination_unconfirmed`` carries
-    ``["retry_setup_reconciliation"]``). Daemon 404/410 job-absence verdicts
-    and the operation-scoped input/reconcile 409s ride this shape with their
-    original status; transport failure and daemon 5xx stay the proxy's 503.
+    ``["retry_setup_reconciliation"]``). Daemon 404/410 job-absence verdicts,
+    the operation-scoped input/reconcile 409s, and a create-time daemon 400 —
+    the engine's verdict on the requested login SHAPE (e.g. a harness with no
+    default credential store refusing a default login) — ride this shape with
+    their original status, stable code and the engine's own sentence;
+    transport failure and daemon 5xx stay the proxy's 503.
     Not an action framework: the list mirrors the daemon's own top-level
     ``ControlProblem.requiredActions`` (at most 16 strings of at most 512
     chars) and nothing else."""
@@ -1245,6 +1301,8 @@ __all__ = [
     "StatusResponse",
     "HealthResponse",
     "StateResponse",
+    "ActiveDirectTurn",
+    "ActiveChatActivity",
     "EvolutionStateSnapshot",
     "SettingsNetworkMeta",
     "SettingsMeta",

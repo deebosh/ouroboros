@@ -24,6 +24,32 @@ PACING_INTERVAL_DEFAULT_SEC = 600
 SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC = 90
 
 
+# Shipped router profile. Keeping the root-loop role policy beside the direct
+# provider profiles gives onboarding, runtime defaults, and tests one vocabulary
+# instead of repeating model ids across those surfaces.
+OPENROUTER_DEFAULTS = {
+    "main": "google/gemini-3.7-flash",
+    "heavy": "",
+    "light": "openai/gpt-5.6-luna",
+    "vision": "",
+    "consciousness": "",
+    "fallback": "openai/gpt-5.6-luna",
+    "deep_self_review": "openai/gpt-5.6-sol-pro",
+}
+
+OPENROUTER_REVIEW_DEFAULTS = {
+    "triad": (
+        "google/gemini-3.7-flash",
+        "openai/gpt-5.6-terra",
+        "anthropic/claude-opus-5",
+    ),
+    "scope": ("openai/gpt-5.6-terra",),
+    # Claude Agent SDK spelling, not an OpenRouter model id. With no direct
+    # Anthropic key the existing advisory gate records an audited bypass.
+    "advisory": "claude-sonnet-5",
+}
+
+
 # Settings defaults
 SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OPENROUTER_API_KEY": "",
@@ -47,24 +73,21 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_NETWORK_PASSWORD": "",
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
-    "OUROBOROS_MODEL": "x-ai/grok-4.5",
-    # Worker lanes. Empty means "use OUROBOROS_MODEL" (same shape as consciousness),
-    # so the owner sets ONE model by default and optionally overrides a lane. HEAVY is
-    # the strong acting/coding lane (mutative first-level subagents); LIGHT is the cheap
-    # bulk lane (auto / deep subagents); real cheap default since v6.82.0.
-    "OUROBOROS_MODEL_HEAVY": "",
-    "OUROBOROS_MODEL_LIGHT": "google/gemini-3.6-flash",
-    "OUROBOROS_MODEL_VISION": "",
+    "OUROBOROS_MODEL": OPENROUTER_DEFAULTS["main"],
+    # Worker lanes; empty means "use OUROBOROS_MODEL" (one model by default, per-lane
+    # override optional). HEAVY = mutative first-level subagents; LIGHT = auto/deep bulk.
+    "OUROBOROS_MODEL_HEAVY": OPENROUTER_DEFAULTS["heavy"],
+    "OUROBOROS_MODEL_LIGHT": OPENROUTER_DEFAULTS["light"],
+    "OUROBOROS_MODEL_VISION": OPENROUTER_DEFAULTS["vision"],
     "OUROBOROS_IMAGE_INPUT_MODE": "auto",
-    # Background consciousness is a high-horizon cognitive loop, not a cheap
-    # helper lane. Empty means "use OUROBOROS_MODEL".
-    "OUROBOROS_MODEL_CONSCIOUSNESS": "",
+    # Background consciousness is a high-horizon loop, not a cheap helper lane.
+    "OUROBOROS_MODEL_CONSCIOUSNESS": OPENROUTER_DEFAULTS["consciousness"],
     # Cross-model resilience CHAIN (comma-separated, ordered). A single model is a
     # 1-element chain; empty disables cross-model fallback. Resilience slot — keeps a
     # real default, unlike the worker lanes. (Renamed from the singular MODEL_FALLBACK.)
-    "OUROBOROS_MODEL_FALLBACKS": "openai/gpt-5.6-luna",
-    "OUROBOROS_MODEL_DEEP_SELF_REVIEW": "openai/gpt-5.6-sol-pro",
-    "CLAUDE_CODE_MODEL": "opus[1m]",
+    "OUROBOROS_MODEL_FALLBACKS": OPENROUTER_DEFAULTS["fallback"],
+    "OUROBOROS_MODEL_DEEP_SELF_REVIEW": OPENROUTER_DEFAULTS["deep_self_review"],
+    "CLAUDE_CODE_MODEL": OPENROUTER_REVIEW_DEFAULTS["advisory"],
     "OUROBOROS_MAX_WORKERS": 10,
     "OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT": 6,
     "OUROBOROS_MAX_SUBAGENT_DEPTH": 2,
@@ -82,10 +105,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Single owner-facing knob (math SSOT in ouroboros/retention.py); deprecated
     # per-subsystem keys are migrated to this on settings load.
     "OUROBOROS_GC_RETENTION_DAYS": 7,
-    "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC": 120,
-    "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC": 900,
-    "TOTAL_BUDGET": 10.0,
-    "OUROBOROS_PER_TASK_COST_USD": 20.0,
+    "TOTAL_BUDGET": 200.0,
+    "OUROBOROS_PER_TASK_COST_USD": 50.0,
     # cloud.ru catalog prices are RUB per 1M while the budget is USD. No implicit
     # exchange rate: the owner must explicitly configure the divisor.
     "OUROBOROS_RUB_USD_RATE": "",
@@ -160,7 +181,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_GENERATIVE_PROBE": "1",
     "OUROBOROS_GENERATIVE_PROBE_CHARS": "5000000",
     # Pre-commit review: comma-separated provider-tagged model list
-    "OUROBOROS_REVIEW_MODELS": "openai/gpt-5.6-luna,google/gemini-3.6-flash,anthropic/claude-sonnet-5",
+    "OUROBOROS_REVIEW_MODELS": ",".join(OPENROUTER_REVIEW_DEFAULTS["triad"]),
     "OUROBOROS_REVIEWER_SLOTS": "",  # structured slot SSOT (reviewer_slot_config.py); "" = legacy comma keys
     # INSTALL-TIME facts: the agent-preset generation this install received, and WHEN onboarding last completed
     # (recorded on EVERY completion). Endpoint-authored and disk-only — see ENDPOINT_AUTHORED_SETTINGS.
@@ -199,8 +220,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "MCP_SERVERS": [],
     "MCP_TOOL_TIMEOUT_SEC": 60,
     # Scope review: one or more reviewer slots; enforcement follows OUROBOROS_REVIEW_ENFORCEMENT.
-    "OUROBOROS_SCOPE_REVIEW_MODELS": "openai/gpt-5.6-terra",
-    "OUROBOROS_SCOPE_REVIEW_MODEL": "openai/gpt-5.6-terra",
+    "OUROBOROS_SCOPE_REVIEW_MODELS": ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"]),
+    "OUROBOROS_SCOPE_REVIEW_MODEL": OPENROUTER_REVIEW_DEFAULTS["scope"][0],
     # DEPRECATED, enforcement-inert (v6.80.0): stored, owner-only (dedicated audited endpoint), but
     # NOTHING consults it — whether the BIBLE P3 blocking scope review applies follows owner-only
     # OUROBOROS_CONTEXT_MODE. Degraded opt-in key: removed.
@@ -232,10 +253,10 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_PLAN_TASK_DEADLINE_MIN_SEC": 300,
     # Acceptance-review budget layer (task_pacing SSOT). The first final review
     # reserves at least 200s; later passes use max(this floor, 1.5×timing EWMA).
-    # max passes remains the legacy default outside Required+Blocking; an explicit
-    # task-local cap is always authoritative.
     "OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC": 200,
-    "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES": 1,
+    # Shared paid-review-cycle cap (SSOT + per-gate meaning: ouroboros/review_cycles.py):
+    # STRING "N"|"unlimited": plan review, acceptance (passes = cycles - 1), commit-gate cap.
+    "OUROBOROS_REVIEW_MAX_CYCLES": "2",
     "OUROBOROS_ACCEPTANCE_RESERVE_PCT": 5,
     # Prompt-cache TTL, one honest GLOBAL override (owner decision 2026-08-08, batch #2 Q2=A): applied to
     # EVERY cache_control breakpoint on the Anthropic-normalizing family — main loop, review lanes, safety
@@ -300,6 +321,10 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # Same window, same reason: the shared terminal-or-cutoff planning boundary never
     # stopped on heartbeat staleness.
     "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
+    # knobs are retired (the review-cycle cap OUROBOROS_REVIEW_MAX_CYCLES bounds plan review).
+    "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES",
+    "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC",
+    "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC",
 )
 
 

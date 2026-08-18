@@ -4,7 +4,7 @@
 // timestamp — and never adds a synthetic assistant bubble. The transcript
 // column and the pending-bubble registry are handed over explicitly, so a Main
 // chat and a Project panel annotate only their own messages.
-export function createMessageAnnotations({ messagesDiv, pendingUserBubbles }) {
+export function createMessageAnnotations({ messagesDiv, pendingUserBubbles, localEchoJournal = null }) {
     function routingAnnotationText(annotation) {
         if (!annotation || typeof annotation !== 'object') return '';
         const action = String(annotation.action || '');
@@ -63,6 +63,9 @@ export function createMessageAnnotations({ messagesDiv, pendingUserBubbles }) {
     function updateMessageAnnotation(clientMessageId, annotation) {
         const messageId = String(clientMessageId || '');
         if (!messageId) return false;
+        // The journal copy carries the ack, so a re-render restores it too.
+        const journalEntry = localEchoJournal?.get(messageId);
+        if (journalEntry) journalEntry.annotation = annotation || null;
         const bubble = Array.from(messagesDiv.querySelectorAll('.chat-bubble.user[data-client-message-id]'))
             .find((candidate) => candidate.dataset.clientMessageId === messageId);
         return renderRoutingAnnotation(bubble, annotation);

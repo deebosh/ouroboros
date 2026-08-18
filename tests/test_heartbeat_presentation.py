@@ -93,6 +93,13 @@ def test_a_reload_no_longer_probes_the_settings_document_for_retired_keys() -> N
 def test_retired_planning_heartbeat_default_is_quiet_but_custom_value_is_loud(
     tmp_path, monkeypatch,
 ) -> None:
+    """The planning-scout heartbeat knob is retired: ``RETIRED_SETTING_KEYS`` strips it
+    from the settings document before any reader sees it, so the ENVIRONMENT is the only
+    surviving source of a value. That is what the notice reads, and it distinguishes the
+    two cases honestly — the shipped default stays quiet (nothing was customized), while
+    a non-default env value still earns exactly one ``deprecated_settings_ignored`` row
+    naming the key. Silence for a value the owner really set would lose the fact that a
+    knob they tuned no longer does anything."""
     from supervisor import queue
 
     monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)

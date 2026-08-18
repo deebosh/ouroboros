@@ -83,6 +83,12 @@ export function createHistoryResyncScheduler({
 }
 
 /**
+ * Insert a top-level timeline node chronologically while keeping typing last.
+ * Equal timestamps preserve arrival order; timestamp-free nodes append.
+ * (Moved verbatim from chat.js — that module sits at its byte ceiling.)
+ */
+
+/**
  * Sort key for a top-level timeline node: its stamped `data-ts` epoch, or
  * +Infinity for timestamp-free nodes so they keep the historical "append at
  * the end (before typing)" placement of insertTimelineNode.

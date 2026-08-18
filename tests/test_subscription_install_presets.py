@@ -1,15 +1,9 @@
-"""The install-time subscription preset compiler (plan §D.1, D-3/D-9).
-
-Every assertion here is against the RATIFIED matrix, not against the code's own
-idea of it: the expected table below is transcribed from the plan and the
-resolved ids are checked to exist in the live discovery lists the daemon really
-returned on 2026-08-09, so a silently renamed model id fails loudly instead of
-being persisted into the owner's reviewer configuration.
-"""
+"""The declarative install-time subscription preset compiler (D-3/D-9)."""
 
 from __future__ import annotations
 
 import json
+from itertools import combinations
 
 import pytest
 
@@ -21,7 +15,6 @@ from ouroboros.subscription_install_presets import (
     SUBSCRIPTION_PRESET_VERSION,
     HarnessDiscovery,
     compile_install_preset,
-    matrix_combinations,
 )
 
 # Verbatim from the live Claudexor daemon (GET /v2/harnesses/<id>/models,
@@ -39,10 +32,8 @@ LIVE_MODELS = {
     ),
     "cursor": (
         "auto", "composer-2.5",
-        "cursor-grok-4.5-low", "cursor-grok-4.5-medium", "cursor-grok-4.5-high",
-        "cursor-grok-4.5-high-fast",
-        "gemini-3.6-flash-minimal", "gemini-3.6-flash-low",
-        "gemini-3.6-flash-medium", "gemini-3.6-flash-high",
+        "cursor-grok-4.6-low", "cursor-grok-4.6-medium", "cursor-grok-4.6-high",
+        "cursor-grok-4.6-high-fast",
         "gpt-5.6-sol-low", "gpt-5.6-sol-medium", "gpt-5.6-sol-high",
         "gpt-5.6-sol-xhigh", "gpt-5.6-sol-max",
         "gpt-5.6-terra-medium", "gpt-5.6-terra-high",
@@ -50,66 +41,43 @@ LIVE_MODELS = {
         "claude-opus-5-medium", "claude-opus-5-high",
         "claude-fable-5-thinking-xhigh", "claude-sonnet-5-medium",
     ),
+    "agy": (
+        "gemini-3.7-flash-low",
+        "gemini-3.7-flash-medium",
+        "gemini-3.7-flash-high",
+    ),
 }
 
-# The ratified matrix, transcribed from plan §D.1 as (target_id, effort) pairs.
-EXPECTED = {
-    ("claude",): {
-        "subagent": "claude=claude-opus-5:medium",
-        "advisory": ("claude=claude-sonnet-5", "low"),
-        "triad": [("claude=claude-sonnet-5", "medium"),
-                  ("claude=claude-opus-5", "medium"),
-                  ("claude=claude-opus-4-6", "medium")],
-        "scope": [("claude=claude-fable-5", "medium")],
+HARNESSES = ("claude", "codex", "cursor")
+CORE_HARNESSES = HARNESSES
+SCOPE_ORDER = ("codex", "claude", "cursor")
+COMBINATIONS = tuple(
+    combination
+    for size in range(1, len(HARNESSES) + 1)
+    for combination in combinations(HARNESSES, size)
+)
+AGY_COMBINATIONS = (("agy",),) + tuple(
+    (*combination, "agy")
+    for combination in COMBINATIONS
+)
+EXPECTED_SURFACES = {
+    "claude": {
+        "subagent": ("claude-opus-5", "medium"),
+        "advisory": ("claude-sonnet-5", "low"),
+        "triad": ("claude-opus-5", "medium"),
+        "scope": ("claude-opus-5", "medium"),
     },
-    ("codex",): {
-        "subagent": "codex=gpt-5.6-sol:medium",
-        "advisory": ("codex=gpt-5.6-terra", "medium"),
-        "triad": [("codex=gpt-5.6-sol", "medium"),
-                  ("codex=gpt-5.6-terra", "medium"),
-                  ("codex=gpt-5.5", "medium")],
-        "scope": [("codex=gpt-5.6-sol", "medium")],
+    "codex": {
+        "subagent": ("gpt-5.6-sol", "medium"),
+        "advisory": ("gpt-5.6-terra", "medium"),
+        "triad": ("gpt-5.6-sol", "medium"),
+        "scope": ("gpt-5.6-sol", "medium"),
     },
-    ("cursor",): {
-        # Cursor spells effort INSIDE the slug; the row/tail effort agrees with it.
-        "subagent": "cursor=cursor-grok-4.5-high:high",
-        "advisory": ("cursor=cursor-grok-4.5-medium", "medium"),
-        "triad": [("cursor=cursor-grok-4.5-medium", "medium"),
-                  ("cursor=gemini-3.6-flash-medium", "medium"),
-                  ("cursor=gpt-5.6-sol-medium", "medium")],
-        "scope": [("cursor=cursor-grok-4.5-high", "high")],
-    },
-    ("claude", "codex"): {
-        "subagent": "claude=claude-opus-5:medium",
-        "advisory": ("claude=claude-sonnet-5", "low"),
-        "triad": [("claude=claude-opus-5", "medium"),
-                  ("codex=gpt-5.6-sol", "medium"),
-                  ("claude=claude-sonnet-5", "medium")],
-        "scope": [("codex=gpt-5.6-sol", "medium")],
-    },
-    ("claude", "cursor"): {
-        "subagent": "claude=claude-opus-5:medium",
-        "advisory": ("claude=claude-sonnet-5", "low"),
-        "triad": [("claude=claude-opus-5", "medium"),
-                  ("cursor=cursor-grok-4.5-medium", "medium"),
-                  ("claude=claude-sonnet-5", "medium")],
-        "scope": [("claude=claude-fable-5", "medium")],
-    },
-    ("codex", "cursor"): {
-        "subagent": "codex=gpt-5.6-sol:medium",
-        "advisory": ("codex=gpt-5.6-terra", "medium"),
-        "triad": [("codex=gpt-5.6-sol", "medium"),
-                  ("cursor=cursor-grok-4.5-medium", "medium"),
-                  ("codex=gpt-5.6-terra", "medium")],
-        "scope": [("codex=gpt-5.6-sol", "medium")],
-    },
-    ("claude", "codex", "cursor"): {
-        "subagent": "claude=claude-opus-5:medium",
-        "advisory": ("claude=claude-sonnet-5", "low"),
-        "triad": [("claude=claude-opus-5", "medium"),
-                  ("codex=gpt-5.6-sol", "medium"),
-                  ("cursor=cursor-grok-4.5-medium", "medium")],
-        "scope": [("codex=gpt-5.6-sol", "medium")],
+    "cursor": {
+        "subagent": ("cursor-grok-4.6-high", "high"),
+        "advisory": ("cursor-grok-4.6-medium", "medium"),
+        "triad": ("cursor-grok-4.6-medium", "medium"),
+        "scope": ("cursor-grok-4.6-high", "high"),
     },
 }
 
@@ -119,32 +87,44 @@ def _discoveries(*harnesses, models=None):
     return [HarnessDiscovery(harness_id=h, model_ids=tuple(catalog[h])) for h in harnesses]
 
 
-def test_matrix_covers_exactly_the_seven_non_empty_combinations():
-    combos = {tuple(sorted(key)) for key in matrix_combinations()}
-    assert combos == {tuple(sorted(key)) for key in EXPECTED}
-    assert len(combos) == 7
+def _target(harness, surface):
+    model, effort = EXPECTED_SURFACES[harness][surface]
+    return f"{harness}={model}", effort
 
 
-@pytest.mark.parametrize("connected", sorted(EXPECTED, key=len))
-def test_every_combination_matches_the_ratified_matrix(connected):
+def _triad_harnesses(connected):
+    core = [harness for harness in CORE_HARNESSES if harness in connected]
+    return core * 3 if len(core) == 1 else core
+
+
+@pytest.mark.parametrize("connected", COMBINATIONS)
+def test_every_combination_follows_the_declarative_policy(connected):
     preset = compile_install_preset(_discoveries(*connected))
 
     assert preset.ok, preset.refusal
-    expected = EXPECTED[connected]
-    assert preset.subagent_harness == expected["subagent"]
+    primary = next(harness for harness in HARNESSES if harness in connected)
+    subagent_target, subagent_effort = _target(primary, "subagent")
+    assert preset.subagent_harness == f"{subagent_target}:{subagent_effort}"
 
-    config = parse_reviewer_slots(preset.reviewer_slots)  # the ONE strict parser
-    assert [(row.target_id, row.effort) for row in config.triad] == expected["triad"]
-    assert [(row.target_id, row.effort) for row in config.scope] == expected["scope"]
-    assert (config.advisory.target_id, config.advisory.effort) == expected["advisory"]
+    config = parse_reviewer_slots(preset.reviewer_slots)
+    assert [(row.target_id, row.effort) for row in config.triad] == [
+        _target(harness, "triad") for harness in _triad_harnesses(connected)
+    ]
+    scope_harness = next(harness for harness in SCOPE_ORDER if harness in connected)
+    assert [(row.target_id, row.effort) for row in config.scope] == [
+        _target(scope_harness, "scope")
+    ]
+    assert (config.advisory.target_id, config.advisory.effort) == _target(
+        primary, "advisory",
+    )
     assert config.advisory.enabled is True
     assert config.advisory.kind == "agent_session"
     assert all(row.is_session for row in config.triad + config.scope)
 
 
-@pytest.mark.parametrize("connected", sorted(EXPECTED, key=len))
+@pytest.mark.parametrize("connected", COMBINATIONS)
 def test_only_exact_discovery_ids_are_ever_written(connected):
-    """No owner shorthand (``opus-4.6``, ``terra``, ``grok-4.5``) may survive
+    """No owner shorthand (``opus-5``, ``terra``, ``grok-4.6``) may survive
     into the saved value — every model must exist in that harness's live list."""
     preset = compile_install_preset(_discoveries(*connected))
     config = parse_reviewer_slots(preset.reviewer_slots)
@@ -157,7 +137,7 @@ def test_only_exact_discovery_ids_are_ever_written(connected):
         assert model in LIVE_MODELS[harness], f"{model!r} is not in {harness} discovery"
 
 
-@pytest.mark.parametrize("connected", sorted(EXPECTED, key=len))
+@pytest.mark.parametrize("connected", COMBINATIONS)
 def test_credential_profile_is_never_pinned(connected):
     """D28: the daemon rotates accounts; an install-time pin would outlive one."""
     preset = compile_install_preset(_discoveries(*connected))
@@ -166,6 +146,17 @@ def test_credential_profile_is_never_pinned(connected):
     config = parse_reviewer_slots(preset.reviewer_slots)
     assert all(row.profile_id == "" for row in config.triad + config.scope)
     assert config.advisory.profile_id == ""
+
+
+@pytest.mark.parametrize("harness", CORE_HARNESSES)
+def test_single_core_harness_runs_three_independent_same_model_slots(harness):
+    config = parse_reviewer_slots(
+        compile_install_preset(_discoveries(harness)).reviewer_slots
+    )
+
+    expected_target, _ = _target(harness, "triad")
+    assert [row.target_id for row in config.triad] == [expected_target] * 3
+    assert len({row.slot_id for row in config.triad}) == 3
 
 
 def test_settings_keys_are_exactly_the_three_install_keys():
@@ -180,7 +171,7 @@ def test_settings_keys_are_exactly_the_three_install_keys():
 
 def test_unresolvable_model_refuses_typed_and_emits_nothing():
     models = dict(LIVE_MODELS)
-    models["claude"] = tuple(m for m in LIVE_MODELS["claude"] if m != "claude-opus-4-6")
+    models["claude"] = tuple(m for m in LIVE_MODELS["claude"] if m != "claude-opus-5")
 
     preset = compile_install_preset(_discoveries("claude", models=models))
 
@@ -188,33 +179,28 @@ def test_unresolvable_model_refuses_typed_and_emits_nothing():
     assert preset.refusal is not None
     assert preset.refusal.code == "model_not_in_discovery"
     assert preset.refusal.seat is not None
-    assert (preset.refusal.seat.surface, preset.refusal.seat.position) == ("triad", 3)
-    assert preset.refusal.seat.preference == "opus-4.6"
-    assert "claude-opus-4-6" in preset.refusal.candidates
+    assert (preset.refusal.seat.surface, preset.refusal.seat.position) == ("subagent", 1)
+    assert preset.refusal.seat.preference == "opus-5"
+    assert "claude-opus-5" in preset.refusal.candidates
     # Nothing partial: no slots, no subagent value, no settings keys at all.
     assert preset.reviewer_slots == ""
     assert preset.subagent_harness == ""
     assert preset.settings_keys() == {}
 
 
-def test_cursor_gpt56_family_resolves_in_flagship_order():
-    """Cursor publishes no bare ``gpt-5.6`` slug, so the owner's "gpt-5.6" seat
-    is the 5.6 FAMILY — sol first, and only from live discovery."""
+def test_cursor_without_grok_refuses_instead_of_using_a_costlier_model():
     models = dict(LIVE_MODELS)
-    models["cursor"] = tuple(m for m in LIVE_MODELS["cursor"] if not m.startswith("gpt-5.6-sol"))
-
-    preset = compile_install_preset(_discoveries("cursor", models=models))
-
-    assert preset.ok, preset.refusal
-    config = parse_reviewer_slots(preset.reviewer_slots)
-    assert config.triad[2].target_id == "cursor=gpt-5.6-terra-medium"
-
     models["cursor"] = tuple(
-        m for m in models["cursor"] if not m.startswith(("gpt-5.6-terra", "gpt-5.6-luna")))
+        model for model in LIVE_MODELS["cursor"]
+        if not model.startswith(("cursor-grok-4.6", "grok-4.6"))
+    )
+
     refused = compile_install_preset(_discoveries("cursor", models=models))
+
     assert not refused.ok
     assert refused.refusal.code == "model_not_in_discovery"
-    assert refused.refusal.seat.preference == "gpt-5.6"
+    assert refused.refusal.seat.preference == "grok-4.6"
+    assert any(model.startswith("gpt-5.6") for model in models["cursor"])
 
 
 def test_cursor_effort_rides_the_slug_and_the_row_field_together():
@@ -223,10 +209,21 @@ def test_cursor_effort_rides_the_slug_and_the_row_field_together():
 
     # scope is the high-effort cursor seat: the slug tail and the field agree,
     # so nothing downstream can materialize a DIFFERENT effort by default.
-    assert config.scope[0].target_id == "cursor=cursor-grok-4.5-high"
+    assert config.scope[0].target_id == "cursor=cursor-grok-4.6-high"
     assert config.scope[0].effort == "high"
     assert preset.receipt["surfaces"]["scope"][0]["effort_in_model_id"] is True
     assert preset.receipt["surfaces"]["subagent"]["effort_in_model_id"] is True
+
+
+@pytest.mark.parametrize("connected", AGY_COMBINATIONS)
+def test_antigravity_combinations_refuse_until_owner_dictates_their_seats(connected):
+    preset = compile_install_preset(_discoveries(*connected))
+
+    assert not preset.ok
+    assert preset.refusal is not None
+    assert preset.refusal.code == "matrix_row_absent"
+    assert "owner decision" in preset.refusal.message
+    assert preset.settings_keys() == {}
 
 
 def test_claude_and_codex_rows_carry_effort_only_in_the_field():
@@ -269,7 +266,7 @@ def test_receipt_records_what_was_resolved_and_from_where():
     assert receipt["discovery_counts"]["codex"] == len(LIVE_MODELS["codex"])
     assert receipt["capability"]["claude"]["status"] == "ok"
     assert receipt["surfaces"]["advisory"]["model"] == "claude-sonnet-5"
-    assert len(receipt["surfaces"]["triad"]) == 3
+    assert len(receipt["surfaces"]["triad"]) == 2
     # The receipt must be JSON-serializable — it rides an API response.
     json.dumps(receipt)
 
@@ -294,3 +291,59 @@ def test_compiler_reads_no_settings_and_carries_no_transport(monkeypatch):
     for forbidden in ("import httpx", "import requests", "import socket",
                       "import urllib", "ClaudexorGateway", "load_settings"):
         assert forbidden not in source, f"{forbidden} has no place in a pure compiler"
+
+
+# Verbatim from the Antigravity CLI the Claudexor 3.5.0 agy adapter pins
+# (AGY_KNOWN_MODELS, verified against agy 1.1.13). Fourteen ids; effort rides
+# inside the slug, and gemini-3.1-pro exists ONLY at high/low.
+AGY_LIVE_MODELS = (
+    "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+    "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+    "gemini-3.5-flash-high", "gemini-3.5-flash-medium", "gemini-3.5-flash-low",
+    "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+    "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
+)
+
+
+def _catalog_with_agy():
+    return {**LIVE_MODELS, "agy": AGY_LIVE_MODELS}
+
+
+def test_matrix_row_absent_wins_over_empty_discovery():
+    # An unratified combination refuses as unratified whatever its discovery
+    # holds — the guard runs before discovery validation on purpose.
+    preset = compile_install_preset([HarnessDiscovery(harness_id="agy", model_ids=())])
+    assert preset.refusal is not None
+    assert preset.refusal.code == "matrix_row_absent"
+
+
+def test_no_recognized_combination_can_raise():
+    # The KeyError class: every non-empty subset of PRESET_HARNESSES must come
+    # back as a compiled preset or a typed refusal, never an exception.
+    import itertools
+
+    from ouroboros.subscription_install_presets import PRESET_HARNESSES
+
+    catalog = _catalog_with_agy()
+    for size in range(1, len(PRESET_HARNESSES) + 1):
+        for combo in itertools.combinations(PRESET_HARNESSES, size):
+            preset = compile_install_preset(_discoveries(*combo, models=catalog))
+            assert preset.ok or preset.refusal is not None
+
+
+def test_agy_alias_table_spells_effort_inside_the_id():
+    from ouroboros.subscription_install_presets import (
+        _EFFORT_IN_MODEL_ID,
+        _MODEL_ALIASES,
+        HARNESS_AGY,
+    )
+
+    assert HARNESS_AGY in _EFFORT_IN_MODEL_ID
+    aliases = _MODEL_ALIASES[HARNESS_AGY]
+    # Every alias candidate formats to an id the pinned vendor CLI really
+    # publishes, so a future matrix row resolves exact discovery ids.
+    assert aliases["gemini-3.7-flash"][0].format(effort="high") in AGY_LIVE_MODELS
+    assert aliases["gemini-3.1-pro"][0].format(effort="high") in AGY_LIVE_MODELS
+    assert aliases["gemini-3.1-pro"][0].format(effort="low") in AGY_LIVE_MODELS
+    # Documented trap for the future dictation: pro has no -medium slug.
+    assert aliases["gemini-3.1-pro"][0].format(effort="medium") not in AGY_LIVE_MODELS

@@ -343,7 +343,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "settings_scales.py": "EFFORT_SCALE effort_rank clamp_effort_to effort_one_step_down resolve_effort PROMPT_CACHE_TTL_SCALE resolve_prompt_cache_ttl VALID_RUNTIME_MODES _RUNTIME_MODE_RANK normalize_runtime_mode VALID_SAFETY_MODES normalize_safety_mode _SAFETY_MODE_RANK",
         "model_slots.py": "_parse_model_list _main_model get_light_model get_heavy_model get_vision_model get_image_input_mode parse_fallback_chain get_fallback_models _LEGACY_SLOT_RENAMES migrate_legacy_slot_keys get_consciousness_model get_deep_self_review_model",
         "review_model_routes.py": "_DIRECT_PROVIDER_REVIEW_RUNS _exclusive_direct_remote_provider_env direct_provider_review_models_fallback adaptive_quorum get_review_models get_review_enforcement get_scope_review_models",
-        "runtime_limits.py": "_clamped_number_setting _bounded_positive_int_setting get_max_workers get_task_idle_timeout_sec get_task_abs_ceiling_sec get_per_call_timeout_ceiling_sec get_plan_task_swarm_timeout_sec get_plan_task_swarm_max_wait_sec get_restart_drain_max_sec get_safety_max_tokens get_safety_call_timeout_sec get_websearch_timeout_sec get_llm_transport_read_timeout_sec get_acceptance_review_est_sec get_acceptance_max_improvement_passes get_acceptance_reserve_pct get_plan_task_deadline_min_sec get_vision_caption_timeout_sec get_pacing_interval_sec get_supervisor_liveness_deadline_sec get_post_task_evolution_budget_usd MAX_ACTIVE_SUBAGENTS_HARD_CAP get_max_active_subagents_per_root get_max_subagent_depth DELEGATE_WAIT_CEILING_SEC DELEGATE_WAIT_WINDOW_MAX_SEC get_delegate_wait_max_sec get_delegate_wait_sec get_search_code_wall_sec",
+        "runtime_limits.py": "_clamped_number_setting _bounded_positive_int_setting get_max_workers get_task_idle_timeout_sec get_task_abs_ceiling_sec get_per_call_timeout_ceiling_sec get_restart_drain_max_sec get_safety_max_tokens get_safety_call_timeout_sec get_websearch_timeout_sec get_llm_transport_read_timeout_sec get_acceptance_review_est_sec get_acceptance_reserve_pct get_plan_task_deadline_min_sec get_vision_caption_timeout_sec get_pacing_interval_sec get_supervisor_liveness_deadline_sec get_post_task_evolution_budget_usd MAX_ACTIVE_SUBAGENTS_HARD_CAP get_max_active_subagents_per_root get_max_subagent_depth DELEGATE_WAIT_CEILING_SEC DELEGATE_WAIT_WINDOW_MAX_SEC get_delegate_wait_max_sec get_delegate_wait_sec get_search_code_wall_sec",
     }
     config_extraction_rows = {
         f"ouroboros/config.py::{symbol}": f"ouroboros/{owner}::{symbol}"
@@ -1103,6 +1103,66 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "_openrouter_signature_retry_kwargs",
             "_retry_without_optional_sampling",
         )
+    })
+    # Upstream adoption through v6.104.0: the release carved web/modules/chat_activity.js
+    # out of chat.js, so at the new merge base four identities DECLARE there. Only their
+    # baseline address moves — owner, body and facade shape are what they already were.
+    merge_adopt_rebased_declarations = {
+        "web/modules/chat.js::createChatInstance.buildMessageKey": "web/modules/chat_activity.js::buildMessageKey",
+        "web/modules/chat.js::createChatInstance.formatMsgTime": "web/modules/chat_activity.js::formatMsgTime",
+        "web/modules/chat.js::createChatInstance.routingAnnotationText": "web/modules/chat_activity.js::routingAnnotationText",
+    }
+    for _old, _new in merge_adopt_rebased_declarations.items():
+        web_extractions[_new] = web_extractions.pop(_old)
+        implemented[_new] = implemented.pop(_old)
+        registry_extraction_no_facade_rows.discard(_old)
+        registry_extraction_no_facade_rows.add(_new)
+    retired_current["web/modules/chat_activity.js::optionalFiniteNumber"] = retired_current.pop(
+        "web/modules/chat.js::optionalFiniteNumber")
+    # The eleven live-card projections upstream's chat_activity.js re-publishes keep the
+    # domain owners this line already gave them; chat_activity.js re-exports each name, so
+    # the facade cell is the old identity and no historical importer notices the move.
+    merge_adopt_web_facade_rows = {
+        f"web/modules/chat_activity.js::{symbol}": f"web/modules/{owner}::{symbol}"
+        for owner, symbols in {
+            "chat_card_state.js": "COLLAPSED_ACTIVITY_MAX boundActivityPreview clearStickyCardState isTerminalTaskPhase liveLineRowToggleKey projectCollapsedActivity",
+            "costs.js": "headerBudgetPresentation mergeStickyCostMeta taskCostMeta taskCostProjection",
+            "utils.js": "rawTimestampEpoch",
+        }.items()
+        for symbol in symbols.split()
+    }
+    # The shipped router profile follows the settings vocabulary it fills in: provider_models
+    # imports that leaf, so the profile cannot be declared above it. provider_models and the
+    # config facade both re-export the two names like every other settings-vocabulary member.
+    merge_adopt_facade_rows = {
+        **merge_adopt_web_facade_rows,
+        "ouroboros/provider_models.py::OPENROUTER_DEFAULTS": "ouroboros/settings_defaults.py::OPENROUTER_DEFAULTS",
+        "ouroboros/provider_models.py::OPENROUTER_REVIEW_DEFAULTS": "ouroboros/settings_defaults.py::OPENROUTER_REVIEW_DEFAULTS",
+        "ouroboros/config.py::OPENROUTER_DEFAULTS": "ouroboros/settings_defaults.py::OPENROUTER_DEFAULTS",
+        "ouroboros/config.py::OPENROUTER_REVIEW_DEFAULTS": "ouroboros/settings_defaults.py::OPENROUTER_REVIEW_DEFAULTS",
+        "ouroboros/tools/plan_render.py::PLAN_REVIEW_CONTROL_PREFIX": "ouroboros/tools/review_synthesis.py::PLAN_REVIEW_CONTROL_PREFIX",
+    }
+    merge_adopt_no_facade_rows = {
+        "tests/test_claudexor_owned_daemon.py::test_login_create_passes_the_daemon_400_verdict_through":
+            "tests/test_claudexor_login_accounts.py::test_login_create_passes_the_daemon_400_verdict_through",
+        "tests/test_heartbeat_presentation.py::test_retired_planning_heartbeat_key_is_silent_and_dropped_on_load":
+            "tests/test_heartbeat_presentation.py::test_retired_planning_heartbeat_default_is_quiet_but_custom_value_is_loud",
+    }
+    merge_adopt_rows = {**merge_adopt_facade_rows, **merge_adopt_no_facade_rows}
+    implemented.update(merge_adopt_rows)
+    existing_process_owner_rows.update(merge_adopt_rows)
+    registry_extraction_no_facade_rows.update(merge_adopt_no_facade_rows)
+    # D04 rides the heartbeat row: the retired knob is stripped from the settings document,
+    # so the environment is the only surviving source and the test says which half is quiet.
+    s3_semantic_delta_ids[
+        "tests/test_heartbeat_presentation.py::test_retired_planning_heartbeat_key_is_silent_and_dropped_on_load"
+    ] = "D04"
+    # Both sides fixed the same squatted-literal defect; the per-test tmp_path isolation
+    # already in this tree makes upstream's unique-name helper redundant.
+    retired_current.update({
+        f"tests/test_telegram_miniapp_{module}.py::_nonexistent_state_dir":
+            "retired:each scenario takes its own pytest tmp_path state dir, so no shared-host name can be squatted"
+        for module in ("companion", "lifecycle")
     })
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))

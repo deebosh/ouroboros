@@ -29,6 +29,8 @@ from ouroboros.secret_masking import strip_masked_secrets
 from ouroboros.settings_defaults import (
     ENDPOINT_AUTHORED_SETTINGS,  # noqa: F401
     FINALIZATION_GRACE_DEFAULT_SEC,  # noqa: F401
+    OPENROUTER_DEFAULTS,  # noqa: F401
+    OPENROUTER_REVIEW_DEFAULTS,  # noqa: F401
     OWNER_STOP_OUTER_CAP_SEC,  # noqa: F401
     PACING_INTERVAL_DEFAULT_SEC,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
@@ -82,7 +84,6 @@ from ouroboros.runtime_limits import (
     MAX_ACTIVE_SUBAGENTS_HARD_CAP,  # noqa: F401
     _bounded_positive_int_setting,  # noqa: F401
     _clamped_number_setting,  # noqa: F401
-    get_acceptance_max_improvement_passes,  # noqa: F401
     get_acceptance_reserve_pct,  # noqa: F401
     get_acceptance_review_est_sec,  # noqa: F401
     get_delegate_wait_max_sec,  # noqa: F401
@@ -94,8 +95,6 @@ from ouroboros.runtime_limits import (
     get_pacing_interval_sec,  # noqa: F401
     get_per_call_timeout_ceiling_sec,  # noqa: F401
     get_plan_task_deadline_min_sec,  # noqa: F401
-    get_plan_task_swarm_max_wait_sec,  # noqa: F401
-    get_plan_task_swarm_timeout_sec,  # noqa: F401
     get_post_task_evolution_budget_usd,  # noqa: F401
     get_restart_drain_max_sec,  # noqa: F401
     get_safety_call_timeout_sec,  # noqa: F401
@@ -674,6 +673,9 @@ def normalize_settings_raw(raw: dict) -> dict:
             loaded["OUROBOROS_GC_RETENTION_DAYS"] = seed
     for _legacy in LEGACY_RETENTION_KEYS:
         loaded.pop(_legacy, None)
+    # Rename alias: a customized acceptance-pass count seeds the shared review-cycle knob
+    # (cycles = passes + 1) unless the owner authored one, then the legacy key is dropped.
+    _seed_review_cycles_from_legacy_passes(loaded)
     for _retired in RETIRED_SETTING_KEYS:
         loaded.pop(_retired, None)
     migrate_legacy_slot_keys(loaded)
@@ -689,6 +691,19 @@ def serialize_settings(settings: dict) -> str:
     tests/test_settings_read_seam.py). Without one serializer the writers disagreed on
     ``ensure_ascii`` alone, so the same document had two spellings on disk."""
     return json.dumps(settings, ensure_ascii=False, indent=2)
+
+
+def _seed_review_cycles_from_legacy_passes(loaded: dict) -> None:
+    """Migrate the retired acceptance-pass key into ``OUROBOROS_REVIEW_MAX_CYCLES`` (cycles =
+    passes + 1) at LOAD: a runtime "is it customized?" test cannot tell a deliberate "2" from
+    an untouched default, and left acceptance on the legacy number."""
+    legacy = loaded.pop("OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES", None)
+    try:
+        passes = int(str(legacy).strip()) if legacy is not None else 1
+    except (TypeError, ValueError):
+        return
+    if passes != 1 and "OUROBOROS_REVIEW_MAX_CYCLES" not in loaded:  # 1 = shipped legacy default
+        loaded["OUROBOROS_REVIEW_MAX_CYCLES"] = str(max(0, passes) + 1)
 
 
 def load_settings() -> dict:

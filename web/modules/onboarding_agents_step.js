@@ -16,8 +16,9 @@
 //     breath as the benefit, because a wizard that implies otherwise sends the
 //     owner to a first run that refuses to start.
 //   * "Rides a plan" is not "free", and NOT every reviewer moves. Commit triad,
-//     scope and the advisory pre-reviewer move; plan review, task acceptance
-//     and skill review stay API-only today (D15). The footnote carries both.
+//     scope, the advisory pre-reviewer and plan review (each triad row's own
+//     delivery) move; task acceptance and skill review stay API-only today
+//     (D15). The footnote carries both.
 //
 // The rotation artwork is a STATIC SVG — inline, no library, no animation
 // (no comparable product animates this, and motion here would be noise). It is
@@ -38,10 +39,12 @@ import { claudexorStatus, accountRows, familyLabel } from './claudexor_status_st
 import { LOGIN_CARD_FULL, createLoginCardController } from './harness_login_cards.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 
-// The families the ratified install matrix covers (subscription_install_presets
-// PRESET_HARNESSES). A connected harness outside this list contributes no
-// preset seat, so offering it here would promise something the compiler
-// refuses.
+// The families the declarative install policy currently assigns. Since agy (Antigravity)
+// joined the compiler's PRESET_HARNESSES this list is deliberately NARROWER
+// than that tuple: agy is recognized but has no assigned seats yet (its seats are
+// an owner decision still to be dictated — issue #232), and offering a family
+// here whose every combination the compiler refuses would promise something
+// the install cannot deliver. Extend this list together with the policy seats.
 export const AGENT_FAMILIES = [
     { harness: 'claude', label: 'Claude Code' },
     { harness: 'codex', label: 'Codex' },
@@ -80,8 +83,8 @@ export const VALUE_LADDER = [
 
 export const LADDER_FOOTNOTE =
     'Riding a plan is not free — it moves that work onto a subscription you already '
-    + 'pay for instead of adding per-call API charges. Plan review, task acceptance and '
-    + 'skill review stay on the API key for now.';
+    + 'pay for instead of adding per-call API charges. Task acceptance and skill review '
+    + 'stay on the API key for now; plan review follows each triad row.';
 
 // ---------------------------------------------------------------------------
 // Pure helpers.

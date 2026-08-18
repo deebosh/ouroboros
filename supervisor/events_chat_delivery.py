@@ -47,8 +47,56 @@ def _bound_project_chat_id(ctx: Any, task_id: Any, parent_task_id: Any = "", roo
 def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
     try:
         chat_id = int(evt.get("chat_id") or 0)
+        task_id = str(evt.get("task_id") or "")
+        phase = str(evt.get("phase") or "thinking")
+        client_msg_id = ""
+        kind = ""
+        if task_id:
+            try:
+                from supervisor.active_activity import get_direct_activity_registry
+                # A registry hit identifies a direct/ephemeral turn; queued
+                # managed tasks also emit typing_start but are not tracked here,
+                # so their frames go out without a kind stamp.
+                entry = get_direct_activity_registry().get(task_id)
+                if entry:
+                    client_msg_id = entry.client_message_id
+                    kind = entry.kind
+            except Exception:
+                pass
+        if not kind and task_id:
+            # A RUNNING queue ROOT is stamped "managed_task" so the client can
+            # reconcile its entry against the /api/state activity snapshot
+            # (which lists queue roots). Subagent typing keeps the legacy
+            # no-kind exemption: no snapshot source enumerates children.
+            try:
+                running = getattr(ctx, "RUNNING", None)
+                meta = running.get(task_id) if isinstance(running, dict) else None
+                task_row = meta.get("task") if isinstance(meta, dict) else None
+                if isinstance(task_row, dict):
+                    from ouroboros.task_results import resolve_task_lineage
+
+                    lineage = resolve_task_lineage(
+                        task_id,
+                        metadata=task_row.get("metadata"),
+                        root_task_id=task_row.get("root_task_id"),
+                        parent_task_id=task_row.get("parent_task_id"),
+                        delegation_role=task_row.get("delegation_role"),
+                        original_task_id=task_row.get("original_task_id"),
+                        timeout_retry_from=task_row.get("timeout_retry_from"),
+                    )
+                    if lineage["is_root_task"]:
+                        kind = "managed_task"
+            except Exception:
+                log.debug("managed typing kind resolution failed for %s", task_id, exc_info=True)
         if chat_id:
-            ctx.bridge.send_chat_action(chat_id, "typing")
+            ctx.bridge.send_chat_action(
+                chat_id,
+                "typing",
+                activity_id=task_id,
+                client_message_id=client_msg_id,
+                phase=phase,
+                kind=kind,
+            )
     except Exception:
         log.debug("Failed to send typing action to chat", exc_info=True)
         pass

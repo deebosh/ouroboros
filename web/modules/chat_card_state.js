@@ -38,6 +38,8 @@ export function clearStickyCardState(record) {
     if (!record) return record;
     record.collapsedActivity = '';
     record.costMeta = null;
+    // A recycled slot must not inherit the previous cycle's finalizing hold.
+    record.finalizingHold = false;
     // The activity clock is cycle state too: a
     // recycled slot ('bg-consciousness', 'active') would otherwise open showing
     // the previous cycle's "Latest" time.

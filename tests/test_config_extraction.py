@@ -22,6 +22,10 @@ _LEAVES = (settings_defaults, settings_scales, model_slots, review_model_routes,
 
 _MOVED_OWNERS = {
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
+    # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
+    # vocabulary leaf the v7 split created for exactly this class of fact.
+    "OPENROUTER_DEFAULTS": settings_defaults,
+    "OPENROUTER_REVIEW_DEFAULTS": settings_defaults,
     "FINALIZATION_GRACE_DEFAULT_SEC": settings_defaults,
     "OWNER_STOP_OUTER_CAP_SEC": settings_defaults,
     "PACING_INTERVAL_DEFAULT_SEC": settings_defaults,
@@ -68,7 +72,6 @@ _MOVED_OWNERS = {
     "MAX_ACTIVE_SUBAGENTS_HARD_CAP": runtime_limits,
     "_bounded_positive_int_setting": runtime_limits,
     "_clamped_number_setting": runtime_limits,
-    "get_acceptance_max_improvement_passes": runtime_limits,
     "get_acceptance_reserve_pct": runtime_limits,
     "get_acceptance_review_est_sec": runtime_limits,
     "get_delegate_wait_max_sec": runtime_limits,
@@ -80,8 +83,6 @@ _MOVED_OWNERS = {
     "get_pacing_interval_sec": runtime_limits,
     "get_per_call_timeout_ceiling_sec": runtime_limits,
     "get_plan_task_deadline_min_sec": runtime_limits,
-    "get_plan_task_swarm_max_wait_sec": runtime_limits,
-    "get_plan_task_swarm_timeout_sec": runtime_limits,
     "get_post_task_evolution_budget_usd": runtime_limits,
     "get_restart_drain_max_sec": runtime_limits,
     "get_safety_call_timeout_sec": runtime_limits,

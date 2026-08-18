@@ -20,9 +20,9 @@ const SETTINGS_TABS = [
 // Guard markers: renderTabStrip emits behavior/advanced tabs at runtime.
 
 const MODEL_CARDS = [
-    ['Main', 'Primary reasoning model.', 's-model', 's-local-main', 'x-ai/grok-4.5'],
+    ['Main', 'Primary reasoning model.', 's-model', 's-local-main', 'google/gemini-3.7-flash'],
     ['Heavy', 'Strong acting/coding lane for mutative first-level subagents. Empty uses Main.', 's-model-heavy', 's-local-heavy', ''],
-    ['Light', 'Fast summaries, lightweight tasks, and all deep subagents. Empty uses Main.', 's-model-light', 's-local-light', 'google/gemini-3.6-flash'],
+    ['Light', 'Fast summaries, lightweight tasks, and all deep subagents. Empty uses Main.', 's-model-light', 's-local-light', 'openai/gpt-5.6-luna'],
     ['Vision', 'Caption and VLM lane. Empty uses Main.', 's-model-vision', '', ''],
     ['Consciousness', 'High-horizon background consciousness. Empty uses Main.', 's-model-consciousness', 's-local-consciousness', ''],
     ['Fallback', 'Resilience and degraded path (comma-separated chain).', 's-model-fallback', 's-local-fallback', 'openai/gpt-5.6-luna'],
@@ -423,6 +423,26 @@ export function renderSettingsPage() {
                     </div>
 
                     <div class="form-section">
+                        <h3>Max Review Cycles</h3>
+                        <div class="settings-section-copy">One shared cap on paid review cycles per task for plan review, task acceptance (improvement passes = cycles &minus; 1) and the commit gate (review blocks of the same unchanged diff before it refuses another run). <code>&infin;</code> removes the cap; the task's own deadline, budget and lifecycle rails still bind.</div>
+                        <div class="settings-effort-card">
+                            <label>Max Review Cycles</label>
+                            <input id="s-review-max-cycles" type="hidden" value="2">
+                            ${renderSegmentedField({
+                                target: 's-review-max-cycles',
+                                modifier: 'data-review-cycles-group',
+                                options: [
+                                    { value: '1', label: '1' },
+                                    { value: '2', label: '2' },
+                                    { value: '3', label: '3' },
+                                    { value: '5', label: '5' },
+                                    { value: 'unlimited', label: '\u221E' },
+                                ],
+                            })}
+                        </div>
+                    </div>
+
+                    <div class="form-section">
                         <h3>Image Input</h3>
                         <div class="settings-section-copy">Auto sends images inline to vision-capable models and captions them for blind models. Caption always uses text captions; Inline refuses caption fallback; Off emits placeholders.</div>
                         <div class="settings-effort-card">
@@ -780,11 +800,11 @@ export function renderSettingsPage() {
                             </div>
                             <div class="form-field">
                                 <label>Total Budget (USD)</label>
-                                <input id="s-total-budget" type="number" min="0.01" step="any" value="10.0">
+                                <input id="s-total-budget" type="number" min="0.01" step="any" value="200.0">
                             </div>
                             <div class="form-field">
                                 <label>Per-Task Cost Cap (USD)</label>
-                                <input id="s-settings-per-task-cost" type="number" min="0.01" step="any" value="20.0">
+                                <input id="s-settings-per-task-cost" type="number" min="0.01" step="any" value="50.0">
                             </div>
                         </div>
                     </div>

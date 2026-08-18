@@ -1499,19 +1499,11 @@
    "is_error": true,
    "status": "error"
   },
-  "ident:PLANNING:named": {
+  "ident:PLAN_REVIEW_CYCLES_EXHAUSTED:named": {
    "is_error": false,
    "status": "ok"
   },
-  "ident:PLANNING:plain": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "ident:PLAN_CONTEXT_DEGRADED:named": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "ident:PLAN_CONTEXT_DEGRADED:plain": {
+  "ident:PLAN_REVIEW_CYCLES_EXHAUSTED:plain": {
    "is_error": false,
    "status": "ok"
   },
@@ -1704,14 +1696,6 @@
    "status": "ok"
   },
   "ident:REVIEWED_ATTEMPT_IN_PROGRESS:plain": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "ident:REVIEWER:named": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "ident:REVIEWER:plain": {
    "is_error": false,
    "status": "ok"
   },
