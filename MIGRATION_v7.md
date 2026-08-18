@@ -33,6 +33,21 @@ leaf (e.g. `supervisor.events` → `supervisor.events_task_done`); no handler, l
 to the old names. The L1 llm leaves and the tool-registry leaves instead pin their parent logger
 names; both shapes are deliberate.
 
+Disclosed residual: anonymous-source moves. This ledger's identity scheme is
+`path::symbol` (an exact lexical qualname at MERGE_BASE), so a body that had NO
+name at the base — an inline callback or an IIFE — has no addressable old
+identity and structurally cannot carry a row. Wave D moved five such bodies out
+of web/modules/chat.js; each is disclosed here instead, with the suite that
+characterizes it: the `onWs('photo')` and `onWs('video')` handler bodies →
+`web/modules/chat_media_bubbles.js::handlePhotoFrame`/`::handleVideoFrame`
+(web/tests/chat_media_bubbles.test.js); the `onWs('open')` body →
+`web/modules/chat_history_sync.js::handleSocketOpen`
+(web/tests/chat_continuity.test.js); the bootstrap IIFE → runs at
+`createChatHistorySync` construction with the same synchronous-body timing; the
+Load-older DOM block → `web/modules/chat_history_sync.js::syncLoadOlderControl`.
+A future anonymous-source move must extend THIS list or first name the body in
+place so a normal row can carry it.
+
 | old path/symbol | new owner/path | facade/public contract | semantic delta | characterization test | upstream-transfer status/note |
 |---|---|---|---|---|---|
 | web/modules/chat.js::liveLineRowToggleKey | web/modules/chat_card_state.js::liveLineRowToggleKey | web/modules/chat.js::liveLineRowToggleKey | {"id":"none","note":"verbatim extraction preserves row disclosure behavior and binding identity"} | web/tests/chat_facade.test.js::assertChatFacadeOwnerIdentity | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |
