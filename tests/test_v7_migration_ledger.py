@@ -1233,7 +1233,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "scripts/run_external_review.py::_REVIEW_SUBSTRATE_PATHS":
             "scripts/run_external_review.py::_is_review_substrate_path",
         "tests/test_external_review_script.py::_REVIEW_SUBSTRATE_PATHS":
-            "tests/test_external_review_script.py::test_every_live_review_stack_leaf_classifies_as_substrate",
+            "tests/test_external_review_script.py::test_every_review_named_module_carries_a_boundary_decision",
     }
     implemented.update(d31_rows)
     existing_process_owner_rows.update(d31_rows)

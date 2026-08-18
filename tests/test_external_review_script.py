@@ -45,11 +45,16 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         assert _is_review_substrate_path(doc), doc
 
 
-def test_every_live_review_stack_leaf_classifies_as_substrate():
-    """The class fix for the hand-list defect (spec 1.14-2): the trust boundary
-    is DERIVED from the tree, not remembered. Every module whose name declares
-    the review/scope/skill_review/triad role -- including leaves born from a
-    split after this test was written -- must classify as substrate, and the
+def test_every_review_named_module_carries_a_boundary_decision():
+    """The class fix for the hand-list defect (spec 1.14-2): the CONTRIBUTOR
+    trust boundary is decided for every review-named module, not remembered.
+    The boundary deliberately covers the external-review machinery (advisory/
+    triad/scope + shared runtime), NOT every module with review in its name:
+    agent-side review surfaces (plan review engine, deep self-review, the git
+    review cycle) are outside it because the contributor flow has no dependency
+    on them -- the same scope the retired hand list had. What this test forces
+    is the DECISION: a new review-named module must either classify as
+    substrate or join the disclosure list with a dependency proof, and the
     anchor half must stay disjoint from the name-declared half so the split
     cannot silently regress into a second hand-list."""
     repo = Path(__file__).resolve().parent.parent
