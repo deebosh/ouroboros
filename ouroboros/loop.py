@@ -511,6 +511,10 @@ def run_llm_loop(
 # size boundary); each leaf reads the loop's own rebindable globals back through
 # a call-time handle, and this block re-exports every moved name so historical
 # `ouroboros.loop` imports and monkeypatch targets keep working unchanged.
+# RETIREMENT (spec 1.9-15): the private re-exports are TEMPORARY within the v7
+# stream -- the L3 package migrates the ~48 loop-private test imports to their
+# leaf owners and retires the private half of this facade; only genuinely
+# public contract names remain at the end of v7.
 from ouroboros.loop_messages import (  # noqa: E402, F401 -- intentional public re-exports
     _emit_checkpoint_event,
     _extract_plain_text_from_content,

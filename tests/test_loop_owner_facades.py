@@ -1,10 +1,13 @@
 """Facade-identity contract for the v7 L-B loop.py leaf owners.
 
 Every member the L-B split moved out of ``ouroboros/loop.py`` keeps a loop.py
-re-export under its historical name; callers (and monkeypatching tests) must
-never learn which leaf a name landed in. This pins the facade identity — the
-loop binding IS the leaf's object — and the hot-code label parity for the
-leaves, the same way the queue split pins both for its leaves.
+re-export under its historical name for the DURATION of the v7 stream, so
+existing callers and monkeypatching tests keep working unchanged while the
+split lands. This pins the facade identity — the loop binding IS the leaf's
+object — and the hot-code label parity for the leaves, the same way the queue
+split pins both for its leaves. The private half of the facade is temporary
+(spec 1.9-15): the L3 package re-homes the loop-private test imports to the
+leaf owners and retires those re-exports, and this test shrinks with them.
 """
 
 from __future__ import annotations

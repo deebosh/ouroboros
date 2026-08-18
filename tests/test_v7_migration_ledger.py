@@ -1254,7 +1254,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     })
     # v7 stream L lane L-B: loop.py splits into cohesive owner leaves; every moved
     # name keeps its loop.py facade re-export. Handle rows read rebindable loop
-    # globals through the call-time handle _loop() (delta D18, set pinned in
+    # globals through the call-time handle _loop() (delta D33, set pinned in
     # tests/test_module_handle_extraction.py); verbatim rows moved byte-identical.
     lb_loop_verbatim_rows = {
         f"ouroboros/loop.py::{symbol}": f"{owner}::{symbol}"
@@ -1323,7 +1323,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                     "ouroboros/reflection.py::should_generate_reflection",
                     "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
                 }
-                else "D18" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows | lb_loop_handle_rows)
+                else "D18" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows)
+                else "D33" if row["old path/symbol"] in lb_loop_handle_rows
                 else s3_semantic_delta_ids.get(row["old path/symbol"], "none")
             )
             assert delta["id"] == expected_delta and delta["note"]
@@ -1450,4 +1451,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33"})
