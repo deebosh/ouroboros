@@ -451,7 +451,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                               "tests/test_git_review_pipeline.py::_get_git_ops_module",
                               "tests/test_git_review_pipeline.py::_get_registry_module",
                               "tests/test_git_review_pipeline.py::_make_ctx"}
-    web_extractions = {f"web/modules/chat.js::{symbol}": f"web/modules/{owner}::{symbol}" for owner, symbols in {"chat_card_state.js": "liveLineRowToggleKey clearStickyCardState COLLAPSED_ACTIVITY_MAX boundActivityPreview projectCollapsedActivity isTerminalTaskPhase", "chat_controls.js": "shouldFirePanic confirmAndSendPanic", "chat_render_batch.js": "insertTimelineNode", "costs.js": "headerBudgetPresentation taskCostMeta taskCostProjection mergeStickyCostMeta", "utils.js": "rawTimestampEpoch", "chat_card_actions.js": "projectIdFromTask"}.items() for symbol in symbols.split()}
+    web_extractions = {f"web/modules/chat.js::{symbol}": f"web/modules/{owner}::{symbol}" for owner, symbols in {"chat_card_state.js": "liveLineRowToggleKey clearStickyCardState COLLAPSED_ACTIVITY_MAX boundActivityPreview projectCollapsedActivity isTerminalTaskPhase", "chat_controls.js": "shouldFirePanic confirmAndSendPanic", "chat_render_batch.js": "insertTimelineNode", "costs.js": "headerBudgetPresentation taskCostMeta taskCostProjection mergeStickyCostMeta", "utils.js": "rawTimestampEpoch", "chat_card_actions.js": "projectIdFromTask", "chat_attachments.js": "MAX_PENDING_ATTACHMENTS MAX_ATTACHMENT_FILE_BYTES MAX_PENDING_ATTACHMENT_BYTES", "chat_history_sync.js": "CHAT_STORAGE_KEY"}.items() for symbol in symbols.split()}
     # createChatInstance closure helpers moved into per-instance factories (no facade: they were never exported)
     web_extractions.update({f"web/modules/chat.js::createChatInstance.{symbol}": f"web/modules/{owner}::{factory}.{symbol}" for owner, factory, symbols in (
         ("chat_timeline_anchor.js", "createTimelineAnchors", "NEAR_BOTTOM_THRESHOLD_PX isNearBottom captureVisibleTimelineAnchor restoreVisibleTimelineAnchor"),
@@ -470,6 +470,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         ("chat_composer.js", "createComposer", "resizeChatInput swarmArmed setSwarm setSendBusy scrollToBottom updateScrollButton updateMessagesPadding"),
         ("chat_header_controls.js", "createHeaderControls", "syncHeaderControlState refreshHeaderControlState"),
         ("chat_frame_routing.js", "createFrameRouting", "isKnownProjectFrame incrementUnreadIfNeeded isProjectMirrorFrame isMyThread"),
+        # v7 W3 wave D (chat.js size campaign): the remaining per-instance closure
+        # clusters — attachment staging, the live-card store, the task-frame router
+        # and the history/feed owner — each moved whole into its own factory.
+        ("chat_attachments.js", "createChatAttachments", "pendingAttachmentBytes updateAttachmentPreview stagePendingFiles cleanupUploadedAttachments setAttachmentUploadState isFileDrag setFileDragActive"),
+        ("chat_live_cards.js", "createChatLiveCards", "registerEphemeralDecisionFrame registerEphemeralDecisionFrameMutation reanchorTaskCard reanchorVisibleTaskCard revealBufferedCardIfNeeded revealBufferedCardMutation queueTaskLiveUpdate queueTaskLiveUpdateMutation createLiveCardRecord getLiveCardRecord getSubagentCardRecord getSubagentCardRecordMutation resetLiveCardRecord ensureLiveCardVisible updateLiveCardCount syncLiveCardLayout fetchFullLineOutput applyLiveCardState applyLiveCardStateMutation finishLiveCard finishLiveCardMutation"),
+        ("chat_task_frames.js", "createTaskFrames", "appendTaskSummaryToLiveCard updateLiveCardFromProgressMessage updateLiveCardFromLogEvent"),
+        ("chat_history_sync.js", "createChatHistorySync", "readPendingReconnectBanner clearPendingReconnectBanner persistVisibleHistory insertMessageNode addMessage ensureWelcomeMessage awaitInitialHydration MAIN_HYDRATION_MAX_DEFER_MS waitForHydrationWindow finalizeRebuildBatch syncHistory cancelHistoryPaint refreshHistory scheduleHistorySync historyResyncScheduler syncLoadOlderControl loadOlderHistory"),
     )
     # The same wave's chat.js module-scope primitives: three closure helpers with no
     # closure reads at all became plain top-level owners, and the cost presentation
@@ -990,6 +997,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     registry_extraction_no_facade_rows.update(old for old in web_extractions if "::createChatInstance." in old)
     # W3: a module-private chat.js helper that moved with its only caller — never exported, so no facade.
     registry_extraction_no_facade_rows.add("web/modules/chat.js::projectIdFromTask")
+    # W3 wave D: never-exported chat.js module constants that moved with their only consumers.
+    registry_extraction_no_facade_rows.update({
+        "web/modules/chat.js::MAX_PENDING_ATTACHMENTS",
+        "web/modules/chat.js::MAX_ATTACHMENT_FILE_BYTES",
+        "web/modules/chat.js::MAX_PENDING_ATTACHMENT_BYTES",
+        "web/modules/chat.js::CHAT_STORAGE_KEY",
+    })
     registry_extraction_no_facade_rows.update(w3_chat_primitive_rows)
     registry_extraction_no_facade_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
     # S6 (delegation/cancellation targeted fixes): no symbol moves — every row
