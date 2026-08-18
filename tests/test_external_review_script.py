@@ -133,21 +133,21 @@ def test_every_review_named_module_carries_a_boundary_decision():
     trust boundary is decided for every review-named module, not remembered.
     The boundary deliberately covers the external-review machinery (advisory/
     triad/scope + shared runtime), NOT every module with review in its name:
-    agent-side review surfaces (plan review engine, deep self-review, the git
-    review cycle) are outside it because the contributor flow has no dependency
-    on them -- the same scope the retired hand list had. What this test forces
-    is the DECISION: a new review-named module must either classify as
-    substrate or join the disclosure list with a dependency proof, and the
-    anchor half must stay disjoint from the name-declared half so the split
-    cannot silently regress into a second hand-list."""
+    agent-side review surfaces are outside it because the contributor flow has
+    no dependency on them. The original grep-based version of this proof was
+    WRONG about the git review cycle (the flow reaches it through the tools.git
+    re-export hop -- caught by the external gate audit), so membership in the
+    disclosure list below is now enforced by the computed import-closure test
+    above, not by hand reasoning. What this test forces is the DECISION: a new
+    review-named module must either classify as substrate or join the
+    disclosure list, and the closure test proves the list disjoint from what
+    the flow actually imports."""
     repo = Path(__file__).resolve().parent.parent
-    # Deliberately OUTSIDE the boundary: agent-side review surfaces the contributor
-    # trust path has no dependency on (verified: run_external_review,
-    # contributor_review_evidence, claude_advisory_review, triad_review, scope_review,
-    # commit_gate, review_execution and review_substrate import none of them; the
-    # "plan_review" token in review_execution.py is a route label, not an import).
-    # A new review-named module lands RED here until it is either classified
-    # substrate or added to this list with the same dependency proof.
+    # Deliberately OUTSIDE the boundary. The dependency claim for every entry is
+    # machine-checked by test_the_contributor_flow_import_closure_stays_inside_
+    # the_boundary (a listed module appearing in the flow's import closure fails
+    # that test). A new review-named module lands RED here until it is either
+    # classified substrate or added to this list.
     agent_side_review_surfaces = {
         "ouroboros/deep_self_review.py",
         "ouroboros/tools/plan_review.py",
