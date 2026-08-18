@@ -123,13 +123,51 @@ def test_the_contributor_flow_import_closure_stays_inside_the_boundary():
         "ouroboros/tools/git_review_cycle.py",
         "ouroboros/tools/plan_review.py",
         "ouroboros/tools/plan_review_runtime.py",
-        "ouroboros/loop_acceptance_review.py",
     }
     inside = sorted(set(agent_side) & set(review_named_in_closure))
     assert inside == ["ouroboros/tools/git_review_cycle.py"], (
         "agent-side-disclosed modules that the contributor flow actually imports "
         f"(the disclosure would be false): {inside}"
     )
+
+
+def test_the_flag_unions_the_computed_base_flow_closure():
+    """The audit-proven bypass class: modules the review flow EXECUTES but whose
+    names carry no review token (git_plumbing via the git_review_cycle import,
+    context_layout via review/scope session navigation, the llm stack) must trip
+    the substrate flag through the computed closure even though the name rule
+    cannot see them. Derived from a real git tree (HEAD here; the gate uses the
+    PR's BASE), so an import refactor updates the set instead of staling it."""
+    import subprocess
+
+    from scripts.contributor_review_evidence import flow_import_closure
+
+    repo = Path(__file__).resolve().parent.parent
+
+    def git_bytes(args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True
+        ).stdout
+
+    head = git_bytes(["rev-parse", "HEAD"]).decode().strip()
+    closure = flow_import_closure(head, git_bytes, full_walk=_is_review_substrate_path)
+    for rel in (
+        "ouroboros/tools/git_plumbing.py",
+        "ouroboros/context_layout.py",
+        "ouroboros/llm.py",
+        "ouroboros/tools/git_review_cycle.py",
+    ):
+        assert rel in closure, rel
+    # The gate predicate is the UNION: name-blind closure members flag too.
+    flagged = [
+        p for p in ("ouroboros/tools/git_plumbing.py", "ouroboros/context_layout.py")
+        if _is_review_substrate_path(p) or p in closure
+    ]
+    assert flagged == [
+        "ouroboros/tools/git_plumbing.py", "ouroboros/context_layout.py",
+    ]
+    # And the closure never quietly shrinks to nothing.
+    assert len(closure) > 80, len(closure)
 
 
 def test_every_review_named_module_carries_a_boundary_decision():

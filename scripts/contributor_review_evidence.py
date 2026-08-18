@@ -485,3 +485,61 @@ def finalize_contributor_outcome(
             ),
         }
     return exit_code, outcome
+
+
+def flow_import_closure(base_sha: str, git_bytes, full_walk=None) -> frozenset[str]:
+    """Repo-relative import closure of the contributor entry scripts, read from
+    the BASE tree (the trusted rerun re-executes the BASE flow, so the protected
+    surface is what the BASE flow imports). Entry scripts AND modules the
+    ``full_walk`` predicate accepts (the declared substrate -- the flow executes
+    their functions) contribute every import they contain, lazy ones included;
+    other transitive modules contribute module-level imports only (a deep lazy
+    import in a non-executed module is a deliberate execution-path break a
+    static walker cannot prove executed)."""
+    import ast as _ast
+
+    entries = (
+        "scripts/run_external_review.py",
+        "scripts/contributor_review_evidence.py",
+    )
+
+    def blob(rel: str) -> str | None:
+        try:
+            return git_bytes(["show", f"{base_sha}:{rel}"]).decode("utf-8")
+        except Exception:
+            return None
+
+    def module_to_rel(mod: str) -> str | None:
+        cand = mod.replace(".", "/")
+        for rel in (f"{cand}.py", f"{cand}/__init__.py"):
+            if blob(rel) is not None:
+                return rel
+        return None
+
+    seen: set[str] = set()
+    frontier = list(entries)
+    while frontier:
+        rel = frontier.pop()
+        if rel in seen:
+            continue
+        text = blob(rel)
+        if text is None:
+            continue
+        seen.add(rel)
+        try:
+            tree = _ast.parse(text)
+        except SyntaxError:
+            continue
+        walk_all = rel in entries or (full_walk is not None and full_walk(rel))
+        nodes = _ast.walk(tree) if walk_all else iter(tree.body)
+        for node in nodes:
+            mods: list[str] = []
+            if isinstance(node, _ast.Import):
+                mods = [a.name for a in node.names]
+            elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
+                mods = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+            for mod in mods:
+                target = module_to_rel(mod)
+                if target and target not in seen:
+                    frontier.append(target)
+    return frozenset(seen)

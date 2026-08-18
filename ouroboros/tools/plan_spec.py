@@ -884,4 +884,3 @@ def closure_after_disposition(
             "blocking_enforcement: the wave must close before the work starts"
         )
     return {"closed": closed, "open_ids": open_ids, "notes": notes}
-

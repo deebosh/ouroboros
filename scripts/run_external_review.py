@@ -68,11 +68,9 @@ _CONTRIBUTOR_LANDING_OBLIGATION_ITEMS = frozenset({
     "version_bump",
     "changelog_and_badge",
 })
-# The review substrate has two halves: ANCHORS, whose names do not declare their
-# role (governing docs, these scripts, the shared runtime the review stack runs
-# through), and the name-declared half -- review/scope/skill_review/triad modules
-# -- classified by NAME so a leaf born from a future split joins the boundary the
-# moment it exists instead of waiting on this list (spec 1.14-2, delta D31).
+# Review substrate: ANCHORS (roles names cannot declare) + the NAME rule
+# (review/scope/skill_review/triad; spec 1.14-2, D31); the gate also unions the
+# computed BASE-flow import closure at flag time (see substrate_changed).
 _REVIEW_SUBSTRATE_ANCHOR_PATHS = frozenset({
     "BIBLE.md",
     "docs/ARCHITECTURE.md",
@@ -101,11 +99,9 @@ _REVIEW_SUBSTRATE_ANCHOR_PATHS = frozenset({
     "ouroboros/tools/git.py",
     "ouroboros/tools/git_review_cycle.py",
     "ouroboros/tools/parallel_review.py",
-    "ouroboros/tools/registry.py", "ouroboros/tools/registry_core.py",
-    "ouroboros/tools/registry_guard_process.py", "ouroboros/tools/registry_guards.py",
-    "ouroboros/tools/tool_resolution.py", "ouroboros/tools/extension_dispatch.py",
-    "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_context.py",
-    "ouroboros/tools/tool_result.py", "ouroboros/tools/release_sync.py",
+    "ouroboros/tools/registry.py", "ouroboros/tools/registry_core.py", "ouroboros/tools/registry_guard_process.py",
+    "ouroboros/tools/registry_guards.py", "ouroboros/tools/tool_resolution.py", "ouroboros/tools/extension_dispatch.py",
+    "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_result.py", "ouroboros/tools/release_sync.py",
     "ouroboros/claudexor_daemon.py",
     "ouroboros/delegate_custody.py",
     "ouroboros/delegate_output.py",
@@ -115,10 +111,8 @@ _REVIEW_SUBSTRATE_ANCHOR_PATHS = frozenset({
 _REVIEW_SUBSTRATE_NAME_PREFIXES = ("review", "reviewer_", "scope_", "skill_review", "triad_review")
 _REVIEW_SUBSTRATE_MODULE_DIRS = ("ouroboros", "ouroboros/tools")
 
-
 def _is_review_substrate_path(path: str) -> bool:
-    """Classify one repo-relative path as review-substrate. Works on the PATH
-    ALONE (no tree lookup), so it covers files a proposal adds or deletes."""
+    """Classify by PATH alone (covers files a proposal adds or deletes)."""
     if path in _REVIEW_SUBSTRATE_ANCHOR_PATHS:
         return True
     parent, _, name = path.rpartition("/")
@@ -335,7 +329,15 @@ def _contributor_snapshot(base_ref: str, head_ref: str) -> dict:
     target_config = _git_bytes(["show", f"{base_sha}:ouroboros/config.py"])
     base_script = _git_bytes(["show", f"{base_sha}:scripts/run_external_review.py"])
     head_script = _git_bytes(["show", f"{head_sha}:scripts/run_external_review.py"])
-    substrate_changed = sorted(p for p in set(changed_paths) if _is_review_substrate_path(p))
+    # Flag = declared boundary UNION the BASE-flow import closure: editing any
+    # module the review executes can weaken it, whatever it is named.
+    from scripts.contributor_review_evidence import flow_import_closure
+
+    flow_closure = flow_import_closure(base_sha, _git_bytes, full_walk=_is_review_substrate_path)
+    substrate_changed = sorted(
+        p for p in set(changed_paths)
+        if _is_review_substrate_path(p) or p in flow_closure
+    )
     return {
         "base_ref": base_ref,
         "base_sha": base_sha,

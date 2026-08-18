@@ -1212,4 +1212,3 @@ def test_schema_conformant_clean_session_verdict_counts_as_clean():
     # prose around the empty array is still a non-response
     _, err2 = plan_spec.parse_findings("I could not review this.\n[]")
     assert err2 is not None
-

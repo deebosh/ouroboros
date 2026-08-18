@@ -584,5 +584,3 @@ def test_clean_acceptance_requires_per_criterion_evidence(tmp_path):
         request, slots=slots, drive_root=tmp_path, llm=_CriterionLLM(structured=True),
     )
     assert clean.aggregate_signal == "PASS"
-
-

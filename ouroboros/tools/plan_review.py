@@ -952,5 +952,3 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
 
 
 # ------------------------------------------------------------------------ rendering
-
-
