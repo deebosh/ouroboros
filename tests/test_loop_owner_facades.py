@@ -61,6 +61,12 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_delivery_replace_required _delivery_keep_allowed _arm_delivery_control _hold_delivery_for_skill_action _parse_delivery_control_object "
         "_resolve_delivery_control _compose_delivery_suffix _no_tool_final_answer"
     ),
+    "loop_forced_finalization": (
+        "_load_direct_child_results _direct_child_results _child_disposition_state _project_child_result_dispositions _record_forced_finalization "
+        "_forced_orphan_note _claimed_child_dispositions _undispositioned_children _maybe_enforce_child_absorption_gate _run_forced_children_acceptance "
+        "_enforce_swarm_actions _finalize_forced_services _drain_forced_owner_directives _call_forced_model_once _publish_model_forced_candidate "
+        "_publish_stale_forced_candidate _forced_fallback_result _forced_swarm_router_result _resolve_forced_delivery_control _forced_final_answer"
+    ),
 }
 
 

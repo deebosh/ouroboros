@@ -3,7 +3,6 @@
 BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 
 GIANT_PATHS = (
-    "ouroboros/loop.py",
     "ouroboros/tools/claude_advisory_review.py",
     "supervisor/git_ops.py",
     "tests/test_agent_task_pipeline.py",
@@ -18,7 +17,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/agent.py",
     "ouroboros/agent_task_pipeline.py",
     "ouroboros/delegate_custody.py",
-    "ouroboros/loop.py",
     "ouroboros/review_execution.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/delegate.py",

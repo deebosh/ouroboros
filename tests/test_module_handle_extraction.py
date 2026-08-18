@@ -120,6 +120,24 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_supersede_delivery_acceptance_binding", "_supersede_task_acceptance_for_evidence_change",
         "_supersede_task_acceptance_for_owner_followup", "_unaccepted_delivery_binding"
     })),
+    "ouroboros/loop_forced_finalization.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "DeliveryCandidate", "_LoopExitContext", "_append_or_merge_user_message", "_call_forced_model_once",
+        "_child_disposition_state", "_claimed_child_dispositions", "_compose_delivery_suffix",
+        "_current_delivery_candidate", "_degrade_retained_delivery_candidate", "_delivery_evidence_state",
+        "_delivery_replace_required", "_direct_child_results", "_drain_forced_owner_directives",
+        "_drain_incoming_messages", "_end_task_acceptance_fence", "_finalize_forced_services",
+        "_finalize_task_services", "_force_plan_decision", "_force_plan_disclosure", "_force_plan_reminder",
+        "_forced_delegation_note", "_forced_fallback_result", "_forced_final_answer", "_forced_orphan_note",
+        "_forced_swarm_router_result", "_forced_unaccepted_binding", "_live_delivery_candidate",
+        "_load_direct_child_results", "_merge_finalization_trace", "_parse_delivery_control_object",
+        "_project_child_result_dispositions", "_publish_delivery_candidate",
+        "_publish_model_forced_candidate", "_publish_stale_forced_candidate",
+        "_record_forced_acceptance_bypass", "_record_forced_finalization", "_replace_delivery_candidate",
+        "_resolve_forced_delivery_control", "_run_forced_children_acceptance",
+        "_run_task_acceptance_review_once", "_service_finalization_evidence", "_set_acceptance_decision",
+        "_supersede_task_acceptance_for_owner_followup", "_swarm_handoff_attempt",
+        "_undispositioned_children", "call_llm_with_retry"
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),
