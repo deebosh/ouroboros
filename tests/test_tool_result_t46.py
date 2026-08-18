@@ -326,7 +326,7 @@ def test_plan_handler_propagates_native_sidecar_through_running_loop_thread(
         (
             "fresh",
             {"aggregate_signal": "GREEN", "closed": True},
-            {"plan": "P", "goal": "G", "scope": {"acceptance_claims": []}},
+            {"plan": "P", "goal": "G", "spec": {"acceptance_claims": []}},
             "_VACUOUS_CLAIMS_NOTE",
         ),
         (

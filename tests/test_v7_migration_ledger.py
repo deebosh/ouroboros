@@ -519,16 +519,35 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "and reuse them by blob id"
     )
     retired_current.update({"web/modules/chat.js::optionalFiniteNumber": "web/modules/costs.js::optionalFiniteNumber", "ouroboros/loop_tool_execution.py::PLAN_REVIEW_CONTROL_PREFIX": "retired:loop no longer imports the display-only plan footer prefix"})
-    # D02 (lane d02): the loop's textual plan-control parser and its vocabulary re-home
-    # to the grammar owner beside the emitter — the loop reads native metadata only,
-    # so the old path deliberately does NOT re-export them (facade "-").
+    # D02 (lane d02): the typed plan-result seam re-applied on the upstream-rewritten
+    # engine. The loop's textual parser and its vocabulary re-home to the grammar owner
+    # beside the emitter (the loop reads native metadata only, no re-export, facade "-");
+    # the wrapper and the engine coroutine change in place (facade "-"); the typed cap
+    # result moves to the runtime-seam owner behind an import-alias facade.
     d02_plan_seam_rows = {
         "ouroboros/loop_tool_execution.py::_parse_plan_review_control":
             "ouroboros/tools/plan_render.py::_parse_plan_review_control",
         "ouroboros/loop_tool_execution.py::_PLAN_REVIEW_OUTCOMES":
             "ouroboros/tools/plan_render.py::_PLAN_REVIEW_OUTCOMES",
+        "ouroboros/tools/plan_review.py::_handle_plan_task":
+            "ouroboros/tools/plan_review.py::_handle_plan_task",
+        "ouroboros/tools/plan_review.py::_run_plan_review_async":
+            "ouroboros/tools/plan_review.py::_run_plan_review_async",
+        "ouroboros/tools/plan_review.py::_cycles_exhausted":
+            "ouroboros/tools/plan_review_runtime.py::plan_review_cycles_exhausted",
     }
     implemented.update(d02_plan_seam_rows)
+    # The vacuity predicate moves verbatim and takes back its pre-rewrite public
+    # name; the engine keeps the old private binding as a facade (delta none).
+    implemented["ouroboros/tools/plan_review.py::_vacuous_disposition"] = (
+        "ouroboros/tools/plan_review_runtime.py::vacuous_review_disposition"
+    )
+    retired_current.update({
+        "ouroboros/tools/plan_review.py::PLAN_REVIEW_CONTROL_PREFIX":
+            "ouroboros/tools/review_synthesis.py::PLAN_REVIEW_CONTROL_PREFIX",
+        "ouroboros/tools/plan_review.py::current_plan_review_wave":
+            "ouroboros/task_results.py::current_plan_review_wave",
+    })
     # T1: two retirements that DO carry a semantic delta — the loop's ordered
     # families and generic markers move into the single classifier rather than
     # disappearing, so their rows name the spec 4.3.3 delta instead of "none".
@@ -622,10 +641,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     existing_process_owner_rows.update(t1_fix_rows)
     existing_process_owner_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
     registry_extraction_no_facade_rows.update(t1_fix_rows)
-    # D02 (lane d02): the plan-control parser/vocabulary moves land in an existing
-    # engine module (plan_render.py) and the loop keeps NO re-export of either.
+    # D02 (lane d02): the seam rows land in existing engine modules (plan_render.py,
+    # plan_review.py, plan_review_runtime.py). The parser/vocabulary moves and the
+    # in-place wrapper/engine rows carry NO facade; the cap-result and vacuity-
+    # predicate moves keep the old private bindings as import-alias facades.
     existing_process_owner_rows.update(d02_plan_seam_rows)
-    registry_extraction_no_facade_rows.update(d02_plan_seam_rows)
+    existing_process_owner_rows.add("ouroboros/tools/plan_review.py::_vacuous_disposition")
+    registry_extraction_no_facade_rows.update(
+        identity for identity in d02_plan_seam_rows
+        if identity != "ouroboros/tools/plan_review.py::_cycles_exhausted"
+    )
     # The closure-invariant harness keeps its module-level parser binding as a
     # facade re-export re-pointed at the T1 home (verbatim binding, delta none).
     implemented["tests/test_plan_spec.py::_parse_plan_review_control"] = (

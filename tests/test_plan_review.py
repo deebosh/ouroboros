@@ -648,7 +648,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
         record.assert_not_called()
         run.assert_not_called()
 
-    def test_vacuous_disposition_beside_a_plan_is_ignored(self):
+    def test_vacuous_disposition_beside_a_plan_is_ignored_with_disclosure(self):
         import ouroboros.tools.plan_review as pr
         from ouroboros.tools.registry import ToolContext
 
@@ -658,7 +658,9 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
             out = pr._handle_plan_task(
                 ctx, plan="P", goal="G", spec={}, review_disposition={"review_fingerprint": "", "items": []},
             )
-        self.assertEqual(out, "reviewed")
+        # D02 wrapper contract: the vacuous disposition is ignored (review mode ran
+        # exactly once) and the treatment is DISCLOSED, never silent (v7 seam).
+        self.assertEqual(out, "reviewed" + pr._VACUOUS_DISPOSITION_NOTE)
         run.assert_called_once()
 
     def test_duplicate_plan_calls_use_existing_sequential_tool_lane(self):
