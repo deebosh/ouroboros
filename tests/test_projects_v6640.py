@@ -200,7 +200,9 @@ def test_project_sidebar_and_menu_static_contracts():
     assert "project_last_viewed" not in app
     assert "project_hidden" not in app
 
-    assert "chatAnnotation: msg.chat_annotation || null" in chat
+    # The history-replay annotation projection moved to chat_history_sync.js (wave D).
+    history_sync = (root / "web" / "modules" / "chat_history_sync.js").read_text(encoding="utf-8")
+    assert "chatAnnotation: msg.chat_annotation || null" in history_sync
     annotation_handler = chat[
         chat.index("onWs('message_annotation'"):
         chat.index("onWs('log'")
@@ -251,9 +253,10 @@ def test_project_main_mirror_never_creates_second_unread_static_contract():
 
     # History replay reconstructs the mirror but is not a new-delivery signal;
     # only live frames may advance Main's global unread counter.
-    history = chat[
-        chat.index("async function syncHistory"):
-        chat.index("function cancelHistoryPaint")
+    history_sync = (root / "web" / "modules" / "chat_history_sync.js").read_text(encoding="utf-8")
+    history = history_sync[
+        history_sync.index("async function syncHistory"):
+        history_sync.index("function cancelHistoryPaint")
     ]
     assert "appendTaskSummaryToLiveCard(msg" in history
     assert "incrementUnreadIfNeeded" not in history
@@ -410,28 +413,32 @@ def test_ephemeral_decision_web_frames_never_create_task_card_or_second_receipt(
     chat = (root / "web" / "modules" / "chat.js").read_text(encoding="utf-8")
 
     assert "const ephemeralDecisionTaskIds = new Set();" in chat
-    register = chat[
-        chat.index("function registerEphemeralDecisionFrame"):
-        # reconnectBannerText moved to chat_activity.js; the next stable symbol
-        # after the register pair bounds the slice now.
-        chat.index("function readPendingReconnectBanner")
+    # The register pair moved to chat_live_cards.js (wave D); the slice is
+    # bounded by the next factory member after the pair.
+    live_cards = (root / "web" / "modules" / "chat_live_cards.js").read_text(encoding="utf-8")
+    register = live_cards[
+        live_cards.index("function registerEphemeralDecisionFrame"):
+        live_cards.index("function reanchorTaskCard")
     ]
     assert "ephemeralDecisionTaskIds.add(taskId);" in register
     assert "record.root?.remove();" in register
 
-    card_factory = chat[
-        chat.index("function createLiveCardRecord"):
-        chat.index("function getLiveCardRecord")
+    card_factory = live_cards[
+        live_cards.index("function createLiveCardRecord"):
+        live_cards.index("function getLiveCardRecord")
     ]
     assert "!ephemeralDecisionTaskIds.has(normalizedGroupId)" in card_factory
 
-    progress = chat[
-        chat.index("function updateLiveCardFromProgressMessage"):
-        chat.index("function updateLiveCardFromLogEvent")
+    # The progress/log routers moved to chat_task_frames.js (wave D); the log
+    # router runs to the factory return, the last member of the module.
+    task_frames = (root / "web" / "modules" / "chat_task_frames.js").read_text(encoding="utf-8")
+    progress = task_frames[
+        task_frames.index("function updateLiveCardFromProgressMessage"):
+        task_frames.index("function updateLiveCardFromLogEvent")
     ]
-    logs = chat[
-        chat.index("function updateLiveCardFromLogEvent"):
-        chat.index("function addMessage")
+    logs = task_frames[
+        task_frames.index("function updateLiveCardFromLogEvent"):
+        task_frames.index("return {")
     ]
     assert "if (registerEphemeralDecisionFrame(msg)) return;" in progress
     assert "if (registerEphemeralDecisionFrame(evt)) return;" in logs

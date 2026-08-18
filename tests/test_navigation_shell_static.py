@@ -105,7 +105,10 @@ def test_project_rows_use_slots_not_generic_spans():
 def test_project_panel_composer_and_welcome_contracts():
     chat_js = _read("web/modules/chat.js")
     css = _read("web/style.css")
-    assert "if (!isMain) return;" in chat_js  # ensureWelcomeMessage is main-only
+    # ensureWelcomeMessage moved to chat_history_sync.js (wave D).
+    assert "if (!isMain) return;" in _read(
+        "web/modules/chat_history_sync.js"
+    )  # ensureWelcomeMessage is main-only
     assert "padding: 10px 292px" not in css
     assert "right: 8px;\n    bottom: 6px" not in css
     assert ".chat-text-row:focus-within" in css

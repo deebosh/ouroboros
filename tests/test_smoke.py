@@ -463,13 +463,19 @@ def test_size_ratchet_manifest_matches_live_tree():
     assert not errors, "Size-ratchet manifest violations:\n" + "\n".join(errors)
 
 
-def test_js_module_gate_buckets_and_grandfathering():
-    """The JS size gate sees web/tests and exempts debt by exact rel-path only."""
+def test_js_module_gate_buckets_and_grandfathering(monkeypatch):
+    """The JS size gate sees web/tests and exempts debt by exact rel-path only.
+
+    chat.js paid its giant debt in wave D, so the LIVE registry must gate it
+    again — a 4000-line regression lands in oversized, not grandfathered. The
+    exact-rel-path exemption machinery is pinned through a synthetic registry
+    entry, so this test no longer depends on any real module staying in debt."""
+    import ouroboros.review as review_mod
     from ouroboros.review import compute_complexity_metrics, module_is_grandfathered
 
     sections = [
         ("repo/web/app.js", "x\n" * 2000),                   # gated, over hard gate, not grandfathered
-        ("repo/web/modules/chat.js", "x\n" * 4000),          # gated, grandfathered by rel-path
+        ("repo/web/modules/chat.js", "x\n" * 4000),          # debt paid — a regression is gated again
         ("repo/web/vendor/chart.umd.min.js", "x\n" * 9000),  # vendored/minified — excluded
         ("repo/web/tests/foo.test.js", "x\n" * 9000),        # web/tests/ — gated
         ("repo/ouroboros/small.py", "x\n" * 10),
@@ -480,16 +486,32 @@ def test_js_module_gate_buckets_and_grandfathering():
     oversized = {p for p, _n in metrics["oversized_modules"]}
     grandfathered = {p for p, _n in metrics["grandfathered_modules"]}
     assert "web/app.js" in oversized
-    assert "web/modules/chat.js" in grandfathered
-    assert "web/modules/chat.js" not in oversized
+    assert "web/modules/chat.js" in oversized
+    assert "web/modules/chat.js" not in grandfathered
     assert "web/tests/foo.test.js" in oversized
     assert "web/vendor/chart.umd.min.js" not in oversized
     assert "web/vendor/chart.umd.min.js" not in grandfathered
+    assert not module_is_grandfathered("web/modules/chat.js")
 
-    # Grandfather entry is rel-path-keyed: a chat.js anywhere else stays gated.
-    assert module_is_grandfathered("web/modules/chat.js")
-    assert not module_is_grandfathered("repo/web/modules/chat.js")
-    assert not module_is_grandfathered("web/other/chat.js")
+    # The exemption is rel-path-keyed: pinned via a synthetic registry entry so
+    # a fixture module anywhere else stays gated.
+    monkeypatch.setattr(
+        review_mod, "GIANT_PATHS",
+        frozenset(review_mod.GIANT_PATHS | {"web/modules/giant_fixture.js"}),
+    )
+    if review_mod.MODULE_DEBT_1500 is not None:
+        monkeypatch.setattr(
+            review_mod, "MODULE_DEBT_1500",
+            frozenset(review_mod.MODULE_DEBT_1500 | {"web/modules/giant_fixture.js"}),
+        )
+    synthetic = compute_complexity_metrics(
+        [("repo/web/modules/giant_fixture.js", "x\n" * 4000)]
+    )
+    assert {p for p, _n in synthetic["grandfathered_modules"]} == {"web/modules/giant_fixture.js"}
+    assert {p for p, _n in synthetic["oversized_modules"]} == set()
+    assert module_is_grandfathered("web/modules/giant_fixture.js")
+    assert not module_is_grandfathered("repo/web/modules/giant_fixture.js")
+    assert not module_is_grandfathered("web/other/giant_fixture.js")
 
 
 def test_no_bare_except_pass():
