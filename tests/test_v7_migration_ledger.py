@@ -1272,9 +1272,12 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     existing_process_owner_rows.update(lb_loop_handle_rows)
     # v7 lane 1A: the update_merge planning/materialization cluster moves to
     # supervisor/update_merge_plan.py; every moved name keeps its update_merge
-    # facade re-export. Handle rows read the monkeypatch-addressable parent
-    # bindings through the call-time handle _um() (delta D18, set pinned in
-    # tests/test_module_handle_extraction.py); verbatim rows moved byte-identical.
+    # facade re-export. _git_run moved byte-identical (delta none); the three
+    # bodies hosting the carrier-engine insertion points ride D34 — the
+    # owner-ratified (batch №8 answer 6=A / spec §1.9-10) span-substitution
+    # resolver applied before write-tree — and the two of them that read
+    # monkeypatch-addressable parent bindings do so through the call-time
+    # handle _um() (set pinned in tests/test_module_handle_extraction.py).
     lane1a_update_plan_rows = {
         f"supervisor/update_merge.py::{symbol}": f"supervisor/update_merge_plan.py::{symbol}"
         for symbol in (
@@ -1282,14 +1285,15 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "plan_managed_update_merge", "materialize_assisted_merge_live",
         )
     }
-    lane1a_update_handle_rows = {
+    lane1a_carrier_delta_rows = {
+        "supervisor/update_merge.py::_build_clean_merge_commit",
         "supervisor/update_merge.py::plan_managed_update_merge",
         "supervisor/update_merge.py::materialize_assisted_merge_live",
     }
     implemented.update(lane1a_update_plan_rows)
     existing_process_owner_rows.update(lane1a_update_plan_rows)
-    for _lane1a_old in lane1a_update_handle_rows:
-        s3_semantic_delta_ids[_lane1a_old] = "D18"
+    for _lane1a_old in lane1a_carrier_delta_rows:
+        s3_semantic_delta_ids[_lane1a_old] = "D34"
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -1471,4 +1475,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34"})

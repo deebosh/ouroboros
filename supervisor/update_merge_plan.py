@@ -17,6 +17,7 @@ import subprocess
 from typing import Any, Dict, List, Optional, Tuple
 
 from supervisor import git_ops as _g
+from supervisor.update_carriers import resolve_carrier_conflicts
 
 
 def _um():
@@ -82,10 +83,19 @@ def _build_clean_merge_commit(
                 [ln.strip() for ln in unmerged_out.splitlines() if ln.strip()]
                 if rc_u == 0 else []
             )
-            if base_conflicts:
-                return "", {"base_conflicts": base_conflicts}
-            return "", {"error": base_merge_error or "base merge failed without an inventory"}
-        if rc_bm != 0:
+            if not base_conflicts:
+                return "", {"error": base_merge_error or "base merge failed without an inventory"}
+            # Carrier engine insertion point 2 of 3 (spec §1.9-10, owner batch №8
+            # answer 6=A): the base re-merge, applied BEFORE write-tree. A base
+            # conflict confined to declared version-carrier spans adopts the
+            # official side of the span and stays on the clean path; anything
+            # else routes to the assisted lane exactly as before.
+            resolution = resolve_carrier_conflicts(tmp_wt, base_conflicts, prefer="theirs")
+            carrier_resolved = set(resolution["resolved"])
+            remaining = [path for path in base_conflicts if path not in carrier_resolved]
+            if remaining:
+                return "", {"base_conflicts": remaining}
+        elif rc_bm != 0:
             return "", {"error": base_merge_error or "clean base merge unexpectedly failed"}
     rc_mt, merged_tree, _mte = _git_run(["git", "-C", tmp_wt, "write-tree"])
     if rc_mt != 0 or not merged_tree:
@@ -241,6 +251,7 @@ def plan_managed_update_merge(
             "hot_code_paths": [],
             "local_snapshot": base_sha,
             "merge_commit": target_sha if build else "",
+            "carrier_resolved_paths": [],
             "recommended_strategy": "auto_merge",
             **pins,
         }
@@ -320,6 +331,18 @@ def plan_managed_update_merge(
                 **pins,
             }
 
+        # Carrier engine insertion point 1 of 3 (spec §1.9-10, owner batch №8
+        # answer 6=A): the planner merge, applied BEFORE write-tree. Conflicts
+        # confined to declared version-carrier spans adopt the official side of
+        # the span (staged in the ISOLATED temp worktree) and leave the plan's
+        # conflict inventory; every other conflict classifies exactly as before.
+        carrier_resolved: List[str] = []
+        if unmerged:
+            resolution = resolve_carrier_conflicts(tmp_wt, unmerged, prefer="theirs")
+            carrier_resolved = list(resolution["resolved"])
+            if carrier_resolved:
+                unmerged = [path for path in unmerged if path not in set(carrier_resolved)]
+
         plan = classify_conflicts(unmerged)
         kind = str(plan["kind"])
         merge_commit = ""
@@ -346,6 +369,7 @@ def plan_managed_update_merge(
                         "local_dirty_count": local_dirty_count,
                         "local_snapshot": local_snapshot,
                         "merge_commit": "",
+                        "carrier_resolved_paths": carrier_resolved,
                         "recommended_strategy": "assisted",
                         **pins,
                     }
@@ -362,6 +386,7 @@ def plan_managed_update_merge(
             "local_dirty_count": local_dirty_count,
             "local_snapshot": local_snapshot,
             "merge_commit": merge_commit,
+            "carrier_resolved_paths": carrier_resolved,
             # Git owns clean merges. Ouroboros is needed only for a real conflict.
             "recommended_strategy": "auto_merge" if kind == "clean" else "assisted",
             **pins,
@@ -426,6 +451,22 @@ def materialize_assisted_merge_live(
         return False, "merge produced no MERGE_HEAD (nothing to merge or fatal error)"
     if mh != target_sha:
         return False, f"MERGE_HEAD {mh[:12]} != target {target_sha[:12]}"
+    # Carrier engine insertion point 3 of 3 (spec §1.9-10, owner batch №8
+    # answer 6=A): the live materializer. Version-carrier spans in the staged
+    # merge adopt the official side so the assisted resolver only faces real
+    # conflicts; best-effort — whatever stays unresolved remains for the
+    # assisted lane exactly as before.
+    rc_cu, carrier_unmerged_out, _cue = _g.git_capture(
+        ["git", "diff", "--name-only", "--diff-filter=U"]
+    )
+    if rc_cu == 0:
+        carrier_conflicted = [
+            ln.strip() for ln in carrier_unmerged_out.splitlines() if ln.strip()
+        ]
+        if carrier_conflicted:
+            resolve_carrier_conflicts(
+                str(_g.REPO_DIR), carrier_conflicted, prefer="theirs"
+            )
     # Re-base the first parent to the reviewed pre-update state WITHOUT disturbing the merge
     # result: `git reset --soft` is refused mid-merge, so move the branch ref directly with
     # update-ref (HEAD follows the symbolic ref) — the index (conflicted/merged entries), the
