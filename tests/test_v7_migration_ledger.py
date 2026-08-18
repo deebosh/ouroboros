@@ -1252,6 +1252,24 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "retired:each scenario takes its own pytest tmp_path state dir, so no shared-host name can be squatted"
         for module in ("companion", "lifecycle")
     })
+    # v7 stream L lane L-B: loop.py splits into cohesive owner leaves; every moved
+    # name keeps its loop.py facade re-export. Handle rows read rebindable loop
+    # globals through the call-time handle _loop() (delta D18, set pinned in
+    # tests/test_module_handle_extraction.py); verbatim rows moved byte-identical.
+    lb_loop_verbatim_rows = {
+        f"ouroboros/loop.py::{symbol}": f"{owner}::{symbol}"
+        for owner, symbols in _inv.lb_loop_verbatim_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    lb_loop_handle_rows = {
+        f"ouroboros/loop.py::{symbol}": f"{owner}::{symbol}"
+        for owner, symbols in _inv.lb_loop_handle_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    implemented.update(lb_loop_verbatim_rows)
+    implemented.update(lb_loop_handle_rows)
+    existing_process_owner_rows.update(lb_loop_verbatim_rows)
+    existing_process_owner_rows.update(lb_loop_handle_rows)
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -1305,7 +1323,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                     "ouroboros/reflection.py::should_generate_reflection",
                     "tests/test_tool_execution_classification.py::test_shell_and_claude_failures_are_treated_as_tool_failures",
                 }
-                else "D18" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows)
+                else "D18" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows | lb_loop_handle_rows)
                 else s3_semantic_delta_ids.get(row["old path/symbol"], "none")
             )
             assert delta["id"] == expected_delta and delta["note"]

@@ -35,7 +35,17 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 # leaf -> (parent, handle, declared substitution set)
+# The ouroboros/loop_*.py rows are the L-B loop split: same owner-approved
+# mechanical exception, with `_loop()` as the call-time handle. Their declared
+# sets include the loop members and the loop-imported names that tests rebind
+# on the parent (`loop.call_llm_with_retry` and friends), so monkeypatching the
+# loop keeps intercepting the moved bodies. An `if TYPE_CHECKING:` import of
+# annotation-only names does not violate the no-top-level-import rule below:
+# it never executes, so nothing is frozen at import time.
 LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
+    "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "_append_or_merge_user_content", "_evict_stale_image_blocks", "_record_owner_directive", "_visible_round_text",
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),
