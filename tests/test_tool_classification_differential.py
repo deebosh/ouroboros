@@ -335,6 +335,38 @@ def test_a_self_reported_failure_is_telemetry_on_the_execution_axis() -> None:
     assert recovered["policy_denials"] == []
 
 
+def test_a_control_refusal_typed_unavailable_is_the_substrates_answer() -> None:
+    """Owner homing of `unavailable` (spec §1.15), asserted where it is consumed.
+
+    A target the runtime cannot serve — a legacy control surface that is off, a
+    task id this tree never registered — answers with the typed `unavailable`
+    the A.21 producers ship (e.g. control_task_results' LEGACY_UNAVAILABLE). That
+    is the SUBSTRATE saying no, not the agent failing: it stays is_error=True and
+    blocking, but it must not land in `unresolved` and degrade execution health.
+    `argument_error` deliberately stays degrading — a malformed call is the
+    agent's own defect and feeds reflection. Asserted through the classifier, not
+    by frozenset membership, so a re-homing has to face the split again."""
+    from ouroboros._outcome_tool_errors import _classify_tool_errors
+
+    buckets = _classify_tool_errors({"tool_calls": [{
+        "tool": "get_task_result",
+        "status": "unavailable",
+        "is_error": True,
+        "result": "⚠️ LEGACY_UNAVAILABLE: no result recorded for task_00000000",
+    }]})
+    assert [row["tool"] for row in buckets["policy_denials"]] == ["get_task_result"]
+    assert buckets["unresolved"] == []
+    # The other half of the §1.15 split: the agent's own malformed call degrades.
+    mistake = _classify_tool_errors({"tool_calls": [{
+        "tool": "get_task_result",
+        "status": "argument_error",
+        "is_error": True,
+        "result": "⚠️ ROUTING_ARGUMENT: task_id is required",
+    }]})
+    assert mistake["policy_denials"] == []
+    assert [row["tool"] for row in mistake["unresolved"]] == ["get_task_result"]
+
+
 def test_golden_covers_every_harvested_producer() -> None:
     """A producer added after the cutover has no golden answer, so it fails here
     instead of silently entering the tree with an unverified classification."""

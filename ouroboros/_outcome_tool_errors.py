@@ -106,9 +106,10 @@ _RECOVERY_TOOL_NAMES = frozenset({
 # the deliverable succeeded (the site-presentation incident: integration_blocked +
 # LIST_FILES policy → degraded/tool_failure over a shipped site). A structural
 # status partition (Bible P5 — never content matching). Genuine tool/exec failures
-# (`error`, `*_error`, `non_zero_exit`, `shell_error`, `timeout`, `unavailable`) and
-# security-boundary hits (`safety_violation`, `violation`) are intentionally EXCLUDED
-# and stay real failures.
+# (`error`, `*_error`, `non_zero_exit`, `shell_error`, `timeout`) and security-
+# boundary hits (`safety_violation`, `violation`) are intentionally EXCLUDED and
+# stay real failures. `unavailable` moved buckets in v7 (owner decision, spec
+# §1.15): see its entry below.
 _POLICY_DENIAL_STATUSES = frozenset({
     # v6.90.x (submarine unwind): the three confinement surfaces that leaked past
     # the partition as generic errors are now typed — the user_files path block on
@@ -140,6 +141,13 @@ _POLICY_DENIAL_STATUSES = frozenset({
     # bucket-level assertion in tests/test_tool_classification_differential.py
     # pins that effect rather than the membership.
     "tool_reported_failure",
+    # v7 (owner §1.15): a target the runtime cannot serve — a control surface that
+    # is off, a task id this tree never registered, a dead extension — is the
+    # SUBSTRATE's answer, not the agent's mistake. It stays is_error=True and
+    # blocking (the counters and anti-loop scan need it), but it must not degrade
+    # execution health. `argument_error` deliberately stays OUT: a malformed call
+    # is the agent's own defect and feeds reflection.
+    "unavailable",
     "user_files_path_blocked",
     "workspace_blocked",
     "write_file_blocked",
