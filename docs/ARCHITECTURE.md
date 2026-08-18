@@ -1,4 +1,4 @@
-# Ouroboros v6.103.12 — Architecture & Reference
+# Ouroboros v6.103.13 — Architecture & Reference
 
 This file is NOT a changelog. Version history lives in README.md, git tags, and commit log.
 
@@ -1656,7 +1656,13 @@ be published as an authoritative nothing.
 
 ### Git and commit review
 
-`tools/git.py` owns repository writes, staging, reviewed commit, rollback or restore, tags, push, and CI follow-up. File-edit tools validate their own atomic write shape; `mutation_attribution.py` captures the root-task baseline and projects only the clean-at-baseline system-repository delta. A changed pre-existing dirty path, stale or missing baseline, or failed scan blocks automatic staging. `commit_reviewed(paths=None)` stages only that attributed candidate, explicit paths must be a subset, and an empty candidate returns `GIT_NO_ATTRIBUTED_CHANGES`; managed update transactions keep their separate typed whole-tree authority.
+`tools/git.py` owns repository writes, staging, reviewed commit, rollback or restore, tags, push, and CI follow-up. File-edit tools validate their own atomic write shape; `mutation_attribution.py` captures the root-task baseline and projects only the clean-at-baseline system-repository delta. The resolver (`resolve_attributed_git_paths`) distinguishes omitted, empty, and explicit staging requests:
+
+- **omitted (`paths=None`)** — stages every attributed candidate; a changed pre-existing dirty path, stale or missing baseline, or failed scan blocks automatic staging.
+- **explicit non-empty** — admits a non-empty request only when every named path is a clean-at-baseline candidate and the sole blocker is unrelated `preexisting_dirty_changed`; the unrelated dirt remains visible in returned evidence for reviewers, and an explicit name for a pre-existing dirty file never grants ownership.
+- **empty (`paths=[]`)** — an explicit no-op that returns `GIT_NO_ATTRIBUTED_CHANGES` regardless of blockers; the resolver never falls back to whole-tree staging.
+
+Managed update transactions keep their separate typed whole-tree authority and are deliberately outside the narrow explicit-path exception.
 
 A reviewed commit is bound to one staged fingerprint. A cheap LLM-first advisory pass may run before the expensive gates; it is intentionally advisory, and Ouroboros may skip it when it judges the lane unhealthy, unhelpful, unavailable, or too slow. Skipping advisory never skips independently applicable tests, triad, applicable scope review, aggregation, or exact-SHA binding. The hermetic preflight runs the candidate in a disposable worktree and data root. Triad and scope inspect the same staged snapshot, aggregation preserves actor evidence and obligations, and any mutation stales the binding. External review wrappers report readiness but do not grant commit authority.
 

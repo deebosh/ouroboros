@@ -523,6 +523,33 @@ def attributed_git_candidates(
     }
 
 
+def _explicit_selection_can_narrow_dirty_blocker(
+    selected: Sequence[str],
+    evidence: Mapping[str, Any],
+    blockers: Sequence[str],
+) -> bool:
+    """Allow an explicit path set to proceed when only ``preexisting_dirty_changed`` blocks.
+
+    The narrow exception admits a non-empty explicit request only when:
+
+    1. every selected path is a clean-at-baseline candidate (already computed
+       by :func:`attributed_git_candidates`);
+    2. no selected path belongs to ``excluded_preexisting_dirty``;
+    3. the sole blocker is ``preexisting_dirty_changed`` — every other global
+       flag remains fail-closed.
+
+    Evidence is preserved unchanged for reviewers; this helper only describes
+    whether the blocker may be narrowed for the staging decision.
+    """
+    if set(blockers) != {"preexisting_dirty_changed"}:
+        return False
+    candidates = {str(path) for path in evidence.get("candidates") or []}
+    excluded = {
+        str(path) for path in evidence.get("excluded_preexisting_dirty") or []
+    }
+    return bool(selected) and set(selected) <= candidates and not (set(selected) & excluded)
+
+
 def resolve_attributed_git_paths(
     results_drive_root: Any,
     task_id: str,
@@ -532,12 +559,44 @@ def resolve_attributed_git_paths(
     """Resolve omitted/explicit staging paths against one attributed candidate set."""
     evidence = attributed_git_candidates(results_drive_root, task_id, repo_root)
     blockers = [str(item) for item in evidence.get("blockers") or [] if str(item)]
-    if blockers == ["baseline_stale"] and try_reanchor_stale_baseline(
+    # ``try_reanchor_stale_baseline`` is a healing step: it advances the
+    # baseline epoch when a foreign fast-forward touched NO currently dirty
+    # path. The internal guard (foreign-commit-interval disjoint from dirty
+    # paths) decides correctness; trigger it whenever ``baseline_stale`` is
+    # in the blocker set so the narrow explicit-path exception below can
+    # succeed once the re-anchor has refreshed the candidate evidence.
+    if "baseline_stale" in blockers and try_reanchor_stale_baseline(
         results_drive_root, task_id, repo_root,
     ):
         evidence = attributed_git_candidates(results_drive_root, task_id, repo_root)
         blockers = [str(item) for item in evidence.get("blockers") or [] if str(item)]
-    if blockers:
+    # Normalize explicit paths FIRST so a malformed/escaping path still returns
+    # its own typed ``PATH_ERROR`` independent of unrelated worktree dirt. The
+    # narrow preexisting-dirty exception below consumes the same normalized set.
+    if explicit_paths is None:
+        normalized_selected: list[str] = []
+    else:
+        try:
+            normalized_selected = sorted(dict.fromkeys(
+                safe_relpath(str(path)) for path in explicit_paths if str(path or "").strip()
+            ))
+        except ValueError as exc:
+            return [], evidence, f"�️ PATH_ERROR: {exc}"
+    # ``paths=[]`` is an explicit no-op request from the caller. Honor it
+    # before the blocker gate so unrelated dirt never widens a "stage nothing"
+    # intent into a blocker message; this matches the ``paths=[]`` no-op
+    # contract preserved for every other resolver state.
+    if explicit_paths is not None and not normalized_selected:
+        return [], evidence, (
+            "⚠️ GIT_NO_ATTRIBUTED_CHANGES: no clean-at-baseline task-owned paths "
+            "are available to stage."
+        )
+    if blockers and not (
+        explicit_paths is not None
+        and _explicit_selection_can_narrow_dirty_blocker(
+            normalized_selected, evidence, blockers,
+        )
+    ):
         return [], evidence, (
             "⚠️ GIT_ATTRIBUTION_BLOCKED: clean task attribution is unavailable "
             f"({', '.join(blockers)}). Automatic staging is disabled; preserve the "
@@ -547,12 +606,7 @@ def resolve_attributed_git_paths(
     if explicit_paths is None:
         selected = candidates
     else:
-        try:
-            selected = sorted(dict.fromkeys(
-                safe_relpath(str(path)) for path in explicit_paths if str(path or "").strip()
-            ))
-        except ValueError as exc:
-            return [], evidence, f"⚠️ PATH_ERROR: {exc}"
+        selected = normalized_selected
         outside = sorted(set(selected) - set(candidates))
         if outside:
             return [], evidence, (
