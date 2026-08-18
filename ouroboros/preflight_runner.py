@@ -255,7 +255,14 @@ def _preflight_pass_specs(
         ),
         _make_pass(
             "serial",
-            [target, "-m", f"serial and {LANE_EXCLUSION_EXPR}", *output_flags],
+            # `--timeout=300 --timeout-method=thread` mirrors PARALLEL_PASS_FLAGS so a
+            # single hung test cannot burn the rest of the serial pass's total budget
+            # (ibl-c094f2f90ec4: test_web_search's autouse _rebind_runtime_roots_between_tests
+            # hang blew past the 900s preflight budget because the serial pass had no
+            # per-test bound). Thread method required: signal SIGALRM cannot interrupt
+            # os.fsync, which is the actual blocking primitive behind several rot cases.
+            [target, "-m", f"serial and {LANE_EXCLUSION_EXPR}", *output_flags,
+             "--timeout=300", "--timeout-method=thread"],
         ),
     ]
 
