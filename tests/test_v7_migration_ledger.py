@@ -518,7 +518,17 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "retired:ref inventories read blobs directly through _iter_ref_gated_blobs "
         "and reuse them by blob id"
     )
-    retired_current.update({"web/modules/chat.js::optionalFiniteNumber": "web/modules/costs.js::optionalFiniteNumber", "ouroboros/loop_tool_execution.py::_parse_plan_review_control": "retired:native plan_task ToolResult metadata replaces textual control parsing", "ouroboros/loop_tool_execution.py::PLAN_REVIEW_CONTROL_PREFIX": "retired:loop no longer imports the display-only plan footer prefix", "ouroboros/loop_tool_execution.py::_PLAN_REVIEW_OUTCOMES": "retired:plan producer validates the closed outcome vocabulary before publication"})
+    retired_current.update({"web/modules/chat.js::optionalFiniteNumber": "web/modules/costs.js::optionalFiniteNumber", "ouroboros/loop_tool_execution.py::PLAN_REVIEW_CONTROL_PREFIX": "retired:loop no longer imports the display-only plan footer prefix"})
+    # D02 (lane d02): the loop's textual plan-control parser and its vocabulary re-home
+    # to the grammar owner beside the emitter — the loop reads native metadata only,
+    # so the old path deliberately does NOT re-export them (facade "-").
+    d02_plan_seam_rows = {
+        "ouroboros/loop_tool_execution.py::_parse_plan_review_control":
+            "ouroboros/tools/plan_render.py::_parse_plan_review_control",
+        "ouroboros/loop_tool_execution.py::_PLAN_REVIEW_OUTCOMES":
+            "ouroboros/tools/plan_render.py::_PLAN_REVIEW_OUTCOMES",
+    }
+    implemented.update(d02_plan_seam_rows)
     # T1: two retirements that DO carry a semantic delta — the loop's ordered
     # families and generic markers move into the single classifier rather than
     # disappearing, so their rows name the spec 4.3.3 delta instead of "none".
@@ -612,6 +622,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     existing_process_owner_rows.update(t1_fix_rows)
     existing_process_owner_rows.add("tests/test_repo_health_smoke.py::test_transition_rejects_function_swap_even_at_same_cardinality")
     registry_extraction_no_facade_rows.update(t1_fix_rows)
+    # D02 (lane d02): the plan-control parser/vocabulary moves land in an existing
+    # engine module (plan_render.py) and the loop keeps NO re-export of either.
+    existing_process_owner_rows.update(d02_plan_seam_rows)
+    registry_extraction_no_facade_rows.update(d02_plan_seam_rows)
+    # The closure-invariant harness keeps its module-level parser binding as a
+    # facade re-export re-pointed at the T1 home (verbatim binding, delta none).
+    implemented["tests/test_plan_spec.py::_parse_plan_review_control"] = (
+        "ouroboros/tools/plan_render.py::_parse_plan_review_control"
+    )
+    existing_process_owner_rows.add("tests/test_plan_spec.py::_parse_plan_review_control")
     # v7 stream S3: supervisor/events.py split into per-family owner modules.
     s3_events_symbols_by_owner = {
         "events_chat_delivery.py": "HOST_NARRATION _bound_project_chat_id _handle_typing_start _DELIVERED_MESSAGE_IDS _register_delivered _handle_send_message _handle_send_photo _handle_send_video _handle_send_document",
@@ -1219,7 +1239,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 else "D08"
                 if row["old path/symbol"] in s6_delta_rows
                 else "D02"
-                if row["old path/symbol"] in t2b_owner_delta_rows | a21_owner_delta_rows | {
+                if row["old path/symbol"] in t2b_owner_delta_rows | a21_owner_delta_rows | set(d02_plan_seam_rows) | {
                     "ouroboros/tools/registry.py::ToolEntry",
                     "ouroboros/tools/registry.py::ToolRegistry",
                     # T1: the classification cutover is a spec 4.3.3 tool-domain delta.

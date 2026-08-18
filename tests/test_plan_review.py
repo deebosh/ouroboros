@@ -672,7 +672,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
 
     def test_control_line_outcomes_follow_the_parser_contract(self):
         import ouroboros.tools.plan_review as pr
-        from ouroboros.loop_tool_execution import _parse_plan_review_control
+        from ouroboros.tools.plan_render import _parse_plan_review_control
 
         for aggregate, closed, expected in (
             ("GREEN", True, ("GREEN", True)),
