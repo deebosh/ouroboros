@@ -64,7 +64,8 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "budget_pause": _handled(
         "supervisor.events_budget", "ouroboros/agent.py"),
     "budget_root_fence": _handled(
-        "supervisor.events_budget", "ouroboros/agent.py", "ouroboros/loop.py"),
+        # v7 L-B split: the loop's fence emitter lives in the budget leaf.
+        "supervisor.events_budget", "ouroboros/agent.py", "ouroboros/loop_budget.py"),
     "cancel_task": _handled(
         "supervisor.events_runtime_controls", "ouroboros/tools/join_ledger.py"),
     "deep_self_review_request": _handled(
@@ -81,7 +82,8 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         "supervisor.events_worker_reports", "ouroboros/utils.py",
         note="the envelope every worker log line rides; its nested payload types are their own rows"),
     "owner_message_injected": _handled(
-        "supervisor.events_runtime_controls", "ouroboros/loop.py"),
+        # v7 L-B split: the drain that emits the receipt lives in the round-limits leaf.
+        "supervisor.events_runtime_controls", "ouroboros/loop_round_limits.py"),
     "project_digest": _handled(
         "supervisor.events_project_routing", "ouroboros/agent_task_pipeline.py"),
     "promote_chat_to_task": _handled(
