@@ -154,6 +154,7 @@ def test_every_review_named_module_carries_a_boundary_decision():
     # classified substrate or added to this list.
     agent_side_review_surfaces = {
         "ouroboros/deep_self_review.py",
+        "ouroboros/loop_acceptance_review.py",
         "ouroboros/tools/plan_review.py",
         "ouroboros/tools/plan_review_runtime.py",
     }
