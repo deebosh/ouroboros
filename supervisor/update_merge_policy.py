@@ -16,6 +16,7 @@ DOCUMENT_EXACT = frozenset({"README.md"})
 DOCUMENT_PREFIXES = ("docs/",)
 HOT_CODE_PATHS = frozenset({
     "ouroboros/loop.py",
+    "ouroboros/loop_budget.py",
     "ouroboros/loop_model_call.py",
     "ouroboros/loop_nudges.py",
     "ouroboros/loop_round_limits.py",

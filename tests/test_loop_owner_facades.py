@@ -49,6 +49,11 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_physical_context_for_fit _dispatch_round_model _run_main_reclaim _measure_after_reclaim _reproject_actual_overflow_low "
         "_failed_capture_is_comparable _strict_context_shrink_predicate _emit_overflow_retry_skipped _call_round_model"
     ),
+    "loop_budget": (
+        "_check_budget_limits _resolve_task_cost_ceiling _TREE_ACCOUNTING_MAX_STALE_SEC _loop_tree_accounting _soft_land_exhausted_ceiling "
+        "_service_finalization_evidence _LoopExitContext _handle_budget_exceeded _cleanup_loop_resources _service_identity_projection "
+        "_finalize_task_services _prepare_post_tool_budget_context"
+    ),
 }
 
 

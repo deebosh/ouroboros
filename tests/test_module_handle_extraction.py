@@ -96,6 +96,14 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "call_llm_with_retry", "compact_tool_history_llm", "last_physical_attempt_capture",
         "seal_task_transcript"
     })),
+    "ouroboros/loop_budget.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "DeliveryCandidate", "_TREE_ACCOUNTING_MAX_STALE_SEC", "_arm_delivery_control",
+        "_compose_delivery_suffix", "_current_delivery_candidate", "_delivery_evidence_state",
+        "_emit_checkpoint_event", "_finalize_forced_services", "_finalize_task_services",
+        "_force_plan_disclosure", "_forced_fallback_result", "_forced_final_answer",
+        "_forced_swarm_router_result", "_live_delivery_candidate", "_loop_tree_accounting",
+        "_publish_delivery_candidate", "_record_forced_finalization", "_service_identity_projection"
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),
