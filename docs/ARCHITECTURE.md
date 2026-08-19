@@ -1,4 +1,4 @@
-# Ouroboros v6.103.17 — Architecture & Reference
+# Ouroboros v6.103.19 — Architecture & Reference
 
 This file is NOT a changelog. Version history lives in README.md, git tags, and commit log.
 
@@ -990,6 +990,20 @@ and `deliverables` are granted `read`/`list`/`search` only to orchestrator
 profiles (never write/shell/cwd, never handed to a subagent) so a parent can
 inspect a child-task project tree or a finished deliverable when synthesizing its
 work.
+
+`active_workspace` is the per-task live workspace. It resolves to the
+ctx-supplied `active_repo_dir()` when callable, else falls back to
+`workspace_root` when `workspace_mode` is set (so self_worktree / external /
+project subagents see their worktree/project dir, not the orchestrator's
+repo). Coercion is via `_coerce_real_path_local` in `ouroboros/tool_access.py`
+— mirrors `active_repo_dir_for` (`ouroboros/tools/registry.py:94`) byte-identically
+so `_process_root_candidates` projects the same shell cwd roots that
+`active_repo_dir_for` would; a workspace whose `workspace_root` is empty,
+None, or a `unittest.mock` instance is rejected. Overlap protection against
+`system_repo_dir` / `repo_dir` / `drive_root` / `budget_drive_root` flows
+through `ToolContext.is_workspace_mode()` at the callers that need it, NOT
+through this resolver — `_coerce_real_path_local` returns the workspace
+regardless, and the policy gate sits one level up. (ibl-a7530ab93441)
 
 ### Safety and runtime mode
 

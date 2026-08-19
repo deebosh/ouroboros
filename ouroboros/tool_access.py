@@ -1320,6 +1320,21 @@ def _skill_payload_base(
     )
 
 
+def _coerce_real_path_local(value: Any) -> pathlib.Path | None:
+    """Mirror of tools/registry.py::_coerce_real_path, inlined to avoid the
+    tool_access -> tools.registry import edge (registry.py is heavier and the
+    tool_access module is the public policy import). Returns None for None,
+    empty strings, Mock instances, and TypeError-raising values."""
+    if value is None or value == "":
+        return None
+    if value.__class__.__module__.startswith("unittest.mock"):
+        return None
+    try:
+        return pathlib.Path(os.fspath(value))
+    except TypeError:
+        return None
+
+
 def resource_root_path(
     ctx: Any,
     root: ResourceRoot,
@@ -1328,6 +1343,13 @@ def resource_root_path(
     skill_name: str = "",
 ) -> pathlib.Path:
     if root == "active_workspace":
+        # ibl-a7530ab93441: mirror active_repo_dir_for (tools/registry.py:94) so
+        # self_worktree subagents see their worktree in _process_root_candidates.
+        # `_coerce_real_path` returns None for None/Mock/TypeError — both fall-
+        # through paths collapse into the same workspace_root fallback below.
+        # NOTE: overlap protection (workspace_mode_block_reason) flows through
+        # `is_workspace_mode()` at the callers that need it; this resolver
+        # matches active_repo_dir_for's semantics exactly, byte-identical.
         active = getattr(ctx, "active_repo_dir", None)
         candidate = None
         if callable(active):
@@ -1335,9 +1357,14 @@ def resource_root_path(
                 candidate = active()
             except Exception:
                 candidate = None
-        if candidate is None or candidate.__class__.__module__.startswith("unittest.mock"):
-            candidate = getattr(ctx, "repo_dir")
-        return pathlib.Path(candidate).resolve(strict=False)
+        candidate_path = _coerce_real_path_local(candidate)
+        if candidate_path is not None:
+            return candidate_path
+        workspace_path = _coerce_real_path_local(getattr(ctx, "workspace_root", None))
+        workspace_mode = str(getattr(ctx, "workspace_mode", "") or "").strip()
+        if workspace_path is not None and workspace_mode:
+            return workspace_path
+        return pathlib.Path(os.fspath(getattr(ctx, "repo_dir"))).resolve(strict=False)
     if root == "system_repo":
         return pathlib.Path(getattr(ctx, "system_repo_dir", None) or getattr(ctx, "repo_dir")).resolve(strict=False)
     if root == "runtime_data":
