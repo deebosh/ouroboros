@@ -1190,10 +1190,13 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             "retired:each scenario takes its own pytest tmp_path state dir, so no shared-host name can be squatted"
         for module in ("companion", "lifecycle")
     })
-    # v7 stream L lane L-B: loop.py splits into cohesive owner leaves; every moved
-    # name keeps its loop.py facade re-export. Handle rows read rebindable loop
-    # globals through the call-time handle _loop() (delta D33, set pinned in
-    # tests/test_module_handle_extraction.py); verbatim rows moved byte-identical.
+    # v7 stream L lane L-B: loop.py splits into cohesive owner leaves. Handle rows
+    # read rebindable loop globals through the call-time handle _loop() (delta D33,
+    # set pinned in tests/test_module_handle_extraction.py); verbatim rows moved
+    # byte-identical. Lane L3 then spent the TEMPORARY private half of that facade
+    # (spec 1.9-15): a name only its own leaf reads carries facade "-", and if the
+    # same edit removed its last _loop() read it is a verbatim row again, because
+    # un-substituting the handle restores the merge-base text exactly.
     lb_loop_verbatim_rows = {
         f"ouroboros/loop.py::{symbol}": f"{owner}::{symbol}"
         for owner, symbols in _inv.lb_loop_verbatim_symbols_by_owner.items()
@@ -1204,10 +1207,27 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in _inv.lb_loop_handle_symbols_by_owner.items()
         for symbol in symbols.split()
     }
+    lb_loop_l3_retired_rows = {
+        f"ouroboros/loop.py::{symbol}": f"{owner}::{symbol}"
+        for owner, symbols in _inv.lb_loop_l3_retired_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    assert lb_loop_l3_retired_rows.keys() <= (lb_loop_verbatim_rows | lb_loop_handle_rows).keys()
+    # L3 also re-homed the loop-private TEST imports: the characterization binds the
+    # leaf that defines the symbol instead of the loop re-export. The test module
+    # still exports the name, so these rows keep their facade; only the provider moved.
+    l3_repointed_test_rows = {
+        f"{test}::{symbol}": f"{owner}::{symbol}"
+        for test, owners in _inv.l3_repointed_test_import_owners.items()
+        for owner, symbols in owners.items()
+        for symbol in symbols.split()
+    }
     implemented.update(lb_loop_verbatim_rows)
     implemented.update(lb_loop_handle_rows)
+    implemented.update(l3_repointed_test_rows)
     existing_process_owner_rows.update(lb_loop_verbatim_rows)
     existing_process_owner_rows.update(lb_loop_handle_rows)
+    existing_process_owner_rows.update(l3_repointed_test_rows)
     # v7 lane 1A: the update_merge planning/materialization cluster moves to
     # supervisor/update_merge_plan.py; every moved name keeps its update_merge
     # facade re-export. _git_run moved byte-identical (delta none); the three
@@ -1365,89 +1385,11 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
             assert delta["id"] == expected_delta and delta["note"]
             expected_facade = (
                 "-"
-                if row["old path/symbol"] in {
-                    "ouroboros/tools/registry.py::ToolRegistry._ephemeral_block",
-                    "ouroboros/tools/registry.py::ToolRegistry._subagent_and_update_gate",
-                    "ouroboros/tools/registry.py::ToolRegistry._heal_mode_block",
-                    "ouroboros/tools/registry.py::_executor_backend_candidate_allowed",
-                    "ouroboros/tools/registry.py::_command_mentions_protected_root",
-                    "ouroboros/tools/registry.py::_light_mode_payload_mutation_allowed",
-                    "ouroboros/tools/registry.py::ToolRegistry._protected_shell_block",
-                    "ouroboros/tools/registry.py::ToolRegistry._git_protected_roots",
-                    "ouroboros/tools/registry.py::ToolRegistry._resolved_shell_cwd",
-                    "ouroboros/tools/registry.py::ToolRegistry._external_workspace_git_block",
-                    "ouroboros/tools/registry.py::ToolRegistry._external_runtime_protected_paths",
-                    "ouroboros/tools/registry.py::ToolRegistry._external_shell_runtime_or_secret_block",
-                    "ouroboros/tools/registry.py::ToolRegistry._workspace_shell_write_block",
-                    "ouroboros/tools/registry.py::ToolRegistry._shell_git_and_runtime_block",
-                    "tests/test_external_workspace_access.py::_command_mentions_protected_root",
-                    "ouroboros/tools/registry.py::ToolRegistry._run_shell_safety_check",
-                    "ouroboros/tools/registry.py::_light_repo_snapshot",
-                    "ouroboros/tools/registry.py::_format_light_repo_write_block",
-                    "ouroboros/tools/registry.py::_git_ref_snapshot",
-                    "ouroboros/tools/registry.py::ToolRegistry._snapshot_owner_files",
-                    "ouroboros/tools/registry.py::ToolRegistry._restore_owner_files",
-                    "ouroboros/tools/registry.py::ToolRegistry._run_shell_post_checks",
-                    "tests/test_skill_exec.py::test_run_shell_restores_obfuscated_self_authored_state_marker",
-                    "ouroboros/tools/registry.py::SKILL_OWNER_STATE_FILENAMES",
-                    "ouroboros/tools/registry.py::parse_porcelain_paths",
-                    "ouroboros/tools/registry.py::safe_relpath",
-                    "ouroboros/tools/registry.py::_detect_runtime_mode_elevation",
-                    "ouroboros/tools/registry.py::_SUBAGENT_SHELL_SECRET_MARKERS",
-                    "ouroboros/tools/registry.py::_subagent_shell_targets_secret",
-                    "ouroboros/tools/registry.py::_detect_mutative_toggle_self_change",
-                    "ouroboros/tools/registry.py::_detect_evolution_owner_control_self_change",
-                    "ouroboros/tools/registry.py::_detect_context_mode_self_lowering",
-                    "ouroboros/tools/registry.py::_READ_ONLY_INSPECTION_COMMANDS",
-                    "ouroboros/tools/registry.py::_COMMAND_HEAD_WRAPPERS",
-                    "ouroboros/tools/registry.py::_READ_ONLY_GIT_SUBCOMMANDS",
-                    "ouroboros/tools/registry.py::_SEARCH_TOOL_EXEC_OPTIONS",
-                    "ouroboros/tools/registry.py::_DENIED_READ_OPTIONS",
-                    "ouroboros/tools/registry.py::_TRUSTED_EXECUTABLE_DIRS",
-                    "ouroboros/tools/registry.py::_trusted_read_head",
-                    "ouroboros/tools/registry.py::_denied_read_option",
-                    "ouroboros/tools/registry.py::_NESTED_EXECUTION_MARKERS",
-                    "ouroboros/tools/registry.py::_NESTED_EXECUTION_TOKENS",
-                    "ouroboros/tools/registry.py::_is_pure_read_inspection",
-                    "ouroboros/tools/registry.py::_detect_scope_review_floor_self_lowering",
-                    "ouroboros/tools/registry.py::_detect_safety_mode_self_lowering",
-                    "ouroboros/tools/registry.py::_detect_owner_skill_attest_self_call",
-                    "ouroboros/tools/registry.py::_SKILL_OWNER_STATE_STEMS",
-                    "ouroboros/tools/registry.py::_DETACHED_PROCESS_MARKERS",
-                    "ouroboros/tools/registry.py::_mentions_skill_owner_state",
-                    "ouroboros/tools/registry.py::_mentions_detached_process",
-                    "ouroboros/tools/registry.py::LIGHT_SHELL_WRITER_COMMANDS",
-                    "ouroboros/tools/registry.py::SKILL_OWNER_STATE_STEMS",
-                    "ouroboros/tools/registry.py::build_resolved_resource_binding",
-                    "ouroboros/tools/registry.py::interpreter_family",
-                    "ouroboros/tools/registry.py::light_shell_repo_mutation",
-                    "ouroboros/tools/registry.py::protected_artifact_shell_block_reason",
-                    "ouroboros/tools/registry.py::runtime_data_guard_targets",
-                    "ouroboros/tools/registry.py::shell_command_string",
-                    "ouroboros/tools/registry.py::strip_leading_env_assignments",
-                    "ouroboros/tools/registry.py::sudo_noninteractive_violation",
-                    "ouroboros/tools/registry.py::unwrap_env_argv",
-                    "ouroboros/tools/registry.py::workspace_executor_state_write_block",
-                    "ouroboros/tools/registry.py::writer_target_tokens",
-                    "ouroboros/tools/registry.py::PROTECTED_RUNTIME_PATHS",
-                    "ouroboros/tools/registry.py::task_artifact_dir_path",
-                    "ouroboros/tools/registry.py::task_id_for_artifacts",
-                    "ouroboros/tools/registry.py::run_shell_git_block_reason",
-                    "ouroboros/tools/registry.py::workspace_git_safety_violation",
-                    "ouroboros/tools/registry.py::is_absolute_path_text",
-                    "ouroboros/tools/registry.py::path_text_is_inside",
-                    "ouroboros/tools/registry.py::shell_argv",
-                    "ouroboros/tools/registry.py::shell_argv_with_path_tokens",
-                    "ouroboros/tools/registry.py::PROTECTED_RUNTIME_PATHS_LOWER",
-                    "ouroboros/tools/registry.py::shell_has_write_indicator",
-                    "ouroboros/tools/registry.py::shell_writer_targets_protected",
-                    "ouroboros/tools/registry.py::is_external_workspace",
-                    "ouroboros/tools/registry.py::normalize_root",
-                    "ouroboros/tools/registry.py::resolve_shell_cwd",
-                    "ouroboros/tools/registry.py::SKILL_PAYLOAD_CONTROL_DIRNAMES",
-                    "ouroboros/tools/registry.py::is_skill_payload_path",
-                    "ouroboros/tools/registry.py::resolve_skill_payload_target",
-                } | registry_extraction_no_facade_rows
+                if row["old path/symbol"] in (
+                    set(_inv.facadeless_extraction_rows)
+                    | registry_extraction_no_facade_rows
+                    | lb_loop_l3_retired_rows.keys()
+                )
                 else row["old path/symbol"]
             )
             assert row["facade/public contract"] == expected_facade

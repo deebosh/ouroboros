@@ -78,27 +78,171 @@ ts2_binding_facade_rows = {
 # "verbatim" rows) and members whose bodies read rebindable loop globals through
 # the call-time parent handle _loop() (delta D18). Owner path -> moved symbols.
 lb_loop_verbatim_symbols_by_owner = {
-    "ouroboros/loop_messages.py": "_emit_checkpoint_event _extract_plain_text_from_content _evict_stale_image_blocks _owner_marked_content _record_owner_directive _last_assistant_text _visible_round_text",
+    "ouroboros/loop_messages.py": "_emit_checkpoint_event _extract_plain_text_from_content _evict_stale_image_blocks _owner_marked_content _record_owner_directive _last_assistant_text _visible_round_text _append_or_merge_user_content",
     "ouroboros/loop_acceptance.py": "_task_acceptance_eligible _begin_task_acceptance_fence _end_task_acceptance_fence _task_acceptance_owner_generation_changed _task_acceptance_subtree_snapshot _mark_root_acceptance_checkpoint _latch_final_answer_marker _server_web_allowed_by_task ACCEPTANCE_REASON_UNSPECIFIED ACCEPTANCE_DECISION_REASONS _reopen_obligation_row _open_acceptance_obligations _format_obligations_clause",
-    "ouroboros/loop_acceptance_review.py": "_ACCEPTANCE_REVIEW_CHECKLIST _TaskAcceptanceContext _acceptance_dialogue_quorum _attach_dialogue_to_host_run _mark_agent_acceptance_runs_advisory _latest_agent_acceptance_evidence _set_applied_host_acceptance_impact _prior_acceptance_run _direct_context_fence_state",
+    "ouroboros/loop_acceptance_review.py": "_ACCEPTANCE_REVIEW_CHECKLIST _TaskAcceptanceContext _acceptance_dialogue_quorum _attach_dialogue_to_host_run _mark_agent_acceptance_runs_advisory _latest_agent_acceptance_evidence _set_applied_host_acceptance_impact _prior_acceptance_run _direct_context_fence_state _build_host_acceptance_evidence _record_host_acceptance_run",
     "ouroboros/loop_round_limits.py": "_CompactionRoundContext _provider_failure_hint _provider_recovery_hint _task_deadline_epoch _mark_owner_stop_control_drained _owner_stop_window_elapsed _context_reclaim_passes _context_reclaim_materializations _context_overflow_retries _RoundLimitContext _account_compaction_usage",
-    "ouroboros/loop_nudges.py": "_skill_names_touched_by_trace _force_plan_reminder _build_recent_tool_trace _DELEGATE_ACTIVITY_TOOLS _nanny_metered_since_delegate_activity _nanny_burn_phrase _answer_protocol_active _contract_expected_output",
-    "ouroboros/loop_model_call.py": "_adopt_fallback_route _snapshot_context_fit_usage _restore_context_fit_usage _RoundModelCallContext _context_fit_round_id _main_context_profile _remember_main_fit _physical_context_for_fit _failed_capture_is_comparable _strict_context_shrink_predicate",
+    "ouroboros/loop_nudges.py": "_skill_names_touched_by_trace _force_plan_reminder _build_recent_tool_trace _DELEGATE_ACTIVITY_TOOLS _nanny_metered_since_delegate_activity _nanny_burn_phrase _answer_protocol_active _contract_expected_output _nanny_finalization_message _nanny_reminder_due _skill_finalization_message",
+    "ouroboros/loop_model_call.py": "_adopt_fallback_route _snapshot_context_fit_usage _restore_context_fit_usage _RoundModelCallContext _context_fit_round_id _main_context_profile _remember_main_fit _physical_context_for_fit _failed_capture_is_comparable _strict_context_shrink_predicate _measure_round_main_fit",
     "ouroboros/loop_budget.py": "_resolve_task_cost_ceiling _TREE_ACCOUNTING_MAX_STALE_SEC _loop_tree_accounting _service_finalization_evidence _LoopExitContext _service_identity_projection",
-    "ouroboros/loop_delivery.py": "DeliveryCandidate _swarm_handoff_attempt _unaccepted_delivery_binding _publish_delivery_candidate _ensure_explicit_acceptance_binding _merge_finalization_trace _delivery_control_prompt _delivery_replace_required _parse_delivery_control_object _compose_delivery_suffix",
+    "ouroboros/loop_delivery.py": "DeliveryCandidate _swarm_handoff_attempt _unaccepted_delivery_binding _publish_delivery_candidate _ensure_explicit_acceptance_binding _merge_finalization_trace _delivery_control_prompt _delivery_replace_required _parse_delivery_control_object _compose_delivery_suffix _delivery_acceptance_binding",
     "ouroboros/loop_forced_finalization.py": "_load_direct_child_results _child_disposition_state _claimed_child_dispositions",
 }
+# v7 lane L3: the members whose TEMPORARY loop.py private re-export retired
+# (spec 1.9-15). Their rows carry facade "-": nothing outside the owning leaf
+# reads them, so the leaf holds the only binding. A name that also lost its last
+# _loop() read in the same edit moves from the handle map to the verbatim map --
+# un-substituting the handle restores the merge-base text byte for byte.
+lb_loop_l3_retired_symbols_by_owner = {
+    "ouroboros/loop_acceptance.py": "ACCEPTANCE_DECISION_REASONS ACCEPTANCE_REASON_UNSPECIFIED _reopen_obligation_row",
+    "ouroboros/loop_acceptance_review.py": "_ACCEPTANCE_REVIEW_CHECKLIST _TaskAcceptanceContext _acceptance_dialogue_quorum _apply_task_acceptance_result _attach_dialogue_to_host_run _build_host_acceptance_evidence _direct_context_fence_state _execute_task_acceptance_panel _latest_agent_acceptance_evidence _mark_agent_acceptance_runs_advisory _prior_acceptance_run _record_acceptance_infra_failure _record_host_acceptance_run _set_applied_host_acceptance_impact",
+    "ouroboros/loop_budget.py": "_service_identity_projection",
+    "ouroboros/loop_delivery.py": "_compute_subagent_handoff _delivery_acceptance_binding _delivery_control_prompt _delivery_keep_allowed _ensure_explicit_acceptance_binding _hold_delivery_for_skill_action _resolve_delivery_control _unaccepted_delivery_binding",
+    "ouroboros/loop_forced_finalization.py": "_call_forced_model_once _claimed_child_dispositions _drain_forced_owner_directives _publish_model_forced_candidate _publish_stale_forced_candidate _resolve_forced_delivery_control _run_forced_children_acceptance _undispositioned_children",
+    "ouroboros/loop_messages.py": "_append_or_merge_user_content _evict_stale_image_blocks _visible_round_text",
+    "ouroboros/loop_model_call.py": "_adopt_fallback_route _context_fit_round_id _dispatch_round_model _emit_overflow_retry_skipped _failed_capture_is_comparable _main_context_profile _measure_after_reclaim _measure_round_main_fit _physical_context_for_fit _remember_main_fit _reproject_actual_overflow_low _restore_context_fit_usage _run_main_reclaim _snapshot_context_fit_usage _strict_context_shrink_predicate",
+    "ouroboros/loop_nudges.py": "_DELEGATE_ACTIVITY_TOOLS _answer_protocol_active _build_recent_tool_trace _contract_expected_output _maybe_inject_cost_budget_milestone _maybe_inject_nanny_economics_reminder _maybe_inject_self_check _maybe_inject_time_budget_milestone _nanny_burn_phrase _nanny_finalization_message _nanny_metered_since_delegate_activity _nanny_reminder_due _skill_finalization_message _skill_names_touched_by_trace",
+    "ouroboros/loop_round_limits.py": "_handle_owner_stop_finalization _mark_owner_stop_control_drained _maybe_deadline_local_finalize _owner_stop_window_elapsed _provider_failure_hint _provider_recovery_hint",
+}
+
 lb_loop_handle_symbols_by_owner = {
-    "ouroboros/loop_messages.py": "_append_or_merge_user_message _append_or_merge_user_content _initialize_owner_directives _emit_round_progress",
+    "ouroboros/loop_messages.py": "_append_or_merge_user_message _initialize_owner_directives _emit_round_progress",
     "ouroboros/loop_acceptance.py": "_supersede_delivery_acceptance_binding _supersede_task_acceptance_for_owner_followup _supersede_task_acceptance_for_evidence_change _set_acceptance_decision _collect_acceptance_obligations _dispose_obligations_on_clean_pass _record_forced_acceptance_bypass",
-    "ouroboros/loop_acceptance_review.py": "_build_host_acceptance_evidence _execute_task_acceptance_panel _record_host_acceptance_run _apply_task_acceptance_result _record_acceptance_infra_failure _run_task_acceptance_review_once",
+    "ouroboros/loop_acceptance_review.py": "_execute_task_acceptance_panel _apply_task_acceptance_result _record_acceptance_infra_failure _run_task_acceptance_review_once",
     "ouroboros/loop_round_limits.py": "_drain_incoming_messages _run_round_compaction _handle_round_limit _handle_forced_finalization _handle_owner_stop_finalization _handle_provider_unavailable _maybe_deadline_local_finalize _maybe_early_finalize _finalize_limit_ctx",
-    "ouroboros/loop_nudges.py": "_skill_finalization_message _force_plan_decision _force_plan_disclosure _maybe_inject_self_check _maybe_inject_time_budget_milestone _maybe_inject_cost_budget_milestone _note_nanny_delegate_activity _nanny_reminder_due _maybe_inject_nanny_economics_reminder _inject_round_checkpoints _forced_delegation_note _nanny_finalization_message _maybe_inject_finalization_nudges",
-    "ouroboros/loop_model_call.py": "_run_cross_model_fallback_chain _rebind_context_fit_plan _measure_round_main_fit _dispatch_round_model _run_main_reclaim _measure_after_reclaim _reproject_actual_overflow_low _emit_overflow_retry_skipped _call_round_model",
+    "ouroboros/loop_nudges.py": "_force_plan_decision _force_plan_disclosure _maybe_inject_self_check _maybe_inject_time_budget_milestone _maybe_inject_cost_budget_milestone _note_nanny_delegate_activity _maybe_inject_nanny_economics_reminder _inject_round_checkpoints _forced_delegation_note _maybe_inject_finalization_nudges",
+    "ouroboros/loop_model_call.py": "_run_cross_model_fallback_chain _rebind_context_fit_plan _dispatch_round_model _run_main_reclaim _measure_after_reclaim _reproject_actual_overflow_low _emit_overflow_retry_skipped _call_round_model",
     "ouroboros/loop_budget.py": "_check_budget_limits _soft_land_exhausted_ceiling _handle_budget_exceeded _cleanup_loop_resources _finalize_task_services _prepare_post_tool_budget_context",
-    "ouroboros/loop_delivery.py": "_compute_subagent_handoff _delivery_evidence_state _delivery_acceptance_binding _replace_delivery_candidate _forced_unaccepted_binding _live_delivery_candidate _current_delivery_candidate _degrade_retained_delivery_candidate _delivery_keep_allowed _arm_delivery_control _hold_delivery_for_skill_action _resolve_delivery_control _no_tool_final_answer",
+    "ouroboros/loop_delivery.py": "_compute_subagent_handoff _delivery_evidence_state _replace_delivery_candidate _forced_unaccepted_binding _live_delivery_candidate _current_delivery_candidate _degrade_retained_delivery_candidate _delivery_keep_allowed _arm_delivery_control _hold_delivery_for_skill_action _resolve_delivery_control _no_tool_final_answer",
     "ouroboros/loop_forced_finalization.py": "_direct_child_results _project_child_result_dispositions _record_forced_finalization _forced_orphan_note _undispositioned_children _maybe_enforce_child_absorption_gate _run_forced_children_acceptance _enforce_swarm_actions _finalize_forced_services _drain_forced_owner_directives _call_forced_model_once _publish_model_forced_candidate _publish_stale_forced_candidate _forced_fallback_result _forced_swarm_router_result _resolve_forced_delivery_control _forced_final_answer",
 }
+
+# v7 lane L3: loop-private TEST imports re-homed from the temporary
+# ouroboros.loop re-export to the leaf that defines the symbol. The test module
+# still re-exports the name at module scope, so these rows keep their facade;
+# only the provider moved. Test path -> owner path -> re-pointed symbols.
+l3_repointed_test_import_owners = {
+    "tests/test_budget_limits.py": {
+        "ouroboros/loop_budget.py": "_check_budget_limits",
+        "ouroboros/loop_round_limits.py": "_RoundLimitContext",
+    },
+    "tests/test_context_overflow_hint.py": {
+        "ouroboros/loop_round_limits.py": "_provider_recovery_hint",
+    },
+    "tests/test_loop_misc.py": {
+        "ouroboros/loop_acceptance.py": "_latch_final_answer_marker _server_web_allowed_by_task",
+        "ouroboros/loop_messages.py": "_initialize_owner_directives",
+        "ouroboros/loop_nudges.py": "_maybe_inject_self_check _maybe_inject_time_budget_milestone",
+        "ouroboros/loop_round_limits.py": "_drain_incoming_messages",
+    },
+    "tests/test_nanny_finalization_nudge.py": {
+        "ouroboros/loop_nudges.py": "_maybe_inject_finalization_nudges",
+    },
+    "tests/test_provider_failure_reporting.py": {
+        "ouroboros/loop_round_limits.py": "_provider_failure_hint",
+    },
+    "tests/test_review_eligibility.py": {
+        "ouroboros/loop_acceptance.py": "_task_acceptance_eligible",
+    },
+    "tests/test_transcript_seal.py": {
+        "ouroboros/loop_messages.py": "_extract_plain_text_from_content",
+    },
+    "tests/test_v6502_capability.py": {
+        "ouroboros/loop_nudges.py": "_contract_expected_output",
+    },
+    "tests/test_v678_acceptance_state.py": {
+        "ouroboros/loop_acceptance.py": "ACCEPTANCE_DECISION_REASONS _set_acceptance_decision _supersede_task_acceptance_for_evidence_change _supersede_task_acceptance_for_owner_followup",
+        "ouroboros/loop_acceptance_review.py": "_apply_task_acceptance_result _record_acceptance_infra_failure",
+    },
+}
+
+# The extraction rows that deliberately kept NO facade: the old identity was
+# retired at its old path rather than re-exported. Data for the ledger
+# membership test, kept here so that module stays inside the size ratchet.
+facadeless_extraction_rows = (
+    "ouroboros/tools/registry.py::ToolRegistry._ephemeral_block",
+    "ouroboros/tools/registry.py::ToolRegistry._subagent_and_update_gate",
+    "ouroboros/tools/registry.py::ToolRegistry._heal_mode_block",
+    "ouroboros/tools/registry.py::_executor_backend_candidate_allowed",
+    "ouroboros/tools/registry.py::_command_mentions_protected_root",
+    "ouroboros/tools/registry.py::_light_mode_payload_mutation_allowed",
+    "ouroboros/tools/registry.py::ToolRegistry._protected_shell_block",
+    "ouroboros/tools/registry.py::ToolRegistry._git_protected_roots",
+    "ouroboros/tools/registry.py::ToolRegistry._resolved_shell_cwd",
+    "ouroboros/tools/registry.py::ToolRegistry._external_workspace_git_block",
+    "ouroboros/tools/registry.py::ToolRegistry._external_runtime_protected_paths",
+    "ouroboros/tools/registry.py::ToolRegistry._external_shell_runtime_or_secret_block",
+    "ouroboros/tools/registry.py::ToolRegistry._workspace_shell_write_block",
+    "ouroboros/tools/registry.py::ToolRegistry._shell_git_and_runtime_block",
+    "tests/test_external_workspace_access.py::_command_mentions_protected_root",
+    "ouroboros/tools/registry.py::ToolRegistry._run_shell_safety_check",
+    "ouroboros/tools/registry.py::_light_repo_snapshot",
+    "ouroboros/tools/registry.py::_format_light_repo_write_block",
+    "ouroboros/tools/registry.py::_git_ref_snapshot",
+    "ouroboros/tools/registry.py::ToolRegistry._snapshot_owner_files",
+    "ouroboros/tools/registry.py::ToolRegistry._restore_owner_files",
+    "ouroboros/tools/registry.py::ToolRegistry._run_shell_post_checks",
+    "tests/test_skill_exec.py::test_run_shell_restores_obfuscated_self_authored_state_marker",
+    "ouroboros/tools/registry.py::SKILL_OWNER_STATE_FILENAMES",
+    "ouroboros/tools/registry.py::parse_porcelain_paths",
+    "ouroboros/tools/registry.py::safe_relpath",
+    "ouroboros/tools/registry.py::_detect_runtime_mode_elevation",
+    "ouroboros/tools/registry.py::_SUBAGENT_SHELL_SECRET_MARKERS",
+    "ouroboros/tools/registry.py::_subagent_shell_targets_secret",
+    "ouroboros/tools/registry.py::_detect_mutative_toggle_self_change",
+    "ouroboros/tools/registry.py::_detect_evolution_owner_control_self_change",
+    "ouroboros/tools/registry.py::_detect_context_mode_self_lowering",
+    "ouroboros/tools/registry.py::_READ_ONLY_INSPECTION_COMMANDS",
+    "ouroboros/tools/registry.py::_COMMAND_HEAD_WRAPPERS",
+    "ouroboros/tools/registry.py::_READ_ONLY_GIT_SUBCOMMANDS",
+    "ouroboros/tools/registry.py::_SEARCH_TOOL_EXEC_OPTIONS",
+    "ouroboros/tools/registry.py::_DENIED_READ_OPTIONS",
+    "ouroboros/tools/registry.py::_TRUSTED_EXECUTABLE_DIRS",
+    "ouroboros/tools/registry.py::_trusted_read_head",
+    "ouroboros/tools/registry.py::_denied_read_option",
+    "ouroboros/tools/registry.py::_NESTED_EXECUTION_MARKERS",
+    "ouroboros/tools/registry.py::_NESTED_EXECUTION_TOKENS",
+    "ouroboros/tools/registry.py::_is_pure_read_inspection",
+    "ouroboros/tools/registry.py::_detect_scope_review_floor_self_lowering",
+    "ouroboros/tools/registry.py::_detect_safety_mode_self_lowering",
+    "ouroboros/tools/registry.py::_detect_owner_skill_attest_self_call",
+    "ouroboros/tools/registry.py::_SKILL_OWNER_STATE_STEMS",
+    "ouroboros/tools/registry.py::_DETACHED_PROCESS_MARKERS",
+    "ouroboros/tools/registry.py::_mentions_skill_owner_state",
+    "ouroboros/tools/registry.py::_mentions_detached_process",
+    "ouroboros/tools/registry.py::LIGHT_SHELL_WRITER_COMMANDS",
+    "ouroboros/tools/registry.py::SKILL_OWNER_STATE_STEMS",
+    "ouroboros/tools/registry.py::build_resolved_resource_binding",
+    "ouroboros/tools/registry.py::interpreter_family",
+    "ouroboros/tools/registry.py::light_shell_repo_mutation",
+    "ouroboros/tools/registry.py::protected_artifact_shell_block_reason",
+    "ouroboros/tools/registry.py::runtime_data_guard_targets",
+    "ouroboros/tools/registry.py::shell_command_string",
+    "ouroboros/tools/registry.py::strip_leading_env_assignments",
+    "ouroboros/tools/registry.py::sudo_noninteractive_violation",
+    "ouroboros/tools/registry.py::unwrap_env_argv",
+    "ouroboros/tools/registry.py::workspace_executor_state_write_block",
+    "ouroboros/tools/registry.py::writer_target_tokens",
+    "ouroboros/tools/registry.py::PROTECTED_RUNTIME_PATHS",
+    "ouroboros/tools/registry.py::task_artifact_dir_path",
+    "ouroboros/tools/registry.py::task_id_for_artifacts",
+    "ouroboros/tools/registry.py::run_shell_git_block_reason",
+    "ouroboros/tools/registry.py::workspace_git_safety_violation",
+    "ouroboros/tools/registry.py::is_absolute_path_text",
+    "ouroboros/tools/registry.py::path_text_is_inside",
+    "ouroboros/tools/registry.py::shell_argv",
+    "ouroboros/tools/registry.py::shell_argv_with_path_tokens",
+    "ouroboros/tools/registry.py::PROTECTED_RUNTIME_PATHS_LOWER",
+    "ouroboros/tools/registry.py::shell_has_write_indicator",
+    "ouroboros/tools/registry.py::shell_writer_targets_protected",
+    "ouroboros/tools/registry.py::is_external_workspace",
+    "ouroboros/tools/registry.py::normalize_root",
+    "ouroboros/tools/registry.py::resolve_shell_cwd",
+    "ouroboros/tools/registry.py::SKILL_PAYLOAD_CONTROL_DIRNAMES",
+    "ouroboros/tools/registry.py::is_skill_payload_path",
+    "ouroboros/tools/registry.py::resolve_skill_payload_target",
+)
+
 
 # v7 lane G1 (supervisor/git_ops.py split): leaf owner -> members whose moved
 # bodies read rebindable/monkeypatch-addressable git_ops globals through the
@@ -227,7 +371,10 @@ ts1_test_split_symbols_by_owner = {
         "tests/test_task_summary.py": "test_build_trace_summary_shows_structured_failure_facts test_multi_round_zero_tool_task_uses_llm_summary_prompt test_task_summary_accepts_openai_compatible_when_legacy_base_url_is_present test_task_summary_prefers_direct_model_when_openrouter_missing test_task_summary_prompt_includes_review_evidence test_task_summary_row_carries_chat_id_for_trivial_task test_task_summary_row_carries_flat_snapshot_cost_fields test_task_summary_uses_configured_light_model_when_openrouter_present test_trivial_task_summary_bypasses_llm_and_uses_short_format",
     },
     "tests/test_loop_misc.py": {
-        "ouroboros/loop.py": "_run_task_acceptance_review_once _set_acceptance_decision _skill_finalization_message _skill_names_touched_by_trace _task_acceptance_eligible run_llm_loop",
+        "ouroboros/loop.py": "_run_task_acceptance_review_once _set_acceptance_decision _task_acceptance_eligible run_llm_loop",
+        # L3 moved these two providers from the loop facade to the nudges owner
+        # that defines them; the theme split had already re-pointed the binding.
+        "ouroboros/loop_nudges.py": "_skill_finalization_message _skill_names_touched_by_trace",
         "ouroboros/skill_loader.py": "SkillReviewState compute_content_hash save_enabled save_review_state",
         "tests/test_loop_acceptance_gate.py": "_exercise_owner_followup_during_acceptance_panel test_direct_owner_followup_during_acceptance_panel_forces_fresh_review test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason test_queued_owner_followup_during_acceptance_panel_forces_fresh_review_and_sealed_rejects test_required_review_blocked_commit_does_not_surface_prior_head test_root_acceptance_evidence_call_is_not_recorded_as_a_review_run test_set_acceptance_decision_collapses_unknown_status_fail_closed test_set_acceptance_decision_preserves_agent_stance test_task_acceptance_agent_tool_is_advisory_before_auto_host_gate test_task_acceptance_required_feeds_back_capsule test_task_acceptance_review_tool_result_lifts_agent_decision_into_trace",
         "tests/test_loop_image_attach.py": "test_tool_results_carrying_auto_attach_image_get_the_image_same_round test_undecodable_image_fails_the_attach_not_the_provider_call",
