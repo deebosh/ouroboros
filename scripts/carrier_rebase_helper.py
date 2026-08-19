@@ -3,7 +3,7 @@
 rebases of the v7 branch (owner-ratified: spec §1.9-10, batch №8 answer 6=A).
 
 Standalone operator tooling — NOT runtime. When a `git rebase` (or merge) of
-the v7 branch stops on the 7 release carriers (VERSION, pyproject.toml,
+the v7 branch stops on the release carriers (VERSION, pyproject.toml, uv.lock,
 web/package.json, web/modules/api_types.js GATEWAY_CONTRACT_VERSION, the
 README badge, the README Version History block, the docs/ARCHITECTURE.md
 header), this helper resolves each conflicted carrier file by span
