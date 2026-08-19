@@ -38,6 +38,14 @@ DELEGATE_LEAF_OWNERS: dict[str, dict[str, str]] = {
             "integrate_payload_patch"
         ),
     },
+    "ouroboros.tools.subagent_integration": {
+        "ouroboros.tools.subagent_integration_delegated": (
+            "_READY_CAPTURE_STATUSES _drift_refusal _locked_apply _manifest_capture_status "
+            "_capture_failed_refusal _capture_at_disposition _delegated_disposition_refusal "
+            "_unwritten_disposition_text _dispose_delegated _resolve_acknowledged_intent "
+            "_integrate_delegated_patch"
+        ),
+    },
 }
 
 

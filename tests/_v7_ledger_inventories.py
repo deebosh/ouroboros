@@ -112,6 +112,13 @@ del1_verbatim_symbols_by_parent = {
     "ouroboros/tools/delegate_integration.py": {
         "ouroboros/tools/delegate_payload_patch.py": "_reserved_payload_rel_path _finalize_payload_apply",
     },
+    "ouroboros/tools/subagent_integration.py": {
+        "ouroboros/tools/subagent_integration_delegated.py": (
+            "_READY_CAPTURE_STATUSES _manifest_capture_status _capture_failed_refusal "
+            "_capture_at_disposition _delegated_disposition_refusal _unwritten_disposition_text "
+            "_dispose_delegated _resolve_acknowledged_intent"
+        ),
+    },
 }
 del1_handle_symbols_by_parent = {
     "ouroboros/delegate_custody.py": {
@@ -129,6 +136,9 @@ del1_handle_symbols_by_parent = {
             "_snapshot_head_textual _write_payload_patch_artifacts _payload_reserved_paths "
             "_candidate_symlink_escapes integrate_payload_patch"
         ),
+    },
+    "ouroboros/tools/subagent_integration.py": {
+        "ouroboros/tools/subagent_integration_delegated.py": "_drift_refusal _locked_apply _integrate_delegated_patch",
     },
 }
 

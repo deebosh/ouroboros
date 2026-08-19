@@ -64,6 +64,11 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/tools/delegate_payload_patch.py": ("ouroboros/tools/delegate_integration.py", "_di", frozenset({
         "_rebind_payload_reference", "_resolved", "payload_content_hash",
     })),
+    "ouroboros/tools/subagent_integration_delegated.py": ("ouroboros/tools/subagent_integration.py", "_si", frozenset({
+        "_baseline_drifted_paths", "_capture_at_disposition", "_locked_apply", "_patch_touched_paths",
+        "_sha256_file", "_stageable_paths", "_target_is_system_repo", "_write_verdict",
+        "get_runtime_mode",
+    })),
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_append_or_merge_user_content", "_evict_stale_image_blocks", "_record_owner_directive", "_visible_round_text",
     })),
