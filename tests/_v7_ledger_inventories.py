@@ -109,6 +109,9 @@ del1_verbatim_symbols_by_parent = {
             "_terminal_payload _access_evidence _reported_cost"
         ),
     },
+    "ouroboros/tools/delegate_integration.py": {
+        "ouroboros/tools/delegate_payload_patch.py": "_reserved_payload_rel_path _finalize_payload_apply",
+    },
 }
 del1_handle_symbols_by_parent = {
     "ouroboros/delegate_custody.py": {
@@ -120,6 +123,12 @@ del1_handle_symbols_by_parent = {
     },
     "ouroboros/tools/delegate.py": {
         "ouroboros/tools/delegate_terminal.py": "_record_containment _delivered_terminal_payload",
+    },
+    "ouroboros/tools/delegate_integration.py": {
+        "ouroboros/tools/delegate_payload_patch.py": (
+            "_snapshot_head_textual _write_payload_patch_artifacts _payload_reserved_paths "
+            "_candidate_symlink_escapes integrate_payload_patch"
+        ),
     },
 }
 

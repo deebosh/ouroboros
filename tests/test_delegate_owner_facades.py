@@ -31,6 +31,13 @@ DELEGATE_LEAF_OWNERS: dict[str, dict[str, str]] = {
             "_delivered_terminal_payload"
         ),
     },
+    "ouroboros.tools.delegate_integration": {
+        "ouroboros.tools.delegate_payload_patch": (
+            "_reserved_payload_rel_path _snapshot_head_textual _write_payload_patch_artifacts "
+            "_payload_reserved_paths _candidate_symlink_escapes _finalize_payload_apply "
+            "integrate_payload_patch"
+        ),
+    },
 }
 
 

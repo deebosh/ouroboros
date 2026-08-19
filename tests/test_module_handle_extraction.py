@@ -61,6 +61,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/tools/delegate_terminal.py": ("ouroboros/tools/delegate.py", "_delegate", frozenset({
         "_emit",
     })),
+    "ouroboros/tools/delegate_payload_patch.py": ("ouroboros/tools/delegate_integration.py", "_di", frozenset({
+        "_rebind_payload_reference", "_resolved", "payload_content_hash",
+    })),
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_append_or_merge_user_content", "_evict_stale_image_blocks", "_record_owner_directive", "_visible_round_text",
     })),

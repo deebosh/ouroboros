@@ -17,7 +17,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/agent_task_pipeline.py",
     "ouroboros/review_execution.py",
     "ouroboros/tools/claude_advisory_review.py",
-    "ouroboros/tools/delegate_integration.py",
     "ouroboros/tools/review.py",
     "ouroboros/tools/subagent_integration.py",
     "ouroboros/usage_accounting.py",
