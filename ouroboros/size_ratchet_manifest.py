@@ -13,7 +13,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/review.py",
     "ouroboros/usage_accounting.py",
-    "tests/test_review_prompt_caching.py",
 )
 
 FUNCTION_DEBT = (
