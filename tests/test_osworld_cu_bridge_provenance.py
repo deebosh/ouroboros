@@ -325,7 +325,8 @@ def test_osworld_methodology_preregisters_the_dedup_rule_and_defers_the_lane_gen
     assert "LOCK_TIMEOUT" in text
     assert "--allow-dirty-seed" in text
 
-def test_module_grandfather_matcher_uses_exact_repo_relative_paths():
+def test_module_grandfather_matcher_uses_exact_repo_relative_paths(monkeypatch):
+    import ouroboros.review as review_mod
     from ouroboros.review import (
         GIANT_PATHS,
         _exact_repo_relative_path,
@@ -333,11 +334,17 @@ def test_module_grandfather_matcher_uses_exact_repo_relative_paths():
     )
     # Exact runtime helpers accept only actual repo-relative paths. Compatibility
     # section-prefix decoding belongs solely to compute_complexity_metrics.
-    # The nested samples come from the LIVE manifest rather than one hardcoded
-    # debt path: this contract used to be pinned on skills/unix_computer_use/
-    # plugin.py, and the day that module was paid down the assertion would have
-    # gone vacuous instead of red.
-    nested = sorted(path for path in GIANT_PATHS if "/" in path)
+    # The v7 size campaign paid the whole registry down (GIANT_PATHS is empty),
+    # so the live-derived sample the anti-vacuity guard demanded is now pinned
+    # the other way round: the EMPTINESS itself is the campaign outcome, and the
+    # exact-path mechanism is exercised through a synthetic registry entry, the
+    # same way the JS gate test survived chat.js paying its debt.
+    assert GIANT_PATHS == frozenset()
+    monkeypatch.setattr(
+        review_mod, "GIANT_PATHS",
+        frozenset({"skills/synthetic_fixture/plugin.py", "synthetic_root_fixture.py"}),
+    )
+    nested = sorted(path for path in review_mod.GIANT_PATHS if "/" in path)
     assert nested
     for path in nested:
         assert module_is_grandfathered(path), path
@@ -347,7 +354,7 @@ def test_module_grandfather_matcher_uses_exact_repo_relative_paths():
         assert not module_is_grandfathered("other_dir/" + path.rsplit("/", 1)[1]), path
     # A ROOT-level manifest path is an exact key too; a nested same-basename is
     # not. Live-derived for the same reason the nested loop is.
-    for path in sorted(path for path in GIANT_PATHS if "/" not in path):
+    for path in sorted(path for path in review_mod.GIANT_PATHS if "/" not in path):
         assert module_is_grandfathered(path), path
         assert not module_is_grandfathered("repo/" + path), path
         assert not module_is_grandfathered("ouroboros/" + path), path
