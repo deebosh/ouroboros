@@ -33,20 +33,19 @@ delta id" rule: `init` rebinds REPO_DIR/DRIVE_ROOT/BRANCH_* and tests monkeypatc
 plumbing and sibling members on the parent, so the G1 leaves read every parent-addressable name
 through the call-time handle `_go()`; per-leaf sets pinned in
 tests/test_module_handle_extraction.py);
-assisted path, never whole-file theirs); D36 is the DEL1 delegate-family module-handle
+D36 is the DEL1 delegate-family module-handle
 delta — the same owner-approved §1.9/№8 mechanical exception as D18/D33, applied to the
 delegate-family size-debt split (delegate_custody.py, tools/delegate.py,
 tools/delegate_integration.py, tools/subagent_integration.py): a leaf body reads a
 monkeypatch-addressable parent global through the leaf's call-time parent handle, with
-the exact per-leaf sets pinned in tests/test_module_handle_extraction.py; the next free id is D37 unless
-assisted path, never whole-file theirs); D35 is the L-C review-stack module-handle delta
-assisted path, never whole-file theirs); D37 is the L-C review-stack module-handle delta
+the exact per-leaf sets pinned in tests/test_module_handle_extraction.py;
+D37 is the L-C review-stack module-handle delta
 (the §1.9/№8-pattern mechanism applied to the review stream with its own id per the §1.9-1
 "separate delta id" rule, exactly as D33 did for the loop stream: handles `_rev()`/`_car()`
 read rebindable parent facade bindings of ouroboros/tools/review.py and
 ouroboros/tools/claude_advisory_review.py so tests patching or rebinding the parent keep
 intercepting the moved bodies; per-leaf sets pinned in tests/test_module_handle_extraction.py);
-the next free id is D36 unless
+the next free id is D38 unless
 a fresh `git grep -n "\bDnn\b"` over the whole tree proves otherwise — always grep
 before assigning. The module-handle delta — called "D10" in two immutable S3b commit
 messages and "D12" in one fix commit — is D18 here, and here is the authority.
