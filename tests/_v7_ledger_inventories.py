@@ -349,7 +349,7 @@ config_extraction_symbols_by_owner = {
 # give one cohesive cluster its own leaf owner. Same two row classes as L-B:
 # members moved byte-identical (delta "none") and members whose bodies read
 # rebindable parent globals through a call-time handle (_agent()/_usage(),
-# delta D35). Parent path -> {owner path -> moved symbols}.
+# delta D38). Parent path -> {owner path -> moved symbols}.
 lc2_verbatim_symbols_by_owner = {
     "ouroboros/agent.py": {
         "ouroboros/agent_dispatch.py": "dispatch_executor_note executor_blocked_outcome _record_executor_resolution _blocked_executor_terminal _budget_exhausted_message _budget_resume_policy _queued_budget_exhausted_message _physical_calls_after_budget_rail _initial_effort_for resolve_dispatch_axes _DELEGATE_VERBS preflight_delegate_visibility reset_nanny_economics_marks emit_dispatch_resolution capability_delta_prompt_block",

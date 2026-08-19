@@ -1286,7 +1286,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # agent_task_pipeline.py and usage_accounting.py moves to a leaf owner;
     # every moved name keeps its parent facade re-export. Handle rows read
     # monkeypatch-addressable parent bindings through the call-time handles
-    # _agent()/_usage() (delta D35, sets pinned in
+    # _agent()/_usage() (delta D38, sets pinned in
     # tests/test_module_handle_extraction.py); verbatim rows moved byte-identical.
     lc2_verbatim_rows = {
         f"{parent}::{s}": f"{owner}::{s}"
@@ -1301,7 +1301,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update({**lc2_verbatim_rows, **lc2_handle_rows})
     existing_process_owner_rows.update({**lc2_verbatim_rows, **lc2_handle_rows})
     for _lc2_old in lc2_handle_rows:
-        s3_semantic_delta_ids[_lc2_old] = "D35"
+        s3_semantic_delta_ids[_lc2_old] = "D38"
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -1488,3 +1488,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
     assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35", "D36", "D37"})
     assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D38"})
