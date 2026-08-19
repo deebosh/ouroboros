@@ -1090,16 +1090,15 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     registry_extraction_no_facade_rows.update(set(ts1_test_split_rows) - ts1_test_split_facade_rows)
     # v7 lane TS2: the review-family test-giant theme splits: source module -> {owner path: moved
     # symbols}. Same shape as the S7a/S7b/W5 blocks: the sibling module that hosts a moved test,
-    # fixture or helper owns it. A facade cell appears only where the parent still imports the
-    # moved helper by its old name; a test the parent no longer mentions carries "-".
-    ts2_test_split_symbols_by_owner = _inv.ts2_test_split_symbols_by_owner
-    ts2_test_split_rows = {f"{source}::{symbol}": f"{owner}::{symbol}" for source, owners in ts2_test_split_symbols_by_owner.items() for owner, symbols in owners.items() for symbol in symbols.split()}
-    ts2_test_split_facade_rows = {
-        "tests/test_scope_review.py::_get_module",
-    }
-    implemented.update(ts2_test_split_rows)
-    existing_process_owner_rows.update(ts2_test_split_rows)
-    registry_extraction_no_facade_rows.update(set(ts2_test_split_rows) - ts2_test_split_facade_rows)
+    # fixture or helper owns it, and a facade cell appears only where the parent still imports
+    # the moved helper by its old name. The facade sets and the import-binding side rows are
+    # data and live beside the symbol maps in tests/_v7_ledger_inventories.py (byte-ratchet idiom).
+    ts2_test_split_rows = {f"{source}::{symbol}": f"{owner}::{symbol}" for source, owners in _inv.ts2_test_split_symbols_by_owner.items() for owner, symbols in owners.items() for symbol in symbols.split()}
+    ts2_rows = {**ts2_test_split_rows, **_inv.ts2_binding_rows}
+    ts2_facade_rows = _inv.ts2_test_split_facade_rows | _inv.ts2_binding_facade_rows
+    implemented.update(ts2_rows)
+    existing_process_owner_rows.update(ts2_rows)
+    registry_extraction_no_facade_rows.update(set(ts2_rows) - ts2_facade_rows)
     # v7 stream L: llm.py splits into ten owner leaves. Module-level names keep a
     # facade on llm.py; LLMClient members move into owner mixins the class
     # composes, so the class inherits the exact same function objects.
