@@ -329,14 +329,14 @@ def _contributor_snapshot(base_ref: str, head_ref: str) -> dict:
     target_config = _git_bytes(["show", f"{base_sha}:ouroboros/config.py"])
     base_script = _git_bytes(["show", f"{base_sha}:scripts/run_external_review.py"])
     head_script = _git_bytes(["show", f"{head_sha}:scripts/run_external_review.py"])
-    # Flag = declared boundary UNION the BASE-flow import closure: editing any
-    # module the review executes can weaken it, whatever it is named.
+    # Flag = boundary UNION BASE-flow closure; poisoned closure flags everything.
     from scripts.contributor_review_evidence import flow_import_closure
 
     flow_closure = flow_import_closure(base_sha, _git_bytes, conservative=True)
+    poisoned = "<unresolved-import>" in flow_closure
     substrate_changed = sorted(
         p for p in set(changed_paths)
-        if _is_review_substrate_path(p) or p in flow_closure
+        if poisoned or _is_review_substrate_path(p) or p in flow_closure
     )
     return {
         "base_ref": base_ref,

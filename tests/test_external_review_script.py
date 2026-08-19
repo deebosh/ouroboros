@@ -179,6 +179,28 @@ def test_the_flag_unions_the_computed_base_flow_closure():
     # the entries -- so a walker regression cannot silently shrink either set.
     assert closure >= hybrid
     assert len(hybrid) > 80, len(hybrid)
+    # Fail-closed contract: a healthy tree resolves everything (no sentinel),
+    # and an unresolvable repo-internal import poisons the closure instead of
+    # silently dropping out (proven on a synthetic tree with a bad import).
+    assert "<unresolved-import>" not in closure
+    import subprocess as _sp, tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        _sp.run(["git", "-C", td, "init", "-q"], check=True)
+        os.makedirs(f"{td}/scripts"); os.makedirs(f"{td}/ouroboros")
+        open(f"{td}/scripts/run_external_review.py", "w").write(
+            "from ouroboros.missing_module import gone" + chr(10)
+        )
+        open(f"{td}/scripts/contributor_review_evidence.py", "w").write("x = 1" + chr(10))
+        _sp.run(["git", "-C", td, "add", "-A"], check=True)
+        _sp.run(["git", "-C", td, "-c", "user.email=t@t", "-c", "user.name=t",
+                 "commit", "-qm", "seed"], check=True)
+        sha = _sp.run(["git", "-C", td, "rev-parse", "HEAD"],
+                      capture_output=True, text=True, check=True).stdout.strip()
+        def toy_git_bytes(args):
+            return _sp.run(["git", "-C", td, *args], check=True,
+                           capture_output=True).stdout
+        toy = flow_import_closure(sha, toy_git_bytes, conservative=True)
+        assert "<unresolved-import>" in toy
 
 
 def test_every_review_named_module_carries_a_boundary_decision():

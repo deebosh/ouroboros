@@ -531,6 +531,15 @@ def flow_import_closure(base_sha: str, git_bytes, full_walk=None, conservative: 
         up = level - 1
         return ".".join(parts[: len(parts) - up]) if up < len(parts) else ""
 
+    # Fail-closed sentinel (the class rule, not another instance condition): any
+    # import the walker CANNOT resolve but which names a repo-internal root, any
+    # over-lifted relative import, and any dynamic import primitive seen inside a
+    # closure module all poison the closure with this marker. The caller treats a
+    # poisoned closure as matching every changed path (maximally conservative),
+    # so an unresolvable edge can never silently shrink the protected surface.
+    UNRESOLVED = "<unresolved-import>"
+    _REPO_ROOTS = ("ouroboros", "supervisor", "scripts", "web")
+
     seen: set[str] = set()
     frontier = list(entries)
     while frontier:
@@ -565,8 +574,57 @@ def flow_import_closure(base_sha: str, git_bytes, full_walk=None, conservative: 
                 stem = f"{base_pkg}.{node.module}" if node.module else base_pkg
                 if stem:
                     mods = [stem] + [f"{stem}.{a.name}" for a in node.names]
+                else:
+                    seen.add(UNRESOLVED)  # over-lifted relative import
+            elif isinstance(node, _ast.Call):
+                fn = node.func
+                name = getattr(fn, "attr", None) or getattr(fn, "id", None)
+                if name in ("import_module", "__import__"):
+                    args = node.args
+                    arg0 = args[0] if args else None
+                    if isinstance(arg0, _ast.Constant) and isinstance(arg0.value, str):
+                        target = module_to_rel(arg0.value)
+                        if target and target not in seen:
+                            frontier.append(target)
+                        elif arg0.value.split(".")[0] in _REPO_ROOTS:
+                            seen.add(UNRESOLVED)
+                    elif (
+                        isinstance(arg0, _ast.JoinedStr)
+                        and arg0.values
+                        and isinstance(arg0.values[0], _ast.Constant)
+                        and isinstance(arg0.values[0].value, str)
+                        and "." in arg0.values[0].value
+                    ):
+                        # f-string with a constant package prefix (the registry's
+                        # `f"ouroboros.tools.{modname}"` wildcard): every module
+                        # under that package is reachable -- expand the package
+                        # directory from the git tree instead of poisoning.
+                        pkg_dir = arg0.values[0].value.rstrip(".").replace(".", "/")
+                        try:
+                            listing = git_bytes(
+                                ["ls-tree", "--name-only", f"{base_sha}:{pkg_dir}"]
+                            ).decode()
+                        except Exception:
+                            listing = ""
+                        if listing:
+                            for fname in listing.splitlines():
+                                if fname.endswith(".py"):
+                                    cand = f"{pkg_dir}/{fname}"
+                                    if cand not in seen:
+                                        frontier.append(cand)
+                        elif pkg_dir.split("/")[0] in _REPO_ROOTS:
+                            seen.add(UNRESOLVED)
+                    else:
+                        seen.add(UNRESOLVED)  # dynamic import, target unknowable
             for mod in mods:
                 target = module_to_rel(mod)
                 if target and target not in seen:
                     frontier.append(target)
+                elif target is None and mod.split(".")[0] in _REPO_ROOTS:
+                    # names a repo root but no blob resolves: renamed/removed or
+                    # generated module -- fail closed rather than silently drop.
+                    # (import-from member names legitimately miss; only flag when
+                    # the BARE module path itself does not resolve either)
+                    if "." not in mod or module_to_rel(mod.rsplit(".", 1)[0]) is None:
+                        seen.add(UNRESOLVED)
     return frozenset(seen)
