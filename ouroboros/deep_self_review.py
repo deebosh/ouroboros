@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
-from typing import Any, Callable, Dict, Optional, Tuple
+import re
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,28 @@ _DEEP_OUTPUT_MARGIN_TOKENS = 155_000
 _DEEP_INPUT_TOKEN_LIMIT = min(
     REVIEW_PROMPT_TOKEN_BUDGET,
     _DEEP_MODEL_CONTEXT_WINDOW - _DEEP_MAX_OUTPUT_TOKENS - _DEEP_OUTPUT_MARGIN_TOKENS,
+)
+
+# Pack integrity floor (Gate A). A pathologically small pack invites hallucination
+# structurally: the model has too little context to write a project-wide review.
+# The char floor (~12K tokens) sits above what one or two files can produce; the
+# file-count floor separates "real project atlas" from "memory-only stub"; the
+# memory floor catches "atlas without the agent's own memory".
+_DEEP_MIN_PACK_CHARS = 50_000
+_DEEP_MIN_FILE_COUNT = 5
+_DEEP_MIN_MEMORY_FILES = 3
+
+# Response grounding floor (Gate B). The model's review must reference at least
+# N distinct paths that exist in the assembled pack, so hallucinated prose
+# cannot be presented as authoritative. URL-stripping pre-pass prevents a
+# fabricated URL from grounding via its leaf path component.
+_DEEP_MIN_PATH_REFS = 3
+_PACK_PATH_EXTS = ("py", "md", "js", "ts", "json", "yaml", "yml", "toml", "sh", "bash", "sql")
+_URL_RE = re.compile(r"https?://\S+")
+_PATH_REF_RE = re.compile(
+    r"(?:^|(?<![A-Za-z0-9]))([A-Za-z0-9_./-]+\.(?:"
+    + "|".join(_PACK_PATH_EXTS)
+    + r"))"
 )
 
 _MEMORY_WHITELIST = [
@@ -341,11 +364,69 @@ def build_review_pack(
     pack_text = "\n".join(parts)
     stats = {
         "file_count": file_count,
+        "memory_count": memory_count,
         "total_chars": len(pack_text),
         "skipped": skipped,
         "context_manifest": atlas.manifest,
     }
     return pack_text, stats
+
+
+def _coerce_path_strings(section) -> List[str]:
+    """Extract ``rel_path`` strings from one manifest section.
+
+    Defensive against both serialized-dict rows (the persisted form at
+    ``deep_self_review_context.json``) and in-memory ``PathRecord`` dataclass
+    rows (the atlas's natural form). ``getattr`` fallback returns ``None``
+    for unknown shapes, never raises — caller filters with ``if rel:``.
+    """
+    out: List[str] = []
+    for row in (section or []):
+        if isinstance(row, dict):
+            rel = row.get("rel_path")
+        else:
+            rel = getattr(row, "rel_path", None)
+        if rel:
+            out.append(rel)
+    return out
+
+
+def _ground_response_in_pack(text: str, manifest: Optional[dict]) -> Set[str]:
+    """Return distinct pack-relative paths that the response text references.
+
+    URL-shaped substrings are stripped BEFORE path extraction so a fabricated
+    URL cannot ground via its leaf path component (e.g. an agent quoting
+    ``https://example.com/ouroboros/deep_self_review.py`` while only the
+    leaf ``ouroboros/deep_self_review.py`` is in the pack must NOT count as a
+    grounded reference). The pack path set is ``atlas.selected ∪ atlas.omitted
+    ∪ _MEMORY_WHITELIST`` — memory files appear in the user message but not in
+    the atlas manifest, so adding them is required for any response that
+    grounds in identity / scratchpad / patterns.
+    """
+    pack_paths: Set[str] = set()
+    if manifest:
+        for section_name in ("selected", "omitted"):
+            for rel in _coerce_path_strings(manifest.get(section_name)):
+                pack_paths.add(rel)
+    for rel in _MEMORY_WHITELIST:
+        pack_paths.add(rel)
+    if not pack_paths:
+        return set()  # empty manifest → fail-closed below
+    cleaned = _URL_RE.sub(" ", text)
+    refs: Set[str] = set()
+    for match in _PATH_REF_RE.finditer(cleaned):
+        candidate = match.group(1)
+        if candidate in pack_paths:
+            refs.add(candidate)
+            continue
+        # Try matching as basename or suffix of any pack path — the response
+        # often references ``deep_self_review.py`` rather than the full
+        # ``ouroboros/deep_self_review.py`` path, and both should count.
+        for pack_path in pack_paths:
+            if pack_path.endswith("/" + candidate) or pack_path == candidate:
+                refs.add(pack_path)
+                break
+    return refs
 
 
 def is_review_available() -> Tuple[bool, Optional[str]]:
@@ -440,6 +521,23 @@ def run_deep_self_review(
         if not pack_text and stats.get("skipped"):
             return f"❌ Failed to build review pack: {stats['skipped'][0]}", {}
 
+        # Gate A (pack integrity): refuse to send a pathologically small pack to
+        # the reviewer. A model given 1-2 files and 800 chars has no choice but
+        # to hallucinate, and the resulting "review" reads as authoritative. This
+        # gate catches the structural class before review tokens are spent.
+        if (stats.get("file_count", 0) < _DEEP_MIN_FILE_COUNT
+                or stats.get("memory_count", 0) < _DEEP_MIN_MEMORY_FILES
+                or len(pack_text) < _DEEP_MIN_PACK_CHARS):
+            return (
+                f"❌ Deep self-review pack integrity gate failed: "
+                f"file_count={stats.get('file_count', 0)} (min {_DEEP_MIN_FILE_COUNT}), "
+                f"memory_count={stats.get('memory_count', 0)} (min {_DEEP_MIN_MEMORY_FILES}), "
+                f"total_chars={len(pack_text):,} (min {_DEEP_MIN_PACK_CHARS:,}). "
+                "Refusing to send a pathologically small pack to the reviewer — "
+                "the model would have no choice but to hallucinate.",
+                {},
+            )
+
         emit_progress(
             f"Review pack built: {stats['file_count']} files, "
             f"{stats['total_chars']:,} chars"
@@ -522,6 +620,20 @@ def run_deep_self_review(
         text = response.get("content") or ""
         if not text:
             return "⚠️ Model returned an empty response for the deep self-review.", usage or {}
+
+        # Gate B (response grounding): the model's review must reference at least
+        # N distinct paths that exist in the assembled pack, so hallucinated
+        # prose cannot be presented as authoritative. URL-stripping pre-pass
+        # prevents a fabricated URL from grounding via its leaf path component.
+        grounded_refs = _ground_response_in_pack(text, stats.get("context_manifest"))
+        if len(grounded_refs) < _DEEP_MIN_PATH_REFS:
+            return (
+                f"❌ Deep self-review response ungrounded: "
+                f"{len(grounded_refs)} distinct path references intersect the pack "
+                f"(min {_DEEP_MIN_PATH_REFS}). "
+                "Refusing to publish a review whose findings cannot be tied to pack artifacts.",
+                usage or {},
+            )
 
         emit_progress(f"Deep self-review complete ({len(text):,} chars).")
         return text, usage or {}

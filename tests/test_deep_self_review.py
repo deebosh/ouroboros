@@ -829,3 +829,554 @@ def test_direct_fallback_preserves_an_explicit_real_model_pin():
         assert model == OPENAI_DIRECT_DEFAULTS["deep_self_review"], (
             "a router-only -pro slug lands on the provider default"
         )
+
+
+# Shared manifest fixture for Gate A and Gate B tests. The pack_path set is
+# built from this manifest + _MEMORY_WHITELIST at the time _ground_response_in_pack
+# runs; tests that need different selected/omitted rows construct their own.
+# ``secret_module.py`` is intentionally absent from both selected and omitted —
+# a fabricated path the model has no way to know about, used by the
+# "response_refs_paths_not_in_pack" test as a true non-groundable reference.
+_MANIFEST_REVIEW_TOOLS = {
+    "status": "ok",
+    "selected": [
+        {"rel_path": "ouroboros/deep_self_review.py", "disposition": "selected"},
+        {"rel_path": "ouroboros/tools/review_helpers.py", "disposition": "selected"},
+        {"rel_path": "ouroboros/loop.py", "disposition": "selected"},
+    ],
+    "omitted": [],
+}
+
+
+class TestPackIntegrityGate:
+    """Gate A — refuses to send a pathologically small pack to the reviewer.
+
+    Catches the structural-hallucination class: a 1-2 file pack invites the
+    reviewer to invent project context. Three sub-conditions, any of which
+    fails the gate; the gate fires BEFORE ``chat_observed`` is invoked so no
+    review tokens are spent on the rejected attempt.
+    """
+
+    def _sufficient_pack_stats(self):
+        return {
+            "file_count": 6,
+            "memory_count": 3,
+            "total_chars": 60_000,
+            "skipped": [],
+            "context_manifest": _MANIFEST_REVIEW_TOOLS,
+        }
+
+    def _build_with_stats(self, stats):
+        pack = "x" * stats["total_chars"]
+        return pack, stats
+
+    def test_gate_a_fires_when_total_chars_below_minimum(self, tmp_repo, tmp_drive):
+        stats = self._sufficient_pack_stats()
+        stats["total_chars"] = 49_999  # one below the 50_000 floor
+        mock_llm = mock.Mock()
+
+        with mock.patch(
+            "ouroboros.deep_self_review.build_review_pack",
+            return_value=self._build_with_stats(stats),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "pack integrity gate failed" in result
+        assert "total_chars=49,999" in result
+        assert "min 50,000" in result
+        assert usage == {}
+        mock_llm.chat.assert_not_called()
+
+    def test_gate_a_fires_when_memory_count_below_minimum_despite_adequate_file_count(
+        self, tmp_repo, tmp_drive
+    ):
+        """At file_count=5 (at the threshold, NOT below), memory_count=1 below.
+
+        The fixture has 3 atlas selected + 2 memory files = file_count=5, which
+        satisfies the file_count sub-condition. The ``memory_count`` sub-condition
+        is the actual firing trigger — the test name is intentionally specific
+        to avoid future-maintainer confusion about which sub-check fired.
+        """
+        stats = self._sufficient_pack_stats()
+        stats["file_count"] = 5  # at threshold, not below
+        stats["memory_count"] = 1  # below threshold
+        mock_llm = mock.Mock()
+
+        with mock.patch(
+            "ouroboros.deep_self_review.build_review_pack",
+            return_value=self._build_with_stats(stats),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "pack integrity gate failed" in result
+        assert "memory_count=1" in result
+        assert "min 3" in result
+        mock_llm.chat.assert_not_called()
+
+    def test_gate_a_passes_when_pack_meets_all_thresholds(self, tmp_repo, tmp_drive):
+        """At file_count=6, memory_count=3, total_chars=60_000, gate A passes,
+        chat_observed IS called, and Gate B passes too (3 grounded refs)."""
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_stats(self._sufficient_pack_stats()),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "Reviewed ouroboros/deep_self_review.py, "
+                            "ouroboros/loop.py, and ouroboros/tools/review_helpers.py. "
+                            "Findings follow."
+                        )
+                    },
+                    {"cost": 0.01},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "Reviewed ouroboros" in result
+        assert "pack integrity gate failed" not in result
+        assert "response ungrounded" not in result
+        assert usage == {"cost": 0.01}
+
+    def test_gate_a_does_not_fire_when_atlas_assembly_fails_first(
+        self, tmp_repo, tmp_drive
+    ):
+        """The pre-existing ``pack_text == ""`` + skipped-fatal path takes
+        precedence over Gate A — preserves the existing error verbatim and
+        does not double-report."""
+        mock_llm = mock.Mock()
+
+        with mock.patch(
+            "ouroboros.deep_self_review.build_review_pack",
+            return_value=("", {"file_count": 0, "total_chars": 0,
+                               "skipped": ["FATAL: atlas exploded"]}),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "Failed to build review pack" in result
+        assert "atlas exploded" in result
+        assert "pack integrity gate failed" not in result
+        mock_llm.chat.assert_not_called()
+
+    def test_gate_a_at_exact_minimums_passes(self, tmp_repo, tmp_drive):
+        """Boundary case: file_count=5, memory_count=3, total_chars=50_000.
+
+        Gate A uses ``<`` (strict), not ``<=`` — equal-to-minimum passes. Catches
+        a regression where someone might tighten to ``<=`` and silently reject
+        valid packs at the floor.
+        """
+        stats = self._sufficient_pack_stats()
+        stats["file_count"] = 5
+        stats["memory_count"] = 3
+        stats["total_chars"] = 50_000
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_stats(stats),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "Grounded review of ouroboros/deep_self_review.py, "
+                            "ouroboros/loop.py, and ouroboros/tools/review_helpers.py."
+                        )
+                    },
+                    {"cost": 0.01},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "Grounded review" in result
+        assert "pack integrity gate failed" not in result
+        assert "response ungrounded" not in result
+        assert usage == {"cost": 0.01}
+
+    def test_gate_a_fires_when_memory_count_key_absent(self, tmp_repo, tmp_drive):
+        """Regression guard: stats dict missing ``memory_count`` key (older
+        build_review_pack_re_repack pre-fix) defaults to 0, which fails the memory
+        sub-condition. Without ``memory_count`` exposure, Gate A becomes a
+        permanent failure even on structurally complete packs.
+        """
+        stats = {
+            "file_count": 100,  # well above floor
+            # no memory_count key
+            "total_chars": 200_000,  # well above floor
+            "skipped": [],
+            "context_manifest": _MANIFEST_REVIEW_TOOLS,
+        }
+        mock_llm = mock.Mock()
+
+        with mock.patch(
+            "ouroboros.deep_self_review.build_review_pack",
+            return_value=self._build_with_stats(stats),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "pack integrity gate failed" in result
+        assert "memory_count=0" in result
+        mock_llm.chat.assert_not_called()
+
+
+class TestResponseGroundingGate:
+    """Gate B — refuses to publish a review whose findings cannot be tied to
+    pack artifacts.
+
+    Catches the structural-hallucination class at the OTHER end of the
+    pipeline: a model that was given a real pack but ignored it (or copied a
+    prior review from training data, or fabricated findings about files that
+    don't exist). Failures here preserve ``usage`` because review tokens WERE
+    spent — this is not a pre-flight check.
+    """
+
+    def _build_with_pack(self, manifest=None):
+        manifest = manifest if manifest is not None else _MANIFEST_REVIEW_TOOLS
+        stats = {
+            "file_count": 6,
+            "memory_count": 3,
+            "total_chars": 60_000,
+            "skipped": [],
+            "context_manifest": manifest,
+        }
+        return "x" * 60_000, stats
+
+    def test_gate_b_fires_when_response_has_no_path_refs(self, tmp_repo, tmp_drive):
+        """Pure prose with no path-like tokens: gate fires."""
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "This is a deep review of the agent system. The architecture "
+                            "is generally sound but the documentation could be improved. "
+                            "Several edge cases in error handling warrant attention."
+                        )
+                    },
+                    {"cost": 0.42},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "response ungrounded" in result
+        assert "0 distinct path references" in result
+        assert usage == {"cost": 0.42}, "usage preserved: review tokens were spent"
+
+    def test_gate_b_fires_when_response_refs_paths_not_in_pack(self, tmp_repo, tmp_drive):
+        """Response mentions fabricated paths that are NOT in the manifest."""
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "Issues found in ouroboros/nonexistent.py and "
+                            "ouroboros/loop.py, also some.py and other.py. "
+                            "More on ouroboros/tools/review_helpers.py."
+                        )
+                    },
+                    {"cost": 0.42},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "response ungrounded" in result
+        assert "2 distinct path references" in result  # loop.py + review_helpers.py
+        assert usage == {"cost": 0.42}
+
+    def test_gate_b_fires_when_only_one_path_ref_intersects(self, tmp_repo, tmp_drive):
+        """5 path mentions but only 1 in pack: gate fires (count < 3)."""
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "Reviewed ouroboros/loop.py, some.py, other.py, "
+                            "another.py, last.py. Findings: none."
+                        )
+                    },
+                    {"cost": 0.42},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "response ungrounded" in result
+        assert "1 distinct path references" in result
+        assert usage == {"cost": 0.42}
+
+    def test_gate_b_passes_with_three_distinct_grounded_refs(self, tmp_repo, tmp_drive):
+        """Response mentions 3 distinct pack paths → gate passes."""
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "Reviewed ouroboros/deep_self_review.py for the gates, "
+                            "ouroboros/loop.py for the task loop, and "
+                            "ouroboros/tools/review_helpers.py for the prompt pack. "
+                            "All look sound."
+                        )
+                    },
+                    {"cost": 0.42},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "Reviewed ouroboros" in result
+        assert "response ungrounded" not in result
+        assert usage == {"cost": 0.42}
+
+    def test_gate_b_strips_url_paths_before_checking(self, tmp_repo, tmp_drive):
+        """A URL whose leaf path IS in the pack must NOT ground via the leaf.
+
+        Without the URL-stripping pre-pass, ``https://example.com/ouroboros/deep_self_review.py``
+        would parse as ``example.com/ouroboros/deep_self_review.py`` and fail
+        suffix-matching (no pack_path ends with that string), so the test passes
+        for the wrong reason. The strip-then-extract implementation removes
+        the URL substring entirely, leaving zero path refs in this response, so
+        the gate fires (0 grounded).
+        """
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "See https://example.com/ouroboros/deep_self_review.py "
+                            "for the canonical review-pipeline documentation."
+                        )
+                    },
+                    {"cost": 0.42},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "response ungrounded" in result
+        assert "0 distinct path references" in result
+
+    def test_gate_b_handles_basename_only_paths(self, tmp_repo, tmp_drive):
+        """Response references ``deep_self_review.py`` (basename) — suffix-match
+        against ``ouroboros/deep_self_review.py`` grounds it."""
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "deep_self_review.py, loop.py, review_helpers.py — all fine."
+                        )
+                    },
+                    {"cost": 0.42},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "Reviewed ouroboros" in result.lower() or "deep_self_review.py" in result
+        assert "response ungrounded" not in result
+        assert usage == {"cost": 0.42}
+
+    def test_gate_b_includes_memory_whitelist_paths(self, tmp_repo, tmp_drive):
+        """Response references memory/identity.md, memory/scratchpad.md, and
+        memory/knowledge/patterns.md (all in _MEMORY_WHITELIST) — must ground
+        via the helper, even though they are not in atlas.selected."""
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "Reviewed memory/identity.md for the agent's self-model, "
+                            "memory/scratchpad.md for working context, and "
+                            "memory/knowledge/patterns.md for the pattern register. "
+                            "All current."
+                        )
+                    },
+                    {"cost": 0.42},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "Reviewed memory" in result
+        assert "response ungrounded" not in result
+        assert usage == {"cost": 0.42}
+
+    def test_gate_b_passes_usage_accounting_preserved(self, tmp_repo, tmp_drive):
+        """When Gate B fires, usage is preserved (we spent review tokens)."""
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {"content": "No code references here, just prose."},
+                    {"cost": 0.99},
+                ),
+            ),
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert "response ungrounded" in result
+        assert usage == {"cost": 0.99}, "usage preserved when Gate B rejects"
