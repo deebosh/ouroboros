@@ -1088,7 +1088,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # name for historical importers; a symbol the parent no longer mentions carries "-".
     ts1_test_split_symbols_by_owner = _inv.ts1_test_split_symbols_by_owner
     ts1_test_split_rows = {f"{source}::{symbol}": f"{owner}::{symbol}" for source, owners in ts1_test_split_symbols_by_owner.items() for owner, symbols in owners.items() for symbol in symbols.split()}
-    ts1_test_split_facade_rows: set[str] = set()
+    # The extension_loader parent re-exports the shared helper module's six symbols so the
+    # five pre-existing importer suites keep resolving them under the old module name.
+    ts1_test_split_facade_rows = {
+        "tests/test_extension_loader.py::_add_fake_native_dep",
+        "tests/test_extension_loader.py::_clear_loader_state",
+        "tests/test_extension_loader.py::_isolated_site_packages_dir",
+        "tests/test_extension_loader.py::_mark_isolated_deps_installed",
+        "tests/test_extension_loader.py::_prepare_extension",
+        "tests/test_extension_loader.py::_write_ext_skill",
+    }
     implemented.update(ts1_test_split_rows)
     existing_process_owner_rows.update(ts1_test_split_rows)
     registry_extraction_no_facade_rows.update(set(ts1_test_split_rows) - ts1_test_split_facade_rows)
@@ -1109,18 +1118,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in llm_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
-    llm_mixin_symbols_by_owner = {
-        ("llm_attempt.py", "_PayloadCachePolicyMixin"): "_MAX_CACHE_BREAKPOINTS _normalize_payload_cache_ttl _payload_cache_breakpoints _pop_cache_breakpoint_disclosure",
-        ("llm_capability_policy.py", "_CapabilityPolicyMixin"): "_CAPABILITIES_FETCH_OK _CONTEXT_LENGTH_CACHE _EFFORT_CEILING_CACHE _EFFORT_CEILING_LOADED _EFFORT_FLOOR_CACHE _EFFORT_FLOOR_LOADED _EFFORT_FLOOR_RELOAD_SEC _NESTED_REASONING_PARAM _REJECTED_PARAMS_CACHE _REJECTED_PARAMS_LOADED _REJECTED_PARAMS_RELOAD_SEC _SUPPORTED_PARAMS_CACHE _SUPPORTED_PARAMS_FETCHED _apply_rejected_param_cache _clamp_effort_for_model _effort_ceiling_for _effort_floor_for _fetch_openrouter_capabilities _get_supported_parameters _known_rejected_params _mandatory_value_rejection _parameter_rejection_error _payload_effort _pop_effort_clamp_disclosure _record_effort_ceiling _record_effort_floor _remember_rejected_params _retry_without_optional_sampling _set_payload_effort clamp_effort_for_route metadata_fetch_attempted_and_failed openrouter_context_length",
-        ("llm_routing.py", "_ProviderRoutingMixin"): "_explicit_cache_affinity_identity _get_async_remote_client _get_client _get_local_client _get_remote_client _make_no_proxy_async_client _make_no_proxy_client _no_proxy_timeout _openrouter_session_identity _parse_provider_model _prompt_cache_identity _qualified_model_name _resolve_remote_target probe_oversized_context",
-        ("llm_messages.py", "_MessageShapingMixin"): "_REASONING_CONTENT_BLOCK_TYPES _content_with_system_notice_marker _copy_messages_with_cache_policy _has_openrouter_reasoning_details _has_replayed_reasoning_metadata _is_deferrable_image_user_turn _model_family _normalize_system_message_placement _replace_image_blocks_with_placeholder _strip_openrouter_roundtrip_metadata sanitize_reasoning_on_model_switch",
-        ("llm_fallback.py", "_RecoveryLadderMixin"): "_create_chat_completion_with_retries _create_chat_completion_with_retries_async _is_http_status _is_transient_body_error _openrouter_signature_retry_kwargs _param_retry_kwargs_for_body_error _provider_body_error _reroute_kwargs_for_body_error _reroute_same_model_kwargs _retry_without_prompt_cache_parameter _rotate_openrouter_session_affinity _strip_kwargs_for_encrypted_body_error",
-        ("llm_anthropic.py", "_AnthropicLaneMixin"): "_anthropic_blocks_from_content _anthropic_image_block _build_anthropic_messages _build_anthropic_tool_choice _cache_write_split _chat_anthropic _coalesce_anthropic_message _normalize_anthropic_response _sanitize_anthropic_tool_result_content _stringify_anthropic_content",
-        ("llm_gigachat.py", "_GigaChatLaneMixin"): "_chat_gigachat _get_gigachat_client _gigachat_function_result _gigachat_messages _gigachat_text _normalize_gigachat_response",
-        ("llm_local.py", "_LocalLaneMixin"): "_chat_local _prepare_messages_for_local_context",
-        ("llm_openai_compatible.py", "_OpenAICompatibleLaneMixin"): "_build_remote_kwargs _normalize_remote_response _openrouter_main_web_search_tool extract_display_reasoning",
-        ("llm_pricing.py", "_GenerationCostMixin"): "_fetch_generation_cost",
-    }
+    llm_mixin_symbols_by_owner = _inv.llm_mixin_symbols_by_owner
     llm_mixin_rows = {
         f"ouroboros/llm.py::LLMClient.{symbol}": f"ouroboros/{owner}::{mixin}.{symbol}"
         for (owner, mixin), symbols in llm_mixin_symbols_by_owner.items()
