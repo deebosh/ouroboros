@@ -73,4 +73,8 @@ g1_git_ops_handle_symbols_by_owner = {
         "configure_remote configure_personal_remote _configure_credential_helper "
         "push_to_remote"
     ),
+    "git_ops_updates.py": (
+        "list_versions list_commits ensure_official_update_remote "
+        "list_official_update_tags compute_managed_update_status prepare_managed_update"
+    ),
 }

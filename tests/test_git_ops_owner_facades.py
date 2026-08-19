@@ -20,6 +20,10 @@ GIT_OPS_LEAF_OWNERS: dict[str, str] = {
         "configure_remote configure_personal_remote _configure_credential_helper "
         "push_to_remote"
     ),
+    "git_ops_updates": (
+        "list_versions list_commits ensure_official_update_remote "
+        "list_official_update_tags compute_managed_update_status prepare_managed_update"
+    ),
 }
 
 

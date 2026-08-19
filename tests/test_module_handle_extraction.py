@@ -176,6 +176,14 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "BRANCH_DEV", "REPO_DIR", "_configure_credential_helper", "_has_remote",
         "configure_remote", "ensure_official_update_remote", "git_capture",
     })),
+    "supervisor/git_ops_updates.py": ("supervisor/git_ops.py", "_go", frozenset({
+        "BRANCH_DEV", "DRIVE_ROOT", "OFFICIAL_UPDATE_REMOTE_URL", "_collect_repo_sync_state",
+        "_compute_ref_ahead_count", "_create_rescue_snapshot", "_git_network_bounded",
+        "_has_remote", "_list_remotes", "_managed_remote_name", "_managed_update_target",
+        "_read_managed_repo_meta", "_rescue_untracked_incomplete", "_resolve_managed_update_target",
+        "_write_update_intent", "append_jsonl", "ensure_official_update_remote", "git_capture",
+        "git_fetch_bounded", "load_state", "managed_branch_defaults", "preserve_local_ref_branch",
+    })),
 }
 
 

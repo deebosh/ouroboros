@@ -4,7 +4,6 @@ BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 
 GIANT_PATHS = (
     "ouroboros/tools/claude_advisory_review.py",
-    "supervisor/git_ops.py",
     "tests/test_agent_task_pipeline.py",
     "tests/test_extension_loader.py",
     "tests/test_loop_misc.py",
