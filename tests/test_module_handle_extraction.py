@@ -53,7 +53,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # `logging.getLogger("supervisor.git_ops")`, which IS the parent's logger object,
 # so moved records keep their `%(name)s` (the ledger's disclosed logger residual).
 LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
-    # The DEL1 delegate-family rows (delta D35) follow the same owner-approved
+    # The DEL1 delegate-family rows (delta D36) follow the same owner-approved
     # mechanical exception: parent names that tests rebind on the historical
     # module surface are read through the call-time handle, everything else
     # moved verbatim or imports from its true owner.
@@ -172,7 +172,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     # The ouroboros/tools/review_*.py and ouroboros/review_*.py rows are the
     # L-C review-stack split: the same owner-approved mechanical exception,
-    # with `_rev()` / `_car()` as the call-time handles (delta D35). Their
+    # with `_rev()` / `_car()` as the call-time handles (delta D37). Their
     # declared sets are the parent bindings tests rebind (monkeypatch or plain
     # attribute assignment) plus cross-leaf member reads, so patching the
     # parent keeps intercepting the moved bodies.

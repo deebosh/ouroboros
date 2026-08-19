@@ -46,11 +46,9 @@ D37 is the L-C review-stack module-handle delta
 read rebindable parent facade bindings of ouroboros/tools/review.py and
 ouroboros/tools/claude_advisory_review.py so tests patching or rebinding the parent keep
 intercepting the moved bodies; per-leaf sets pinned in tests/test_module_handle_extraction.py);
-the next free id is D38 unless
-assisted path, never whole-file theirs); D35 is the L-C2 module-handle delta (the ratified
-assisted path, never whole-file theirs); D38 is the L-C2 module-handle delta (the ratified
+D38 is the L-C2 module-handle delta (the ratified
 supervisor mechanism applied to the agent-dispatch and usage legacy-import leaves with its
-own id per the §1.9-1 "separate delta id" rule); the next free id is D36 unless
+own id per the §1.9-1 "separate delta id" rule); the next free id is D39 unless
 a fresh `git grep -n "\bDnn\b"` over the whole tree proves otherwise — always grep
 before assigning. The module-handle delta — called "D10" in two immutable S3b commit
 messages and "D12" in one fix commit — is D18 here, and here is the authority.
