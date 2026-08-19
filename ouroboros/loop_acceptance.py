@@ -97,9 +97,7 @@ def _begin_task_acceptance_fence(ctx: Any, task_id: str) -> tuple[bool, Any]:
     admission_agent = getattr(ctx, "owner_message_admission_agent", None)
     if admission_lock is not None and admission_agent is not None:
         with admission_lock:
-            ctx._task_acceptance_owner_generation = int(
-                getattr(admission_agent, "_owner_message_generation", 0) or 0
-            )
+            ctx._task_acceptance_owner_generation = int(getattr(admission_agent, "_owner_message_generation", 0) or 0)
     existing = getattr(ctx, "_task_acceptance_fence_token", None)
     if existing is not None:
         inspect = getattr(ctx, "inspect_acceptance_fence", None)

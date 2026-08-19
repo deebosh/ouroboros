@@ -223,9 +223,7 @@ def _loop_tree_accounting(
         if scope is None or not scope.root_task_id or scope.root_limit_usd is None:
             return None
         if refresh:
-            return refresh_root_accounting(
-                scope.drive_root, scope.root_task_id, max_age_sec=max_age_sec,
-            )
+            return refresh_root_accounting(scope.drive_root, scope.root_task_id, max_age_sec=max_age_sec)
         return last_root_accounting(scope.root_task_id)
     except Exception:
         log.debug("Tree accounting telemetry unavailable", exc_info=True)

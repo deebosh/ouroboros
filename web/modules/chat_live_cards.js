@@ -110,9 +110,7 @@ export function createChatLiveCards({
         const movedEarlier = stampNodeTimestamp(record.root, rawTs, { anchor: true });
         if (record.isSubagent) {
             const parent = liveCardRecords.get(record.parentGroupId);
-            const parentMoved = reanchorTaskCard(
-                parent, rawTs, { suppressDomInsert }, seen
-            );
+            const parentMoved = reanchorTaskCard(parent, rawTs, { suppressDomInsert }, seen);
             return movedEarlier || parentMoved;
         }
         if (!movedEarlier) return false;
@@ -382,9 +380,7 @@ export function createChatLiveCards({
     }
 
     function getSubagentCardRecord(childId = '', parentId = '', role = '') {
-        return withStableViewport(() => getSubagentCardRecordMutation(
-            childId, parentId, role,
-        ));
+        return withStableViewport(() => getSubagentCardRecordMutation(childId, parentId, role));
     }
 
     function getSubagentCardRecordMutation(childId = '', parentId = '', role = '') {

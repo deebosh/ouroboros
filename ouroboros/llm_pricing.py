@@ -122,9 +122,7 @@ def fetch_openrouter_pricing(*, timeout_sec: float = 5.0) -> Dict[str, Tuple[Opt
                         tier_row = (tier_prompt, tier_cached, tier_write, tier_completion)
                         tiers.append((min_prompt_tokens, tier_row))
                     except (TypeError, ValueError):
-                        log.warning(
-                            "Skipping malformed pricing override for %s", model_id,
-                        )
+                        log.warning("Skipping malformed pricing override for %s", model_id)
             if tiers:
                 row = PricingSchedule(row, tuple(tiers))
             pricing_dict[model_id] = row

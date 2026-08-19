@@ -154,9 +154,7 @@ export function createTimelineAnchors({ messagesDiv, liveCardRecords }) {
             ) || null;
         }
         if (!node && anchor.ts) {
-            const matches = Array.from(messagesDiv.children).filter(
-                (item) => item.dataset?.ts === anchor.ts
-            );
+            const matches = Array.from(messagesDiv.children).filter((item) => item.dataset?.ts === anchor.ts);
             node = matches[anchor.ordinal] || matches[0] || null;
         }
         return restoreNode(node, anchor.topOffset ?? anchor.offset);

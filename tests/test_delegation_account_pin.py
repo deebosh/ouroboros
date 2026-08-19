@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 
 from ouroboros import subagents
-from tests.test_delegated_subagent_transport import (  # noqa: F401 — autouse fixture
+from tests._delegated_transport_shared import (  # noqa: F401 — autouse fixture
     _owned_gateway_uses_each_test_transport,
-    _plain_ctx,
 )
+from tests.test_delegated_run_accounting import _plain_ctx  # noqa: F401 — shared fixture
 
 
 def test_the_account_pin_is_a_sibling_key_folded_into_the_route(monkeypatch):

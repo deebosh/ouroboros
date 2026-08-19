@@ -264,9 +264,7 @@ class _CapabilityPolicyMixin:
                 # and every reactive in-process rejection is also recorded
                 # durably, so replacing (not unioning) lets expired entries
                 # actually evict from a long-running process.
-                cls._REJECTED_PARAMS_CACHE[durable_key] = set(
-                    get_rejected_params(DATA_DIR, durable_key)
-                )
+                cls._REJECTED_PARAMS_CACHE[durable_key] = set(get_rejected_params(DATA_DIR, durable_key))
             except Exception:
                 pass
         for key in {model_id, normalize_model_identity(model_id)}:

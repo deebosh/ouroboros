@@ -45,6 +45,7 @@ from ouroboros.tools.control_events import (
     _wait_for_routing_annotation,  # noqa: F401
 )
 from ouroboros.tools.control_routing import (
+    _attach_client_surface,  # noqa: F401
     _attach_origin_from_metadata,  # noqa: F401
     _attach_swarm_intent,  # noqa: F401
     _cached_swarm_handoff,  # noqa: F401
