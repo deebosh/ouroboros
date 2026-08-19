@@ -195,6 +195,14 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "checkout_and_reset", "git_capture", "import_test", "load_state",
         "preserve_local_ref_branch", "rescue_git_capture", "save_state", "sync_runtime_dependencies",
     })),
+    "supervisor/git_ops_rescue.py": ("supervisor/git_ops.py", "_go", frozenset({
+        "BRANCH_DEV", "DRIVE_ROOT", "REPO_DIR", "_atomic_write_bytes", "_collect_repo_sync_state",
+        "_copy_untracked_for_rescue", "_create_rescue_snapshot", "_git_dir",
+        "_link_rescue_to_evolution_transaction", "_list_remotes", "_managed_remote_branch_for",
+        "_managed_remote_name", "_read_managed_repo_meta", "_run_git_process_bounded",
+        "append_jsonl", "atomic_write_text", "rescue_before_destructive_rollback",
+        "rescue_git_capture",
+    })),
 }
 
 

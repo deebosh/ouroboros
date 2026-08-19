@@ -83,4 +83,15 @@ g1_git_ops_handle_symbols_by_owner = {
         "_admission_gate_for_unsynced_tree checkout_and_reset "
         "sync_runtime_dependencies import_test safe_restart"
     ),
+    "git_ops_rescue.py": (
+        "_collect_repo_sync_state _copy_untracked_for_rescue _create_rescue_snapshot "
+        "_link_rescue_to_evolution_transaction rescue_before_destructive_rollback "
+        "rescue_into_tx"
+    ),
+}
+
+# The two rescue bodies with no parent-addressable reads moved verbatim
+# (delta none; byte-identity enforced by tests/test_v7_verbatim_moves.py).
+g1_git_ops_verbatim_symbols_by_owner = {
+    "git_ops_rescue.py": "_atomic_write_bytes _rescue_untracked_incomplete",
 }

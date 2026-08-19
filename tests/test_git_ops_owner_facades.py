@@ -30,6 +30,11 @@ GIT_OPS_LEAF_OWNERS: dict[str, str] = {
         "_admission_gate_for_unsynced_tree checkout_and_reset "
         "sync_runtime_dependencies import_test safe_restart"
     ),
+    "git_ops_rescue": (
+        "_collect_repo_sync_state _copy_untracked_for_rescue _atomic_write_bytes "
+        "_create_rescue_snapshot _link_rescue_to_evolution_transaction "
+        "_rescue_untracked_incomplete rescue_before_destructive_rollback rescue_into_tx"
+    ),
 }
 
 

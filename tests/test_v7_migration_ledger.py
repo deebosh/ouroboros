@@ -1305,7 +1305,11 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in _inv.g1_git_ops_handle_symbols_by_owner.items()
         for symbol in symbols.split()
     }
-    g1_git_ops_verbatim_rows: dict[str, str] = {}
+    g1_git_ops_verbatim_rows = {
+        f"supervisor/git_ops.py::{symbol}": f"supervisor/{owner}::{symbol}"
+        for owner, symbols in _inv.g1_git_ops_verbatim_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
     implemented.update(g1_git_ops_handle_rows)
     implemented.update(g1_git_ops_verbatim_rows)
     existing_process_owner_rows.update(g1_git_ops_handle_rows)
