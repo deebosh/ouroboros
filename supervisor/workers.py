@@ -1083,6 +1083,19 @@ def _run_chat_task(
                         )
                     except Exception as exc:
                         _report_binding_failure(task["id"], pid, exc, path="direct_project_turn")
+        # Compute the unified upload list once. Web/Desktop transports carry the
+        # desktop attachment set under task['metadata']['chat_attachment_uploads']
+        # (resolved from data/uploads/ by ws._chat_attachment_uploads and routed
+        # through the shared staging substrate below). Older clients / non-Web
+        # transports (Telegram bridge, the single-image base64 seam) carry
+        # image_data instead — mirror server.py:_stage_mailbox_attachments and
+        # materialise the bytes to a private staging file so the same shared
+        # substrate serves them, instead of leaving them inline-only (the legacy
+        # bug: the agent could not read them via read_file(root='artifact_store',
+        # path='attachments/...')).
+        meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        uploads = list(meta.get("chat_attachment_uploads") or [])
+        inline_source: Optional[pathlib.Path] = None
         if image_data:
             # image_data is (base64, mime) or (base64, mime, caption). The caption
             # still seeds task['text'] (and the legacy inline image path below) so a
@@ -1093,30 +1106,60 @@ def _run_chat_task(
                 task["image_caption"] = image_data[2]
                 if not text:
                     task["text"] = image_data[2]
-        # v6.52.0 (P1, full desktop unify): route the WHOLE desktop attachment set
-        # (any type) through the shared staging substrate so the agent gets EVERY
-        # attachment — images natively via attachment_images + non-images via the
-        # read_file(root='artifact_store', path='attachments/...') manifest — exactly
-        # like the CLI/API/GAIA path. The uploads are resolved from data/uploads/ in
-        # ws._chat_attachment_uploads and carried as task['metadata'] (like force_plan).
-        # On a non-empty manifest we DROP the legacy inline image_base64 so the same
-        # image is not double-injected; on absent/empty uploads (older clients, the
-        # single-image base64 seam) the legacy inline path above stays untouched.
-        meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        uploads = meta.get("chat_attachment_uploads")
+            if not uploads:
+                # Non-Web transports / legacy single-image base64 seam: persist the
+                # bytes to a private staging file so the shared substrate can read
+                # them. The staging block below drops the inline image_base64 on
+                # success to avoid double-injection. 50 MiB cap mirrors the upload
+                # guard used everywhere else (server.py:_stage_mailbox_attachments,
+                # gateway.ws). Failure to persist leaves the inline image_base64 in
+                # place as a degraded fallback — the same degraded-fallback behaviour
+                # the rest of the staging substrate keeps.
+                import base64
+                try:
+                    raw = base64.b64decode(str(image_data[0] or ""), validate=True)
+                    if raw and len(raw) <= 50 * 1024 * 1024:
+                        mime = str(image_data[1] or "image/jpeg").lower()
+                        suffix = (
+                            ".png" if "png" in mime
+                            else ".webp" if "webp" in mime
+                            else ".jpg"
+                        )
+                        uploads_dir = DRIVE_ROOT / "uploads"
+                        uploads_dir.mkdir(parents=True, exist_ok=True)
+                        inline_source = uploads_dir / f"inline-{uuid.uuid4().hex}{suffix}"
+                        with inline_source.open("xb") as handle:
+                            handle.write(raw)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        uploads.append({"path": str(inline_source), "label": "inline image"})
+                except Exception:
+                    log.warning("Unable to stage inline legacy image", exc_info=True)
+        # Stage all uploads (desktop set + the inline-materialised legacy image)
+        # through the shared artifact_store seam. On a non-empty manifest, drop the
+        # legacy inline image_base64 so the same image is not double-injected.
         if uploads:
             from ouroboros.artifacts import stage_task_attachments
             from ouroboros.gateway.tasks import _render_attachment_lines
-
-            manifest = stage_task_attachments(DRIVE_ROOT, str(task["id"]), uploads)
-            if manifest:
-                task["drive_root"] = str(DRIVE_ROOT)
-                task["attachment_images"] = [m for m in manifest if m.get("is_image")]
-                rendered = _render_attachment_lines(manifest)
-                if rendered:
-                    task["text"] = f"{task.get('text') or ''}\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]"
-                task.pop("image_base64", None)
-                task.pop("image_mime", None)
+            try:
+                manifest = stage_task_attachments(DRIVE_ROOT, str(task["id"]), uploads)
+                if manifest:
+                    task["drive_root"] = str(DRIVE_ROOT)
+                    task["attachment_images"] = [m for m in manifest if m.get("is_image")]
+                    rendered = _render_attachment_lines(manifest)
+                    if rendered:
+                        task["text"] = (
+                            f"{task.get('text') or ''}\n\n[ATTACHMENTS]"
+                            f"\n{rendered}\n[END_ATTACHMENTS]"
+                        )
+                    task.pop("image_base64", None)
+                    task.pop("image_mime", None)
+            finally:
+                if inline_source is not None:
+                    try:
+                        inline_source.unlink(missing_ok=True)
+                    except OSError:
+                        log.debug("Unable to remove inline image staging source", exc_info=True)
         if not task["text"]:
             task["text"] = "(image attached)" if image_data else ""
         # Cluster B: proactively coin a project name for a fresh MAIN-CHAT direct card

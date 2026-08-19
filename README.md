@@ -10,7 +10,7 @@
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://github.com/razzant/ouroboros/releases)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)](https://github.com/razzant/ouroboros/releases)
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.103.18](https://img.shields.io/badge/version-6.103.18-green.svg)](VERSION)
+[![Version 6.103.20](https://img.shields.io/badge/version-6.103.20-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
@@ -426,6 +426,7 @@ and integration work.
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 6.103.20 | 2026-08-19 | fix(attachments): stage inline image_data through the shared artifact_store seam so the agent can read attached image bytes via `read_file(root="artifact_store", path="attachments/...")` instead of receiving them inline-only (closes ibl-162952d44079, ibl-04a5239e3573). Restructures the legacy single-image base64 seam in `supervisor/workers.py:_run_chat_task` (lines 1086-1119 pre-fix) — when `image_data` is present and `chat_attachment_uploads` is empty, the inline base64 is materialised to a private staging file under `data/uploads/` (50 MiB guard, mime suffix, fsync, try/finally unlink), then routed through the shared `stage_task_attachments` substrate. Legacy `image_base64`/`image_mime` are dropped on a successful manifest to avoid double-injection. Adds 9 regression tests in `TestInlineImageDataPersistence`. Verified: 30/30 pytest green, 43/43 in test_v6730_origin_invariant.py. §15(c) bypass with owner authorization (plan_review structurally unavailable across this session, scope reviewer overloaded). |
 | 6.103.18 | 2026-08-19 | fix(deep_self_review): prefer direct-OpenAI over OpenRouter when both keys are set (closes ibl-ad4731a2f03e). The `is_review_available()` branch for `openai/...` routes checked openrouter FIRST, shadowing a working direct-OpenAI route. When the OpenRouter account-level credit pool is exhausted the cascade is silent at the provider level — the call looks healthy until it 402s mid-flight — and a working direct-OpenAI path would have succeeded. Fix is a single reorder of the two if-blocks; Gate A/B (v6.103.17) untouched. Adds 2 regression tests covering the bug case and the openrouter fallback path. |
 | 6.103.17 | 2026-08-19 | fix(deep_self_review): two fail-closed gates (pack integrity + response grounding) prevent structural hallucination — closes ibl-a051798735c3 |
 | 6.103.17 | 2026-08-19 | UX: SKILL.openclaw.md DATA_WRITE_BLOCKED / HEAL_MODE_BLOCKED / Files-API errors now point authors at SKILL.md (the user-authored manifest) instead — runtime reads SKILL.md; SKILL.openclaw.md is the publisher's frozen audit snapshot preserved by marketplace/adapter.py. Closes ibl-4228308d7a4d UX gap. |
