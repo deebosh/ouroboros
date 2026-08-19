@@ -121,13 +121,13 @@ def _is_review_substrate_path(path: str) -> bool:
         and name.endswith(".py")
         and name.startswith(_REVIEW_SUBSTRATE_NAME_PREFIXES)
     )
+from ouroboros.runtime_mode_policy import GIT_OPS_FAMILY_PATHS  # below the sys.path bootstrap
 _RELEASE_MACHINERY_PATHS = frozenset({
     ".github/workflows/ci.yml", "Ouroboros.spec", "build.sh",
-    "build_linux.sh",
-    "build_windows.ps1",
+    "build_linux.sh", "build_windows.ps1",
     "ouroboros/tool_module_inventory.py", "ouroboros/tools/release_sync.py",
     "scripts/build_repo_bundle.py",
-    "supervisor/git_ops.py",
+    *GIT_OPS_FAMILY_PATHS,  # the git_ops parent AND its G1 leaves, from the owner's one family list
 })
 
 _CONTRIBUTOR_CONTRACT = {

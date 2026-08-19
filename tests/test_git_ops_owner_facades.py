@@ -47,6 +47,34 @@ def test_git_ops_owner_facade_preserves_identity():
             assert getattr(git_ops, name) is getattr(module, name), f"{leaf}.{name}"
 
 
+def test_every_git_ops_leaf_is_protected_exactly_like_the_parent():
+    """The leaves hold the destructive machinery; the inventories must say so.
+
+    ``supervisor/git_ops.py`` is a release-invariant path (the agent may not
+    rewrite it outside pro mode) and release machinery (a contributor proposal
+    touching it is release-sensitive). The G1 split moved the remote, managed-
+    update, checkout/reset and rescue bodies out of it and moved none of that
+    risk, so an inventory naming only the parent would leave the code that
+    actually resets and rescues the repository unguarded.
+
+    Both inventories derive from one family list, so this pin is what keeps that
+    list honest: it fails if a fifth leaf appears in the owner map above without
+    joining the family, or if the family names a module that does not exist."""
+    import pathlib
+
+    from ouroboros.runtime_mode_policy import GIT_OPS_FAMILY_PATHS, protected_path_category
+    from scripts.run_external_review import _RELEASE_MACHINERY_PATHS
+
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    family = {"supervisor/git_ops.py"} | {f"supervisor/{leaf}.py" for leaf in GIT_OPS_LEAF_OWNERS}
+
+    assert set(GIT_OPS_FAMILY_PATHS) == family
+    for path in sorted(family):
+        assert (repo / path).is_file(), path
+        assert protected_path_category(path) == "release-invariant", path
+        assert path in _RELEASE_MACHINERY_PATHS, path
+
+
 def test_git_ops_leaves_keep_hot_code_label_parity():
     """Managed-update conflict labelling does not name ``supervisor/git_ops.py``;
     the split must not silently upgrade or downgrade the label for code that

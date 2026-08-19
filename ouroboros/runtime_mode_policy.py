@@ -40,6 +40,18 @@ FROZEN_CONTRACT_PATHS = frozenset({
     "ouroboros/size_ratchet_manifest.py",
 })
 
+# The git_ops family is ONE protected surface, listed from ONE place. The v7 G1
+# split moved the destructive remote/update/reset/rescue bodies into leaf modules
+# without moving any of the risk, so every inventory that protects the parent must
+# protect the leaves. Hand-copying the family into each inventory is precisely how
+# a leaf ends up unprotected; membership is derived instead, and
+# tests/test_git_ops_owner_facades.py pins this list against the leaf owner map.
+GIT_OPS_LEAF_MODULES = ("remotes", "updates", "reset", "rescue")
+GIT_OPS_FAMILY_PATHS = frozenset(
+    {"supervisor/git_ops.py"}
+    | {f"supervisor/git_ops_{leaf}.py" for leaf in GIT_OPS_LEAF_MODULES}
+)
+
 RELEASE_INVARIANT_PATHS = frozenset({
     ".github/workflows/ci.yml",
     "Ouroboros.spec",
@@ -50,10 +62,9 @@ RELEASE_INVARIANT_PATHS = frozenset({
     "ouroboros/launcher_bootstrap.py",
     "ouroboros/repo_remotes.py",
     "ouroboros/tool_module_inventory.py",
-    "supervisor/git_ops.py",
     "supervisor/update_merge.py",
     "supervisor/update_merge_policy.py",
-})
+}) | GIT_OPS_FAMILY_PATHS
 
 PROTECTED_RUNTIME_PATH_PREFIXES = FROZEN_CONTRACT_PATH_PREFIXES
 PROTECTED_RUNTIME_PATHS = (
