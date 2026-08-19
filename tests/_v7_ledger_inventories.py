@@ -94,6 +94,8 @@ g1_git_ops_handle_symbols_by_owner = {
 # (delta none; byte-identity enforced by tests/test_v7_verbatim_moves.py).
 g1_git_ops_verbatim_symbols_by_owner = {
     "git_ops_rescue.py": "_atomic_write_bytes _rescue_untracked_incomplete",
+}
+
 # v7 lane DEL1: the delegate family splits into cohesive owner leaves; every
 # moved name keeps its parent facade re-export. Handle rows read monkeypatch-
 # addressable parent globals through the leaf's call-time handle (delta D36,
