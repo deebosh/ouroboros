@@ -24,7 +24,6 @@ import shutil
 import uuid
 from typing import Any, Dict
 
-from ouroboros.utils import utc_now_iso
 
 
 def _go():
@@ -311,7 +310,7 @@ def _link_rescue_to_evolution_transaction(rescue_info: Dict[str, Any], reason: s
         _go().append_jsonl(
             pathlib.Path(_go().DRIVE_ROOT) / "logs" / "supervisor.jsonl",
             {
-                "ts": utc_now_iso(),
+                "ts": _go().utc_now_iso(),
                 "type": "evolution_transaction_rescue_linked",
                 "reason": reason,
                 "transaction_id": linked.get("transaction_id"),
@@ -388,7 +387,7 @@ def rescue_before_destructive_rollback(reason: str, *, context: str = "rollback"
             "ts": str(info.get("ts") or ""),
         }
         event = {
-            "ts": utc_now_iso(), "type": "managed_update_rescue_captured",
+            "ts": _go().utc_now_iso(), "type": "managed_update_rescue_captured",
             "reason": reason, "rescue_path": result["path"],
             **({"rescue_ref": result["ref"]} if result["ref"] else {}),
             **({"warnings": list(info.get("warnings") or [])}
@@ -399,7 +398,7 @@ def rescue_before_destructive_rollback(reason: str, *, context: str = "rollback"
             "rescue before destructive rollback failed (rollback continues)", exc_info=True
         )
         result = {"error": repr(exc)}
-        event = {"ts": utc_now_iso(), "type": "managed_update_rescue_failed",
+        event = {"ts": _go().utc_now_iso(), "type": "managed_update_rescue_failed",
                  "reason": reason, "error": repr(exc)}
     try:
         if not _go().append_jsonl(_go().DRIVE_ROOT / "logs" / "supervisor.jsonl", event):

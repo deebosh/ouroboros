@@ -45,7 +45,13 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # The supervisor/git_ops_*.py rows are the G1 git_ops split (`_go()` as the
 # call-time handle): `init` rebinds REPO_DIR/DRIVE_ROOT/BRANCH_* on the parent
 # and tests monkeypatch the capture plumbing and sibling members there, so the
-# moved bodies read every parent-addressable name through the handle.
+# moved bodies read every parent-addressable name through the handle. That
+# includes `utc_now_iso`, which the parent re-exports for exactly this reason
+# (supervisor/update_recovery.py already reads it as `_g.utc_now_iso`): a leaf
+# from-importing it would put the moved bodies on a binding nothing addressing
+# the parent can reach. The one name held back is the logger: each leaf binds
+# `logging.getLogger("supervisor.git_ops")`, which IS the parent's logger object,
+# so moved records keep their `%(name)s` (the ledger's disclosed logger residual).
 LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     # The DEL1 delegate-family rows (delta D35) follow the same owner-approved
     # mechanical exception: parent names that tests rebind on the historical
@@ -223,6 +229,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_read_managed_repo_meta", "_rescue_untracked_incomplete", "_resolve_managed_update_target",
         "_write_update_intent", "append_jsonl", "ensure_official_update_remote", "git_capture",
         "git_fetch_bounded", "load_state", "managed_branch_defaults", "preserve_local_ref_branch",
+        "utc_now_iso",
     })),
     "supervisor/git_ops_reset.py": ("supervisor/git_ops.py", "_go", frozenset({
         "BRANCH_DEV", "BRANCH_STABLE", "DRIVE_ROOT", "REPO_DIR",
@@ -234,6 +241,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_rescue_untracked_incomplete", "_run_git_resilient", "_update_source", "append_jsonl",
         "checkout_and_reset", "git_capture", "import_test", "load_state",
         "preserve_local_ref_branch", "rescue_git_capture", "save_state", "sync_runtime_dependencies",
+        "utc_now_iso",
     })),
     "supervisor/git_ops_rescue.py": ("supervisor/git_ops.py", "_go", frozenset({
         "BRANCH_DEV", "DRIVE_ROOT", "REPO_DIR", "_atomic_write_bytes", "_collect_repo_sync_state",
@@ -241,7 +249,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_link_rescue_to_evolution_transaction", "_list_remotes", "_managed_remote_branch_for",
         "_managed_remote_name", "_read_managed_repo_meta", "_run_git_process_bounded",
         "append_jsonl", "atomic_write_text", "rescue_before_destructive_rollback",
-        "rescue_git_capture",
+        "rescue_git_capture", "utc_now_iso",
     })),
     "ouroboros/agent_dispatch.py": ("ouroboros/agent.py", "_agent", frozenset({
         "write_task_result",

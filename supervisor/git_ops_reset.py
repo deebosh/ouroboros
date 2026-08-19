@@ -24,7 +24,6 @@ import sys
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from ouroboros.utils import utc_now_iso
 
 
 def _go():
@@ -203,7 +202,7 @@ def _admission_gate_for_unsynced_tree(
                 _go().append_jsonl(
                     _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
                     {
-                        "ts": utc_now_iso(),
+                        "ts": _go().utc_now_iso(),
                         "type": "reset_blocked_rescue_failed",
                         "target_branch": branch, "reason": reason, "policy": policy,
                         "current_branch": repo_state.get("current_branch"),
@@ -225,7 +224,7 @@ def _admission_gate_for_unsynced_tree(
                 _go().append_jsonl(
                     _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
                     {
-                        "ts": utc_now_iso(),
+                        "ts": _go().utc_now_iso(),
                         "type": "reset_blocked_rescue_incomplete",
                         "target_branch": branch, "reason": reason, "policy": policy,
                         "current_branch": repo_state.get("current_branch"),
@@ -248,7 +247,7 @@ def _admission_gate_for_unsynced_tree(
                 _go().append_jsonl(
                     _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
                     {
-                        "ts": utc_now_iso(),
+                        "ts": _go().utc_now_iso(),
                         "type": "reset_blocked_rescue_incomplete",
                         "target_branch": branch, "reason": reason, "policy": policy,
                         "current_branch": repo_state.get("current_branch"),
@@ -275,7 +274,7 @@ def _admission_gate_for_unsynced_tree(
             _go().append_jsonl(
                 _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
                 {
-                    "ts": utc_now_iso(),
+                    "ts": _go().utc_now_iso(),
                     "type": "reset_blocked_unsynced_state",
                     "target_branch": branch, "reason": reason, "policy": policy,
                     "current_branch": repo_state.get("current_branch"),
@@ -292,7 +291,7 @@ def _admission_gate_for_unsynced_tree(
         _go().append_jsonl(
             _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
             {
-                "ts": utc_now_iso(),
+                "ts": _go().utc_now_iso(),
                 "type": "reset_unsynced_rescued_then_reset",
                 "target_branch": branch, "reason": reason, "policy": policy,
                 "current_branch": repo_state.get("current_branch"),
@@ -352,7 +351,7 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
                 _go().append_jsonl(
                     _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
                     {
-                        "ts": utc_now_iso(),
+                        "ts": _go().utc_now_iso(),
                         "type": "managed_update_intent_invalid",
                         "target_branch": branch,
                         "target_sha": intent_sha,
@@ -377,7 +376,7 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
             _go().append_jsonl(
                 _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
                 {
-                    "ts": utc_now_iso(),
+                    "ts": _go().utc_now_iso(),
                     "type": "reset_fetch_failed",
                     "target_branch": branch, "reason": reason, "error": msg,
                     "remote": fetch_remote,
@@ -415,7 +414,7 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
                 _go().append_jsonl(
                     _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
                     {
-                        "ts": utc_now_iso(),
+                        "ts": _go().utc_now_iso(),
                         "type": "ui_update_preserved_late_head",
                         "target_branch": branch,
                         "reason": reason,
@@ -515,7 +514,7 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
         _go().append_jsonl(
             _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
             {
-                "ts": utc_now_iso(),
+                "ts": _go().utc_now_iso(),
                 "type": "deps_sync_ok", "reason": reason, "source": source,
             },
         )
@@ -525,7 +524,7 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
         _go().append_jsonl(
             _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
             {
-                "ts": utc_now_iso(),
+                "ts": _go().utc_now_iso(),
                 "type": "deps_sync_error", "reason": reason, "source": source, "error": msg,
             },
         )
@@ -563,7 +562,7 @@ def safe_restart(
     if str(os.environ.get("OUROBOROS_DISABLE_MANAGED_UPDATES", "") or "").strip() == "1":
         _go().append_jsonl(
             _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {"ts": utc_now_iso(), "type": "managed_checkout_disabled",
+            {"ts": _go().utc_now_iso(), "type": "managed_checkout_disabled",
              "reason": reason, "target_branch": _go().BRANCH_DEV},
         )
         deps_ok, deps_msg = _go().sync_runtime_dependencies(reason=reason)
@@ -589,7 +588,7 @@ def safe_restart(
     _go().append_jsonl(
         _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
         {
-            "ts": utc_now_iso(),
+            "ts": _go().utc_now_iso(),
             "type": "safe_restart_dev_import_failed",
             "reason": reason,
             "branch": _go().BRANCH_DEV,

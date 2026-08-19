@@ -31,8 +31,9 @@ assisted path, never whole-file theirs); D35 is the G1 git_ops module-handle del
 §1.9-1 module-handle mechanism applied to the git_ops stream with its own id per the "separate
 delta id" rule: `init` rebinds REPO_DIR/DRIVE_ROOT/BRANCH_* and tests monkeypatch the capture
 plumbing and sibling members on the parent, so the G1 leaves read every parent-addressable name
-through the call-time handle `_go()`; per-leaf sets pinned in
-tests/test_module_handle_extraction.py);
+through the call-time handle `_go()` — including `utc_now_iso`, which the parent re-exports for
+exactly that reason, and excluding only the logger each leaf binds by the parent's name; per-leaf
+sets pinned in tests/test_module_handle_extraction.py);
 D36 is the DEL1 delegate-family module-handle
 delta — the same owner-approved §1.9/№8 mechanical exception as D18/D33, applied to the
 delegate-family size-debt split (delegate_custody.py, tools/delegate.py,

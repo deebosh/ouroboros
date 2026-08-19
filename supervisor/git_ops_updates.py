@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Tuple
 
-from ouroboros.utils import utc_now_iso
 
 
 def _go():
@@ -292,7 +291,7 @@ def compute_managed_update_status(fetch: bool = False) -> Dict[str, Any]:
                 "behind", "ahead",
             )
         }
-        snapshot["checked_at"] = utc_now_iso()
+        snapshot["checked_at"] = _go().utc_now_iso()
         update_state(lambda saved: saved.__setitem__("managed_update_cache", snapshot))
     except Exception:
         log.debug("managed update status cache save failed", exc_info=True)
@@ -401,7 +400,7 @@ def prepare_managed_update(
         "target_ref": status.get("target_ref") or "",
         "strategy": strategy,
         "keep_branch": keep_branch,
-        "requested_at": utc_now_iso(),
+        "requested_at": _go().utc_now_iso(),
     }
     if arm_intent:
         _go()._write_update_intent(update_intent)
@@ -409,7 +408,7 @@ def prepare_managed_update(
     _go().append_jsonl(
         _go().DRIVE_ROOT / "logs" / "supervisor.jsonl",
         {
-            "ts": utc_now_iso(),
+            "ts": _go().utc_now_iso(),
             "type": "ui_update_requested",
             "strategy": strategy,
             "status": status,
