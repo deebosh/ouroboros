@@ -2867,6 +2867,42 @@
    "is_error": false,
    "status": "ok"
   },
+  "shape:followup_cap_reached": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:followup_data_root_unresolved": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:followup_objective_required": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:followup_persist_failed": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:followup_run_at_invalid": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:followup_scheduled": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:followup_subagent_refused": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:followup_task_id_required": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "shape:followup_text_too_long": {
+   "is_error": false,
+   "status": "ok"
+  },
   "shape:git_error_untyped_text": {
    "is_error": false,
    "status": "error"

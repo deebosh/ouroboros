@@ -210,6 +210,22 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:subtask_depth_limit": Delta(False, "ok", True, "resource_constraint_blocked", "A.21", "a child beyond the depth limit was never scheduled; the limit is the constraint"),
     "shape:subagent_capability_mismatch": Delta(False, "ok", True, "argument_error", "A.21", "a profile that cannot satisfy the declared capabilities scheduled no child"),
     "shape:task_result_unknown_id": Delta(False, "ok", True, "unavailable", "A.21", "an id this tree never registered has no result to read"),
+    # Owner item A.22 — owner decision 2026-08-19 ("B": schedule_followup publishes
+    # native typed ToolResult; golden/corpus regeneration sanctioned). The adopted
+    # one-shot follow-up tool reported `ok` for every registration it REFUSED,
+    # because its sentences carry no identifier the adapter can key on: the same
+    # defect as A.21, on the tool that mints FUTURE ROOT TASKS, where "registered"
+    # and "refused" reading alike is the most expensive confusion in the family —
+    # an agent told to wait for an instant that will never come. The producer names
+    # each failure itself; every sentence is byte-identical.
+    "shape:followup_subagent_refused": Delta(False, "ok", True, "blocked", "A.22", "a delegated subagent may not mint future root tasks; the denial was reported as a registration"),
+    "shape:followup_task_id_required": Delta(False, "ok", True, "unavailable", "A.22", "no real task to own the durable record is an unavailable surface, not a scheduled follow-up"),
+    "shape:followup_run_at_invalid": Delta(False, "ok", True, "argument_error", "A.22", "an unparseable run_at scheduled nothing"),
+    "shape:followup_objective_required": Delta(False, "ok", True, "argument_error", "A.22", "an empty objective scheduled nothing"),
+    "shape:followup_text_too_long": Delta(False, "ok", True, "argument_error", "A.22", "an over-limit objective or context is refused whole — never truncated, never scheduled"),
+    "shape:followup_data_root_unresolved": Delta(False, "ok", True, "error", "A.22", "a drive root that could not be resolved wrote no record"),
+    "shape:followup_cap_reached": Delta(False, "ok", True, "resource_constraint_blocked", "A.22", "a follow-up beyond the per-task cap was never registered; the cap is the constraint"),
+    "shape:followup_persist_failed": Delta(False, "ok", True, "error", "A.22", "a follow-up the table refused to store does not exist"),
 })
 
 # Deltas the classifier WOULD produce for which no producer exists, recorded so a

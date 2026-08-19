@@ -685,3 +685,13 @@ merge_adopt_v6105_no_facade_rows = {
     "tests/test_review_agent_session_route.py::test_retry_of_a_pinned_session_health_checks_the_stored_account":
         "tests/test_review_session_delivery.py::test_retry_of_a_pinned_session_health_checks_the_stored_account",
 }
+
+
+# Lane followup, owner decision 2026-08-19 (answer "B": schedule_followup publishes a
+# native typed ToolResult; the golden/corpus regeneration it requires is sanctioned).
+# In-place row: the adopted tool keeps its path, name and every sentence — only the
+# code published beside the text is new, so there is nothing to re-export.
+followup_native_result_rows = {
+    "ouroboros/tools/followup.py::_handle_schedule_followup":
+        "ouroboros/tools/followup.py::_handle_schedule_followup",
+}

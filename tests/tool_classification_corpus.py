@@ -384,6 +384,51 @@ _PRODUCER_SHAPES = (
      "A read-only child has no shell/writable roots.", "TOOL_ARG_ERROR", ()),
     ("task_result_unknown_id", "get_task_result",
      "Task 4f2a1c: unknown or not yet registered", "LEGACY_UNAVAILABLE", ()),
+    # tools/followup.py — owner decision 2026-08-19 ("B"). Same blindness as the
+    # A.20/A.21 families, on the tool that mints FUTURE ROOT TASKS: every sentence
+    # is markerless ("ERROR: FOLLOWUP_…"), so no identifier and no (code, first
+    # line) pair can be harvested for any of them and the text corpus reads every
+    # refusal as an ordinary success. Without a shape the differential is blind to
+    # the whole family: a follow-up that was refused — by authority, by the pending
+    # cap, by a persist failure — could go on reporting ok and no case would move.
+    ("followup_subagent_refused", "schedule_followup",
+     "ERROR: FOLLOWUP_SUBAGENT_REFUSED: a delegated subagent holds narrower-than-parent "
+     "authority and may not mint future root tasks. Report the wait instant to your "
+     "parent instead; the parent (or the owner) decides whether to schedule a follow-up.",
+     "ACCESS_BLOCKED", ()),
+    ("followup_task_id_required", "schedule_followup",
+     "ERROR: FOLLOWUP_TASK_ID_REQUIRED: a durable follow-up must belong to a real task.",
+     "LEGACY_UNAVAILABLE", ()),
+    ("followup_run_at_invalid", "schedule_followup",
+     "ERROR: FOLLOWUP_RUN_AT_INVALID: 'soon' is not a parseable ISO 8601 instant. "
+     "Example: 2026-08-19T12:20:00+03:00 (naive times read as UTC).",
+     "TOOL_ARG_ERROR", ()),
+    ("followup_objective_required", "schedule_followup",
+     "ERROR: FOLLOWUP_OBJECTIVE_REQUIRED: write the future task's objective in plain language.",
+     "TOOL_ARG_ERROR", ()),
+    ("followup_text_too_long", "schedule_followup",
+     "ERROR: FOLLOWUP_TEXT_TOO_LONG: objective is 4001 chars; the limit is 4000. "
+     "Shorten it — nothing was truncated and nothing was scheduled.",
+     "TOOL_ARG_ERROR", ()),
+    ("followup_data_root_unresolved", "schedule_followup",
+     "ERROR: FOLLOWUP_DATA_ROOT_UNRESOLVED: task drive root is not under the owner data root",
+     "TOOL_ERROR", ()),
+    ("followup_cap_reached", "schedule_followup",
+     "ERROR: FOLLOWUP_CAP_REACHED: this task already holds 2 pending follow-up(s) of the "
+     "2 allowed: followup-root-1-a1b2c3 (fires at/after 2030-01-01T00:00:00+00:00); "
+     "followup-root-1-d4e5f6 (fires at/after 2030-02-01T00:00:00+00:00). Each fires once; "
+     "wait for one to fire, or the owner can disable/delete records from the Schedules surface.",
+     "RESOURCE_CONSTRAINT_BLOCKED", ()),
+    ("followup_persist_failed", "schedule_followup",
+     "ERROR: FOLLOWUP_PERSIST_FAILED: OSError: [Errno 28] No space left on device",
+     "TOOL_ERROR", ()),
+    ("followup_scheduled", "schedule_followup",
+     "FOLLOWUP_SCHEDULED: one-shot follow-up followup-root-1-a1b2c3 registered to fire at/after "
+     "2030-01-01T00:00:00+00:00 (next scheduler tick at/after that instant). It will enqueue an "
+     "ordinary root task through the supervisor scheduler under normal admission; pending "
+     "follow-ups for this task: 1/2. The record is durable in state/scheduled_tasks.json and "
+     "fires exactly once; the owner can disable or delete it from the Schedules surface.",
+     "OK", ()),
 )
 
 

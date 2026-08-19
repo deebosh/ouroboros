@@ -1175,6 +1175,14 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(merge_adopt_v6105_rows)
     existing_process_owner_rows.update(merge_adopt_v6105_rows)
     registry_extraction_no_facade_rows.update(merge_adopt_v6105_no_facade_rows)
+    # Lane followup (owner decision 2026-08-19, answer "B"): the adopted one-shot
+    # follow-up tool joins the T1 typed-result cutover IN PLACE — same path, same
+    # name, same sentences — so nothing is re-exported and the D02 id below carries
+    # the owner-approved retyping of refusals that used to report ok (item A.22).
+    followup_native_result_rows = dict(_inv.followup_native_result_rows)
+    implemented.update(followup_native_result_rows)
+    existing_process_owner_rows.update(followup_native_result_rows)
+    registry_extraction_no_facade_rows.update(followup_native_result_rows)
     # D02: the upstream v6.103.0 silent-ignore pin for a vacuous disposition is
     # re-pointed at the ratified disclosure contract (note + preserved native meta);
     # the replacement is named in the ledger so the SSOT, not just the commit
@@ -1407,7 +1415,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 else "D08"
                 if row["old path/symbol"] in s6_delta_rows
                 else "D02"
-                if row["old path/symbol"] in t2b_owner_delta_rows | a21_owner_delta_rows | set(d02_plan_seam_rows) | {
+                if row["old path/symbol"] in t2b_owner_delta_rows | a21_owner_delta_rows | set(d02_plan_seam_rows) | set(followup_native_result_rows) | {
                     "ouroboros/tools/registry.py::ToolEntry",
                     "ouroboros/tools/registry.py::ToolRegistry",
                     # T1: the classification cutover is a spec 4.3.3 tool-domain delta.
