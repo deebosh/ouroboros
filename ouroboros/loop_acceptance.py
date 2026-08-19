@@ -601,7 +601,7 @@ def _set_acceptance_decision(llm_trace: Dict[str, Any], decision: Dict[str, Any]
     reason = str(merged.get("reason") or "")
     if status not in ACCEPTANCE_DECISION_STATUSES:
         merged["status"] = ACCEPTANCE_FINALIZED_UNACCEPTED
-        reason = reason or status or _loop().ACCEPTANCE_REASON_UNSPECIFIED
+        reason = reason or status or ACCEPTANCE_REASON_UNSPECIFIED
     merged["reason"] = reason
     for key in ("agent_disposition", "agent_rationale"):
         if previous.get(key) and not merged.get(key):
@@ -672,7 +672,7 @@ def _collect_acceptance_obligations(llm_trace: Dict[str, Any], result: Any) -> N
             if row is not None:
                 if claimed_id not in touched_this_pass:
                     touched_this_pass.add(claimed_id)
-                    _loop()._reopen_obligation_row(row, finding)
+                    _reopen_obligation_row(row, finding)
                 continue
             unbound_note = f"re_raise_unbound:{claimed_id or 'missing_id'}"
         oid = "ob-" + hashlib.sha256(
@@ -687,7 +687,7 @@ def _collect_acceptance_obligations(llm_trace: Dict[str, Any], result: Any) -> N
             row = by_id[oid]
             if not kind and oid not in touched_this_pass:
                 touched_this_pass.add(oid)
-                _loop()._reopen_obligation_row(row, finding)
+                _reopen_obligation_row(row, finding)
             elif kind:
                 notes = row.setdefault("notes", [])
                 note = unbound_note or f"typed_new_matched_existing:{oid}"

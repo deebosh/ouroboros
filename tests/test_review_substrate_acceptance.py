@@ -376,7 +376,7 @@ def test_root_acceptance_agent_refs_reach_host_packet_beyond_trajectory_cap(
 ):
     from types import SimpleNamespace as NS
 
-    import ouroboros.loop as loop_mod
+    from ouroboros import loop_acceptance_review
     from ouroboros.loop_tool_execution import process_tool_results
     from ouroboros.tools.registry import ToolRegistry
     from ouroboros.tools.review import _handle_task_acceptance_review
@@ -433,7 +433,7 @@ def test_root_acceptance_agent_refs_reach_host_packet_beyond_trajectory_cap(
     registry._ctx.root_task_id = "root"
     registry._ctx.task_metadata = {"root_task_id": "root"}
     registry._ctx.task_contract = {}
-    host_ctx = loop_mod._TaskAcceptanceContext(
+    host_ctx = loop_acceptance_review._TaskAcceptanceContext(
         tools=registry,
         content="complete",
         task_id="root",
@@ -447,7 +447,7 @@ def test_root_acceptance_agent_refs_reach_host_packet_beyond_trajectory_cap(
         budget_profile=None,
         passes_done=0,
     )
-    host_evidence = loop_mod._build_host_acceptance_evidence(host_ctx)
+    host_evidence = loop_acceptance_review._build_host_acceptance_evidence(host_ctx)
 
     assert host_evidence["agent_supplied"]["receipt_ref"] == (
         "artifact://receipt-123"
@@ -580,10 +580,10 @@ def test_stale_parent_lineage_cannot_trigger_a_second_host_panel(monkeypatch, tm
 def test_host_acceptance_enforcement_impact_records_applied_action(tmp_path):
     from types import SimpleNamespace as NS
 
-    import ouroboros.loop as loop_mod
+    from ouroboros import loop_acceptance_review
 
     tool_ctx = NS(_task_acceptance_seen_bindings={})
-    ctx = loop_mod._TaskAcceptanceContext(
+    ctx = loop_acceptance_review._TaskAcceptanceContext(
         tools=NS(_ctx=tool_ctx),
         content="candidate",
         task_id="impact",
@@ -607,15 +607,15 @@ def test_host_acceptance_enforcement_impact_records_applied_action(tmp_path):
         request={},
     )
 
-    record = loop_mod._record_host_acceptance_run(ctx, degraded)
+    record = loop_acceptance_review._record_host_acceptance_run(ctx, degraded)
     assert record["enforcement_impact"] == "degrades_completion"
-    loop_mod._set_applied_host_acceptance_impact(
+    loop_acceptance_review._set_applied_host_acceptance_impact(
         record,
         degraded,
         requires_revision=True,
     )
     assert record["enforcement_impact"] == "requires_revision"
-    loop_mod._set_applied_host_acceptance_impact(
+    loop_acceptance_review._set_applied_host_acceptance_impact(
         record,
         degraded,
         requires_revision=False,

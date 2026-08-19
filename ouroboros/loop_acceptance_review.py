@@ -164,7 +164,7 @@ def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, An
         drive_root=ctx.drive_root,
         task_id=ctx.task_id,
         task_type=ctx.task_type,
-        agent_evidence=_loop()._latest_agent_acceptance_evidence(ctx.llm_trace),
+        agent_evidence=_latest_agent_acceptance_evidence(ctx.llm_trace),
         include_recent_commit=committed_this_turn,
         canonical_subject=str(ctx.content or ""),
         subtree_statuses=ctx.subtree_statuses,
@@ -187,7 +187,7 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
         run_review_request,
     )
 
-    evidence = ctx.evidence or _loop()._build_host_acceptance_evidence(ctx)
+    evidence = ctx.evidence or _build_host_acceptance_evidence(ctx)
     slots = reviewer_slots(effort=resolve_effort("review"), role_hint="task acceptance")
     request = ReviewRequest(
         surface="task_acceptance",
@@ -197,7 +197,7 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
         ),
         subject=str(ctx.content or ""),
         evidence=evidence,
-        checklist=_loop()._ACCEPTANCE_REVIEW_CHECKLIST,
+        checklist=_ACCEPTANCE_REVIEW_CHECKLIST,
         policy={
             "full_output_enters_context": False,
             "hardness": HARDNESS_ADVISORY_VISIBLE,
@@ -274,7 +274,7 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
 
 def _record_host_acceptance_run(ctx: _TaskAcceptanceContext, result: Any) -> Dict[str, Any]:
     """Append the authoritative host result after demoting agent-tool evidence."""
-    _loop()._mark_agent_acceptance_runs_advisory(ctx.llm_trace)
+    _mark_agent_acceptance_runs_advisory(ctx.llm_trace)
     for prior in ctx.llm_trace.get("review_runs") or []:
         if (
             isinstance(prior, dict)
@@ -342,7 +342,7 @@ def _apply_task_acceptance_result(
     )
 
     if record_run:
-        _loop()._record_host_acceptance_run(ctx, result)
+        _record_host_acceptance_run(ctx, result)
     dissent = dissent_findings(result)
     blocking_lane = ctx.mode == "required" and _loop().get_review_enforcement() == "blocking"
     # A REUSED panel (unchanged binding) is the SAME reviewer act applied
@@ -364,9 +364,9 @@ def _apply_task_acceptance_result(
     # contract-valid actors with the panel's own quorum; persisted for audit on
     # the authoritative run record regardless of which branch applies below.
     dialogue = aggregate_dialogue_status(
-        result, quorum=_loop()._acceptance_dialogue_quorum(result),
+        result, quorum=_acceptance_dialogue_quorum(result),
     )
-    _loop()._attach_dialogue_to_host_run(ctx.llm_trace, dialogue)
+    _attach_dialogue_to_host_run(ctx.llm_trace, dialogue)
     dialogue_terminal = dialogue["status"] != DIALOGUE_CONTINUE
     if task_acceptance_is_clean(result):
         ctx.tools._ctx._task_acceptance_reviewed = True
@@ -602,7 +602,7 @@ def _record_acceptance_infra_failure(ctx: _TaskAcceptanceContext, exc: Exception
         pass_index=ctx.passes_done,
     )
     safe_error = _loop()._extract_plain_text_from_content(str(exc))[:2000]
-    _loop()._mark_agent_acceptance_runs_advisory(ctx.llm_trace)
+    _mark_agent_acceptance_runs_advisory(ctx.llm_trace)
     run_record = {
         "request": {"surface": "task_acceptance", "task_id": ctx.task_id},
         "actors": [],
@@ -732,7 +732,7 @@ def _run_task_acceptance_review_once(
         for run in (llm_trace.get("review_runs") or [])
     )
     if agent_review_present:
-        _loop()._mark_agent_acceptance_runs_advisory(llm_trace)
+        _mark_agent_acceptance_runs_advisory(llm_trace)
         trigger = f"{trigger}_after_agent_advisory"
     elif agent_called:
         trigger = f"{trigger}_after_agent_tool"
@@ -819,7 +819,7 @@ def _run_task_acceptance_review_once(
         })
         emit_progress("Task acceptance review skipped: inside the finalization reserve.")
         return False
-    review_ctx = _loop()._TaskAcceptanceContext(
+    review_ctx = _TaskAcceptanceContext(
         tools=tools,
         content=content,
         task_id=task_id,
@@ -850,14 +850,14 @@ def _run_task_acceptance_review_once(
         from ouroboros.review_evidence import task_acceptance_evidence_revision
         from ouroboros.review_substrate import build_review_binding
 
-        review_ctx.evidence = _loop()._build_host_acceptance_evidence(review_ctx)
+        review_ctx.evidence = _build_host_acceptance_evidence(review_ctx)
         review_ctx.review_binding = build_review_binding(
             candidate=content,
             evidence=review_ctx.evidence,
-            fence_token_or_state=_loop()._direct_context_fence_state(tools._ctx, _fence_token),
+            fence_token_or_state=_direct_context_fence_state(tools._ctx, _fence_token),
         )
         binding_hash = str(review_ctx.review_binding.get("binding_hash") or "")
-        seen_bindings, prior_run = _loop()._prior_acceptance_run(
+        seen_bindings, prior_run = _prior_acceptance_run(
             tools._ctx, llm_trace, binding_hash,
         )
         reused_result = None
@@ -896,11 +896,11 @@ def _run_task_acceptance_review_once(
         passes_before_apply = int(
             getattr(tools._ctx, "_task_acceptance_improvement_passes", 0) or 0
         )
-        panel_result = reused_result or _loop()._execute_task_acceptance_panel(review_ctx)
+        panel_result = reused_result or _execute_task_acceptance_panel(review_ctx)
         run_record = (
             prior_run
             if reused_result is not None
-            else _loop()._record_host_acceptance_run(review_ctx, panel_result)
+            else _record_host_acceptance_run(review_ctx, panel_result)
         )
         if _loop()._task_acceptance_owner_generation_changed(tools._ctx):
             _loop()._supersede_task_acceptance_for_owner_followup(tools._ctx, llm_trace)
@@ -917,7 +917,7 @@ def _run_task_acceptance_review_once(
             evidence={},
         )
         fresh_evidence_revision = task_acceptance_evidence_revision(
-            _loop()._build_host_acceptance_evidence(fresh_review_ctx)
+            _build_host_acceptance_evidence(fresh_review_ctx)
         )
         frozen_evidence_revision = str(
             review_ctx.review_binding.get("evidence_revision") or ""
@@ -937,7 +937,7 @@ def _run_task_acceptance_review_once(
                 emit_progress,
             )
             return True
-        another_round = _loop()._apply_task_acceptance_result(
+        another_round = _apply_task_acceptance_result(
             review_ctx,
             panel_result,
             record_run=False,
@@ -955,7 +955,7 @@ def _run_task_acceptance_review_once(
                 "Task acceptance review superseded: an owner follow-up arrived during the panel."
             )
             return True
-        _loop()._set_applied_host_acceptance_impact(
+        _set_applied_host_acceptance_impact(
             run_record,
             panel_result,
             requires_revision=another_round,
@@ -963,4 +963,4 @@ def _run_task_acceptance_review_once(
         return another_round
     except Exception as exc:
         log.debug("Mandatory task acceptance review failed", exc_info=True)
-        return _loop()._record_acceptance_infra_failure(review_ctx, exc)
+        return _record_acceptance_infra_failure(review_ctx, exc)

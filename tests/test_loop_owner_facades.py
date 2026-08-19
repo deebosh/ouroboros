@@ -36,15 +36,16 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_emit_round_progress"
     ),
     "loop_acceptance": (
-        "_task_acceptance_eligible _begin_task_acceptance_fence _end_task_acceptance_fence _supersede_delivery_acceptance_binding _supersede_task_acceptance_for_owner_followup "
-        "_task_acceptance_owner_generation_changed _supersede_task_acceptance_for_evidence_change _task_acceptance_subtree_snapshot _mark_root_acceptance_checkpoint _latch_final_answer_marker "
-        "_server_web_allowed_by_task ACCEPTANCE_REASON_UNSPECIFIED ACCEPTANCE_DECISION_REASONS _set_acceptance_decision _collect_acceptance_obligations "
-        "_reopen_obligation_row _open_acceptance_obligations _dispose_obligations_on_clean_pass _format_obligations_clause _record_forced_acceptance_bypass"
+        "_task_acceptance_eligible _begin_task_acceptance_fence _end_task_acceptance_fence "
+        "_supersede_delivery_acceptance_binding _supersede_task_acceptance_for_owner_followup "
+        "_task_acceptance_owner_generation_changed _supersede_task_acceptance_for_evidence_change "
+        "_task_acceptance_subtree_snapshot _mark_root_acceptance_checkpoint _latch_final_answer_marker "
+        "_server_web_allowed_by_task _set_acceptance_decision _collect_acceptance_obligations "
+        "_open_acceptance_obligations _dispose_obligations_on_clean_pass _format_obligations_clause "
+        "_record_forced_acceptance_bypass"
     ),
     "loop_acceptance_review": (
-        "_ACCEPTANCE_REVIEW_CHECKLIST _TaskAcceptanceContext _acceptance_dialogue_quorum _attach_dialogue_to_host_run _mark_agent_acceptance_runs_advisory "
-        "_latest_agent_acceptance_evidence _build_host_acceptance_evidence _execute_task_acceptance_panel _record_host_acceptance_run _set_applied_host_acceptance_impact "
-        "_apply_task_acceptance_result _record_acceptance_infra_failure _prior_acceptance_run _direct_context_fence_state _run_task_acceptance_review_once"
+        "_run_task_acceptance_review_once"
     ),
     "loop_round_limits": (
         "_CompactionRoundContext _provider_failure_hint _provider_recovery_hint _task_deadline_epoch _mark_owner_stop_control_drained "
@@ -90,6 +91,16 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
 # retired (spec 1.9-15). Nothing outside the owning leaf reads these, so the
 # leaf owns the only binding and ouroboros.loop carries none.
 RETIRED_FROM_LOOP: dict[str, tuple[str, ...]] = {
+    "loop_acceptance_review": (
+        "_ACCEPTANCE_REVIEW_CHECKLIST _TaskAcceptanceContext _acceptance_dialogue_quorum "
+        "_attach_dialogue_to_host_run _mark_agent_acceptance_runs_advisory _latest_agent_acceptance_evidence "
+        "_build_host_acceptance_evidence _execute_task_acceptance_panel _record_host_acceptance_run "
+        "_set_applied_host_acceptance_impact _apply_task_acceptance_result _record_acceptance_infra_failure "
+        "_prior_acceptance_run _direct_context_fence_state"
+    ),
+    "loop_acceptance": (
+        "ACCEPTANCE_REASON_UNSPECIFIED ACCEPTANCE_DECISION_REASONS _reopen_obligation_row"
+    ),
     "loop_messages": (
         "_evict_stale_image_blocks _append_or_merge_user_content _visible_round_text"
     ),

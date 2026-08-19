@@ -22,14 +22,10 @@ from types import SimpleNamespace
 import pytest
 
 import ouroboros.loop as loop_mod
-from ouroboros.loop import (
-    ACCEPTANCE_DECISION_REASONS,
-    _apply_task_acceptance_result,
-    _record_acceptance_infra_failure,
-    _set_acceptance_decision,
-    _supersede_task_acceptance_for_evidence_change,
-    _supersede_task_acceptance_for_owner_followup,
-)
+from ouroboros import loop_acceptance_review
+from ouroboros.loop import _set_acceptance_decision, _supersede_task_acceptance_for_evidence_change, _supersede_task_acceptance_for_owner_followup
+from ouroboros.loop_acceptance_review import _apply_task_acceptance_result, _record_acceptance_infra_failure
+from ouroboros.loop_acceptance import ACCEPTANCE_DECISION_REASONS
 from ouroboros.outcomes import (
     ACCEPTANCE_ACCEPTED,
     ACCEPTANCE_FINALIZED_UNACCEPTED,
@@ -77,7 +73,7 @@ def _apply_ctx(tmp_path, *, prior_trace=None, passes_done=0, budget_profile=None
     )
     trace = dict(prior_trace or {})
     trace.setdefault("tool_calls", [{"tool": "write_file", "args": {"path": "x.py"}}])
-    return loop_mod._TaskAcceptanceContext(
+    return loop_acceptance_review._TaskAcceptanceContext(
         tools=SimpleNamespace(_ctx=tool_ctx),
         content="done",
         task_id="t",

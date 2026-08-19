@@ -650,7 +650,7 @@ def test_acceptance_panel_declines_wave_on_insufficient_budget(monkeypatch, tmp_
     """The acceptance admission decline returns a terminal DEGRADED without a
     single reviewer call (loop-side wiring of the shared budget gate)."""
     from types import SimpleNamespace
-    import ouroboros.loop as loop_mod
+    from ouroboros import loop_acceptance_review
     import ouroboros.review_substrate as rs
     from ouroboros.tools import review_helpers
 
@@ -665,14 +665,14 @@ def test_acceptance_panel_declines_wave_on_insufficient_budget(monkeypatch, tmp_
         lambda ctx, **k: {"fits": False, "estimated_wave_usd": 30.0, "remaining_usd": 1.0, "limit_usd": 50.0, "slots": 2},
     )
     tools = SimpleNamespace(_ctx=SimpleNamespace(task_id="t", drive_root=str(tmp_path), pending_events=[]))
-    ctx = loop_mod._TaskAcceptanceContext(
+    ctx = loop_acceptance_review._TaskAcceptanceContext(
         tools=tools, content="done", task_id="t", task_type="task",
         llm_trace={"tool_calls": []}, drive_root=tmp_path,
         messages=[{"role": "system", "content": ""}, {"role": "user", "content": "goal"}],
         emit_progress=lambda _m: None, mode="required", subtree_statuses=[],
         budget_profile=None, passes_done=0, evidence={"k": "v"},
     )
-    result = loop_mod._execute_task_acceptance_panel(ctx)
+    result = loop_acceptance_review._execute_task_acceptance_panel(ctx)
     assert calls["panel"] == 0
     assert result.aggregate_signal == "DEGRADED" and result.degraded
     assert any("review_wave_budget_insufficient" in r for r in result.degraded_reasons)

@@ -626,7 +626,7 @@ def test_root_exploration_log_is_task_local_and_bounded(harness):
 
 
 def _acceptance_ctx(tmp_path, *, passes_done, events=None):
-    import ouroboros.loop as loop_mod
+    from ouroboros import loop_acceptance_review
 
     tool_ctx = SimpleNamespace(
         _task_acceptance_reviewed=False, _task_acceptance_improvement_passes=passes_done,
@@ -634,7 +634,7 @@ def _acceptance_ctx(tmp_path, *, passes_done, events=None):
         task_metadata={}, task_contract={}, is_direct_chat=False, event_queue=events,
         end_acceptance_fence=lambda **_k: {"ok": True}, _task_acceptance_fence_token="tok",
     )
-    return loop_mod._TaskAcceptanceContext(
+    return loop_acceptance_review._TaskAcceptanceContext(
         tools=SimpleNamespace(_ctx=tool_ctx), content="done", task_id="acc-1", task_type="task",
         llm_trace={"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}, drive_root=None,
         messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m: None, mode="required",
@@ -658,6 +658,7 @@ def _fail_result():
 
 def test_required_blocking_acceptance_at_cap_terminalizes_blocked_with_typed_event(tmp_path, monkeypatch):
     import ouroboros.loop as loop_mod
+    from ouroboros import loop_acceptance_review
     from ouroboros.outcomes import derive_loop_outcome
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")  # 1 improvement pass
@@ -665,7 +666,7 @@ def test_required_blocking_acceptance_at_cap_terminalizes_blocked_with_typed_eve
     monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "blocking")
     events: queue.Queue = queue.Queue()
     ctx = _acceptance_ctx(tmp_path, passes_done=1, events=events)
-    another_round = loop_mod._apply_task_acceptance_result(ctx, _fail_result(), record_run=True)
+    another_round = loop_acceptance_review._apply_task_acceptance_result(ctx, _fail_result(), record_run=True)
     assert another_round is False
     decision = ctx.llm_trace["acceptance_decision"]
     assert decision["status"] == "finalized_unaccepted"
@@ -685,13 +686,14 @@ def test_required_blocking_acceptance_at_cap_terminalizes_blocked_with_typed_eve
 
 def test_advisory_acceptance_at_cap_keeps_finalized_unaccepted_semantics(tmp_path, monkeypatch):
     import ouroboros.loop as loop_mod
+    from ouroboros import loop_acceptance_review
     from ouroboros.outcomes import derive_loop_outcome
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
     monkeypatch.delenv("OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES", raising=False)
     monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "advisory")
     ctx = _acceptance_ctx(tmp_path, passes_done=1)
-    assert loop_mod._apply_task_acceptance_result(ctx, _fail_result(), record_run=True) is False
+    assert loop_acceptance_review._apply_task_acceptance_result(ctx, _fail_result(), record_run=True) is False
     decision = ctx.llm_trace["acceptance_decision"]
     assert decision["status"] == "finalized_unaccepted" and decision["reason"] == "capsule_spent"
     outcome = derive_loop_outcome("done", {}, ctx.llm_trace)

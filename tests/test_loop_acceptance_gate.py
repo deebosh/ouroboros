@@ -47,7 +47,7 @@ def test_set_acceptance_decision_collapses_unknown_status_fail_closed():
     minted, and it can only mint the canonical trio. A future writer that invents a
     fourth token gets `finalized_unaccepted` and its token survives as the reason —
     never a silent fourth owner-facing state, never a lost token."""
-    from ouroboros.loop import ACCEPTANCE_DECISION_REASONS
+    from ouroboros.loop_acceptance import ACCEPTANCE_DECISION_REASONS
     from ouroboros.outcomes import ACCEPTANCE_DECISION_STATUSES
 
     trace: dict = {}
@@ -76,7 +76,7 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
     import pathlib
     import re
 
-    from ouroboros.loop import ACCEPTANCE_DECISION_REASONS
+    from ouroboros.loop_acceptance import ACCEPTANCE_DECISION_REASONS
 
     # The v7 L-B split spread the writers over loop.py and its leaves; the
     # inventory below is the union over the whole loop family, so a writer

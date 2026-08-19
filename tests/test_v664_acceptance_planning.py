@@ -75,7 +75,7 @@ def test_acceptance_review_reserve_uses_existing_event_ewma(tmp_path, monkeypatc
 
 
 def test_acceptance_panel_persists_timing_to_canonical_root(tmp_path, monkeypatch):
-    import ouroboros.loop as loop
+    from ouroboros import loop_acceptance_review
     import ouroboros.review_evidence as evidence_mod
     import ouroboros.review_substrate as substrate
 
@@ -93,7 +93,7 @@ def test_acceptance_panel_persists_timing_to_canonical_root(tmp_path, monkeypatc
         "run_review_request",
         lambda *_a, **_k: SimpleNamespace(aggregate_signal="PASS"),
     )
-    ctx = loop._TaskAcceptanceContext(
+    ctx = loop_acceptance_review._TaskAcceptanceContext(
         tools=SimpleNamespace(_ctx=tool_ctx),
         content="deliverable",
         task_id="root-timing",
@@ -108,7 +108,7 @@ def test_acceptance_panel_persists_timing_to_canonical_root(tmp_path, monkeypatc
         passes_done=2,
     )
 
-    loop._execute_task_acceptance_panel(ctx)
+    loop_acceptance_review._execute_task_acceptance_panel(ctx)
 
     rows = [json.loads(line) for line in (canonical / "logs" / "events.jsonl").read_text().splitlines()]
     assert rows[-1]["task_id"] == "root-timing"
