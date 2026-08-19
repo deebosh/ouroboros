@@ -63,3 +63,14 @@ lb_loop_handle_symbols_by_owner = {
     "ouroboros/loop_delivery.py": "_compute_subagent_handoff _delivery_evidence_state _delivery_acceptance_binding _replace_delivery_candidate _forced_unaccepted_binding _live_delivery_candidate _current_delivery_candidate _degrade_retained_delivery_candidate _delivery_keep_allowed _arm_delivery_control _hold_delivery_for_skill_action _resolve_delivery_control _no_tool_final_answer",
     "ouroboros/loop_forced_finalization.py": "_direct_child_results _project_child_result_dispositions _record_forced_finalization _forced_orphan_note _undispositioned_children _maybe_enforce_child_absorption_gate _run_forced_children_acceptance _enforce_swarm_actions _finalize_forced_services _drain_forced_owner_directives _call_forced_model_once _publish_model_forced_candidate _publish_stale_forced_candidate _forced_fallback_result _forced_swarm_router_result _resolve_forced_delivery_control _forced_final_answer",
 }
+
+# v7 lane G1 (supervisor/git_ops.py split): leaf owner -> members whose moved
+# bodies read rebindable/monkeypatch-addressable git_ops globals through the
+# call-time handle _go() (D35; per-leaf sets pinned in
+# tests/test_module_handle_extraction.py).
+g1_git_ops_handle_symbols_by_owner = {
+    "git_ops_remotes.py": (
+        "configure_remote configure_personal_remote _configure_credential_helper "
+        "push_to_remote"
+    ),
+}

@@ -1294,6 +1294,22 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     existing_process_owner_rows.update(lane1a_update_plan_rows)
     for _lane1a_old in lane1a_carrier_delta_rows:
         s3_semantic_delta_ids[_lane1a_old] = "D34"
+    # v7 lane G1: the supervisor/git_ops.py ownership split — each cluster moves
+    # to its own supervisor/git_ops_*.py owner and every moved name keeps its
+    # git_ops facade re-export. Bodies reading rebindable/monkeypatch-addressable
+    # git_ops globals do so through the call-time handle _go() and ride D35 (the
+    # ratified §1.9-1 module-handle mechanism with the G1 stream's own id);
+    # bodies with no such reads move verbatim (delta none).
+    g1_git_ops_handle_rows = {
+        f"supervisor/git_ops.py::{symbol}": f"supervisor/{owner}::{symbol}"
+        for owner, symbols in _inv.g1_git_ops_handle_symbols_by_owner.items()
+        for symbol in symbols.split()
+    }
+    g1_git_ops_verbatim_rows: dict[str, str] = {}
+    implemented.update(g1_git_ops_handle_rows)
+    implemented.update(g1_git_ops_verbatim_rows)
+    existing_process_owner_rows.update(g1_git_ops_handle_rows)
+    existing_process_owner_rows.update(g1_git_ops_verbatim_rows)
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -1349,6 +1365,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 }
                 else "D18" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows)
                 else "D33" if row["old path/symbol"] in lb_loop_handle_rows
+                else "D35" if row["old path/symbol"] in g1_git_ops_handle_rows
                 else s3_semantic_delta_ids.get(row["old path/symbol"], "none")
             )
             assert delta["id"] == expected_delta and delta["note"]
@@ -1475,4 +1492,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # contract is that no row escapes classification, asserted below.
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
-    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35"})

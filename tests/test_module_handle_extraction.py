@@ -42,6 +42,10 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # loop keeps intercepting the moved bodies. An `if TYPE_CHECKING:` import of
 # annotation-only names does not violate the no-top-level-import rule below:
 # it never executes, so nothing is frozen at import time.
+# The supervisor/git_ops_*.py rows are the G1 git_ops split (`_go()` as the
+# call-time handle): `init` rebinds REPO_DIR/DRIVE_ROOT/BRANCH_* on the parent
+# and tests monkeypatch the capture plumbing and sibling members there, so the
+# moved bodies read every parent-addressable name through the handle.
 LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_append_or_merge_user_content", "_evict_stale_image_blocks", "_record_owner_directive", "_visible_round_text",
@@ -167,6 +171,10 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     "supervisor/update_merge_plan.py": ("supervisor/update_merge.py", "_um", frozenset({
         "_merge_head_sha", "managed_update_constitution_present",
+    })),
+    "supervisor/git_ops_remotes.py": ("supervisor/git_ops.py", "_go", frozenset({
+        "BRANCH_DEV", "REPO_DIR", "_configure_credential_helper", "_has_remote",
+        "configure_remote", "ensure_official_update_remote", "git_capture",
     })),
 }
 

@@ -1890,103 +1890,13 @@ def prepare_managed_update(
 from supervisor.update_recovery import promote_branch_exact, rollback_to_version  # noqa: E402,F401
 
 
-def configure_remote(repo_slug: str, token: str) -> Tuple[bool, str]:
-    """Configure origin while storing the token in git credential helper."""
-    if not repo_slug or not token:
-        return False, "Missing repo slug or token"
-
-    clean_url = f"https://github.com/{repo_slug}.git"
-
-    if _has_remote("origin"):
-        rc, _, err = git_capture(["git", "remote", "set-url", "origin", clean_url])
-    else:
-        rc, _, err = git_capture(["git", "remote", "add", "origin", clean_url])
-    if rc != 0:
-        return False, f"Failed to configure remote: {err}"
-
-    _configure_credential_helper(repo_slug, token)
-    return True, "ok"
-
-
-def configure_personal_remote(
-    repo_slug: str,
-    token: str,
-    *,
-    auto_fork: bool = True,
-    confirm_replace_origin: bool = False,
-) -> Tuple[bool, str, str]:
-    """Configure the personal persistence remote (`origin`), ensuring `managed` exists."""
-    if not token:
-        return False, "Missing GitHub token", ""
-    # Ensure the official update path lives on `managed` BEFORE (re)pointing
-    # `origin` at the personal repo, so replacing a clone-default `origin` that
-    # still points at the official upstream never orphans the official update
-    # remote. Shared by every caller (startup + Settings save). Best-effort:
-    # personal-origin configuration proceeds even if this step fails.
-    try:
-        ensure_official_update_remote()
-    except Exception:
-        log.warning("Official update remote setup failed during personal remote config", exc_info=True)
-    resolved_slug = str(repo_slug or "").strip()
-    warnings: List[str] = []
-    # Always validate a configured slug (rejects the official repo and origin
-    # conflicts); only empty-slug fork resolution is gated on auto_fork.
-    if resolved_slug or auto_fork:
-        try:
-            from ouroboros.repo_remotes import ensure_personal_origin_target
-
-            result = ensure_personal_origin_target(
-                REPO_DIR,
-                token,
-                configured_repo=resolved_slug,
-                confirm_replace_origin=confirm_replace_origin,
-            )
-        except Exception as exc:
-            return False, f"Personal remote provisioning failed: {exc}", ""
-        if not result.ok:
-            return False, result.message or result.action or "personal remote provisioning failed", ""
-        resolved_slug = result.repo_slug
-        warnings = list(result.warnings or [])
-    if not resolved_slug:
-        return False, "Missing repo slug", ""
-    ok, msg = configure_remote(resolved_slug, token)
-    if not ok:
-        return ok, msg, resolved_slug
-    if warnings:
-        msg = msg + " (" + "; ".join(warnings[:5]) + ")"
-    return True, msg, resolved_slug
-
-
-def _configure_credential_helper(repo_slug: str, token: str) -> None:
-    """Store credentials in repo-local .git/credentials, not global state."""
-    cred_path = REPO_DIR / ".git" / "credentials"
-    git_capture([
-        "git", "config", "--local", "credential.helper",
-        f"store --file={cred_path}",
-    ])
-    cred_line = f"https://x-access-token:{token}@github.com"
-    try:
-        cred_path.write_text(cred_line + "\n", encoding="utf-8")
-        cred_path.chmod(0o600)
-    except Exception as e:
-        log.warning("Failed to write repo credentials file: %s", e)
-
-
-def push_to_remote(branch: Optional[str] = None, push_tags: bool = True) -> Tuple[bool, str]:
-    """Push current branch (and optionally tags) to origin."""
-    if not _has_remote("origin"):
-        return False, "No remote configured"
-
-    target = branch or BRANCH_DEV
-    rc, out, err = git_capture(["git", "push", "-u", "origin", target])
-    if rc != 0:
-        return False, f"git push failed: {err}"
-
-    result = f"Pushed {target} to origin"
-    if push_tags:
-        rc_t, _, err_t = git_capture(["git", "push", "origin", "--tags"])
-        if rc_t != 0:
-            result += f" (tags push failed: {err_t})"
-        else:
-            result += " + tags"
-    return True, result
+# The personal persistence remote (`origin`) surface lives in
+# supervisor/git_ops_remotes.py (G1 split); re-exported because callers/tests
+# address it through the git_ops facade (cycle-free: the leaf imports git_ops
+# only at call time through its _go() handle).
+from supervisor.git_ops_remotes import (  # noqa: E402,F401
+    _configure_credential_helper,
+    configure_personal_remote,
+    configure_remote,
+    push_to_remote,
+)
