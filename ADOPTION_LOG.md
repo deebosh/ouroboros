@@ -308,8 +308,8 @@ Import retargets in the two new upstream suites (`test_delegation_account_pin.py
 | migration | `scripts/v7_evidence.py check-migration` | `MIGRATION_v7.md OK`, rc=0 |
 | migration script | `scripts/v7_migration.py` | rc=0 |
 | node | `cd web && npm test` | **581 pass / 0 fail** |
-| full parallel | `pytest tests/ -q -n 16` (default addopts) | 3 failures on the first pass, all fixed (§16); clean on re-run |
-| serial | `pytest tests/ -q -m serial` | rc=0, 100%, zero failures |
+| full parallel | `pytest tests/ -q -n 16` (default addopts) | **rc=0 — 10648 passed, 15 skipped, 0 failed** (3 failures on the first pass, all fixed — §16) |
+| serial | `pytest tests/ -q -m serial` | **rc=0 — 431 passed, 12 skipped, 0 failed** |
 | ledger | `pytest tests/test_v7_migration_ledger.py tests/test_v7_prologue_evidence.py` | three rounds: an inventory desync, a facade disagreement, and finally the registration the ledger test requires — see §18 |
 
 ## 16. What the FULL battery caught (and the fixes)
