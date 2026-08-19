@@ -293,7 +293,7 @@ git_extraction_symbols_by_owner = {
 # splits into review-prefixed owner leaves. Two parent-aware maps, one per row
 # class: members moved byte-identical (delta "none", "verbatim" rows) and
 # members whose bodies read rebindable parent facade bindings through the
-# call-time handles _rev()/_car() (delta D35). Parent -> owner -> moved symbols.
+# call-time handles _rev()/_car() (delta D37). Parent -> owner -> moved symbols.
 lc_review_verbatim_symbols_by_owner = {
     "ouroboros/tools/review.py": {
         "ouroboros/tools/review_multi_model.py": "MAX_MODELS CONCURRENCY_LIMIT DEFAULT_REVIEW_MODEL_TIMEOUT_SEC _CONSTITUTIONAL_PREAMBLE _review_model_timeout_sec _handle_multi_model_review _review_output_budget _parse_model_response",

@@ -1287,7 +1287,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     existing_process_owner_rows.update(del1_handle_rows)
     # v7 stream L lane L-C: review-stack owner leaves (parent-aware maps live in
     # _v7_ledger_inventories). Handle rows read rebindable parent facade bindings
-    # through the call-time handles _rev()/_car() (delta D35, sets pinned in
+    # through the call-time handles _rev()/_car() (delta D37, sets pinned in
     # tests/test_module_handle_extraction.py); verbatim rows moved byte-identical.
     def _lc_rows(maps):
         return {f"{parent}::{s}": f"{owner}::{s}" for parent, owners in maps.items()
@@ -1356,6 +1356,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 else "D35" if row["old path/symbol"] in g1_git_ops_handle_rows
                 else "D36" if row["old path/symbol"] in del1_handle_rows
                 else "D35" if row["old path/symbol"] in lc_review_handle_rows
+                else "D37" if row["old path/symbol"] in lc_review_handle_rows
                 else s3_semantic_delta_ids.get(row["old path/symbol"], "none")
             )
             assert delta["id"] == expected_delta and delta["note"]
@@ -1484,3 +1485,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
     assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35", "D36"})
     assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D37"})
