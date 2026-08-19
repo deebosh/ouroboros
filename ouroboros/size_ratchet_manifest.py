@@ -6,7 +6,6 @@ GIANT_PATHS = (
 )
 
 MODULE_DEBT_1500 = (
-    "ouroboros/agent_task_pipeline.py",
     "ouroboros/usage_accounting.py",
 )
 
@@ -88,6 +87,7 @@ BAND_PATHS = {
     "launcher.py": None,
     "ouroboros/agent.py": "per-worker agent orchestrator (Env, OuroborosAgent, make_agent) after the delegated-child dispatch seam was extracted into ouroboros/agent_dispatch.py behind the compatibility facade (v7 lane L-C2)",
     "ouroboros/agent_startup_checks.py": None,
+    "ouroboros/agent_task_pipeline.py": "task pipeline after the L-C2 synthesis extraction; orchestration wiring, still shrinking with the campaign",
     "ouroboros/claudexor_runtime.py": None,
     "ouroboros/context.py": None,
     "ouroboros/delegate_custody.py": "durable custody row owner after the DEL1 reconciliation split: the event vocabulary, replay, settlement, cancellation and containment-fault writers stay with the rows they author while the sweeps live in delegate_custody_reconcile.py behind the compatibility facade",

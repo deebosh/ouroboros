@@ -354,6 +354,9 @@ lc2_verbatim_symbols_by_owner = {
     "ouroboros/agent.py": {
         "ouroboros/agent_dispatch.py": "dispatch_executor_note executor_blocked_outcome _record_executor_resolution _blocked_executor_terminal _budget_exhausted_message _budget_resume_policy _queued_budget_exhausted_message _physical_calls_after_budget_rail _initial_effort_for resolve_dispatch_axes _DELEGATE_VERBS preflight_delegate_visibility reset_nanny_economics_marks emit_dispatch_resolution capability_delta_prompt_block",
     },
+    "ouroboros/agent_task_pipeline.py": {
+        "ouroboros/post_task_synthesis.py": "build_trace_summary _update_improvement_backlog _apply_reflection_memory_actions _child_task_evidence _pre_synthesis_usage_snapshot _compact_review_projection _TASK_SUMMARY_PROMPT _summary_row_cost_fields _run_task_summary _run_chat_consolidation _run_scratchpad_consolidation _run_reflection",
+    },
 }
 lc2_handle_symbols_by_owner = {
     "ouroboros/agent.py": {

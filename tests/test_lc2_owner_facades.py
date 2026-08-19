@@ -25,6 +25,13 @@ LC2_LEAF_OWNERS: dict[str, tuple[str, str]] = {
         "_initial_effort_for resolve_dispatch_axes _DELEGATE_VERBS preflight_delegate_visibility "
         "reset_nanny_economics_marks emit_dispatch_resolution capability_delta_prompt_block"
     ),
+    "ouroboros.post_task_synthesis": (
+        "ouroboros.agent_task_pipeline",
+        "build_trace_summary _update_improvement_backlog _apply_reflection_memory_actions "
+        "_child_task_evidence _pre_synthesis_usage_snapshot _compact_review_projection "
+        "_TASK_SUMMARY_PROMPT _summary_row_cost_fields _run_task_summary _run_chat_consolidation "
+        "_run_scratchpad_consolidation _run_reflection"
+    ),
 }
 
 
