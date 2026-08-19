@@ -15,7 +15,6 @@ GIANT_PATHS = (
 MODULE_DEBT_1500 = (
     "ouroboros/agent.py",
     "ouroboros/agent_task_pipeline.py",
-    "ouroboros/delegate_custody.py",
     "ouroboros/review_execution.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/delegate.py",
@@ -111,6 +110,7 @@ BAND_PATHS = {
     "ouroboros/agent_startup_checks.py": None,
     "ouroboros/claudexor_runtime.py": None,
     "ouroboros/context.py": None,
+    "ouroboros/delegate_custody.py": "durable custody row owner after the DEL1 reconciliation split: the event vocabulary, replay, settlement, cancellation and containment-fault writers stay with the rows they author while the sweeps live in delegate_custody_reconcile.py behind the compatibility facade",
     "ouroboros/extension_process_runner.py": None,
     "ouroboros/gateway/contracts.py": None,
     "ouroboros/gateway/extensions.py": None,

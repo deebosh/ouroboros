@@ -665,20 +665,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     )
     existing_process_owner_rows.add("tests/test_plan_spec.py::_parse_plan_review_control")
     # v7 stream S3: supervisor/events.py split into per-family owner modules.
-    s3_events_symbols_by_owner = {
-        "events_chat_delivery.py": "HOST_NARRATION _bound_project_chat_id _handle_typing_start _DELIVERED_MESSAGE_IDS _register_delivered _handle_send_message _handle_send_photo _handle_send_video _handle_send_document",
-        "events_subagent_admission.py": "_GIT_UNBORN_HEAD _is_active_subagent_task _active_subagent_count _task_own_id _iter_tree_subagent_tasks _depth_reservation_admits _subagent_cap_blocks _subagent_rejection_meta _subagent_scheduled_meta _send_subagent_rejection _record_delegation_constraint _compose_subagent_text _validate_external_workspace _external_workspace_head _resolve_subagent_constraint",
-        "events_schedule_task.py": "_handle_schedule_task VALID_SUBAGENT_MEMORY_MODES _PARENT_CONTEXT_MARKER _PARENT_CONTEXT_END _extract_task_description_and_context _format_task_for_dedup _build_scheduled_task_payload _find_duplicate_task _cleanup_rejected_worktree _reject_schedule_task _reject_if_no_chat_target",
-        "events_project_routing.py": "_emit_routing_receipt _publish_routing_ack _rollback_promoted_pending _persist_promote_rejection _prepare_promote_source_off_loop _handle_promote_chat_to_task _handle_routing_manual_target _handle_project_digest _handle_ensure_project_scope",
-        "events_coop_checkpoint.py": "_COOP_CHECKPOINT_INFLIGHT _COOP_CHECKPOINT_DROPPED _COOP_CHECKPOINT_LOCK _spawn_coop_checkpoint _checkpoint_coop_roots_on_root_done _maybe_checkpoint_coop_on_tree_quiescence",
-        "events_evolution_done.py": "_handle_evolution_task_done",
-        "events_task_done.py": "_authoritative_terminal_cost _task_done_review_projection _PROVIDER_DEATH_NOTIFIED _maybe_notify_provider_death _finish_task_done_dispatch _resolve_lifecycle_fault _task_done_durable_fault _handle_task_done",
-        "events_budget.py": "_handle_llm_usage _set_root_budget_pause_locked _handle_budget_pause _handle_budget_root_fence _handle_review_wave_budget_insufficient",
-        "events_worker_reports.py": "_handle_task_heartbeat _handle_task_dispatch_resolved _handle_task_metrics _handle_log_event _handle_skill_lifecycle _handle_acceptance_fence _handle_external_wait_lease",
-        "events_runtime_controls.py": "_handle_deep_self_review_request _handle_promote_to_stable _handle_cancel_task _handle_toggle_evolution _handle_toggle_consciousness _handle_owner_message_injected",
-        # The owner-stop backstop joins the existing transitions owner, not a new module.
-        "queue_transitions.py": "_close_campaign_after_owner_stop",
-    }
+    s3_events_symbols_by_owner = _inv.s3_events_symbols_by_owner
     s3_events_rows = {
         f"supervisor/events.py::{symbol}": f"supervisor/{owner}::{symbol}"
         for owner, symbols in s3_events_symbols_by_owner.items()
@@ -739,12 +726,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "retired:supervisor.state owns the queue snapshot path; the queue reads it through the module at use time"
     )
     # S3b: the module-handle extraction of the queue (delta D18).
-    s3b_queue_handle_symbols_by_owner = {
-        "queue_snapshot.py": "_kept_service_pids parse_iso_to_ts persist_queue_snapshot restore_pending_from_snapshot",
-        "queue_timeouts.py": "_enforce_task_timeouts_locked _has_live_descendant _has_pending_descendant _is_descendant_of _subtree_progressing _task_deadline_ts _task_drive_for_task enforce_task_timeouts",
-        "queue_schedules.py": "_SKILL_SCHEDULE_SYNC_INTERVAL_SEC _last_skill_schedule_sync _schedule_running_or_queued _scheduled_tasks_path _task_from_schedule _write_scheduled_tasks check_scheduled_tasks list_scheduled_tasks remove_scheduled_task resync_skill_schedules sync_skill_schedules upsert_scheduled_task",
-        "queue_evolution.py": "_deliver_pending_owner_report enqueue_evolution_task_if_needed get_evolution_status_snapshot queue_deep_self_review_task",
-    }
+    s3b_queue_handle_symbols_by_owner = _inv.s3b_queue_handle_symbols_by_owner
     s3b_queue_handle_rows = {
         f"supervisor/queue.py::{symbol}": f"supervisor/{owner}::{symbol}"
         for owner, symbols in s3b_queue_handle_symbols_by_owner.items()
@@ -1314,6 +1296,23 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(g1_git_ops_verbatim_rows)
     existing_process_owner_rows.update(g1_git_ops_handle_rows)
     existing_process_owner_rows.update(g1_git_ops_verbatim_rows)
+    # v7 lane DEL1: the delegate family splits into cohesive owner leaves; every
+    # moved name keeps its parent facade re-export. Handle rows ride delta D36
+    # (sets pinned in tests/test_module_handle_extraction.py); the rest verbatim.
+    del1_verbatim_rows = {
+        f"{parent}::{symbol}": f"{owner}::{symbol}"
+        for parent, owners in _inv.del1_verbatim_symbols_by_parent.items()
+        for owner, symbols in owners.items() for symbol in symbols.split()
+    }
+    del1_handle_rows = {
+        f"{parent}::{symbol}": f"{owner}::{symbol}"
+        for parent, owners in _inv.del1_handle_symbols_by_parent.items()
+        for owner, symbols in owners.items() for symbol in symbols.split()
+    }
+    implemented.update(del1_verbatim_rows)
+    implemented.update(del1_handle_rows)
+    existing_process_owner_rows.update(del1_verbatim_rows)
+    existing_process_owner_rows.update(del1_handle_rows)
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -1370,6 +1369,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
                 else "D18" if row["old path/symbol"] in (s3b_queue_handle_rows | s3b_pool_handle_rows)
                 else "D33" if row["old path/symbol"] in lb_loop_handle_rows
                 else "D35" if row["old path/symbol"] in g1_git_ops_handle_rows
+                else "D36" if row["old path/symbol"] in del1_handle_rows
                 else s3_semantic_delta_ids.get(row["old path/symbol"], "none")
             )
             assert delta["id"] == expected_delta and delta["note"]

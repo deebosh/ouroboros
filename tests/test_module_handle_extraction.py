@@ -47,6 +47,17 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 # and tests monkeypatch the capture plumbing and sibling members there, so the
 # moved bodies read every parent-addressable name through the handle.
 LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
+    # The DEL1 delegate-family rows (delta D35) follow the same owner-approved
+    # mechanical exception: parent names that tests rebind on the historical
+    # module surface are read through the call-time handle, everything else
+    # moved verbatim or imports from its true owner.
+    "ouroboros/delegate_custody_reconcile.py": ("ouroboros/delegate_custody.py", "_custody", frozenset({
+        "RECONCILED", "RunCustody", "STARTED", "START_FAILED", "START_REQUESTED", "TERMINAL_STATES",
+        "_CUSTODY", "_iter_rows", "_reconcile_one", "cancel_and_verify", "close_absent_run",
+        "daemon_says_absent", "emit", "event_log_path", "is_terminal", "open_runs",
+        "output_disposition", "pending_invocations", "record_containment_fault",
+        "record_settled_unread", "record_started", "replay", "settle_run",
+    })),
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_append_or_merge_user_content", "_evict_stale_image_blocks", "_record_owner_directive", "_visible_round_text",
     })),
