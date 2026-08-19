@@ -210,6 +210,8 @@ def test_nonforced_resolver_treats_unknown_verb_object_as_protocol_not_prose(tmp
     to the owner). It is control intent: the resolver keeps its repair semantics
     (one repair round), never adopting the raw object as the answer."""
     loop, registry, limit_ctx, trace = _forced_test_context(tmp_path)
+    from ouroboros import loop_delivery
+
     candidate = loop._replace_delivery_candidate(
         registry, limit_ctx, trace, "Retained complete answer.", control="candidate",
     )
@@ -217,7 +219,7 @@ def test_nonforced_resolver_treats_unknown_verb_object_as_protocol_not_prose(tmp
     registry._ctx._delivery_control_required = False
     unknown_verb = json.dumps({"delivery_control": "finalize"})
 
-    status, text = loop._resolve_delivery_control(
+    status, text = loop_delivery._resolve_delivery_control(
         unknown_verb, registry, limit_ctx, trace,
     )
 
@@ -227,7 +229,7 @@ def test_nonforced_resolver_treats_unknown_verb_object_as_protocol_not_prose(tmp
     assert "DELIVERY_CONTROL_REPAIR" in str(limit_ctx.messages[-1]["content"])
 
     # Second failure after the one repair round degrades to the retained answer.
-    status2, text2 = loop._resolve_delivery_control(
+    status2, text2 = loop_delivery._resolve_delivery_control(
         unknown_verb, registry, limit_ctx, trace,
     )
     assert status2 == "degraded"

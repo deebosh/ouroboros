@@ -225,7 +225,7 @@ def _delivery_acceptance_binding(
 ) -> Dict[str, Any]:
     """Refresh a candidate from one exact, complete, active host-root verdict."""
 
-    binding = _loop()._unaccepted_delivery_binding(tools, candidate_hash)
+    binding = _unaccepted_delivery_binding(tools, candidate_hash)
     review_decision = llm_trace.get("review_decision") if isinstance(llm_trace.get("review_decision"), dict) else {}
     expected_panel = str(review_decision.get("panel_id") or "")
     expected_binding = str(review_decision.get("binding_hash") or "")
@@ -317,7 +317,7 @@ def _replace_delivery_candidate(
         revision=revision,
         evidence_revision=evidence_revision,
         evidence_fingerprint=evidence_fingerprint,
-        acceptance_binding=_loop()._unaccepted_delivery_binding(tools, content_hash),
+        acceptance_binding=_unaccepted_delivery_binding(tools, content_hash),
         finalization_control=control,
     )
     tools._ctx._delivery_candidate = candidate
@@ -348,7 +348,7 @@ def _forced_unaccepted_binding(
 ) -> Dict[str, Any]:
     """Bind a newly generated forced answer without borrowing an older verdict."""
 
-    binding = _loop()._unaccepted_delivery_binding(tools, candidate.content_sha256)
+    binding = _unaccepted_delivery_binding(tools, candidate.content_sha256)
     binding.update({
         "acceptance_status": "unaccepted",
         "authoritative": False,
@@ -406,7 +406,7 @@ def _degrade_retained_delivery_candidate(
     candidate.degraded = True
     candidate.degraded_reason = reason_code
     candidate.finalization_control = control
-    _loop()._ensure_explicit_acceptance_binding(candidate)
+    _ensure_explicit_acceptance_binding(candidate)
     tools = getattr(ctx, "tools", None)
     if tools is not None:
         _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
@@ -488,9 +488,9 @@ def _arm_delivery_control(
     tools._ctx._delivery_control_required = True
     _loop()._append_or_merge_user_message(
         ctx.messages,
-        _loop()._delivery_control_prompt(
+        _delivery_control_prompt(
             candidate,
-            keep_allowed=_loop()._delivery_keep_allowed(
+            keep_allowed=_delivery_keep_allowed(
                 candidate, evidence_revision, evidence_fingerprint,
             ),
         ),
@@ -599,7 +599,7 @@ def _resolve_delivery_control(
     valid = False
     replacement = ""
     if selected == "keep" and set(parsed) == {"delivery_control"}:
-        valid = _loop()._delivery_keep_allowed(
+        valid = _delivery_keep_allowed(
             candidate, evidence_revision, evidence_fingerprint,
         )
         error = "keep cannot bind changed evidence; send replace with the complete answer"
@@ -613,7 +613,7 @@ def _resolve_delivery_control(
     if valid and selected == "keep":
         tools._ctx._delivery_control_required = False
         candidate.finalization_control = "keep"
-        candidate.acceptance_binding = _loop()._delivery_acceptance_binding(
+        candidate.acceptance_binding = _delivery_acceptance_binding(
             tools, llm_trace, candidate.content_sha256,
         )
         _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
@@ -636,9 +636,9 @@ def _resolve_delivery_control(
         _loop()._append_or_merge_user_message(
             ctx.messages,
             "[DELIVERY_CONTROL_REPAIR] Invalid finalization control: " + error + ".\n"
-            + _loop()._delivery_control_prompt(
+            + _delivery_control_prompt(
                 candidate,
-                keep_allowed=_loop()._delivery_keep_allowed(
+                keep_allowed=_delivery_keep_allowed(
                     candidate, evidence_revision, evidence_fingerprint,
                 ),
             ),
@@ -657,7 +657,7 @@ def _resolve_delivery_control(
     # candidate/evidence pair before publication.
     candidate.evidence_revision = evidence_revision
     candidate.evidence_fingerprint = evidence_fingerprint
-    candidate.acceptance_binding = _loop()._unaccepted_delivery_binding(
+    candidate.acceptance_binding = _unaccepted_delivery_binding(
         tools, candidate.content_sha256,
     )
     llm_trace["reasoning_notes"].append(
@@ -688,7 +688,7 @@ def _no_tool_final_answer(
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """Run the no-tool finalization gates; ``None`` requests another model round."""
     messages = limit_ctx.messages
-    control_state, controlled_content = _loop()._resolve_delivery_control(
+    control_state, controlled_content = _resolve_delivery_control(
         content, tools, limit_ctx, llm_trace,
     )
     if control_state == "retry":
@@ -709,7 +709,7 @@ def _no_tool_final_answer(
         str(content or ""), messages, tools, llm_trace, emit_progress,
     ):
         return None
-    handoff_msg = _loop()._compute_subagent_handoff(tools, limit_ctx.drive_root, limit_ctx.task_id, content)
+    handoff_msg = _compute_subagent_handoff(tools, limit_ctx.drive_root, limit_ctx.task_id, content)
     if handoff_msg:
         if content and content.strip():
             messages.append({"role": "assistant", "content": content})
@@ -741,7 +741,7 @@ def _no_tool_final_answer(
         # next round may run the required tool or provide the historically
         # allowed reconsidered full answer, but a typed keep cannot close it.
         if skill_finalization_injected_now:
-            _loop()._hold_delivery_for_skill_action(tools, llm_trace)
+            _hold_delivery_for_skill_action(tools, llm_trace)
         else:
             _loop()._arm_delivery_control(tools, limit_ctx, llm_trace)
         return None
@@ -839,7 +839,7 @@ def _no_tool_final_answer(
         return None
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if isinstance(candidate, _loop().DeliveryCandidate):
-        candidate.acceptance_binding = _loop()._delivery_acceptance_binding(
+        candidate.acceptance_binding = _delivery_acceptance_binding(
             tools, llm_trace, candidate.content_sha256,
         )
         _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
@@ -946,7 +946,7 @@ def _no_tool_final_answer(
         _loop()._arm_delivery_control(tools, limit_ctx, llm_trace)
         return None
     if isinstance(candidate, _loop().DeliveryCandidate):
-        candidate.acceptance_binding = _loop()._delivery_acceptance_binding(
+        candidate.acceptance_binding = _delivery_acceptance_binding(
             tools, llm_trace, candidate.content_sha256,
         )
         _loop()._publish_delivery_candidate(tools, candidate, llm_trace)

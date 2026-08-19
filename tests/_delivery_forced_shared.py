@@ -74,7 +74,9 @@ def _bind_host_pass(loop, registry, trace, candidate):
         "enforcement_impact": "allows_completion",
     }
     trace["review_runs"] = [run]
-    candidate.acceptance_binding = loop._delivery_acceptance_binding(
+    from ouroboros import loop_delivery
+
+    candidate.acceptance_binding = loop_delivery._delivery_acceptance_binding(
         registry,
         trace,
         candidate.content_sha256,

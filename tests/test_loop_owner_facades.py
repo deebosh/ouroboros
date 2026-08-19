@@ -61,16 +61,16 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_run_cross_model_fallback_chain _rebind_context_fit_plan _RoundModelCallContext _call_round_model"
     ),
     "loop_budget": (
-        "_check_budget_limits _resolve_task_cost_ceiling _TREE_ACCOUNTING_MAX_STALE_SEC _loop_tree_accounting _soft_land_exhausted_ceiling "
-        "_service_finalization_evidence _LoopExitContext _handle_budget_exceeded _cleanup_loop_resources _service_identity_projection "
-        "_finalize_task_services _prepare_post_tool_budget_context"
+        "_check_budget_limits _resolve_task_cost_ceiling _TREE_ACCOUNTING_MAX_STALE_SEC _loop_tree_accounting "
+        "_soft_land_exhausted_ceiling _service_finalization_evidence _LoopExitContext _handle_budget_exceeded "
+        "_cleanup_loop_resources _finalize_task_services _prepare_post_tool_budget_context"
     ),
     "loop_delivery": (
-        "DeliveryCandidate _swarm_handoff_attempt _compute_subagent_handoff _delivery_evidence_state _unaccepted_delivery_binding "
-        "_delivery_acceptance_binding _publish_delivery_candidate _replace_delivery_candidate _ensure_explicit_acceptance_binding _forced_unaccepted_binding "
-        "_live_delivery_candidate _current_delivery_candidate _degrade_retained_delivery_candidate _merge_finalization_trace _delivery_control_prompt "
-        "_delivery_replace_required _delivery_keep_allowed _arm_delivery_control _hold_delivery_for_skill_action _parse_delivery_control_object "
-        "_resolve_delivery_control _compose_delivery_suffix _no_tool_final_answer"
+        "DeliveryCandidate _swarm_handoff_attempt _delivery_evidence_state _publish_delivery_candidate "
+        "_replace_delivery_candidate _forced_unaccepted_binding _live_delivery_candidate "
+        "_current_delivery_candidate _degrade_retained_delivery_candidate _merge_finalization_trace "
+        "_delivery_replace_required _arm_delivery_control _parse_delivery_control_object "
+        "_compose_delivery_suffix _no_tool_final_answer"
     ),
     "loop_forced_finalization": (
         "_load_direct_child_results _direct_child_results _child_disposition_state _project_child_result_dispositions _record_forced_finalization "
@@ -85,6 +85,14 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
 # retired (spec 1.9-15). Nothing outside the owning leaf reads these, so the
 # leaf owns the only binding and ouroboros.loop carries none.
 RETIRED_FROM_LOOP: dict[str, tuple[str, ...]] = {
+    "loop_delivery": (
+        "_compute_subagent_handoff _unaccepted_delivery_binding _delivery_acceptance_binding "
+        "_ensure_explicit_acceptance_binding _delivery_control_prompt _delivery_keep_allowed "
+        "_hold_delivery_for_skill_action _resolve_delivery_control"
+    ),
+    "loop_budget": (
+        "_service_identity_projection"
+    ),
     "loop_model_call": (
         "_adopt_fallback_route _snapshot_context_fit_usage _restore_context_fit_usage _context_fit_round_id "
         "_main_context_profile _remember_main_fit _measure_round_main_fit _physical_context_for_fit "

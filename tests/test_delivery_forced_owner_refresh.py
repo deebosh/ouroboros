@@ -227,6 +227,7 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
     import hashlib
 
     import ouroboros.loop as loop
+    from ouroboros import loop_delivery
     from ouroboros import loop_acceptance_review
     import ouroboros.review_substrate as review_substrate
     from ouroboros.task_results import write_task_result
@@ -299,7 +300,7 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
     assert trace["review_runs"][0]["superseded_reason"] == (
         "host_acceptance_evidence_revision_changed"
     )
-    binding = loop._delivery_acceptance_binding(
+    binding = loop_delivery._delivery_acceptance_binding(
         registry, trace, hashlib.sha256(answer.encode("utf-8")).hexdigest(),
     )
     assert binding["acceptance_status"] == "unaccepted"
@@ -311,6 +312,7 @@ def test_child_result_change_after_host_panel_requires_replacement_and_fresh_pan
     tmp_path, monkeypatch,
 ):
     import ouroboros.loop as loop
+    from ouroboros import loop_delivery
     from ouroboros import loop_acceptance_review
     import ouroboros.review_substrate as review_substrate
     from ouroboros.task_results import write_task_result
@@ -345,7 +347,7 @@ def test_child_result_change_after_host_panel_requires_replacement_and_fresh_pan
 
     monkeypatch.setattr(loop, "get_task_review_mode", lambda: "auto")
     monkeypatch.setattr(loop_acceptance_review, "_execute_task_acceptance_panel", clean_panel)
-    monkeypatch.setattr(loop, "_compute_subagent_handoff", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop_delivery, "_compute_subagent_handoff", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_maybe_enforce_child_absorption_gate", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_maybe_inject_finalization_nudges", lambda *_a, **_k: False)
     monkeypatch.setattr(loop, "_finalize_task_services", lambda *_a, **_k: False)

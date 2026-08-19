@@ -29,9 +29,11 @@ def test_normal_host_suffix_is_inside_candidate_and_panel_subject(tmp_path, monk
         rationale="defer until the next run",
     )
     loop, registry, ctx, trace = _forced_test_context(tmp_path)
+    from ouroboros import loop_delivery
+
     captured = {}
 
-    monkeypatch.setattr(loop, "_compute_subagent_handoff", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop_delivery, "_compute_subagent_handoff", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_maybe_inject_finalization_nudges", lambda *_a, **_k: False)
 
     def capture_panel(*, content, **_kwargs):

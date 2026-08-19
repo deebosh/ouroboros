@@ -559,7 +559,7 @@ def _finalize_task_services(ctx: _LoopExitContext) -> bool:
             if not isinstance(service, dict):
                 continue
             signature = hashlib.sha256(json.dumps(
-                _loop()._service_identity_projection(service),
+                _service_identity_projection(service),
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
