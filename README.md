@@ -10,7 +10,7 @@
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://github.com/razzant/ouroboros/releases)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)](https://github.com/razzant/ouroboros/releases)
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.103.23](https://img.shields.io/badge/version-6.103.23-green.svg)](VERSION)
+[![Version 6.103.24](https://img.shields.io/badge/version-6.103.24-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
@@ -426,6 +426,7 @@ and integration work.
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 6.103.24 | 2026-08-19 | fix(skill-review): reconcile pending-forever review_job.json zombies (closes ibl-f334f2324443). When a lifecycle dispatch never reaches _on_started (dedupe collision, worker died before file-lock, infra error before heartbeat), review_job.json stays at status=pending forever and silently blocks every retry. mark_stale_review_job_interrupted only catches status=running; the new _mark_pending_review_zombie_interrupted path handles pending zombies (age > _STALE_REVIEW_JOB_SEC AND no live pid), transitioning them to status=interrupted with reason=pending_zombie_never_started so a fresh dispatch can acquire a fresh lease. Wire point unchanged — reconcile_stale_review_jobs is already called from gateway /api/extensions and /api/skills/daemons; it now walks both running and pending branches. Also closes an existing version-carrier desync (VERSION at 6.103.22 while other carriers were at 6.103.23) so all seven carriers land on 6.103.24 together. |
 | 6.103.23 | 2026-08-19 | feat(dispatch): pre-flight root hint surfaces the first allowed root before the gate refuses (closes ibl-a0348d742b9b). Non-semantic pre-check in `_preflight_root_hint`: when a path-target tool asks for a root+operation the active profile denies, the dispatcher returns a typed `⚠️ PREFLIGHT_ROOT_HINT:` naming the first allowed alternative instead of letting `tools.execute` burn a denial+recovery round. Gate semantics unchanged. |
 | 6.103.22 | 2026-08-19 | fix(review): pre-commit gate catches staged-snapshot oversized functions (closes ibl-oversized-function-gate-bypass) |
 | 6.103.19 | 2026-08-19 | fix(sandbox): resource_root_path falls back to workspace_root for self_worktree subagents (closes ibl-a7530ab93441). Mirrors active_repo_dir_for via _coerce_real_path_local; capability addition disclosed per CHECKLISTS item 21. |
