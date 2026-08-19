@@ -106,6 +106,10 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   "separate delta id" rule, exactly as D33 did for the loop stream; handles `_rev()`/`_car()`,
 #   leaves hold no mutable state, the handle exists so tests patching/rebinding the parent's
 #   `tools.review.X` / `tools.claude_advisory_review.X` bindings keep intercepting the moved bodies).
+#   D35 §1.9/№8-pattern module-handle reads of monkeypatchable agent.py / usage_accounting.py facade
+#   bindings in the L-C2 leaves (the same ratified supervisor mechanism applied to the L-C2 stream
+#   with its own id per the §1.9-1 "separate delta id" rule; leaves hold no mutable state, the
+#   handle exists so tests patching the parent binding keep intercepting the moved bodies).
 # "D01" (reserved for §4.3.1 size-ratchet layers) was retired unused (owner-ratified, batch №11):
 # ratchet-layer changes are governed by size_ratchet.json + scripts/regenerate_size_ratchet.py, not
 # by ledger rows.
@@ -122,6 +126,7 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   (delegate_custody / tools.delegate / delegate_integration / subagent_integration;
 #   renumbered from the lane's provisional D35 after the G1 collision).
 APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35", "D36", "D37"})
+APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35"})
 UPSTREAM_STATUSES = frozenset({"not_applicable", "pending", "transferred", "retired"})
 APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_result.py",

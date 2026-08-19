@@ -243,6 +243,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "append_jsonl", "atomic_write_text", "rescue_before_destructive_rollback",
         "rescue_git_capture",
     })),
+    "ouroboros/agent_dispatch.py": ("ouroboros/agent.py", "_agent", frozenset({
+        "write_task_result",
+    })),
 }
 
 

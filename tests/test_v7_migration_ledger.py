@@ -670,10 +670,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # v7 stream L-A: the scope reviewer keeps the run; its prompt budget/window
     # authority and its pack assembly become owners. Every row is a facade row —
     # the parent re-exports the same objects under their historical private names.
-    scope_review_extraction_symbols_by_owner = {
-        "scope_review_budget.py": "_SCOPE_MAX_TOKENS _SCOPE_REVIEW_SLOT_TIMEOUT_SEC _SCOPE_OUTPUT_MARGIN_TOKENS _SCOPE_INPUT_TOKEN_LIMIT _SCOPE_MODEL_DEFAULT _SCOPE_BUDGET_TOKEN_LIMIT _SCOPE_FAILCLOSED_WINDOW _SCOPE_MODEL_CONTEXT_WINDOW _calibrated_input_token_limit _shared_window_scaled_reserves _window_scaled_reserves _effective_scope_input_limit _get_scope_model _is_provider_oversize_error _provider_error_is_oversize",
-        "scope_review_pack.py": "_DELETED_INLINE_MAX_BYTES _SCOPE_CONTEXT_MANIFEST _SCOPE_STABLE_PREFIX_LEN _ScopeAtlasNotAssembled _current_scope_context_manifest _CANONICAL_CONTEXT_DOCS _CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES _load_canonical_context_docs _should_skip_current_touched_context _build_review_history_section _parse_staged_name_status _classify_deleted_for_inline _degradable_diff_only_paths _inline_deleted_file_pack _gather_scope_packs _record_ladder_steps _render_touched_section _build_scope_history_section _ScopePromptContext _build_scope_prompt",
-    }
+    scope_review_extraction_symbols_by_owner = _inv.scope_review_extraction_symbols_by_owner
     scope_review_extraction_rows = {
         f"ouroboros/tools/scope_review.py::{symbol}": f"ouroboros/tools/{owner}::{symbol}"
         for owner, symbols in scope_review_extraction_symbols_by_owner.items()
@@ -728,10 +725,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(tool_access_extraction_rows)
     # v7 stream L-A: review_helpers keeps the shared plumbing; the reviewer vocabulary
     # and the reviewable-file classification/packs become owners. All facade rows.
-    review_helpers_extraction_symbols_by_owner = {
-        "review_prompt_text.py": "_SECRET_LINE_RE _JSON_SECRET_RE CRITICAL_FINDING_CALIBRATION REVIEW_PREAMBLE REVIEW_THOROUGHNESS_BLOCK REVIEW_SEVERITY_THRESHOLDS REPO_ANTI_PATTERN_LOCK_GUARD _ANTI_THRASHING_RULE_VERDICT _ANTI_THRASHING_RULE_ITEM_NAME _CONVERGENCE_RULE_TEXT _HISTORY_VERIFICATION_ONLY_RULE single_line format_review_history_entry build_review_history_section build_obligations_block build_anti_thrashing_rules_section build_self_verification_template _OBLIGATION_SUFFIX_RE normalize_reviewer_obligation_id strip_obligation_suffix normalize_reviewer_item normalize_reviewer_items build_rebuttal_section format_obligation_excerpt redact_prompt_secrets _make_fence format_prompt_code_block",
-        "review_file_pack.py": "BINARY_EXTENSIONS _FILE_SIZE_LIMIT _SENSITIVE_EXTENSIONS _SENSITIVE_NAMES _VENDORED_SUFFIXES _VENDORED_NAMES _FULL_REPO_BINARY_EXTENSIONS _FULL_REPO_SKIP_DIR_PREFIXES _MAX_FULL_REPO_FILE_BYTES _BINARY_SNIFF_BYTES parse_changed_paths_from_porcelain_z list_changed_paths_from_git_status parse_changed_paths_from_porcelain paths_from_porcelain_line parse_git_name_status format_name_status_for_preflight paths_from_name_status build_touched_file_pack build_advisory_changed_context _is_probably_binary _raw_bytes_binary list_git_tracked_paths iter_repo_pack_entries build_full_repo_pack build_head_snapshot_section",
-    }
+    review_helpers_extraction_symbols_by_owner = _inv.review_helpers_extraction_symbols_by_owner
     review_helpers_extraction_rows = {
         f"ouroboros/tools/review_helpers.py::{symbol}": f"ouroboros/tools/{owner}::{symbol}"
         for owner, symbols in review_helpers_extraction_symbols_by_owner.items()
@@ -740,10 +734,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(scope_review_extraction_rows)
     # v7 stream L-A: review_state keeps the durable store; its record rules and its
     # in-memory ledger become owners. All facade rows.
-    review_state_extraction_symbols_by_owner = {
-        "review_state_records.py": "_STATE_SCHEMA_VERSION _MAX_RUN_HISTORY _MAX_ATTEMPT_HISTORY _MAX_COMMIT_READINESS_DEBTS _DEFAULT_TOOL_NAME _DEFAULT_ADVISORY_TOOL_NAME _LEGACY_CURRENT_REPO_KEY _REVIEW_ATTEMPT_TTL_SEC _REVIEW_ATTEMPT_GRACE_SEC _OPEN_COMMIT_READINESS_DEBT_STATUSES _CANONICAL_OBLIGATION_ITEM_RE _normalize_fingerprint_text _normalize_obligation_item_key _stable_digest _make_obligation_fingerprint _looks_like_public_obligation_id _max_iso_ts _min_iso_ts _filter_repo_scope _commit_readiness_debts_view _OBLIGATION_STR_DEFAULTS _DEBT_STR_DEFAULTS _RUN_STR_DEFAULTS _ATTEMPT_STR_DEFAULTS _ATTEMPT_MERGE_INCOMING_FIRST _ATTEMPT_MERGE_INCOMING_LISTS _RUN_STATUS_ICONS _filter_lifecycle_records _allocate_prefixed_id _append_finding_lines ObligationItem CommitReadinessDebtItem AdvisoryRunRecord CommitAttemptRecord _attempt_identity_tuple _attempt_order_key _coerce_int _infer_next_prefixed_sequence _normalize_findings _merge_attempt infer_review_phase _parse_iso_ts _dedupe_strings _utc_now",
-        "review_state_model.py": "AdvisoryReviewState",
-    }
+    review_state_extraction_symbols_by_owner = _inv.review_state_extraction_symbols_by_owner
     review_state_extraction_rows = {
         f"ouroboros/review_state.py::{symbol}": f"ouroboros/{owner}::{symbol}"
         for owner, symbols in review_state_extraction_symbols_by_owner.items()
@@ -890,14 +881,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # The loader keeps the extension lifecycle; the registries, the namespace
     # encoding, the child-catalog re-validation, the staged import trees, the
     # liveness projection and the PluginAPI object each get one owner.
-    s4_extension_symbols_by_owner = {
-        "extension_registry_state.py": "_ExtensionRegistrations _ExtensionLoadFailure _PluginAPIConfig _lock _extensions _extension_modules _load_failures _unloading _lifecycle_locks _tools _routes _ws_handlers _ui_tabs _settings_sections _lifecycle_lock_for _record_companion_name",
-        "extension_surface_names.py": "_EXTENSION_NAME_PREFIX _EXTENSION_SKILL_TOKEN_MAX _EXTENSION_SHORT_MAX _EXTENSION_NAME_RE _extension_skill_token extension_name_prefix extension_surface_name parse_extension_surface_name _widget_span_from_render _assert_namespace_path _assert_tool_name",
-        "extension_child_catalog.py": "_out_of_process_handler_proxy _validate_child_catalog_namespace _validate_child_tool_descriptor _validate_child_route_descriptor _validate_child_ws_descriptor _validate_child_ui_descriptor _validate_child_settings_descriptor",
-        "extension_import_staging.py": "_plugin_entry_path _module_key _purge_extension_bytecode _stage_extension_import_tree _IMPORT_SWEEP_GRACE_SEC _sweep_stale_extension_imports",
-        "extension_liveness.py": "_extension_runtime_state _deps_block_reason _apply_deps_block runtime_state_for_skill_name runtime_state_for_loaded_skill is_extension_live _revert_enabled_after_load_error",
-        "extension_plugin_api.py": "PluginAPIImpl current_execution_mode _reject_extension_child_side_effect mint_skill_token set_ws_broadcaster _ws_broadcaster",
-    }
+    s4_extension_symbols_by_owner = _inv.s4_extension_symbols_by_owner
     s4_extension_rows = {
         f"ouroboros/extension_loader.py::{symbol}": f"ouroboros/{owner}::{symbol}"
         for owner, symbols in s4_extension_symbols_by_owner.items()
@@ -1298,6 +1282,26 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     for _lc in (lc_review_verbatim_rows, lc_review_handle_rows):
         implemented.update(_lc)
         existing_process_owner_rows.update(_lc)
+    # v7 lane L-C2: one cohesive cluster of each of agent.py,
+    # agent_task_pipeline.py and usage_accounting.py moves to a leaf owner;
+    # every moved name keeps its parent facade re-export. Handle rows read
+    # monkeypatch-addressable parent bindings through the call-time handles
+    # _agent()/_usage() (delta D35, sets pinned in
+    # tests/test_module_handle_extraction.py); verbatim rows moved byte-identical.
+    lc2_verbatim_rows = {
+        f"{parent}::{s}": f"{owner}::{s}"
+        for parent, owners in _inv.lc2_verbatim_symbols_by_owner.items()
+        for owner, symbols in owners.items() for s in symbols.split()
+    }
+    lc2_handle_rows = {
+        f"{parent}::{s}": f"{owner}::{s}"
+        for parent, owners in _inv.lc2_handle_symbols_by_owner.items()
+        for owner, symbols in owners.items() for s in symbols.split()
+    }
+    implemented.update({**lc2_verbatim_rows, **lc2_handle_rows})
+    existing_process_owner_rows.update({**lc2_verbatim_rows, **lc2_handle_rows})
+    for _lc2_old in lc2_handle_rows:
+        s3_semantic_delta_ids[_lc2_old] = "D35"
     for row in rows:
         delta = v7_evidence._migration_json(row["semantic delta"], ("id", "note"))
         upstream = v7_evidence._migration_json(row["upstream-transfer status/note"], ("status", "note"))
@@ -1483,3 +1487,4 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     assert sum(row["old path/symbol"] in implemented for row in rows) == len(implemented)
     assert sum(row["old path/symbol"] in retired_current for row in rows) == len(retired_current)
     assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35", "D36", "D37"})
+    assert v7_migration.APPROVED_SEMANTIC_DELTAS == frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35"})

@@ -345,3 +345,50 @@ config_extraction_symbols_by_owner = {
         "review_model_routes.py": "_DIRECT_PROVIDER_REVIEW_RUNS _exclusive_direct_remote_provider_env direct_provider_review_models_fallback adaptive_quorum get_review_models get_review_enforcement get_scope_review_models",
         "runtime_limits.py": "_clamped_number_setting _bounded_positive_int_setting get_max_workers get_task_idle_timeout_sec get_task_abs_ceiling_sec get_per_call_timeout_ceiling_sec get_restart_drain_max_sec get_safety_max_tokens get_safety_call_timeout_sec get_websearch_timeout_sec get_llm_transport_read_timeout_sec get_acceptance_review_est_sec get_acceptance_reserve_pct get_plan_task_deadline_min_sec get_vision_caption_timeout_sec get_pacing_interval_sec get_supervisor_liveness_deadline_sec get_post_task_evolution_budget_usd MAX_ACTIVE_SUBAGENTS_HARD_CAP get_max_active_subagents_per_root get_max_subagent_depth DELEGATE_WAIT_CEILING_SEC DELEGATE_WAIT_WINDOW_MAX_SEC get_delegate_wait_max_sec get_delegate_wait_sec get_search_code_wall_sec",
 }
+# v7 lane L-C2: agent.py, agent_task_pipeline.py and usage_accounting.py each
+# give one cohesive cluster its own leaf owner. Same two row classes as L-B:
+# members moved byte-identical (delta "none") and members whose bodies read
+# rebindable parent globals through a call-time handle (_agent()/_usage(),
+# delta D35). Parent path -> {owner path -> moved symbols}.
+lc2_verbatim_symbols_by_owner = {
+    "ouroboros/agent.py": {
+        "ouroboros/agent_dispatch.py": "dispatch_executor_note executor_blocked_outcome _record_executor_resolution _blocked_executor_terminal _budget_exhausted_message _budget_resume_policy _queued_budget_exhausted_message _physical_calls_after_budget_rail _initial_effort_for resolve_dispatch_axes _DELEGATE_VERBS preflight_delegate_visibility reset_nanny_economics_marks emit_dispatch_resolution capability_delta_prompt_block",
+    },
+}
+lc2_handle_symbols_by_owner = {
+    "ouroboros/agent.py": {
+        "ouroboros/agent_dispatch.py": "_persist_early_origin_stub",
+    },
+}
+
+
+# moved out of the ledger test for the 1500-line band.
+scope_review_extraction_symbols_by_owner = {
+        "scope_review_budget.py": "_SCOPE_MAX_TOKENS _SCOPE_REVIEW_SLOT_TIMEOUT_SEC _SCOPE_OUTPUT_MARGIN_TOKENS _SCOPE_INPUT_TOKEN_LIMIT _SCOPE_MODEL_DEFAULT _SCOPE_BUDGET_TOKEN_LIMIT _SCOPE_FAILCLOSED_WINDOW _SCOPE_MODEL_CONTEXT_WINDOW _calibrated_input_token_limit _shared_window_scaled_reserves _window_scaled_reserves _effective_scope_input_limit _get_scope_model _is_provider_oversize_error _provider_error_is_oversize",
+        "scope_review_pack.py": "_DELETED_INLINE_MAX_BYTES _SCOPE_CONTEXT_MANIFEST _SCOPE_STABLE_PREFIX_LEN _ScopeAtlasNotAssembled _current_scope_context_manifest _CANONICAL_CONTEXT_DOCS _CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES _load_canonical_context_docs _should_skip_current_touched_context _build_review_history_section _parse_staged_name_status _classify_deleted_for_inline _degradable_diff_only_paths _inline_deleted_file_pack _gather_scope_packs _record_ladder_steps _render_touched_section _build_scope_history_section _ScopePromptContext _build_scope_prompt",
+}
+
+
+# moved out of the ledger test for the 1500-line band.
+review_helpers_extraction_symbols_by_owner = {
+        "review_prompt_text.py": "_SECRET_LINE_RE _JSON_SECRET_RE CRITICAL_FINDING_CALIBRATION REVIEW_PREAMBLE REVIEW_THOROUGHNESS_BLOCK REVIEW_SEVERITY_THRESHOLDS REPO_ANTI_PATTERN_LOCK_GUARD _ANTI_THRASHING_RULE_VERDICT _ANTI_THRASHING_RULE_ITEM_NAME _CONVERGENCE_RULE_TEXT _HISTORY_VERIFICATION_ONLY_RULE single_line format_review_history_entry build_review_history_section build_obligations_block build_anti_thrashing_rules_section build_self_verification_template _OBLIGATION_SUFFIX_RE normalize_reviewer_obligation_id strip_obligation_suffix normalize_reviewer_item normalize_reviewer_items build_rebuttal_section format_obligation_excerpt redact_prompt_secrets _make_fence format_prompt_code_block",
+        "review_file_pack.py": "BINARY_EXTENSIONS _FILE_SIZE_LIMIT _SENSITIVE_EXTENSIONS _SENSITIVE_NAMES _VENDORED_SUFFIXES _VENDORED_NAMES _FULL_REPO_BINARY_EXTENSIONS _FULL_REPO_SKIP_DIR_PREFIXES _MAX_FULL_REPO_FILE_BYTES _BINARY_SNIFF_BYTES parse_changed_paths_from_porcelain_z list_changed_paths_from_git_status parse_changed_paths_from_porcelain paths_from_porcelain_line parse_git_name_status format_name_status_for_preflight paths_from_name_status build_touched_file_pack build_advisory_changed_context _is_probably_binary _raw_bytes_binary list_git_tracked_paths iter_repo_pack_entries build_full_repo_pack build_head_snapshot_section",
+}
+
+
+# moved out of the ledger test for the 1500-line band.
+review_state_extraction_symbols_by_owner = {
+        "review_state_records.py": "_STATE_SCHEMA_VERSION _MAX_RUN_HISTORY _MAX_ATTEMPT_HISTORY _MAX_COMMIT_READINESS_DEBTS _DEFAULT_TOOL_NAME _DEFAULT_ADVISORY_TOOL_NAME _LEGACY_CURRENT_REPO_KEY _REVIEW_ATTEMPT_TTL_SEC _REVIEW_ATTEMPT_GRACE_SEC _OPEN_COMMIT_READINESS_DEBT_STATUSES _CANONICAL_OBLIGATION_ITEM_RE _normalize_fingerprint_text _normalize_obligation_item_key _stable_digest _make_obligation_fingerprint _looks_like_public_obligation_id _max_iso_ts _min_iso_ts _filter_repo_scope _commit_readiness_debts_view _OBLIGATION_STR_DEFAULTS _DEBT_STR_DEFAULTS _RUN_STR_DEFAULTS _ATTEMPT_STR_DEFAULTS _ATTEMPT_MERGE_INCOMING_FIRST _ATTEMPT_MERGE_INCOMING_LISTS _RUN_STATUS_ICONS _filter_lifecycle_records _allocate_prefixed_id _append_finding_lines ObligationItem CommitReadinessDebtItem AdvisoryRunRecord CommitAttemptRecord _attempt_identity_tuple _attempt_order_key _coerce_int _infer_next_prefixed_sequence _normalize_findings _merge_attempt infer_review_phase _parse_iso_ts _dedupe_strings _utc_now",
+        "review_state_model.py": "AdvisoryReviewState",
+}
+
+
+# moved out of the ledger test for the 1500-line band.
+s4_extension_symbols_by_owner = {
+        "extension_registry_state.py": "_ExtensionRegistrations _ExtensionLoadFailure _PluginAPIConfig _lock _extensions _extension_modules _load_failures _unloading _lifecycle_locks _tools _routes _ws_handlers _ui_tabs _settings_sections _lifecycle_lock_for _record_companion_name",
+        "extension_surface_names.py": "_EXTENSION_NAME_PREFIX _EXTENSION_SKILL_TOKEN_MAX _EXTENSION_SHORT_MAX _EXTENSION_NAME_RE _extension_skill_token extension_name_prefix extension_surface_name parse_extension_surface_name _widget_span_from_render _assert_namespace_path _assert_tool_name",
+        "extension_child_catalog.py": "_out_of_process_handler_proxy _validate_child_catalog_namespace _validate_child_tool_descriptor _validate_child_route_descriptor _validate_child_ws_descriptor _validate_child_ui_descriptor _validate_child_settings_descriptor",
+        "extension_import_staging.py": "_plugin_entry_path _module_key _purge_extension_bytecode _stage_extension_import_tree _IMPORT_SWEEP_GRACE_SEC _sweep_stale_extension_imports",
+        "extension_liveness.py": "_extension_runtime_state _deps_block_reason _apply_deps_block runtime_state_for_skill_name runtime_state_for_loaded_skill is_extension_live _revert_enabled_after_load_error",
+        "extension_plugin_api.py": "PluginAPIImpl current_execution_mode _reject_extension_child_side_effect mint_skill_token set_ws_broadcaster _ws_broadcaster",
+}
