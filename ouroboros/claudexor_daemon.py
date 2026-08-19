@@ -41,6 +41,23 @@ log = logging.getLogger(__name__)
 _OWNED_DIR_NAME = "claudexor"
 _SPAWN_WAIT_SEC = 20.0
 _SPAWN_POLL_SEC = 0.25
+# Inter-process spawn lock: serializes concurrent ``ensure_running()`` calls
+# across the worker pool. Each worker process has its OWN in-process
+# ``threading.Lock`` (which is useless across processes — they would each
+# spawn a daemon simultaneously, the second claudexord would lose the
+# socket lease, and the loser would time out with a typed ClaudexorUnavailable
+# while the winner's spawn polling completes). The lock file is distinct
+# from ``claudexor_runtime._INSTALL_LOCK_FILENAME`` (different concern:
+# install serializes runtime tree preparation under data/state/cx; spawn
+# serializes daemon process startup under data/claudexor). Wait ceiling
+# matches the spawn polling window + small cleanup margin; stale ceiling
+# catches a lock-holder whose Python process died between ``open(O_EXCL)``
+# and the ``finally`` release.
+_SPAWN_LOCK_FILENAME = "spawn.lock"
+_SPAWN_LOCK_WAIT_SEC = 25.0
+_SPAWN_LOCK_STALE_SEC = 60.0
+
+
 def owned_config_dir() -> pathlib.Path:
     """The data-plane root the owned daemon lives under."""
     from ouroboros.config import DATA_DIR
@@ -304,91 +321,156 @@ class OwnedClaudexorDaemon:
                 # A newer managed tree may have been staged above, but a live
                 # daemon is never hot-swapped. The next natural start selects it.
                 return endpoint
+            # INTER-PROCESS SPAWN LOCK
+            # Each worker process holds its own in-process ``threading.Lock``
+            # (above), which is useless across processes: two workers would
+            # each decide "daemon is dead", each call ``spawn_supervised``,
+            # the second claudexord loses the writer-lease on the control
+            # socket, and the loser waits the full polling window before
+            # surfacing a typed failure — exactly the race that reopens
+            # ``crd-0003`` and blocks every reviewed-path commit. The lock
+            # file is distinct from ``claudexor_runtime.install.lock``
+            # (install serializes runtime tree prep; spawn serializes the
+            # daemon process under this home). mkdir here so the lock file's
+            # parent exists before the acquire.
             config_dir = owned_config_dir()
             config_dir.mkdir(parents=True, exist_ok=True)
-            env = dict(os.environ)
-            env["CLAUDEXOR_CONFIG_DIR"] = str(config_dir)
-            # Loopback-only ephemeral port is the engine default; explicitly
-            # scrub any operator-level overrides that would cross homes.
-            for crossing in ("CLAUDEXOR_DAEMON_SOCK", "CLAUDEXOR_CONTROL_PORT"):
-                env.pop(crossing, None)
-            command_bin = pathlib.Path(command[0]).parent
-            if command_bin.is_dir():
-                # Windows materializes os.environ with its native "Path" key; a
-                # plain dict lookup of "PATH" misses it and would hand the child
-                # a PATH holding only the Node bin dir (the engine then reports
-                # git_missing). Prepend onto whichever key the host actually has.
-                path_key = next((k for k in env if k.upper() == "PATH"), "PATH")
-                # An EMPTY PATH component means the CURRENT WORKING DIRECTORY on
-                # POSIX. A host with no PATH (a scrubbed service manager, a bare
-                # container unit) would otherwise leave a trailing empty entry
-                # here and make CWD an executable search root for a long-lived
-                # daemon that shells out to tools of its own. Drop every empty
-                # component; order is otherwise preserved exactly.
-                inherited = str(env.get(path_key, "") or "")
-                composed = [str(command_bin), *inherited.split(os.pathsep)]
-                env[path_key] = os.pathsep.join(part for part in composed if part)
-            runtime = get_runtime_manager().status()
-            log_path = config_dir / "daemon.log"
-            from ouroboros.config import DATA_DIR
-            from ouroboros.process_custody import spawn_supervised
+            from ouroboros.platform_layer import (
+                acquire_exclusive_file_lock,
+                release_exclusive_file_lock,
+            )
 
-            log.info("Spawning owned claudexord under %s from %s", config_dir, runtime.get("source") or "external")
-            with open(log_path, "ab") as sink:
-                self._proc = spawn_supervised(
-                    command,
-                    drive_root=pathlib.Path(DATA_DIR),
-                    purpose="claudexor_daemon",
-                    scope="session",
-                    env=env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=sink,
-                    stderr=sink,
+            spawn_lock_path = config_dir / _SPAWN_LOCK_FILENAME
+            spawn_lock_fd = acquire_exclusive_file_lock(
+                spawn_lock_path,
+                timeout_sec=_SPAWN_LOCK_WAIT_SEC,
+                stale_sec=_SPAWN_LOCK_STALE_SEC,
+                metadata=f"pid={os.getpid()} ensure_running spawn\n",
+            )
+            if spawn_lock_fd is None:
+                # Another worker held the lock longer than
+                # ``_SPAWN_LOCK_WAIT_SEC``. Re-check liveness: the holder may
+                # have completed (or failed and released) by now. If a live
+                # daemon exists, reuse it — never spawn a duplicate. If not,
+                # the holder genuinely failed and the typed error below names
+                # the same root cause as a fresh spawn failure.
+                endpoint, state, detail = self._classify_liveness()
+                if endpoint is not None:
+                    if detail:
+                        self._last_error = detail
+                    self._enable_rotation(endpoint)
+                    return endpoint
+                tail = ""
+                try:
+                    tail = (config_dir / "daemon.log").read_bytes()[-500:].decode(
+                        "utf-8", errors="replace"
+                    )
+                except OSError:
+                    pass
+                raise ClaudexorUnavailable(
+                    "daemon_spawn_race_lost",
+                    f"another worker held the spawn lock past {_SPAWN_LOCK_WAIT_SEC:.0f}s"
+                    " and no live daemon exists"
+                    + (f"; log tail: {tail}" if tail else ""),
                 )
-            _write_ownership_marker()
-            deadline = time.monotonic() + _SPAWN_WAIT_SEC
-            while time.monotonic() < deadline:
-                if self._proc.poll() is not None:
-                    break
-                # RECONCILE: fresh discovery + AUTHENTICATED handshake against
-                # the descriptor the new daemon just wrote — the same identity
-                # proof attach uses, so a restart never claims a port it does
-                # not hold.
+            try:
+                # Re-check liveness INSIDE the lock: the worker we were
+                # waiting for may have completed its spawn (or a third worker
+                # may have raced past us while we waited on the file lock).
+                # Either way, reuse the live daemon — never spawn a duplicate.
+                endpoint, state, detail = self._classify_liveness()
+                if endpoint is not None:
+                    if detail:
+                        self._last_error = detail
+                    self._enable_rotation(endpoint)
+                    return endpoint
+
+                # We own the spawn.
+                env = dict(os.environ)
+                env["CLAUDEXOR_CONFIG_DIR"] = str(config_dir)
+                # Loopback-only ephemeral port is the engine default; explicitly
+                # scrub any operator-level overrides that would cross homes.
+                for crossing in ("CLAUDEXOR_DAEMON_SOCK", "CLAUDEXOR_CONTROL_PORT"):
+                    env.pop(crossing, None)
+                command_bin = pathlib.Path(command[0]).parent
+                if command_bin.is_dir():
+                    # Windows materializes os.environ with its native "Path" key; a
+                    # plain dict lookup of "PATH" misses it and would hand the child
+                    # a PATH holding only the Node bin dir (the engine then reports
+                    # git_missing). Prepend onto whichever key the host actually has.
+                    path_key = next((k for k in env if k.upper() == "PATH"), "PATH")
+                    # An EMPTY PATH component means the CURRENT WORKING DIRECTORY on
+                    # POSIX. A host with no PATH (a scrubbed service manager, a bare
+                    # container unit) would otherwise leave a trailing empty entry
+                    # here and make CWD an executable search root for a long-lived
+                    # daemon that shells out to tools of its own. Drop every empty
+                    # component; order is otherwise preserved exactly.
+                    inherited = str(env.get(path_key, "") or "")
+                    composed = [str(command_bin), *inherited.split(os.pathsep)]
+                    env[path_key] = os.pathsep.join(part for part in composed if part)
+                runtime = get_runtime_manager().status()
+                log_path = config_dir / "daemon.log"
+                from ouroboros.config import DATA_DIR
+                from ouroboros.process_custody import spawn_supervised
+
+                log.info("Spawning owned claudexord under %s from %s", config_dir, runtime.get("source") or "external")
+                with open(log_path, "ab") as sink:
+                    self._proc = spawn_supervised(
+                        command,
+                        drive_root=pathlib.Path(DATA_DIR),
+                        purpose="claudexor_daemon",
+                        scope="session",
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=sink,
+                        stderr=sink,
+                    )
+                _write_ownership_marker()
+                deadline = time.monotonic() + _SPAWN_WAIT_SEC
+                while time.monotonic() < deadline:
+                    if self._proc.poll() is not None:
+                        break
+                    # RECONCILE: fresh discovery + AUTHENTICATED handshake against
+                    # the descriptor the new daemon just wrote — the same identity
+                    # proof attach uses, so a restart never claims a port it does
+                    # not hold.
+                    endpoint = self._alive_endpoint()
+                    if endpoint is not None:
+                        self._last_error = ""
+                        self._enable_rotation(endpoint)
+                        return endpoint
+                    time.sleep(_SPAWN_POLL_SEC)
+                # Two Ouroboros processes can race only on first provisioning: the
+                # winner publishes the owned endpoint and the losing Claudexor
+                # child exits after observing the same writer lease. Reconcile one
+                # final time after child exit before reporting a false spawn
+                # failure. An exited loser is not a process this manager owns.
                 endpoint = self._alive_endpoint()
                 if endpoint is not None:
+                    if self._proc.poll() is not None:
+                        self._proc = None
                     self._last_error = ""
                     self._enable_rotation(endpoint)
                     return endpoint
-                time.sleep(_SPAWN_POLL_SEC)
-            # Two Ouroboros processes can race only on first provisioning: the
-            # winner publishes the owned endpoint and the losing Claudexor
-            # child exits after observing the same writer lease. Reconcile one
-            # final time after child exit before reporting a false spawn
-            # failure. An exited loser is not a process this manager owns.
-            endpoint = self._alive_endpoint()
-            if endpoint is not None:
-                if self._proc.poll() is not None:
-                    self._proc = None
-                self._last_error = ""
-                self._enable_rotation(endpoint)
-                return endpoint
-            tail = ""
-            try:
-                tail = log_path.read_bytes()[-500:].decode("utf-8", errors="replace")
-            except OSError:
-                pass
-            # OUR OWN child, and it never became a daemon we can reach: leaving it
-            # alive orphans a process holding this config dir, and leaving the handle
-            # set makes the NEXT ensure_running spawn a second one beside it. Killed
-            # here rather than in `stop()`, which by contract only ever terminates a
-            # daemon we successfully started.
-            self._terminate_child()
-            raise ClaudexorUnavailable(
-                "daemon_spawn_failed",
-                "the owned claudexord did not publish a live control descriptor "
-                f"within {_SPAWN_WAIT_SEC:.0f}s"
-                + (f"; log tail: {tail}" if tail else ""),
-            )
+                tail = ""
+                try:
+                    tail = log_path.read_bytes()[-500:].decode("utf-8", errors="replace")
+                except OSError:
+                    pass
+                # OUR OWN child, and it never became a daemon we can reach: leaving it
+                # alive orphans a process holding this config dir, and leaving the handle
+                # set makes the NEXT ensure_running spawn a second one beside it. Killed
+                # here rather than in `stop()`, which by contract only ever terminates a
+                # daemon we successfully started.
+                self._terminate_child()
+                raise ClaudexorUnavailable(
+                    "daemon_spawn_failed",
+                    "the owned claudexord did not publish a live control descriptor "
+                    f"within {_SPAWN_WAIT_SEC:.0f}s"
+                    + (f"; log tail: {tail}" if tail else ""),
+                )
+            finally:
+                release_exclusive_file_lock(spawn_lock_path, spawn_lock_fd)
 
     def _terminate_child(self) -> None:
         """Stop and forget the child this manager spawned. Caller holds the lock."""
