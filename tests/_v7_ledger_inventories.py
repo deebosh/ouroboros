@@ -89,10 +89,12 @@ lb_loop_verbatim_symbols_by_owner = {
     "ouroboros/loop_forced_finalization.py": "_load_direct_child_results _child_disposition_state _claimed_child_dispositions",
 }
 # v7 lane L3: the members whose TEMPORARY loop.py private re-export retired
-# (spec 1.9-15). Their rows carry facade "-": nothing outside the owning leaf
-# reads them, so the leaf holds the only binding. A name that also lost its last
-# _loop() read in the same edit moves from the handle map to the verbatim map --
-# un-substituting the handle restores the merge-base text byte for byte.
+# (spec 4.3-15). Their rows carry facade "-": ouroboros.loop no longer binds
+# them, and any consumer left outside the owning leaf imports the owner
+# directly (the one such member is _append_or_merge_user_content). A name that
+# also lost its last _loop() read in the same edit moves from the handle map to
+# the verbatim map -- un-substituting the handle restores the merge-base text
+# byte for byte.
 lb_loop_l3_retired_symbols_by_owner = {
     "ouroboros/loop_acceptance.py": "ACCEPTANCE_DECISION_REASONS ACCEPTANCE_REASON_UNSPECIFIED _reopen_obligation_row",
     "ouroboros/loop_acceptance_review.py": "_ACCEPTANCE_REVIEW_CHECKLIST _TaskAcceptanceContext _acceptance_dialogue_quorum _apply_task_acceptance_result _attach_dialogue_to_host_run _build_host_acceptance_evidence _direct_context_fence_state _execute_task_acceptance_panel _latest_agent_acceptance_evidence _mark_agent_acceptance_runs_advisory _prior_acceptance_run _record_acceptance_infra_failure _record_host_acceptance_run _set_applied_host_acceptance_impact",

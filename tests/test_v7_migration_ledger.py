@@ -1194,9 +1194,10 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     # read rebindable loop globals through the call-time handle _loop() (delta D33,
     # set pinned in tests/test_module_handle_extraction.py); verbatim rows moved
     # byte-identical. Lane L3 then spent the TEMPORARY private half of that facade
-    # (spec 1.9-15): a name only its own leaf reads carries facade "-", and if the
-    # same edit removed its last _loop() read it is a verbatim row again, because
-    # un-substituting the handle restores the merge-base text exactly.
+    # (spec 4.3-15): a retired name carries facade "-" (any consumer left outside
+    # the owning leaf imports the owner directly), and if the same edit removed
+    # its last _loop() read it is a verbatim row again, because un-substituting
+    # the handle restores the merge-base text exactly.
     lb_loop_verbatim_rows = {
         f"ouroboros/loop.py::{symbol}": f"{owner}::{symbol}"
         for owner, symbols in _inv.lb_loop_verbatim_symbols_by_owner.items()

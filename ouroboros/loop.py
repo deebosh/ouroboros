@@ -509,7 +509,7 @@ def run_llm_loop(
 
 # The v7 L-B split: the members below moved into cohesive leaves (module-size
 # boundary), and this block binds the ones the loop family still addresses here.
-# The L3 package (spec 1.9-15) spent the TEMPORARY half of that facade: every
+# The L3 package (spec 4.3-15) spent the TEMPORARY half of that facade: every
 # moved name was classified by who reads it, the loop-private test imports were
 # re-homed to their leaf owners, and a name whose only reader is its own leaf
 # left this surface for good. What is left survives for one of exactly two

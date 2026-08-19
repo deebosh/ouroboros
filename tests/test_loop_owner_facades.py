@@ -3,7 +3,7 @@
 Every member the L-B split moved out of ``ouroboros/loop.py`` got a loop.py
 re-export under its historical name, so existing callers and monkeypatching
 tests kept working unchanged while the split landed. The private half of that
-facade was declared TEMPORARY (spec 1.9-15), and the L3 package spent it: each
+facade was declared TEMPORARY (spec 4.3-15), and the L3 package spent it: each
 name was classified by who actually reads it, and the ones only its own leaf
 reads left ``ouroboros.loop`` for good.
 
@@ -86,8 +86,11 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
 
 
 # leaf module -> every member whose TEMPORARY loop.py re-export the L3 package
-# retired (spec 1.9-15). Nothing outside the owning leaf reads these, so the
-# leaf owns the only binding and ouroboros.loop carries none.
+# retired (spec 4.3-15). ouroboros.loop carries none of these bindings; the one
+# member still read outside its owning leaf is _append_or_merge_user_content,
+# whose consumers import the owner directly (lazy function-local imports in
+# tools/browser.py and tools/vision.py; a frozen module-level import in
+# loop_round_limits.py, disclosed at its import site).
 RETIRED_FROM_LOOP: dict[str, tuple[str, ...]] = {
     "loop_forced_finalization": (
         "_claimed_child_dispositions _undispositioned_children _run_forced_children_acceptance "

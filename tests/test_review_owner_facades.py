@@ -7,7 +7,7 @@ stream, so existing callers and monkeypatching tests keep working unchanged
 while the split lands. This pins the facade identity — the parent binding IS
 the leaf's object — and the merge-label parity for the leaves, the same way
 the loop and queue splits pin both for theirs. The private half of the facade
-is temporary (spec 1.9-15): the L3 package re-homes the private test imports
+is temporary (spec 4.3-15): the L3 package re-homes the private test imports
 to the leaf owners and retires those re-exports, and this test shrinks with
 them.
 """
