@@ -395,8 +395,12 @@ class TestDesktopChatFullSetStaging:
         assert task["text"].count("read_file(root='artifact_store'") == 2
 
     def test_no_uploads_keeps_legacy_inline_image(self, tmp_path, monkeypatch):
-        """Backward-compat: with no chat_attachment_uploads, the single-image base64
-        seam is untouched (image_base64 stays, nothing is staged)."""
+        """Backward-compat: with no chat_attachment_uploads but image_data present
+        (the legacy single-image base64 seam — Telegram bridge, older clients), the
+        bytes are now staged through the shared substrate (same path the desktop
+        set takes) and the inline image_base64 is dropped on success, so the agent
+        can read them via read_file(root='artifact_store', path='attachments/...')
+        instead of receiving them inline-only. Closes ibl-162952d44079."""
         import supervisor.workers as workers
 
         drive = _drive(tmp_path)
@@ -410,8 +414,278 @@ class TestDesktopChatFullSetStaging:
 
         task = agent.task
         assert task is not None
-        assert task.get("image_base64") == b64
+        # Legacy inline keys dropped (avoid double-injection) — bytes are now on disk.
+        assert task.get("image_base64") is None
+        assert task.get("image_mime") is None
+        # Staged via the shared substrate, not inline.
+        imgs = task.get("attachment_images")
+        assert isinstance(imgs, list) and len(imgs) == 1
+        assert imgs[0]["is_image"] is True
+        assert imgs[0]["relpath"].startswith("attachments/")
+        # The READY read_file manifest is appended so the agent can read the image.
+        assert task["drive_root"] == str(drive)
+        assert "[ATTACHMENTS]" in task["text"]
+        assert "[END_ATTACHMENTS]" in task["text"]
+        assert "read_file(root='artifact_store'" in task["text"]
+        # The caption (3rd tuple element) is recorded on the task but does NOT
+        # override a non-empty user text — the agent's user text wins.
+        assert task.get("image_caption") == "a shot"
+        assert "hi" in task["text"]
+        assert "a shot" not in task["text"]
+        # The staged file actually exists on disk with the original bytes.
+        adir = _attach_dir(drive, task["id"])
+        staged = next(p for p in adir.iterdir() if p.is_file())
+        assert staged.read_bytes() == _PNG_BYTES
+
+
+class TestInlineImageDataPersistence:
+    """The legacy single-image base64 seam (Telegram bridge, older clients) now
+    routes through the shared staging substrate. Without this, image bytes stay
+    inline in task['image_base64'] and the agent cannot read them via
+    read_file(root='artifact_store', path='attachments/...') — closes
+    ibl-162952d44079 and ibl-04a5239e3573 (duplicate)."""
+
+    def test_image_data_only_persists_and_drops_inline(self, tmp_path, monkeypatch):
+        """image_data + no metadata: stage via shared substrate, drop inline keys."""
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        b64 = base64.b64encode(_PNG_BYTES).decode("ascii")
+        agent = _FakeChatAgent()
+        workers._run_chat_task(agent, 1, "describe this", (b64, "image/png", "diagram"))
+
+        task = agent.task
+        assert task is not None
+        # Legacy inline keys dropped.
+        assert task.get("image_base64") is None
+        assert task.get("image_mime") is None
+        # Staged via the shared substrate.
+        imgs = task.get("attachment_images")
+        assert isinstance(imgs, list) and len(imgs) == 1
+        assert imgs[0]["is_image"] is True
+        assert imgs[0]["relpath"].startswith("attachments/")
+        assert task["drive_root"] == str(drive)
+        assert "[ATTACHMENTS]" in task["text"]
+        # Caption (3rd tuple element) is recorded on the task — does NOT override
+        # the user text (the agent's user text wins when both are present).
+        assert task.get("image_caption") == "diagram"
+        # Original bytes are recoverable.
+        adir = _attach_dir(drive, task["id"])
+        staged = next(p for p in adir.iterdir() if p.is_file())
+        assert staged.read_bytes() == _PNG_BYTES
+        # Temporary source under data/uploads was cleaned up after staging.
+        leftover = list((drive / "uploads").iterdir()) if (drive / "uploads").exists() else []
+        assert leftover == [], f"inline staging source leaked: {leftover}"
+
+    def test_image_data_with_empty_text_seeds_caption_into_text(self, tmp_path, monkeypatch):
+        """When text is empty, the caption seeds task['text'] and survives staging."""
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        b64 = base64.b64encode(_PNG_BYTES).decode("ascii")
+        agent = _FakeChatAgent()
+        workers._run_chat_task(agent, 1, "", (b64, "image/png", "my caption"))
+
+        task = agent.task
+        assert task is not None
+        # The caption seeds task['text'] AND survives the staging rewrite.
+        assert "my caption" in task["text"]
+        assert task.get("image_caption") == "my caption"
+        # And the manifest is appended after the caption.
+        assert "[ATTACHMENTS]" in task["text"]
+
+    def test_image_data_two_tuple_no_caption(self, tmp_path, monkeypatch):
+        """image_data is (b64, mime) — no caption — still stages correctly; the
+        text field is the user-supplied 'text' argument verbatim."""
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        b64 = base64.b64encode(_PNG_BYTES).decode("ascii")
+        agent = _FakeChatAgent()
+        workers._run_chat_task(agent, 1, "what is this?", (b64, "image/png"))
+
+        task = agent.task
+        assert task is not None
+        # Inline keys dropped.
+        assert task.get("image_base64") is None
+        assert task.get("image_mime") is None
+        # Caption stays empty.
+        assert task.get("image_caption") is None
+        # Original text survives the staging rewrite.
+        assert "what is this?" in task["text"]
+        # And the manifest is appended.
+        assert "[ATTACHMENTS]" in task["text"]
+
+    def test_image_data_with_unrelated_metadata(self, tmp_path, monkeypatch):
+        """image_data + task_metadata that has NO chat_attachment_uploads key —
+        the staging still materialises the inline image (chat_attachment_uploads
+        is empty, not absent-with-meaning)."""
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        b64 = base64.b64encode(_PNG_BYTES).decode("ascii")
+        agent = _FakeChatAgent()
+        workers._run_chat_task(
+            agent, 1, "x", (b64, "image/png"),
+            task_metadata={"some_other_key": 42},
+        )
+
+        task = agent.task
+        assert task is not None
+        assert task.get("image_base64") is None
+        assert task.get("attachment_images") and len(task["attachment_images"]) == 1
+
+    def test_image_data_with_existing_uploads_drops_inline(self, tmp_path, monkeypatch):
+        """image_data + non-empty chat_attachment_uploads: the existing uploads
+        list WINS (claim_2 — uploads-wins), the inline image_data bytes are
+        dropped (the same as the pre-fix behaviour, preserved). The agent sees
+        ONLY the explicit uploads; the inline image does not silently double-
+        stage. (Practical call sites never send both for the same image — the
+        Telegram bridge resolves its photo into chat_attachment_uploads before
+        _run_chat_task is reached — so this branch is a guard against a custom
+        integration that did.)
+        """
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        # One existing on-disk upload (PDF, not an image).
+        pdf_src = tmp_path / "report.pdf"
+        pdf_src.write_bytes(b"%PDF-1.4\n%fake\n")
+
+        # Plus the inline image (which the uploads-wins branch drops).
+        b64 = base64.b64encode(_PNG_BYTES).decode("ascii")
+        agent = _FakeChatAgent()
+        workers._run_chat_task(
+            agent, 1, "see report",
+            (b64, "image/png", "shot"),
+            task_metadata={
+                "chat_attachment_uploads": [
+                    {"path": str(pdf_src), "label": "report.pdf", "mime": "application/pdf"},
+                ],
+            },
+        )
+
+        task = agent.task
+        assert task is not None
+        # Inline keys dropped (same as the pre-fix branch).
+        assert task.get("image_base64") is None
+        assert task.get("image_mime") is None
+        # ONLY the PDF is staged; the inline image is NOT silently double-injected.
+        adir = _attach_dir(drive, task["id"])
+        staged_names = sorted(p.name for p in adir.iterdir() if p.is_file())
+        assert any(n.endswith(".pdf") for n in staged_names)
+        assert not any(n.endswith(".png") for n in staged_names)
+        # Manifest has ONE read_file line (the PDF), not two.
+        assert task["text"].count("read_file(root='artifact_store'") == 1
+        # attachment_images is empty (PDF isn't an image; inline dropped).
+        imgs = task.get("attachment_images")
+        assert imgs == []
+        # No leftover inline staging source under data/uploads (the inline path
+        # did not run because uploads was non-empty).
+        leftover = list((drive / "uploads").iterdir()) if (drive / "uploads").exists() else []
+        assert leftover == [], f"unexpected leftover under uploads/: {leftover}"
+
+    def test_image_data_jpeg_mime_routes_to_jpg_suffix(self, tmp_path, monkeypatch):
+        """mime=image/jpeg → .jpg suffix on the staging file (not .jpeg)."""
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        b64 = base64.b64encode(_PNG_BYTES).decode("ascii")
+        agent = _FakeChatAgent()
+        workers._run_chat_task(agent, 1, "x", (b64, "image/jpeg"))
+
+        task = agent.task
+        assert task is not None
+        adir = _attach_dir(drive, task["id"])
+        staged = next(p for p in adir.iterdir() if p.is_file())
+        assert staged.suffix == ".jpg"
+
+    def test_image_data_corrupt_b64_falls_back_to_inline(self, tmp_path, monkeypatch):
+        """Invalid base64 in image_data: staging fails, legacy inline image_base64
+        stays as a degraded fallback (same fallback the rest of the staging
+        substrate keeps — never a hard fail on a transient decode error)."""
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        agent = _FakeChatAgent()
+        workers._run_chat_task(agent, 1, "x", ("!!!not-valid-base64@@@", "image/png"))
+
+        task = agent.task
+        assert task is not None
+        # Staging failed → inline base64 left in place as fallback (degraded but
+        # the message is not lost).
+        assert task.get("image_base64") == "!!!not-valid-base64@@@"
         assert task.get("image_mime") == "image/png"
+        assert "attachment_images" not in task
+        assert "[ATTACHMENTS]" not in task["text"]
+
+    def test_image_data_oversize_50mb_falls_back_to_inline(self, tmp_path, monkeypatch):
+        """>50 MiB inline payload: exceeds the canonical cap, staging skipped,
+        legacy inline kept as fallback."""
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        # 50 MiB + 1 byte worth of b64 (caps the inner size guard exactly at the limit).
+        huge = b"\x00" * (50 * 1024 * 1024 + 1)
+        b64 = base64.b64encode(huge).decode("ascii")
+        agent = _FakeChatAgent()
+        workers._run_chat_task(agent, 1, "x", (b64, "image/png"))
+
+        task = agent.task
+        assert task is not None
+        # Oversize → staging skipped → inline base64 stays.
+        assert task.get("image_base64") == b64
+        assert "attachment_images" not in task
+
+    def test_no_image_data_no_uploads_no_staging(self, tmp_path, monkeypatch):
+        """Neither image_data nor chat_attachment_uploads: no staging at all,
+        drive_root / attachment_images / [ATTACHMENTS] all absent. Pure text
+        path. The (image attached) fallback fires when text is empty."""
+        import supervisor.workers as workers
+
+        drive = _drive(tmp_path)
+        monkeypatch.setattr(workers, "DRIVE_ROOT", drive)
+        import ouroboros.project_naming as project_naming
+        monkeypatch.setattr(project_naming, "spawn_proactive_namer", lambda *a, **k: None)
+
+        agent = _FakeChatAgent()
+        workers._run_chat_task(agent, 1, "hello", None)
+
+        task = agent.task
+        assert task is not None
+        assert task["text"] == "hello"
         assert "attachment_images" not in task
         assert "[ATTACHMENTS]" not in task["text"]
 

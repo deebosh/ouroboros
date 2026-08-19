@@ -161,6 +161,36 @@ class TestIsReviewAvailable:
         assert available is True
         assert model == "anthropic::claude-opus-4.8"
 
+    def test_openai_direct_preferred_when_both_keys_set(self):
+        """Regression for ibl-ad4731a2f03e: when both OPENAI_API_KEY and
+        OPENROUTER_API_KEY are set, an OpenRouter cascade must NOT shadow a
+        working direct-OpenAI route (the openrouter credit cascade is silent
+        at the provider level — openrouter looks healthy then 402s mid-call).
+        """
+        with (
+            mock.patch("ouroboros.deep_self_review.get_deep_self_review_model", return_value="openai/gpt-5.5-pro"),
+            mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test", "OPENROUTER_API_KEY": "sk-or-test"}, clear=True),
+        ):
+            available, model = is_review_available()
+        assert available is True
+        # The direct-OpenAI rewrite path wins; the result must NOT be the
+        # raw OpenRouter route (`openai/gpt-5.5-pro`) that the bug returned.
+        assert model != "openai/gpt-5.5-pro"
+        assert model == OPENAI_DIRECT_DEFAULTS["deep_self_review"]
+
+    def test_openrouter_used_when_openai_direct_unavailable(self):
+        """The fix must preserve the openrouter fallback when openai direct is
+        NOT available (no OPENAI_API_KEY) — openrouter is the only path.
+        """
+        with (
+            mock.patch("ouroboros.deep_self_review.get_deep_self_review_model", return_value="openai/gpt-5.5"),
+            mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=True),
+        ):
+            available, model = is_review_available()
+        assert available is True
+        # Falls through to openrouter since openai direct is unreachable.
+        assert model == "openai/gpt-5.5"
+
 
 class TestRequestToolEmitsEvent:
     def test_emits_correct_event(self):
