@@ -30,9 +30,7 @@ from ouroboros.pricing import estimate_cost_optional
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # annotation-only names; lazy under future annotations, never imported at runtime
-    from ouroboros.loop import (
-        DeliveryCandidate,
-    )
+    from ouroboros.loop_delivery import DeliveryCandidate
 
 
 # The parent logger name is pinned on purpose: records moved with their code

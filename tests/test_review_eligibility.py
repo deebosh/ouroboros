@@ -14,7 +14,7 @@ from ouroboros.outcomes import (
     turn_has_reviewable_effects,
     _unresolved_tool_errors,
 )
-from ouroboros.loop import _task_acceptance_eligible
+from ouroboros.loop_acceptance import _task_acceptance_eligible
 
 
 def _call(tool, *, is_error=False, status="ok", root=None):

@@ -530,7 +530,7 @@ def test_append_failure_has_zero_task_result_mutation_and_retry_works(
 
 
 def test_latest_valid_row_wins_for_same_exact_hash(tmp_path):
-    from ouroboros.loop import _child_disposition_state
+    from ouroboros.loop_forced_finalization import _child_disposition_state
     from ouroboros.task_status import load_effective_task_result
     from ouroboros.task_tree_ledger import tree_ledger_rows
     from ouroboros.tools.join_ledger import _child_result_sha256
@@ -558,7 +558,7 @@ def test_latest_valid_row_wins_for_same_exact_hash(tmp_path):
 
 
 def test_legacy_task_result_disposition_fields_are_not_authority(tmp_path):
-    from ouroboros.loop import _child_disposition_state
+    from ouroboros.loop_forced_finalization import _child_disposition_state
     from ouroboros.task_results import load_task_result
     from ouroboros.task_status import load_effective_task_result
 
@@ -612,7 +612,7 @@ def test_tree_gc_removes_ephemeral_disposition_authority(tmp_path):
 
 def test_cancellation_wins_and_late_scratch_result_is_deleted(tmp_path):
     from ouroboros.headless import HEADLESS_TASKS_DIR, remove_subagent_task_drive
-    from ouroboros.loop import _child_disposition_state
+    from ouroboros.loop_forced_finalization import _child_disposition_state
     from ouroboros.task_results import STATUS_CANCELLED, load_task_result, write_task_result
     from ouroboros.task_status import load_effective_task_result
 
@@ -656,7 +656,7 @@ def test_legacy_cancel_requested_latch_is_pending_not_handled(tmp_path):
     reminder for a child the supervisor was still tearing down; such a child
     must stay visible as cancel-pending until custody settles it.
     """
-    from ouroboros.loop import _child_disposition_state
+    from ouroboros.loop_forced_finalization import _child_disposition_state
     from ouroboros.task_results import STATUS_CANCEL_REQUESTED, write_task_result
     from ouroboros.task_status import load_effective_task_result
 

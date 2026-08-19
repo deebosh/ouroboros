@@ -20,7 +20,9 @@ from types import SimpleNamespace
 
 import ouroboros.loop as loop_mod
 from ouroboros import loop_round_limits
-from ouroboros.loop import _drain_incoming_messages, _initialize_owner_directives, _latch_final_answer_marker, _server_web_allowed_by_task
+from ouroboros.loop_acceptance import _latch_final_answer_marker, _server_web_allowed_by_task
+from ouroboros.loop_messages import _initialize_owner_directives
+from ouroboros.loop_round_limits import _drain_incoming_messages
 from ouroboros.loop_nudges import _maybe_inject_self_check, _maybe_inject_time_budget_milestone
 
 

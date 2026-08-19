@@ -20,9 +20,7 @@ from ouroboros.tools.registry import ToolRegistry
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # annotation-only names; lazy under future annotations, never imported at runtime
-    from ouroboros.loop import (
-        _RoundLimitContext,
-    )
+    from ouroboros.loop_round_limits import _RoundLimitContext
 
 
 # The parent logger name is pinned on purpose: records moved with their code

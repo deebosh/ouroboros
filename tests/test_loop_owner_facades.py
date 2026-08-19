@@ -26,7 +26,11 @@ resurrect a second address for one object — so it is asserted, not assumed.
 
 from __future__ import annotations
 
+import ast
 import importlib
+import pathlib
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
 
 # leaf module -> every member the leaf owns (loop.py re-exports each name).
 LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
@@ -138,6 +142,50 @@ def test_loop_owner_facades_preserve_identity():
         module = importlib.import_module(f"ouroboros.{leaf}")
         for name in names.split():
             assert getattr(loop, name) is getattr(module, name), f"{leaf}.{name}"
+
+
+def _loop_body_reads() -> set[str]:
+    """Names ``ouroboros/loop.py``'s own code reads, ignoring the re-export block."""
+    source = (REPO / "ouroboros" / "loop.py").read_text(encoding="utf-8")
+    return {
+        node.id for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+
+
+def _sibling_handle_readers() -> dict[str, set[str]]:
+    """name -> the loop leaves that read it as ``_loop().name``."""
+    readers: dict[str, set[str]] = {}
+    for path in sorted((REPO / "ouroboros").glob("loop_*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name) and node.value.func.id == "_loop"):
+                readers.setdefault(node.attr, set()).add(path.stem)
+    return readers
+
+
+def test_every_surviving_private_re_export_still_has_a_reason_to_exist():
+    """The retirement's real product is this invariant, not the line count.
+
+    After L3 a private name may sit on ``ouroboros.loop`` for exactly two
+    reasons: ``run_llm_loop``'s own body calls it, or a leaf OTHER than its
+    owner reads it as ``_loop().name`` — the family's rendezvous binding, whose
+    alternative is a mesh of sibling handles. A name that satisfies neither is
+    a re-export nobody needs, which is precisely what L3 went looking for; it
+    should be retired rather than left here for a future reader to puzzle over.
+    """
+    body = _loop_body_reads()
+    readers = _sibling_handle_readers()
+    unjustified = [
+        f"{leaf}.{name}"
+        for leaf, names in LOOP_LEAF_OWNERS.items()
+        for name in names.split()
+        if name not in body and not (readers.get(name, set()) - {leaf})
+    ]
+    assert unjustified == [], (
+        "these re-exports have neither a run_llm_loop caller nor a sibling "
+        f"handle reader and should be retired: {unjustified}"
+    )
 
 
 def test_the_retired_private_names_own_their_leaf_and_left_the_loop_surface():

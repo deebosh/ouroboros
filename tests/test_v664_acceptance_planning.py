@@ -138,7 +138,7 @@ def test_normalized_stall_default_does_not_emit_deprecation_noise(tmp_path):
 
 
 def test_child_task_never_becomes_host_acceptance_authority():
-    from ouroboros.loop import _task_acceptance_eligible
+    from ouroboros.loop_acceptance import _task_acceptance_eligible
 
     assert _task_acceptance_eligible(
         "required", {"tool_calls": [{"tool": "write_file"}]}, False,
@@ -147,7 +147,7 @@ def test_child_task_never_becomes_host_acceptance_authority():
 
 
 def test_queue_owned_acceptance_fence_uses_only_optional_ctx_hooks():
-    from ouroboros.loop import _begin_task_acceptance_fence, _end_task_acceptance_fence
+    from ouroboros.loop_acceptance import _begin_task_acceptance_fence, _end_task_acceptance_fence
 
     calls = []
 
@@ -172,7 +172,7 @@ def test_queue_owned_acceptance_fence_uses_only_optional_ctx_hooks():
 
 
 def test_acceptance_quiescence_does_not_treat_cancel_requested_as_settled(tmp_path, monkeypatch):
-    from ouroboros.loop import _task_acceptance_subtree_snapshot
+    from ouroboros.loop_acceptance import _task_acceptance_subtree_snapshot
     import ouroboros.task_status as task_status
 
     monkeypatch.setattr(
@@ -196,7 +196,7 @@ def test_acceptance_quiescence_does_not_treat_cancel_requested_as_settled(tmp_pa
 def test_acceptance_subtree_uses_canonical_budget_root_for_split_drive(
     tmp_path, monkeypatch,
 ):
-    from ouroboros.loop import _task_acceptance_subtree_snapshot
+    from ouroboros.loop_acceptance import _task_acceptance_subtree_snapshot
     from ouroboros.tools.join_ledger import _child_result_sha256
     import ouroboros.task_status as task_status
 
@@ -243,7 +243,7 @@ def test_acceptance_subtree_uses_canonical_budget_root_for_split_drive(
 
 
 def test_acceptance_quiescence_requires_empty_supervisor_snapshot(tmp_path, monkeypatch):
-    from ouroboros.loop import _task_acceptance_subtree_snapshot
+    from ouroboros.loop_acceptance import _task_acceptance_subtree_snapshot
     import ouroboros.task_status as task_status
 
     monkeypatch.setattr(task_status, "find_child_tasks", lambda *_args, **_kwargs: [{

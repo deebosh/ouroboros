@@ -10,7 +10,7 @@ makes the FACT structural (one re-loop) while the decision stays the child's.
 
 from types import SimpleNamespace
 
-from ouroboros.loop import _maybe_inject_finalization_nudges
+from ouroboros.loop_nudges import _maybe_inject_finalization_nudges
 
 
 def _run(ctx_obj, msgs, tool_calls):
@@ -317,7 +317,8 @@ def _forced_run(tmp_path, nanny, tool_calls):
     import pathlib
     from unittest.mock import patch
 
-    from ouroboros.loop import _RoundLimitContext, _forced_final_answer
+    from ouroboros.loop_forced_finalization import _forced_final_answer
+    from ouroboros.loop_round_limits import _RoundLimitContext
 
     class _Ctx:
         pass

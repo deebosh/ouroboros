@@ -132,7 +132,7 @@ def _delegate_call(name="delegate_start"):
 
 
 def test_the_baseline_advances_on_delegate_verbs_only():
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _nanny_metered_since_delegate_activity
 
     ctx = _nanny_ctx()
@@ -161,7 +161,7 @@ def test_the_baseline_advances_on_delegate_verbs_only():
 
 
 def test_a_non_nanny_task_is_never_tracked_or_reminded():
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = SimpleNamespace(_nanny_route_dispatched=False)
@@ -176,7 +176,7 @@ def test_a_non_nanny_task_is_never_tracked_or_reminded():
 def test_the_reminder_fires_proportionally_and_rearms_without_a_cap():
     """Owner 2=B: no absolute cap — the reminder repeats each threshold-width of
     metered rounds for as long as the burn continues, and never blocks."""
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -207,7 +207,7 @@ def test_the_reminder_never_makes_an_unconditional_zero_cost_claim():
     spend may settle billed/estimated/undisclosed — its text must carry the
     conditional phrasing (known-zero only on a settled $0 spend), never the
     old unconditional "runs at $0 marginal cost" assertion."""
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -233,7 +233,7 @@ def test_the_reminder_never_makes_an_unconditional_zero_cost_claim():
 
 
 def test_below_threshold_stays_silent():
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -249,7 +249,7 @@ def test_the_cost_axis_alone_can_trigger_the_reminder():
     (`round_idx - last_fired >= 8`) muted exactly this case, and the old test
     masked the mute by presetting `_nanny_reminder_round` below zero."""
     from ouroboros.task_pacing import NANNY_REMINDER_USD
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -269,7 +269,7 @@ def test_the_reminder_stays_out_of_owner_chat_progress(tmp_path):
     import json
 
     from ouroboros.task_pacing import NANNY_REMINDER_USD
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -299,7 +299,7 @@ def test_the_rearm_is_dual_axis_a_continuing_dollar_burn_refires_before_8_rounds
     A nanny burning $2 per round must hear the reminder again long before eight
     more rounds pass."""
     from ouroboros.task_pacing import NANNY_REMINDER_USD
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -322,7 +322,7 @@ def test_delegate_activity_resets_the_fire_cursor():
     delegate verb, so the first post-activity threshold crossing fires with no
     spacing gate."""
     from ouroboros.task_pacing import NANNY_REMINDER_USD
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -347,7 +347,7 @@ def test_a_ritual_wait_cannot_rebaseline_the_cost_axis():
     baselines. A wait now advances only the ROUND baseline, so the dollar axis
     keeps accruing and fires at the threshold."""
     from ouroboros.task_pacing import NANNY_REMINDER_USD
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -373,7 +373,7 @@ def test_a_ritual_wait_cannot_rebaseline_the_cost_axis():
 def test_a_genuinely_holding_nanny_stays_quiet():
     """R2-5, the other direction: waits only, pennies per round — neither axis
     crosses, and the reminder never fires."""
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -392,7 +392,7 @@ def test_zero_baseline_reminder_says_since_task_start():
     """R2-7c: before the first delegate verb there is no 'last delegated-run
     activity' — the reminder measures from the task's start and says so."""
     from ouroboros.task_pacing import NANNY_REMINDER_USD
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -413,7 +413,7 @@ def test_first_reminder_fires_early_with_zero_delegate_activity():
     delegate-verb call hears its FIRST reminder at NANNY_FIRST_REMINDER_ROUNDS
     regardless of dollars — the live E2E's cheap children finished in 4-8
     rounds under $0.15 and never heard it."""
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -436,7 +436,7 @@ def test_no_early_fire_once_a_delegate_verb_happened():
     """The early first-fire is ONLY for a nanny with zero delegate activity:
     after any delegate verb the ordinary 8-round/$2 dual-axis thresholds apply
     unchanged, so round NANNY_FIRST_REMINDER_ROUNDS stays silent."""
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -457,7 +457,7 @@ def test_rearm_after_the_early_first_fire_uses_the_ordinary_thresholds():
     round NANNY_FIRST_REMINDER_ROUNDS, the next one waits a further FULL
     threshold-width (8 rounds / $2) — the early constant governs only the
     first firing of a zero-delegation nanny."""
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _maybe_inject_nanny_economics_reminder
 
     ctx = _nanny_ctx()
@@ -477,7 +477,7 @@ def test_an_expensive_no_tool_round_still_counts(tmp_path):
     including tool-less rounds — the same call the loop makes before its
     final-answer branch, with an empty tool list, must advance the progress
     mark while never advancing the delegate baseline."""
-    from ouroboros.loop import _note_nanny_delegate_activity
+    from ouroboros.loop_nudges import _note_nanny_delegate_activity
     from ouroboros.loop_nudges import _nanny_metered_since_delegate_activity
 
     ctx = _nanny_ctx()
@@ -537,7 +537,7 @@ def _succeeded_run(drive, task_id="child-1"):
 
 
 def test_succeeded_run_with_a_big_metered_tail_gets_the_overrun_reminder(tmp_path):
-    from ouroboros.loop import _maybe_inject_finalization_nudges
+    from ouroboros.loop_nudges import _maybe_inject_finalization_nudges
 
     drive = _custody_drive(tmp_path)
     _succeeded_run(drive)
@@ -560,7 +560,7 @@ def test_succeeded_run_with_a_big_metered_tail_gets_the_overrun_reminder(tmp_pat
 
 
 def test_succeeded_run_with_a_modest_tail_keeps_the_silence(tmp_path):
-    from ouroboros.loop import _maybe_inject_finalization_nudges
+    from ouroboros.loop_nudges import _maybe_inject_finalization_nudges
 
     drive = _custody_drive(tmp_path)
     _succeeded_run(drive)
@@ -589,7 +589,7 @@ def test_forced_wrapup_over_a_succeeded_run_carries_the_honest_spend_note(tmp_pa
     """F16 (grok): a forced exit (budget/rounds overrun) may not re-loop, so the
     honest-spend line rides the ONE forced prompt when the overrun condition
     holds — succeeded delegated runs used to silence the forced note entirely."""
-    from ouroboros.loop import _forced_delegation_note
+    from ouroboros.loop_nudges import _forced_delegation_note
 
     drive = _custody_drive(tmp_path)
     _succeeded_run(drive)
@@ -606,7 +606,7 @@ def test_forced_wrapup_over_a_succeeded_run_carries_the_honest_spend_note(tmp_pa
 
 
 def test_forced_wrapup_over_a_succeeded_run_stays_silent_below_threshold(tmp_path):
-    from ouroboros.loop import _forced_delegation_note
+    from ouroboros.loop_nudges import _forced_delegation_note
 
     drive = _custody_drive(tmp_path)
     _succeeded_run(drive)

@@ -24,7 +24,7 @@ import pytest
 import ouroboros.loop as loop_mod
 from ouroboros import loop_nudges
 from ouroboros import loop_acceptance_review
-from ouroboros.loop import _set_acceptance_decision, _supersede_task_acceptance_for_evidence_change, _supersede_task_acceptance_for_owner_followup
+from ouroboros.loop_acceptance import _set_acceptance_decision, _supersede_task_acceptance_for_evidence_change, _supersede_task_acceptance_for_owner_followup
 from ouroboros.loop_acceptance_review import _apply_task_acceptance_result, _record_acceptance_infra_failure
 from ouroboros.loop_acceptance import ACCEPTANCE_DECISION_REASONS
 from ouroboros.outcomes import (

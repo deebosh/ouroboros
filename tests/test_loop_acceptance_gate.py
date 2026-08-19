@@ -14,12 +14,9 @@ import threading
 from types import SimpleNamespace
 
 import ouroboros.loop as loop_mod
-from ouroboros.loop import (
-    _drain_incoming_messages,
-    _run_task_acceptance_review_once,
-    _set_acceptance_decision,
-    _task_acceptance_eligible,
-)
+from ouroboros.loop_acceptance import _set_acceptance_decision, _task_acceptance_eligible
+from ouroboros.loop_acceptance_review import _run_task_acceptance_review_once
+from ouroboros.loop_round_limits import _drain_incoming_messages
 
 
 def test_set_acceptance_decision_preserves_agent_stance():
