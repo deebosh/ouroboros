@@ -315,10 +315,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in shell_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
-    headless_extraction_symbols_by_owner = {
-        "headless_status.py": "ARTIFACT_STATUS_PENDING ARTIFACT_STATUS_FINALIZING ARTIFACT_STATUS_READY ARTIFACT_STATUS_READY_WITH_CHANGES ARTIFACT_STATUS_READY_NO_CHANGES ARTIFACT_STATUS_MISSING ARTIFACT_STATUS_FAILED ARTIFACT_TERMINAL_STATUSES _FINAL_STATUSES _LOCAL_READONLY_SUBAGENT_MODE _ARTIFACT_LIFECYCLE_FIELDS",
-        "workspace_patch_capture.py": "SCRATCH_MANIFEST_NAME _GIT_UNBORN_HEAD build_workspace_patch write_workspace_patch_artifacts _git_stdout _workspace_patch_base _git_empty_tree_oid _head_reflog_exists _looks_like_git_oid _git_path_list _git_bytes _append_git_output _write_patch_separator _untracked_blob_exclude_reason untracked_capture_veto_reason _preflight_head_from_task _preflight_head_present _acting_constraint_from_task _empty_patch_manifest",
-    }
+    headless_extraction_symbols_by_owner = _inv.headless_extraction_symbols_by_owner
     headless_extraction_rows = {
         f"ouroboros/headless.py::{symbol}": f"ouroboros/{owner}::{symbol}"
         for owner, symbols in headless_extraction_symbols_by_owner.items()
@@ -417,10 +414,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         for owner, symbols in shell_extraction_symbols_by_owner.items()
         for symbol in symbols.split()
     }
-    headless_extraction_symbols_by_owner = {
-        "headless_status.py": "ARTIFACT_STATUS_PENDING ARTIFACT_STATUS_FINALIZING ARTIFACT_STATUS_READY ARTIFACT_STATUS_READY_WITH_CHANGES ARTIFACT_STATUS_READY_NO_CHANGES ARTIFACT_STATUS_MISSING ARTIFACT_STATUS_FAILED ARTIFACT_TERMINAL_STATUSES _FINAL_STATUSES _LOCAL_READONLY_SUBAGENT_MODE _ARTIFACT_LIFECYCLE_FIELDS",
-        "workspace_patch_capture.py": "SCRATCH_MANIFEST_NAME _GIT_UNBORN_HEAD build_workspace_patch write_workspace_patch_artifacts _git_stdout _workspace_patch_base _git_empty_tree_oid _head_reflog_exists _looks_like_git_oid _git_path_list _git_bytes _append_git_output _write_patch_separator _untracked_blob_exclude_reason untracked_capture_veto_reason _preflight_head_from_task _preflight_head_present _acting_constraint_from_task _empty_patch_manifest",
-    }
+    headless_extraction_symbols_by_owner = _inv.headless_extraction_symbols_by_owner
     headless_extraction_rows = {
         f"ouroboros/headless.py::{symbol}": f"ouroboros/{owner}::{symbol}"
         for owner, symbols in headless_extraction_symbols_by_owner.items()
@@ -739,13 +733,7 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     }
     registry_extraction_no_facade_rows.update(s3b_queue_no_facade)
     # S3b: the module-handle extraction of the worker pool (delta D18).
-    s3b_pool_handle_symbols_by_owner = {
-        "worker_promotion.py": "_admit_promoted_workspace _canonical_promoted_repair_constraint _fail_promoted_task_loudly _origin_from_mapping _origin_from_task_record _promote_duplicate_reason _promoted_force_plan_metadata _report_binding_failure ensure_project_scope promote_chat_to_task",
-        "worker_chat_lane.py": "_broadcast_task_named _handle_chat_direct_locked _run_chat_task auto_resume_after_restart handle_chat_direct handle_chat_ephemeral",
-        "worker_health.py": "_emit_task_done_terminal _ensure_workers_healthy_locked ensure_workers_healthy terminal_task_metadata",
-        "worker_pool_lifecycle.py": "_WORKER_LIFECYCLE_LOCK _first_worker_boot_event_since _first_worker_event_since _kill_survivors _record_worker_pids _serialized_worker_lifecycle _verify_worker_sha_after_spawn _worker_pids_path _write_failure_result kill_workers_for_update reap_orphaned_workers respawn_worker",
-        "worker_assignment.py": "_cancel_unauthorized_evolution _evolution_assignment_error assign_tasks",
-    }
+    s3b_pool_handle_symbols_by_owner = _inv.s3b_pool_handle_symbols_by_owner
     s3b_pool_handle_rows = {
         f"supervisor/workers.py::{symbol}": f"supervisor/{owner}::{symbol}"
         for owner, symbols in s3b_pool_handle_symbols_by_owner.items()
@@ -1094,6 +1082,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(w5_test_split_rows)
     existing_process_owner_rows.update(w5_test_split_rows)
     registry_extraction_no_facade_rows.update(set(w5_test_split_rows) - w5_test_split_facade_rows)
+    # v7 stream S test-giant theme splits (lane TS1): source module -> {owner path: moved symbols}.
+    # Same shape as the S7b block: the sibling module that hosts a moved test, fixture or helper
+    # owns it. A facade cell appears only where a helper keeps resolving under its old module
+    # name for historical importers; a symbol the parent no longer mentions carries "-".
+    ts1_test_split_symbols_by_owner = _inv.ts1_test_split_symbols_by_owner
+    ts1_test_split_rows = {f"{source}::{symbol}": f"{owner}::{symbol}" for source, owners in ts1_test_split_symbols_by_owner.items() for owner, symbols in owners.items() for symbol in symbols.split()}
+    ts1_test_split_facade_rows: set[str] = set()
+    implemented.update(ts1_test_split_rows)
+    existing_process_owner_rows.update(ts1_test_split_rows)
+    registry_extraction_no_facade_rows.update(set(ts1_test_split_rows) - ts1_test_split_facade_rows)
     # v7 stream L: llm.py splits into ten owner leaves. Module-level names keep a
     # facade on llm.py; LLMClient members move into owner mixins the class
     # composes, so the class inherits the exact same function objects.
