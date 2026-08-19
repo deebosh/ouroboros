@@ -6,7 +6,7 @@ import time
 import pytest
 
 from ouroboros.llm import LocalContextTooLargeError
-from ouroboros.loop import _provider_recovery_hint
+from ouroboros.loop_round_limits import _provider_recovery_hint
 from ouroboros.loop_llm_call import (
     _LlmErrorContext,
     _is_context_overflow_error,

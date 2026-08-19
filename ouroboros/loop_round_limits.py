@@ -228,7 +228,7 @@ def _drain_incoming_messages(
                     # Owner-stop budget starts at DELIVERY (1=A): stamp the drain
                     # so the custody sweep budgets the final turn from here, not
                     # the button press. First drain wins; fail-soft.
-                    _loop()._mark_owner_stop_control_drained(owner_ctx, drive_root, task_id)
+                    _mark_owner_stop_control_drained(owner_ctx, drive_root, task_id)
                 continue
             if kind == KIND_HURRY:
                 # HQ1 no-chat contract (§19.7.2 item 6): a typed hurry control is
@@ -401,7 +401,7 @@ def _handle_forced_finalization(ctx: _RoundLimitContext, reason: str) -> Tuple[s
     """
     reason_lines = str(reason or "").splitlines()
     if reason_lines and reason_lines[0].strip() == REASON_OWNER_REQUESTED_FINALIZATION:
-        return _loop()._handle_owner_stop_finalization(ctx, str(reason))
+        return _handle_owner_stop_finalization(ctx, str(reason))
     fallback = f"⚠️ Task reached {reason or 'deadline'}; finalization grace produced no answer."
     prompt = (
         f"[FINALIZE_NOW] The supervisor opened a finalization grace window (reason: {reason or 'deadline'}). "
@@ -440,7 +440,7 @@ def _handle_owner_stop_finalization(
         "⚠️ The owner requested finalize-then-stop; no final answer could be "
         "produced inside the grace window."
     )
-    if _loop()._owner_stop_window_elapsed(ctx):
+    if _owner_stop_window_elapsed(ctx):
         # An expired control never buys a paid summary: the honest fallback
         # rides the same typed rail and custody settles it.
         _loop()._finalize_forced_services(ctx, llm_trace)
@@ -493,7 +493,7 @@ def _handle_provider_unavailable(ctx: _RoundLimitContext) -> Tuple[str, Dict[str
     else:
         fallback = (
             "⚠️ The model provider returned no usable response after retries and same-model reroute."
-            f"{_loop()._provider_failure_hint(ctx.accumulated_usage)}{_loop()._provider_recovery_hint(ctx.accumulated_usage)} "
+            f"{_provider_failure_hint(ctx.accumulated_usage)}{_provider_recovery_hint(ctx.accumulated_usage)} "
             "Any files written so far are preserved in the workspace."
         )
     prompt = (
@@ -558,7 +558,7 @@ def _maybe_early_finalize(
     loop-local real-deadline finalize. Returns the forced answer or None."""
     if controls.get("finalize_now"):
         return _loop()._handle_forced_finalization(limit_ctx, str(controls["finalize_now"]))
-    return _loop()._maybe_deadline_local_finalize(limit_ctx, tools)
+    return _maybe_deadline_local_finalize(limit_ctx, tools)
 
 
 def _finalize_limit_ctx(

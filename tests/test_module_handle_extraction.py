@@ -96,10 +96,8 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/loop_round_limits.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_append_or_merge_user_message", "_current_delivery_candidate",
         "_emit_checkpoint_event", "_finalize_forced_services", "_forced_fallback_result",
-        "_forced_final_answer", "_handle_forced_finalization", "_handle_owner_stop_finalization",
-        "_last_assistant_text", "_live_delivery_candidate", "_mark_owner_stop_control_drained",
-        "_maybe_deadline_local_finalize", "_owner_marked_content", "_owner_stop_window_elapsed",
-        "_provider_failure_hint", "_provider_recovery_hint", "_record_owner_directive",
+        "_forced_final_answer", "_handle_forced_finalization", "_last_assistant_text",
+        "_live_delivery_candidate", "_owner_marked_content", "_record_owner_directive",
         "_task_deadline_epoch", "compact_tool_history_llm", "utc_now"
     })),
     "ouroboros/loop_nudges.py": ("ouroboros/loop.py", "_loop", frozenset({

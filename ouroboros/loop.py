@@ -554,11 +554,7 @@ from ouroboros.loop_acceptance_review import (  # noqa: E402, F401 -- intentiona
 )
 from ouroboros.loop_round_limits import (  # noqa: E402, F401 -- intentional public re-exports
     _CompactionRoundContext,
-    _provider_failure_hint,
-    _provider_recovery_hint,
     _task_deadline_epoch,
-    _mark_owner_stop_control_drained,
-    _owner_stop_window_elapsed,
     _drain_incoming_messages,
     _context_reclaim_passes,
     _context_reclaim_materializations,
@@ -568,9 +564,7 @@ from ouroboros.loop_round_limits import (  # noqa: E402, F401 -- intentional pub
     _account_compaction_usage,
     _handle_round_limit,
     _handle_forced_finalization,
-    _handle_owner_stop_finalization,
     _handle_provider_unavailable,
-    _maybe_deadline_local_finalize,
     _maybe_early_finalize,
     _finalize_limit_ctx,
 )

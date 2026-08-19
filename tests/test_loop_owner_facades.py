@@ -48,10 +48,10 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_run_task_acceptance_review_once"
     ),
     "loop_round_limits": (
-        "_CompactionRoundContext _provider_failure_hint _provider_recovery_hint _task_deadline_epoch _mark_owner_stop_control_drained "
-        "_owner_stop_window_elapsed _drain_incoming_messages _context_reclaim_passes _context_reclaim_materializations _context_overflow_retries "
-        "_run_round_compaction _RoundLimitContext _account_compaction_usage _handle_round_limit _handle_forced_finalization "
-        "_handle_owner_stop_finalization _handle_provider_unavailable _maybe_deadline_local_finalize _maybe_early_finalize _finalize_limit_ctx"
+        "_CompactionRoundContext _task_deadline_epoch _drain_incoming_messages _context_reclaim_passes "
+        "_context_reclaim_materializations _context_overflow_retries _run_round_compaction _RoundLimitContext "
+        "_account_compaction_usage _handle_round_limit _handle_forced_finalization "
+        "_handle_provider_unavailable _maybe_early_finalize _finalize_limit_ctx"
     ),
     "loop_nudges": (
         "_skill_names_touched_by_trace _skill_finalization_message _force_plan_decision _force_plan_reminder _force_plan_disclosure "
@@ -91,6 +91,10 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
 # retired (spec 1.9-15). Nothing outside the owning leaf reads these, so the
 # leaf owns the only binding and ouroboros.loop carries none.
 RETIRED_FROM_LOOP: dict[str, tuple[str, ...]] = {
+    "loop_round_limits": (
+        "_provider_failure_hint _provider_recovery_hint _mark_owner_stop_control_drained "
+        "_owner_stop_window_elapsed _handle_owner_stop_finalization _maybe_deadline_local_finalize"
+    ),
     "loop_acceptance_review": (
         "_ACCEPTANCE_REVIEW_CHECKLIST _TaskAcceptanceContext _acceptance_dialogue_quorum "
         "_attach_dialogue_to_host_run _mark_agent_acceptance_runs_advisory _latest_agent_acceptance_evidence "

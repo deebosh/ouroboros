@@ -19,6 +19,7 @@ import queue
 from types import SimpleNamespace
 
 import ouroboros.loop as loop_mod
+from ouroboros import loop_round_limits
 from ouroboros.loop import (
     _drain_incoming_messages,
     _initialize_owner_directives,
@@ -256,12 +257,12 @@ def test_deadline_local_finalize_gate(monkeypatch):
 
     # Far from deadline (10:30 vs now 09:59 -> ~31 min left > 120s) -> no finalize.
     far = SimpleNamespace(_ctx=SimpleNamespace(task_metadata={"deadline_at": "2026-06-10T10:30:00Z"}))
-    assert loop_mod._maybe_deadline_local_finalize(SimpleNamespace(), far) is None
+    assert loop_round_limits._maybe_deadline_local_finalize(SimpleNamespace(), far) is None
     # Within grace (10:00 vs now 09:59 -> 60s < 120s) -> finalize best-effort.
     near = SimpleNamespace(_ctx=SimpleNamespace(task_metadata={"deadline_at": "2026-06-10T10:00:00Z"}))
-    result = loop_mod._maybe_deadline_local_finalize(SimpleNamespace(), near)
+    result = loop_round_limits._maybe_deadline_local_finalize(SimpleNamespace(), near)
     assert result is not None and result[0] == "BEST EFFORT"
     assert captured["reason_code"] == "deadline_local"
     # No deadline_at at all -> never fires (no synthesized deadline).
     none_ctx = SimpleNamespace(_ctx=SimpleNamespace(task_metadata={}))
-    assert loop_mod._maybe_deadline_local_finalize(SimpleNamespace(), none_ctx) is None
+    assert loop_round_limits._maybe_deadline_local_finalize(SimpleNamespace(), none_ctx) is None
