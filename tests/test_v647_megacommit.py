@@ -354,9 +354,10 @@ def test_artifact_observation_reconciliation_clears_the_red_nudge(tmp_path, monk
     from types import SimpleNamespace
 
     import ouroboros.loop as loop_mod
+    from ouroboros import loop_nudges
     from ouroboros.outcomes import append_verification_receipt
 
-    monkeypatch.setattr(loop_mod, "_skill_finalization_message", lambda *_a, **_k: "")
+    monkeypatch.setattr(loop_nudges, "_skill_finalization_message", lambda *_a, **_k: "")
 
     def _fires(drive, receipts):
         for receipt in receipts:
@@ -527,9 +528,10 @@ def test_red_verification_nudge_one_shot_and_before_receipt_absent(monkeypatch):
     that is a property of the call site, not exercised here.)"""
     import types as _t
     from ouroboros import loop as L
+    from ouroboros import loop_nudges
     from ouroboros import outcomes as O
 
-    monkeypatch.setattr(L, "_skill_finalization_message", lambda *a, **k: "")
+    monkeypatch.setattr(loop_nudges, "_skill_finalization_message", lambda *a, **k: "")
     dr = Path(tempfile.mkdtemp())
     O.append_verification_receipt(dr, "redt", {"status": "fail", "check": "pytest", "returncode": 1})
     ctx = _t.SimpleNamespace(task_contract={}, task_metadata={})

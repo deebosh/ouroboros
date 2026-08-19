@@ -578,24 +578,9 @@ from ouroboros.loop_nudges import (  # noqa: E402, F401 -- intentional public re
     _maybe_inject_finalization_nudges,
 )
 from ouroboros.loop_model_call import (  # noqa: E402, F401 -- intentional public re-exports
-    _adopt_fallback_route,
-    _snapshot_context_fit_usage,
-    _restore_context_fit_usage,
     _run_cross_model_fallback_chain,
     _rebind_context_fit_plan,
     _RoundModelCallContext,
-    _context_fit_round_id,
-    _main_context_profile,
-    _remember_main_fit,
-    _measure_round_main_fit,
-    _physical_context_for_fit,
-    _dispatch_round_model,
-    _run_main_reclaim,
-    _measure_after_reclaim,
-    _reproject_actual_overflow_low,
-    _failed_capture_is_comparable,
-    _strict_context_shrink_predicate,
-    _emit_overflow_retry_skipped,
     _call_round_model,
 )
 from ouroboros.loop_budget import (  # noqa: E402, F401 -- intentional public re-exports

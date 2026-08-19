@@ -111,7 +111,7 @@ def _run_cross_model_fallback_chain(
             _fcd.mark_cooldown(model, use_local)
 
     _cooled(active_model, active_use_local)
-    primary_context_usage = _loop()._snapshot_context_fit_usage(accumulated_usage)
+    primary_context_usage = _snapshot_context_fit_usage(accumulated_usage)
     fallback_use_local = os.environ.get("USE_LOCAL_FALLBACK", "").lower() in ("true", "1")
     attempt_cap = _fcd.attempts_per_model()
     msg = None
@@ -171,7 +171,7 @@ def _run_cross_model_fallback_chain(
                 active_use_local,
                 context_fit_plan,
                 active_context_mode,
-            ) = _loop()._adopt_fallback_route(
+            ) = _adopt_fallback_route(
                 ctx,
                 tools,
                 fallback_model,
@@ -189,7 +189,7 @@ def _run_cross_model_fallback_chain(
         tools._ctx.context_fit_plan = context_fit_plan
         tools._ctx.messages = messages
         tools._ctx.active_context_mode = active_context_mode
-        _loop()._restore_context_fit_usage(accumulated_usage, primary_context_usage)
+        _restore_context_fit_usage(accumulated_usage, primary_context_usage)
         _cooled(fallback_model, fallback_use_local)
     return (
         msg,
@@ -376,12 +376,12 @@ def _measure_round_main_fit(
         plan,
         ctx.messages,
         ctx.tool_schemas,
-        profile=_loop()._main_context_profile(plan, rendered_mode),
+        profile=_main_context_profile(plan, rendered_mode),
         rendered_mode=rendered_mode,
-        round_id=_loop()._context_fit_round_id(ctx),
+        round_id=_context_fit_round_id(ctx),
         automatic_pass_used=automatic_pass_used,
     )
-    _loop()._remember_main_fit(ctx, disposition)
+    _remember_main_fit(ctx, disposition)
     return disposition
 
 
@@ -425,7 +425,7 @@ def _dispatch_round_model(
         attempt_cap=attempt_cap,
         allow_server_web_search=_loop()._server_web_allowed_by_task(ctx.tools._ctx),
         physical_context=(
-            _loop()._physical_context_for_fit(disposition) if disposition is not None else None
+            _physical_context_for_fit(disposition) if disposition is not None else None
         ),
         candidate_predicate=candidate_predicate,
     )
@@ -491,14 +491,14 @@ def _run_main_reclaim(
 
 def _measure_after_reclaim(ctx: _RoundModelCallContext) -> Any:
     """Suppress a second pass while reporting whether a summarizer actually ran."""
-    disposition = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True)
+    disposition = _measure_round_main_fit(ctx, automatic_pass_used=True)
     if disposition is None:
         return None
     key = (disposition.measurement.route_fp, disposition.measurement.round_id)
     used = key in _loop()._context_reclaim_materializations(ctx.tools._ctx)
     if disposition.automatic_pass_used != used:
         disposition = replace(disposition, automatic_pass_used=used)
-        _loop()._remember_main_fit(ctx, disposition)
+        _remember_main_fit(ctx, disposition)
     return disposition
 
 
@@ -562,17 +562,17 @@ def _emit_overflow_retry_skipped(ctx: _RoundModelCallContext, reason: str) -> No
 
 def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     """Measure, optionally reclaim, dispatch, and recover one Main round."""
-    disposition = _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
+    disposition = _measure_round_main_fit(ctx, automatic_pass_used=False)
     if disposition is not None:
         key = (disposition.measurement.route_fp, disposition.measurement.round_id)
         already_reclaimed = key in _loop()._context_reclaim_passes(ctx.tools._ctx)
         if disposition.action == "reclaim_once" and not already_reclaimed:
-            _loop()._run_main_reclaim(ctx, disposition)
+            _run_main_reclaim(ctx, disposition)
             already_reclaimed = True
         if already_reclaimed:
-            disposition = _loop()._measure_after_reclaim(ctx)
+            disposition = _measure_after_reclaim(ctx)
 
-    msg, cost = _loop()._dispatch_round_model(
+    msg, cost = _dispatch_round_model(
         ctx,
         disposition,
         attempt_cap=ctx.attempt_cap,
@@ -585,40 +585,40 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     failed_capture = _loop().last_physical_attempt_capture()
     if disposition is None:
         return msg, cost, ctx.active_context_mode
-    _loop()._reproject_actual_overflow_low(ctx)
+    _reproject_actual_overflow_low(ctx)
     reclaim_key = (disposition.measurement.route_fp, disposition.measurement.round_id)
     overflow_fit = (
-        _loop()._measure_after_reclaim(ctx)
+        _measure_after_reclaim(ctx)
         if reclaim_key in _loop()._context_reclaim_passes(ctx.tools._ctx)
-        else _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
+        else _measure_round_main_fit(ctx, automatic_pass_used=False)
     )
     if overflow_fit is None:
         return msg, cost, ctx.active_context_mode
     key = (overflow_fit.measurement.route_fp, overflow_fit.measurement.round_id)
     if key not in _loop()._context_reclaim_passes(ctx.tools._ctx):
-        _loop()._run_main_reclaim(ctx, overflow_fit, minimum_goal_tokens=1)
-        overflow_fit = _loop()._measure_after_reclaim(ctx)
+        _run_main_reclaim(ctx, overflow_fit, minimum_goal_tokens=1)
+        overflow_fit = _measure_after_reclaim(ctx)
         if overflow_fit is None:
             return msg, cost, ctx.active_context_mode
 
     retries = _loop()._context_overflow_retries(ctx.tools._ctx)
     if key in retries:
-        _loop()._emit_overflow_retry_skipped(ctx, "route_round_retry_already_used")
+        _emit_overflow_retry_skipped(ctx, "route_round_retry_already_used")
         return msg, cost, ctx.active_context_mode
-    if not _loop()._failed_capture_is_comparable(failed_capture):
-        _loop()._emit_overflow_retry_skipped(ctx, "failed_candidate_not_comparable")
+    if not _failed_capture_is_comparable(failed_capture):
+        _emit_overflow_retry_skipped(ctx, "failed_candidate_not_comparable")
         return msg, cost, ctx.active_context_mode
     retries.add(key)
     try:
-        retry_msg, retry_cost = _loop()._dispatch_round_model(
+        retry_msg, retry_cost = _dispatch_round_model(
             ctx,
             overflow_fit,
             attempt_cap=1,
-            candidate_predicate=_loop()._strict_context_shrink_predicate(
+            candidate_predicate=_strict_context_shrink_predicate(
                 failed_capture,
             ),
         )
     except PhysicalAttemptPreconditionFailed:
-        _loop()._emit_overflow_retry_skipped(ctx, "context_candidate_not_strictly_smaller")
+        _emit_overflow_retry_skipped(ctx, "context_candidate_not_strictly_smaller")
         return msg, cost, ctx.active_context_mode
     return retry_msg, retry_cost, ctx.active_context_mode

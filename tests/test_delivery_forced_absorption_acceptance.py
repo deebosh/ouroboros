@@ -49,8 +49,10 @@ def _forced_absorption_acceptance_context(tmp_path, monkeypatch, panel_result):
         seen_evidence.update(review_ctx.evidence or {})
         return panel_result
 
+    from ouroboros import loop_acceptance_review
+
     monkeypatch.setattr(loop, "get_task_review_mode", lambda: "auto")
-    monkeypatch.setattr(loop, "_execute_task_acceptance_panel", panel_probe)
+    monkeypatch.setattr(loop_acceptance_review, "_execute_task_acceptance_panel", panel_probe)
     monkeypatch.setattr(
         loop, "call_llm_with_retry",
         lambda *_a, **_k: (

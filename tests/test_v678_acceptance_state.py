@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 import ouroboros.loop as loop_mod
+from ouroboros import loop_nudges
 from ouroboros import loop_acceptance_review
 from ouroboros.loop import _set_acceptance_decision, _supersede_task_acceptance_for_evidence_change, _supersede_task_acceptance_for_owner_followup
 from ouroboros.loop_acceptance_review import _apply_task_acceptance_result, _record_acceptance_infra_failure
@@ -544,7 +545,7 @@ def test_semantically_different_green_yields_one_advisory_nudge_and_no_gate(monk
     tools = SimpleNamespace(_ctx=tool_ctx)
     trace = {"reasoning_notes": [], "tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
     messages: list = []
-    monkeypatch.setattr(loop_mod, "_skill_finalization_message", lambda *_a, **_k: "")
+    monkeypatch.setattr(loop_nudges, "_skill_finalization_message", lambda *_a, **_k: "")
 
     fired = [
         loop_mod._maybe_inject_finalization_nudges(
@@ -567,7 +568,7 @@ def test_red_receipt_reconciled_by_the_same_check_raises_no_nudge(monkeypatch, t
 
     append_verification_receipt(tmp_path, "t", {"status": "fail", "check": "pytest tests/x.py"})
     append_verification_receipt(tmp_path, "t", {"status": "pass", "check": "pytest  tests/x.py "})
-    monkeypatch.setattr(loop_mod, "_skill_finalization_message", lambda *_a, **_k: "")
+    monkeypatch.setattr(loop_nudges, "_skill_finalization_message", lambda *_a, **_k: "")
     tools = SimpleNamespace(_ctx=SimpleNamespace(drive_root=str(tmp_path)))
     trace = {"reasoning_notes": [], "tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
     assert loop_mod._maybe_inject_finalization_nudges(

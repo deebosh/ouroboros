@@ -227,6 +227,7 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
     import hashlib
 
     import ouroboros.loop as loop
+    from ouroboros import loop_acceptance_review
     import ouroboros.review_substrate as review_substrate
     from ouroboros.task_results import write_task_result
     from ouroboros.tools.registry import ToolRegistry
@@ -276,7 +277,7 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
         return clean
 
     monkeypatch.setattr(loop, "get_task_review_mode", lambda: "auto")
-    monkeypatch.setattr(loop, "_execute_task_acceptance_panel", mutate_child)
+    monkeypatch.setattr(loop_acceptance_review, "_execute_task_acceptance_panel", mutate_child)
     trace = {"tool_calls": [], "reasoning_notes": []}
     messages = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
     answer = "Answer based on fact v1."
@@ -310,6 +311,7 @@ def test_child_result_change_after_host_panel_requires_replacement_and_fresh_pan
     tmp_path, monkeypatch,
 ):
     import ouroboros.loop as loop
+    from ouroboros import loop_acceptance_review
     import ouroboros.review_substrate as review_substrate
     from ouroboros.task_results import write_task_result
 
@@ -342,7 +344,7 @@ def test_child_result_change_after_host_panel_requires_replacement_and_fresh_pan
         return clean
 
     monkeypatch.setattr(loop, "get_task_review_mode", lambda: "auto")
-    monkeypatch.setattr(loop, "_execute_task_acceptance_panel", clean_panel)
+    monkeypatch.setattr(loop_acceptance_review, "_execute_task_acceptance_panel", clean_panel)
     monkeypatch.setattr(loop, "_compute_subagent_handoff", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_maybe_enforce_child_absorption_gate", lambda *_a, **_k: None)
     monkeypatch.setattr(loop, "_maybe_inject_finalization_nudges", lambda *_a, **_k: False)

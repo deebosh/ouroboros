@@ -58,10 +58,7 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_inject_round_checkpoints _forced_delegation_note _maybe_inject_finalization_nudges"
     ),
     "loop_model_call": (
-        "_adopt_fallback_route _snapshot_context_fit_usage _restore_context_fit_usage _run_cross_model_fallback_chain _rebind_context_fit_plan "
-        "_RoundModelCallContext _context_fit_round_id _main_context_profile _remember_main_fit _measure_round_main_fit "
-        "_physical_context_for_fit _dispatch_round_model _run_main_reclaim _measure_after_reclaim _reproject_actual_overflow_low "
-        "_failed_capture_is_comparable _strict_context_shrink_predicate _emit_overflow_retry_skipped _call_round_model"
+        "_run_cross_model_fallback_chain _rebind_context_fit_plan _RoundModelCallContext _call_round_model"
     ),
     "loop_budget": (
         "_check_budget_limits _resolve_task_cost_ceiling _TREE_ACCOUNTING_MAX_STALE_SEC _loop_tree_accounting _soft_land_exhausted_ceiling "
@@ -88,6 +85,12 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
 # retired (spec 1.9-15). Nothing outside the owning leaf reads these, so the
 # leaf owns the only binding and ouroboros.loop carries none.
 RETIRED_FROM_LOOP: dict[str, tuple[str, ...]] = {
+    "loop_model_call": (
+        "_adopt_fallback_route _snapshot_context_fit_usage _restore_context_fit_usage _context_fit_round_id "
+        "_main_context_profile _remember_main_fit _measure_round_main_fit _physical_context_for_fit "
+        "_dispatch_round_model _run_main_reclaim _measure_after_reclaim _reproject_actual_overflow_low "
+        "_failed_capture_is_comparable _strict_context_shrink_predicate _emit_overflow_retry_skipped"
+    ),
     "loop_nudges": (
         "_skill_names_touched_by_trace _skill_finalization_message _build_recent_tool_trace "
         "_maybe_inject_self_check _maybe_inject_time_budget_milestone _maybe_inject_cost_budget_milestone "
