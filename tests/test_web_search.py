@@ -28,13 +28,17 @@ def _make_event(etype: str, **kwargs):
 
 
 def _make_completed_event(input_tokens: int = 100, output_tokens: int = 50):
-    usage_obj = MagicMock()
-    usage_obj.model_dump.return_value = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    }
-    resp_obj = MagicMock()
-    resp_obj.usage = usage_obj
+    # Real usage dataclass shape — SimpleNamespace instead of MagicMock so
+    # ouroboros.tools.search._obj_to_plain falls through to the __dict__ branch
+    # instead of recursing through MagicMock's auto-generated `model_dump`
+    # (which returned a fresh MagicMock on every call, hanging the test
+    # indefinitely until pytest-timeout fired at 30s — see
+    # ibl-streaming-test-recursion-bugs).
+    usage_obj = types.SimpleNamespace(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+    resp_obj = types.SimpleNamespace(usage=usage_obj)
     return _make_event("response.completed", response=resp_obj)
 
 
@@ -66,9 +70,14 @@ def ctx():
 def patch_env(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    # Deterministic cascade: disable the optional ddgs backend so tests do not
-    # depend on whether `ddgs` happens to be installed (and do not make real
-    # network calls). Tests that exercise ddgs inject their own fake module.
+    # Deterministic cascade: disable BOTH the optional ddgs backend AND any
+    # openrouter/anthropic keys so tests do not depend on test-host env state
+    # (openrouter's chat.completions path would otherwise succeed via the
+    # openai mock and shadow the "no answer" cascade that
+    # test_streaming_empty_text_engages_cascade verifies). Tests that exercise
+    # ddgs inject their own fake module.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setitem(sys.modules, "ddgs", None)
 
 
