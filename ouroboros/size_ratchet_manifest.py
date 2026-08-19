@@ -6,7 +6,6 @@ GIANT_PATHS = (
     "ouroboros/tools/claude_advisory_review.py",
     "tests/test_review_agent_session_route.py",
     "tests/test_review_substrate_v2.py",
-    "tests/test_scope_review.py",
 )
 
 MODULE_DEBT_1500 = (
@@ -19,7 +18,6 @@ MODULE_DEBT_1500 = (
     "tests/test_review_agent_session_route.py",
     "tests/test_review_prompt_caching.py",
     "tests/test_review_substrate_v2.py",
-    "tests/test_scope_review.py",
 )
 
 FUNCTION_DEBT = (
