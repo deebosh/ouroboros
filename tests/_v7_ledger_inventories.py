@@ -298,6 +298,9 @@ lc_review_verbatim_symbols_by_owner = {
     "ouroboros/tools/review.py": {
         "ouroboros/tools/review_multi_model.py": "MAX_MODELS CONCURRENCY_LIMIT DEFAULT_REVIEW_MODEL_TIMEOUT_SEC _CONSTITUTIONAL_PREAMBLE _review_model_timeout_sec _handle_multi_model_review _review_output_budget _parse_model_response",
     },
+    "ouroboros/review_execution.py": {
+        "ouroboros/review_session_verdict.py": "REVIEW_SESSION_OUTPUT_SCHEMA review_session_output_schema _UNEXTRACTABLE _SESSION_EXTRACT_PROMPT _EXTRACT_MAX_CHARS _findings_array _strictly_parseable canonicalize_session_verdict _extract_verdict_via_light_model",
+    },
 }
 lc_review_handle_symbols_by_owner = {
     "ouroboros/tools/review.py": {

@@ -9,7 +9,6 @@ GIANT_PATHS = (
 MODULE_DEBT_1500 = (
     "ouroboros/agent.py",
     "ouroboros/agent_task_pipeline.py",
-    "ouroboros/review_execution.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/usage_accounting.py",
 )
@@ -109,6 +108,7 @@ BAND_PATHS = {
     "ouroboros/preflight_runner.py": None,
     "ouroboros/protected_artifacts.py": None,
     "ouroboros/review.py": "v7 size-gate owner: blob-id-cached ref inventory keeps the exact per-commit history audit affordable (204s->21s) without sampling commits",
+    "ouroboros/review_execution.py": "review execution rail after the L-C session-verdict extraction; route vocabulary and executor seam, still shrinking with the review-stack campaign",
     "ouroboros/skill_loader.py": None,
     "ouroboros/skill_review_runner.py": None,
     "ouroboros/subagent_worktrees.py": "private-snapshot registry owner: strict-vs-soft reads, the typed corruption refusal and the Git-branch cleanup symmetry keep the acting-worktree and delegated-snapshot lifecycles in the one module that holds their cross-process ops lock",

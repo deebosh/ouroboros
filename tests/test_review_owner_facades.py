@@ -26,6 +26,13 @@ REVIEW_LEAF_OWNERS: dict[str, dict[str, str]] = {
             "_multi_model_review_async _parse_model_response"
         ),
     },
+    "ouroboros.review_execution": {
+        "ouroboros.review_session_verdict": (
+            "REVIEW_SESSION_OUTPUT_SCHEMA review_session_output_schema _UNEXTRACTABLE "
+            "_SESSION_EXTRACT_PROMPT _EXTRACT_MAX_CHARS _findings_array _strictly_parseable "
+            "canonicalize_session_verdict _extract_verdict_via_light_model"
+        ),
+    },
 }
 
 
