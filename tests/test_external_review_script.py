@@ -13,10 +13,6 @@ import pytest
 from scripts.contributor_review_evidence import finalize_contributor_outcome
 from scripts.run_external_review import (
     _RELEASE_MACHINERY_PATHS,
-    _REVIEW_SUBSTRATE_ANCHOR_PATHS,
-    _REVIEW_SUBSTRATE_MODULE_DIRS,
-    _REVIEW_SUBSTRATE_NAME_PREFIXES,
-    _is_review_substrate_path,
     _apply_contributor_landing_obligations,
     _apply_contributor_review_env,
     _assert_contributor_review_config,
@@ -24,12 +20,14 @@ from scripts.run_external_review import (
     _configured_openrouter_models,
     _contributor_snapshot,
     _contributor_execution_receipts,
+    _contributor_result,
     _create_isolated_checkout,
     _freeze_contributor_slots,
     _openrouter_key_health,
     _openrouter_pool,
     _remove_isolated_checkout,
     _require_contributor_budget,
+    _run_on_trusted_base,
     _prepare_review_configuration,
     _resolved_review_config,
     _review_evidence_and_cost,
@@ -38,228 +36,129 @@ from scripts.run_external_review import (
 )
 
 
-def test_contributor_trust_boundary_covers_functional_review_dependencies():
-    from ouroboros.tools.scope_review import _CANONICAL_CONTEXT_DOCS
+# Stands in for the review script in the seeded repo's BASE commit, so the
+# base-side run is really executed and reports which tree it ran from.
+_BASE_SIDE_PROBE = """import json, os, pathlib, subprocess, sys
 
-    for doc in _CANONICAL_CONTEXT_DOCS:
-        assert _is_review_substrate_path(doc), doc
-
-
-def _static_import_closure(repo, entry_rel_paths):
-    """Transitive closure of repo-internal MODULE-LEVEL imports.
-
-    Hybrid depth rule. The ENTRY scripts contribute every import they contain,
-    module-level or function-local: the flow calls its own functions, so their
-    lazy imports are its own execution paths (run_external_review reaches
-    tools.git through exactly such a local import). TRANSITIVE modules
-    contribute only module-level imports: a lazy import deeper in the graph is
-    a deliberate execution-path break (the module-handle idiom) and only
-    executes if the flow calls that specific function, which a static walker
-    cannot prove. The git_review_cycle hop is a module-level re-export in
-    tools/git.py and stays caught."""
-    import ast as _ast
-
-    def module_to_rel(mod: str):
-        cand = mod.replace(".", "/")
-        for rel in (f"{cand}.py", f"{cand}/__init__.py"):
-            if (repo / rel).exists():
-                return rel
-        return None
-
-    seen = set()
-    entries = set(entry_rel_paths)
-    frontier = list(entry_rel_paths)
-    while frontier:
-        rel = frontier.pop()
-        if rel in seen or not (repo / rel).exists():
-            continue
-        seen.add(rel)
-        tree = _ast.parse((repo / rel).read_text(encoding="utf-8"))
-        nodes = _ast.walk(tree) if rel in entries else iter(tree.body)
-        for node in nodes:
-            mods = []
-            if isinstance(node, _ast.Import):
-                mods = [a.name for a in node.names]
-            elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
-                mods = [node.module]
-                mods += [f"{node.module}.{a.name}" for a in node.names]
-            for mod in mods:
-                target = module_to_rel(mod)
-                if target and target not in seen:
-                    frontier.append(target)
-    return seen
+out = os.environ.get("REVIEW_PROBE_OUT", "")
+if out:
+    here = pathlib.Path(__file__).resolve().parents[1]
+    pathlib.Path(out).write_text(json.dumps({
+        "argv": sys.argv[1:],
+        "machinery_sha": subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(here),
+            capture_output=True, text=True,
+        ).stdout.strip(),
+        "machinery_root": str(here),
+        "cwd": os.getcwd(),
+        "data_dir": os.environ.get("OUROBOROS_DATA_DIR", ""),
+    }), encoding="utf-8")
+raise SystemExit(1)
+"""
 
 
-def test_the_contributor_flow_import_closure_stays_inside_the_boundary():
-    """The auditor-confirmed class defect behind the git_review_cycle hole: the
-    dependency proof looked at DIRECT imports of the trust-path files, while the
-    contributor flow reaches git_review_cycle.py through the tools.git re-export
-    hop. The proof is now computed, not asserted: walk the transitive static
-    import closure from the two contributor entry scripts, and every
-    review-named module the flow can actually execute must classify as
-    substrate — and must NOT sit in the agent-side disclosure list."""
-    repo = Path(__file__).resolve().parent.parent
-    closure = _static_import_closure(
-        repo,
-        ["scripts/run_external_review.py", "scripts/contributor_review_evidence.py"],
-    )
-    review_named_in_closure = sorted(
-        rel for rel in closure
-        if rel.rpartition("/")[0] in _REVIEW_SUBSTRATE_MODULE_DIRS
-        and "review" in rel.rpartition("/")[2]
-    )
-    assert "ouroboros/tools/git_review_cycle.py" in review_named_in_closure
-    unclassified = [p for p in review_named_in_closure if not _is_review_substrate_path(p)]
-    assert unclassified == [], (
-        "review-named modules the contributor flow transitively imports but the "
-        f"boundary does not classify: {unclassified}"
-    )
-    agent_side = {
-        "ouroboros/deep_self_review.py",
-        # The task-loop's host acceptance review (v7 L-B split of loop.py): an
-        # agent-side surface like plan_review — same proof, none of the trust-path
-        # modules above import it.
-        "ouroboros/loop_acceptance_review.py",
-        "ouroboros/tools/git_review_cycle.py",
-        "ouroboros/tools/plan_review.py",
-        "ouroboros/tools/plan_review_runtime.py",
-    }
-    inside = sorted(set(agent_side) & set(review_named_in_closure))
-    assert inside == ["ouroboros/tools/git_review_cycle.py"], (
-        "agent-side-disclosed modules that the contributor flow actually imports "
-        f"(the disclosure would be false): {inside}"
-    )
+def _probe_path(monkeypatch, tmp_path: Path) -> Path:
+    probe = tmp_path / "base-side-run.json"
+    monkeypatch.setenv("REVIEW_PROBE_OUT", str(probe))
+    return probe
 
 
-def test_the_flag_unions_the_computed_base_flow_closure():
-    """The audit-proven bypass class: modules the review flow EXECUTES but whose
-    names carry no review token (git_plumbing via the git_review_cycle import,
-    context_layout via review/scope session navigation, the llm stack) must trip
-    the substrate flag through the computed closure even though the name rule
-    cannot see them. Derived from a real git tree (HEAD here; the gate uses the
-    PR's BASE), so an import refactor updates the set instead of staling it."""
-    import subprocess
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        # A proposal that touches nothing review-related...
+        "a.txt",
+        # ...and proposals that rewrite the review machinery itself take the
+        # SAME path. That identity IS the contract: the lane never asks what a
+        # diff contains before deciding whose review code runs.
+        "ouroboros/review_substrate.py",
+        "scripts/run_external_review.py",
+    ],
+)
+def test_contributor_review_always_runs_on_the_trusted_base(
+    tmp_path, monkeypatch, changed_path
+):
+    """Owner decision (2026-08-19): review always runs on the old version.
 
-    from scripts.contributor_review_evidence import flow_import_closure
+    The proposal is still the reviewed subject — the base-side run is handed the
+    same base/head commits — but the machinery executing the review is the
+    target base's own, whatever the proposal touches, and the base-side exit
+    code is the review's exit code. The base script really runs here: it reports
+    the tree it was loaded from.
+    """
+    repo = _init_contributor_repo(tmp_path, monkeypatch)
+    probe = _probe_path(monkeypatch, tmp_path)
+    path = repo / changed_path
+    path.write_text("# proposal\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", f"proposal touches {changed_path}")
+    base_sha = _git(repo, "rev-parse", "base").strip()
+    head_sha = _git(repo, "rev-parse", "HEAD").strip()
 
-    repo = Path(__file__).resolve().parent.parent
+    exit_code = _run_on_trusted_base(SimpleNamespace(
+        base_ref="base", head_ref="HEAD", commit_message="PR title",
+        goal="goal", scope="scope", output="", drive_root="",
+    ))
 
-    def git_bytes(args):
-        return subprocess.run(
-            ["git", "-C", str(repo), *args], check=True, capture_output=True
-        ).stdout
-
-    head = git_bytes(["rev-parse", "HEAD"]).decode().strip()
-    hybrid = flow_import_closure(head, git_bytes, full_walk=_is_review_substrate_path)
-    closure = flow_import_closure(head, git_bytes, conservative=True)
-    for rel in (
-        "ouroboros/tools/git_plumbing.py",
-        "ouroboros/context_layout.py",
-        "ouroboros/llm.py",
-        "ouroboros/tools/git_review_cycle.py",
-        # The audit-proven third-round chain: review_state -> semantic_dedup
-        # lazily imports llm_observability; only the conservative walk sees it.
-        "ouroboros/llm_observability.py",
-        # The fourth round: a RELATIVE import (from .version import get_version
-        # in ouroboros/__init__.py) must resolve too.
-        "ouroboros/version.py",
-    ):
-        assert rel in closure, rel
-    # The gate predicate is the UNION: name-blind closure members flag too.
-    flagged = [
-        p for p in ("ouroboros/tools/git_plumbing.py", "ouroboros/context_layout.py")
-        if _is_review_substrate_path(p) or p in closure
-    ]
-    assert flagged == [
-        "ouroboros/tools/git_plumbing.py", "ouroboros/context_layout.py",
-    ]
-    # Machine-derived invariants instead of a bare cardinality floor: the
-    # conservative flag-closure dominates the execution-semantics hybrid, and
-    # the hybrid already contains the whole declared substrate reachable from
-    # the entries -- so a walker regression cannot silently shrink either set.
-    assert closure >= hybrid
-    assert len(hybrid) > 80, len(hybrid)
-    # Fail-closed contract: a healthy tree resolves everything (no sentinel),
-    # and an unresolvable repo-internal import poisons the closure instead of
-    # silently dropping out (proven on a synthetic tree with a bad import).
-    assert "<unresolved-import>" not in closure
-    import subprocess as _sp, tempfile, os
-    with tempfile.TemporaryDirectory() as td:
-        _sp.run(["git", "-C", td, "init", "-q"], check=True)
-        os.makedirs(f"{td}/scripts"); os.makedirs(f"{td}/ouroboros")
-        open(f"{td}/scripts/run_external_review.py", "w").write(
-            "from ouroboros.missing_module import gone" + chr(10)
-        )
-        open(f"{td}/scripts/contributor_review_evidence.py", "w").write("x = 1" + chr(10))
-        _sp.run(["git", "-C", td, "add", "-A"], check=True)
-        _sp.run(["git", "-C", td, "-c", "user.email=t@t", "-c", "user.name=t",
-                 "commit", "-qm", "seed"], check=True)
-        sha = _sp.run(["git", "-C", td, "rev-parse", "HEAD"],
-                      capture_output=True, text=True, check=True).stdout.strip()
-        def toy_git_bytes(args):
-            return _sp.run(["git", "-C", td, *args], check=True,
-                           capture_output=True).stdout
-        toy = flow_import_closure(sha, toy_git_bytes, conservative=True)
-        assert "<unresolved-import>" in toy
+    assert exit_code == 1  # the base-side verdict is this review's verdict
+    ran = json.loads(probe.read_text(encoding="utf-8"))
+    assert ran["machinery_sha"] == base_sha != head_sha
+    assert Path(ran["machinery_root"]) != repo
+    assert ran["cwd"] == ran["machinery_root"]
+    assert ran["data_dir"]
+    argv = ran["argv"]
+    assert "--contributor" in argv
+    # Commits, not refs: a moving ref cannot re-point the trusted run.
+    assert argv[argv.index("--base-ref") + 1] == base_sha
+    assert argv[argv.index("--head-ref") + 1] == head_sha
+    assert argv[-2:] == ["--", "PR title"]
+    # The trusted worktree is temporary: it is removed once the review returns.
+    assert not Path(ran["machinery_root"]).exists()
 
 
-def test_every_review_named_module_carries_a_boundary_decision():
-    """The class fix for the hand-list defect (spec 1.14-2): the CONTRIBUTOR
-    trust boundary is decided for every review-named module, not remembered.
-    The boundary deliberately covers the external-review machinery (advisory/
-    triad/scope + shared runtime), NOT every module with review in its name:
-    agent-side review surfaces are outside it because the contributor flow has
-    no dependency on them. The original grep-based version of this proof was
-    WRONG about the git review cycle (the flow reaches it through the tools.git
-    re-export hop -- caught by the external gate audit), so membership in the
-    disclosure list below is now enforced by the computed import-closure test
-    above, not by hand reasoning. What this test forces is the DECISION: a new
-    review-named module must either classify as substrate or join the
-    disclosure list, and the closure test proves the list disjoint from what
-    the flow actually imports."""
-    repo = Path(__file__).resolve().parent.parent
-    # Deliberately OUTSIDE the boundary. The dependency claim for every entry is
-    # machine-checked by test_the_contributor_flow_import_closure_stays_inside_
-    # the_boundary (a listed module appearing in the flow's import closure fails
-    # that test). A new review-named module lands RED here until it is either
-    # classified substrate or added to this list.
-    agent_side_review_surfaces = {
-        "ouroboros/deep_self_review.py",
-        "ouroboros/loop_acceptance_review.py",
-        "ouroboros/tools/plan_review.py",
-        "ouroboros/tools/plan_review_runtime.py",
-    }
-    named = sorted(
-        f"{rel_dir}/{p.name}"
-        for rel_dir in _REVIEW_SUBSTRATE_MODULE_DIRS
-        for p in (repo / rel_dir).glob("*review*.py")
-    )
-    assert len(named) >= 44, named  # the live inventory; shrinkage means a glob bug
-    undecided = [
-        path for path in named
-        if not _is_review_substrate_path(path) and path not in agent_side_review_surfaces
-    ]
-    assert undecided == [], (
-        "review-named modules with no trust-boundary decision (classify as substrate "
-        f"or add to agent_side_review_surfaces with a dependency proof): {undecided}"
-    )
-    stale = [p for p in agent_side_review_surfaces if not (repo / p).exists()]
-    assert stale == []
-    # The two halves stay disjoint: nothing in the disclosure list may classify.
-    assert [p for p in agent_side_review_surfaces if _is_review_substrate_path(p)] == []
-    # The anchors carry ONLY the surfaces the name rule cannot see.
-    overlap = [
-        path for path in _REVIEW_SUBSTRATE_ANCHOR_PATHS
-        if path.rpartition("/")[0] in _REVIEW_SUBSTRATE_MODULE_DIRS
-        and path.rpartition("/")[2].startswith(_REVIEW_SUBSTRATE_NAME_PREFIXES)
-    ]
-    assert overlap == []
-    # And a proposal-side path that does not exist in this tree still classifies:
-    # the gate reads the DIFF, so a leaf a PR adds is inside the boundary too.
-    assert _is_review_substrate_path("ouroboros/review_born_tomorrow.py")
-    assert _is_review_substrate_path("ouroboros/tools/skill_review_born_tomorrow.py")
-    assert not _is_review_substrate_path("ouroboros/loop.py")
-    assert not _is_review_substrate_path("web/modules/review_widget.py")
+def test_contributor_review_invoked_from_the_target_base_runs_in_place(
+    tmp_path, monkeypatch
+):
+    """No re-run when the executing tree already IS the target base."""
+    repo = _init_contributor_repo(tmp_path, monkeypatch)
+    probe = _probe_path(monkeypatch, tmp_path)
+    head_sha = _git(repo, "rev-parse", "HEAD").strip()
+    _git(repo, "checkout", "--detach", "base")
+
+    assert _run_on_trusted_base(SimpleNamespace(
+        base_ref="base", head_ref=head_sha, commit_message="",
+        goal="", scope="", output="", drive_root="",
+    )) is None
+    assert not probe.exists()
+
+
+def test_contributor_review_refuses_a_dirty_authoring_worktree(tmp_path, monkeypatch):
+    """The uncommitted half of a proposal must not silently drop out.
+
+    The base-side run sees a freshly materialized (always clean) worktree, so
+    this is read in the authoring worktree before the re-run leaves it.
+    """
+    repo = _init_contributor_repo(tmp_path, monkeypatch)
+    probe = _probe_path(monkeypatch, tmp_path)
+    (repo / "uncommitted.txt").write_text("work in progress\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not clean"):
+        _run_on_trusted_base(SimpleNamespace(
+            base_ref="base", head_ref="HEAD", commit_message="",
+            goal="", scope="", output="", drive_root="",
+        ))
+    assert not probe.exists()
+
+
+def test_contributor_result_is_decided_by_the_exit_code_alone():
+    """The retired D31 classifier is not a gate anywhere in the outcome path.
+
+    A proposal rewriting the review machinery gets the same result vocabulary as
+    any other, because nothing but the review's exit code reaches this decision.
+    """
+    assert _contributor_result(0) == "READY_FOR_INTEGRATION"
+    assert _contributor_result(1) == "BLOCKED"
+    assert _contributor_result(3) == "INCOMPLETE"
 
 
 def test_external_review_script_delegates_verdict_to_production_gate():
@@ -381,7 +280,9 @@ def _init_contributor_repo(tmp_path: Path, monkeypatch) -> Path:
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "core.autocrlf", "false")
     (repo / "scripts").mkdir()
-    (repo / "scripts" / "run_external_review.py").write_text("# base script\n", encoding="utf-8")
+    (repo / "scripts" / "run_external_review.py").write_text(
+        _BASE_SIDE_PROBE, encoding="utf-8"
+    )
     _write_target_config(repo)
     (repo / "ouroboros" / "review_substrate.py").write_text(
         "# trusted review substrate\n", encoding="utf-8"
@@ -544,8 +445,11 @@ def test_contributor_snapshot_binds_clean_base_head_and_tree(tmp_path, monkeypat
     assert snapshot["target_version"] == "1.2.3"
     assert snapshot["head_tree_sha"] == _git(repo, "rev-parse", "HEAD^{tree}").strip()
     assert snapshot["changed_paths"] == ["a.txt"]
-    assert snapshot["review_substrate_changed"] == []
     assert snapshot["diff_sha256"]
+    # The retired trust-boundary classification leaves no snapshot residue.
+    assert not {"review_substrate_changed", "review_substrate_matches_base"} & set(
+        snapshot
+    )
 
     (repo / "dirty.txt").write_text("not committed\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="not clean"):
@@ -605,36 +509,6 @@ def test_contributor_snapshot_checks_each_duplicate_installer_link(
 
     with pytest.raises(RuntimeError, match="site.install.download.macos-arm64.0"):
         _contributor_snapshot("base", "HEAD")
-
-
-@pytest.mark.parametrize(
-    "relative_path",
-    [
-        "ouroboros/review_substrate.py",
-        "ouroboros/review_execution.py",
-        "ouroboros/utils.py",
-        "ouroboros/tool_module_inventory.py",
-        "ouroboros/tools/registry.py", "ouroboros/tools/registry_core.py",
-        "ouroboros/tools/registry_guard_process.py",
-        "ouroboros/tools/registry_guards.py",
-        "ouroboros/tools/tool_resolution.py",
-        "ouroboros/tools/extension_dispatch.py",
-        "ouroboros/tools/tool_result.py",
-    ],
-)
-def test_contributor_snapshot_flags_transitive_review_substrate_changes(
-    tmp_path, monkeypatch, relative_path
-):
-    repo = _init_contributor_repo(tmp_path, monkeypatch)
-    path = repo / relative_path
-    path.write_text("# proposal changes trusted review substrate\n", encoding="utf-8")
-    _git(repo, "add", str(path.relative_to(repo)))
-    _git(repo, "commit", "-m", "change review substrate")
-
-    snapshot = _contributor_snapshot("base", "HEAD")
-
-    assert snapshot["review_substrate_changed"] == [relative_path]
-    assert snapshot["review_substrate_matches_base"] is False
 
 
 @pytest.mark.parametrize(
@@ -719,7 +593,8 @@ def test_contributor_packet_is_redacted_and_shareable(tmp_path):
         snapshot={
             "base_sha": "a" * 40,
             "head_sha": "b" * 40,
-            "review_substrate_changed": [],
+            # A proposal rewriting the review script is packeted like any other.
+            "changed_paths": ["scripts/run_external_review.py"],
         },
         resolved_config={"triad_models": ["anthropic/fable"]},
         outcome={"status": "passed", "path": local_root, "api_key": "test-secret-value"},
@@ -752,6 +627,12 @@ def test_contributor_packet_is_redacted_and_shareable(tmp_path):
     assert "$REPO" in evidence_text + full_text
     assert "production_triad_quorum_plus_authoritative_scope" in evidence_text
     assert '"execution_receipts_consistent": true' in evidence_text
+    # Evidence records the unconditional contract, never a per-proposal verdict
+    # about whose review code ran.
+    assert public_evidence["result"] == "READY_FOR_INTEGRATION"
+    assert public_evidence["trust"]["review_machinery"] == "target_base_unconditional"
+    assert "owner decision 2026-08-19" in public_evidence["trust"]["note"]
+    assert "rerun" not in evidence_text
     assert "triad:slot_1:observed_model_is_display_label" in evidence_text
     assert "quorum still met" in evidence_text
     assert "transcript EOF_MARK" in full_text
@@ -826,20 +707,19 @@ def test_exit_classification_separates_infra_from_genuine_blocks():
         assert _classify_exit({"status": "blocked", "block_reason": infra_reason}) == 3, infra_reason
 
 
-def test_contributor_outcome_fails_closed_on_receipt_or_trust_drift():
+def test_contributor_outcome_fails_closed_on_receipt_drift_only():
     exit_code, outcome = finalize_contributor_outcome(
-        snapshot={"review_substrate_changed": []}, outcome={"status": "passed"},
-        exit_code=0, mismatches=["provider_mismatch:triad:t1"],
+        outcome={"status": "passed"}, exit_code=0,
+        mismatches=["provider_mismatch:triad:t1"],
     )
     assert exit_code == 3
     assert outcome["block_reason"] == "execution_receipt_mismatch"
 
-    exit_code, outcome = finalize_contributor_outcome(
-        snapshot={"review_substrate_changed": ["scripts/run_external_review.py"]},
+    # Nothing about the proposal's contents downgrades a clean run any more: the
+    # machinery that produced it was the target base's either way.
+    assert finalize_contributor_outcome(
         outcome={"status": "passed"}, exit_code=0, mismatches=[],
-    )
-    assert exit_code == 3
-    assert outcome["block_reason"] == "trusted_base_rerun_required"
+    ) == (0, {"status": "passed"})
 
 
 def test_openrouter_pool_orders_hope_keys_last(monkeypatch, tmp_path):

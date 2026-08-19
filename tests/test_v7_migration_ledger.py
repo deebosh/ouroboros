@@ -1177,20 +1177,37 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     existing_process_owner_rows.add(_d02_repinned_old)
     registry_extraction_no_facade_rows.add(_d02_repinned_old)
     s3_semantic_delta_ids[_d02_repinned_old] = "D02"
-    # D31 (post-merge batch, spec 1.14-2): the review trust boundary became an anchor
-    # set plus classification by name; the hand-list and its issubset test are the
-    # replaced identities, both implemented on the WIP with facade "-".
+    # D31 (owner decision 2026-08-19, superseding the spec 1.14-2 batch): the
+    # contributor lane always executes the target base's review machinery, so the
+    # per-proposal trust classifier — the hand-list, its anchors-plus-name-rule
+    # successor and the base-flow import closure — retires whole, and so does the
+    # boundary characterization that proved its membership.
     d31_rows = {
         "scripts/run_external_review.py::_REVIEW_SUBSTRATE_PATHS":
-            "scripts/run_external_review.py::_is_review_substrate_path",
+            "retired:the contributor lane always executes the target base's review machinery, so no diff is classified",
         "tests/test_external_review_script.py::_REVIEW_SUBSTRATE_PATHS":
-            "tests/test_external_review_script.py::test_every_review_named_module_carries_a_boundary_decision",
+            "retired:the boundary characterization retires with the classifier it proved",
+        "tests/test_external_review_script.py::test_contributor_trust_boundary_covers_functional_review_dependencies":
+            "retired:no boundary classifies the functional review dependencies any more",
+        "tests/test_external_review_script.py::test_contributor_snapshot_flags_transitive_review_substrate_changes":
+            "retired:the snapshot carries no substrate flag left to characterize",
     }
-    implemented.update(d31_rows)
-    existing_process_owner_rows.update(d31_rows)
-    registry_extraction_no_facade_rows.update(d31_rows)
+    retired_current.update(d31_rows)
     for _d31_old in d31_rows:
-        s3_semantic_delta_ids[_d31_old] = "D31"
+        retired_delta_ids[_d31_old] = "D31"
+    # The receipt half of the fail-closed characterization survives the retired
+    # trust half, under the name that now describes it.
+    _d31_renamed = (
+        "tests/test_external_review_script.py"
+        "::test_contributor_outcome_fails_closed_on_receipt_or_trust_drift"
+    )
+    implemented[_d31_renamed] = (
+        "tests/test_external_review_script.py"
+        "::test_contributor_outcome_fails_closed_on_receipt_drift_only"
+    )
+    existing_process_owner_rows.add(_d31_renamed)
+    registry_extraction_no_facade_rows.add(_d31_renamed)
+    s3_semantic_delta_ids[_d31_renamed] = "D31"
     # D04 rides the heartbeat row: the retired knob is stripped from the settings document,
     # so the environment is the only surviving source and the test says which half is quiet.
     s3_semantic_delta_ids[

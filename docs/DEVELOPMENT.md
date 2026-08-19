@@ -787,8 +787,12 @@ terminal settlement and capability-delta facts, telemetry limitations, and
 full redacted agent-session transcripts. Missing, tampered, drifted,
 unprovable, or contradictory identity/terminal receipts make the packet
 `INCOMPLETE`. Non-identity capability deltas remain explicit degradation
-evidence and do not override the production actor-status/quorum result. A
-proposal changing this review substrate still requires a trusted-target rerun.
+evidence and do not override the production actor-status/quorum result. The
+review machinery is always the target base's own (owner decision, 2026-08-19):
+unless the invoking checkout already is the target base, the lane materializes
+that commit in a detached worktree and re-runs the review from it, so a proposal
+is never trusted to review itself and no per-proposal trust classification
+remains. The proposal stays the reviewed subject in the frozen checkout.
 
 This evidence establishes readiness; it does not authorize commit, push, merge,
 or publication. Maintainers choose the landing parent and release version,

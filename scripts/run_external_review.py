@@ -16,6 +16,11 @@ contributor lane excludes advisory, freezes configured routes under blocking
 semantics, performs provider-specific readiness checks where supported, and
 emits redacted base/head/tree/diff-bound evidence.
 
+The contributor lane always runs the review machinery of the TARGET BASE (owner
+decision, 2026-08-19): unless this process already executes from the base
+commit, it materializes that commit in a detached worktree and re-runs itself
+there, so a proposal is never trusted to review itself.
+
 Exit codes:
     0  review passed
     1  genuine review block (critical findings)
@@ -68,59 +73,6 @@ _CONTRIBUTOR_LANDING_OBLIGATION_ITEMS = frozenset({
     "version_bump",
     "changelog_and_badge",
 })
-# Review substrate: ANCHORS (roles names cannot declare) + the NAME rule
-# (review/scope/skill_review/triad; spec 1.14-2, D31); the gate also unions the
-# computed BASE-flow import closure at flag time (see substrate_changed).
-_REVIEW_SUBSTRATE_ANCHOR_PATHS = frozenset({
-    "BIBLE.md",
-    "docs/ARCHITECTURE.md",
-    "docs/CHECKLISTS.md",
-    "docs/DEVELOPMENT.md",
-    "scripts/run_external_review.py",
-    "scripts/contributor_review_evidence.py",
-    "ouroboros/config.py",
-    "ouroboros/capability_evidence.py",
-    "ouroboros/code_intelligence.py",
-    "ouroboros/context_budget.py",
-    "ouroboros/deadline_utils.py",
-    "ouroboros/llm.py",
-    "ouroboros/outcomes.py",
-    "ouroboros/platform_layer.py",
-    "ouroboros/pricing.py",
-    "ouroboros/provider_models.py",
-    "ouroboros/preflight_runner.py",
-    "ouroboros/runtime_mode_policy.py",
-    "ouroboros/tool_module_inventory.py",
-    "ouroboros/usage_accounting.py",
-    "ouroboros/observability.py",
-    "ouroboros/utils.py",
-    "ouroboros/tools/claude_advisory_review.py",
-    "ouroboros/tools/commit_gate.py",
-    "ouroboros/tools/git.py",
-    "ouroboros/tools/git_review_cycle.py",
-    "ouroboros/tools/parallel_review.py",
-    "ouroboros/tools/registry.py", "ouroboros/tools/registry_core.py", "ouroboros/tools/registry_guard_process.py",
-    "ouroboros/tools/registry_guards.py", "ouroboros/tools/tool_resolution.py", "ouroboros/tools/extension_dispatch.py",
-    "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_result.py", "ouroboros/tools/release_sync.py",
-    "ouroboros/claudexor_daemon.py",
-    "ouroboros/delegate_custody.py",
-    "ouroboros/delegate_output.py",
-    "ouroboros/gateways/claudexor.py",
-    "ouroboros/subagents.py",
-})
-_REVIEW_SUBSTRATE_NAME_PREFIXES = ("review", "reviewer_", "scope_", "skill_review", "triad_review")
-_REVIEW_SUBSTRATE_MODULE_DIRS = ("ouroboros", "ouroboros/tools")
-
-def _is_review_substrate_path(path: str) -> bool:
-    """Classify by PATH alone (covers files a proposal adds or deletes)."""
-    if path in _REVIEW_SUBSTRATE_ANCHOR_PATHS:
-        return True
-    parent, _, name = path.rpartition("/")
-    return (
-        parent in _REVIEW_SUBSTRATE_MODULE_DIRS
-        and name.endswith(".py")
-        and name.startswith(_REVIEW_SUBSTRATE_NAME_PREFIXES)
-    )
 from ouroboros.runtime_mode_policy import GIT_OPS_FAMILY_PATHS  # below the sys.path bootstrap
 _RELEASE_MACHINERY_PATHS = frozenset({
     ".github/workflows/ci.yml", "Ouroboros.spec", "build.sh",
@@ -284,6 +236,15 @@ def _hash_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _require_clean_worktree() -> None:
+    """The reviewed proposal is the committed snapshot, never a dirty tree."""
+    if _git_text(["status", "--porcelain"]).strip():
+        raise RuntimeError(
+            "the contributor worktree is not clean; commit the intended PR "
+            "snapshot before review"
+        )
+
+
 def _contributor_snapshot(base_ref: str, head_ref: str) -> dict:
     """Resolve a clean, exact committed PR proposal whose target tip is its parent."""
     base_sha = _git_text(["rev-parse", f"{base_ref}^{{commit}}"]).strip()
@@ -300,12 +261,7 @@ def _contributor_snapshot(base_ref: str, head_ref: str) -> dict:
             f"{base_ref} ({base_sha[:12]}) is not an ancestor of {head_ref} "
             f"({head_sha[:12]}). Fetch and rebase the PR onto current {base_ref}."
         )
-    dirty = _git_text(["status", "--porcelain"])
-    if dirty.strip():
-        raise RuntimeError(
-            "the contributor worktree is not clean; commit the intended PR "
-            "snapshot before review"
-        )
+    _require_clean_worktree()
     patch = _git_bytes(["diff", "--binary", "--no-ext-diff", f"{base_sha}..{head_sha}"])
     if not patch.strip():
         raise RuntimeError("the contributor diff is empty")
@@ -327,17 +283,10 @@ def _contributor_snapshot(base_ref: str, head_ref: str) -> dict:
         )
     target_version = _git_text(["show", f"{base_sha}:VERSION"]).strip()
     target_config = _git_bytes(["show", f"{base_sha}:ouroboros/config.py"])
+    # The base script is the one that executes this review; the head script is
+    # recorded as the proposal that did NOT execute it.
     base_script = _git_bytes(["show", f"{base_sha}:scripts/run_external_review.py"])
     head_script = _git_bytes(["show", f"{head_sha}:scripts/run_external_review.py"])
-    # Flag = boundary UNION BASE-flow closure; poisoned closure flags everything.
-    from scripts.contributor_review_evidence import flow_import_closure
-
-    flow_closure = flow_import_closure(base_sha, _git_bytes, conservative=True)
-    poisoned = "<unresolved-import>" in flow_closure
-    substrate_changed = sorted(
-        p for p in set(changed_paths)
-        if poisoned or _is_review_substrate_path(p) or p in flow_closure
-    )
     return {
         "base_ref": base_ref,
         "base_sha": base_sha,
@@ -350,10 +299,8 @@ def _contributor_snapshot(base_ref: str, head_ref: str) -> dict:
         "patch": patch.decode("utf-8", errors="surrogateescape"),
         "diff_sha256": _hash_bytes(patch),
         "changed_paths": changed_paths,
-        "review_substrate_changed": substrate_changed,
         "base_script_sha256": _hash_bytes(base_script),
         "head_script_sha256": _hash_bytes(head_script),
-        "review_substrate_matches_base": not substrate_changed,
         "release_sensitive_changes": release_sensitive,
         "release_metadata_or_machinery_changed": release_sensitive["changed"],
     }
@@ -586,6 +533,50 @@ def _remove_isolated_checkout(checkout_root: pathlib.Path, checkout: pathlib.Pat
         cwd=str(REPO), capture_output=True, text=True, timeout=120,
     )
     shutil.rmtree(checkout_root, ignore_errors=True)
+
+
+def _run_on_trusted_base(args) -> int | None:
+    """Run the contributor review with the TARGET BASE's own review machinery.
+
+    Owner decision (2026-08-19): a contributor review never runs on the
+    proposal's unverified copy of the review flow, for any PR, whatever it
+    touches — so there is nothing to classify. The one deciding fact is whether
+    the tree this process imports its machinery from IS the target base; when it
+    is not, the base commit is materialized in a detached worktree and this
+    script re-runs from there. The proposal stays the reviewed subject: the
+    trusted run binds the same base/head commits and applies the same patch into
+    its own frozen checkout, where its tests still run as the hermetic preflight
+    intends. Returns the base-side exit code, or ``None`` when this process is
+    already on the trusted base and should continue in place.
+    """
+    base_ref = args.base_ref or _CONTRIBUTOR_DEFAULT_BASE_REF
+    base_sha = _git_text(["rev-parse", f"{base_ref}^{{commit}}"]).strip()
+    if _git_text(["rev-parse", "HEAD"]).strip() == base_sha:
+        return None
+    head_sha = _git_text(["rev-parse", f"{args.head_ref}^{{commit}}"]).strip()
+    _require_clean_worktree()
+    checkout_root, trusted = _create_isolated_checkout("", base_commit=base_sha)
+    try:
+        # Commits, not refs: the trusted run binds the exact same proposal even
+        # if a ref moves while it runs. The data root is passed because the child
+        # would otherwise resolve it from its temporary checkout's parent.
+        command = [
+            sys.executable, str(trusted / "scripts" / "run_external_review.py"),
+            "--contributor", "--base-ref", base_sha, "--head-ref", head_sha,
+            "--goal", args.goal, "--scope", args.scope,
+            *(["--output", args.output] if args.output else []),
+            *(["--drive-root", args.drive_root] if args.drive_root else []),
+            "--", args.commit_message,
+        ]
+        print(f"Trusted review machinery: base {base_sha[:12]} at {trusted}", file=sys.stderr)
+        code = subprocess.run(
+            command, cwd=str(trusted),
+            env={**os.environ, "OUROBOROS_DATA_DIR": str(DATA)},
+        ).returncode
+        # An abnormal termination is infrastructure, never a reviewer verdict.
+        return code if code in (0, 1, 2, 3) else 3
+    finally:
+        _remove_isolated_checkout(checkout_root, trusted)
 
 
 def _actor_records(ctx: object) -> list[dict]:
@@ -832,9 +823,8 @@ def _public_projection(value, *, replacements: list[tuple[str, str]]):
     return _replace_public_paths(redacted, replacements)
 
 
-def _contributor_result(exit_code: int, snapshot: dict) -> str:
-    if snapshot.get("review_substrate_changed"):
-        return "INCOMPLETE_MAINTAINER_TRUSTED_BASE_RERUN_REQUIRED"
+def _contributor_result(exit_code: int) -> str:
+    """The exit code is the whole input: no proposal fact downgrades a result."""
     if exit_code != 0:
         return "BLOCKED" if exit_code == 1 else "INCOMPLETE"
     return "READY_FOR_INTEGRATION"
@@ -858,7 +848,7 @@ def _write_contributor_packet(
     degraded_reasons: list[str],
     replacements: list[tuple[str, str]],
 ) -> pathlib.Path:
-    result = _contributor_result(exit_code, snapshot)
+    result = _contributor_result(exit_code)
     telemetry_limitations = [
         f"{item.get('surface')}:{item.get('slot_id')}:observed_model_is_display_label"
         for item in execution_receipts
@@ -919,13 +909,14 @@ def _write_contributor_packet(
         },
         "trust": {
             "execution_receipts_consistent": not execution_mismatches,
-            "review_substrate_changed": snapshot.get("review_substrate_changed", []),
-            "maintainer_trusted_base_rerun_required": bool(
-                snapshot.get("review_substrate_changed")
-            ),
+            "review_machinery": "target_base_unconditional",
             "note": (
-                "Contributor evidence is not merge authorization or cryptographic "
-                "proof of execution."
+                "Unconditional trusted execution (owner decision 2026-08-19): the "
+                "review machinery is always the target base implementation, so no "
+                "proposal reviews itself. The proposal is the reviewed subject and "
+                "its own tests still run in the frozen checkout, as the preflight "
+                "intends. Contributor evidence is not merge authorization or "
+                "cryptographic proof of execution."
             ),
         },
         "production_outcome": outcome,
@@ -1052,7 +1043,9 @@ def _parse_args():
         help=(
             "Review the committed base-ref..head-ref proposal with the configured "
             "triad/scope slots, blocking clean semantics, no Claude advisory, "
-            "and a shareable route-aware evidence packet."
+            "and a shareable route-aware evidence packet. The review machinery "
+            "always runs from the target base: unless this checkout is already "
+            "on it, the base is materialized and this script re-runs there."
         ),
     )
     parser.add_argument(
@@ -1196,6 +1189,10 @@ def main() -> int:
     args = _parse_args()
 
     try:
+        if args.contributor:
+            base_side_exit = _run_on_trusted_base(args)
+            if base_side_exit is not None:
+                return base_side_exit
         contributor_snapshot, review_base_commit, resolved_config = (
             _prepare_review_configuration(args)
         )
@@ -1411,8 +1408,7 @@ def main() -> int:
         from scripts.contributor_review_evidence import finalize_contributor_outcome
 
         exit_code, outcome = finalize_contributor_outcome(
-            snapshot=contributor_snapshot, outcome=outcome, exit_code=exit_code,
-            mismatches=execution_mismatches,
+            outcome=outcome, exit_code=exit_code, mismatches=execution_mismatches,
         )
 
     if contributor_snapshot is not None:
