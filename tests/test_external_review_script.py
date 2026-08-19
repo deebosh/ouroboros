@@ -141,13 +141,15 @@ def test_the_handoff_forwards_artifact_paths_the_child_can_still_reach(
     _run_on_trusted_base(SimpleNamespace(
         base_ref="base", head_ref="HEAD", commit_message="-title-like-a-flag",
         goal="--goal-like-a-flag", scope="-s", output="artifacts/run",
-        drive_root="drive",
+        drive_root="~/drive",
     ))
 
     ran = json.loads(probe.read_text(encoding="utf-8"))
     options = _forwarded_options(ran["argv"])
     assert options["output"] == str(tmp_path / "artifacts" / "run")
-    assert options["drive-root"] == str(tmp_path / "drive")
+    # A quoted "~/..." keeps its home meaning: the parent expands it exactly
+    # the way the in-place lane's own resolution would have.
+    assert options["drive-root"] == os.path.abspath(os.path.expanduser("~/drive"))
     for key in ("output", "drive-root"):
         assert not Path(options[key]).is_relative_to(Path(ran["machinery_root"]))
     # Values that look like flags survive as values.

@@ -568,8 +568,8 @@ def _run_on_trusted_base(args) -> int | None:
             sys.executable, str(trusted / "scripts" / "run_external_review.py"),
             "--contributor", f"--base-ref={base_sha}", f"--head-ref={head_sha}",
             f"--goal={args.goal}", f"--scope={args.scope}",
-            *([f"--output={os.path.abspath(args.output)}"] if args.output else []),
-            *([f"--drive-root={os.path.abspath(args.drive_root)}"] if args.drive_root else []),
+            *([f"--output={os.path.abspath(os.path.expanduser(args.output))}"] if args.output else []),
+            *([f"--drive-root={os.path.abspath(os.path.expanduser(args.drive_root))}"] if args.drive_root else []),
             "--", args.commit_message,
         ]
         print(f"Trusted review machinery: base {base_sha[:12]} at {trusted}", file=sys.stderr)
@@ -1048,7 +1048,8 @@ def _parse_args():
             "Review the committed base-ref..head-ref proposal with the configured "
             "triad/scope slots, blocking clean semantics, no Claude advisory, "
             "and a shareable route-aware evidence packet. The review machinery "
-            "always comes from the target base, materialized when it has to be."
+            "always comes from the target base, materialized when it has to be "
+            "(the wrapper itself runs from the invoking checkout: invoke from a trusted one)."
         ),
     )
     parser.add_argument(
