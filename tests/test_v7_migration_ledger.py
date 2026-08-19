@@ -1162,6 +1162,19 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(merge_adopt_rows)
     existing_process_owner_rows.update(merge_adopt_rows)
     registry_extraction_no_facade_rows.update(merge_adopt_no_facade_rows)
+    # Upstream adoption through v6.105.1 (unified accounts, delegation substrate,
+    # rotation visibility). Three kinds of row land together and are kept as data in
+    # _v7_ledger_inventories: the base's OWN extraction of the executor-note pair,
+    # which v7 answers by keeping its agent_dispatch home; the leaves v7 had to carve
+    # when upstream's additions pushed subagents.py, context.py and the plan-review
+    # engine suite back over the 1500-line ceiling; and the upstream test symbols that
+    # landed in themed v7 suites instead of the parents they were written against.
+    merge_adopt_v6105_facade_rows = dict(_inv.merge_adopt_v6105_facade_rows)
+    merge_adopt_v6105_no_facade_rows = dict(_inv.merge_adopt_v6105_no_facade_rows)
+    merge_adopt_v6105_rows = {**merge_adopt_v6105_facade_rows, **merge_adopt_v6105_no_facade_rows}
+    implemented.update(merge_adopt_v6105_rows)
+    existing_process_owner_rows.update(merge_adopt_v6105_rows)
+    registry_extraction_no_facade_rows.update(merge_adopt_v6105_no_facade_rows)
     # D02: the upstream v6.103.0 silent-ignore pin for a vacuous disposition is
     # re-pointed at the ratified disclosure contract (note + preserved native meta);
     # the replacement is named in the ledger so the SSOT, not just the commit

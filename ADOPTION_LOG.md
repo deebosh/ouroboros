@@ -310,7 +310,7 @@ Import retargets in the two new upstream suites (`test_delegation_account_pin.py
 | node | `cd web && npm test` | **581 pass / 0 fail** |
 | full parallel | `pytest tests/ -q -n 16` (default addopts) | 3 failures on the first pass, all fixed (§16); clean on re-run |
 | serial | `pytest tests/ -q -m serial` | rc=0, 100%, zero failures |
-| ledger | `pytest tests/test_v7_migration_ledger.py tests/test_v7_prologue_evidence.py` | one inventory desync (`_run_session_directly`), synced, then green |
+| ledger | `pytest tests/test_v7_migration_ledger.py tests/test_v7_prologue_evidence.py` | three rounds: an inventory desync, a facade disagreement, and finally the registration the ledger test requires — see §18 |
 
 ## 16. What the FULL battery caught (and the fixes)
 
@@ -357,3 +357,27 @@ Not right, or incomplete:
 | — (not mentioned) | three modules crossing the 1500 ceiling, requiring extractions inside the merge commit |
 | — (not mentioned) | the verbatim-drift class: moving MERGE_BASE_SHA falsifies "verbatim" notes wherever upstream reflowed an extracted declaration |
 | — (not mentioned) | five upstream test assertions written against pre-split shapes |
+
+## 18. The ledger test wants rows REGISTERED, not merely well-formed
+
+`scripts/v7_evidence.py check-migration` and
+`tests/test_v7_migration_ledger.py` check different things, and passing the
+first says little about the second. `check-migration` validates each row's
+shape and resolution. The test additionally classifies EVERY row into one of
+three buckets, and a row that belongs to none of them fails:
+
+1. `implemented` — built from the dicts in `tests/_v7_ledger_inventories.py`;
+2. `retired_current` — deliberate retirements;
+3. everything else — must be a not-yet-built destination whose owner PATH is
+   listed in `v7_migration.APPROVED_PENDING_OWNERS`.
+
+New rows for moves that ALREADY happened therefore land in bucket 3 and are
+rejected, because their owners are real files rather than approved pending
+destinations. The v6.104 adoption solved this with a `merge_adopt_*` block; this
+adoption follows it exactly: 31 facade rows and 32 no-facade rows added to
+`_v7_ledger_inventories.py` as data, expanded into `implemented`,
+`existing_process_owner_rows` and `registry_extraction_no_facade_rows` beside
+the v6.104 block.
+
+Worth carrying forward: **an adoption is not finished when the ledger validates
+— it is finished when the ledger test can classify every row it added.**
