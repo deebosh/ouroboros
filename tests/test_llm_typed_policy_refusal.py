@@ -1,4 +1,9 @@
-"""A typed policy refusal is never swallowed by the provider fallback.
+"""A typed policy refusal is never swallowed, repaired, or repeated.
+
+Two seams answer for one fact. The recovery ladder must not consume a refusal
+(it has no provider answer to fall back FROM), and the retry loop's classifier
+must not call it retryable (repeating an unchanged refused call only re-runs the
+refusal). Both read the declared code; neither reads the message.
 
 The refusals here are SYNTHETIC. Nothing is copied from, imported from, or
 shaped after any deployment's own refusal type: one subclasses the published
@@ -23,6 +28,7 @@ from typing import Any, Dict, List
 import pytest
 
 from ouroboros.llm import PROVIDER_POLICY_REFUSAL, LLMClient, ProviderPolicyRefusal
+from ouroboros.loop_llm_call import classify_llm_exception
 
 
 class NoPermittedConnection(ProviderPolicyRefusal):
@@ -241,3 +247,52 @@ def test_a_refusal_carrying_a_foreign_code_is_not_treated_as_a_refusal(client):
 
     assert resp.model_dump()["error"]["code"] == 429
     assert len(calls) == 2
+
+
+# --- the retry loop's own answer -------------------------------------------
+#
+# The ladder above declines to REPAIR a refusal; the retry loop must also decline
+# to REPEAT it. Both seams read the same typed fact, so the assertions below go
+# through `classify_llm_exception` — the function the loop actually consults —
+# rather than any marker table it happens to consult on the way.
+
+
+@pytest.mark.parametrize("refusal", _REFUSALS, ids=_REFUSAL_IDS)
+def test_the_retry_loop_classifies_a_typed_refusal_as_permanent(refusal):
+    """A refused call is a named, non-retryable class.
+
+    Its kind is the declared code itself, so `events.jsonl` names the refusal
+    instead of laundering it into the catch-all `provider_error`; and
+    `retry_same_request` is False, so the loop stops rather than spending its
+    whole attempt budget re-running a call no provider ever saw."""
+    classification = classify_llm_exception(refusal)
+
+    assert classification.kind == PROVIDER_POLICY_REFUSAL
+    assert classification.retry_same_request is False
+    assert classification.provider_code == PROVIDER_POLICY_REFUSAL
+    # Recovery is not a known instant; nothing here may schedule a wake-up.
+    assert classification.retry_after_sec is None
+
+
+def test_the_retry_loop_prefers_the_typed_fact_over_recoverable_prose():
+    """`TenantBlocked`'s message says "rate limit" — the text the loop keys on
+    for its retryable class. The typed fact must win: prose from a call that
+    never reached a provider describes nothing that could heal."""
+    refusal = TenantBlocked()
+
+    assert "rate limit" in str(refusal)  # the trap is really in the message
+    assert classify_llm_exception(refusal).retry_same_request is False
+
+
+def test_the_retry_loop_does_not_read_a_foreign_code_as_a_refusal():
+    """The loop's branch is the same exact-value test the ladder makes, not a
+    prefix match: a longer code that merely CONTAINS the declared one keeps the
+    ordinary classification it would have had."""
+
+    class OtherCode(RuntimeError):
+        code = "provider_policy_refusal_v2"
+
+    classification = classify_llm_exception(OtherCode("something else"))
+
+    assert classification.kind != PROVIDER_POLICY_REFUSAL
+    assert classification.retry_same_request is True
