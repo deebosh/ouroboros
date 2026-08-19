@@ -101,14 +101,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_task_deadline_epoch", "compact_tool_history_llm", "utc_now"
     })),
     "ouroboros/loop_nudges.py": ("ouroboros/loop.py", "_loop", frozenset({
-        "_DELEGATE_ACTIVITY_TOOLS", "_TREE_ACCOUNTING_MAX_STALE_SEC", "_answer_protocol_active",
-        "_append_or_merge_user_message", "_build_recent_tool_trace", "_contract_expected_output",
-        "_emit_checkpoint_event", "_extract_plain_text_from_content", "_force_plan_decision",
-        "_loop_tree_accounting", "_maybe_inject_cost_budget_milestone",
-        "_maybe_inject_nanny_economics_reminder", "_maybe_inject_self_check",
-        "_maybe_inject_time_budget_milestone", "_nanny_burn_phrase", "_nanny_finalization_message",
-        "_nanny_metered_since_delegate_activity", "_nanny_reminder_due", "_skill_finalization_message",
-        "_skill_names_touched_by_trace", "get_review_enforcement"
+        "_TREE_ACCOUNTING_MAX_STALE_SEC", "_append_or_merge_user_message", "_emit_checkpoint_event",
+        "_extract_plain_text_from_content", "_force_plan_decision", "_loop_tree_accounting",
+        "get_review_enforcement"
     })),
     "ouroboros/loop_model_call.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_RoundModelCallContext", "_account_compaction_usage", "_adopt_fallback_route", "_call_round_model",

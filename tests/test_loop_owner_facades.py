@@ -54,11 +54,8 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_handle_provider_unavailable _maybe_early_finalize _finalize_limit_ctx"
     ),
     "loop_nudges": (
-        "_skill_names_touched_by_trace _skill_finalization_message _force_plan_decision _force_plan_reminder _force_plan_disclosure "
-        "_build_recent_tool_trace _maybe_inject_self_check _maybe_inject_time_budget_milestone _maybe_inject_cost_budget_milestone _DELEGATE_ACTIVITY_TOOLS "
-        "_note_nanny_delegate_activity _nanny_metered_since_delegate_activity _nanny_reminder_due _nanny_burn_phrase _maybe_inject_nanny_economics_reminder "
-        "_inject_round_checkpoints _forced_delegation_note _nanny_finalization_message _maybe_inject_finalization_nudges _answer_protocol_active "
-        "_contract_expected_output"
+        "_force_plan_decision _force_plan_reminder _force_plan_disclosure _note_nanny_delegate_activity "
+        "_inject_round_checkpoints _forced_delegation_note _maybe_inject_finalization_nudges"
     ),
     "loop_model_call": (
         "_adopt_fallback_route _snapshot_context_fit_usage _restore_context_fit_usage _run_cross_model_fallback_chain _rebind_context_fit_plan "
@@ -91,6 +88,13 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
 # retired (spec 1.9-15). Nothing outside the owning leaf reads these, so the
 # leaf owns the only binding and ouroboros.loop carries none.
 RETIRED_FROM_LOOP: dict[str, tuple[str, ...]] = {
+    "loop_nudges": (
+        "_skill_names_touched_by_trace _skill_finalization_message _build_recent_tool_trace "
+        "_maybe_inject_self_check _maybe_inject_time_budget_milestone _maybe_inject_cost_budget_milestone "
+        "_DELEGATE_ACTIVITY_TOOLS _nanny_metered_since_delegate_activity _nanny_reminder_due "
+        "_nanny_burn_phrase _maybe_inject_nanny_economics_reminder _nanny_finalization_message "
+        "_answer_protocol_active _contract_expected_output"
+    ),
     "loop_round_limits": (
         "_provider_failure_hint _provider_recovery_hint _mark_owner_stop_control_drained "
         "_owner_stop_window_elapsed _handle_owner_stop_finalization _maybe_deadline_local_finalize"

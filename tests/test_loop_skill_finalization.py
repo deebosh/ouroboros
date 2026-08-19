@@ -7,10 +7,7 @@ from __future__ import annotations
 
 import json
 
-from ouroboros.loop import (
-    _skill_finalization_message,
-    _skill_names_touched_by_trace,
-)
+from ouroboros.loop_nudges import _skill_finalization_message, _skill_names_touched_by_trace
 from ouroboros.skill_loader import (
     SkillReviewState,
     compute_content_hash,

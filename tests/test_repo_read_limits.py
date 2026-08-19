@@ -151,7 +151,7 @@ def test_repo_commit_results_never_truncated():
 
 
 def test_self_check_returns_bool_and_interval_15():
-    from ouroboros.loop import _maybe_inject_self_check
+    from ouroboros.loop_nudges import _maybe_inject_self_check
     messages = []
     usage = {"cost": 0}
     progress_calls = []

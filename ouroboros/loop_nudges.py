@@ -72,7 +72,7 @@ def _skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
 
 
 def _skill_finalization_message(drive_root: pathlib.Path, llm_trace: Dict[str, Any]) -> str:
-    names = _loop()._skill_names_touched_by_trace(llm_trace)
+    names = _skill_names_touched_by_trace(llm_trace)
     if not names:
         return ""
     try:
@@ -213,7 +213,7 @@ def _maybe_inject_self_check(
             "(ledger-accounted incl. in-flight holds, subagents included)\n"
         )
 
-    tool_trace = _loop()._build_recent_tool_trace(messages)
+    tool_trace = _build_recent_tool_trace(messages)
 
     reminder = (
         f"[CHECKPOINT {checkpoint_num} — round {round_idx}/{max_rounds}]\n"
@@ -359,7 +359,7 @@ def _note_nanny_delegate_activity(
     for call in tool_calls or []:
         fn = call.get("function") if isinstance(call, dict) else None
         name = str((fn or {}).get("name") or "").strip() if isinstance(fn, dict) else ""
-        if name in _loop()._DELEGATE_ACTIVITY_TOOLS:
+        if name in _DELEGATE_ACTIVITY_TOOLS:
             verbs.add(name)
     if not verbs:
         return
@@ -415,7 +415,7 @@ def _nanny_reminder_due(ctx: Any, round_idx: int) -> Tuple[int, float, bool]:
         NANNY_FIRST_REMINDER_ROUNDS, NANNY_REMINDER_ROUNDS, NANNY_REMINDER_USD,
     )
 
-    rounds, cost = _loop()._nanny_metered_since_delegate_activity(ctx)
+    rounds, cost = _nanny_metered_since_delegate_activity(ctx)
     round_threshold = NANNY_REMINDER_ROUNDS
     if (
         not isinstance(getattr(ctx, "_nanny_delegate_baseline", None), dict)
@@ -469,7 +469,7 @@ def _maybe_inject_nanny_economics_reminder(
     ctx = tools._ctx
     if not getattr(ctx, "_nanny_route_dispatched", False):
         return False
-    rounds, cost, due = _loop()._nanny_reminder_due(ctx, round_idx)
+    rounds, cost, due = _nanny_reminder_due(ctx, round_idx)
     if not due:
         return False
     # The fire cursor is the metered-progress mark AT this firing (round + cost),
@@ -489,7 +489,7 @@ def _maybe_inject_nanny_economics_reminder(
     # unqualified (estimated/undisclosed spend is never zero).
     reminder = (
         "[NANNY ECONOMICS REMINDER]\n"
-        f"You are a harness-dispatched NANNY and you have spent {_loop()._nanny_burn_phrase(rounds, cost)} "
+        f"You are a harness-dispatched NANNY and you have spent {_nanny_burn_phrase(rounds, cost)} "
         f"{since_phrase}. A subscription-lane delegated run has known-zero "
         "marginal cost only when its settled spend reports $0 (estimated or "
         "undisclosed spend is never zero); every round you think yourself is "
@@ -531,21 +531,21 @@ def _inject_round_checkpoints(
     milestone AFTER owner messages, so the checkpoint is the LLM-call tail (a
     normal user turn). Returns whether any was injected (routine compaction is
     skipped that round when so)."""
-    checkpoint = _loop()._maybe_inject_self_check(
+    checkpoint = _maybe_inject_self_check(
         round_idx, max_rounds, messages, accumulated_usage, emit_progress,
         event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
     )
-    time_budget = _loop()._maybe_inject_time_budget_milestone(
+    time_budget = _maybe_inject_time_budget_milestone(
         messages, tools, event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
         round_idx=round_idx, accumulated_usage=accumulated_usage,
     )
-    cost_budget = _loop()._maybe_inject_cost_budget_milestone(
+    cost_budget = _maybe_inject_cost_budget_milestone(
         messages, tools,
         budget_remaining_usd=budget_remaining_usd, cost_ceiling=cost_ceiling,
         accumulated_usage=accumulated_usage,
         event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
     )
-    nanny_economics = _loop()._maybe_inject_nanny_economics_reminder(
+    nanny_economics = _maybe_inject_nanny_economics_reminder(
         round_idx, messages, tools, emit_progress,
         event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
     )
@@ -585,13 +585,13 @@ def _forced_delegation_note(tools_ctx: Any, llm_trace: Dict[str, Any]) -> str:
         # The proportional silence must not extend to FORCED exits (grok / F16):
         # a wrap-up forced by an overrun still owes the parent the honest-spend
         # line. One shot, riding the single forced prompt — never a re-loop.
-        rounds, cost = _loop()._nanny_metered_since_delegate_activity(tools_ctx)
+        rounds, cost = _nanny_metered_since_delegate_activity(tools_ctx)
         from ouroboros.task_pacing import NANNY_REMINDER_ROUNDS, NANNY_REMINDER_USD
 
         if rounds >= NANNY_REMINDER_ROUNDS or cost >= NANNY_REMINDER_USD:
             return (
                 "\nNOTE: your delegated run(s) succeeded, but you have since spent "
-                f"{_loop()._nanny_burn_phrase(rounds, cost)} with no delegated-run activity. "
+                f"{_nanny_burn_phrase(rounds, cost)} with no delegated-run activity. "
                 "Account for that metered spend honestly in your answer."
             )
         return ""
@@ -662,14 +662,14 @@ def _nanny_finalization_message(
         # then co-built for tens of opus rounds while this early return kept
         # the nudge silent. Silence is now proportional to the measured burn
         # since the last delegated-run activity.
-        rounds, cost = _loop()._nanny_metered_since_delegate_activity(tools._ctx)
+        rounds, cost = _nanny_metered_since_delegate_activity(tools._ctx)
         from ouroboros.task_pacing import NANNY_REMINDER_ROUNDS, NANNY_REMINDER_USD
 
         if rounds < NANNY_REMINDER_ROUNDS and cost < NANNY_REMINDER_USD:
             return ""
         return (
             "⚠️ NANNY_METERED_OVERRUN: your delegated run(s) succeeded, but you have "
-            f"since spent {_loop()._nanny_burn_phrase(rounds, cost)} with no delegated-run "
+            f"since spent {_nanny_burn_phrase(rounds, cost)} with no delegated-run "
             "activity. A successful run is verified and integrated, not rebuilt. If "
             "the remaining work is substantive, delegate it (a new delegate_start); "
             "if you are wrapping up, keep the wrap-up short and account for the "
@@ -754,7 +754,7 @@ def _maybe_inject_finalization_nudges(
             if isinstance(c, dict)
         )
         tools._ctx._nanny_finalization_injected = True
-        _nanny_msg = _loop()._nanny_finalization_message(
+        _nanny_msg = _nanny_finalization_message(
             tools, drive_root, task_id, trace_attempted=_trace_attempted,
         )
         if _nanny_msg:
@@ -772,7 +772,7 @@ def _maybe_inject_finalization_nudges(
             )
             llm_trace["reasoning_notes"].append(_nanny_msg)
             return True
-    finalization_msg = _loop()._skill_finalization_message(drive_root, llm_trace)
+    finalization_msg = _skill_finalization_message(drive_root, llm_trace)
     if finalization_msg and not getattr(tools._ctx, "_skill_finalization_injected", False):
         tools._ctx._skill_finalization_injected = True
         if content and content.strip():
@@ -884,7 +884,7 @@ def _maybe_inject_finalization_nudges(
     # earlier. Structural facts only (no refusal-text matching).
     if (
         not getattr(tools._ctx, "_noop_attempt_nudged", False)
-        and str(_loop()._contract_expected_output(tools._ctx)).strip()
+        and str(_contract_expected_output(tools._ctx)).strip()
         and not (llm_trace.get("tool_calls") or [])
         and not turn_has_reviewable_effects(llm_trace)
         and not extract_final_answer(content or "")
@@ -896,7 +896,7 @@ def _maybe_inject_finalization_nudges(
         # ANSWER marker only when this task's contract actually declares the protocol.
         _marker_bit = (
             "no tool calls, no reviewable effects, no FINAL ANSWER"
-            if _loop()._answer_protocol_active(tools._ctx)
+            if _answer_protocol_active(tools._ctx)
             else "no tool calls, no reviewable effects, no delivered answer"
         )
         _loop()._append_or_merge_user_message(
@@ -923,7 +923,7 @@ def _maybe_inject_finalization_nudges(
     # (a v6.56.0 run finalized a last-round refusal empty despite 24 calls).
     if (
         not getattr(tools._ctx, "_final_marker_nudged", False)
-        and _loop()._answer_protocol_active(tools._ctx)  # v6.60.0: marker nudge is protocol-gated
+        and _answer_protocol_active(tools._ctx)  # v6.60.0: marker nudge is protocol-gated
         and content and content.strip()
         and not extract_final_answer(content or "")
         and ((llm_trace.get("tool_calls") or []) or turn_has_reviewable_effects(llm_trace))

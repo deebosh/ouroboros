@@ -174,7 +174,7 @@ def test_split_root_nanny_reads_custody_from_the_canonical_root(tmp_path):
     # the nudge, a started-but-failed run yields the truthful failure message —
     # both with the child drive passed exactly as production passes it.
     from ouroboros import delegate_custody as custody
-    from ouroboros.loop import _nanny_finalization_message
+    from ouroboros.loop_nudges import _nanny_finalization_message
 
     parent, child = tmp_path / "parent", tmp_path / "child"
     for root in (parent, child):
@@ -233,7 +233,7 @@ def test_pending_run_gets_the_wait_reminder_not_a_failure_accusation(tmp_path):
     # told the child to retry — a duplicate concurrent delegated run — while
     # finalizing over it is exactly the orphan-result failure mode. The reminder
     # points at delegate_wait and accuses nothing.
-    from ouroboros.loop import _nanny_finalization_message
+    from ouroboros.loop_nudges import _nanny_finalization_message
 
     drive = _custody_drive(tmp_path)
     _emit_started(drive, "run-1", "child-1")
@@ -250,7 +250,7 @@ def test_mixed_failed_and_pending_runs_prefer_the_pending_reminder(tmp_path):
     # With one dead sibling AND one still in flight, "retry" is the wrong
     # instruction: the pending reminder wins, the earlier failure rides along
     # as a fact instead of being dropped.
-    from ouroboros.loop import _nanny_finalization_message
+    from ouroboros.loop_nudges import _nanny_finalization_message
 
     drive = _custody_drive(tmp_path)
     _emit_started(drive, "run-dead", "child-1")
@@ -266,7 +266,7 @@ def test_mixed_failed_and_pending_runs_prefer_the_pending_reminder(tmp_path):
 
 def test_all_failed_runs_keep_the_failure_message(tmp_path):
     # All settled, none succeeded: the terminal non-success message stays.
-    from ouroboros.loop import _nanny_finalization_message
+    from ouroboros.loop_nudges import _nanny_finalization_message
 
     drive = _custody_drive(tmp_path)
     for run_id in ("run-1", "run-2"):
