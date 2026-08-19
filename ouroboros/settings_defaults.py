@@ -300,6 +300,10 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # offers the connected-subscription default); the literal `off` = delegation off
     # because the owner said so. Wait keys bound the nanny's QUIET wait only.
     "OUROBOROS_SUBAGENT_HARNESS": "",
+    # Optional Delegation account pin (D-U5): a credential-profile id sent as
+    # `credentialProfileId`; empty = engine rotation pool (D28; presets never
+    # author it). Read ONLY by get_subagent_harness -> DelegationRoute.profile_id.
+    "OUROBOROS_SUBAGENT_PROFILE": "",
     "OUROBOROS_DELEGATE_WAIT_SEC": 120,
     "OUROBOROS_DELEGATE_WAIT_MAX_SEC": 1800,
 }

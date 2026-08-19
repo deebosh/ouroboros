@@ -278,3 +278,19 @@ def test_a_retry_health_check_judges_the_stored_pin_not_the_current_setting(
     assert bodies[-1] == bodies[0], "the retry replays the RECORDED body"
     assert bodies[-1]["credentialProfileId"] == "stored-pin"
     delegate._CUSTODY.clear()
+
+
+def test_the_account_pin_is_a_persisted_setting_the_gateway_accepts():
+    """D-U5 persistence: the gateway merges only keys present in the settings
+    defaults, so ``OUROBOROS_SUBAGENT_PROFILE`` must be a member — without it
+    the Settings UI sends the owner's pin and the backend silently drops it
+    (the exact hunk the v6.105 adoption first lost).
+    """
+    from ouroboros.gateway.settings import _merge_settings_payload
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+    assert SETTINGS_DEFAULTS["OUROBOROS_SUBAGENT_PROFILE"] == ""
+    merged = _merge_settings_payload({}, {"OUROBOROS_SUBAGENT_PROFILE": "koshak"})
+    assert merged["OUROBOROS_SUBAGENT_PROFILE"] == "koshak"
+    cleared = _merge_settings_payload(merged, {"OUROBOROS_SUBAGENT_PROFILE": ""})
+    assert cleared["OUROBOROS_SUBAGENT_PROFILE"] == ""

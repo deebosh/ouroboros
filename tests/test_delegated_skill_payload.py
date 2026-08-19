@@ -940,7 +940,8 @@ def test_recovered_pending_invocation_object_carries_the_shape(tmp_path, monkeyp
            "target_root": "/x/target", "payload_hash": "h1"}
     body = {"prompt": "x", "access": "workspace_write", "mode": "agent",
             "execution": {"isolation": "live", "delegated": True},
-            "scope": {"root": "/x/exec"}, "primaryHarness": "r"}
+            "scope": {"root": "/x/exec"}, "primaryHarness": "r",
+            "credentialProfileId": "koshak"}
     custody.record_start_requested(
         drive, run_id="", task_id="t-a", idempotency_key="k", invocation_id="invR",
         max_seconds=60, request=body, project_id="p", project_owned=False,
@@ -959,6 +960,10 @@ def test_recovered_pending_invocation_object_carries_the_shape(tmp_path, monkeyp
     assert obj.access == "workspace_write" and obj.mode == "agent"
     assert obj.isolation == "live" and obj.delegated is True
     assert obj.resource_ref == ref and obj.authority_source == "skill_payload"
+    # D-U5 provenance survives recovery: the requested account pin rides the
+    # stored canonical body into the recovered custody row (the hunk the
+    # v6.105 adoption first dropped).
+    assert obj.profile_id == "koshak"
     custody._CUSTODY.clear()
 
 

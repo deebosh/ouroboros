@@ -867,6 +867,8 @@ def test_plan_review_native_projection_preserves_text_and_structured_control(
         ("fresh", {"aggregate_signal": "GREEN", "closed": True}),
         ("cached", {"aggregate_signal": "REVIEW_REQUIRED", "closed": False}),
         ("disposition", {"aggregate_signal": "REVIEW_REQUIRED", "closed": True}),
+        # B2 honest DEGRADED (v6.105): a legal, always-open aggregate.
+        ("degraded", {"aggregate_signal": "DEGRADED", "closed": False}),
     )
     expected = []
     calls = []
@@ -923,3 +925,10 @@ def test_plan_review_native_projection_preserves_text_and_structured_control(
     assert forged_result.text == forged
     assert dict(forged_result.meta) == {}
     assert calls == [("plan_task", forged)]
+
+    # The guard rejects the one laundering-adjacent illegal shape at the
+    # producer seam itself: DEGRADED can never publish as closed (B2, v6.105).
+    with pytest.raises(ValueError, match="outcome=DEGRADED"):
+        pr._publish_plan_review_projection(
+            None, {"aggregate_signal": "DEGRADED", "closed": True}, "never"
+        )

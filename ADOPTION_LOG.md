@@ -266,7 +266,9 @@ Import retargets in the two new upstream suites (`test_delegation_account_pin.py
   counted only the test re-homes and missed the 1500-ceiling extractions, the
   import-binding moves in the two new upstream suites, and the
   `_attach_client_surface` / `TYPED_FAILURE_FACT_KEYS` / startup-sweep moves.
-* **Nine verbatim rows were re-synced, not re-noted.** With `MERGE_BASE_SHA`
+* **Nine rows were re-synced, not re-noted** (eight byte-equal after the
+  re-sync; `loop_budget` is the ninth and stays a D33 module-handle adaptation
+  — semantically equal, not byte-pinned, as its own ledger note honestly says). With `MERGE_BASE_SHA`
   moved, `test_v7_verbatim_moves` reads each row's old text at the NEW base — so
   upstream's cosmetic reflow of a declaration v7 had extracted turns a true
   "verbatim" note into a false one. The reflowed text was adopted into the leaf

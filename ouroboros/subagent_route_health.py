@@ -5,8 +5,10 @@ route-manifest question keeps one home: ``route_health`` answers "can THIS route
 run THIS shape right now" for the dispatcher and for the nanny's own
 ``delegate_start`` alike, and the quota readers below it (`_exhausted_window` and
 its model-scope/cooldown predicates) are the only place a harness window is read
-as spent. ``subagents`` re-exports every name, so historical imports and
-monkeypatch targets keep working unchanged.
+as spent. ``subagents`` re-exports every name, so historical imports keep
+working; interception happens at THIS module (the leaf's own globals are what
+``route_health`` reads) — patch ``ouroboros.subagent_route_health.X``, not the
+``subagents`` alias, to intercept a helper.
 """
 
 from __future__ import annotations
