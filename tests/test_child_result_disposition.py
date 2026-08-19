@@ -433,6 +433,7 @@ def test_orphan_note_claim_detail_is_scoped_to_undecided_children(monkeypatch):
     so "not carried by this round's disposition projection — re-submit to close it"
     would be a provably false owner-visible instruction."""
     import ouroboros.loop as loop
+    from ouroboros import loop_forced_finalization
     from ouroboros.tools.join_ledger import _child_result_sha256
 
     child = {"task_id": "child1", "status": "completed", "result": "child work"}
@@ -447,7 +448,7 @@ def test_orphan_note_claim_detail_is_scoped_to_undecided_children(monkeypatch):
     }
     monkeypatch.setattr(loop, "_direct_child_results", lambda _ctx: [dict(deferred_child)])
     monkeypatch.setattr(
-        loop,
+        loop_forced_finalization,
         "_claimed_child_dispositions",
         lambda _ctx: {"child1": ("deferred", digest)},
     )

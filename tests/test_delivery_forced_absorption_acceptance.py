@@ -210,6 +210,7 @@ def test_orphan_note_names_claimed_but_failed_disposition(monkeypatch, tmp_path)
     the row exists, so the write did NOT fail; the binding to the current result
     is what is missing."""
     import ouroboros.loop as loop
+    from ouroboros import loop_forced_finalization
     from ouroboros.tools.join_ledger import _child_result_sha256
 
     child = {
@@ -222,7 +223,7 @@ def test_orphan_note_names_claimed_but_failed_disposition(monkeypatch, tmp_path)
     stale_sha = "0" * 64
     assert _child_result_sha256(child) != stale_sha
     monkeypatch.setattr(
-        loop,
+        loop_forced_finalization,
         "_claimed_child_dispositions",
         lambda _ctx: {"child1": ("integrated", stale_sha)},
     )
@@ -238,7 +239,7 @@ def test_orphan_note_names_claimed_but_failed_disposition(monkeypatch, tmp_path)
     # Same row, hash STILL matching: the write plainly succeeded and bound, so the
     # honest gap is the projection this round, not the ledger.
     monkeypatch.setattr(
-        loop,
+        loop_forced_finalization,
         "_claimed_child_dispositions",
         lambda _ctx: {"child1": ("integrated", _child_result_sha256(child))},
     )
@@ -249,7 +250,7 @@ def test_orphan_note_names_claimed_but_failed_disposition(monkeypatch, tmp_path)
 
 def test_claimed_child_dispositions_reads_the_blackboard(tmp_path):
     from ouroboros.task_tree_ledger import tree_ledger_append
-    import ouroboros.loop as loop
+    from ouroboros import loop_forced_finalization
 
     tree_ledger_append(
         "root1", "decision", "integrated after review",
@@ -270,8 +271,8 @@ def test_claimed_child_dispositions_reads_the_blackboard(tmp_path):
         root_task_id="root1", task_id="parent1",
     )
 
-    claims = loop._claimed_child_dispositions(ctx)
+    claims = loop_forced_finalization._claimed_child_dispositions(ctx)
 
     assert claims == {"child1": ("integrated", "a" * 64)}
     # Fail-soft on junk context.
-    assert loop._claimed_child_dispositions(SimpleNamespace()) == {}
+    assert loop_forced_finalization._claimed_child_dispositions(SimpleNamespace()) == {}

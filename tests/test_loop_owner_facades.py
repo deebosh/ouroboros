@@ -73,10 +73,10 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
         "_compose_delivery_suffix _no_tool_final_answer"
     ),
     "loop_forced_finalization": (
-        "_load_direct_child_results _direct_child_results _child_disposition_state _project_child_result_dispositions _record_forced_finalization "
-        "_forced_orphan_note _claimed_child_dispositions _undispositioned_children _maybe_enforce_child_absorption_gate _run_forced_children_acceptance "
-        "_enforce_swarm_actions _finalize_forced_services _drain_forced_owner_directives _call_forced_model_once _publish_model_forced_candidate "
-        "_publish_stale_forced_candidate _forced_fallback_result _forced_swarm_router_result _resolve_forced_delivery_control _forced_final_answer"
+        "_load_direct_child_results _direct_child_results _child_disposition_state "
+        "_project_child_result_dispositions _record_forced_finalization _forced_orphan_note "
+        "_maybe_enforce_child_absorption_gate _enforce_swarm_actions _finalize_forced_services "
+        "_forced_fallback_result _forced_swarm_router_result _forced_final_answer"
     ),
 }
 
@@ -85,6 +85,11 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
 # retired (spec 1.9-15). Nothing outside the owning leaf reads these, so the
 # leaf owns the only binding and ouroboros.loop carries none.
 RETIRED_FROM_LOOP: dict[str, tuple[str, ...]] = {
+    "loop_forced_finalization": (
+        "_claimed_child_dispositions _undispositioned_children _run_forced_children_acceptance "
+        "_drain_forced_owner_directives _call_forced_model_once _publish_model_forced_candidate "
+        "_publish_stale_forced_candidate _resolve_forced_delivery_control"
+    ),
     "loop_delivery": (
         "_compute_subagent_handoff _unaccepted_delivery_binding _delivery_acceptance_binding "
         "_ensure_explicit_acceptance_binding _delivery_control_prompt _delivery_keep_allowed "

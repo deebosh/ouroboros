@@ -197,7 +197,7 @@ def _forced_orphan_note(ctx: _RoundLimitContext, *, include_terminal: bool = Tru
         from ouroboros.task_status import FINAL_STATUSES
 
         children = _loop()._direct_child_results(ctx)
-        claimed = _loop()._claimed_child_dispositions(ctx)
+        claimed = _claimed_child_dispositions(ctx)
 
         def _undecided(c: Dict[str, Any]) -> bool:
             if _loop()._child_disposition_state(c) in {
@@ -327,7 +327,7 @@ def _maybe_enforce_child_absorption_gate(
     emit_progress: Callable[[str], None],
     llm_trace: Dict[str, Any],
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]] | str]:
-    undecided = _loop()._undispositioned_children(limit_ctx)
+    undecided = _undispositioned_children(limit_ctx)
     if not undecided:
         return None
     if not getattr(tools._ctx, "_child_absorption_reminded", False):
@@ -369,7 +369,7 @@ def _maybe_enforce_child_absorption_gate(
         reason_code="children_unabsorbed",
     )
     _loop()._merge_finalization_trace(llm_trace, forced_trace)
-    _loop()._run_forced_children_acceptance(
+    _run_forced_children_acceptance(
         tools, limit_ctx, undecided, text, messages, emit_progress, llm_trace,
     )
     return text, usage, llm_trace
@@ -713,7 +713,7 @@ def _forced_fallback_result(
     if candidate is not None:
         composed = _loop()._compose_delivery_suffix(candidate.full_text, suffix)
         if composed != candidate.full_text:
-            candidate = _loop()._publish_model_forced_candidate(
+            candidate = _publish_model_forced_candidate(
                 ctx, llm_trace, composed, reason_code,
             )
             ctx.accumulated_usage["_best_effort_extracted"] = True
@@ -747,7 +747,7 @@ def _forced_fallback_result(
         return candidate.full_text, ctx.accumulated_usage, llm_trace
 
     if fallback_is_retained_model_text and live_candidate is not None:
-        candidate = _loop()._publish_stale_forced_candidate(
+        candidate = _publish_stale_forced_candidate(
             ctx,
             llm_trace,
             live_candidate,
@@ -766,7 +766,7 @@ def _forced_fallback_result(
             return candidate.full_text, ctx.accumulated_usage, llm_trace
 
     composed = _loop()._compose_delivery_suffix(fallback_text, suffix)
-    candidate = _loop()._publish_model_forced_candidate(
+    candidate = _publish_model_forced_candidate(
         ctx, llm_trace, composed, reason_code,
     )
     if fallback_is_retained_model_text:
@@ -915,16 +915,16 @@ def _forced_final_answer(
     extracted = ""
     for attempt in range(1 if single_semantic_turn else 2):
         try:
-            extracted = _loop()._call_forced_model_once(ctx)
+            extracted = _call_forced_model_once(ctx)
         except BudgetExceeded:
-            _loop()._drain_forced_owner_directives(ctx, llm_trace)
+            _drain_forced_owner_directives(ctx, llm_trace)
             raise
         except Exception:
             log.warning("Failed to get final response after %s", reason_code, exc_info=True)
             extracted = ""
         ctx.accumulated_usage["execution_status"] = "failed"
         ctx.accumulated_usage["reason_code"] = reason_code
-        if not _loop()._drain_forced_owner_directives(ctx, llm_trace):
+        if not _drain_forced_owner_directives(ctx, llm_trace):
             break
         if attempt == 1:
             return _loop()._forced_fallback_result(
@@ -946,7 +946,7 @@ def _forced_final_answer(
             "new complete answer bound to every owner directive now present.",
         )
 
-    extracted, control_degraded = _loop()._resolve_forced_delivery_control(
+    extracted, control_degraded = _resolve_forced_delivery_control(
         getattr(getattr(ctx, "tools", None), "_ctx", None), extracted,
     )
     if extracted:
@@ -961,7 +961,7 @@ def _forced_final_answer(
         full_text = _loop()._compose_delivery_suffix(
             extracted, plan_suffix + _loop()._forced_orphan_note(ctx),
         )
-        candidate = _loop()._publish_model_forced_candidate(
+        candidate = _publish_model_forced_candidate(
             ctx, llm_trace, full_text, reason_code,
         )
         if control_degraded and candidate is not None:
