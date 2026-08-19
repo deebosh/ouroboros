@@ -38,7 +38,6 @@ _owned_gateway_uses_each_test_transport = __owned_gateway_uses_each_test_transpo
 fake_route = __fake_route
 
 from tests._review_session_route_shared import (
-    FakeGateway,
     FakeLLM,
     _agent_request,
     _agent_slot,
@@ -591,6 +590,9 @@ def test_pre_dispatch_admission_raises_the_typed_window_class(tmp_path, fake_rou
     no session is ever started."""
     from ouroboros.gateways.claudexor import ClaudexorSubscriptionWindowExhausted
     from ouroboros.review_execution import AgentSessionReviewExecutor, ReviewAssignment
+    # Local import: this module must NOT re-export the shared fake (the ledger
+    # records the split fixture as facadeless).
+    from tests._review_session_route_shared import FakeGateway
 
     spent = {"subject": {"harness": "fake-review", "subject_id": "acct"},
              "freshness": "fresh",

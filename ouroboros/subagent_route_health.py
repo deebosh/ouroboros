@@ -19,7 +19,7 @@ if TYPE_CHECKING:  # annotation only — a runtime import would cycle with the p
 
 
 def route_health(
-    gateway: Any, route_id: str, shape: "DelegatedRunShape", *, route_model: str = "",
+    gateway: Any, route_id: str, shape: DelegatedRunShape, *, route_model: str = "",
     pinned_profile: str = "",
 ) -> tuple[str, str]:
     """Return ``(unavailable_reason, reset_at)`` for a route about to run ``shape``.

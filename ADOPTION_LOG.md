@@ -298,3 +298,59 @@ Import retargets in the two new upstream suites (`test_delegation_account_pin.py
 4. **`prompts/SYSTEM.md` and `docs/CHECKLISTS.md` changed** — a runtime prompt
    and a review criterion, adopted verbatim from upstream. Owner-visible by
    the workspace's own rules even though the content is upstream-authored.
+
+## 15. Gate receipts
+
+| gate | command | result |
+|---|---|---|
+| ruff | `ruff check . --select F` | All checks passed |
+| size ratchet | `scripts/regenerate_size_ratchet.py --check` | rc=0 (manifest regenerated with one band rationale) |
+| migration | `scripts/v7_evidence.py check-migration` | `MIGRATION_v7.md OK`, rc=0 |
+| migration script | `scripts/v7_migration.py` | rc=0 |
+| node | `cd web && npm test` | **581 pass / 0 fail** |
+| full parallel | `pytest tests/ -q -n 16` (default addopts) | 3 failures on the first pass, all fixed (§16); clean on re-run |
+| serial | `pytest tests/ -q -m serial` | rc=0, 100%, zero failures |
+| ledger | `pytest tests/test_v7_migration_ledger.py tests/test_v7_prologue_evidence.py` | one inventory desync (`_run_session_directly`), synced, then green |
+
+## 16. What the FULL battery caught (and the fixes)
+
+The focused suites were green while these three were not — worth recording,
+because each is a different failure mode of the same adoption:
+
+1. `test_control_extraction.py::test_control_catalog_schema_bytes_and_handler_owners_are_stable`
+   — the schedule_subagent schema byte-hash moved because upstream rewrote three
+   descriptions. **Re-pinned to the new hash with the reason in the test**: the
+   pin exists to make a prompt-contract change visible, not to forbid it.
+2. `test_v7_verbatim_moves` — `route_health` broke its own verbatim claim because
+   the extraction QUOTED its `DelegatedRunShape` annotation. Reverted to the bare
+   name: `from __future__ import annotations` already makes it lazy, so the
+   `TYPE_CHECKING` import is enough and the text stays byte-identical.
+3. `test_v7_migration_ledger` — the two provenance gates disagreed about
+   `FakeGateway`: `check-migration` wanted a facade because the routes suite had
+   started re-exporting it, while the ledger inventory records that split fixture
+   as facadeless. Resolved in favour of the inventory — the one test that needs
+   the fake imports it INSIDE the function, so the module surface is unchanged
+   and both gates read the same fact.
+
+## 17. Where the map was right, and where it was not
+
+Right, and load-bearing: the 117-file classification, the carrier prediction,
+the DEGRADED trap existing at all, the `subagent_dispatch_notes` collision and
+its recommended resolution, the `_FROZEN_TOOL_MODULES` hunk being obsolete, the
+`queue.py → queue_schedules.py` and `server.py → server_owner_routing.py`
+re-home targets, and the warning that `plan_render`/`plan_review_runtime` would
+NOT conflict.
+
+Not right, or incomplete:
+
+| map claim | reality |
+|---|---|
+| DEGRADED has 2 landing sites | 4 — v7's typed-metadata seam duplicates the vocabulary at both ends |
+| ~11 new ledger rows | 62 added, 2 repaired |
+| repair rows 3859/3860 by re-keying to `subagent_dispatch_notes.py` | those rows stayed valid; the base's extraction needed its OWN rows instead |
+| the `followup` landing site is the frozen-inventory pin fixture | that fixture derives; no edit needed. The real pin that moved was the control-catalog schema hash |
+| 17 re-homes | 18 (`_attach_client_surface` was missed) |
+| `test_a_pool_exhausted_terminal…` → routes suite | delivery suite (helper ownership, §6) |
+| — (not mentioned) | three modules crossing the 1500 ceiling, requiring extractions inside the merge commit |
+| — (not mentioned) | the verbatim-drift class: moving MERGE_BASE_SHA falsifies "verbatim" notes wherever upstream reflowed an extracted declaration |
+| — (not mentioned) | five upstream test assertions written against pre-split shapes |

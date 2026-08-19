@@ -146,8 +146,13 @@ def test_control_catalog_schema_bytes_and_handler_owners_are_stable():
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
+    # Re-pinned at the v6.105.0 adoption: upstream rewrote three schedule_subagent
+    # descriptions (objective states an OUTCOME, context is the delegated run's WORK
+    # ORDER, an explicit model lane OVERRIDES dispatch policy). The schema bytes are
+    # a prompt contract, so a deliberate upstream wording change moves this hash —
+    # the pin exists to make that visible, not to forbid it.
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "7f948b1ed471823229b4cc55f87f2d5194e2ea8490428b48bce1509e7e737949"
+        "a4acd52899af73a0ba0d9a609652febff3df93ed25306507ab76c72cdea7fc4d"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

@@ -58,6 +58,18 @@ a fresh `git grep -n "\bDnn\b"` over the whole tree proves otherwise — always 
 before assigning. The module-handle delta — called "D10" in two immutable S3b commit
 messages and "D12" in one fix commit — is D18 here, and here is the authority.
 
+Base note (v6.105.0/v6.105.1 adoption): `MERGE_BASE_SHA` now names `e7c84240`, the
+upstream tree this branch was merged with. Two consequences worth stating rather than
+leaving for a reader to rediscover. First, the base's own extractions can COLLIDE with
+v7's: it moved `dispatch_executor_note`/`executor_blocked_outcome` into
+`subagent_dispatch_notes.py` while v7 had already moved them into `agent_dispatch.py`.
+The v7 home is kept, the base's module is not created, its function bodies are adopted
+verbatim, and the collision is recorded as a pair of rows FROM the base's path. Second,
+a "verbatim" note is a claim about text at the CURRENT base, so upstream's cosmetic
+reflow of a declaration v7 had already extracted silently falsifies it; nine such rows
+were re-synced by adopting the reflowed text into the leaf, which is why this adoption
+takes upstream line-compression in those nine places and nowhere else.
+
 Disclosed residual: S-stream leaves bind per-leaf logger names (`logging.getLogger(__name__)`),
 so moved log records change their `%(name)s` in server.log/stdout from the parent module to the
 leaf (e.g. `supervisor.events` → `supervisor.events_task_done`); no handler, level or test binds
@@ -3671,7 +3683,7 @@ place so a normal row can carry it.
 | tests/test_scope_review.py::test_scope_rows_whose_models_sanitize_alike_keep_distinct_identities | tests/test_scope_review_slots.py::test_scope_rows_whose_models_sanitize_alike_keep_distinct_identities | - | {"id":"none","note":"verbatim test split relocates the characterization to its themed sibling without changing the assertion"} | tests/test_scope_review_slots.py::test_scope_rows_whose_models_sanitize_alike_keep_distinct_identities | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |
 | tests/test_scope_review.py::test_stale_evidence_cannot_authorize_a_blocking_scope_verdict | tests/test_scope_review_slots.py::test_stale_evidence_cannot_authorize_a_blocking_scope_verdict | - | {"id":"none","note":"verbatim test split relocates the characterization to its themed sibling without changing the assertion"} | tests/test_scope_review_slots.py::test_stale_evidence_cannot_authorize_a_blocking_scope_verdict | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |
 | tests/test_scope_review.py::test_window_provenance_wording_is_five_way | tests/test_scope_review_slots.py::test_window_provenance_wording_is_five_way | - | {"id":"none","note":"verbatim test split relocates the characterization to its themed sibling without changing the assertion"} | tests/test_scope_review_slots.py::test_window_provenance_wording_is_five_way | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |
-| tests/test_review_agent_session_route.py::FakeGateway | tests/_review_session_route_shared.py::FakeGateway | tests/test_review_agent_session_route.py::FakeGateway | {"id":"none","note":"verbatim test split moves the shared fixture/helper to the sibling helper module without changing its semantics"} | tests/test_review_session_delivery.py::test_restart_reconciliation_settles_review_spend_to_the_recorded_root | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |
+| tests/test_review_agent_session_route.py::FakeGateway | tests/_review_session_route_shared.py::FakeGateway | - | {"id":"none","note":"verbatim test split moves the shared fixture/helper to the sibling helper module without changing its semantics"} | tests/test_review_session_delivery.py::test_restart_reconciliation_settles_review_spend_to_the_recorded_root | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |
 | tests/test_review_agent_session_route.py::FakeLLM | tests/_review_session_route_shared.py::FakeLLM | tests/test_review_agent_session_route.py::FakeLLM | {"id":"none","note":"verbatim test split moves the shared fixture/helper to the sibling helper module without changing its semantics"} | tests/test_review_agent_session_route.py::test_schema_conformant_clean_verdict_survives | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |
 | tests/test_review_agent_session_route.py::_agent_request | tests/_review_session_route_shared.py::_agent_request | tests/test_review_agent_session_route.py::_agent_request | {"id":"none","note":"verbatim test split moves the shared fixture/helper to the sibling helper module without changing its semantics"} | tests/test_review_agent_session_route.py::test_schema_conformant_clean_verdict_survives | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |
 | tests/test_review_agent_session_route.py::_agent_slot | tests/_review_session_route_shared.py::_agent_slot | tests/test_review_agent_session_route.py::_agent_slot | {"id":"none","note":"verbatim test split moves the shared fixture/helper to the sibling helper module without changing its semantics"} | tests/test_review_agent_session_route.py::test_schema_conformant_clean_verdict_survives | {"status":"pending","note":"implemented on the v7 WIP; pending upstream transfer"} |

@@ -815,7 +815,9 @@ def closure_after_disposition(
     (rerun the wave). Advisory enforcement never flips ``closed``: the caller
     may proceed with the wave open under loud disclosure — this function only
     reports. Control-line invariants (``plan_render
-    ._parse_plan_review_control``): GREEN ⇒ closed, REVISE_PLAN ⇒ not closed.
+    ._parse_plan_review_control``): GREEN ⇒ closed; REVISE_PLAN and DEGRADED ⇒
+    not closed (B2 — DEGRADED reaches the control line as itself and is always
+    OPEN, instead of being laundered into REVIEW_REQUIRED).
     """
     verdict = str(aggregate or "").strip().upper()
     mode = str(enforcement or "").strip().lower()
