@@ -7,7 +7,6 @@ enriched triad, git.py wiring, shared LLM routing and the advisory schema.
 """
 
 import inspect
-import os
 import pathlib
 import subprocess
 
@@ -125,6 +124,7 @@ class TestScopeReviewModule:
         mod = _get_module("ouroboros.tools.scope_review")
         assert "gpt-5.6-terra" in mod._SCOPE_MODEL_DEFAULT
         # Verify the getter returns the shipped default when no override env var is set
+        import os
         if not os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL"):
             assert "gpt-5.6-terra" in mod._get_scope_model()
         # else: env override is active — default check not applicable in this env
@@ -132,6 +132,7 @@ class TestScopeReviewModule:
     def test_scope_review_model_configurable_via_env(self):
         """OUROBOROS_SCOPE_REVIEW_MODEL env overrides the default."""
         mod = _get_module("ouroboros.tools.scope_review")
+        import os
         old = os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL")
         old_plural = os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS")
         try:
@@ -151,6 +152,7 @@ class TestScopeReviewModule:
     def test_scope_review_effort_configurable(self):
         """OUROBOROS_EFFORT_SCOPE_REVIEW should resolve via resolve_effort."""
         from ouroboros.config import resolve_effort
+        import os
         old = os.environ.get("OUROBOROS_EFFORT_SCOPE_REVIEW")
         try:
             os.environ["OUROBOROS_EFFORT_SCOPE_REVIEW"] = "low"

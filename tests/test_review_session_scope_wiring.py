@@ -14,10 +14,8 @@ import pytest
 
 from ouroboros.review_execution import (
     SCOPE_REVIEW_ROUTES_ENV,
-    ReviewRouteKind,
 )
 from ouroboros.review_substrate import (
-    ReviewSlot,
     scope_reviewer_slots,
 )
 
@@ -112,6 +110,7 @@ def test_scope_session_delivery_never_builds_the_pack(tmp_path, fake_route, monk
     floor: coverage is then the only thing that could possibly gate it — and does
     not. (Authority itself is covered by the session-floor tests below.)"""
     import ouroboros.tools.scope_review as scope_mod
+    from ouroboros.review_execution import ReviewRouteKind
 
     def _pack_must_not_build(*_a, **_k):  # pragma: no cover - the point is silence
         raise AssertionError("the api pack builder ran for a session slot")
@@ -163,6 +162,7 @@ def test_scope_session_delivery_never_builds_the_pack(tmp_path, fake_route, monk
 def _run_session_scope(tmp_path, fake_route, monkeypatch, *, window, provenance, rows=None):
     """One session-delivered scope row under a given window evidence pair."""
     import ouroboros.tools.scope_review as scope_mod
+    from ouroboros.review_execution import ReviewRouteKind
 
     # Ported onto the evidence-typed resolver (ReviewerWindow): sourced provenance
     # rides `status`; the conservative fallback is NO evidence (window_tokens=0,
@@ -332,6 +332,7 @@ def test_triad_mixed_panel_builds_the_pack_once_for_api_rows_only(tmp_path, fake
     historical pack; the session row gets the compact task; an all-session
     panel never assembles the pack at all."""
     import ouroboros.tools.review as review_mod
+    from ouroboros.review_execution import ReviewRouteKind
 
     chat_calls = []
 
@@ -432,6 +433,8 @@ def _all_session_scope_panel(tmp_path, monkeypatch, *, window, provenance):
     `run_parallel_review`'s quorum, `aggregate_review_verdict` — runs for real.
     """
     from ouroboros import config as cfg
+    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_substrate import ReviewSlot
     from ouroboros.tools import parallel_review, review
     import ouroboros.tools.scope_review as scope_mod
 

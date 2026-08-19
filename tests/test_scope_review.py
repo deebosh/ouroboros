@@ -7,7 +7,6 @@ structured round history, and the fail-closed pack-assembly guards.
 """
 
 import json
-import subprocess
 
 import pytest
 
@@ -27,6 +26,7 @@ class TestScopeFailClosed:
         and the current_files_section has a deletion placeholder.
         This test verifies the correct new behavior after the Phase 3 fix.
         """
+        import subprocess
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
         (tmp_path / "docs" / "CHECKLISTS.md").write_text("## Intent / Scope Review Checklist\n\nplaceholder\n", encoding="utf-8")
@@ -53,6 +53,7 @@ class TestScopeFailClosed:
 
     def test_build_scope_prompt_blocks_on_partial_omission(self, tmp_path):
         """_build_scope_prompt returns _TouchedContextStatus(status='omitted') when some files are binary."""
+        import subprocess
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
         (tmp_path / "docs" / "CHECKLISTS.md").write_text("## Intent / Scope Review Checklist\n\nplaceholder\n", encoding="utf-8")
@@ -79,6 +80,7 @@ class TestScopeFailClosed:
 
     def test_build_scope_prompt_clean_when_all_readable(self, tmp_path):
         """_build_scope_prompt returns None omitted when all files are readable."""
+        import subprocess
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
         (tmp_path / "docs" / "CHECKLISTS.md").write_text("## Intent / Scope Review Checklist\n\nplaceholder\n", encoding="utf-8")
@@ -98,6 +100,7 @@ class TestScopeFailClosed:
         assert "bbb" in prompt
 
     def test_scope_prompt_deduplicates_touched_tests_and_canonical_docs(self, tmp_path):
+        import subprocess
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
         (tmp_path / "docs" / "CHECKLISTS.md").write_text(
@@ -163,6 +166,7 @@ class TestRunScopeReviewFailClosed:
 
     def test_run_scope_review_blocks_on_binary_files(self, tmp_path):
         """run_scope_review() must return SCOPE_REVIEW_BLOCKED for binary touched files."""
+        import subprocess
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
         (tmp_path / "docs" / "CHECKLISTS.md").write_text("## Intent / Scope Review Checklist\n\nplaceholder\n", encoding="utf-8")
@@ -199,6 +203,7 @@ class TestRunScopeReviewFailClosed:
         The prompt-builder must return omitted=None (not '__empty__') so
         run_scope_review proceeds to the LLM instead of short-circuiting.
         """
+        import subprocess
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
         (tmp_path / "docs" / "CHECKLISTS.md").write_text("## Intent / Scope Review Checklist\n\nplaceholder\n", encoding="utf-8")
@@ -224,6 +229,7 @@ class TestRunScopeReviewFailClosed:
 
     def test_build_scope_prompt_retries_compact_atlas_after_budget_overflow(self, tmp_path, monkeypatch):
         """Atlas budget overflow should retry once with compact manifest mode."""
+        import subprocess
 
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
@@ -263,6 +269,7 @@ class TestRunScopeReviewFailClosed:
         """Guaranteed-fit ladder: when even full touched degradation + compact
         atlas cannot fit (mocked oversize estimator), the result is the
         fail-closed fixed_overflow status — NOT a skippable budget_exceeded."""
+        import subprocess
 
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
@@ -304,6 +311,7 @@ class TestRunScopeReviewFailClosed:
 
     def test_build_scope_prompt_uses_zero_context_diff_before_overflow(self, tmp_path, monkeypatch):
         """The last fit step removes unchanged context, not changed lines or calls."""
+        import subprocess
 
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
@@ -384,6 +392,7 @@ class TestRunScopeReviewFailClosed:
         (fixed_overflow); a KNOWN sub-floor reviewer (advisory-only authority)
         emits the disclosed budget_exceeded fit signal, which run_scope_review
         later blocks unless the owner explicitly selected the advisory floor."""
+        import subprocess
 
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
@@ -434,6 +443,7 @@ class TestRunScopeReviewFailClosed:
         """Guaranteed-fit ladder: a touched file too large for the budget is
         degraded to diff-only with an explicit disclosed note, and the prompt
         then fits and is returned (scope review actually runs)."""
+        import subprocess
 
         subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
         (tmp_path / "docs").mkdir(exist_ok=True)
