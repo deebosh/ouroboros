@@ -487,8 +487,11 @@ def _execute_single_tool(
 
     # `status`/`is_error` are READ from the published code, never re-derived from
     # the text; process exit, signal and artifact-registration facts come from
-    # typed meta, so producer-controlled stdout can forge none of them.
-    is_error = _is_tool_execution_failure(tool_ok, result, tool_result)
+    # typed meta, so producer-controlled stdout can forge none of them. The tool
+    # name travels with the call even though the dispatcher always publishes a
+    # typed result here: the fallback adapter classifies ext_/mcp_ bodies by name,
+    # and a nameless fallback would silently answer for a different surface.
+    is_error = _is_tool_execution_failure(tool_ok, result, tool_result, fn_name=fn_name)
     result_meta = {
         **_extract_result_metadata(fn_name, result, is_error, tool_result),
         **_tool_result_fields(tool_result),

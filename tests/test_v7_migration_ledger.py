@@ -523,6 +523,17 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS":
             "retired:the generic marker fallbacks live once, in the single classifier",
     })
+    # T3: the last two text scans of a process result. Their only reader moved to
+    # typed meta at the cutover, so they carry the same 4.3.3 delta rather than
+    # retiring as observable-identical dead code.
+    retired_current.update({
+        "ouroboros/loop_tool_execution.py::_EXIT_CODE_RE":
+            "retired:the process exit code is a producer fact carried in ToolResult.meta, "
+            "never scraped from stdout",
+        "ouroboros/loop_tool_execution.py::_SIGNAL_RE":
+            "retired:the terminating signal is a producer fact carried in ToolResult.meta, "
+            "never scraped from stdout",
+    })
     retired_current["ouroboros/launcher_onboarding.py::save_settings"] = (
         "retired:the launcher persists nothing at startup; the pre-server provider "
         "normalization is applied to the environment and re-derived by every reader"
@@ -531,6 +542,8 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
         "ouroboros/launcher_onboarding.py::save_settings": "D03",
         "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES": "D02",
         "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS": "D02",
+        "ouroboros/loop_tool_execution.py::_EXIT_CODE_RE": "D02",
+        "ouroboros/loop_tool_execution.py::_SIGNAL_RE": "D02",
         # S3, spec 4.3.8: the safety module's import-time supervisor edge.
         "ouroboros/safety.py::update_budget_from_usage": "D05",
         # S3, spec 4.3.6: three worker-pool globals nothing read.
