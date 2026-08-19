@@ -4,7 +4,6 @@ BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 
 GIANT_PATHS = (
     "ouroboros/tools/claude_advisory_review.py",
-    "tests/test_agent_task_pipeline.py",
     "tests/test_extension_loader.py",
     "tests/test_review_agent_session_route.py",
     "tests/test_review_substrate_v2.py",
@@ -18,7 +17,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/review.py",
     "ouroboros/usage_accounting.py",
-    "tests/test_agent_task_pipeline.py",
     "tests/test_extension_loader.py",
     "tests/test_review_agent_session_route.py",
     "tests/test_review_prompt_caching.py",
