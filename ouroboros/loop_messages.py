@@ -61,7 +61,7 @@ def _extract_plain_text_from_content(content: Any) -> str:
 
 def _append_or_merge_user_message(messages: List[Dict[str, Any]], text: str) -> None:
     """Append a user message without creating consecutive user turns."""
-    _loop()._append_or_merge_user_content(messages, text)
+    _append_or_merge_user_content(messages, text)
 
 
 def _evict_stale_image_blocks(messages: List[Dict[str, Any]], *, incoming: int = 0) -> None:
@@ -111,7 +111,7 @@ def _append_or_merge_user_content(messages: List[Dict[str, Any]], content: Any) 
             if isinstance(b, dict) and str(b.get("type") or "") in ("image_url", "image")
         )
         if incoming_images:
-            _loop()._evict_stale_image_blocks(messages, incoming=incoming_images)
+            _evict_stale_image_blocks(messages, incoming=incoming_images)
     if messages and messages[-1].get("role") == "user":
         prior = messages[-1].get("content")
         if isinstance(content, list):
@@ -249,7 +249,7 @@ def _emit_round_progress(content: Any, msg: Dict[str, Any], emit_progress, llm_t
     is DISPLAY-ONLY: emitted to the UI bubble but NOT recorded in ``reasoning_notes`` (which feeds
     build_trace_summary / task summaries) and never appended to the transcript, so it cannot leak out
     of the display path into the durable trace or back to a provider. Gated by OUROBOROS_REASONING_SUMMARY."""
-    visible_text = _loop()._visible_round_text(content)
+    visible_text = _visible_round_text(content)
     if visible_text:
         emit_progress(visible_text)
         llm_trace["reasoning_notes"].append(visible_text)

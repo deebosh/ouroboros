@@ -651,7 +651,7 @@ def attach_local_image_to_context(ctx: ToolContext, path: str) -> Tuple[bool, st
         source_path = str(pathlib.Path(path).expanduser().resolve())
 
     caption = f"[image: {src_name}]"
-    from ouroboros.loop import _append_or_merge_user_content
+    from ouroboros.loop_messages import _append_or_merge_user_content
 
     _append_or_merge_user_content(messages, [
         {"type": "text", "text": caption},

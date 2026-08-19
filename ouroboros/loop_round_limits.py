@@ -22,6 +22,9 @@ from ouroboros.context import build_user_content
 from ouroboros.deadline_utils import parse_deadline_ts
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.loop_llm_call import emit_llm_usage_event
+# The owner-content appender is the messages leaf's own public name (L3): nothing
+# rebinds it on the loop, so the sibling owner is imported directly.
+from ouroboros.loop_messages import _append_or_merge_user_content
 from ouroboros.pricing import estimate_cost_optional
 
 from typing import TYPE_CHECKING
@@ -204,7 +207,7 @@ def _drain_incoming_messages(
                         or ""
                     ),
                 )
-                _loop()._append_or_merge_user_content(messages, _loop()._owner_marked_content(owner_content))
+                _append_or_merge_user_content(messages, _loop()._owner_marked_content(owner_content))
             else:
                 _loop()._record_owner_directive(
                     owner_ctx, source="direct_incoming", content=injected,

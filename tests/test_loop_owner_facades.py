@@ -1,13 +1,27 @@
 """Facade-identity contract for the v7 L-B loop.py leaf owners.
 
-Every member the L-B split moved out of ``ouroboros/loop.py`` keeps a loop.py
-re-export under its historical name for the DURATION of the v7 stream, so
-existing callers and monkeypatching tests keep working unchanged while the
-split lands. This pins the facade identity — the loop binding IS the leaf's
-object — and the hot-code label parity for the leaves, the same way the queue
-split pins both for its leaves. The private half of the facade is temporary
-(spec 1.9-15): the L3 package re-homes the loop-private test imports to the
-leaf owners and retires those re-exports, and this test shrinks with them.
+Every member the L-B split moved out of ``ouroboros/loop.py`` got a loop.py
+re-export under its historical name, so existing callers and monkeypatching
+tests kept working unchanged while the split landed. The private half of that
+facade was declared TEMPORARY (spec 1.9-15), and the L3 package spent it: each
+name was classified by who actually reads it, and the ones only its own leaf
+reads left ``ouroboros.loop`` for good.
+
+Two lists carry that outcome and both are load-bearing.
+
+``LOOP_LEAF_OWNERS`` is what loop.py still re-exports. A name survives here for
+one of exactly two reasons, and no other: ``run_llm_loop``'s own body calls it,
+or a SIBLING leaf reads it through the D33 call-time handle (``_loop().X``), for
+which loop.py is the family's rendezvous binding — retiring those would not
+remove a seam, it would replace one shared seam with a mesh of sibling handles.
+This test pins the facade identity for them: the loop binding IS the leaf's
+object.
+
+``RETIRED_FROM_LOOP`` is what left. Those names are read only by the leaf that
+owns them, so the leaf reads them as ordinary module-locals (still late-bound,
+so patching the LEAF intercepts) and no ``ouroboros.loop`` binding remains. That
+absence is the contract — a well-meaning re-export added back would silently
+resurrect a second address for one object — so it is asserted, not assumed.
 """
 
 from __future__ import annotations
@@ -18,9 +32,8 @@ import importlib
 LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
     "loop_messages": (
         "_emit_checkpoint_event _extract_plain_text_from_content _append_or_merge_user_message "
-        "_evict_stale_image_blocks _append_or_merge_user_content _owner_marked_content "
-        "_record_owner_directive _initialize_owner_directives _last_assistant_text "
-        "_visible_round_text _emit_round_progress"
+        "_owner_marked_content _record_owner_directive _initialize_owner_directives _last_assistant_text "
+        "_emit_round_progress"
     ),
     "loop_acceptance": (
         "_task_acceptance_eligible _begin_task_acceptance_fence _end_task_acceptance_fence _supersede_delivery_acceptance_binding _supersede_task_acceptance_for_owner_followup "
@@ -73,6 +86,16 @@ LOOP_LEAF_OWNERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# leaf module -> every member whose TEMPORARY loop.py re-export the L3 package
+# retired (spec 1.9-15). Nothing outside the owning leaf reads these, so the
+# leaf owns the only binding and ouroboros.loop carries none.
+RETIRED_FROM_LOOP: dict[str, tuple[str, ...]] = {
+    "loop_messages": (
+        "_evict_stale_image_blocks _append_or_merge_user_content _visible_round_text"
+    ),
+}
+
+
 def test_loop_owner_facades_preserve_identity():
     import ouroboros.loop as loop
 
@@ -80,6 +103,22 @@ def test_loop_owner_facades_preserve_identity():
         module = importlib.import_module(f"ouroboros.{leaf}")
         for name in names.split():
             assert getattr(loop, name) is getattr(module, name), f"{leaf}.{name}"
+
+
+def test_the_retired_private_names_own_their_leaf_and_left_the_loop_surface():
+    """The L3 retirement, stated as a property rather than a diff: each retired
+    name is a real member of its leaf, and ``ouroboros.loop`` no longer binds it
+    at all. The second half is the one worth a test — a re-export added back
+    "for convenience" would restore a second address for the same object and
+    quietly re-open the patch-the-wrong-module trap the retirement closed."""
+    import ouroboros.loop as loop
+
+    for leaf, names in RETIRED_FROM_LOOP.items():
+        module = importlib.import_module(f"ouroboros.{leaf}")
+        for name in names.split():
+            assert hasattr(module, name), f"{leaf}.{name} is not owned by its leaf"
+            assert not hasattr(loop, name), f"ouroboros.loop still binds {name}"
+            assert name not in LOOP_LEAF_OWNERS.get(leaf, "").split(), f"{name} is in both lists"
 
 
 def test_loop_leaves_keep_the_hot_code_label():

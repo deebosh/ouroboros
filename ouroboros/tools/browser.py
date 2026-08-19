@@ -905,7 +905,7 @@ def _inject_native_screenshot(ctx: ToolContext, b64: str) -> str:
         shot_path = shot_dir / f"{ts}.png"
         shot_path.write_bytes(base64.b64decode(b64))
         caption = f"[browser screenshot {ts}]"
-        from ouroboros.loop import _append_or_merge_user_content
+        from ouroboros.loop_messages import _append_or_merge_user_content
 
         _append_or_merge_user_content(messages, [
             {"type": "text", "text": caption},

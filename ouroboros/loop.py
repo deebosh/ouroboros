@@ -507,25 +507,27 @@ def run_llm_loop(
         _cleanup_loop_resources(stateful_executor, exit_ctx)
 
 
-# The v7 L-B split: the members below moved into cohesive leaves (module-
-# size boundary); each leaf reads the loop's own rebindable globals back through
-# a call-time handle, and this block re-exports every moved name so historical
-# `ouroboros.loop` imports and monkeypatch targets keep working unchanged.
-# RETIREMENT (spec 1.9-15): the private re-exports are TEMPORARY within the v7
-# stream -- the L3 package migrates the ~48 loop-private test imports to their
-# leaf owners and retires the private half of this facade; only genuinely
-# public contract names remain at the end of v7.
+# The v7 L-B split: the members below moved into cohesive leaves (module-size
+# boundary), and this block binds the ones the loop family still addresses here.
+# The L3 package (spec 1.9-15) spent the TEMPORARY half of that facade: every
+# moved name was classified by who reads it, the loop-private test imports were
+# re-homed to their leaf owners, and a name whose only reader is its own leaf
+# left this surface for good. What is left survives for one of exactly two
+# reasons -- `run_llm_loop` below calls it, or a SIBLING leaf reads it through
+# the D33 call-time handle (`_loop().X`), for which this module is the family's
+# one rendezvous binding. Retiring those would not remove a seam; it would trade
+# one shared seam for a mesh of sibling handles, and cross-leaf monkeypatching
+# would have to learn which leaf a name landed in. The retired names are pinned
+# as absent in tests/test_loop_owner_facades.py::RETIRED_FROM_LOOP: adding a
+# re-export back "for convenience" restores a second address for one object.
 from ouroboros.loop_messages import (  # noqa: E402, F401 -- intentional public re-exports
     _emit_checkpoint_event,
     _extract_plain_text_from_content,
     _append_or_merge_user_message,
-    _evict_stale_image_blocks,
-    _append_or_merge_user_content,
     _owner_marked_content,
     _record_owner_directive,
     _initialize_owner_directives,
     _last_assistant_text,
-    _visible_round_text,
     _emit_round_progress,
 )
 from ouroboros.loop_acceptance import (  # noqa: E402, F401 -- intentional public re-exports
