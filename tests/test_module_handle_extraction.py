@@ -164,6 +164,15 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_supersede_task_acceptance_for_owner_followup", "_swarm_handoff_attempt",
         "_undispositioned_children", "call_llm_with_retry"
     })),
+    # The ouroboros/tools/review_*.py and ouroboros/review_*.py rows are the
+    # L-C review-stack split: the same owner-approved mechanical exception,
+    # with `_rev()` / `_car()` as the call-time handles (delta D35). Their
+    # declared sets are the parent bindings tests rebind (monkeypatch or plain
+    # attribute assignment) plus cross-leaf member reads, so patching the
+    # parent keeps intercepting the moved bodies.
+    "ouroboros/tools/review_multi_model.py": ("ouroboros/tools/review.py", "_rev", frozenset({
+        "LLMClient", "load_governance_doc", "review_drive_root", "slot_id_for_row",
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),

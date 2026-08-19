@@ -100,6 +100,12 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   (`init` rebinds REPO_DIR/DRIVE_ROOT/BRANCH_* and tests monkeypatch the capture plumbing and
 #   sibling members on the parent; the §1.9-1 mechanism with a separate id per stream — the
 #   per-leaf `_go()` read sets are pinned in tests/test_module_handle_extraction.py).
+#   anchors and conflicts outside a carrier span stay on the assisted path, never whole-file theirs.
+#   · D35 §1.9/№8-pattern module-handle reads of monkeypatchable review-stack facade bindings in the
+#   L-C leaves (the ratified mechanism applied to the review stream with its own id per the §1.9-1
+#   "separate delta id" rule, exactly as D33 did for the loop stream; handles `_rev()`/`_car()`,
+#   leaves hold no mutable state, the handle exists so tests patching/rebinding the parent's
+#   `tools.review.X` / `tools.claude_advisory_review.X` bindings keep intercepting the moved bodies).
 # "D01" (reserved for §4.3.1 size-ratchet layers) was retired unused (owner-ratified, batch №11):
 # ratchet-layer changes are governed by size_ratchet.json + scripts/regenerate_size_ratchet.py, not
 # by ledger rows.
@@ -116,6 +122,7 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   (delegate_custody / tools.delegate / delegate_integration / subagent_integration;
 #   renumbered from the lane's provisional D35 after the G1 collision).
 APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35", "D36"})
+APPROVED_SEMANTIC_DELTAS = frozenset({"none", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11", "D13", "D18", "D31", "D33", "D34", "D35"})
 UPSTREAM_STATUSES = frozenset({"not_applicable", "pending", "transferred", "retired"})
 APPROVED_PENDING_OWNERS = frozenset({
     "ouroboros/tools/tool_context.py", "ouroboros/tools/tool_catalog.py", "ouroboros/tools/tool_result.py",

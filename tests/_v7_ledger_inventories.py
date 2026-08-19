@@ -288,3 +288,49 @@ git_extraction_symbols_by_owner = {
         "git_repo_edit.py": "_CONTENT_OMITTED_PREFIX _check_shrink_guard _repo_write _str_replace_editor",
         "git_vcs_ops.py": "_limit_git_output _vcs_binding _vcs_result _binding_relative_path _git_status _git_diff _ff_pull _pull_from_remote _restore_to_head _revert_commit",
 }
+# v7 stream L lane L-C: the review stack (ouroboros/tools/review.py,
+# ouroboros/review_execution.py, ouroboros/tools/claude_advisory_review.py)
+# splits into review-prefixed owner leaves. Two parent-aware maps, one per row
+# class: members moved byte-identical (delta "none", "verbatim" rows) and
+# members whose bodies read rebindable parent facade bindings through the
+# call-time handles _rev()/_car() (delta D35). Parent -> owner -> moved symbols.
+lc_review_verbatim_symbols_by_owner = {
+    "ouroboros/tools/review.py": {
+        "ouroboros/tools/review_multi_model.py": "MAX_MODELS CONCURRENCY_LIMIT DEFAULT_REVIEW_MODEL_TIMEOUT_SEC _CONSTITUTIONAL_PREAMBLE _review_model_timeout_sec _handle_multi_model_review _review_output_budget _parse_model_response",
+    },
+}
+lc_review_handle_symbols_by_owner = {
+    "ouroboros/tools/review.py": {
+        "ouroboros/tools/review_multi_model.py": "_query_model _multi_model_review_async",
+    },
+}
+
+
+# moved out of the ledger test for the 1500-line band.
+dependency_symbols_by_owner = {
+        "ouroboros/tool_capabilities.py": "ACTING_SUBAGENT_MODE ACTING_SUBAGENT_TOOL_NAMES CORE_TOOL_NAMES LOCAL_READONLY_SUBAGENT_MODE LOCAL_READONLY_SUBAGENT_TOOL_NAMES META_TOOL_NAMES",
+        "ouroboros/contracts/skill_payload_policy.py": "SKILL_PAYLOAD_CONTROL_FILENAMES constraint_bucket_skill cross_skill_redirect_error decide_payload_short_form is_skill_payload_control_filename synthesize_payload_constraint",
+        "ouroboros/contracts/task_constraint.py": "TaskConstraint VALID_WRITE_SURFACES normalize_task_constraint",
+        "ouroboros/tool_access.py": "UserFilesPathBlockedError binding_targets_system_repo canonical_repo_relative_path light_cognitive_or_root_redirect normalize_root_relative shell_cwd_block_message workspace_mode_block_reason",
+        "ouroboros/runtime_mode_policy.py": "mode_allows_protected_write protected_paths_in protected_write_block_message",
+        "ouroboros/tools/shell_guards.py": "process_shell_guard_args",
+        "ouroboros/python_interpreter.py": "record_python_resolution resolve_process_python",
+}
+
+
+# moved out of the ledger test for the 1500-line band.
+shell_extraction_symbols_by_owner = {
+        "shell_process.py": "_RUN_SHELL_DEFAULT_TIMEOUT_SEC _active_subprocesses _subprocess_lock _tracked_subprocess_run _kill_process_group kill_all_tracked_subprocesses _shell_env_for_cwd _resolve_effective_timeout _describe_returncode _format_process_output _executor_can_run_cwd",
+        "shell_outputs.py": "_OUTPUT_DIR_MAX_FILES _OUTPUT_DIR_MAX_BYTES _allowed_output_roots _protected_output_source_reason _changed_path_covers _resolve_declared_output _directory_fingerprint_from_entries _bounded_directory_fingerprint _fingerprint_output _snapshot_declared_outputs _scan_directory_output_members _register_process_outputs _UNDECLARED_OUTPUTS_MARKER _SENSITIVE_OUTPUT_NAMES _SENSITIVE_OUTPUT_SUFFIXES _SENSITIVE_OUTPUT_MARKERS _SENSITIVE_OUTPUT_COMPONENT_NAMES _sensitive_output_component_reason _OUTPUT_CALL_PATH_RE _OUTPUT_REDIRECT_PATH_RE _EMBEDDED_OUTPUT_PATH_RE _USER_FILE_WRITE_CALL_RE _USER_FILE_OPEN_WRITE_CALL_RE _USER_FILE_REDIRECT_RE _OUTPUT_STAT_SLACK_SEC _mentioned_user_file_outputs_without_declaration",
+        "shell_effects.py": "_resolve_git_root _status_snapshot _shallow_listing _user_files_run_had_effect _protected_runtime_dirty_paths _restore_protected_runtime_paths _tree_fingerprint _resolve_scratch_abs _scratch_safety_reason _record_scratch_fingerprints _get_changed_files _get_diff_stat",
+}
+
+
+# moved out of the ledger test for the 1500-line band.
+config_extraction_symbols_by_owner = {
+        "settings_defaults.py": "FINALIZATION_GRACE_DEFAULT_SEC OWNER_STOP_OUTER_CAP_SEC PACING_INTERVAL_DEFAULT_SEC SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC SETTINGS_DEFAULTS RETIRED_SETTING_KEYS _DISK_AUTHORED_SETTINGS ENDPOINT_AUTHORED_SETTINGS SETTINGS_KEYS_NOT_EXPORTED_TO_ENV settings_env_keys",
+        "settings_scales.py": "EFFORT_SCALE effort_rank clamp_effort_to effort_one_step_down resolve_effort PROMPT_CACHE_TTL_SCALE resolve_prompt_cache_ttl VALID_RUNTIME_MODES _RUNTIME_MODE_RANK normalize_runtime_mode VALID_SAFETY_MODES normalize_safety_mode _SAFETY_MODE_RANK",
+        "model_slots.py": "_parse_model_list _main_model get_light_model get_heavy_model get_vision_model get_image_input_mode parse_fallback_chain get_fallback_models _LEGACY_SLOT_RENAMES migrate_legacy_slot_keys get_consciousness_model get_deep_self_review_model",
+        "review_model_routes.py": "_DIRECT_PROVIDER_REVIEW_RUNS _exclusive_direct_remote_provider_env direct_provider_review_models_fallback adaptive_quorum get_review_models get_review_enforcement get_scope_review_models",
+        "runtime_limits.py": "_clamped_number_setting _bounded_positive_int_setting get_max_workers get_task_idle_timeout_sec get_task_abs_ceiling_sec get_per_call_timeout_ceiling_sec get_restart_drain_max_sec get_safety_max_tokens get_safety_call_timeout_sec get_websearch_timeout_sec get_llm_transport_read_timeout_sec get_acceptance_review_est_sec get_acceptance_reserve_pct get_plan_task_deadline_min_sec get_vision_caption_timeout_sec get_pacing_interval_sec get_supervisor_liveness_deadline_sec get_post_task_evolution_budget_usd MAX_ACTIVE_SUBAGENTS_HARD_CAP get_max_active_subagents_per_root get_max_subagent_depth DELEGATE_WAIT_CEILING_SEC DELEGATE_WAIT_WINDOW_MAX_SEC get_delegate_wait_max_sec get_delegate_wait_sec get_search_code_wall_sec",
+}

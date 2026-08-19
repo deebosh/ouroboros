@@ -11,7 +11,6 @@ MODULE_DEBT_1500 = (
     "ouroboros/agent_task_pipeline.py",
     "ouroboros/review_execution.py",
     "ouroboros/tools/claude_advisory_review.py",
-    "ouroboros/tools/review.py",
     "ouroboros/usage_accounting.py",
 )
 
@@ -120,6 +119,7 @@ BAND_PATHS = {
     "ouroboros/tools/delegate.py": "nanny verb owner after the DEL1 terminal-evidence split: the start/wait/cancel verbs, their guards and the tool catalog stay with the surface the model calls while the terminal story lives in delegate_terminal.py behind the compatibility facade",
     "ouroboros/tools/registry_core.py": "ToolRegistry execution authority extracted verbatim behind the compatibility facade while preserving guard and dispatch order",
     "ouroboros/tools/registry_guards.py": "consolidates existing root/CWD/workspace/git process receiver guards without semantic or ABI change",
+    "ouroboros/tools/review.py": "review tool surface after the L-C multi-model extraction; facade wiring plus the review tool entrypoints, still shrinking with the review-stack campaign",
     "ouroboros/tools/shell_guards.py": None,
     "ouroboros/tools/skill_exec.py": None,
     "ouroboros/tools/subagent_integration.py": "subagent patch integration owner after the DEL1 disposition split: locate/verify/verdict plumbing, the external-workspace and coop verification lanes and integrate_subagent_patch stay together while the delegated-run disposition seam lives in subagent_integration_delegated.py behind the compatibility facade",
