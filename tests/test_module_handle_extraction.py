@@ -184,6 +184,17 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_write_update_intent", "append_jsonl", "ensure_official_update_remote", "git_capture",
         "git_fetch_bounded", "load_state", "managed_branch_defaults", "preserve_local_ref_branch",
     })),
+    "supervisor/git_ops_reset.py": ("supervisor/git_ops.py", "_go", frozenset({
+        "BRANCH_DEV", "BRANCH_STABLE", "DRIVE_ROOT", "REPO_DIR",
+        "_admission_gate_for_unsynced_tree", "_clear_bootstrap_pin_marker", "_clear_update_intent",
+        "_collect_repo_sync_state", "_compute_ref_ahead_count", "_create_rescue_snapshot",
+        "_git_dir", "_guard_live_repo_destructive_git", "_has_remote", "_maybe_repair_git_index",
+        "_pin_to_bundle_sha_on_bootstrap", "_preserve_branch_for_official_reset",
+        "_read_managed_repo_meta", "_read_update_intent", "_ref_points_at_ref",
+        "_rescue_untracked_incomplete", "_run_git_resilient", "_update_source", "append_jsonl",
+        "checkout_and_reset", "git_capture", "import_test", "load_state",
+        "preserve_local_ref_branch", "rescue_git_capture", "save_state", "sync_runtime_dependencies",
+    })),
 }
 
 

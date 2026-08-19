@@ -77,4 +77,10 @@ g1_git_ops_handle_symbols_by_owner = {
         "list_versions list_commits ensure_official_update_remote "
         "list_official_update_tags compute_managed_update_status prepare_managed_update"
     ),
+    "git_ops_reset.py": (
+        "_compute_ref_ahead_count _ref_points_at_ref preserve_local_ref_branch "
+        "_preserve_branch_for_official_reset _run_git_resilient "
+        "_admission_gate_for_unsynced_tree checkout_and_reset "
+        "sync_runtime_dependencies import_test safe_restart"
+    ),
 }
