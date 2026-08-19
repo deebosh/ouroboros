@@ -104,8 +104,10 @@ def test_claude_code_advisory_sdk_max_turns():
                     found = True
     assert found, "DEFAULT_CLAUDE_CODE_MAX_TURNS not found in claude_code.py"
 
-    # Verify the surviving caller references the shared constant
-    advisory_src = Path("ouroboros/tools/claude_advisory_review.py").read_text(encoding="utf-8")
+    # Verify the surviving caller references the shared constant. The caller
+    # (_run_claude_advisory) lives in the v7 L-C advisory-run leaf; the pin
+    # follows its moved owner byte-identically.
+    advisory_src = Path("ouroboros/tools/review_advisory_run.py").read_text(encoding="utf-8")
     assert "DEFAULT_CLAUDE_CODE_MAX_TURNS" in advisory_src
     assert "max_turns=8" not in advisory_src
 
