@@ -85,9 +85,11 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   D09 §4.3.2 LLM local retry (one physical attempt) · D11 §1.9/№8 FUNCTION_DEBT same-qualname
 #   relocation rule · D13 §6.4 supervisor/git_ops pre-init roots follow OUROBOROS_* env
 #   (hermetic-isolation incident fix; ratified by owner batch №11, spec §1.12) · D18 §1.9/№8 module-handle
-#   reads of rebound supervisor globals in extracted leaves · D31 §1.14-2 review trust boundary derived
-#   by name classification instead of the hand-list (owner batch №14, answer 2=A; widens the substrate
-#   flag to the 20 review-stack leaves the literal had silently missed) · D33 §1.9/№8-pattern
+#   reads of rebound supervisor globals in extracted leaves · D31 §1.14-2 the contributor review trust
+#   boundary (owner decision 2026-08-19, superseding batch №14 answer 2=A): the per-proposal classifier
+#   — hand-list, then anchors plus name rule plus base-flow import closure — retires whole, because the
+#   contributor lane now hands the review off to the target base's own machinery for every proposal, so
+#   there is nothing left to classify · D33 §1.9/№8-pattern
 #   module-handle reads of monkeypatchable loop facade bindings in the L-B leaves (the ratified
 #   supervisor mechanism applied to the loop stream with its own id per the §1.9-1 "separate delta
 #   id" rule; owner-ratified, batch №17 answer 2=A; leaves hold no mutable state, the handle

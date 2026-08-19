@@ -17,9 +17,10 @@ semantics, performs provider-specific readiness checks where supported, and
 emits redacted base/head/tree/diff-bound evidence.
 
 The contributor lane always runs the review machinery of the TARGET BASE (owner
-decision, 2026-08-19): unless this process already executes from the base
-commit, it materializes that commit in a detached worktree and re-runs itself
-there, so a proposal is never trusted to review itself.
+decision, 2026-08-19): unless already executing from the base commit, it
+materializes that commit in a detached worktree and re-runs itself there, so the
+reviewed proposal is never the reviewing code. The handoff itself is read from
+the invoking checkout: run this wrapper from a trusted one (unchanged trust root).
 
 Exit codes:
     0  review passed
@@ -539,15 +540,17 @@ def _run_on_trusted_base(args) -> int | None:
     """Run the contributor review with the TARGET BASE's own review machinery.
 
     Owner decision (2026-08-19): a contributor review never runs on the
-    proposal's unverified copy of the review flow, for any PR, whatever it
-    touches — so there is nothing to classify. The one deciding fact is whether
-    the tree this process imports its machinery from IS the target base; when it
-    is not, the base commit is materialized in a detached worktree and this
-    script re-runs from there. The proposal stays the reviewed subject: the
-    trusted run binds the same base/head commits and applies the same patch into
-    its own frozen checkout, where its tests still run as the hermetic preflight
-    intends. Returns the base-side exit code, or ``None`` when this process is
-    already on the trusted base and should continue in place.
+    proposal's unverified copy of the review flow, whatever it touches — so
+    there is nothing to classify. The one deciding fact is whether the tree this
+    process imports its machinery from IS the target base; when it is not, the
+    base is materialized in a detached worktree and this script re-runs there,
+    binding the same base/head commits and applying the same patch into its own
+    frozen checkout, where the proposal's tests still run as the preflight
+    intends. Returns the base-side exit code, or ``None`` when already on base.
+
+    Scope: the handoff removes the dependency on WHICH checkout the operator
+    stood in, not on this wrapper — these lines are read from the invoking
+    checkout, so invoke it from a trusted one (an unchanged, now stated, root).
     """
     base_ref = args.base_ref or _CONTRIBUTOR_DEFAULT_BASE_REF
     base_sha = _git_text(["rev-parse", f"{base_ref}^{{commit}}"]).strip()
@@ -557,22 +560,21 @@ def _run_on_trusted_base(args) -> int | None:
     _require_clean_worktree()
     checkout_root, trusted = _create_isolated_checkout("", base_commit=base_sha)
     try:
-        # Commits, not refs: the trusted run binds the exact same proposal even
-        # if a ref moves while it runs. The data root is passed because the child
-        # would otherwise resolve it from its temporary checkout's parent.
+        # Commits, not refs, so a moving ref cannot re-point the run. Artifact
+        # paths absolutize against the INVOKING cwd and the data root is passed:
+        # the child runs inside the temporary checkout and would resolve both
+        # there, losing them with it. Equals-form keeps a leading "-" a value.
         command = [
             sys.executable, str(trusted / "scripts" / "run_external_review.py"),
-            "--contributor", "--base-ref", base_sha, "--head-ref", head_sha,
-            "--goal", args.goal, "--scope", args.scope,
-            *(["--output", args.output] if args.output else []),
-            *(["--drive-root", args.drive_root] if args.drive_root else []),
+            "--contributor", f"--base-ref={base_sha}", f"--head-ref={head_sha}",
+            f"--goal={args.goal}", f"--scope={args.scope}",
+            *([f"--output={os.path.abspath(args.output)}"] if args.output else []),
+            *([f"--drive-root={os.path.abspath(args.drive_root)}"] if args.drive_root else []),
             "--", args.commit_message,
         ]
         print(f"Trusted review machinery: base {base_sha[:12]} at {trusted}", file=sys.stderr)
-        code = subprocess.run(
-            command, cwd=str(trusted),
-            env={**os.environ, "OUROBOROS_DATA_DIR": str(DATA)},
-        ).returncode
+        env = {**os.environ, "OUROBOROS_DATA_DIR": str(DATA)}
+        code = subprocess.run(command, cwd=str(trusted), env=env).returncode
         # An abnormal termination is infrastructure, never a reviewer verdict.
         return code if code in (0, 1, 2, 3) else 3
     finally:
@@ -912,10 +914,12 @@ def _write_contributor_packet(
             "review_machinery": "target_base_unconditional",
             "note": (
                 "Unconditional trusted execution (owner decision 2026-08-19): the "
-                "review machinery is always the target base implementation, so no "
-                "proposal reviews itself. The proposal is the reviewed subject and "
-                "its own tests still run in the frozen checkout, as the preflight "
-                "intends. Contributor evidence is not merge authorization or "
+                "review machinery is the target base's, handed off to for every "
+                "proposal alike, so the reviewed code is not the reviewing code. "
+                "Scope: the wrapper performing that handoff is read from the "
+                "invoking checkout, which the operator is responsible for trusting; "
+                "the proposal is the reviewed subject and its own tests still run in "
+                "the frozen checkout. This evidence is not merge authorization or "
                 "cryptographic proof of execution."
             ),
         },
@@ -1044,8 +1048,7 @@ def _parse_args():
             "Review the committed base-ref..head-ref proposal with the configured "
             "triad/scope slots, blocking clean semantics, no Claude advisory, "
             "and a shareable route-aware evidence packet. The review machinery "
-            "always runs from the target base: unless this checkout is already "
-            "on it, the base is materialized and this script re-runs there."
+            "always comes from the target base, materialized when it has to be."
         ),
     )
     parser.add_argument(

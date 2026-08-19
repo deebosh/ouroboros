@@ -185,8 +185,10 @@ The review always runs on the target-base code, whatever your PR touches. If the
 checkout you invoke it from is not already the target base, the command
 materializes that commit in a temporary worktree and re-runs itself there, so
 your proposal is reviewed by the base's review machinery and never by its own.
-Commit your work first: an uncommitted change is refused rather than silently
-left out of the reviewed snapshot.
+The command performing that handoff is still the one in the checkout you invoke,
+so a maintainer reproducing your packet should invoke it from a checkout they
+trust. Commit your work first: an uncommitted change is refused rather than
+silently left out of the reviewed snapshot.
 
 ## 6. Open the Pull Request
 

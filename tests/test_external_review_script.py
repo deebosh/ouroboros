@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,14 +107,53 @@ def test_contributor_review_always_runs_on_the_trusted_base(
     assert Path(ran["machinery_root"]) != repo
     assert ran["cwd"] == ran["machinery_root"]
     assert ran["data_dir"]
-    argv = ran["argv"]
-    assert "--contributor" in argv
+    assert "--contributor" in ran["argv"]
     # Commits, not refs: a moving ref cannot re-point the trusted run.
-    assert argv[argv.index("--base-ref") + 1] == base_sha
-    assert argv[argv.index("--head-ref") + 1] == head_sha
-    assert argv[-2:] == ["--", "PR title"]
+    options = _forwarded_options(ran["argv"])
+    assert options["base-ref"] == base_sha
+    assert options["head-ref"] == head_sha
+    assert ran["argv"][-2:] == ["--", "PR title"]
     # The trusted worktree is temporary: it is removed once the review returns.
     assert not Path(ran["machinery_root"]).exists()
+
+
+def _forwarded_options(argv: list[str]) -> dict[str, str]:
+    return dict(
+        item[2:].split("=", 1) for item in argv if item.startswith("--") and "=" in item
+    )
+
+
+def test_the_handoff_forwards_artifact_paths_the_child_can_still_reach(
+    tmp_path, monkeypatch
+):
+    """Relative artifact paths must not resolve inside the temporary checkout.
+
+    The child runs with cwd set to the materialized base worktree, which is
+    deleted when the review returns; a verbatim relative --output/--drive-root
+    would put the operator's results there and lose them. They are absolutized
+    against the INVOKING cwd instead. Options travel in equals form so a value
+    starting with "-" reaches the child as a value, not as a broken flag.
+    """
+    _init_contributor_repo(tmp_path, monkeypatch)
+    probe = _probe_path(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    _run_on_trusted_base(SimpleNamespace(
+        base_ref="base", head_ref="HEAD", commit_message="-title-like-a-flag",
+        goal="--goal-like-a-flag", scope="-s", output="artifacts/run",
+        drive_root="drive",
+    ))
+
+    ran = json.loads(probe.read_text(encoding="utf-8"))
+    options = _forwarded_options(ran["argv"])
+    assert options["output"] == str(tmp_path / "artifacts" / "run")
+    assert options["drive-root"] == str(tmp_path / "drive")
+    for key in ("output", "drive-root"):
+        assert not Path(options[key]).is_relative_to(Path(ran["machinery_root"]))
+    # Values that look like flags survive as values.
+    assert options["goal"] == "--goal-like-a-flag"
+    assert options["scope"] == "-s"
+    assert ran["argv"][-2:] == ["--", "-title-like-a-flag"]
 
 
 def test_contributor_review_invoked_from_the_target_base_runs_in_place(
@@ -130,6 +170,40 @@ def test_contributor_review_invoked_from_the_target_base_runs_in_place(
         goal="", scope="", output="", drive_root="",
     )) is None
     assert not probe.exists()
+
+
+def test_the_real_wrapper_hands_off_before_it_reviews_anything(tmp_path, monkeypatch):
+    """End-to-end pin of the main() wiring, not just the helper.
+
+    The REAL script is invoked as a process from a checkout that is not the
+    target base, exactly as a contributor runs it. Reaching any review work
+    without handing off first would leave the base-side probe unexecuted, so
+    deleting the main() hook fails here even while the helper stays perfect.
+    """
+    repo = _init_contributor_repo(tmp_path, monkeypatch)
+    probe = _probe_path(monkeypatch, tmp_path)
+    wrapper = Path(__file__).resolve().parent.parent / "scripts" / "run_external_review.py"
+    # The base commit keeps the probe; the proposal carries the real wrapper.
+    (repo / "scripts" / "run_external_review.py").write_text(
+        wrapper.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "proposal adopts the real wrapper")
+    base_sha = _git(repo, "rev-parse", "base").strip()
+
+    proc = subprocess.run(
+        [
+            sys.executable, str(repo / "scripts" / "run_external_review.py"),
+            "--contributor", "--base-ref=base", "--head-ref=HEAD", "--", "PR title",
+        ],
+        cwd=str(repo), capture_output=True, text=True, timeout=300,
+        env={**os.environ, "REVIEW_PROBE_OUT": str(probe)},
+    )
+
+    assert probe.exists(), f"the base-side run never happened: {proc.stderr[-2000:]}"
+    ran = json.loads(probe.read_text(encoding="utf-8"))
+    assert ran["machinery_sha"] == base_sha
+    assert proc.returncode == 1  # the probe's exit code, passed through
 
 
 def test_contributor_review_refuses_a_dirty_authoring_worktree(tmp_path, monkeypatch):
@@ -279,11 +353,21 @@ def _init_contributor_repo(tmp_path: Path, monkeypatch) -> Path:
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "core.autocrlf", "false")
+    # Same ignores as the real repository: importing from a checkout writes
+    # bytecode into it, which would otherwise read as an unclean worktree.
+    (repo / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")
     (repo / "scripts").mkdir()
     (repo / "scripts" / "run_external_review.py").write_text(
         _BASE_SIDE_PROBE, encoding="utf-8"
     )
     _write_target_config(repo)
+    # A real (not namespace) package, so a wrapper executed out of this repo
+    # imports its module-level dependency from here and not from whatever
+    # ouroboros the host interpreter happens to have installed.
+    (repo / "ouroboros" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "ouroboros" / "runtime_mode_policy.py").write_text(
+        "GIT_OPS_FAMILY_PATHS = frozenset()\n", encoding="utf-8"
+    )
     (repo / "ouroboros" / "review_substrate.py").write_text(
         "# trusted review substrate\n", encoding="utf-8"
     )

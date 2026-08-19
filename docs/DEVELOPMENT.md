@@ -792,7 +792,10 @@ review machinery is always the target base's own (owner decision, 2026-08-19):
 unless the invoking checkout already is the target base, the lane materializes
 that commit in a detached worktree and re-runs the review from it, so a proposal
 is never trusted to review itself and no per-proposal trust classification
-remains. The proposal stays the reviewed subject in the frozen checkout.
+remains. The proposal stays the reviewed subject in the frozen checkout. The
+guarantee is scoped: the wrapper deciding to hand off is itself read from the
+invoking checkout, so run it from a trusted one. That trust root is the same as
+before the change; it is now stated instead of assumed.
 
 This evidence establishes readiness; it does not authorize commit, push, merge,
 or publication. Maintainers choose the landing parent and release version,
