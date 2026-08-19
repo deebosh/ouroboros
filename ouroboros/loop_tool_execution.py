@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import re
 import time
 import concurrent.futures
 import contextvars
@@ -49,10 +48,6 @@ log = logging.getLogger(__name__)
 _PROCESS_RESULT_TOOLS = frozenset(
     {"run_command", "run_script", "start_service", "stop_service"}
 )
-# Compatibility-only private identities retained for the v7 migration census.
-# Process fact extraction no longer consults either pattern.
-_EXIT_CODE_RE = re.compile(r"exit_code=(-?\d+)")
-_SIGNAL_RE = re.compile(r"signal=([A-Z0-9_]+)")
 
 # Reviewed mutative tools get a hard ceiling after their soft timeout.
 _REVIEWED_MUTATIVE_HARD_CEILING = 1800
