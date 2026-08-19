@@ -478,4 +478,3 @@ def finalize_contributor_outcome(
             "execution_receipt_mismatches": mismatches,
         }
     return exit_code, outcome
-
