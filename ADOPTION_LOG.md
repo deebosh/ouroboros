@@ -325,12 +325,15 @@ because each is a different failure mode of the same adoption:
    the extraction QUOTED its `DelegatedRunShape` annotation. Reverted to the bare
    name: `from __future__ import annotations` already makes it lazy, so the
    `TYPE_CHECKING` import is enough and the text stays byte-identical.
-3. `test_v7_migration_ledger` — the two provenance gates disagreed about
-   `FakeGateway`: `check-migration` wanted a facade because the routes suite had
-   started re-exporting it, while the ledger inventory records that split fixture
-   as facadeless. Resolved in favour of the inventory — the one test that needs
-   the fake imports it INSIDE the function, so the module surface is unchanged
-   and both gates read the same fact.
+3. `test_v7_migration_ledger` — the two provenance gates disagreed about the
+   shared session fixtures. `check-migration` derives "a facade is required" from
+   whether the OLD path re-exports the symbol, so adding `FakeGateway` and
+   `_run_session_directly` to the routes suite's module-level imports made it
+   demand facades; the ledger inventory records both as facadeless split rows.
+   Resolved in favour of the inventory both times — each test that needs one
+   imports it INSIDE the function, so the module surface is unchanged and the two
+   gates read the same fact. Worth naming as a rule: **adding a module-level
+   import of a split helper silently changes that helper's provenance shape.**
 
 ## 17. Where the map was right, and where it was not
 

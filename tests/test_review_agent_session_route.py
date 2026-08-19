@@ -41,7 +41,6 @@ from tests._review_session_route_shared import (
     FakeLLM,
     _agent_request,
     _agent_slot,
-    _run_session_directly,
     _terminal_detail,
 )
 
@@ -418,6 +417,7 @@ def test_route_status_refusal_carries_its_typed_code(tmp_path, fake_route):
     machine-readable `.code` (the rotation sprint's quorum classification keys
     on failure codes; a bare RuntimeError is invisible to it)."""
     from ouroboros.review_execution import ReviewRouteUnavailable
+    from tests._review_session_route_shared import _run_session_directly
 
     fake_route.catalog_entry["status"] = "unavailable"
     fake_route.catalog_entry["enabled"] = False
@@ -435,6 +435,7 @@ def test_absent_catalog_row_refuses_typed_even_with_a_pinned_profile(tmp_path, f
 
     from ouroboros.review_execution import ReviewRouteUnavailable
     from ouroboros.subagents import parse_subagent_harness
+    from tests._review_session_route_shared import _run_session_directly
 
     fake_route.catalog_entry = {"id": "some-other-route", "enabled": True, "status": "ok",
                                 "accessProfilesSupported": ["readonly"]}
