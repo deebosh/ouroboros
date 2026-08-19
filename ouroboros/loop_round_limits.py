@@ -23,7 +23,10 @@ from ouroboros.deadline_utils import parse_deadline_ts
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.loop_llm_call import emit_llm_usage_event
 # The owner-content appender is the messages leaf's own public name (L3): nothing
-# rebinds it on the loop, so the sibling owner is imported directly.
+# rebinds it on the loop, so the sibling owner is imported directly (frozen
+# sibling import: the name is a pure function no test patches — the same
+# accepted class as the loop_llm_call sibling imports; if a test ever needs to
+# intercept it, flip this to a late-bound read).
 from ouroboros.loop_messages import _append_or_merge_user_content
 from ouroboros.pricing import estimate_cost_optional
 
