@@ -263,9 +263,8 @@ def _task_uses_external_context(task: Dict[str, Any]) -> bool:
 
 
 def _scheduled_tasks_digest(env: Any, *, limit: int = 8) -> Optional[Dict[str, Any]]:
-    """Compact digest of active cron schedules for task/consciousness context.
-
-    Keeps the agent aware of standing cron schedules without inlining the full
+    """Compact digest of active schedules (cron + one-shot) for task/consciousness
+    context. Keeps the agent aware of standing schedules without inlining the full
     schedule table; notes how many active schedules were omitted past ``limit``.
     """
     try:
@@ -282,13 +281,19 @@ def _scheduled_tasks_digest(env: Any, *, limit: int = 8) -> Optional[Dict[str, A
     digest: List[Dict[str, Any]] = []
     for record in tasks[:limit]:
         trigger = record.get("trigger") if isinstance(record.get("trigger"), dict) else {}
-        digest.append({
+        entry = {
             "id": str(record.get("id") or ""),
             "name": str(record.get("name") or ""),
-            "cron": str(trigger.get("expr") or record.get("cron") or ""),
             "timezone": str(record.get("timezone") or "") or "local",
             "next_run_at": str(record.get("next_run_at") or ""),
-        })
+        }
+        if str(trigger.get("type") or "cron") == "once":
+            # One-shot records (schedule_followup) have no cron cadence: project
+            # the fire instant instead of an empty-string cron.
+            entry["run_at"] = str(trigger.get("run_at") or "")
+        else:
+            entry["cron"] = str(trigger.get("expr") or record.get("cron") or "")
+        digest.append(entry)
     out: Dict[str, Any] = {"active": digest}
     if len(tasks) > limit:
         out["omitted_count"] = len(tasks) - limit
@@ -312,149 +317,33 @@ _DECISION_TURN_OUTCOME_RULE = (
     "tool-call round is transient progress and is not durable conversation history."
 )
 
-
-def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The project-room working-folder FACT for a room turn, or None.
-
-    Extracted verbatim from ``build_runtime_section`` (v6.90.x submarine unwind)
-    to keep that builder under the hard method gate; the resolution and the
-    stated rule are unchanged.
-    """
-    # v6.58.0 (2.2): a conversation/decision turn in a project ROOM sees the room's
-    # working folder as a structural FACT — it can promote work into that folder
-    # without ITSELF becoming a workspace task (decision turns deliberately keep the
-    # promote/steer/route toolset, which workspace profiles exclude). The default
-    # transport: promote_chat_to_task from this room inherits working_dir unless
-    # workspace='none'. Registry read is anchored at the canonical DATA_DIR.
-    # v6.61.3 room lens: the rule now states the REAL chat-lane affordances (reads +
-    # default shell cwd resolve to the folder; writes go through promoted tasks) —
-    # the robot-room incident was exactly a fact/affordance split. A set-but-broken
-    # working_dir is disclosed loudly instead of a silent system-repo fallback.
-    try:
-        _room_pid = str(task.get("project_id") or "").strip()
-        if _room_pid and not str(task.get("workspace_root") or "").strip():
-            from ouroboros.config import DATA_DIR as _DATA_DIR
-            from ouroboros.projects_registry import get_project as _get_project
-            from ouroboros.workspace_admission import room_chat_lens_dir as _room_lens
-
-            _room = _get_project(_DATA_DIR, _room_pid) or {}
-            _room_wd = str(_room.get("working_dir") or "").strip()
-            if _room_wd:
-                # Same resolver the agent uses for the tool lens, so the stated rule
-                # and the actual tool surface cannot diverge (the robot incident).
-                _lens_dir, _room_note = _room_lens(_DATA_DIR, _room_pid)
-                _lens_active = bool(task.get("_is_direct_chat")) and bool(_lens_dir)
-                fact = {
-                    "project_id": _room_pid,
-                    "working_dir": _room_wd,
-                    "rule": (
-                        (
-                            "This room's chat lane LOOKS AT the project folder: read_file/"
-                            "list_files/search_code/query_code with root=active_workspace and "
-                            "the DEFAULT shell cwd resolve to working_dir. The Ouroboros "
-                            "system repo needs explicit root=\"system_repo\" (reads) or an "
-                            "explicit cwd (shell). File WRITES here go through "
-                            "promote_chat_to_task — the promoted task inherits this folder as "
-                            "its workspace (workspace='none' opts out)."
-                        )
-                        if _lens_active
-                        else (
-                            "This project has a working folder. Tasks promoted from this room "
-                            "run with it as their active workspace by default; pass "
-                            "workspace='none' to promote a folder-less task."
-                        )
-                    ),
-                }
-                if _room_note:
-                    fact["working_dir_warning"] = _room_note
-                return fact
-    except Exception:
-        log.debug("Failed to inject project_room working_dir fact", exc_info=True)
-    return None
+# Hoisted verbatim from ``build_runtime_section`` (same pattern as
+# ``_DECISION_TURN_OUTCOME_RULE``) to keep that builder under the hard method gate.
+_OWNER_CLIENT_NOTE = (
+    "owner_client is the client surface that SENT the message that started/steered "
+    "this work. Provenance: browser observables are CLIENT-REPORTED (the owner's own "
+    "SPA measured them; not host-attested); received_at is a HOST stamp; {channel: ...} "
+    "is a host stamp for bridge/command ingress but CALLER-DECLARED for external "
+    "/api/tasks admissions (default api_task); captured_at is the client clock at "
+    "SEND time (delivery can lag it — received_at is the honest arrival mark). "
+    "runtime_env.presentation is the server process's own shell, NOT the sender. "
+    "When owner_client is absent, the surface is unknown: ask or hedge rather than "
+    "assuming a browser."
+)
 
 
-def _runtime_budget_info(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
-    """Start-of-task budget block: global projection + the STATIC per-task tree cap,
-    written once at task start so the cached prefix stays byte-stable (DEVELOPMENT
-    cache_friendliness item 22); live tree spend rides only the cache-breaking
-    surfaces (checkpoint/pacing/milestones)."""
-    try:
-        from ouroboros.usage_accounting import usage_projection
-
-        total_usd = float(os.environ.get("TOTAL_BUDGET", "1"))
-        budget_root = pathlib.Path(task.get("budget_drive_root") or env.drive_root)
-        projection = usage_projection(budget_root, global_limit_usd=total_usd)
-        spent_usd = float(projection.get("accounted_usd") or 0.0)
-        budget_info = {
-            "status": "available", "total_usd": total_usd,
-            "spent_usd": spent_usd, "remaining_usd": total_usd - spent_usd,
-            "reserved_usd": float(projection.get("reserved_usd") or 0.0),
-            "unresolved_upper_bound_usd": float(projection.get("unresolved_upper_bound_usd") or 0.0),
-            "unknown_unmetered": int(projection.get("unknown_unmetered") or 0),
-        }
-    except Exception:
-        log.error("Budget authority unavailable for runtime context", exc_info=True)
-        budget_info = {"status": "unavailable"}
-    try:
-        root_cap = float(os.environ.get("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
-    except (TypeError, ValueError):
-        root_cap = 0.0
-    if root_cap > 0:
-        budget_info["per_task_tree_cap_usd"] = root_cap
-        budget_info["per_task_tree_cap_rule"] = (
-            "Hard cap for THIS task's WHOLE tree (own model calls + all subagents), enforced "
-            "by the physical-attempt ledger: dispatches are refused once the tree's accounted "
-            "spend reaches it and the task is force-stopped. Budget checkpoints during the task report the live tree number."
-        )
-    return budget_info
+# The runtime section's fact builders live in ouroboros/context_runtime_facts.py
+# (extracted at this module's size ceiling); re-exported here because the section
+# builder below and the tests that monkeypatch these names address them on THIS
+# surface.
+from ouroboros.context_runtime_facts import (  # noqa: E402,F401 — re-exported public surface
+    _delegation_capability_fact,
+    _project_room_fact,
+    _promoted_task_toolset,
+    _runtime_budget_info,
+)
 
 
-def _promoted_task_toolset(env: Any) -> Dict[str, Any]:
-    """The LIVE built-in toolset available to an ordinary promoted task.
-
-    Workspace focus changes the default target, not the top-level principal's
-    tool names. The projection therefore asks the real registry once and keeps
-    credential omissions typed instead of maintaining a second static catalog.
-    Dynamic extension/MCP availability remains task-time state.
-    """
-    from types import SimpleNamespace
-
-    from ouroboros.tools.registry import ToolRegistry, _builtin_tool_availability
-
-    registry = ToolRegistry(pathlib.Path(env.repo_dir), pathlib.Path(getattr(env, "drive_root", ".")))
-
-    probe = SimpleNamespace(
-        task_id="promote_toolset_probe",
-        task_metadata={},
-        task_contract={},
-        task_constraint=None,
-        is_workspace_mode=lambda: False,
-        is_ephemeral_turn=False,
-    )
-    registry.set_context(probe)
-    top_level_tools = set(registry.available_tools())
-    # Typed omissions: registered built-ins that live availability removes right
-    # now (credential gates). Named with their reason so the router can tell
-    # "does not exist" from "exists but currently unavailable".
-    unavailable = {}
-    for name in registry._entries:
-        available, reason, detail = _builtin_tool_availability(name, probe)
-        if not available:
-            unavailable[name] = f"{reason}: {detail}" if detail else reason
-    return {
-        "top_level_tools": sorted(top_level_tools),
-        **({"unavailable_builtin_tools": dict(sorted(unavailable.items()))} if unavailable else {}),
-        "rule": (
-            "LIVE built-in tool availability, evaluated by the real tool "
-            "registry at promote time. Project focus changes the default root, "
-            "not this ordinary top-level toolset. unavailable_builtin_tools "
-            "exist but are currently unusable (e.g. missing credentials) — do "
-            "not demand them. Dynamic extension/MCP tools are NOT listed (their "
-            "availability is unknowable at promote time). If an objective/"
-            "expected_output demands specific BUILT-IN tools, demand only names "
-            "listed here."
-        ),
-    }
 
 
 def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) -> str:
@@ -493,7 +382,15 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
             "deadline_at": task.get("deadline_at"),
             "allowed_resources": task.get("allowed_resources"),
         },
-        "runtime_env": {"is_desktop": bool(os.environ.get("OUROBOROS_DESKTOP_MODE", "")), "platform": sys.platform},
+        # Server-process presentation posture (launcher-exported; absent = a
+        # web/headless serving process). This is the PROCESS's shell, NOT the
+        # surface the owner's current message came from — that per-message fact
+        # is `owner_client` below. (The former `is_desktop` flag read
+        # OUROBOROS_DESKTOP_MODE, which no producer ever set — retired.)
+        "runtime_env": {
+            "presentation": os.environ.get("OUROBOROS_PRESENTATION", "").strip() or "web",
+            "platform": sys.platform,
+        },
     }
     if isinstance(task.get("task_contract"), dict):
         runtime_data["task_contract"] = task.get("task_contract")
@@ -548,6 +445,12 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
                 "spawn acting subagents."
             ),
         }
+        # B4-lite: configured route + honestly-labeled HISTORY, never live
+        # health. Own nested fail-soft inside the helper: a failure there must
+        # never drop the whole capabilities digest above.
+        _delegation_fact = _delegation_capability_fact()
+        if _delegation_fact is not None:
+            runtime_data["capabilities"]["delegation"] = _delegation_fact
         if ctx is not None:
             from ouroboros.tool_access import filesystem_affordance_map
 
@@ -617,6 +520,21 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
     # duplicating it. This is a structural fact; the model still chooses (BIBLE P5).
     # It also gives project-room messages their default project scene.
     _meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    # Owner Surface Fact: the surface that SENT the message this task/turn came
+    # from. A web message carries raw observables (pywebview/ua/viewport/...);
+    # a non-web ingress carries {"channel": <source>} STAMPED AT ITS PRODUCER
+    # (bridge routing, /api/command, /api/tasks admission).
+    # Absence is an honest gap — no key, never a guessed default (BIBLE P1).
+    # ONE shared projection of the producer-assembled fact — the mailbox
+    # surface-note baseline reads the same function, so the two can't disagree.
+    # The renderer never infers a surface from metadata.source (overloaded by
+    # internal producers: scheduler, skill schedules); absence stays honest.
+    from ouroboros.client_surface import owner_client_fact
+
+    _owner_client = owner_client_fact(_meta)
+    if _owner_client:
+        runtime_data["owner_client"] = dict(_owner_client)
+        runtime_data["owner_client_note"] = _OWNER_CLIENT_NOTE
     _current_chat = _meta.get("current_chat") if isinstance(_meta.get("current_chat"), dict) else None
     _swarm_router = bool(_meta.get("force_plan")) and bool(task.get("_ephemeral_turn"))
     if _current_chat and (_current_chat.get("running_tasks") or _current_chat.get("addressable_root_tasks")):

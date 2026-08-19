@@ -247,7 +247,10 @@ def _drain_incoming_messages(
                 content=dmsg,
                 msg_id=str(entry.get("msg_id") or ""),
             )
-            _loop()._append_or_merge_user_message(messages, _loop()._owner_marked_content(dmsg))
+            from ouroboros.client_surface import noted_owner_text
+
+            _loop()._append_or_merge_user_message(
+                messages, _loop()._owner_marked_content(noted_owner_text(owner_ctx, entry, dmsg)))
             if event_queue is not None:
                 try:
                     event_queue.put_nowait({

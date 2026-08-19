@@ -91,13 +91,68 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
 def _reconcile_delegated_runs(running_task_ids: set) -> None:
     """Settle or cancel delegated runs whose owning task is gone (startup + tick)."""
     try:
+        from ouroboros.claudexor_daemon import ensure_owned_gateway
         from ouroboros.delegate_custody import reconcile_orphaned_runs
 
-        outcomes = reconcile_orphaned_runs(DATA_DIR, running_task_ids=running_task_ids)
+        # The tick runs on the supervisor loop thread: a daemon sitting in its
+        # recovery-only admission window must not hold that thread for the default
+        # admission wait — skip-until-next-sweep is this caller's normal posture.
+        outcomes = reconcile_orphaned_runs(
+            DATA_DIR, running_task_ids=running_task_ids,
+            gateway_factory=lambda: ensure_owned_gateway(admission_wait_sec=0),
+        )
         if outcomes:
             log.info("Delegated-run reconciliation handled %d orphan(s): %s", len(outcomes), outcomes)
     except Exception:
         log.debug("Delegated-run reconciliation failed", exc_info=True)
+
+
+def _startup_worktree_prune() -> None:
+    """Startup hygiene: prune orphaned subagent worktrees (after the custody sweep)."""
+    from supervisor.state import append_jsonl
+
+    try:
+        from ouroboros import subagent_worktrees
+
+        worktree_report = subagent_worktrees.prune_orphans()
+        if worktree_report.get("removed"):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "subagent_worktree_prune",
+                "report": worktree_report,
+            })
+    except Exception:
+        log.debug("Subagent worktree prune failed", exc_info=True)
+
+
+def _startup_prune_sweeps() -> None:
+    """Startup hygiene: prune stale task drives/trees and orphaned temp files."""
+    from supervisor.state import append_jsonl
+
+    try:
+        from ouroboros.headless import prune_headless_task_drives, prune_task_drives, prune_task_trees
+        from ouroboros.utils import sweep_stale_temp_files
+
+        prune_report = prune_headless_task_drives(DATA_DIR)
+        task_drive_report = prune_task_drives(DATA_DIR)
+        # Ephemeral task-tree coordination ledgers age out with their terminal root.
+        prune_task_trees(DATA_DIR)
+        # Reap orphaned atomic-write temp files (.*.tmp.*) left by a hard kill.
+        sweep_stale_temp_files(DATA_DIR)
+        if (
+            prune_report.get("pruned")
+            or prune_report.get("errors")
+            or task_drive_report.get("pruned")
+            or task_drive_report.get("errors")
+        ):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "headless_task_drive_prune",
+                "report": prune_report,
+                "task_drives": task_drive_report,
+            })
+    except Exception:
+        log.debug("Headless task drive prune failed", exc_info=True)
 
 
 def _startup_custody_sweep() -> None:

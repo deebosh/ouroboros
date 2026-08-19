@@ -178,9 +178,8 @@ from supervisor.task_admission import (  # noqa: E402,F401 - public queue API
     reserve_task_admission,
 )
 
-# Variant A off-loop worker reaper lives in supervisor/task_reaper.py (extracted for
-# module size). Re-export the thin names the enforce path and tests use; monkeypatching
-# these queue-module names still works because the enforce path references them here.
+# Variant A off-loop worker reaper lives in supervisor/task_reaper.py (module size); re-export
+# the thin names the enforce path and tests use — monkeypatching these queue names still works.
 from supervisor.task_reaper import (  # noqa: E402,F401 — re-exported for enforce path + tests
     ensure_reaper_started as _ensure_reaper_started,
     reap_queue as _reap_queue,
@@ -244,9 +243,8 @@ def enqueue_task(
         task_id = str(t.get("id") or "").strip()
         reserved_token = str(ADMISSION_RESERVATIONS.get(task_id) or "")
         if reserved_token and admission_token != reserved_token:
-            # A reservation owns this id until its request either enqueues or
-            # releases it.  Tokenless internal callers and competing ingress
-            # requests must not be able to consume/collide with that id.
+            # A reservation owns this id until its request either enqueues or releases it.
+            # Tokenless internal callers and competing ingress must not consume/collide with it.
             t["_admission_blocked"] = "admission_reservation_owned"
             return t
         if require_worker_pool:

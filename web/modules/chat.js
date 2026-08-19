@@ -7,6 +7,7 @@ import {
 import { renderPageHeader } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
+import { clientSurfaceField } from './client_surface.js';
 import { apiClient, apiFetch } from './api_client.js';
 import {
     OWNER_STOP_DETAIL_MARKER,
@@ -701,6 +702,7 @@ export function createChatInstance({
             ...(isMain ? {} : { chat_id: chatId }),
             ...(projectId ? { project_id: projectId } : {}),
             ...(attachmentMeta.length ? { attachments: attachmentMeta } : {}),
+            ...clientSurfaceField(),
         }, hasAttachments ? { queue: false } : undefined);
         if (hasAttachments && result?.status !== 'sent') {
             await cleanupUploadedAttachments(uploadedAttachments);

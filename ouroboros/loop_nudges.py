@@ -762,14 +762,19 @@ def _maybe_inject_finalization_nudges(
                 messages.append({"role": "assistant", "content": content})
             _loop()._append_or_merge_user_message(messages, f"[SYSTEM REMINDER]\n{_nanny_msg}")
             # Owner decision (2026-08-15): no owner-chat progress line — the
-            # model sees the [SYSTEM REMINDER], the trace keeps the durable
-            # text, and the typed task_checkpoint carries observability.
+            # trace + typed task_checkpoint carry observability.
+            _code = _nanny_msg.split(":", 1)[0].replace("⚠️", "").strip()
             _loop()._emit_checkpoint_event(
                 getattr(tools._ctx, "event_queue", None), task_id,
                 getattr(tools._ctx, "drive_logs", None),
                 {"checkpoint_kind": "nanny_finalization_nudge",
-                 "nanny_code": _nanny_msg.split(":", 1)[0].replace("⚠️", "").strip()},
+                 "nanny_code": _code},
             )
+            # B3: durable worker stamp that the nudge was really INJECTED (the
+            # ctx flag is set even on suppression); read back at completion.
+            from ouroboros.delegate_evidence import record_nanny_nudge_stamp
+
+            record_nanny_nudge_stamp(tools._ctx, task_id, _code)
             llm_trace["reasoning_notes"].append(_nanny_msg)
             return True
     finalization_msg = _skill_finalization_message(drive_root, llm_trace)

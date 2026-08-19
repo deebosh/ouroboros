@@ -77,6 +77,7 @@ from ouroboros.review_records import (  # noqa: F401  (compat re-exports)
     ReviewRequest,
     ReviewRunResult,
     ReviewSlot,
+    TYPED_FAILURE_FACT_KEYS,
 )
 from ouroboros.review_verdict import (  # noqa: F401  (compat re-exports)
     DIALOGUE_CONTINUE,
@@ -771,12 +772,16 @@ class ReviewCoordinator:
                 )
             except Exception:
                 response_ref = {}
+            http_status = getattr(exc, "status_code", None)
             return ReviewActorRecord(
                 slot_id=slot.slot_id,
                 model=slot.model,
                 status="error",
                 error=sanitize_tool_result_for_log(error_msg),
                 transport_status=_transport_error_status(exc),
+                failure_code=str(getattr(exc, "code", "") or ""),
+                reset_at=str(getattr(exc, "reset_at", "") or ""),
+                http_status=http_status if isinstance(http_status, int) and http_status else None,
                 prompt_ref=prompt_ref,
                 response_ref=response_ref,
                 duration_sec=round(time.time() - start, 3),

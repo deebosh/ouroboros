@@ -16,129 +16,40 @@ import pathlib
 import queue
 from types import SimpleNamespace
 
-import pytest
 
 from ouroboros.tools import plan_review as pr
-from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
 
-FP_LEN = 64
-CLEAN = "[]\nNO_FINDINGS"
+from tests._plan_review_engine_shared import harness as __harness
+
+# The fixture is requested by name as a test parameter, so it is re-bound through a
+# module attribute: a direct import of a name that reappears as a parameter is an
+# F811 redefinition under the CI ruff gate.
+harness = __harness
+
+from tests._plan_review_engine_shared import (
+    CLEAN,
+    DECK_SPEC,
+    FP_LEN,
+    _call,
+    _control,
+    _finding,
+    _slots,
+    _state,
+)
 
 
-def _finding(fid, klass, *, breaks="", locator="", summary="something", rec="fix it"):
-    return {"id": fid, "class": klass, "breaks": breaks, "locator": locator,
-            "summary": summary, "recommendation": rec}
 
 
-def _slots(*specs):
-    """``specs`` = (slot_id, model[, "session"]) tuples → ReviewSlot list."""
-    from ouroboros.review_execution import ReviewRouteKind
-    from ouroboros.review_substrate import ReviewSlot
-
-    out = []
-    for spec in specs:
-        sid, model = spec[0], spec[1]
-        session = len(spec) > 2 and spec[2] == "session"
-        out.append(ReviewSlot(
-            slot_id=sid, model=model, effort="high", role_hint="plan reviewer",
-            route=ReviewRouteKind.AGENT_SESSION if session else ReviewRouteKind.API_CHAT,
-            session_target="cursor=grok" if session else "",
-        ))
-    return out
 
 
-class _Substrate:
-    """Fake ``run_review_request``: answers per slot id (str or callable(request))."""
-
-    def __init__(self, answers):
-        self.answers = answers
-        self.calls: list = []
-
-    def __call__(self, request, *, slots, drive_root, llm, usage_ctx=None):
-        self.calls.append({"request": request, "slots": list(slots)})
-        actors = []
-        for slot in slots:
-            answer = self.answers.get(slot.slot_id, CLEAN)
-            text = answer(request) if callable(answer) else answer
-            actors.append({
-                "slot_id": slot.slot_id, "model": slot.model, "status": "ok" if text else "error",
-                "raw_text": text or "", "error": "" if text else "transport died",
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "resolved_model": slot.model},
-                "prompt_ref": {}, "response_ref": {},
-            })
-        return SimpleNamespace(actors=actors)
 
 
-@pytest.fixture
-def harness(tmp_path, monkeypatch):
-    system = tmp_path / "repo"
-    system.mkdir()
-    (system / "BIBLE.md").write_text(
-        "# BIBLE.md\n\n## Principle 0: Agency\n\nbe.\n\n## Principle 3: Immune Integrity\n\nreview.\n",
-        encoding="utf-8",
-    )
-    (system / "docs").mkdir()
-    (system / "docs" / "ARCHITECTURE.md").write_text(
-        "# Ouroboros vX — Architecture & Reference\n\n## 1. Runtime\n\nthe loop.\n\n"
-        "## 2. Review organ\n\nslots and quorum.\n",
-        encoding="utf-8",
-    )
-    (system / "ouroboros").mkdir()
-    (system / "ouroboros" / "loop.py").write_text("x = 1\n", encoding="utf-8")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "notes.md").write_text("deck notes\n", encoding="utf-8")
-    drive = tmp_path / "data"
-    drive.mkdir()
-    events: queue.Queue = queue.Queue()
-    progress: list = []
-
-    def make_ctx(*, active_workspace=True, task_id="task-1", messages=None, force_plan=False):
-        ctx = ToolContext(
-            repo_dir=system, system_repo_dir=system, drive_root=drive, task_id=task_id,
-            workspace_root=workspace if active_workspace else None,
-            workspace_mode="external" if active_workspace else "",
-            task_metadata={"root_task_id": task_id, **({"force_plan": True} if force_plan else {})},
-            task_contract={"objective": "Deliver the thing"},
-            event_queue=events,
-        )
-        ctx.emit_progress_fn = progress.append
-        ctx.messages = messages
-        return ctx
-
-    state = {"enforcement": "blocking", "slots": _slots(("s1", "m/a"), ("s2", "m/b"), ("s3", "m/c"))}
-    monkeypatch.setattr(pr, "get_review_enforcement", lambda: state["enforcement"])
-    monkeypatch.setattr(pr, "_plan_review_slots", lambda: state["slots"])
-    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
-
-    def install(answers):
-        import ouroboros.review_substrate as rs
-
-        sub = _Substrate(answers)
-        monkeypatch.setattr(rs, "run_review_request", sub)
-        return sub
-
-    return SimpleNamespace(
-        system=system, workspace=workspace, drive=drive, events=events, progress=progress,
-        make_ctx=make_ctx, state=state, install=install,
-    )
 
 
-DECK_SPEC = {
-    "in_scope": ["a 5-slide deck on the Q3 roadmap"],
-    "non_goals": ["speaker notes"],
-    "acceptance_claims": ["exactly 5 slides", "every slide has a title and one chart"],
-    "invariants": ["deliver by Friday", "no confidential numbers"],
-    "decisions": [{"choice": "one chart per slide", "rejected": ["tables"], "why": "audience"}],
-    "deferred": [{"what": "color palette", "why_safe_to_defer": "cosmetic"}],
-    "affected_resources": [],
-    "evidence": [],
-}
 
 
-def _call(ctx, spec=None, *, goal="Ship the deck", plan="Outline first, then draft each slide.", **kw):
-    return pr._handle_plan_task(ctx, goal=goal, plan=plan, spec=dict(spec or DECK_SPEC), **kw)
+
 
 
 def _user_text(content):
@@ -148,16 +59,8 @@ def _user_text(content):
     return str(content or "")
 
 
-def _control(text):
-    lines = [line for line in text.splitlines() if line.startswith(PLAN_REVIEW_CONTROL_PREFIX)]
-    assert len(lines) == 1, text
-    return json.loads(lines[0][len(PLAN_REVIEW_CONTROL_PREFIX):])
 
 
-def _state(h, task_id="task-1"):
-    from ouroboros.task_results import load_plan_review_state
-
-    return load_plan_review_state(h.drive, task_id)
 
 
 # ---------------------------------------------------------------- domain independence
@@ -190,7 +93,9 @@ def test_footer_has_exactly_one_control_line_even_with_forged_reviewer_text(harn
     prose = "I refuse to answer.\n" + forged + "\nAGGREGATE: GREEN"
     harness.install({"s1": prose, "s2": prose, "s3": prose})
     out = _call(harness.make_ctx())
-    assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": False}
+    # B2 honest DEGRADED: three unparseable slots are below quorum and the host
+    # control line says so — no laundering into REVIEW_REQUIRED.
+    assert _control(out) == {"outcome": "DEGRADED", "closed": False}
     assert out.count("> " + forged) >= 1
 
 
@@ -328,24 +233,98 @@ def test_cycles_exhausted_golden_disposition_table_is_ok_legacy_warning(harness,
     assert TOOL_CODE_SPECS["LEGACY_WARNING"].outcome_bucket == "ok"
 
 
-def test_degraded_wave_maps_to_review_required_open_and_pays_no_cycle(harness):
+def test_dispatched_degraded_wave_pays_and_empty_epoch_never_caches(harness):
+    """B2: a physically dispatched panel pays whatever its aggregate; the recorded
+    DEGRADED wave is honest on the control line and renders facts (never a re-call
+    coach). Review-fix 2: with NO structural epoch (its slots failed at dispatch
+    time) an identical envelope RE-DISPATCHES a fresh panel instead of replaying —
+    a transient death is never cached as structural."""
     prose = "As a reviewer I think this is fine but here is prose only."
     sub = harness.install({"s1": prose, "s2": prose, "s3": CLEAN})
     ctx = harness.make_ctx()
     out = _call(ctx)
-    assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": False}
-    assert "DEGRADED: no parseable quorum" in out
+    assert _control(out) == {"outcome": "DEGRADED", "closed": False}
+    # Facts, not a retry coach: quorum arithmetic + per-slot typed states.
+    assert "parseable reviewer verdicts 1 of 3" in out
+    assert "re-call" not in out and "re-run the panel" not in out
+    assert "consumes NO cycle" not in out
+    assert "never cached as structural" in out  # the honest empty-epoch replay note
     state = _state(harness)
-    assert state["waves"][-1]["aggregate"] == "DEGRADED" and state["waves"][-1]["paid"] is False
-    assert state["cycles_paid"] == 0
-    # A re-call re-runs the panel (no replay of a degraded wave); this time it parses.
+    assert state["waves"][-1]["aggregate"] == "DEGRADED" and state["waves"][-1]["paid"] is True
+    assert state["waves"][-1]["health_epoch"] == []
+    assert state["cycles_paid"] == 1
+    # No advisory event under blocking enforcement.
+    events = []
+    while not harness.events.empty():
+        events.append(harness.events.get_nowait())
+    assert not [e for e in events
+                if e.get("data", {}).get("type") == "plan_review_advisory_open"]
+    # The identical envelope re-dispatches; the healed panel closes GREEN and pays.
     sub.answers = {"s1": CLEAN, "s2": CLEAN, "s3": CLEAN}
     again = _call(ctx)
-    assert len(sub.calls) == 2 and _control(again) == {"outcome": "GREEN", "closed": True}
-    assert _state(harness)["cycles_paid"] == 1
+    assert len(sub.calls) == 2 and "cached exact review" not in again
+    assert _control(again) == {"outcome": "GREEN", "closed": True}
+    assert _state(harness)["cycles_paid"] == 2
     from ouroboros.task_results import plan_review_gate_projection
 
-    assert plan_review_gate_projection(state, "blocking")["reviewer_slots_degraded"] is True
+    # Gate projection semantics unchanged: DEGRADED is OPEN; blocking holds.
+    gate = plan_review_gate_projection(state, "blocking")
+    assert gate["reviewer_slots_degraded"] is True and gate["allow"] is False
+
+
+def test_degraded_wave_at_the_cap_lands_the_typed_exhausted_state(harness, monkeypatch):
+    """B2 consequence: DEGRADED waves pay, so they can spend the cap; the typed
+    D27 exhausted state and event land exactly as for any other open wave."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "1")
+    prose = "no findings array here"
+    harness.install({"s1": prose, "s2": prose, "s3": prose})
+    ctx = harness.make_ctx()
+    out = _call(ctx)
+    assert _control(out) == {"outcome": "DEGRADED", "closed": False}
+    state = _state(harness)
+    assert state["cycles_paid"] == 1 and state["waves"][-1]["cycles_exhausted"] is True
+    events = []
+    while not harness.events.empty():
+        events.append(harness.events.get_nowait())
+    assert [e for e in events if e.get("type") == "log_event"
+            and e.get("data", {}).get("type") == "review_cycles_exhausted"]
+    from ouroboros.task_results import plan_review_gate_projection
+
+    gate = plan_review_gate_projection(state, "blocking")
+    assert gate["status"] == "cycles_exhausted" and gate["allow"] is True
+    assert gate["reviewer_slots_degraded"] is True
+
+
+def test_open_wave_under_advisory_emits_one_typed_event_at_record_time(harness):
+    """B2: advisory is loud AT THE MOMENT an open wave records — one deduplicated
+    typed owner-visible event on the log_event rail; replays never re-emit."""
+    harness.state["enforcement"] = "advisory"
+    note = json.dumps([_finding("n1", "note")])
+    sub = harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    while not harness.events.empty():
+        harness.events.get_nowait()
+    out = _call(ctx)
+    assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": False}
+    events = []
+    while not harness.events.empty():
+        events.append(harness.events.get_nowait())
+    typed = [e for e in events if e.get("type") == "log_event"
+             and e.get("data", {}).get("type") == "plan_review_advisory_open"]
+    assert len(typed) == 1
+    data = typed[0]["data"]
+    assert data["aggregate"] == "REVIEW_REQUIRED" and data["paid"] is True
+    assert data["enforcement"] == "advisory"
+    assert data["fingerprint"] == _state(harness)["waves"][-1]["request_fingerprint"]
+    assert {s["slot_id"] for s in data["slots"]} == {"s1", "s2", "s3"}
+    # A replay is not a recording: no second event, no second panel.
+    _call(ctx)
+    assert len(sub.calls) == 1
+    events = []
+    while not harness.events.empty():
+        events.append(harness.events.get_nowait())
+    assert not [e for e in events
+                if e.get("data", {}).get("type") == "plan_review_advisory_open"]
 
 
 # ---------------------------------------------------------------- closure per class
@@ -1122,8 +1101,11 @@ def test_invalid_or_contradictory_rejections_do_not_earn_the_delta_cycle(harness
     assert "PLAN_REVIEW_CYCLES_EXHAUSTED" not in again and "cycle 1" in again
 
 
-def test_degraded_earned_delta_keeps_the_paid_rejected_wave(harness, monkeypatch):
-    """Delta-review finding D2: a DEGRADED delta attempt must not erase the paid wave."""
+def test_dispatched_degraded_delta_attempt_pays_and_becomes_current(harness, monkeypatch):
+    """B2 wave-record authority change (deliberate, supersedes delta-review D2 for
+    DISPATCHED waves): the earned delta panel ran — garbage answers and all — so it
+    pays its cycle and replaces the paid predecessor. The old free-retry
+    preservation survives only for nothing-dispatched waves (next test)."""
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "5")
     blocking = json.dumps([_finding("f1", "blocking", breaks="claim_1")])
     harness.install({"s1": blocking, "s2": blocking, "s3": CLEAN})
@@ -1135,19 +1117,52 @@ def test_degraded_earned_delta_keeps_the_paid_rejected_wave(harness, monkeypatch
         {"finding_id": "s2:f1", "decision": "reject", "rationale": "fine"},
     ]})
     harness.install({"s1": "garbage not an array", "s2": "also garbage", "s3": "nope"})
-    degraded = _call(ctx)  # the earned delta panel comes back DEGRADED
-    assert "DEGRADED" in degraded
+    degraded = _call(ctx)  # the earned delta panel comes back DEGRADED — but it RAN
+    assert _control(degraded) == {"outcome": "DEGRADED", "closed": False}
     state = _state(harness)
-    paid = [w for w in state["waves"] if w.get("request_fingerprint") == fp and w.get("paid")]
-    assert paid and paid[-1]["findings"], "the paid rejected wave survives"
-    assert paid[-1]["dispositions"], "its rejections survive"
-    assert paid[-1].get("degraded_retries") == 1
-    assert state["cycles_paid"] == 1
-    # and the earn is still live: a working panel retries the delta
-    sub2 = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
-    _call(ctx)
-    assert len(sub2.calls) == 1
-    assert _state(harness)["cycles_paid"] == 2
+    waves = [w for w in state["waves"] if w.get("request_fingerprint") == fp]
+    assert len(waves) == 1 and waves[0]["aggregate"] == "DEGRADED"
+    assert waves[0]["paid"] is True and not waves[0].get("degraded_retries")
+    assert state["cycles_paid"] == 2, "the dispatched delta panel charged its cycle"
+    # Fix 2: this DEGRADED wave has NO structural epoch (garbage answers, not
+    # window-spent lanes), so the identical envelope RE-DISPATCHES, never replays.
+    sub3 = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    fresh = _call(ctx)
+    assert len(sub3.calls) == 1 and "cached exact review" not in fresh
+    assert _control(fresh) == {"outcome": "GREEN", "closed": True}
+    assert _state(harness)["cycles_paid"] == 3
+
+
+def test_nothing_dispatched_wave_stays_unpaid_and_preserves_the_paid_predecessor(tmp_path):
+    """B2: the D2 preservation now covers exactly the UNPAID case — a wave in which no
+    reviewer slot was physically dispatched (typed $0 skip rows only, e.g. the B2b
+    health-skip shape) never erases a paid predecessor and counts a degraded retry."""
+    from ouroboros.task_results import (
+        STATUS_RUNNING, load_plan_review_state, plan_review_wave,
+        record_plan_review_wave, write_task_result,
+    )
+
+    write_task_result(tmp_path, "t1", STATUS_RUNNING, result="running")
+    fp = "c" * 64
+    paid_wave = {
+        "schema_version": 2, "cycle_index": 1, "request_fingerprint": fp,
+        "spec": {"goal": "g", "acceptance_claims": []}, "spec_hash": "b" * 64,
+        "findings": [{"finding_id": "s1:f1", "class": "blocking", "breaks": "goal"}],
+        "aggregate": "REVISE_PLAN", "closed": False,
+        "dispositions": [{"finding_id": "s1:f1", "decision": "reject", "rationale": "no"}],
+        "paid": True,
+    }
+    record_plan_review_wave(tmp_path, "t1", paid_wave)
+    assert load_plan_review_state(tmp_path, "t1")["cycles_paid"] == 1
+    unpaid = {**paid_wave, "aggregate": "DEGRADED", "findings": [], "dispositions": [],
+              "paid": False, "cycle_index": 2}
+    record_plan_review_wave(tmp_path, "t1", unpaid)
+    state = load_plan_review_state(tmp_path, "t1")
+    wave = plan_review_wave(state, fp)
+    assert wave["aggregate"] == "REVISE_PLAN" and wave["paid"] is True
+    assert wave["findings"] and wave["dispositions"], "the paid predecessor survives"
+    assert wave["degraded_retries"] == 1
+    assert state["cycles_paid"] == 1, "a nothing-dispatched wave charges nothing"
 
 
 def test_session_output_schema_for_plan_review_can_carry_a_blocking_finding():
@@ -1214,3 +1229,55 @@ def test_schema_conformant_clean_session_verdict_counts_as_clean():
     # prose around the empty array is still a non-response
     _, err2 = plan_spec.parse_findings("I could not review this.\n[]")
     assert err2 is not None
+
+
+
+def test_typed_lane_facts_survive_to_the_wave_record_and_the_render(harness, monkeypatch):
+    """B1: a typed lane refusal (code / reset / transport / capability_delta) rides
+    substrate -> plan row -> wave actor record -> render as `FAILED[code] (resets ...)`;
+    a prose-only failure (an engine emitting code:null) records and renders exactly as
+    before -- absence stays absence."""
+    import ouroboros.review_substrate as rs
+
+    def _sub(request, *, slots, drive_root, llm, usage_ctx=None):
+        actors = []
+        for slot in slots:
+            if slot.slot_id == "s2":
+                actors.append({
+                    "slot_id": slot.slot_id, "model": slot.model, "status": "error",
+                    "raw_text": "", "error": "delegated review session run-9 ended failed",
+                    "failure_code": "subscription_window_exhausted",
+                    "reset_at": "2030-01-01T00:00:00Z", "http_status": 429,
+                    "transport_status": "provider_transport_error",
+                    "usage": {"capability_delta": [{"reason": "reduced"}]},
+                    "prompt_ref": {}, "response_ref": {},
+                })
+            elif slot.slot_id == "s3":
+                actors.append({
+                    "slot_id": slot.slot_id, "model": slot.model, "status": "error",
+                    "raw_text": "", "error": "transport died", "usage": {},
+                    "prompt_ref": {}, "response_ref": {},
+                })
+            else:
+                actors.append({
+                    "slot_id": slot.slot_id, "model": slot.model, "status": "ok",
+                    "raw_text": CLEAN, "error": "",
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                    "prompt_ref": {}, "response_ref": {},
+                })
+        return SimpleNamespace(actors=actors)
+
+    monkeypatch.setattr(rs, "run_review_request", _sub)
+    ctx = harness.make_ctx()
+    out = _call(ctx)
+    assert "FAILED[subscription_window_exhausted] (resets 2030-01-01T00:00:00Z)" in out
+    assert "FAILED: transport died" in out  # the untyped path is byte-for-byte today's
+    wave = _state(harness)["waves"][-1]
+    rec = {a["slot_id"]: a for a in wave["actors"]}
+    assert rec["s2"]["failure_code"] == "subscription_window_exhausted"
+    assert rec["s2"]["reset_at"] == "2030-01-01T00:00:00Z"
+    assert rec["s2"]["http_status"] == 429
+    assert rec["s2"]["transport_status"] == "provider_transport_error"
+    assert rec["s2"]["capability_delta"] == [{"reason": "reduced"}]
+    assert (rec["s3"]["failure_code"], rec["s3"]["reset_at"]) == ("", "")
+    assert rec["s3"]["http_status"] is None

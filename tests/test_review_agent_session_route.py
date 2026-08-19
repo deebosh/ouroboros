@@ -10,6 +10,8 @@ import json
 
 import pytest
 
+from ouroboros import delegate_custody as custody
+
 from ouroboros.review_execution import (
     REVIEW_SESSION_ROUTE_ENV,
     SCOPE_REVIEW_ROUTES_ENV,
@@ -36,9 +38,11 @@ _owned_gateway_uses_each_test_transport = __owned_gateway_uses_each_test_transpo
 fake_route = __fake_route
 
 from tests._review_session_route_shared import (
+    FakeGateway,
     FakeLLM,
     _agent_request,
     _agent_slot,
+    _run_session_directly,
     _terminal_detail,
 )
 
@@ -382,6 +386,67 @@ def test_unhealthy_route_refuses_typed_never_falls_back(tmp_path, fake_route):
     assert not any(inst.start_requests for inst in fake_route.instances)
 
 
+def test_pinned_profile_passes_row_status_through_to_the_engine(tmp_path, fake_route):
+    """Phase D1 (owner batch-2 1A/2): a slot carrying a manual credential pin must
+    not be refused on the harness-row catalog status — a row with no default
+    credential store reads "unavailable" FOREVER by design (agy, engine INV-135)
+    while its named profiles work. The request REACHES the engine with the pinned
+    credentialProfileId on the wire, and the ENGINE's typed refusal propagates
+    typed on this slot: never a silent degrade, never a fallback onto the api route."""
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    fake_route.catalog_entry["status"] = "unavailable"
+    fake_route.catalog_entry["enabled"] = False
+    fake_route.start_error = ClaudexorUnavailable(
+        "engine_refuses_profile", "engine typed refusal for this profile", status_code=422)
+    llm = FakeLLM()
+    result = run_review_request(
+        _agent_request(),
+        slots=[_agent_slot(session_target="fake-review=fake-small",
+                           session_profile="acct-pinned")],
+        drive_root=tmp_path, llm=llm)
+    starts = [r for inst in fake_route.instances for r in inst.start_requests]
+    assert len(starts) == 1  # the start attempt was actually posted
+    assert starts[0]["credentialProfileId"] == "acct-pinned"
+    actor = result.actors[0]
+    assert actor["status"] == "error"
+    assert "engine typed refusal for this profile" in actor["error"]
+    assert llm.calls == []  # never a silent fallback onto the api route
+
+
+def test_route_status_refusal_carries_its_typed_code(tmp_path, fake_route):
+    """Phase D2: the route_health refusal rides ReviewRouteUnavailable with a
+    machine-readable `.code` (the rotation sprint's quorum classification keys
+    on failure codes; a bare RuntimeError is invisible to it)."""
+    from ouroboros.review_execution import ReviewRouteUnavailable
+
+    fake_route.catalog_entry["status"] = "unavailable"
+    fake_route.catalog_entry["enabled"] = False
+    with pytest.raises(ReviewRouteUnavailable) as excinfo:
+        _run_session_directly(tmp_path)
+    assert excinfo.value.code == "route_status_unavailable"
+    assert not any(inst.start_requests for inst in fake_route.instances)
+
+
+def test_absent_catalog_row_refuses_typed_even_with_a_pinned_profile(tmp_path, fake_route):
+    """Phase D1 keeps `route_not_in_capability_catalog`: a pin skips only the row
+    STATUS refusal — a route the catalog does not carry at all has no engine row
+    to be authoritative about, so it still refuses typed before any POST."""
+    import dataclasses
+
+    from ouroboros.review_execution import ReviewRouteUnavailable
+    from ouroboros.subagents import parse_subagent_harness
+
+    fake_route.catalog_entry = {"id": "some-other-route", "enabled": True, "status": "ok",
+                                "accessProfilesSupported": ["readonly"]}
+    route = dataclasses.replace(parse_subagent_harness("fake-review=fake-small"),
+                                profile_id="acct-pinned")
+    with pytest.raises(ReviewRouteUnavailable) as excinfo:
+        _run_session_directly(tmp_path, session_route=route)
+    assert excinfo.value.code == "route_not_in_capability_catalog"
+    assert not any(inst.start_requests for inst in fake_route.instances)
+
+
 def test_mixed_panel_failed_agent_slot_does_not_shrink_n(tmp_path, fake_route, monkeypatch):
     """5.3: one panel, two deliveries. The agent slot failing typed leaves the
     panel at its configured size — the failed slot is an error actor on its own
@@ -517,3 +582,108 @@ def test_agent_slot_without_session_task_refuses_the_api_pack(tmp_path, fake_rou
     assert "no session task" in actor["error"]
     assert llm.calls == []
     assert not any(inst.start_requests for inst in fake_route.instances)
+
+
+def test_pre_dispatch_admission_raises_the_typed_window_class(tmp_path, fake_route, monkeypatch):
+    """Admission health (route_health, before any POST) knew the window was spent but
+    said so in PROSE — the reset instant and the code did not survive to the actor
+    record. B1: the EXISTING exhausted class is raised there, carrying reset_at, and
+    no session is ever started."""
+    from ouroboros.gateways.claudexor import ClaudexorSubscriptionWindowExhausted
+    from ouroboros.review_execution import AgentSessionReviewExecutor, ReviewAssignment
+
+    spent = {"subject": {"harness": "fake-review", "subject_id": "acct"},
+             "freshness": "fresh",
+             "constraints": [{"used_ratio": 1.0, "resets_at": "2030-02-02T00:00:00Z"}]}
+    monkeypatch.setattr(FakeGateway, "quota_snapshots", lambda self: [dict(spent)])
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-admission", call_type="scope_review",
+                         custody_root=tmp_path),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as excinfo:
+        executor.execute()
+    assert excinfo.value.reset_at == "2030-02-02T00:00:00Z"
+
+    # An undated exhaustion (route_health's reason-with-empty-reset shape) is
+    # STILL the typed class — spent with an unknown healing instant. A fresh
+    # executor: a settled typed failure is memoized per executor by design.
+    spent["constraints"] = [{"used_ratio": 1.0}]
+    custody._CUSTODY.clear()
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-admission-undated", call_type="scope_review",
+                         custody_root=tmp_path / "b"),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as undated:
+        executor.execute()
+    assert undated.value.reset_at == ""
+    assert sum(len(inst.start_requests) for inst in fake_route.instances) == 0
+
+
+def test_pre_dispatch_admission_preserves_the_pool_code(tmp_path, fake_route, monkeypatch):
+    """Review fix 2 (cross-PR contract): an UNDATED `credential_pool_exhausted`
+    reason from route_health raises the SAME exhausted class with the POOL code
+    preserved — never flattened to the subscription code; the dated reason-empty
+    shape keeps the subscription default and its reset exactly as before."""
+    from ouroboros import subagents
+    from ouroboros.gateways.claudexor import ClaudexorSubscriptionWindowExhausted
+    from ouroboros.review_execution import AgentSessionReviewExecutor, ReviewAssignment
+
+    monkeypatch.setattr(
+        subagents, "route_health",
+        lambda gateway, route_id, shape, *, route_model="", pinned_profile="": ("credential_pool_exhausted", ""))
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-pool", call_type="scope_review",
+                         custody_root=tmp_path),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as pool:
+        executor.execute()
+    assert pool.value.code == "credential_pool_exhausted"
+    assert pool.value.reset_at == ""
+
+    # Dated, reason-empty shape (the ordinary spent window): unchanged path.
+    monkeypatch.setattr(
+        subagents, "route_health",
+        lambda gateway, route_id, shape, *, route_model="", pinned_profile="": ("", "2030-03-03T00:00:00Z"))
+    custody._CUSTODY.clear()
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-dated", call_type="scope_review",
+                         custody_root=tmp_path / "b"),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as dated:
+        executor.execute()
+    assert dated.value.code == "subscription_window_exhausted"
+    assert dated.value.reset_at == "2030-03-03T00:00:00Z"
+    assert sum(len(inst.start_requests) for inst in fake_route.instances) == 0
+
+
+def test_an_expired_cooldown_is_history_not_exhaustion():
+    """The `_exhausted_window` reader (the admission seam above) treated ANY non-empty
+    `cooldown_until` as spent. A cooldown whose instant already PASSED is a stale fact
+    the harness has not refreshed, not positive evidence of a spent window; a FUTURE
+    one still blocks, and an illegible instant keeps the conservative old reading."""
+    from ouroboros.subagents import _exhausted_window
+
+    def _quota(cooldown):
+        class _Q:
+            def quota_snapshots(self):
+                return [{"subject": {"harness": "some-route", "subject_id": "a"},
+                         "freshness": "fresh",
+                         "constraints": [{"used_ratio": 0.4,
+                                          "cooldown_until": cooldown}]}]
+
+            def quota_absences(self):
+                return []
+        return _Q()
+
+    assert _exhausted_window(_quota("2020-01-01T00:00:00Z"), "some-route") == (False, "")
+    assert _exhausted_window(_quota("2099-01-01T00:00:00Z"), "some-route") == (
+        True, "2099-01-01T00:00:00Z")
+    assert _exhausted_window(_quota("soon-ish"), "some-route") == (True, "soon-ish")

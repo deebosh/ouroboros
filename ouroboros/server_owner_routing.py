@@ -222,7 +222,12 @@ def _route_project_chat_to_running_task(
                 if isinstance(active_fence, dict) and str(active_fence.get("status") or "") == "sealed":
                     return ""
             if not write_owner_message(
-                task_drive, f"{message}{attachment_note}", tid, msg_id=msg_id
+                task_drive, f"{message}{attachment_note}", tid, msg_id=msg_id,
+                client_surface=(
+                    dict(task_metadata["client_surface"])
+                    if isinstance(task_metadata, dict) and isinstance(task_metadata.get("client_surface"), dict)
+                    else None
+                ),
             ):
                 return ""
             if direct_lock_held:
@@ -385,6 +390,9 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         # through the conversation decision lane would combine skill_repair with
         # _ephemeral_turn: ephemeral hides the repair mutators while heal mode
         # blocks promotion. Promote it directly without weakening either policy.
+        # DELIBERATE: task_metadata (incl. any client_surface fact) is dropped on
+        # this branch — a repair task's objective is a fixed UI action and the
+        # sending surface adds nothing to it (same treatment as force_plan here).
         from supervisor.events import _handle_promote_chat_to_task
 
         ctx.consciousness.inject_observation(
@@ -473,6 +481,21 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         # A suppressed (never-logged) message has a DESIGNED absence of origin;
         # downstream binders must not classify it as a producer bug.
         task_metadata = {**(task_metadata or {}), "origin_suppressed": True}
+    # Owner Surface Fact channel fallback: a non-web ingress (telegram/skill
+    # transports) carries no browser observables, but its channel IS the
+    # surface fact. Host-stamped here, never overwriting a real descriptor;
+    # source=="web" stays an honest absence (an old SPA sends no fact), and a
+    # synthetic A2A chat (negative id) is machine traffic — no owner sent it,
+    # so it must never wear an owner_client fact.
+    from ouroboros.contracts.chat_id_policy import is_a2a_chat_id as _is_a2a
+
+    _ingress_source = str(incoming.get("source") or "web")
+    if (
+        _ingress_source != "web"
+        and not _is_a2a(chat_id)
+        and not isinstance(task_metadata.get("client_surface"), dict)
+    ):
+        task_metadata = {**task_metadata, "client_surface": {"channel": _ingress_source}}
     if project_id and not swarm_intent:
         routed_to_task = _route_project_chat_to_running_task(
             ctx,

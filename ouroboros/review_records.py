@@ -11,7 +11,7 @@ panel projection all read these records; none of them is defined here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ouroboros.review_execution import ReviewRouteKind
 
@@ -83,6 +83,13 @@ class ReviewActorRecord:
     # consumers from conflating a transport failure, malformed JSON, and a
     # valid semantic DEGRADED verdict.
     transport_status: str = ""
+    # B1 typed failure facts, allowlist-carried off the exception's ATTRIBUTES
+    # (generic across every ClaudexorUnavailable subclass; never exc.__dict__):
+    # the machine code, the healing instant and the HTTP status survive the
+    # substrate as fields instead of flattening into `error` prose.
+    failure_code: str = ""
+    reset_at: str = ""
+    http_status: Optional[int] = None
     parse_status: str = ""
     semantic_verdict: str = ""
     provider: str = ""
@@ -94,6 +101,10 @@ class ReviewActorRecord:
     quorum_contribution: bool = False
     reason: str = ""
     enforcement_impact: str = ""
+
+
+# B1 typed failure facts, ONE shared key tuple (row/wave/last-execution projections).
+TYPED_FAILURE_FACT_KEYS = ("failure_code", "reset_at", "http_status", "transport_status")
 
 
 @dataclass

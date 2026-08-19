@@ -410,12 +410,32 @@ def test_plan_review_control_requires_exact_closed_typed_marker():
     assert open_review["plan_review_outcome"] == "REVIEW_REQUIRED"
     assert open_review["plan_review_closed"] is False
 
+    # B2 honest DEGRADED: a legal, always-OPEN control outcome that must survive
+    # the typed seam intact — the old render-time DEGRADED->REVIEW_REQUIRED
+    # laundering hid the no-quorum fact from the agent.
+    degraded_result = ToolResult(
+        status="ok",
+        code="OK",
+        text='PLAN_REVIEW_CONTROL_JSON: {"outcome":"DEGRADED","closed":false}',
+        meta={"plan_review_outcome": "DEGRADED", "plan_review_closed": False},
+    )
+    degraded = _extract_result_metadata(
+        "plan_task",
+        degraded_result.text,
+        False,
+        degraded_result,
+    )
+    assert degraded["plan_review_outcome"] == "DEGRADED"
+    assert degraded["plan_review_closed"] is False
+
     for invalid_meta in (
         {},
         {"plan_review_outcome": "UNKNOWN", "plan_review_closed": True},
         {"plan_review_outcome": "GREEN", "plan_review_closed": "true"},
         {"plan_review_outcome": "GREEN", "plan_review_closed": False},
         {"plan_review_outcome": "REVISE_PLAN", "plan_review_closed": True},
+        # A DEGRADED wave is never closed: no quorum was reached to close it.
+        {"plan_review_outcome": "DEGRADED", "plan_review_closed": True},
     ):
         result = ToolResult(
             status="ok",

@@ -82,6 +82,9 @@ def _create_login(monkeypatch, tmp_path, body: dict, *, operations, raises=False
         def ensure_running(self):
             return object()
 
+        def reconcile_rotation(self, gateway):
+            pass  # B3 reconcile is not this test's subject
+
     class FakeGateway:
         def __init__(self, endpoint):
             pass
@@ -582,3 +585,21 @@ def test_login_input_409_conflicts_ride_through_typed(monkeypatch, tmp_path):
         assert resp.status_code == 409, code
         body = json.loads(resp.body)
         assert body["code"] == code
+
+
+def test_unified_accounts_capability_reads_the_operations_catalog():
+    """The unified-account-model marker is the EXACT catalog id of the engine's
+    new `GET /v2/account-pools` operation (frozen contract §L.2) — never the
+    path spelling, and an unreadable catalog (spelled `[]` by the caller) is
+    the old model. Same discipline as `_login_disclosure_native`."""
+    from ouroboros.gateway.claudexor_accounts import _unified_accounts_native
+
+    by_id = [{"id": "get:quota"}, {"id": "get:account-pools", "path": "/v2/account-pools"}]
+    assert _unified_accounts_native(by_id) is True
+    # The id alone is sufficient; the path alone is NOT the marker.
+    assert _unified_accounts_native([{"id": "get:account-pools"}]) is True
+    assert _unified_accounts_native(
+        [{"id": "get:something-else", "path": "/v2/account-pools"}]) is False
+    assert _unified_accounts_native([{"id": "get:quota"}]) is False
+    assert _unified_accounts_native([]) is False
+    assert _unified_accounts_native([None, "get:account-pools"]) is False

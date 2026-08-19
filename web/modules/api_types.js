@@ -146,6 +146,7 @@
  * @property {Array<Object>=} attachments  // [{filename, display_name, mime}] — image uploads become native blocks (v6.26.0)
  * @property {number=} chat_id     // multi-project thread routing (v6.32.0); main chat = 1
  * @property {string=} project_id  // per-project memory scope (v6.32.0)
+ * @property {Object=} client_surface  // raw sending-surface observables measured at send time (pywebview/ua/viewport/matchMedia/captured_at)
  */
 
 /**
@@ -200,7 +201,8 @@
  *   The completion-seam EVIDENCE the route decision is reconciled against:
  *   {delegated_runs_started, delegated_runs_settled, delegated_runs_succeeded,
  *   delegated_runs_failed, delegated_run_failure_states, evidence_read_failed,
- *   subscription_cost_usd, subscription_cost_estimated, harness_models}.
+ *   subscription_cost_usd, subscription_cost_estimated, harness_models,
+ *   nanny_nudge_recorded, delegate_start_attempted}.
  *   Terminal frames only; absent = "no evidence yet", never "ran natively".
  *   `evidence_read_failed: true` = the custody log exists but could not be
  *   read — zero counts are then UNKNOWN, never a "no run" receipt.
@@ -686,6 +688,7 @@
  * @property {Object=} profiles
  * @property {Array<Object>=} quota
  * @property {ClaudexorStatusReads=} reads
+ * @property {boolean=} unified_accounts
  * @property {Object=} subagent_last_delegation
  * @property {string=} error
  */
@@ -893,4 +896,4 @@
  * @property {?boolean} check_ok
  */
 
-export const GATEWAY_CONTRACT_VERSION = '6.104.0';
+export const GATEWAY_CONTRACT_VERSION = '6.105.1';

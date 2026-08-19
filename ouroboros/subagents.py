@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Any, Dict, List, Mapping
 
 from ouroboros.config import (
@@ -151,11 +151,13 @@ class DelegationRoute:
     ``route_id`` is passed through to Claudexor verbatim as the primary harness.
     Ouroboros never interprets it — no ``if codex/claude/cursor`` anywhere (AGENTS.md).
 
-    ``profile_id`` is the OPTIONAL manual credential pin (Q2-в, applied as the
-    reversible default pending owner confirmation): empty means the daemon's
-    own rotation policy picks the account (D28 — the default); a value rides
-    the run request verbatim as ``credentialProfileId``. Reviewer-slot rows
-    are the only author today.
+    ``profile_id`` is the OPTIONAL manual credential pin: empty means the
+    daemon's own rotation policy picks the account (D28 — the default); a
+    value rides the run request verbatim as ``credentialProfileId``. Two
+    authors: reviewer-slot rows (Q2-в) and the Delegation account pin
+    (``OUROBOROS_SUBAGENT_PROFILE``, unified-accounts sprint D-U5). A pin is
+    STRICT (D-U6): an exhausted pinned window is a typed refusal, never a
+    silent rotation onto a sibling account.
     """
 
     route_id: str
@@ -212,6 +214,18 @@ def get_subagent_harness() -> DelegationRoute | None:
             "OUROBOROS_SUBAGENT_HARNESS is set but unparseable (%r) — "
             "delegation is OFF until it reads harness[=model][:effort]", raw,
         )
+    if route is None:
+        return None
+    # The OPTIONAL account pin (D-U5), a SIBLING key rather than a fourth
+    # grammar position: the route grammar stays Claudexor's own reviewer-panel
+    # spelling, and this is the ONLY reader of the pin key. Empty = the
+    # engine's quota-aware rotation pool (D28).
+    profile = str(
+        os.environ.get("OUROBOROS_SUBAGENT_PROFILE", "")
+        or SETTINGS_DEFAULTS.get("OUROBOROS_SUBAGENT_PROFILE", "")
+    ).strip()
+    if profile:
+        route = dataclass_replace(route, profile_id=profile)
     return route
 
 
@@ -236,14 +250,21 @@ def _last_delegation_path():
 
 
 def record_last_delegation(*, route: str, requested_model: str,
-                           applied_model: str, run_id: str) -> None:
-    """Record the last delegated run's route + requested/applied model.
+                           applied_model: str, run_id: str,
+                           requested_profile: str = "",
+                           applied_profile: str = "") -> None:
+    """Record the last delegated run's route + requested/applied model + account.
 
     Best-effort and atomic, in the CANONICAL data plane beside the saved
     settings (the reviewer-slot projection's own rule): this is UI state, not
     per-task forensics — those live in the custody event log and the ledger.
     ``applied_model`` is the engine summary's own value, '' when the run never
     disclosed one — the requested model is never dressed up as the applied one.
+    The same rule for the account (D-U5): ``applied_profile`` is the engine's
+    ``authRoute.profileId`` settlement receipt, '' when telemetry predates it;
+    ``requested_profile`` is the pin the request carried ('' = rotation) — the
+    two stay separate so a requested-vs-ran mismatch is disclosable, never
+    rewritten.
     """
     import json
 
@@ -261,6 +282,8 @@ def record_last_delegation(*, route: str, requested_model: str,
             "route": str(route or ""),
             "requested_model": str(requested_model or ""),
             "applied_model": str(applied_model or ""),
+            "requested_profile": str(requested_profile or ""),
+            "applied_profile": str(applied_profile or ""),
             "run_id": str(run_id or ""),
         }, ensure_ascii=False, indent=1))
     except Exception:
@@ -359,146 +382,18 @@ def resolve_subagent_executor(
     return SubagentExecutorResolution(executor, "harness", route, "harness_ready")
 
 
-def route_health(
-    gateway: Any, route_id: str, shape: DelegatedRunShape, *, route_model: str = "",
-) -> tuple[str, str]:
-    """Return ``(unavailable_reason, reset_at)`` for a route about to run ``shape``.
-
-    One reader, so the answer the DISPATCHER acts on and the answer the nanny's own
-    ``delegate_start`` gets cannot drift into disagreeing about the same route. Health
-    is asked about the SHAPE, not about a route in the abstract: a route that can only
-    read is not a usable substrate for a child that must write, and an ENGINE that
-    would reject the delegated marker outright is not a usable substrate for one either.
-
-    ``route_model`` is the route's pinned model (``DelegationRoute.model``): quota
-    windows scoped to OTHER models must not take this route offline, so exhaustion is
-    judged against the model the run would actually use. A full-window exhaustion that
-    names no reset instant still reports ``subscription_window_exhausted`` — as the
-    REASON with an empty ``reset_at``, since an unknown healing time is not health.
-    """
-    from ouroboros.config import CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION
-    from ouroboros.gateways.claudexor import engine_at_least
-
-    catalog = gateway.agent_capabilities()
-    entry = None
-    for row in catalog.get("harnesses") or []:
-        if isinstance(row, dict) and str(row.get("id") or "") == route_id:
-            entry = row
-            break
-    if entry is None:
-        return "route_not_in_capability_catalog", ""
-    if not entry.get("enabled") or str(entry.get("status") or "") != "ok":
-        return f"route_status_{entry.get('status') or 'disabled'}", ""
-    supported = [str(v) for v in entry.get("accessProfilesSupported") or []]
-    # A DELEGATED run is externally confined, and the engine rewrites its access to
-    # `external_sandbox_full` before admitting it (`RequestRequirementsResolver.adapterAccess`)
-    # — so the profile the route must declare is that one, not the literal the request
-    # carries. Comparing the literal refused every route whose adapter stands its own
-    # sandbox down in favour of the engine's boundary and therefore declares only the
-    # confined profile: today opencode, which was given `external_sandbox_full` for
-    # exactly this run. Refusing what the engine would admit turned `executor="harness"`
-    # into a typed blocker and `auto` into a silent, metered drop to a native child.
-    if shape.access not in supported and not (
-        shape.delegated and "external_sandbox_full" in supported
-    ):
-        return f"access_profile_unsupported:{shape.access}", ""
-    # An engine below the marker floor REJECTS `execution.delegated` outright — the field
-    # is absent from a `.strict()` schema, so the start is a 400 and no run exists. That
-    # is the only thing this version answers, and it is asked here so the refusal is typed
-    # and arrives before a token is spent instead of as an opaque HTTP error mid-dispatch.
-    # It says NOTHING about whether an admitted engine applies an OS boundary: that is a
-    # per-attempt fact, read back from the run's own artifacts by
-    # `tools.delegate._containment_evidence` and DISCLOSED rather than refused. The floor
-    # cannot be a capability probe either — the marker is nested under `execution`, and
-    # the catalog derives its key list from TOP-LEVEL request keys only.
-    if shape.delegated and not engine_at_least(
-        str(getattr(gateway, "engine_version", "") or ""),
-        CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION,
-    ):
-        return "engine_rejects_delegated_marker", ""
-    exhausted, reset_at = _exhausted_window(gateway, route_id, route_model)
-    if exhausted and not reset_at:
-        # Spent with no named healing instant: still spent. The old shape carried
-        # exhaustion ONLY in a non-empty reset, so a window the harness reports as
-        # fully used but undated read back as a healthy route and the child was
-        # dispatched onto a substrate that was going to refuse it.
-        return "subscription_window_exhausted", ""
-    return "", reset_at
+# Route health and its quota readers live in ouroboros/subagent_route_health.py
+# (extracted at this module's size ceiling); re-exported here because the
+# dispatcher, the delegate verbs, the reviewer slots and their monkeypatching
+# tests all name them on THIS surface.
+from ouroboros.subagent_route_health import (  # noqa: E402,F401 — re-exported public surface
+    _cooldown_active,
+    _exhausted_window,
+    _model_scope_matches,
+    route_health,
+)
 
 
-def _model_scope_matches(route_model: str, applies_to_models: Any) -> bool:
-    """Does a quota constraint's model scope cover the route's pinned model?
-
-    An empty/absent scope is a GLOBAL window — it always applies. An unpinned route
-    (no model in ``OUROBOROS_SUBAGENT_HARNESS``) can land on any model, so every
-    scoped window applies to it too. Otherwise the scope's aliases are matched by
-    case-insensitive containment either way ("opus" ↔ "claude-opus-5"): the harness
-    names windows by its own alias vocabulary, which this module must not enumerate.
-    """
-    aliases = [str(a).strip().lower() for a in (applies_to_models or []) if str(a).strip()]
-    if not aliases:
-        return True
-    model = str(route_model or "").strip().lower()
-    if not model:
-        return True
-    return any(a == model or a in model or model in a for a in aliases)
-
-
-def _exhausted_window(gateway: Any, route_id: str, route_model: str = "") -> tuple[bool, str]:
-    """``(exhausted, reset_at)`` for a route judged against its OWN model.
-
-    A window counts as spent when the harness reports it fully used or explicitly
-    cooling down AND its model scope covers the route's model — a window scoped to a
-    model this route never uses (the live incident: a Fable-only weekly window taking
-    an opus-pinned route offline for days) is someone else's exhaustion, not this
-    route's. Stale snapshots are ignored — an old reading must not block a lane.
-
-    ANY LIVE SNAPSHOT MEANS THE LANE IS USABLE (D28). And exhaustion needs POSITIVE
-    evidence for the WHOLE route: a profile whose quota could not be read at all
-    (absent — a 429 on the usage endpoint, a failed refresh) is UNKNOWN, not spent,
-    so it fail-opens the route: the daemon owns rotation and answers a genuinely
-    empty route with its own typed refusal at start time, which costs nothing here.
-    Only when every readable profile is spent and none is unreadable is there
-    something to wait for; the honest instant is the EARLIEST named reset (possibly
-    none — spent windows are not obliged to carry one).
-
-    A snapshot with an applicable spent constraint counts as spent even if another of
-    ITS OWN constraints has room: a 5-hour window at 100% blocks that profile now,
-    whatever its weekly window says. WHICH profile a run lands on is Claudexor's
-    business — rotation stays there and no profile identity is interpreted here.
-    """
-    resets: List[str] = []
-    any_live = False
-    any_spent = False
-    for snapshot in gateway.quota_snapshots():
-        subject = snapshot.get("subject") if isinstance(snapshot.get("subject"), dict) else {}
-        if str(subject.get("harness") or "") != route_id:
-            continue
-        if str(snapshot.get("freshness") or "") != "fresh":
-            continue
-        spent_here = [
-            (str(c.get("cooldown_until") or "") or str(c.get("resets_at") or ""))
-            for c in (snapshot.get("constraints") or [])
-            if isinstance(c, dict)
-            and (bool(c.get("cooldown_until"))
-                 or (isinstance(c.get("used_ratio"), (int, float))
-                     and float(c.get("used_ratio")) >= 1.0))
-            and _model_scope_matches(route_model, c.get("applies_to_models"))
-        ]
-        if spent_here:
-            any_spent = True
-            resets.extend(reset for reset in spent_here if reset)
-        else:
-            any_live = True
-    if any_live or not any_spent:
-        return False, ""
-    absences = getattr(gateway, "quota_absences", None)
-    if callable(absences):
-        for row in absences() or []:
-            subject = row.get("subject") if isinstance(row, dict) else None
-            if isinstance(subject, dict) and str(subject.get("harness") or "") == route_id:
-                return False, ""
-    return True, min(resets) if resets else ""
 
 
 def probe_subagent_executor(
@@ -523,6 +418,7 @@ def probe_subagent_executor(
         gateway = ensure_owned_gateway()
         unavailable, reset_at = route_health(
             gateway, route.route_id, run_shape, route_model=route.model,
+            pinned_profile=route.profile_id,
         )
     except ClaudexorUnavailable as exc:
         return resolve_subagent_executor(
@@ -821,7 +717,8 @@ def preflight_native_fallback_dispatch(
         lane_provenance=lane.provenance,
         effective_effort=effective_effort,
         effective_executor="native",
-        reason="; ".join(reasons),
+        reduction_reasons=tuple(reasons),
+        reason=derive_capability_reason(reasons),
         reduced=True,
     )
     return dataclasses.replace(
@@ -835,6 +732,14 @@ def preflight_native_fallback_dispatch(
             executor="native", reason=reason, reset_at="",
         ),
     )
+
+
+def derive_capability_reason(reduction_reasons: Any, substrate_disclosures: Any = ()) -> str:
+    """THE one author of ``CapabilityDelta.reason``: every writer derives the
+    string from the typed lists through this join, so string and lists cannot
+    diverge (B4); old hand-concatenated durable records stay readable, and
+    ``str()`` keeps the join total over stored garbage."""
+    return "; ".join(str(r) for r in [*(reduction_reasons or ()), *(substrate_disclosures or ())])
 
 
 @dataclass(frozen=True)
@@ -872,6 +777,10 @@ class CapabilityDelta:
     effective_executor: str = "native"
     reason: str = ""
     reduced: bool = False
+    # Typed axes behind `reason` (B4, 7A): dispatch vs completion-seam facts are
+    # UNRELATED; `reason` derives from these additive lists.
+    reduction_reasons: tuple = ()
+    substrate_disclosures: tuple = ()
     # A field that was accepted once, is still on durable records, and is now
     # IGNORED — stated here rather than dropped, because a value that silently stops
     # meaning anything is the same class of defect as a reduction nobody announces.
@@ -890,6 +799,8 @@ class CapabilityDelta:
             "effective_executor": self.effective_executor,
             "reason": self.reason,
             "reduced": bool(self.reduced),
+            "reduction_reasons": [str(r) for r in self.reduction_reasons],
+            "substrate_disclosures": [str(s) for s in self.substrate_disclosures],
             "legacy_note": self.legacy_note,
         }
 
@@ -922,6 +833,9 @@ def capability_delta_disclosures(delta: Mapping[str, Any]) -> List[str]:
     effective_executor = str(delta.get("effective_executor") or "")
     if requested_executor != "auto" and effective_executor != requested_executor:
         parts.append(f"executor {requested_executor}->{effective_executor}")
+    # Substrate facts (B4): SEPARATE entries after the slot axes, never spliced.
+    parts.extend(
+        str(fact) for fact in (delta.get("substrate_disclosures") or []) if str(fact))
     return parts
 
 
@@ -1165,7 +1079,8 @@ def resolve_subagent_dispatch(
         effective_effort=effective_effort,
         requested_executor=requested_executor,
         effective_executor=executor,
-        reason="; ".join(reasons),
+        reduction_reasons=tuple(reasons),
+        reason=derive_capability_reason(reasons),
         reduced=bool(reasons),
         legacy_note="; ".join(sorted(legacy_ignored.values())),
     )
@@ -1343,18 +1258,35 @@ def substrate_result_fields(envelope: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _disclose_native_only_substrate(delta: Dict[str, Any]) -> Dict[str, Any]:
+def _disclose_native_only_substrate(
+    delta: Dict[str, Any], *, nudge_ignored: bool = False,
+) -> Dict[str, Any]:
     """A harness dispatch that never started a delegated run is a REDUCED execution.
 
     Surfaced through the EXISTING capability_delta disclosure (owner decision:
-    no new axis). Amends a COPY at the completion seam; the dispatch-time
-    author's dict on the live task stays untouched.
-    """
+    no new axis). Amends a COPY at the completion seam (the live task's dict
+    stays untouched); facts land in ``substrate_disclosures`` and ``reason``
+    re-derives (B4); a pre-lists legacy dict keeps its concatenated shape.
+    ``nudge_ignored`` adds ``nanny_finalized_after_nudge_without_delegation``
+    (3A): the nudge was really INJECTED (durable worker stamp, never the
+    suppression-blind ctx flag) and the child COMPLETED with zero runs."""
     amended = dict(delta or {})
-    reason = str(amended.get("reason") or "")
-    if "delegated_substrate_unused" not in reason:
-        amended["reason"] = "; ".join(
-            part for part in (reason, "delegated_substrate_unused") if part)
+    facts = ["delegated_substrate_unused"]
+    if nudge_ignored:
+        facts.append("nanny_finalized_after_nudge_without_delegation")
+    disclosures = [str(s) for s in (amended.get("substrate_disclosures") or [])]
+    disclosures.extend(fact for fact in facts if fact not in disclosures)
+    amended["substrate_disclosures"] = disclosures
+    reduction = amended.get("reduction_reasons")
+    if isinstance(reduction, list):
+        amended["reason"] = derive_capability_reason(reduction, disclosures)
+    else:
+        # Legacy string-only record: preserve the historical concatenation idempotently.
+        reason = str(amended.get("reason") or "")
+        for fact in facts:
+            if fact not in reason:
+                reason = "; ".join(part for part in (reason, fact) if part)
+        amended["reason"] = reason
     amended["reduced"] = True
     return amended
 
@@ -1406,16 +1338,22 @@ def envelope_from_task(
     """
     usage = usage or {}
     evidence = _execution_evidence_for_task(task, status)
-    # Unreadable custody log: the zero counts are UNKNOWN, not established
-    # facts — no substrate claim and no reduction amendment (the docs/JSDoc
-    # contract; omission keeps the enum vocabulary closed).
+    # Unreadable custody log: zero counts are UNKNOWN — no substrate claim, no
+    # reduction amendment (docs/JSDoc contract; omission keeps the enum closed).
     claimable = evidence is not None and not evidence.get("evidence_read_failed")
     substrate = actual_substrate(evidence) if claimable else ""
     capability_delta = task.get("capability_delta") if isinstance(task.get("capability_delta"), dict) else {}
     if substrate == SUBSTRATE_NATIVE_ONLY and str(task.get("effective_executor") or "") == "harness":
-        # Q1A: a harness dispatch that ended native_only must not present as a
-        # clean un-reduced execution — the envelope carries the amended copy.
-        capability_delta = _disclose_native_only_substrate(capability_delta)
+        # Q1A: a harness dispatch that ended native_only carries the amended
+        # copy. B3: only COMPLETED + the durable stamp + ZERO durable attempts
+        # (a nanny refused typed after TRYING delegate_start did not ignore
+        # the nudge — this stays an obedience fact, never an accusation).
+        capability_delta = _disclose_native_only_substrate(
+            capability_delta,
+            nudge_ignored=(str(status or "") == "completed"
+                           and bool(evidence.get("nanny_nudge_recorded"))
+                           and not evidence.get("delegate_start_attempted")),
+        )
     return build_subagent_envelope(
         task_id=str(task.get("id") or ""),
         parent_task_id=str(task.get("parent_task_id") or ""),

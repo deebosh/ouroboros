@@ -200,3 +200,20 @@ def _agent_slot(**overrides):
                 route=ReviewRouteKind.AGENT_SESSION)
     base.update(overrides)
     return ReviewSlot(**base)
+
+
+def _run_session_directly(tmp_path, **overrides):
+    """Call the shared session runner with explicit knobs (the B-class surface)."""
+    from ouroboros.review_execution import (
+        SessionInvocation, run_delegated_review_session,
+    )
+
+    invocation = dict(task_id="t-b", surface="scope_review", slot_id="scope_slot_1",
+                      timeout_sec=30)
+    kwargs = dict(prompt="review this", root="/tmp/fake-repo", custody_drive=tmp_path)
+    for key in list(overrides):
+        if key in ("task_id", "surface", "slot_id", "timeout_sec", "logical_key_extra",
+                   "output_schema", "session_route", "instructions", "retry_state"):
+            invocation[key] = overrides.pop(key)
+    kwargs.update(overrides)
+    return run_delegated_review_session(invocation=SessionInvocation(**invocation), **kwargs)

@@ -87,6 +87,8 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _resume_interrupted_project_deletions,
     _run_startup_task_recovery,
     _startup_custody_sweep,
+    _startup_prune_sweeps,
+    _startup_worktree_prune,
 )
 from ouroboros.server_restart import (  # noqa: F401
     _check_pending_restart_drain,
@@ -325,6 +327,11 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 sender_session_id=sender_session_id,
                 client_message_id=client_message_id,
                 transport=transport,
+                client_surface=(
+                    task_metadata.get("client_surface")
+                    if isinstance(task_metadata, dict) and isinstance(task_metadata.get("client_surface"), dict)
+                    else None
+                ),
             )
             from ouroboros.project_dialogue import build_owner_message_ref
 
@@ -532,6 +539,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                     "task_metadata": task_metadata,
                     "log_text": log_text,
                     "origin_message_ref": origin_message_ref,
+                    "source": source,
                 },
             )
     return offset
@@ -643,19 +651,14 @@ def _run_supervisor(settings: dict) -> None:
 
         bus_init(
             drive_root=DATA_DIR,
-            total_budget_limit=float(
-                settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])
-            ),
+            total_budget_limit=float(settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])),
             budget_report_every=10,
             chat_bridge=bridge,
         )
 
         from supervisor.state import init as state_init, init_state, load_state, save_state, update_state
         from supervisor.state import append_jsonl, update_budget_from_usage, rotate_chat_log_if_needed, rotate_jsonl_log_if_needed
-        state_init(
-            DATA_DIR,
-            float(settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])),
-        )
+        state_init(DATA_DIR, float(settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])))
         init_state()
 
         from supervisor.git_ops import safe_restart
@@ -694,44 +697,11 @@ def _run_supervisor(settings: dict) -> None:
         spawn_workers(max_workers)
         persist_queue_snapshot(reason="startup")
         _resume_interrupted_project_deletions()
-        try:
-            from ouroboros.headless import prune_headless_task_drives, prune_task_drives, prune_task_trees
-            from ouroboros.utils import sweep_stale_temp_files
-
-            prune_report = prune_headless_task_drives(DATA_DIR)
-            task_drive_report = prune_task_drives(DATA_DIR)
-            # Ephemeral task-tree coordination ledgers age out with their terminal root.
-            prune_task_trees(DATA_DIR)
-            # Reap orphaned atomic-write temp files (.*.tmp.*) left by a hard kill.
-            sweep_stale_temp_files(DATA_DIR)
-            if (
-                prune_report.get("pruned")
-                or prune_report.get("errors")
-                or task_drive_report.get("pruned")
-                or task_drive_report.get("errors")
-            ):
-                append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
-                    "ts": utc_now_iso(),
-                    "type": "headless_task_drive_prune",
-                    "report": prune_report,
-                    "task_drives": task_drive_report,
-                })
-        except Exception:
-            log.debug("Headless task drive prune failed", exc_info=True)
+        # Original startup order preserved: drive prunes, custody sweep (reap
+        # orphaned processes), THEN worktree prune.
+        _startup_prune_sweeps()
         _startup_custody_sweep()
-
-        try:
-            from ouroboros import subagent_worktrees
-
-            worktree_report = subagent_worktrees.prune_orphans()
-            if worktree_report.get("removed"):
-                append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
-                    "ts": utc_now_iso(),
-                    "type": "subagent_worktree_prune",
-                    "report": worktree_report,
-                })
-        except Exception:
-            log.debug("Subagent worktree prune failed", exc_info=True)
+        _startup_worktree_prune()
 
         _prune_delegated_snapshots()
 

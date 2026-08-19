@@ -56,6 +56,13 @@ def dispatch_executor_note(decision: Optional[SubagentExecutorResolution],
     LIGHT lane by policy is told so, with the sanctioned escalation
     (``switch_model`` for real acceptance judgment) named beside it — a policy the
     child cannot see is a policy it will fight by accident.
+
+    The harness branch SUPERSEDES any native-self-execution framing in the frozen
+    task text (owner decision 2A): the composed text is written at schedule time,
+    when the executor is unknown, so its execution framing describes the metered
+    fallback — and this note rides ONLY the FINAL post-preflight harness dispatch
+    (the call site runs after the delegate-visibility preflight), so a native or
+    preflight-demoted child never receives the override.
     """
     if decision is None or decision.blocked:
         return ""
@@ -79,7 +86,14 @@ def dispatch_executor_note(decision: Optional[SubagentExecutorResolution],
             "returns waiting_on_user), answer it from the task context with "
             "delegate_answer; a question above your authority — money, scope, external "
             "actions — goes to your human via progress while you keep waiting (a timeout_at "
-            "question benign-declines at the engine timeout; timeout_at=null waits until answered)."
+            "question benign-declines at the engine timeout; timeout_at=null waits until answered). "
+            "If your task text instructs you to execute the work natively yourself, that "
+            "instruction described the metered fallback and is superseded by this dispatch. "
+            "Route thinking-work (code, research, generation) through "
+            "delegate_start/delegate_wait; your own run_command/read_file rounds are for "
+            "verification, integration, and acceptance. The parent's step-by-step context "
+            "is the WORK ORDER for your delegated run's prompt, not a script for you to "
+            "execute natively."
         )
         if lane is not None and lane.provenance == "policy" and lane.effective_lane == "light":
             note += (
@@ -152,13 +166,21 @@ def executor_blocked_outcome(decision: SubagentExecutorResolution) -> Tuple[str,
         if decision.reason == "delegate_visibility_unverified":
             return text, {"execution_status": "infra_failed", "reason_code": "delegate_visibility_unverified"}
         return text, {"execution_status": "infra_failed", "reason_code": "delegate_tools_invisible"}
+    # ":delegation_" is route_health's structural refinement (Phase D3): the
+    # catalog row's manifest cannot run delegated work AT ALL, so "reschedule
+    # once the route recovers" would honestly mean "wait forever" (e.g. agy).
     text = (
         "⚠️ EXECUTOR_UNAVAILABLE: this subagent was pinned to the delegated substrate "
         f"(executor='harness') and the route cannot run: {decision.reason}."
         + (f" It resets at {decision.reset_at}." if decision.reset_at else "")
         + " The task was NOT run on metered API tokens, because that spend is exactly "
-        "what the pin exists to prevent. Reschedule once the route recovers, or "
-        "schedule it again with executor='auto' to accept metered spend."
+        "what the pin exists to prevent. "
+        + ("This harness structurally cannot run delegated work (its manifest does not "
+           "support it), so waiting will not heal it: change the delegated route, or "
+           "schedule it again with executor='auto' to accept metered spend."
+           if ":delegation_" in decision.reason else
+           "Reschedule once the route recovers, or "
+           "schedule it again with executor='auto' to accept metered spend.")
     )
     return text, {
         "execution_status": "infra_failed",
@@ -402,8 +424,17 @@ def preflight_delegate_visibility(
         return amended, True
 
     def _append_reason(delta: CapabilityDelta, note: str, **changes: Any) -> CapabilityDelta:
-        reasons = [part for part in (delta.reason, note) if part]
-        return dataclasses.replace(delta, reason="; ".join(reasons), **changes)
+        from ouroboros.subagents import derive_capability_reason
+
+        # Seed from the legacy string when the typed list is empty but a reason
+        # exists (a stored pre-lists delta): rebuilding purely from the list
+        # would silently DISCARD that disclosure text (P1).
+        base = delta.reduction_reasons or ((delta.reason,) if delta.reason else ())
+        reasons = (*base, note)
+        return dataclasses.replace(
+            delta, reduction_reasons=reasons,
+            reason=derive_capability_reason(reasons, delta.substrate_disclosures),
+            **changes)
 
     pinned = str(task.get("requested_executor") or "auto").strip().lower() == "harness"
     reason = "delegate_tools_invisible"
@@ -509,11 +540,25 @@ def capability_delta_prompt_block(dispatch: Optional[SubagentDispatch]) -> str:
         # fact reaches the child through `dispatch_executor_note` beside this
         # block, so rendering "BELOW what your parent asked for:" over an empty
         # list here told the child nothing and read as a broken sentence.
+        # The parenthetical carries the typed DISPATCH axes only (B4): substrate
+        # facts are completion-seam and never fuse into this dispatch sentence
+        # (a fresh resolution carries none anyway).
+        reduction = delta.get("reduction_reasons")
+        reason_text = (
+            "; ".join(reduction) if isinstance(reduction, list) and reduction
+            else (delta.get("reason") or "unspecified")
+        )
+        action = (
+            "Do the work anyway — routed through your delegated run "
+            "(delegate_start / delegate_wait), not your own metered rounds — but say "
+            if delta.get("effective_executor") == "harness"
+            else "Do the work anyway, but say "
+        )
         parts.append(
             "You are running BELOW what your parent asked for: "
             + "; ".join(disclosures)
-            + f" ({delta.get('reason') or 'unspecified'}). Do the work anyway, but say "
-            "so in blockers if the gap actually limited your answer — do not quietly "
+            + f" ({reason_text}). " + action
+            + "so in blockers if the gap actually limited your answer — do not quietly "
             "return a weaker result as if it were full strength."
         )
     if delta.get("legacy_note"):

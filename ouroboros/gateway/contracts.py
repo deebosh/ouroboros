@@ -38,6 +38,12 @@ class ChatInbound(TypedDict):
     # stays user_id 1; chat_id selects the thread, project_id scopes memory.
     chat_id: NotRequired[int]
     project_id: NotRequired[str]
+    # Per-message sending-surface observables (additive-optional): raw facts the
+    # SPA measures at send time (pywebview bridge presence, ua, viewport,
+    # matchMedia booleans, captured_at). The gateway normalizes through the
+    # closed-key bounded `client_surface.normalize_client_surface`; absence is an
+    # honest gap, never defaulted.
+    client_surface: NotRequired[dict]
 
 
 class TaskConstraintInbound(TypedDict, total=False):
@@ -125,7 +131,10 @@ class ChatOutbound(TypedDict):
     # The completion-seam EVIDENCE the route decision is reconciled against
     # (subagents.envelope_from_task): delegated runs started/settled/succeeded,
     # terminal failure states, disclosed subscription spend (+estimated flag),
-    # engine-reported models. Terminal frames only; its absence means "no
+    # engine-reported models, the additive `nanny_nudge_recorded` flag (a
+    # non-empty finalization nudge was durably stamped), and the additive
+    # `delegate_start_attempted` flag (any durable delegate_start attempt,
+    # refused or started). Terminal frames only; its absence means "no
     # evidence yet", never "ran natively".
     execution_evidence: NotRequired[Dict[str, Any]]
     # The FACT beside the executor_route plan, from the same custody evidence:
@@ -930,6 +939,14 @@ class ClaudexorStatusResponse(TypedDict, total=False):
     profiles: Dict[str, Any]
     quota: List[Dict[str, Any]]
     reads: ClaudexorStatusReads
+    # UNIFIED ACCOUNT MODEL feature fact (additive-optional): True only when
+    # the engine's own /v2/operations catalog was read and advertises
+    # `GET /v2/account-pools` — the engine change that migrates every default
+    # CLI login into a named registry row, empties `harnessAccounts` and
+    # carries pool routing in the additive `profiles.accountPools` key. False
+    # (or absent, on an older backend) means the legacy native-pseudo-row
+    # rendering; an unreadable catalog fails closed to False.
+    unified_accounts: bool
     subagent_last_delegation: Dict[str, Any]
     error: str
 
@@ -1206,6 +1223,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/claudexor/login/{job_id}/input",
     "POST /api/claudexor/login/{job_id}/reconcile",
     "DELETE /api/claudexor/credential-profiles/{harness}/{profile_id}",
+    "PATCH /api/claudexor/credential-profiles/{harness}/{profile_id}",
     "GET /api/extensions",
     "GET /api/extensions/{skill}/manifest",
     "GET /api/extensions/{skill}/module/{entry}",

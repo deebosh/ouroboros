@@ -220,11 +220,12 @@ def _save_settings(path: pathlib.Path, settings: dict) -> None:
     process that was given no path overrides — pinned by
     tests/test_settings_read_seam.py."""
     from ouroboros.config import prepare_settings_for_persist, serialize_settings
+    from ouroboros.utils import replace_atomic
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(serialize_settings(prepare_settings_for_persist(dict(settings))), encoding="utf-8")
-    os.replace(tmp, path)
+    replace_atomic(tmp, path)
 
 
 def _run_inner_cli(runtime: PackagedRuntime, args: Sequence[str]) -> int:

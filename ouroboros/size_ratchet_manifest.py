@@ -136,6 +136,7 @@ BAND_PATHS = {
     "tests/test_advisory_observability.py": None,
     "tests/test_build_scripts.py": None,
     "tests/test_claude_code_gateway.py": None,
+    "tests/test_claudexor_owned_daemon.py": "upstream v6.105.0 added the rotation-reconcile lifecycle suite (13 tests plus the _ReconcileGateway/_rotation_receipt_path helpers) to the module that already owns the owned-daemon ensure/attach lifecycle; the four unified-accounts tests from the same upstream block were re-homed to their themed siblings, so what grew here is the parent's own theme",
     "tests/test_commit_gate.py": None,
     "tests/test_contracts.py": None,
     "tests/test_delegated_skill_payload.py": "Sol scope-review fix batch: P1 trust probes (forged index, symlinked git metadata), P2 golden-E2E review close and schema/docs pins joined the existing R1+gate-fix payload suite.",

@@ -23,7 +23,10 @@ from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
 from supervisor.task_lifecycle import record_scheduled_admission
 from supervisor.schedule_time import (
     next_cron_time as _next_cron_time,
+    once_due as _once_due,
     parse_schedule_time as _parse_schedule_time,
+    prune_consumed_once_records as _prune_consumed_once,
+    record_last_error as _record_last_error,
     schedule_next_run as _schedule_next_run,
     timezone_for_schedule as _timezone_for_schedule,
 )
@@ -294,27 +297,38 @@ def check_scheduled_tasks() -> None:
                 continue
             tz = _timezone_for_schedule(record)
             now = now_utc.astimezone(tz)
-            if trigger_type != "cron":
-                record["last_error"] = f"unsupported trigger type: {trigger_type}"
-                changed = True
-                continue
-            expr = str(trigger.get("expr") or record.get("cron") or "").strip()
-            if not expr:
-                record["last_error"] = "missing cron expression"
-                changed = True
-                continue
-            next_run = _parse_schedule_time(record.get("next_run_at"), tz)
-            if next_run is None:
-                try:
-                    next_run = _next_cron_time(expr, now - datetime.timedelta(minutes=1))
-                    record["next_run_at"] = next_run.isoformat()
-                    changed = True
-                except Exception as exc:
-                    record["last_error"] = f"{type(exc).__name__}: {exc}"
-                    changed = True
+            expr = ""
+            if trigger_type == "once":
+                # One-shot (B2b W=A): fires once at/after run_at via the same admission path
+                # as cron, then is marked done below. A consumed receipt (non-empty completed_at)
+                # NEVER re-fires even re-enabled from UI; re-arm = gateway upsert, fresh run_at.
+                if record.get("completed_at"):
                     continue
-            if next_run > now:
+                due, once_error = _once_due(trigger, tz, now)
+                if once_error:
+                    changed = _record_last_error(record, once_error) or changed
+                    continue
+                if not due:
+                    continue
+            elif trigger_type != "cron":
+                changed = _record_last_error(record, f"unsupported trigger type: {trigger_type}") or changed
                 continue
+            else:
+                expr = str(trigger.get("expr") or record.get("cron") or "").strip()
+                if not expr:
+                    changed = _record_last_error(record, "missing cron expression") or changed
+                    continue
+                next_run = _parse_schedule_time(record.get("next_run_at"), tz)
+                if next_run is None:
+                    try:
+                        next_run = _next_cron_time(expr, now - datetime.timedelta(minutes=1))
+                        record["next_run_at"] = next_run.isoformat()
+                        changed = True
+                    except Exception as exc:
+                        changed = _record_last_error(record, f"{type(exc).__name__}: {exc}") or changed
+                        continue
+                if next_run > now:
+                    continue
             if str(record.get("source") or "") == "skill_manifest":
                 if collision_names is None:
                     collision_names = skill_identity_collision_names(_queue().DRIVE_ROOT)
@@ -349,11 +363,27 @@ def check_scheduled_tasks() -> None:
             record["last_run_at"] = now.isoformat()
             record["last_task_id"] = task["id"]
             record_scheduled_admission(task, admitted, record)
-            try:
-                record["next_run_at"] = _next_cron_time(expr, now).isoformat()
-            except Exception as exc:
-                record["last_error"] = f"{type(exc).__name__}: {exc}"
+            if trigger_type == "once":
+                if not (isinstance(admitted, dict) and admitted.get("_admission_blocked")):
+                    # Consumed ONLY when admission succeeded (durable receipt, never re-fired); a
+                    # refused admission left the record enabled with last_error → next tick retries.
+                    record["enabled"] = False
+                    record["completed_at"] = now.isoformat()
+                    record["next_run_at"] = ""
+            else:
+                try:
+                    record["next_run_at"] = _next_cron_time(expr, now).isoformat()
+                except Exception as exc:
+                    record["last_error"] = f"{type(exc).__name__}: {exc}"
             changed = True
+        # Consumed one-shot receipts age out past the unified GC retention (DEVELOPMENT
+        # Runtime Cleanup SSOT; enabled records are never pruned — see the helper).
+        from ouroboros.retention import age_cutoff, get_gc_retention_days
+
+        kept, pruned = _prune_consumed_once(list(data.get("tasks") or []),
+                                            age_cutoff(get_gc_retention_days()))
+        if pruned:
+            data["tasks"], changed = kept, True
         if changed:
             _write_scheduled_tasks(data)
             _queue().persist_queue_snapshot(reason="scheduled_tasks")

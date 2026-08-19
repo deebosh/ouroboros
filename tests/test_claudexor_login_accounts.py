@@ -399,3 +399,82 @@ def test_login_create_passes_the_daemon_400_verdict_through(monkeypatch):
     answer = asyncio.run(_call())
     assert answer.status_code == 503
     assert b"http_400" in answer.body
+
+
+def test_account_enabled_toggle_is_the_engine_contract(monkeypatch, tmp_path):
+    """The Enabled toggle shares the credential-profile route (PATCH beside
+    DELETE) and is the same thin-proxy rule: one forwarded call carrying the
+    engine's own strict ``{enabled}`` body, a refusal answered AS a refusal,
+    and a body that is not one JSON boolean refused at this edge before any
+    daemon work — nothing is coerced for the engine."""
+    import asyncio
+    import json
+
+    from starlette.requests import Request
+
+    from ouroboros.gateway import claudexor_accounts as accounts
+    from ouroboros.gateways import claudexor as gw
+    import ouroboros.claudexor_daemon as owned
+
+    patched: list = []
+
+    class FakeGateway:
+        def __init__(self, endpoint):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def handshake(self, **_kw):
+            return {}
+
+        def update_credential_profile(self, harness_id, profile_id, *, enabled):
+            if refuse:
+                raise gw.ClaudexorUnavailable("profile_unknown", "no such registry row")
+            patched.append((harness_id, profile_id, enabled))
+            return {"profile": {}, "status": {}}
+
+    monkeypatch.setattr(owned, "owned_config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(gw, "ClaudexorGateway", FakeGateway)
+    monkeypatch.setattr(gw, "discover_daemon_at", lambda _cfg: object())
+
+    def _call(harness, profile_id, body):
+        raw = json.dumps(body).encode("utf-8") if body is not None else b""
+
+        async def receive():
+            return {"type": "http.request", "body": raw, "more_body": False}
+
+        request = Request({
+            "type": "http", "method": "PATCH",
+            "path": f"/api/claudexor/credential-profiles/{harness}/{profile_id}",
+            "headers": [(b"content-type", b"application/json")], "query_string": b"",
+            "path_params": {"harness": harness, "profile_id": profile_id},
+        }, receive)
+        return asyncio.run(accounts.api_claudexor_credential_profile(request))
+
+    refuse = False
+    ok = _call("codex", "work", {"enabled": False})
+    assert ok.status_code == 200
+    assert patched == [("codex", "work", False)], "the handler forwards and does nothing else"
+    body = json.loads(ok.body)
+    assert body == {"ok": True, "harness": "codex", "profile_id": "work", "enabled": False}
+
+    refuse = True
+    denied = _call("codex", "work", {"enabled": True})
+    assert denied.status_code == 503
+    assert b"profile_unknown" in denied.body
+    assert patched == [("codex", "work", False)], "a refusal toggled nothing"
+
+    refuse = False
+    for bad in ({"enabled": "true"}, {"enabled": 1}, {}, None):
+        answer = _call("codex", "work", bad)
+        assert answer.status_code == 400, f"non-boolean body {bad!r} must refuse at the edge"
+        assert b"enabled" in answer.body
+    assert patched == [("codex", "work", False)], "no invalid body reached the daemon"
+
+    bare = _call("codex", "", {"enabled": True})
+    assert bare.status_code == 400
+    assert b"profile_id" in bare.body

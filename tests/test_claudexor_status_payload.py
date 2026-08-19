@@ -438,3 +438,115 @@ def test_wake_endpoint_discloses_a_typed_refusal_instead_of_a_generic_error(monk
 
     assert response.status_code == 503
     assert "claudexord_not_installed" in json.loads(response.body)["error"]
+
+
+def test_status_payload_stamps_the_unified_accounts_fact(monkeypatch, tmp_path):
+    """`unified_accounts` rides every status answer: True only when the
+    operations catalog was READ and carries the account-pools marker; an old
+    engine reads False, and a catalog read failure fails CLOSED to False (the
+    legacy rendering is correct on every engine; a guessed True is not)."""
+    from ouroboros.gateway.claudexor_accounts import _status_payload
+    from ouroboros.gateways import claudexor as gw
+    import ouroboros.claudexor_daemon as owned
+
+    class FakeDaemon:
+        def status_dict(self):
+            return {"state": "running"}
+
+    class FakeGateway:
+        engine_version = "9.9.9"
+        operations_answer: list = [{"id": "get:account-pools"}]
+
+        def __init__(self, endpoint):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def handshake(self, **_kw):
+            return {}
+
+        def agent_capabilities(self):
+            return {"harnesses": []}
+
+        def harnesses(self):
+            return []
+
+        def credential_profiles(self):
+            return {"profiles": [], "harnessAccounts": [], "accountPools": []}
+
+        def quota_snapshots(self):
+            return []
+
+        def operations(self):
+            return type(self).operations_answer
+
+    monkeypatch.setattr(owned, "get_owned_daemon", lambda: FakeDaemon())
+    monkeypatch.setattr(owned, "owned_config_dir", lambda: tmp_path / "cfg")
+    monkeypatch.setattr(gw, "discover_daemon_at", lambda _path: object())
+    monkeypatch.setattr(gw, "ClaudexorGateway", FakeGateway)
+
+    assert _status_payload(include_models=False)["unified_accounts"] is True
+
+    FakeGateway.operations_answer = [{"id": "get:quota"}]
+    assert _status_payload(include_models=False)["unified_accounts"] is False
+
+    class BrokenCatalog(FakeGateway):
+        def operations(self):
+            raise gw.ClaudexorUnavailable("daemon_unreachable", "catalog read died")
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", BrokenCatalog)
+    payload = _status_payload(include_models=False)
+    assert payload["unified_accounts"] is False, "an unreadable catalog fails closed to the old model"
+    # …and the absorbed catalog read never downgrades the real facets.
+    assert payload["reads"] == {"catalog": "ok", "accounts": "ok", "quota": "ok"}
+
+    class NoCatalogMethod(FakeGateway):
+        operations = None
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", NoCatalogMethod)
+    assert _status_payload(include_models=False)["unified_accounts"] is False
+
+    class UnifiedWire(FakeGateway):
+        # The unified engine's full accounts body (frozen contract §L.1):
+        # every account a named registry row, the legacy key an empty
+        # compatibility list, the routing verdict in the ADDITIVE pool key.
+        operations_answer = [{"id": "get:account-pools"}]
+
+        def harnesses(self):
+            # A populated manifest read turns the visibility filters ON —
+            # exactly the path that rewrites the profiles body's other keys.
+            return [{"id": "codex", "manifest": {"capability_profile": {
+                "auth": {"supported_sources": ["native_session"]}}}}]
+
+        def credential_profiles(self):
+            return {
+                "profiles": [{"profile": {"harness_id": "codex",
+                                          "profile_id": "codex-default"}}],
+                "harnessAccounts": [],
+                "accountPools": [{"harness_id": "codex",
+                                  "next_up": {"kind": "profile",
+                                              "profileId": "codex-default"}}],
+            }
+
+    monkeypatch.setattr(gw, "ClaudexorGateway", UnifiedWire)
+    served = _status_payload(include_models=False)
+    # The ADDITIVE pool key rides the accounts facet through the visibility
+    # filters untouched: the store's dual-wire nextUpAccount reader and the
+    # onboarding dual-read both consume it from this one served payload.
+    assert served["unified_accounts"] is True
+    assert served["profiles"]["accountPools"] == [
+        {"harness_id": "codex",
+         "next_up": {"kind": "profile", "profileId": "codex-default"}}]
+    assert served["profiles"]["harnessAccounts"] == []
+    assert [w["profile"]["profile_id"] for w in served["profiles"]["profiles"]] == ["codex-default"]
+
+    class StoppedDaemon:
+        def status_dict(self):
+            return {"state": "stale"}
+
+    monkeypatch.setattr(owned, "get_owned_daemon", lambda: StoppedDaemon())
+    assert _status_payload(include_models=False)["unified_accounts"] is False

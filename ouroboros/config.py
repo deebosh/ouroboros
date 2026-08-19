@@ -19,9 +19,7 @@ import time
 from typing import Any, Optional, Sequence  # noqa: F401
 
 from ouroboros.context_mode_compat import (
-    normalize_and_persist_context_mode_compat,
-    normalize_context_mode,
-    owner_declared_low,
+    normalize_and_persist_context_mode_compat, normalize_context_mode, owner_declared_low,
 )
 from ouroboros.platform_layer import pid_lock_acquire as _compat_pid_lock_acquire, pid_lock_release as _compat_pid_lock_release
 from ouroboros.provider_models import compute_direct_review_models_fallback, local_only_review_route_env, migrate_model_value, review_model_uses_local as review_model_uses_local  # noqa: F401
@@ -143,14 +141,12 @@ def _guard_live_settings_write() -> None:
 # Claudexor control-plane contract, checked at handshake so an old daemon is a typed
 # lane refusal rather than a mid-run schema surprise.
 CLAUDEXOR_PROTOCOL_MAJOR: int = 3
-# The TRANSPORT floor: the lowest engine that serves the READ-ONLY lane, which sends no
-# `execution` block at all. 3.2.0 schema-accepts every field that lane does send (verified
-# live: the body comes back with only the fake-root error, never a field error), and a
-# read-only run is already scoped by Claudexor's ordinary envelope. Keeping the floor AT the
-# oldest serving engine is the owner's explicit decision — it lets an older daemon keep
-# read-only delegation instead of losing the lane; a floor set to the newest daemon anyone
-# happens to run is not conservative, it is an outage (3.2.1 here refused the operator's own
-# 3.2.0 engine and took read-only delegation down with it).
+# The TRANSPORT floor: the lowest engine that serves the READ-ONLY lane, which sends no `execution` block at all.
+# 3.2.0 schema-accepts every field that lane does send (verified live: the body comes back with only the fake-root
+# error, never a field error), and a read-only run is already scoped by Claudexor's ordinary envelope. Keeping the
+# floor AT the oldest serving engine is the owner's explicit decision — it lets an older daemon keep read-only
+# delegation instead of losing the lane; a floor set to the newest daemon anyone happens to run is not conservative,
+# it is an outage (3.2.1 here refused the operator's own 3.2.0 engine and took read-only delegation down with it).
 CLAUDEXOR_MIN_VERSION: str = "3.2.0"
 # The MARKER floor: the oldest engine whose SCHEMA ACCEPTS `execution.delegated`, which is
 # the only delegated-lane question a version can answer honestly. Measured: `RunExecution`
@@ -379,9 +375,7 @@ def get_context_mode() -> str:
     No boot-pin: hot-applies on the next task. The key is dropped from the
     agent-reachable /api/settings POST (P1)."""
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_CONTEXT_MODE"])
-    return normalize_context_mode(
-        os.environ.get("OUROBOROS_CONTEXT_MODE", default_val) or default_val
-    )
+    return normalize_context_mode(os.environ.get("OUROBOROS_CONTEXT_MODE", default_val) or default_val)
 
 
 def get_owner_context_mode() -> str:
@@ -819,9 +813,10 @@ def save_settings(
                 f"{baseline_mode!r} -> {new_mode!r}.{hint}"
             )
         try:
+            from ouroboros.utils import replace_atomic
             tmp = SETTINGS_PATH.with_suffix(".tmp")
             tmp.write_text(serialize_settings(settings), encoding="utf-8")
-            os.replace(str(tmp), str(SETTINGS_PATH))
+            replace_atomic(str(tmp), str(SETTINGS_PATH))
         except OSError:
             SETTINGS_PATH.write_text(serialize_settings(settings), encoding="utf-8")
     finally:

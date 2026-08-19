@@ -357,10 +357,10 @@ def _typed_result_metadata(
         plan_outcome = tool_result.meta.get("plan_review_outcome")
         plan_closed = tool_result.meta.get("plan_review_closed")
         if (
-            plan_outcome in {"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN"}
+            plan_outcome in {"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN", "DEGRADED"}
             and type(plan_closed) is bool
             and not (plan_outcome == "GREEN" and not plan_closed)
-            and not (plan_outcome == "REVISE_PLAN" and plan_closed)
+            and not (plan_outcome in {"REVISE_PLAN", "DEGRADED"} and plan_closed)
         ):
             meta["plan_review_outcome"] = plan_outcome
             meta["plan_review_closed"] = plan_closed

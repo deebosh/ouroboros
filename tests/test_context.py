@@ -262,6 +262,20 @@ class TestHotStoreGrowthInvariant:
         result = build_health_invariants(env)
         assert "HOT STORE GROWTH" not in result
 
+    def test_scheduled_tasks_store_growth_warns_with_receipt_remediation(self, tmp_path):
+        """The one-shot follow-up receipts (B2b W=A) made this whole-document
+        store grow with every fired follow-up; the scheduler re-parses and
+        rewrites it on every tick under the queue lock."""
+        from ouroboros.context_budget import SCHEDULED_TASKS_WARN_BYTES
+
+        env = _make_health_env(tmp_path)
+        _grow_file(tmp_path / "state" / "scheduled_tasks.json", SCHEDULED_TASKS_WARN_BYTES + 1)
+
+        result = build_health_invariants(env)
+        assert "HOT STORE GROWTH" in result
+        assert "state/scheduled_tasks.json" in result
+        assert "receipts" in result  # remediation pointer
+
     def test_absent_stores_stay_silent(self, tmp_path):
         env = _make_health_env(tmp_path)
 
