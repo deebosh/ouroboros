@@ -249,3 +249,52 @@ Each was adapted at the TEST, never by weakening the runtime:
 
 Import retargets in the two new upstream suites (`test_delegation_account_pin.py`,
 `test_plan_review_epoch.py`) follow the same rule and carry ledger rows.
+## 13. Provenance
+
+* `scripts/v7_migration.py::MERGE_BASE_SHA` → `e7c84240fc2aa73a798e045b207df4f39ddd355d`
+  (verified an ancestor of HEAD). `BASELINE_SHA` and
+  `tests/fixtures/v7_prologue_baseline.json` untouched, as the map requires:
+  the campaign's acceptance is measured from that anchor.
+* **The two rows the map predicted (3859/3860 at map time, 3869/3870 here) were
+  NOT repaired the way it prescribed.** Re-keying
+  `ouroboros/agent.py::dispatch_executor_note` to
+  `ouroboros/subagent_dispatch_notes.py::...` would have been correct only if
+  upstream's module survived. It does not (§4.1 option A). The existing rows
+  stayed valid — `agent.py` still re-exports both names — and the new base's
+  extraction is recorded as its own pair of rows instead.
+* **62 ledger rows added, 2 repaired.** Far more than the map's "~11": it
+  counted only the test re-homes and missed the 1500-ceiling extractions, the
+  import-binding moves in the two new upstream suites, and the
+  `_attach_client_surface` / `TYPED_FAILURE_FACT_KEYS` / startup-sweep moves.
+* **Nine verbatim rows were re-synced, not re-noted.** With `MERGE_BASE_SHA`
+  moved, `test_v7_verbatim_moves` reads each row's old text at the NEW base — so
+  upstream's cosmetic reflow of a declaration v7 had extracted turns a true
+  "verbatim" note into a false one. The reflowed text was adopted into the leaf
+  in each case (`llm_capability_policy`, `llm_pricing`, `loop_acceptance`,
+  `loop_nudges`, `loop_budget`, `test_post_task_reflection`,
+  `chat_timeline_anchor`, `chat_live_cards` ×2). This is the ONE place where
+  upstream's line-compression had to be taken rather than dropped, and the
+  reason is provenance, not style.
+
+## 14. Open flags for the operator
+
+1. **D02 goldens — not regenerated, as instructed.** `tools/followup.py` is a new
+   tool producer, but `tests/test_tool_classification_differential.py` passes
+   untouched: the new tool returns plain `ERROR: FOLLOWUP_*` strings and the
+   corpus harvests producer shapes that already cover that form. No
+   `_PRODUCER_SHAPES` entry was added and no golden was regenerated. **Flag, not
+   a fix:** if the owner wants `schedule_followup` to publish a native typed
+   `ToolResult` like the other v7 producers, that is a D02 decision with a
+   golden regeneration attached.
+2. **`os.replace` class-fix remains incomplete (upstream's own gap, disclosed
+   not silently fixed).** Upstream's `replace_atomic` conversion covers
+   `config.py`, `packaged_cli.py`, `headless.py`. Still unconverted on this
+   branch: `claudexor_runtime.py` (6 sites) and `supervisor/state.py:73,960` —
+   the latter untouched by upstream despite its commit subject naming the
+   "atomic state writer". Not extended here (Proportionality: no requirement,
+   and widening an upstream class-fix inside an adoption merge hides it).
+3. **Upstream has drifted 6 commits past the adopted SHA** (`8028f1df` at time
+   of writing, still 6.105.1). Unclassified by the map; a separate decision.
+4. **`prompts/SYSTEM.md` and `docs/CHECKLISTS.md` changed** — a runtime prompt
+   and a review criterion, adopted verbatim from upstream. Owner-visible by
+   the workspace's own rules even though the content is upstream-authored.
