@@ -24,6 +24,13 @@ DELEGATE_LEAF_OWNERS: dict[str, dict[str, str]] = {
             "_retire_recovered_registration _capture_stranded_patch _reconcile_one"
         ),
     },
+    "ouroboros.tools.delegate": {
+        "ouroboros.tools.delegate_terminal": (
+            "_containment_breach _NESTED_HOME_NOTE _NO_BOUNDARY_NOTE _containment_evidence "
+            "_terminal_payload _access_evidence _record_containment _reported_cost "
+            "_delivered_terminal_payload"
+        ),
+    },
 }
 
 

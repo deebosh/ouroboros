@@ -103,6 +103,12 @@ del1_verbatim_symbols_by_parent = {
     "ouroboros/delegate_custody.py": {
         "ouroboros/delegate_custody_reconcile.py": "_capture_stranded_patch",
     },
+    "ouroboros/tools/delegate.py": {
+        "ouroboros/tools/delegate_terminal.py": (
+            "_containment_breach _NESTED_HOME_NOTE _NO_BOUNDARY_NOTE _containment_evidence "
+            "_terminal_payload _access_evidence _reported_cost"
+        ),
+    },
 }
 del1_handle_symbols_by_parent = {
     "ouroboros/delegate_custody.py": {
@@ -111,6 +117,9 @@ del1_handle_symbols_by_parent = {
             "reconcile_orphaned_runs _reconcile_each _recover_pending_invocation "
             "_retire_recovered_registration _reconcile_one"
         ),
+    },
+    "ouroboros/tools/delegate.py": {
+        "ouroboros/tools/delegate_terminal.py": "_record_containment _delivered_terminal_payload",
     },
 }
 
