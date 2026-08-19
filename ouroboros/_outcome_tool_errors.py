@@ -123,6 +123,13 @@ _COSMETIC_TOOL_NAMES = frozenset({"run_command", "run_script"})
 # light_mode/integration blocks are intentionally NOT demoted here.
 _NON_BLOCKING_READONLY_BLOCK_STATUSES = frozenset({"resource_policy_blocked", "resource_constraint_blocked"})
 
+# ibl-a0348d742b9b: preflight root hints live in
+# ouroboros/loop_tool_execution.py::_extract_result_metadata as
+# ``status="preflight_root_hint"`` and reach the classifier with
+# ``is_error=False`` (no _FAILURE_MARKERS in the prefix line), so
+# the leading ``if not item.get("is_error"): continue`` already
+# skips them. No partition needed here.
+
 
 def _is_ignored_readonly_block(tool: str, status: str) -> bool:
     """A2 (v6.50.2) SSOT predicate: an access-policy block (resource_policy_blocked /

@@ -122,6 +122,101 @@ _SIGNAL_RE = re.compile(r"signal=([A-Z0-9_]+)")
 _REVIEWED_MUTATIVE_HARD_CEILING = 1800
 
 
+# ibl-a0348d742b9b: pre-flight root hint allowlist — tools where the
+# ``root=`` argument is semantically meaningful and the policy matrix
+# distinguishes allowed roots from denied ones. Narrow on purpose:
+# firing the hint on a tool that ignores ``root=`` would be a false
+# positive.
+_PREFLIGHT_ROOT_HINT_TOOLS = frozenset({
+    "read_file",
+    "list_files",
+    "search_code",
+    "query_code",
+    "write_file",
+    "edit_text",
+    "apply_patch",
+    "edit_batch",
+})
+
+
+def _preflight_root_hint(
+    tools: ToolRegistry,
+    fn_name: str,
+    args: Dict[str, Any],
+) -> Optional[str]:
+    """Return a non-semantic pre-flight hint when ``root=`` is implausible.
+
+    Closes ibl-a0348d742b9b (external_workspace_task calls
+    accumulating 5-7 policy denials before self-correction). The
+    hint tells the caller the FIRST allowed root for this
+    operation+profile BEFORE the call fires, so the gate's typed
+    refusal only happens when the hint is genuinely wrong.
+
+    **Does NOT change policy enforcement** (ibl-a0348d742b9b
+    contract): the gate keeps running on every call. If this
+    returns None the call proceeds exactly as before; if it
+    returns a typed hint string the dispatcher consumes that as
+    the tool's result and skips the dispatch.
+
+    Three narrow gates keep false-positives structurally
+    impossible:
+    1. Tool in ``_PREFLIGHT_ROOT_HINT_TOOLS`` (curated root=
+       sensitive surface).
+    2. ``decide_tool_access(profile, root, operation)`` returns
+       ``allow=False`` for the actual requested root.
+    3. ``_process_root_candidates`` returns at least one allowed
+       alternative (otherwise the gate is the only source of
+       truth).
+    """
+    if fn_name not in _PREFLIGHT_ROOT_HINT_TOOLS:
+        return None
+    if not isinstance(args, dict):
+        return None
+    requested_root = str(args.get("root") or "").strip()
+    if not requested_root:
+        return None
+    ctx = getattr(tools, "_ctx", None)
+    if ctx is None:
+        return None
+    try:
+        from ouroboros.tool_access import (
+            active_tool_profile,
+            decide_tool_access,
+            _process_root_candidates,
+        )
+        from ouroboros.tools.registry import _TARGET_BINDING_OPERATIONS
+    except Exception:
+        return None
+    operation = _TARGET_BINDING_OPERATIONS.get(fn_name)
+    if not operation:
+        return None
+    try:
+        profile = active_tool_profile(ctx)
+        decision = decide_tool_access(
+            profile=profile, root=requested_root, operation=operation
+        )
+    except Exception:
+        return None
+    if decision.allow:
+        return None
+    try:
+        candidates = _process_root_candidates(ctx, operation)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    suggested_label, suggested_path, _source, _name = candidates[0]
+    return (
+        f"⚠️ PREFLIGHT_ROOT_HINT: root={requested_root!r} is not "
+        f"allowed by the current profile ({profile!r}) for "
+        f"operation={operation!r}. Suggested root: "
+        f"{suggested_label!r} (resolves to {str(suggested_path)!r}). "
+        f"Re-issue with the suggested root to avoid a policy "
+        f"denial; if this hint is wrong the underlying gate "
+        f"will produce the same refusal."
+    )
+
+
 def _emit_live_log(tools: ToolRegistry, payload: Dict[str, Any]) -> None:
     """Emit a live log through the registry context queue. Lineage (parent/root task
     ids) is merged in so a SUBAGENT's live log routes to its root project thread
@@ -475,6 +570,15 @@ def _extract_result_metadata(fn_name: str, result: Any, is_error: bool) -> Dict[
         status = "artifact_output_error"
     elif text.startswith("⚠️ USER_FILES_PATH_BLOCKED"):
         status = "user_files_path_blocked"
+    elif text.startswith("⚠️ PREFLIGHT_ROOT_HINT"):
+        # ibl-a0348d742b9b: non-semantic pre-flight root hint. The call
+        # was SKIPPED by _preflight_root_hint before reaching the gate
+        # because the requested root+operation was matrix-denied and
+        # an allowed alternative existed. Not a denial (the gate
+        # never ran) and not a tool failure (the dispatcher chose to
+        # surface the hint); the classification loop skips it via
+        # ``if not item.get("is_error"): continue``.
+        status = "preflight_root_hint"
     elif text.startswith("⚠️ SAFETY_VIOLATION") or text.startswith("⚠️ CRITICAL SAFETY_VIOLATION"):
         status = "safety_violation"
     elif text.startswith("⚠️ HEAL_MODE_BLOCKED"):
@@ -580,18 +684,28 @@ def _execute_single_tool(
     args_for_log = sanitize_tool_args_for_log(fn_name, args if isinstance(args, dict) else {})
 
     tool_ok = True
-    try:
-        result = tools.execute(fn_name, args)
-    except UsageAccountingError:
-        raise
-    except Exception as e:
-        tool_ok = False
-        safe_error = sanitize_tool_result_for_log(f"{type(e).__name__}: {e}")
-        result = f"⚠️ TOOL_ERROR ({fn_name}): {safe_error}"
-        append_jsonl(drive_logs / "events.jsonl", _with_correlation({
-            "ts": utc_now_iso(), "type": "tool_error", "task_id": task_id,
-            "tool": fn_name, "args": args_for_log, "error": safe_error,
-        }, correlation, tool_call_id=tool_call_id))
+    # ibl-a0348d742b9b: non-semantic pre-flight root hint. If the policy
+    # matrix says the requested root is denied for this profile+operation
+    # AND a known-allowed alternative exists, surface the hint as the
+    # result instead of letting tools.execute burn a denial+recovery
+    # round. Gate semantics unchanged: any call this returns None for
+    # still hits the gate as before.
+    _hint = _preflight_root_hint(tools, fn_name, args)
+    if _hint is not None:
+        result = _hint
+    else:
+        try:
+            result = tools.execute(fn_name, args)
+        except UsageAccountingError:
+            raise
+        except Exception as e:
+            tool_ok = False
+            safe_error = sanitize_tool_result_for_log(f"{type(e).__name__}: {e}")
+            result = f"⚠️ TOOL_ERROR ({fn_name}): {safe_error}"
+            append_jsonl(drive_logs / "events.jsonl", _with_correlation({
+                "ts": utc_now_iso(), "type": "tool_error", "task_id": task_id,
+                "tool": fn_name, "args": args_for_log, "error": safe_error,
+            }, correlation, tool_call_id=tool_call_id))
 
     is_error = _is_tool_execution_failure(tool_ok, result)
     result_meta = _extract_result_metadata(fn_name, result, is_error)
