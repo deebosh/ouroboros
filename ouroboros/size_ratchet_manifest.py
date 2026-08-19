@@ -6,7 +6,6 @@ GIANT_PATHS = (
 )
 
 MODULE_DEBT_1500 = (
-    "ouroboros/usage_accounting.py",
 )
 
 FUNCTION_DEBT = (
@@ -121,6 +120,7 @@ BAND_PATHS = {
     "ouroboros/tools/shell_guards.py": None,
     "ouroboros/tools/skill_exec.py": None,
     "ouroboros/tools/subagent_integration.py": "subagent patch integration owner after the DEL1 disposition split: locate/verify/verdict plumbing, the external-workspace and coop verification lanes and integrate_subagent_patch stay together while the delegated-run disposition seam lives in subagent_integration_delegated.py behind the compatibility facade",
+    "ouroboros/usage_accounting.py": "usage accounting after the L-C2 legacy-import extraction; accounting rails, still shrinking with the campaign",
     "ouroboros/utils.py": None,
     "ouroboros/workspace_executor.py": None,
     "scripts/run_external_review.py": None,

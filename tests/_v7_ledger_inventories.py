@@ -357,10 +357,16 @@ lc2_verbatim_symbols_by_owner = {
     "ouroboros/agent_task_pipeline.py": {
         "ouroboros/post_task_synthesis.py": "build_trace_summary _update_improvement_backlog _apply_reflection_memory_actions _child_task_evidence _pre_synthesis_usage_snapshot _compact_review_projection _TASK_SUMMARY_PROMPT _summary_row_cost_fields _run_task_summary _run_chat_consolidation _run_scratchpad_consolidation _run_reflection",
     },
+    "ouroboros/usage_accounting.py": {
+        "ouroboros/usage_legacy_import.py": "IMPORT_REL _legacy_snapshot ensure_legacy_imported _completed_import_watermark",
+    },
 }
 lc2_handle_symbols_by_owner = {
     "ouroboros/agent.py": {
         "ouroboros/agent_dispatch.py": "_persist_early_origin_stub",
+    },
+    "ouroboros/usage_accounting.py": {
+        "ouroboros/usage_legacy_import.py": "_ensure_legacy_imported_locked",
     },
 }
 

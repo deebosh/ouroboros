@@ -32,6 +32,11 @@ LC2_LEAF_OWNERS: dict[str, tuple[str, str]] = {
         "_TASK_SUMMARY_PROMPT _summary_row_cost_fields _run_task_summary _run_chat_consolidation "
         "_run_scratchpad_consolidation _run_reflection"
     ),
+    "ouroboros.usage_legacy_import": (
+        "ouroboros.usage_accounting",
+        "IMPORT_REL _legacy_snapshot ensure_legacy_imported _completed_import_watermark "
+        "_ensure_legacy_imported_locked"
+    ),
 }
 
 

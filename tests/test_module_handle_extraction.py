@@ -246,6 +246,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/agent_dispatch.py": ("ouroboros/agent.py", "_agent", frozenset({
         "write_task_result",
     })),
+    "ouroboros/usage_legacy_import.py": ("ouroboros/usage_accounting.py", "_usage", frozenset({
+        "_legacy_snapshot", "_locked", "_read_records_locked",
+    })),
 }
 
 
