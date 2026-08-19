@@ -445,8 +445,11 @@ def is_review_available() -> Tuple[bool, Optional[str]]:
         return False, None
     if configured.startswith("openai/"):
         # OpenRouter route with a direct-OpenAI rewrite fallback.
-        if provider_has_credentials("openrouter"):
-            return True, configured
+        # Prefer direct-OpenAI when available (no OPENAI_BASE_URL) — an
+        # OpenRouter quota-billing path must NOT shadow a working direct route,
+        # and the openrouter credit cascade is silent at the provider level
+        # (closes ibl-ad4731a2f03e: discrimination bug that picked an
+        # openrouter route when openai direct would have worked).
         if provider_has_credentials("openai") and not os.environ.get("OPENAI_BASE_URL"):
             slug = configured.split("/", 1)[1]
             if slug.endswith("-pro"):
@@ -460,6 +463,8 @@ def is_review_available() -> Tuple[bool, Optional[str]]:
 
                 return True, OPENAI_DIRECT_DEFAULTS["deep_self_review"]
             return True, "openai::" + slug
+        if provider_has_credentials("openrouter"):
+            return True, configured
         return False, None
     if provider_has_credentials(provider):
         return True, configured
