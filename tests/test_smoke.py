@@ -590,6 +590,88 @@ def test_function_count_reasonable():
     assert len(sizes) <= MAX_TOTAL_FUNCTIONS, f"{len(sizes)} functions — too many?"
 
 
+# ── Pre-commit staged-snapshot oversized-function gate ──────────────
+
+class TestStagedOversizedFunction:
+    """Regression for ibl-oversized-function-gate-bypass.
+
+    Commit 9224e188 (v6.93.2) grew ouroboros/tools/shell.py::_run_shell to 324 lines
+    and the gate never blocked because the smoke test walks HEAD, not staged.
+    The pre-commit helper closes that class — these tests prove the AST primitive
+    _find_oversized_functions correctly flags violations AND respects the
+    grandfather exemption (so this same gate does not raise the false positive
+    that previously motivated manual allowlist entries).
+    """
+
+    def test_oversized_function_detected(self):
+        """A function > MAX_FUNCTION_LINES is reported as a violation."""
+        from ouroboros.tools.review_helpers import (
+            _find_oversized_functions,
+            MAX_FUNCTION_LINES,
+        )
+        body = "\n".join(f"    x_{i} = {i}" for i in range(MAX_FUNCTION_LINES + 50))
+        content = f"def big_function():\n{body}\n"
+        violations = _find_oversized_functions(content, "fake.py")
+        assert len(violations) == 1
+        assert violations[0][0] == "big_function"
+        assert violations[0][1] > MAX_FUNCTION_LINES
+
+    def test_small_function_passes(self):
+        """A function <= MAX_FUNCTION_LINES is NOT reported."""
+        from ouroboros.tools.review_helpers import (
+            _find_oversized_functions,
+            MAX_FUNCTION_LINES,
+        )
+        # Tightly under the cap.
+        body = "\n".join(f"    x_{i} = {i}" for i in range(MAX_FUNCTION_LINES - 2))
+        content = f"def small_function():\n{body}\n"
+        assert _find_oversized_functions(content, "fake.py") == []
+
+    def test_grandfather_exemption_respected(self):
+        """An oversized function whose (basename, name) IS in GRANDFATHERED is exempt.
+
+        This is the structural guarantee that future maintainers will not be tempted
+        to drop the allowlist and re-introduce the very bypass class this fix closes.
+        """
+        from ouroboros.tools.review_helpers import _find_oversized_functions
+        from ouroboros.review import GRANDFATHERED_OVERSIZED_FUNCTIONS
+
+        assert len(GRANDFATHERED_OVERSIZED_FUNCTIONS) > 0, (
+            "GRANDFATHERED_OVERSIZED_FUNCTIONS must be non-empty — without an allowlist, "
+            "the gate would either block legitimate oversized functions or rot silently."
+        )
+        # Pick one real grandfathered entry and synthesize an oversized function with
+        # that exact (basename, name) pair; the gate must NOT report it as a violation.
+        grand_fname, grand_funcname = next(iter(GRANDFATHERED_OVERSIZED_FUNCTIONS))
+        body = "\n".join(f"    x_{i} = {i}" for i in range(400))
+        content = f"def {grand_funcname}():\n{body}\n"
+        violations = _find_oversized_functions(content, grand_fname)
+        assert violations == [], (
+            f"grandfather exemption must silence oversized function "
+            f"{grand_fname}:{grand_funcname}, got {violations}"
+        )
+
+    def test_grandfather_basename_mismatch_still_flags(self):
+        """An oversized function whose name is grandfathered but basename is NOT is still flagged."""
+        from ouroboros.tools.review_helpers import _find_oversized_functions
+        from ouroboros.review import GRANDFATHERED_OVERSIZED_FUNCTIONS
+
+        # Pick the first real grandfathered (basename, funcname) pair, then submit
+        # the same funcname but a different basename. The gate must still flag it.
+        grand_fname, grand_funcname = next(iter(GRANDFATHERED_OVERSIZED_FUNCTIONS))
+        body = "\n".join(f"    x_{i} = {i}" for i in range(400))
+        content = f"def {grand_funcname}():\n{body}\n"
+        violations = _find_oversized_functions(content, "different_file.py")
+        assert len(violations) == 1
+        assert violations[0][0] == grand_funcname
+
+    def test_syntax_error_does_not_crash(self):
+        """A file that fails to parse yields zero violations (fail-safe)."""
+        from ouroboros.tools.review_helpers import _find_oversized_functions
+        # Unparseable: missing colon, broken indent.
+        assert _find_oversized_functions("def broken(\n    pass\n", "fake.py") == []
+
+
 # ── Pre-push gate tests ──────────────────────────────────────────────
 
 class TestPrePushGate:

@@ -5,6 +5,7 @@ No imports from other ouroboros.tools modules to avoid circular deps.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from ouroboros.utils import (
     sanitize_tool_result_for_log,
@@ -1545,6 +1546,89 @@ def check_worktree_readiness(
     return warnings
 
 
+def _find_oversized_functions(content: str, fname: str) -> List[Tuple[str, int]]:
+    """Parse Python content; return [(func_name, line_count)] for non-grandfathered functions > MAX_FUNCTION_LINES.
+
+    The smoke test (tests/test_smoke.py::test_no_extremely_oversized_functions) walks the
+    HEAD working tree and only catches rot AFTER it lands. This helper walks ONE file
+    body and is the AST primitive used by both the smoke test (for HEAD) and the
+    pre-commit staged-snapshot check (closes ibl-oversized-function-gate-bypass: commit
+    9224e188 grew ouroboros/tools/shell.py::_run_shell to 324 lines and the gate never
+    blocked because the smoke test runs on HEAD, not on staged).
+
+    Grandfather exemptions live in ouroboros.review.GRANDFATHERED_OVERSIZED_FUNCTIONS
+    and apply to (basename, function_name) tuples; see that constant for the SSOT.
+
+    Imports are LAZY (inside the body) because ouroboros.tools.review_helpers is a
+    SSOT leaf for review_helpers-importing consumers (ouroboros.review imports back
+    from here); a module-level ouroboros.review import would create a circular
+    import at ouroboros.review load time.
+    """
+    # Lazy import to avoid ouroboros.review <-> ouroboros.tools.review_helpers cycle.
+    from ouroboros.review import GRANDFATHERED_OVERSIZED_FUNCTIONS, MAX_FUNCTION_LINES
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+    out: List[Tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            size = node.end_lineno - node.lineno + 1
+            if size <= MAX_FUNCTION_LINES:
+                continue
+            if (fname, node.name) in GRANDFATHERED_OVERSIZED_FUNCTIONS:
+                continue
+            out.append((node.name, size))
+    return out
+
+
+def _check_staged_oversized_functions(repo_dir: pathlib.Path) -> Optional[str]:
+    """Walk STAGED .py files (post `git add`, pre `git commit`); return a typed error if any
+    staged addition pushes a function over MAX_FUNCTION_LINES.
+
+    Closes the class observed at commit 9224e188 (v6.93.2): _run_shell grew to 324 lines in
+    one commit, but the smoke test (which walks HEAD) never saw the staged delta. By the
+    time the smoke test ran in CI, the rot was already merged. The pre-commit preflight
+    consults this helper BEFORE pytest so the gate fails fast with a precise message
+    naming each oversized function instead of waiting for an expensive CI re-run.
+
+    Fail-open on transient git errors: a missing staged list, a non-zero git exit, or an
+    unreadable file is reported as None (no error) — the subsequent pytest pass + advisory
+    gate + triad + scope review still cover the commit.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "--diff-filter=AM"],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    py_paths = [p for p in proc.stdout.splitlines() if p.endswith(".py") and p.strip()]
+    if not py_paths:
+        return None
+    violations: List[str] = []
+    for rel in py_paths:
+        full = repo_dir / rel
+        try:
+            content = full.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for func_name, size in _find_oversized_functions(content, pathlib.Path(rel).name):
+            violations.append(f"{rel}:{func_name} = {size} lines")
+    if not violations:
+        return None
+    return (
+        f"⚠️ OVERSIZED_FUNCTIONS_BLOCKED: staged snapshot adds functions over "
+        f"{MAX_FUNCTION_LINES} lines (closes ibl-oversized-function-gate-bypass):\n"
+        + "\n".join(violations)
+    )
+
+
 def _run_review_preflight_tests(
     ctx: "Any",
     timeout: Optional[int] = None,
@@ -1559,6 +1643,13 @@ def _run_review_preflight_tests(
     repo_dir = getattr(ctx, "repo_dir", None)
     if repo_dir is None:
         return None
+    # Pre-commit staged-snapshot oversized-function check (closes
+    # ibl-oversized-function-gate-bypass). The smoke test walks HEAD so it only catches
+    # rot AFTER it lands; this walks STAGED so the rot can be refused at commit time.
+    # Runs BEFORE pytest so the gate fails fast with a precise per-function message.
+    oversized_err = _check_staged_oversized_functions(pathlib.Path(repo_dir))
+    if oversized_err:
+        return oversized_err
     # NO `tests/` existence check: run_hermetic_pytest owns the scope call (a
     # deleted suite is a hard block; a shortcut here skipped the gate for it).
     MAX_OUTPUT = 8000
