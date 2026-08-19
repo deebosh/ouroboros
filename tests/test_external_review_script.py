@@ -160,6 +160,9 @@ def test_the_flag_unions_the_computed_base_flow_closure():
         # The audit-proven third-round chain: review_state -> semantic_dedup
         # lazily imports llm_observability; only the conservative walk sees it.
         "ouroboros/llm_observability.py",
+        # The fourth round: a RELATIVE import (from .version import get_version
+        # in ouroboros/__init__.py) must resolve too.
+        "ouroboros/version.py",
     ):
         assert rel in closure, rel
     # The gate predicate is the UNION: name-blind closure members flag too.

@@ -506,11 +506,15 @@ def flow_import_closure(base_sha: str, git_bytes, full_walk=None, conservative: 
         "scripts/contributor_review_evidence.py",
     )
 
+    _blob_cache: dict = {}
+
     def blob(rel: str) -> str | None:
-        try:
-            return git_bytes(["show", f"{base_sha}:{rel}"]).decode("utf-8")
-        except Exception:
-            return None
+        if rel not in _blob_cache:
+            try:
+                _blob_cache[rel] = git_bytes(["show", f"{base_sha}:{rel}"]).decode("utf-8")
+            except Exception:
+                _blob_cache[rel] = None
+        return _blob_cache[rel]
 
     def module_to_rel(mod: str) -> str | None:
         cand = mod.replace(".", "/")
@@ -518,6 +522,14 @@ def flow_import_closure(base_sha: str, git_bytes, full_walk=None, conservative: 
             if blob(rel) is not None:
                 return rel
         return None
+
+    def relative_base(rel: str, level: int) -> str:
+        # package of the importing module, lifted (level-1) times
+        parts = rel.rsplit("/", 1)[0].split("/")
+        if rel.endswith("/__init__.py"):
+            parts = rel[: -len("/__init__.py")].split("/")
+        up = level - 1
+        return ".".join(parts[: len(parts) - up]) if up < len(parts) else ""
 
     seen: set[str] = set()
     frontier = list(entries)
@@ -543,8 +555,16 @@ def flow_import_closure(base_sha: str, git_bytes, full_walk=None, conservative: 
             mods: list[str] = []
             if isinstance(node, _ast.Import):
                 mods = [a.name for a in node.names]
-            elif isinstance(node, _ast.ImportFrom) and node.module and node.level == 0:
+            elif isinstance(node, _ast.ImportFrom) and node.level == 0 and node.module:
                 mods = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+            elif isinstance(node, _ast.ImportFrom) and node.level > 0:
+                # relative import: resolve against the importing module's package
+                # (the fourth audit round: `from .version import get_version` in
+                # ouroboros/__init__.py left version.py outside the closure).
+                base_pkg = relative_base(rel, node.level)
+                stem = f"{base_pkg}.{node.module}" if node.module else base_pkg
+                if stem:
+                    mods = [stem] + [f"{stem}.{a.name}" for a in node.names]
             for mod in mods:
                 target = module_to_rel(mod)
                 if target and target not in seen:
