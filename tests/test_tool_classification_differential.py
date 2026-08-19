@@ -440,7 +440,11 @@ _RESIDUAL_TEXT_INSPECTIONS: Mapping[str, tuple[int, str]] = MappingProxyType({
     "ouroboros/skill_review_prompt.py": (2, "skill review verdict text, not a tool result"),
     "ouroboros/tools/github.py": (12, "private helper-failure checks between two functions of one tool"),
     "ouroboros/tools/skill_publish.py": (9, "private helper-failure checks between two functions of one tool"),
-    "ouroboros/tools/claude_advisory_review.py": (8, "private helper-failure checks between two functions of one tool"),
+    # The v7 L-C advisory split moved these checks verbatim with their code;
+    # the three caps sum to the parent's former 8 — redistribution, not growth.
+    "ouroboros/tools/claude_advisory_review.py": (4, "private helper-failure checks between two functions of one tool"),
+    "ouroboros/tools/review_advisory_prompt.py": (1, "private helper-failure checks between two functions of one tool"),
+    "ouroboros/tools/review_advisory_run.py": (3, "private helper-failure checks between two functions of one tool"),
     "ouroboros/tools/core_file_tools.py": (3, "private helper-failure checks between two functions of one tool"),
     "ouroboros/tools/services.py": (1, "private helper-failure check between two functions of one tool"),
     "ouroboros/tools/core.py": (1, "private helper-failure check between two functions of one tool"),

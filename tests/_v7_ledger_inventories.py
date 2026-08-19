@@ -301,10 +301,18 @@ lc_review_verbatim_symbols_by_owner = {
     "ouroboros/review_execution.py": {
         "ouroboros/review_session_verdict.py": "REVIEW_SESSION_OUTPUT_SCHEMA review_session_output_schema _UNEXTRACTABLE _SESSION_EXTRACT_PROMPT _EXTRACT_MAX_CHARS _findings_array _strictly_parseable canonicalize_session_verdict _extract_verdict_via_light_model",
     },
+    "ouroboros/tools/claude_advisory_review.py": {
+        "ouroboros/tools/review_advisory_prompt.py": "_MAX_DIFF_CHARS_ERROR _get_staged_diff _get_changed_file_list _auto_sync_release_metadata_if_needed _release_metadata_preflight _build_blocking_history_section _syntax_preflight_staged_py_files",
+        "ouroboros/tools/review_advisory_run.py": "_ADVISORY_PROMPT_MAX_CHARS _ADVISORY_EXTRACT_CONTRACT _resolve_fallback_model _check_expected_items ADVISORY_REVIEW_ROUTE_ENV _ADVISORY_SESSION_MAX_SECONDS advisory_review_route advisory_slot_enabled advisory_route_requires_api_key advisory_gate_unavailability_reason _run_advisory_delegated _advisory_session_deltas _advisory_sdk_budget _note_meta_error _is_clean_verdict _needs_fallback_extraction _parse_advisory_output _is_checklist_array",
+    },
 }
 lc_review_handle_symbols_by_owner = {
     "ouroboros/tools/review.py": {
         "ouroboros/tools/review_multi_model.py": "_query_model _multi_model_review_async",
+    },
+    "ouroboros/tools/claude_advisory_review.py": {
+        "ouroboros/tools/review_advisory_prompt.py": "_changed_paths _build_advisory_prompt",
+        "ouroboros/tools/review_advisory_run.py": "advisory_gate_unavailable _run_claude_advisory _llm_extract_advisory_items",
     },
 }
 

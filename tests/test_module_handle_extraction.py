@@ -173,6 +173,15 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/tools/review_multi_model.py": ("ouroboros/tools/review.py", "_rev", frozenset({
         "LLMClient", "load_governance_doc", "review_drive_root", "slot_id_for_row",
     })),
+    "ouroboros/tools/review_advisory_prompt.py": ("ouroboros/tools/claude_advisory_review.py", "_car", frozenset({
+        "_get_changed_file_list", "_get_staged_diff",
+    })),
+    "ouroboros/tools/review_advisory_run.py": ("ouroboros/tools/claude_advisory_review.py", "_car", frozenset({
+        "_ADVISORY_PROMPT_MAX_CHARS", "_build_advisory_prompt", "_get_changed_file_list",
+        "_get_staged_diff", "_syntax_preflight_staged_py_files",
+        "advisory_gate_unavailability_reason", "build_advisory_changed_context",
+        "emit_review_usage",
+    })),
     "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
         "ACCEPTANCE_FENCES", "DRIVE_ROOT", "PENDING", "RUNNING", "_queue_lock", "append_jsonl", "atomic_write_text", "enqueue_task",
     })),

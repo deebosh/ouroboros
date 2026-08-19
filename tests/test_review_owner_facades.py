@@ -33,6 +33,22 @@ REVIEW_LEAF_OWNERS: dict[str, dict[str, str]] = {
             "canonicalize_session_verdict _extract_verdict_via_light_model"
         ),
     },
+    "ouroboros.tools.claude_advisory_review": {
+        "ouroboros.tools.review_advisory_prompt": (
+            "_MAX_DIFF_CHARS_ERROR _get_staged_diff _get_changed_file_list _changed_paths "
+            "_auto_sync_release_metadata_if_needed _release_metadata_preflight "
+            "_build_blocking_history_section _build_advisory_prompt _syntax_preflight_staged_py_files"
+        ),
+        "ouroboros.tools.review_advisory_run": (
+            "_ADVISORY_PROMPT_MAX_CHARS _ADVISORY_EXTRACT_CONTRACT _resolve_fallback_model "
+            "_llm_extract_advisory_items _check_expected_items ADVISORY_REVIEW_ROUTE_ENV "
+            "_ADVISORY_SESSION_MAX_SECONDS advisory_review_route advisory_slot_enabled "
+            "advisory_route_requires_api_key advisory_gate_unavailability_reason "
+            "advisory_gate_unavailable _run_advisory_delegated _advisory_session_deltas "
+            "_advisory_sdk_budget _note_meta_error _run_claude_advisory _is_clean_verdict "
+            "_needs_fallback_extraction _parse_advisory_output _is_checklist_array"
+        ),
+    },
 }
 
 
