@@ -178,7 +178,7 @@ class TestRepoWriteMultiFile:
 class TestReviewInCommitPipeline:
     # ``test_repo_commit_calls_unified_review`` was removed in
     # v5.8.3-rc.5 — it is a strict subset of
-    # ``tests/test_scope_review.py::TestScopeReview::test_scope_review_wired_in_commit``
+    # ``tests/test_scope_review_wiring.py::TestGitWiring::test_scope_review_wired_in_commit``
     # which additionally verify ``run_scope_review`` is reached and the
     # ``ThreadPoolExecutor`` parallelism contract holds.
 
