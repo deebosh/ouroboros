@@ -191,15 +191,26 @@ def _probe_ref(repo: pathlib.Path, ref: str) -> dict[str, Any]:
             "OUROBOROS_BG_WAKEUP_MAX": "3600",
             "GITHUB_TOKEN": "fixture-not-a-secret",
         })
-        completed = subprocess.run(
-            [sys.executable, str(pathlib.Path(__file__).resolve()), "_probe"],
-            cwd=checkout,
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=90,
-        )
+        # Windows resolves the home directory through USERPROFILE (ntpath.expanduser
+        # ignores HOME entirely), so a child that calls Path.home() dies without it.
+        env["USERPROFILE"] = env["HOME"]
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(pathlib.Path(__file__).resolve()), "_probe"],
+                cwd=checkout,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+        except subprocess.CalledProcessError as exc:
+            # Surface the child's stderr: a bare exit-1 from a CI runner is
+            # undiagnosable (the first Windows matrix run cost a blind cycle).
+            raise RuntimeError(
+                f"runtime probe failed (exit {exc.returncode}); stderr tail: "
+                f"{(exc.stderr or '')[-2000:]!r}"
+            ) from exc
         return json.loads(completed.stdout)
 def _symbol_signature(value: Any) -> str:
     try:
