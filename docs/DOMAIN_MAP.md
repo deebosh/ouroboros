@@ -504,10 +504,14 @@ facts from the context because it runs inside every worker), `ouroboros/runtime_
 `tests/test_runtime_mode_core.py` / `tests/test_runtime_mode_elevation.py` ·
 `tests/test_v647_megacommit.py`.
 
-**v7 delta.** **None.** Not one module in this domain was split, merged, renamed or retyped —
-the protected-file list in the operator instructions and the constitution's immune surfaces are
-the same objects at `740357c8` as at `353fd974`. The test side moved: the two runtime-mode
-giants became twelve themed suites, which is coverage rearranged, not policy changed.
+**v7 delta.** Structural: none — not one module in this domain was split, merged, renamed or
+retyped. Behavioral: real, small, and owner-approved. `safety.py` (+48/−6 against `353fd974`)
+gained `_safety_drive_root` (the context-owned data-root resolver replacing the cwd-relative
+`../data` guess), `_record_safety_usage` (an injected-or-fallback accounting sink so a safety
+call with no event queue is still charged), and classifies `schedule_followup` as
+`POLICY_SKIP`; `runtime_mode_policy.py` (+23/−2) widened the safety-critical and
+release-protected file families. The test side moved as well: the two runtime-mode giants
+became twelve themed suites, which is coverage rearranged, not policy changed.
 
 ---
 
@@ -576,9 +580,11 @@ Self-evolution: `supervisor/evolution_lifecycle.py` (campaign state and transact
 `tests/test_project_facts.py` · the six S7b siblings of
 `tests/test_evolution_state_integrity_v3.py` (2386 → 201) · `tests/test_evolution_redesign.py`.
 
-**v7 delta.** **None on the runtime side.** No module here was split or retyped; the campaign's
-only contact with this domain is the test suite, where the evolution-integrity giant became six
-themed suites and the post-task synthesis workers moved to their own owner in D01.
+**v7 delta.** Structural: none — no module here was split, merged or retyped. Line-level: three
+small touches totalling +25/−14 (`reflection.py`, 33 changed lines under the T1 owner-semantics
+closure and the typed control-facts pass; `consolidator.py` and `consciousness.py` a few lines
+each). The campaign's main contact stays the test suite, where the evolution-integrity giant
+became six themed suites and the post-task synthesis workers moved to their own owner in D01.
 
 ---
 
@@ -675,7 +681,8 @@ now a compatibility re-export over `gateway/contracts.py`), `contracts/chat_id_p
 `tests/test_delegated_skill_payload.py` · `tests/test_extension_process_runner.py` ·
 `tests/test_marketplace_api.py` · ARCHITECTURE §11 is the prose authority on what is frozen.
 
-**v7 delta.** **None.** 11 modules before, 11 after, +5 lines across the whole package. A
+**v7 delta.** Structural: none — 11 modules before, 11 after. Line-level: +6/−1 in
+`task_contract.py`, the only change across the whole package. A
 refactor campaign that touched 132 new modules left the frozen ABI byte-stable except for five
 lines, which is the strongest single statement the census makes about blast radius.
 
@@ -688,7 +695,7 @@ lines, which is the strongest single statement the census makes about blast radi
 | every tracked runtime module is in exactly one domain | 411 files assigned; 0 unassigned, 0 duplicated |
 | every campaign-added module appears | 132 ★ marks, matching the census's 103 `ouroboros/` + 29 `supervisor/` |
 | no module was removed | 0 deletions under `ouroboros/` or `supervisor/` between `353fd974` and `740357c8` |
-| domains with zero runtime delta | D13 safety, D15 memory/evolution, D19 contracts — named as such rather than left to be inferred |
+| domains with no structural runtime delta | D13 safety, D15 memory/evolution, D19 contracts — no splits, merges or renames; each carries a small disclosed line-level delta, stated in its section |
 
 **Two facts this map surfaces that the module tree does not.**
 

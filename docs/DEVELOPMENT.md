@@ -1125,7 +1125,9 @@ Before every commit, verify the following:
   rejected by owner scope); the secondary settle
   sites (pre-assignment pending drop, budget-drain `fail_tasks` — whose intent
   reads resolve at the CANONICAL supervisor root, never a child's
-  `budget_drive_root`) hold the SAME
+  `budget_drive_root`; note `fail_tasks` has no production caller today —
+  budget exhaustion pauses tasks before dispatch rather than draining them,
+  and the fence there is pinned by tests against future wiring) hold the SAME
   claim/generation fence and yield to a live claim owner. A `scope=cascade`
   intent is settled EXCLUSIVELY by the cascade's no-live postcondition: every
   other settle site is refused atomically against the CURRENT durable scope
