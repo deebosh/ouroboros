@@ -327,11 +327,21 @@ def clone_repo(destination: pathlib.Path) -> pathlib.Path:
     return clone
 
 
+def write_settings_file(settings_path: pathlib.Path, settings: dict) -> None:
+    """The paid lane's settings carry a live API key on a shared host: the file
+    must exist at 0600 BEFORE the key bytes land (a default-umask write_text
+    briefly published a live key world-readable)."""
+    fd = os.open(settings_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)  # O_CREAT's mode only applies on creation; an existing wider file keeps its bits
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(settings, indent=2))
+
+
 def start_server(clone, root, settings: dict, *, ready_timeout: float = 300) -> IsolatedServer:
     data_root = pathlib.Path(root) / "data"
     data_root.mkdir(parents=True, exist_ok=True)
     settings_path = data_root / "settings.json"
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    write_settings_file(settings_path, settings)
     server = IsolatedServer(clone, data_root, settings_path)
     server.start(ready_timeout=ready_timeout)
     return server

@@ -87,6 +87,7 @@ from tests.fixtures_e2e_cancellation import (
     task_result,
     task_result_bytes,
     wait_until,
+    write_settings_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -750,3 +751,16 @@ def test_e8_budget_drain_fails_queued_tasks_and_settles_their_intents(e2e_clone,
         assert not [tid for tid in task_ids if tid in intents(data_root)], intents(data_root)
     finally:
         server.stop()
+
+
+def test_settings_file_is_created_secret_safe(tmp_path):
+    """No lane marker: this contract must hold in the ordinary battery. The paid
+    lane's settings file carries a live API key on a shared host, so the file
+    must never exist with group/other-readable bits."""
+    settings_path = tmp_path / "settings.json"
+    write_settings_file(settings_path, {"OPENROUTER_API_KEY": "not-a-credential"})
+    assert (settings_path.stat().st_mode & 0o777) == 0o600
+    # Re-writing an existing (possibly wider) file must also end at 0600.
+    settings_path.chmod(0o664)
+    write_settings_file(settings_path, {"OPENROUTER_API_KEY": "not-a-credential"})
+    assert (settings_path.stat().st_mode & 0o777) == 0o600
