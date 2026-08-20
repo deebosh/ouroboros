@@ -112,6 +112,42 @@ def _bind_pytest_repo_root() -> None:
     git_ops.REPO_DIR.mkdir(parents=True, exist_ok=True)
 
 
+@pytest.fixture(autouse=True)
+def _runtime_roots_stay_off_the_live_data_root():
+    """Fail-closed invariant (spec 487/783): no runtime-root module global may
+    END a test resolving into the operator's LIVE data root. The session binder
+    above starts every root on the pytest temp root; a test that rebinds one
+    without restoring it poisons every later test in its worker — the observed
+    symptom was a later, correctly-written test appending to the LIVE
+    supervisor log. This names the poisoning test instead of the victim.
+    """
+    yield
+    if _PYTEST_DATA_DIR is None:
+        return
+    live = pathlib.Path(globals().get("_LIVE_DATA_ROOT") or "").resolve(strict=False)
+    if not str(live):
+        return
+    import ouroboros.config as config
+    from supervisor import git_ops, message_bus, workers
+
+    offenders = []
+    for name, value in (
+        ("config.DATA_DIR", config.DATA_DIR),
+        ("git_ops.DRIVE_ROOT", git_ops.DRIVE_ROOT),
+        ("message_bus.DATA_DIR", message_bus.DATA_DIR),
+        ("workers.DRIVE_ROOT", workers.DRIVE_ROOT),
+    ):
+        if not value:
+            continue
+        resolved = pathlib.Path(value).resolve(strict=False)
+        if resolved == live or live in resolved.parents:
+            offenders.append(f"{name}={value}")
+    assert not offenders, (
+        "runtime root(s) left resolving into the LIVE data root by this test: "
+        + ", ".join(offenders)
+    )
+
+
 def git_ops_repo_root() -> pathlib.Path:
     """The repo root this pytest session binds git_ops (and worker children) to."""
     from supervisor import git_ops
