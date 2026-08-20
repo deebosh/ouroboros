@@ -687,6 +687,26 @@ merge_adopt_v6105_no_facade_rows = {
 }
 
 
+# The FINAL upstream cutoff (PR #257) grew launcher.py to 1572 lines, past this
+# branch's 1500-line module ceiling, and the >1500 debt layer is shrink-only — so
+# the Windows-only pythonnet/pywebview runtime preparation left launcher.py whole
+# inside that merge. Verbatim extraction: same bytes, re-exported under the same
+# names.
+merge_adopt_pr257_facade_rows = {
+    "launcher.py::_prepare_windows_webview_runtime":
+        "ouroboros/launcher_windows_runtime.py::_prepare_windows_webview_runtime",
+    "launcher.py::_show_windows_message":
+        "ouroboros/launcher_windows_runtime.py::_show_windows_message",
+}
+
+merge_adopt_pr257_no_facade_rows = {
+    # The DLL-directory handle list moved with its only reader; launcher.py never
+    # exposed it, so there is nothing to re-export.
+    "launcher.py::_windows_dll_dir_handles":
+        "ouroboros/launcher_windows_runtime.py::_windows_dll_dir_handles",
+}
+
+
 # Lane followup, owner decision 2026-08-19 (answer "B": schedule_followup publishes a
 # native typed ToolResult; the golden/corpus regeneration it requires is sanctioned).
 # In-place row: the adopted tool keeps its path, name and every sentence — only the

@@ -1175,6 +1175,16 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     implemented.update(merge_adopt_v6105_rows)
     existing_process_owner_rows.update(merge_adopt_v6105_rows)
     registry_extraction_no_facade_rows.update(merge_adopt_v6105_no_facade_rows)
+    # The FINAL upstream cutoff (PR #257). Its only ledger-visible move is the one
+    # the size gate forced: upstream's launcher.py growth crossed this branch's
+    # 1500-line ceiling, so the Windows runtime preparation left launcher.py inside
+    # the merge — verbatim, re-exported under the same names.
+    merge_adopt_pr257_facade_rows = dict(_inv.merge_adopt_pr257_facade_rows)
+    merge_adopt_pr257_no_facade_rows = dict(_inv.merge_adopt_pr257_no_facade_rows)
+    merge_adopt_pr257_rows = {**merge_adopt_pr257_facade_rows, **merge_adopt_pr257_no_facade_rows}
+    implemented.update(merge_adopt_pr257_rows)
+    existing_process_owner_rows.update(merge_adopt_pr257_rows)
+    registry_extraction_no_facade_rows.update(merge_adopt_pr257_no_facade_rows)
     # Lane followup (owner decision 2026-08-19, answer "B"): the adopted one-shot
     # follow-up tool joins the T1 typed-result cutover IN PLACE — same path, same
     # name, same sentences — so nothing is re-exported and the D02 id below carries
