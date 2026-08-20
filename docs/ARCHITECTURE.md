@@ -565,6 +565,8 @@ A pre-existing cross-platform residual remains: shutdown admission is not atomic
 │   │   ├── CHECKLISTS.md   ← Pre-commit review checklists (single source of truth)
 │   │   ├── CREATING_SKILLS.md ← Skill author guide (manifest schema, PluginAPI, widgets, publishing)
 │   │   ├── DESIGN.md       ← Design system semantics (type scale, colour claims, status conventions; engineering rules live in DEVELOPMENT.md § Design System)
+│   │   ├── PERSISTENCE_OWNERS.md ← Evidence: every durable path under the data root with its writer(s), authoritative reader, and prune owner (derived from code; the tree below is the reader's orientation, that map is the derivation)
+│   │   ├── FACADE_CONSUMERS.md ← Evidence: who consumes each retained compatibility facade — runtime callers, test patch surface, or contract only — on top of the identity pins
 │   │   └── DEPLOYMENT.md ← Deployment notes, including trusted Docker/Kubernetes non-local bind policy
 │   └── prompts/        ← System prompts (SYSTEM.md, SAFETY.md, CONSCIOUSNESS.md)
 	├── data/
