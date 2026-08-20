@@ -260,9 +260,10 @@ contract-only share in the table.
 the test suite. `events.py` is a dispatcher: the real work lives in ten `events_*`
 leaves that never import the dispatcher they serve, so the only runtime readers are
 `server_owner_routing`, `steering` and `task_reaper`. `server.py` is a composition
-root that nothing imports at runtime by construction; its 49 bindings exist so
-`server.<name>` keeps resolving for the 15 test-only and 5 monkeypatched names that
-reach into it.
+root whose retained facade bindings no production code reads — the one runtime
+importer is `ouroboros/cli.py`, which imports the module to call `server.main()`
+and touches none of the 49 bindings; they exist so `server.<name>` keeps resolving
+for the 15 test-only and 5 monkeypatched names that reach into it.
 
 ### `supervisor/queue.py` — the widest patch surface
 

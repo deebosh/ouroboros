@@ -46,8 +46,10 @@ was deleted; §5 gives its disposition. It is not a campaign deletion.
 
 ## 2. (a) Split from a named giant — 180 files
 
-Thirty-seven test files gave symbols to a new sibling. Thirty-two of them are base-tree
-giants the campaign broke up; three (`test_plan_review_engine.py`, `test_plan_review_epoch.py`,
+Thirty-seven test files gave symbols to a new sibling. Thirty-three of them are base-tree
+giants the campaign broke up — thirty-two Python suites plus one web suite,
+`web/tests/harness_accounts.test.js` (1882 lines at the base); three
+(`test_plan_review_engine.py`, `test_plan_review_epoch.py`,
 `test_delegation_account_pin.py`) were born upstream and split during adoption; one
 (`test_advisory_delegated_route.py`) is not a giant at all — it contributed two symbols to a
 shared helper another split created.

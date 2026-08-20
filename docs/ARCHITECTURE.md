@@ -892,6 +892,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `/api/claudexor/login/{job_id}/input` | `gateway.claudexor_accounts.api_claudexor_login_job` |
 | POST | `/api/claudexor/login/{job_id}/reconcile` | `gateway.claudexor_accounts.api_claudexor_login_job_reconcile` |
 | DELETE | `/api/claudexor/credential-profiles/{harness}/{profile_id}` | `gateway.claudexor_accounts.api_claudexor_credential_profile` |
+| PATCH | `/api/claudexor/credential-profiles/{harness}/{profile_id}` | `gateway.claudexor_accounts.api_claudexor_credential_profile` |
 | POST | `/api/owner/runtime-mode` | `gateway.settings.api_owner_runtime_mode` |
 | POST | `/api/owner/auto-grant` | `gateway.settings.api_owner_auto_grant` |
 | POST | `/api/owner/context-mode` | `gateway.settings.api_owner_context_mode` |
@@ -909,6 +910,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | GET | `/api/tasks/{task_id}/events` | `gateway.tasks.api_task_events` |
 | GET | `/api/tasks/{task_id}/artifacts/{name}` | `gateway.tasks.api_task_artifact` |
 | POST | `/api/tasks/{task_id}/cancel` | `gateway.tasks.api_task_cancel` |
+| POST | `/api/tasks/{task_id}/hurry` | `gateway.task_hurry.api_task_hurry` |
 | POST | `/api/tasks/{task_id}/resume` | `gateway.tasks.api_task_resume` |
 | GET | `/api/schedules` | `gateway.schedules.api_schedules_list` |
 | POST | `/api/schedules` | `gateway.schedules.api_schedules_upsert` |

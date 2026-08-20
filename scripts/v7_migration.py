@@ -108,7 +108,6 @@ MIGRATION_HEADERS = ("old path/symbol", "new owner/path", "facade/public contrac
 #   "separate delta id" rule, exactly as D33 did for the loop stream; handles `_rev()`/`_car()`,
 #   leaves hold no mutable state, the handle exists so tests patching/rebinding the parent's
 #   `tools.review.X` / `tools.claude_advisory_review.X` bindings keep intercepting the moved bodies).
-#   D35 §1.9/№8-pattern module-handle reads of monkeypatchable agent.py / usage_accounting.py facade
 #   D38 §1.9/№8-pattern module-handle reads of monkeypatchable agent.py / usage_accounting.py facade
 #   bindings in the L-C2 leaves (the same ratified supervisor mechanism applied to the L-C2 stream
 #   with its own id per the §1.9-1 "separate delta id" rule; leaves hold no mutable state, the

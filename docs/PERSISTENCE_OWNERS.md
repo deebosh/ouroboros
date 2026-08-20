@@ -236,10 +236,10 @@ says so rather than leaving the asymmetry to be discovered.
 
 | path | writer(s) | authoritative reader | lifecycle | notes |
 |---|---|---|---|---|
-| `observability/blobs/<sha256>.<kind>.gz` | `ouroboros/observability.py::write_blob` (`kind="json"`, from `persist_call`) **and** `ouroboros/tools/services.py` (`kind="txt"`, service-log blobs) | no runtime behavioural reader; `read_blob_ref` is used only by `scripts/contributor_review_evidence.py` | `prune_observability_blobs` **deletes nothing** — it counts and reports `preserved_indefinitely` | Content-addressed, `0600` under private directories. The retention environment variable is parsed and clamped but has no deleting effect. |
+| `observability/blobs/<sha256>.<kind>.gz` | `ouroboros/observability.py::write_blob` (`kind="json"`, from `persist_call`) **and** `ouroboros/tools/services.py` (`kind="txt"`, service-log blobs) | **behavioural**: `observability.py::latest_llm_response_text` dereferences a call manifest's `full_payload_ref` into the blob — the salvage chain used by `supervisor/terminal_delivery.py`, `supervisor/task_reaper.py` and `ouroboros/loop_round_limits.py`; `read_blob_ref` additionally serves `scripts/contributor_review_evidence.py` | `prune_observability_blobs` **deletes nothing** — it counts and reports `preserved_indefinitely` | Content-addressed, `0600` under private directories. The retention environment variable is parsed and clamped but has no deleting effect. |
 | `observability/calls/<task_id>/<call_id>.json` | `ouroboros/observability.py::write_call_manifest` via `persist_call` — upstream sites in the loop, review substrate, triad review, compaction, vision routing and the physical-attempt capture | **behavioural**: `observability.py::latest_llm_response_text` is the salvage source used by `supervisor/terminal_delivery.py`, `supervisor/task_reaper.py`, `ouroboros/loop_round_limits.py` | counted, never deleted | Ids are regex-sanitised before the join. |
 | `observability/salvaged/<task_id>.txt` | `ouroboros/observability.py::preserve_salvaged_output` (from `supervisor/terminal_delivery.py`) | `observability.py::preserved_salvage_path` | **never pruned** | Written on the canonical drive so it outlives the child drive. Undocumented (§16). |
-| `services/<task_id>/<service>.log` | `ouroboros/tools/services.py::_start_service` | tool surface only — `_service_logs` returns a redacted bounded tail plus a blob ref | **the only age-based GC in the durable tree**: `tools/services.py::prune_service_logs` at startup, cutoff `ouroboros/retention.py::age_cutoff(get_gc_retention_days())`; terminal-task sweep through `archive_task_service_logs` | A log larger than the blob cap is neither archived nor deleted — it is retained live with a disclosed path, so an oversize service log is never pruned. |
+| `services/<task_id>/<service>.log` | `ouroboros/tools/services.py::_start_service` | tool surface only — `_service_logs` returns a redacted bounded tail plus a blob ref | age-based GC (one of the five age-pruned planes — see the GC bullet in §15): `tools/services.py::prune_service_logs` at startup, cutoff `ouroboros/retention.py::age_cutoff(get_gc_retention_days())`; terminal-task sweep through `archive_task_service_logs` | A log larger than the blob cap is neither archived nor deleted — it is retained live with a disclosed path, so an oversize service log is never pruned. |
 | `services/<task_id>/<name>.executor.log` | `ouroboros/workspace_executor.py::start_service` (local backend) | the executor record | same prune path | The docker backend writes to a host temp path *outside* the data root, which this runtime never prunes. Undocumented name variant (§16). |
 
 ---
@@ -405,10 +405,16 @@ Durable paths with **no** pruning mechanism of any kind, grouped by what bounds 
   and `archived/`, `uploads/**`, `claudexor/daemon.log`, `logs/agent_stdout.log`,
   `logs/tasks/*.txt`, `projects/<pid>/**`, `Deliverables/**`, `state/python-userbase/`,
   `state/pycache/`, and every lock file listed in §3.
-- **The only age-based GC in the durable tree** is `services/<task_id>/*.log`
-  (`tools/services.py::prune_service_logs`), and it silently exempts logs above the
-  blob cap. `sweep_stale_temp_files` reaps `.tmp.<uuid>` orphans only, and
-  `retention.py` governs subagent worktrees, task drives and service logs — nothing else.
+- **Age-based GC exists in exactly five planes of the durable tree**, all cut by
+  `retention.py::age_cutoff(get_gc_retention_days())`: service logs
+  (`tools/services.py::prune_service_logs`, startup + terminal-task sweep — and it
+  silently exempts logs above the blob cap), consumed one-shot schedule receipts
+  (`supervisor/schedule_time.py::prune_consumed_once_records`, at the schedule tick),
+  and three startup sweeps driven by `server_maintenance.py::_startup_prune_sweeps` —
+  headless task drives (`headless.py::prune_headless_task_drives`), task drives
+  (`prune_task_drives`) and terminal-root task trees (`prune_task_trees`).
+  `sweep_stale_temp_files` reaps `.tmp.<uuid>` orphans only; nothing else in the
+  durable tree ages out.
 
 ---
 
@@ -465,7 +471,7 @@ exists so a later editor does not have to re-derive it.
    deletes nothing and reports `preserved_indefinitely`, even with the retention
    environment variable set.
 5. `services/<task_id>/<service>.log` carries no lifecycle in the tree although it is
-   the only age-pruned plane — and its oversize carve-out is invisible there.
+   one of the five age-pruned planes (§15) — and its oversize carve-out is invisible there.
 6. `archive/` — "Rotated logs, rescue snapshots" understates both the owner
    (`git_ops_rescue::_create_rescue_snapshot`, six callers, plus a `refs/rescue/*` git
    ref) and the contract (`supervisor/state.py` makes `archive/` GC-exempt and forbids
