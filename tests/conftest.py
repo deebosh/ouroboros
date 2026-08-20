@@ -20,10 +20,26 @@ _PYTEST_DATA_DIR = None
 # so the hermetic lane never leaves an unused temp dir behind (see pytest_sessionfinish).
 _PYTEST_REPO_FALLBACK = None
 if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") != "1":
+    # The union of roots the fail-closed invariant defends. The canonical home
+    # root is computed INDEPENDENTLY of the isolating env — same semantics as
+    # supervisor.state.assert_test_data_path: an operator battery that exports
+    # OUROBOROS_DATA_DIR=$TMP/data must not aim the guard at its own temp root
+    # while the real live tree goes unwatched (that is exactly the invocation
+    # every hermetic battery uses, so an env-derived-only guard was blind to
+    # the poisoner class it exists to name).
+    _LIVE_DATA_ROOTS = [str((pathlib.Path.home() / "Ouroboros" / "data").resolve(strict=False))]
+    for _candidate in (
+        os.environ.get("OUROBOROS_TEST_LIVE_DATA_ROOT"),
+        os.environ.get("OUROBOROS_DATA_DIR"),
+    ):
+        if _candidate:
+            _resolved_candidate = str(pathlib.Path(_candidate).resolve(strict=False))
+            if _resolved_candidate not in _LIVE_DATA_ROOTS:
+                _LIVE_DATA_ROOTS.append(_resolved_candidate)
     _LIVE_DATA_ROOT = (
         os.environ.get("OUROBOROS_TEST_LIVE_DATA_ROOT")
         or os.environ.get("OUROBOROS_DATA_DIR")
-        or str(pathlib.Path.home() / "Ouroboros" / "data")
+        or _LIVE_DATA_ROOTS[0]
     )
     _PYTEST_DATA_DIR = pathlib.Path(tempfile.mkdtemp(prefix="ouroboros-pytest-data-"))
     os.environ["OUROBOROS_PYTEST_ACTIVE"] = "1"
@@ -124,8 +140,11 @@ def _runtime_roots_stay_off_the_live_data_root():
     yield
     if _PYTEST_DATA_DIR is None:
         return
-    live = pathlib.Path(globals().get("_LIVE_DATA_ROOT") or "").resolve(strict=False)
-    if not str(live):
+    live_roots = [
+        pathlib.Path(entry).resolve(strict=False)
+        for entry in globals().get("_LIVE_DATA_ROOTS") or []
+    ]
+    if not live_roots:
         return
     import ouroboros.config as config
     from supervisor import git_ops, message_bus, queue, state, workers
@@ -143,10 +162,12 @@ def _runtime_roots_stay_off_the_live_data_root():
         if not value:
             continue
         resolved = pathlib.Path(value).resolve(strict=False)
-        if resolved == live or live in resolved.parents:
-            offenders.append(f"{name}={value}")
+        for live in live_roots:
+            if resolved == live or live in resolved.parents:
+                offenders.append(f"{name}={value} (live root {live})")
+                break
     assert not offenders, (
-        "runtime root(s) left resolving into the LIVE data root by this test: "
+        "runtime root(s) left resolving into a LIVE data root by this test: "
         + ", ".join(offenders)
     )
 
