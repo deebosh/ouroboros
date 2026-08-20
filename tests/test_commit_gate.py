@@ -870,6 +870,123 @@ def test_bypass_is_audited(tmp_path):
     assert bypass_events[0]["task_id"] == "bypass-task"
 
 
+def test_bypass_carries_readiness_warnings(tmp_path, monkeypatch):
+    """skip_advisory_review=True MUST propagate readiness warnings durably.
+
+    Closing ibl-75fbbfedabce. The pre-SDK gate normally runs
+    check_worktree_readiness; the bypass branches used to skip it entirely,
+    silently dropping signals like "large diff", "version mismatch", or
+    "python files modified without test changes". This test asserts the
+    warnings now land in (a) the events.jsonl bypass row, (b) the durable
+    AdvisoryRunRecord, (c) the chat progress surface, and (d) the response
+    payload — so a "bypassed" commit means "owner saw these and proceeded",
+    not "warnings lost".
+    """
+    import json
+    import subprocess
+    git_mod = _get_git_module()
+
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+
+    canned_warnings = [
+        "Python files in ouroboros/supervisor modified without corresponding test changes.",
+        "Large diff detected (500000 chars).",
+    ]
+
+    progress_calls: list = []
+
+    def _fake_check(repo_dir, paths=None):  # noqa: ARG001
+        return list(canned_warnings)
+
+    # The bypass path imports check_worktree_readiness lazily from
+    # review_helpers inside the function body, so monkeypatch the source
+    # module attribute (same convention as test_advisory_preflight tests).
+    monkeypatch.setattr(
+        "ouroboros.tools.review_helpers.check_worktree_readiness",
+        _fake_check,
+    )
+
+    class FakeCtx:
+        repo_dir = tmp_path
+        drive_root = tmp_path
+        task_id = "bypass-with-warnings"
+        def drive_logs(self):
+            return tmp_path / "logs"
+        def emit_progress_fn(self, msg):
+            progress_calls.append(str(msg))
+
+    result = git_mod._check_advisory_freshness(
+        FakeCtx(), "bypassed commit", skip_advisory_pre_review=True
+    )
+    assert result is None  # bypass still passes — warnings are non-blocking
+
+    # (a) events.jsonl carries the warnings on the bypass row.
+    events_path = tmp_path / "logs" / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+    bypass_events = [e for e in events if e.get("type") == "advisory_review_bypassed"]
+    assert len(bypass_events) == 1
+    assert bypass_events[0]["readiness_warnings"] == canned_warnings
+
+    # (b) AdvisoryRunRecord (durable review state) carries the warnings.
+    rs_mod = importlib.import_module("ouroboros.review_state")
+    state = rs_mod.load_state(tmp_path)
+    bypass_runs = [r for r in state.advisory_runs if r.status == "bypassed"]
+    assert len(bypass_runs) == 1
+    assert list(bypass_runs[0].readiness_warnings) == canned_warnings
+
+    # (c) Chat progress surface received the warnings.
+    assert any("Bypass readiness warnings" in str(m) for m in progress_calls), (
+        f"emit_progress_fn should have surfaced warnings, got: {progress_calls}"
+    )
+
+
+def test_bypass_with_no_warnings_is_silent(tmp_path, monkeypatch):
+    """Clean bypass (no warnings) must not emit a spurious progress line.
+
+    Closing ibl-75fbbfedabce must NOT add noise to the clean case — only
+    surface warnings when there ARE warnings. A clean worktree that
+    bypasses successfully emits no chat progress and an empty
+    ``readiness_warnings`` list.
+    """
+    import json
+    import subprocess
+    git_mod = _get_git_module()
+
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        "ouroboros.tools.review_helpers.check_worktree_readiness",
+        lambda repo_dir, paths=None: [],
+    )
+
+    progress_calls: list = []
+    class FakeCtx:
+        repo_dir = tmp_path
+        drive_root = tmp_path
+        task_id = "clean-bypass"
+        def drive_logs(self):
+            return tmp_path / "logs"
+        def emit_progress_fn(self, msg):
+            progress_calls.append(str(msg))
+
+    result = git_mod._check_advisory_freshness(
+        FakeCtx(), "clean bypass", skip_advisory_pre_review=True
+    )
+    assert result is None
+
+    events = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text().splitlines() if line.strip()]
+    bypass_events = [e for e in events if e.get("type") == "advisory_review_bypassed"]
+    assert bypass_events[0]["readiness_warnings"] == []
+    # No spurious "Bypass readiness warnings" line on a clean run.
+    assert not any("Bypass readiness warnings" in str(m) for m in progress_calls), (
+        f"clean bypass must not emit warning progress, got: {progress_calls}"
+    )
+
+
 def test_advisory_pre_review_tool_schema_has_skip_param():
     """advisory_review schema must expose skip_advisory_review param."""
     adv_mod = _get_advisory_module()

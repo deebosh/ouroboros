@@ -1182,7 +1182,8 @@ def _is_checklist_array(items: list) -> bool:
 # -- Audit logging --
 
 def _audit_bypass(ctx: ToolContext, snapshot_hash: str, commit_message: str,
-                  bypass_reason: str, task_id: str) -> None:
+                  bypass_reason: str, task_id: str,
+                  readiness_warnings: Optional[List[str]] = None) -> None:
     try:
         append_jsonl(ctx.drive_logs() / "events.jsonl", {
             "ts": utc_now_iso(),
@@ -1191,6 +1192,7 @@ def _audit_bypass(ctx: ToolContext, snapshot_hash: str, commit_message: str,
             "commit_message": commit_message,  # full — no [:200] truncation
             "bypass_reason": bypass_reason,
             "task_id": task_id,
+            "readiness_warnings": list(readiness_warnings or []),
         })
     except Exception:
         pass
@@ -1227,12 +1229,71 @@ def _advisory_run_record(
     )
 
 
+def _compute_bypass_readiness(
+    repo_dir: pathlib.Path,
+    *,
+    paths: Optional[List[str]],
+    state: "AdvisoryReviewState",
+    snapshot_hash: str,
+    repo_key: str,
+) -> List[str]:
+    """Compute readiness warnings at a bypass point.
+
+    A bypass normally skips the pre-SDK gate (and therefore
+    ``check_worktree_readiness``) — that is the ibl-75fbbfedabce gap. This
+    helper re-runs the deterministic readiness check at bypass, and falls
+    back to a prior matching record's warnings when the fresh compute is
+    empty (transient misses — e.g. worktree briefly between edits — must not
+    erase history). Returns a plain list (possibly empty); callers propagate
+    it through the durable AdvisoryRunRecord, the events.jsonl audit row,
+    the chat progress surface, and the response payload.
+
+    The check is best-effort: any exception falls through to "carry forward
+    from prior record" so a transient bug never blocks a commit OR silently
+    drops the warning context.
+    """
+    fresh: List[str] = []
+    try:
+        fresh = list(check_worktree_readiness(repo_dir, paths=paths) or [])
+    except Exception:
+        log.debug("bypass readiness compute failed (non-fatal)", exc_info=True)
+    if fresh:
+        return list(fresh)
+    try:
+        prior = state.find_by_hash(snapshot_hash, repo_key=repo_key)
+        if prior is not None:
+            carried = list(getattr(prior, "readiness_warnings", []) or [])
+            if carried:
+                return list(carried)
+    except Exception:
+        log.debug("bypass prior-record lookup failed (non-fatal)", exc_info=True)
+    return list(fresh)
+
+
 def _record_bypass(ctx: ToolContext, state: "AdvisoryReviewState", snapshot_hash: str,
                    commit_message: str, reason: str, task_id: str,
                    drive_root: pathlib.Path,
-                   snapshot_paths: Optional[List[str]] = None) -> str:
-    """Audit, record, and save a bypassed advisory run. Returns JSON response."""
-    _audit_bypass(ctx, snapshot_hash, commit_message, reason, task_id)
+                   snapshot_paths: Optional[List[str]] = None,
+                   readiness_warnings: Optional[List[str]] = None) -> str:
+    """Audit, record, and save a bypassed advisory run. Returns JSON response.
+
+    Readiness warnings are durably propagated (record + event + chat progress +
+    response payload) when supplied — closing ibl-75fbbfedabce: a bypass that
+    silently drops readiness context loses the worktree signals an explicit
+    pre-SDK gate would have surfaced. Callers should compute them BEFORE this
+    call (the chat-side helper `_compute_bypass_readiness` is the SSOT shape).
+    """
+    warnings = list(readiness_warnings or [])
+    if warnings:
+        try:
+            ctx.emit_progress_fn(
+                "⚠️ Bypass readiness warnings (non-blocking, "
+                "durable in AdvisoryRunRecord + events.jsonl): "
+                + "; ".join(warnings)
+            )
+        except Exception:
+            pass
+    _audit_bypass(ctx, snapshot_hash, commit_message, reason, task_id, warnings)
     repo_key = make_repo_key(pathlib.Path(ctx.repo_dir))
 
     def _mutate(bypass_state: "AdvisoryReviewState") -> None:
@@ -1241,6 +1302,7 @@ def _record_bypass(ctx: ToolContext, state: "AdvisoryReviewState", snapshot_hash
             repo_key=repo_key, task_id=task_id,
             bypass_reason=reason, bypassed_by_task=task_id,
             snapshot_paths=snapshot_paths,
+            readiness_warnings=warnings,
         ))
 
     update_state(drive_root, _mutate)
@@ -1274,6 +1336,7 @@ def _record_bypass(ctx: ToolContext, state: "AdvisoryReviewState", snapshot_hash
         "status": "bypassed",
         "snapshot_hash": snapshot_hash,
         "bypass_reason": reason,
+        "readiness_warnings": list(warnings),
         "message": msg,
     })
 
@@ -1644,18 +1707,30 @@ def _handle_advisory_pre_review(
         return _record_bypass(ctx, state, snapshot_hash, commit_message,
                                "advisory reviewer disabled in settings — audited bypass",
                                task_id, drive_root,
-                               snapshot_paths=paths)
+                               snapshot_paths=paths,
+                               readiness_warnings=_compute_bypass_readiness(
+                                   repo_dir, paths=paths, state=state,
+                                   snapshot_hash=snapshot_hash, repo_key=repo_key,
+                               ))
     if _requires_key and not os.environ.get("ANTHROPIC_API_KEY", ""):
         return _record_bypass(ctx, state, snapshot_hash, commit_message,
                                "ANTHROPIC_API_KEY not set — auto-bypassed (advisory route=api)",
                                task_id, drive_root,
-                               snapshot_paths=paths)
+                               snapshot_paths=paths,
+                               readiness_warnings=_compute_bypass_readiness(
+                                   repo_dir, paths=paths, state=state,
+                                   snapshot_hash=snapshot_hash, repo_key=repo_key,
+                               ))
 
     # Explicit audited bypass.
     if skip_advisory_pre_review:
         return _record_bypass(ctx, state, snapshot_hash, commit_message,
                                "explicit skip_advisory_review=True", task_id, drive_root,
-                               snapshot_paths=paths)
+                               snapshot_paths=paths,
+                               readiness_warnings=_compute_bypass_readiness(
+                                   repo_dir, paths=paths, state=state,
+                                   snapshot_hash=snapshot_hash, repo_key=repo_key,
+                               ))
 
     readiness_warnings, changed_files, early_exit = _advisory_pre_sdk_gate(
         ctx=ctx,

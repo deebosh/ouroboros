@@ -455,11 +455,45 @@ def _check_advisory_freshness(ctx: ToolContext, commit_message: str,
     if skip_advisory_pre_review:
         task_id = str(getattr(ctx, "task_id", "") or "")
         reason = "skip_advisory_review=True passed to commit_reviewed"
+        # Bypassed commits MUST carry readiness warnings (event + record + chat
+        # progress) — closing ibl-75fbbfedabce. The check is cheap and
+        # deterministic; running it at bypass makes "bypassed review" mean
+        # "owner saw these warnings and chose to proceed", not "warnings
+        # silently lost". Prior record is the carry-forward source so
+        # transient compute misses (e.g. worktree briefly between edits) do
+        # not erase history.
+        readiness_warnings: list = []
+        try:
+            from ouroboros.tools.review_helpers import check_worktree_readiness
+            readiness_warnings = list(
+                check_worktree_readiness(repo_dir, paths=paths) or []
+            )
+        except Exception:
+            log.debug("bypass readiness compute failed (non-fatal)", exc_info=True)
+        if not readiness_warnings:
+            try:
+                prior = state.find_by_hash(snapshot_hash, repo_key=repo_key)
+                if prior is not None:
+                    readiness_warnings = list(
+                        getattr(prior, "readiness_warnings", []) or []
+                    )
+            except Exception:
+                log.debug("bypass prior-record lookup failed (non-fatal)", exc_info=True)
+        if readiness_warnings:
+            try:
+                ctx.emit_progress_fn(
+                    "⚠️ Bypass readiness warnings (non-blocking, "
+                    "durable in AdvisoryRunRecord + events.jsonl): "
+                    + "; ".join(readiness_warnings)
+                )
+            except Exception:
+                pass
         try:
             append_jsonl(ctx.drive_logs() / "events.jsonl", {
                 "ts": _utc_now(), "type": "advisory_review_bypassed",
                 "snapshot_hash": snapshot_hash, "commit_message": commit_message,
                 "bypass_reason": reason, "task_id": task_id,
+                "readiness_warnings": list(readiness_warnings),
             })
         except Exception:
             pass
@@ -476,11 +510,12 @@ def _check_advisory_freshness(ctx: ToolContext, commit_message: str,
                 repo_key=repo_key,
                 tool_name="advisory_review",
                 task_id=task_id,
+                readiness_warnings=list(readiness_warnings),
             ))
 
         update_state(drive_root, _mutate)
 
-        return None  # audited bypass
+        return None  # audited bypass, warnings durably carried
 
     if state.is_fresh(snapshot_hash, repo_key=repo_key) and (open_obs or open_debts):
         if enforcement == "advisory":
