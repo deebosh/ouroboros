@@ -29,6 +29,7 @@ from ouroboros.gateway.owner_settings import (
     _owner_read_settings_raw,
     _owner_update_settings,
     _owner_write_settings,
+    settings_document_mutation,
     owner_write_guard,
     post_commit_failure_response,
     settings_document_digest,
@@ -321,6 +322,10 @@ async def _json_body_or_empty(request: Request) -> Any:
 
 
 def _has_running_agent_tasks() -> bool:
+    # Known pre-existing residual: PENDING/RUNNING are read without the queue
+    # lock, so a task mid-handoff (removed from PENDING, not yet in RUNNING)
+    # can be invisible to one snapshot. The context-mode guard tolerates it —
+    # the read races the supervisor thread with or without any settings lock.
     try:
         from supervisor.workers import PENDING, RUNNING, _get_chat_agent
         if PENDING or RUNNING:
@@ -357,6 +362,13 @@ def _has_started_agent_tasks() -> bool:
 async def api_owner_runtime_mode(request: Request) -> JSONResponse:
     """Persist the owner-selected runtime mode for the next boot."""
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_runtime_mode_sync, request, body)
+
+
+def _api_owner_runtime_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
 
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
@@ -378,7 +390,13 @@ async def api_owner_runtime_mode(request: Request) -> JSONResponse:
             current["OUROBOROS_RUNTIME_MODE"] = next_mode
             return current
 
-        _owner_update_settings(_set_runtime_mode, digest)
+        # Under the seam-wide document lock, because a threaded generic save may
+        # be mid read-merge-write on the same document. The transform's own read
+        # happens inside the settings lock, so there is no second stale read to
+        # refresh here; the digest keeps this request's PRE-lock decision bound to
+        # the document that decision was taken from.
+        with settings_document_mutation():
+            _owner_update_settings(_set_runtime_mode, digest)
     _owner_audit(
         request,
         "runtime_mode",
@@ -400,6 +418,13 @@ async def api_owner_runtime_mode(request: Request) -> JSONResponse:
 async def api_owner_auto_grant(request: Request) -> JSONResponse:
     """Persist the owner auto-grant toggle outside generic settings writes."""
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_auto_grant_sync, request, body)
+
+
+def _api_owner_auto_grant_sync(request: Request, body: Any) -> JSONResponse:
     if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
         return unsaved_error("'enabled' must be a boolean", 400)
     enabled = bool(body.get("enabled"))
@@ -412,8 +437,12 @@ async def api_owner_auto_grant(request: Request) -> JSONResponse:
         current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = value
         return current
 
-    _owner_update_settings(_set_auto_grant)
-    os.environ["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = value
+    with settings_document_mutation():
+        _owner_update_settings(_set_auto_grant)
+        # Projected under the SAME lock as the commit: released first, two
+        # writers can commit A->B and project B->A, stranding the live
+        # environment on the loser's value.
+        os.environ["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = value
     _owner_audit(request, "auto_grant", {"enabled": enabled})
     return JSONResponse({"ok": True, "enabled": enabled})
 
@@ -666,6 +695,13 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
     task (mirrors the auto-grant toggle), so no restart is required.
     """
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_context_mode_sync, request, body)
+
+
+def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
 
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
@@ -691,12 +727,29 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
         current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
         return current
 
-    # This endpoint IS the author of both keys, so they persist even at the shipped default.
-    # The digest binds the idle refusal above to the document this write replaces.
-    _owner_update_settings(_set_context_mode, digest,
-                           authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
-    os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
-    os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+    with settings_document_mutation():
+        # The idle guard is re-proved UNDER the lock: this thread can block on
+        # it behind a long generic save, and a task started in that window
+        # would otherwise be demoted to low mid-flight on a stale idle answer.
+        # BOTH halves of the predicate re-proved under the lock: the pre-lock
+        # answer above is only a fast path, and a writer that committed while
+        # this thread waited can have changed the very mode being lowered FROM.
+        # The digest cannot stand in for this: the queue changes without ever
+        # touching the settings document.
+        previous_mode = _config.get_owner_context_mode()
+        if previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
+            return unsaved_error(
+                "Context mode can only be lowered while Ouroboros is idle. "
+                "Wait until no queued or running work remains, then switch Low/Max.",
+                409,
+            )
+        # This endpoint IS the author of both keys, so they persist even at the shipped default.
+        # The digest binds the idle refusal above to the document this write replaces.
+        _owner_update_settings(_set_context_mode, digest,
+                               authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
+        # Same-lock projection: see api_owner_auto_grant.
+        os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
+        os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
     _owner_audit(
         request,
         "context_mode",
@@ -728,20 +781,28 @@ async def api_owner_scope_review_floor(request: Request) -> JSONResponse:
     accepted, stored, audited, and answered with an explicit deprecation notice naming the
     control that actually decides."""
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_scope_review_floor_sync, request, body)
+
+
+def _api_owner_scope_review_floor_sync(request: Request, body: Any) -> JSONResponse:
     raw = str((body or {}).get("floor") or "").strip().lower()
     if raw not in {"blocking_1m", "advisory"}:
         return unsaved_error("'floor' must be one of: blocking_1m, advisory", 400)
-    digest = settings_document_digest()
-    previous = str(
-        _owner_read_settings_raw().get("OUROBOROS_SCOPE_REVIEW_FLOOR") or "blocking_1m"
-    ).strip().lower()
-
     def _set_scope_review_floor(current: Dict[str, Any]) -> Dict[str, Any]:
         current["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
         return current
 
-    _owner_update_settings(_set_scope_review_floor, digest)
-    os.environ["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
+    with settings_document_mutation():
+        digest = settings_document_digest()
+        previous = str(
+            _owner_read_settings_raw().get("OUROBOROS_SCOPE_REVIEW_FLOOR") or "blocking_1m"
+        ).strip().lower()
+        _owner_update_settings(_set_scope_review_floor, digest)
+        # Same-lock projection: see api_owner_auto_grant.
+        os.environ["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
     _owner_audit(
         request,
         "scope_review_floor",
@@ -768,22 +829,30 @@ async def api_owner_safety_mode(request: Request) -> JSONResponse:
     The deterministic registry sandbox, protected paths, and light-mode guards run
     in every mode (BIBLE P3: the LLM supervisor is a layer, not the floor)."""
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_safety_mode_sync, request, body)
+
+
+def _api_owner_safety_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
 
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
     if raw_mode not in set(_config.VALID_SAFETY_MODES):
         return unsaved_error("'mode' must be one of: full, light, off", 400)
-    digest = settings_document_digest()
-    previous = _config.normalize_safety_mode(
-        _owner_read_settings_raw().get("OUROBOROS_SAFETY_MODE"))
-
     def _set_safety_mode(current: Dict[str, Any]) -> Dict[str, Any]:
         current["OUROBOROS_SAFETY_MODE"] = raw_mode
         return current
 
-    _owner_update_settings(_set_safety_mode, digest,
-                           authored_keys=("OUROBOROS_SAFETY_MODE",), allow_safety_lowering=True)
-    os.environ["OUROBOROS_SAFETY_MODE"] = raw_mode
+    with settings_document_mutation():
+        digest = settings_document_digest()
+        previous = _config.normalize_safety_mode(
+            _owner_read_settings_raw().get("OUROBOROS_SAFETY_MODE"))
+        _owner_update_settings(_set_safety_mode, digest,
+                               authored_keys=("OUROBOROS_SAFETY_MODE",), allow_safety_lowering=True)
+        # Same-lock projection: see api_owner_auto_grant.
+        os.environ["OUROBOROS_SAFETY_MODE"] = raw_mode
     _owner_audit(
         request,
         "safety_mode",
@@ -1106,12 +1175,36 @@ def _apply_settings_save_side_effects(
 
 
 async def api_settings_post(request: Request) -> JSONResponse:
+    # Body parse stays on the loop (it is the only await); everything else runs
+    # in a worker thread. The save body is synchronous work — validation, the
+    # disk write, env projection, hot-reload side effects, and (when review
+    # keys changed) NETWORK evidence fetches for the warning surface — and on
+    # the event loop it froze every other request and WebSocket for the whole
+    # save, which read as the entire app hanging on the Save button.
+    try:
+        body = await request.json()
+    except Exception as exc:
+        # Same answer the broad in-body handler used to give a parse failure.
+        return unsaved_error(str(exc), 400)
+    return await asyncio.to_thread(_api_settings_post_sync, request, body)
+
+
+def _api_settings_post_sync(request: Request, body: Any) -> JSONResponse:
+    # The event loop used to serialize every settings writer for free (no
+    # writer awaited mid read-merge-write); a worker thread does not inherit
+    # that, so the whole body holds the seam-wide document lock — the
+    # single-decision endpoints hold the same lock, and the loop itself stays
+    # free to serve everything else.
+    with settings_document_mutation():
+        return _api_settings_post_locked(request, body)
+
+
+def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
     # Everything below the write is a POST-commit step. The broad handler at the
     # bottom used to answer a failure there with "400, nothing saved" while the
     # bytes were already on disk; `boundary` is what lets it tell the two apart.
     boundary = CommitBoundary()
     try:
-        body = await request.json()
         if not isinstance(body, dict):
             return unsaved_error("JSON body must be an object.", 400)
         channel_key = "OUROBOROS_UPDATE_CHANNEL"

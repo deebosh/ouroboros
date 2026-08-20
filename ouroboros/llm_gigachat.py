@@ -26,6 +26,42 @@ class _GigaChatLaneMixin:
     # ------------------------------------------------------------------
     # GigaChat (native `gigachat` library — NOT OpenAI-compatible)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _new_gigachat_client(
+        target: Dict[str, Any],
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
+    ):
+        """Build a GigaChat library client for the given target."""
+        try:
+            from gigachat import GigaChat
+        except ImportError as exc:  # pragma: no cover - exercised only without the dep
+            raise RuntimeError(
+                "The 'gigachat' package is required to use gigachat:: models. "
+                "Install it with: pip install gigachat"
+            ) from exc
+        kwargs: Dict[str, Any] = {
+            "scope": str(target.get("scope") or "GIGACHAT_API_PERS"),
+            "verify_ssl_certs": bool(target.get("verify_ssl_certs", True)),
+        }
+        for source, destination in (
+            ("api_key", "credentials"), ("user", "user"), ("password", "password"),
+            ("base_url", "base_url"),
+        ):
+            value = str(target.get(source) or "")
+            # Provider Test carries an explicit access-token field to suppress
+            # inherited auth.  Its empty credential is equally authoritative:
+            # omitting it would let the library reload GIGACHAT_CREDENTIALS.
+            if value or (source == "api_key" and "access_token" in target):
+                kwargs[destination] = value
+        if "access_token" in target:
+            kwargs["access_token"] = str(target.get("access_token") or "")
+        if timeout and timeout > 0:
+            kwargs["timeout"] = float(timeout)
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+        return GigaChat(**kwargs)
+
     def _get_gigachat_client(self, target: Dict[str, Any], timeout: Optional[float] = None):
         """Build (and cache) a GigaChat library client for the given target.
 
@@ -47,29 +83,9 @@ class _GigaChatLaneMixin:
         timeout_key = float(timeout) if timeout and timeout > 0 else None
         cache_key = (credentials, user, password, scope, base_url, verify, timeout_key)
 
-        client = self._gigachat_clients.get(cache_key)
-        if client is None:
-            try:
-                from gigachat import GigaChat
-            except ImportError as exc:  # pragma: no cover - exercised only without the dep
-                raise RuntimeError(
-                    "The 'gigachat' package is required to use gigachat:: models. "
-                    "Install it with: pip install gigachat"
-                ) from exc
-            kwargs: Dict[str, Any] = {"scope": scope, "verify_ssl_certs": verify}
-            if credentials:
-                kwargs["credentials"] = credentials
-            if user:
-                kwargs["user"] = user
-            if password:
-                kwargs["password"] = password
-            if base_url:
-                kwargs["base_url"] = base_url
-            if timeout_key is not None:
-                kwargs["timeout"] = timeout_key
-            client = GigaChat(**kwargs)
-            self._gigachat_clients[cache_key] = client
-        return client
+        if cache_key not in self._gigachat_clients:
+            self._gigachat_clients[cache_key] = self._new_gigachat_client(target, timeout=timeout)
+        return self._gigachat_clients[cache_key]
 
     @staticmethod
     def _gigachat_text(content: Any) -> str:

@@ -233,7 +233,12 @@ def test_one_owner_endpoint_write_preserves_every_owner_customization(isolated_s
 def test_every_owner_endpoint_reaches_the_same_normalized_read(isolated_settings):
     """The fix is one seam, not six patches: each single-decision owner endpoint,
     and the generic save, take their document from ``_owner_read_settings_raw`` —
-    directly, or through the locked read-modify-write primitive built on it."""
+    directly, or through the locked read-modify-write primitive built on it.
+
+    The names are the SYNCHRONOUS bodies: every settings writer hands its body to a
+    worker thread (the event loop must not freeze for a save), so the async endpoint
+    is a two-line delegator and the document work lives in its ``_sync`` companion —
+    the generic save one level deeper again, in the body its lock wrapper calls."""
     import ast
 
     from ouroboros.gateway import owner_settings as owner_mod
@@ -257,12 +262,12 @@ def test_every_owner_endpoint_reaches_the_same_normalized_read(isolated_settings
     readers = _callers(settings_mod, "_owner_read_settings_raw") | _callers(
         settings_mod, "_owner_update_settings")
     assert readers == {
-        "api_owner_runtime_mode",
-        "api_owner_auto_grant",
-        "api_owner_context_mode",
-        "api_owner_scope_review_floor",
-        "api_owner_safety_mode",
-        "api_settings_post",
+        "_api_owner_runtime_mode_sync",
+        "_api_owner_auto_grant_sync",
+        "_api_owner_context_mode_sync",
+        "_api_owner_scope_review_floor_sync",
+        "_api_owner_safety_mode_sync",
+        "_api_settings_post_locked",
     }, readers
 
 

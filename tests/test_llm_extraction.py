@@ -19,6 +19,7 @@ from ouroboros import (
     llm_messages,
     llm_openai_compatible,
     llm_pricing,
+    llm_probe,
     llm_routing,
 )
 from ouroboros.llm import LLMClient
@@ -37,6 +38,10 @@ _LEAVES = (
     llm_local,
     llm_openai_compatible,
     llm_pricing,
+    # Not a mixin and not an extraction: the probe transport arrived whole from
+    # upstream. It is an llm_* leaf all the same, so the leaf rules bind it —
+    # never import the parent, no cycles, real weight.
+    llm_probe,
 )
 
 # Module-level names that moved. llm.py re-exports every one of them, so its

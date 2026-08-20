@@ -56,6 +56,13 @@ from ouroboros.launcher_onboarding import (
     prepare_first_run_settings as _prepare_first_run_settings,
     present_first_run_onboarding as _present_first_run_onboarding,
 )
+from ouroboros.launcher_server_reaper import (
+    reap_same_install_strays as _reap_same_install_strays_impl,
+)
+from ouroboros.launcher_windows_runtime import (  # noqa: F401  (re-exported: same objects, prior launcher surface)
+    _prepare_windows_webview_runtime,
+    _show_windows_message,
+)
 from ouroboros.platform_layer import (
     BUNDLE_DIR_ENV,
     IS_LINUX,
@@ -168,108 +175,6 @@ def _find_embedded_python() -> str:
 
 EMBEDDED_PYTHON = _find_embedded_python()
 
-_windows_dll_dir_handles: list = []
-
-
-def _show_windows_message(title: str, message: str) -> None:
-    if not IS_WINDOWS:
-        return
-    try:
-        import ctypes
-
-        ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
-    except Exception:
-        pass
-
-
-def _prepare_windows_webview_runtime() -> tuple[bool, str]:
-    """Prepare pythonnet/pywebview runtime before importing webview on Windows."""
-    if not IS_WINDOWS:
-        return True, ""
-
-    base_dir = pathlib.Path(getattr(sys, "_MEIPASS", pathlib.Path(sys.executable).parent))
-    exe_dir = pathlib.Path(sys.executable).parent
-    runtime_dir = base_dir / "pythonnet" / "runtime"
-    webview_lib_dir = base_dir / "webview" / "lib"
-    py_dll_name = f"python{sys.version_info[0]}{sys.version_info[1]}.dll"
-
-    def _unblock_file(path: pathlib.Path) -> None:
-        try:
-            os.remove(f"{path}:Zone.Identifier")
-        except OSError:
-            pass
-
-    def _unblock_tree(root: pathlib.Path) -> None:
-        if not root.is_dir():
-            return
-        for child in root.rglob("*"):
-            if child.is_file() and child.suffix.lower() in {".dll", ".exe", ".pyd"}:
-                _unblock_file(child)
-
-    py_dll_candidates = [
-        base_dir / py_dll_name,
-        exe_dir / py_dll_name,
-    ]
-    for root, _dirs, files in os.walk(base_dir):
-        if py_dll_name in files:
-            py_dll_candidates.append(pathlib.Path(root) / py_dll_name)
-            if len(py_dll_candidates) >= 6:
-                break
-
-    py_dll_path = next((path for path in py_dll_candidates if path.is_file()), None)
-    runtime_dll_path = runtime_dir / "Python.Runtime.dll"
-    if not runtime_dll_path.is_file():
-        for root, _dirs, files in os.walk(base_dir):
-            if "Python.Runtime.dll" in files:
-                runtime_dll_path = pathlib.Path(root) / "Python.Runtime.dll"
-                break
-
-    if py_dll_path is None:
-        return False, f"Bundled {py_dll_name} was not found."
-    if not runtime_dll_path.is_file():
-        return False, "Bundled Python.Runtime.dll was not found."
-
-    _unblock_file(py_dll_path)
-    _unblock_file(runtime_dll_path)
-    _unblock_tree(runtime_dll_path.parent)
-    _unblock_tree(webview_lib_dir)
-
-    os.environ["PYTHONNET_RUNTIME"] = "netfx"
-    os.environ["PYTHONNET_PYDLL"] = str(py_dll_path)
-
-    search_dirs = []
-    for candidate in (
-        base_dir,
-        exe_dir,
-        runtime_dir,
-        runtime_dll_path.parent,
-        py_dll_path.parent,
-        webview_lib_dir,
-    ):
-        candidate_str = str(candidate)
-        if candidate.is_dir() and candidate_str not in search_dirs:
-            search_dirs.append(candidate_str)
-
-    current_path_parts = os.environ.get("PATH", "").split(os.pathsep) if os.environ.get("PATH") else []
-    os.environ["PATH"] = os.pathsep.join(search_dirs + [part for part in current_path_parts if part and part not in search_dirs])
-
-    if hasattr(os, "add_dll_directory"):
-        global _windows_dll_dir_handles
-        for candidate in search_dirs:
-            try:
-                _windows_dll_dir_handles.append(os.add_dll_directory(candidate))
-            except (FileNotFoundError, OSError):
-                pass
-
-    try:
-        from clr_loader import get_netfx
-        from pythonnet import set_runtime
-
-        set_runtime(get_netfx())
-    except Exception as exc:
-        return False, f"Windows .NET runtime init failed: {exc}"
-
-    return True, ""
 
 def _bundle_dir() -> pathlib.Path:
     if getattr(sys, "frozen", False):
@@ -596,8 +501,13 @@ def _kill_stale_on_port(port: int) -> None:
         kill_process_on_port(port)
         return
     try:
+        # -sTCP:LISTEN keeps this a listener sweep: a bare tcp:PORT selector
+        # also matches ESTABLISHED client sockets, and in browser mode the
+        # owner's own browser holds one — sweeping it violates the invariant
+        # documented on _open_browser_detached (the browser is the owner's
+        # application, outside custody). -nP avoids resolver stalls.
         result = subprocess.run(
-            ["lsof", "-ti", f"tcp:{port}"],
+            ["lsof", "-nP", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -629,6 +539,35 @@ def _kill_stale_runtime_ports(port: int) -> None:
     """Clear core runtime listener ports before start/restart."""
     _kill_stale_on_port(port)
     _kill_stale_on_port(_host_service_port())
+
+
+def _reap_same_install_strays(reason: str) -> list[int]:
+    """Kill leftover generations of THIS install's server; return proven survivors.
+
+    Only ever called while this process holds the single-instance pid lock, which is what makes the
+    identity rule sound: with the lock held, another process running this install's server.py under
+    this launcher's stamped environment cannot be a live peer's generation. Never called from a
+    panic or window-close path — Emergency Stop tears down what it owns and adds no new killing.
+    """
+    try:
+        return _reap_same_install_strays_impl(REPO_DIR, DATA_DIR, reason)
+    except Exception:
+        # A sweep that cannot run must not stop the launcher booting.
+        log.warning("Same-install stray sweep failed (%s)", reason, exc_info=True)
+        return []
+
+
+def _pre_generation_cleanup(port: int) -> list[int]:
+    """Clear the previous generation before starting a new one; returns proven stray survivors.
+
+    Per GENERATION, not once per launcher: exit-42 and crash restarts are where the observed
+    double-boot collisions began. Ordered recorded-cleanup -> stray sweep -> port sweep: the
+    recorded pid keeps its record-driven path with the record unlinked first, the tree kill runs
+    while PPID links are still live, and the port sweep stays the residual net."""
+    _cleanup_recorded_server_process("startup")
+    survivors = _reap_same_install_strays("startup")
+    _kill_stale_runtime_ports(port)
+    return survivors
 
 
 def _wait_for_server(port: int, timeout: float = 30.0, abort_event=None) -> bool:
@@ -709,10 +648,19 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
     global _agent_proc, _agent_job
     crash_times: list[float] = []
 
-    _cleanup_recorded_server_process("startup")
-    _kill_stale_runtime_ports(port)
-
     while not _shutdown_event.is_set():
+        survivors = _pre_generation_cleanup(port)
+        if survivors:
+            # Starting now would put a second generation on the same data directory — the exact
+            # collision this sweep exists to prevent. The next iteration re-sweeps.
+            log.error(
+                "Not starting the agent: same-install server process(es) %s are proven "
+                "launcher-managed strays but survived every kill pass. Retrying in 3s.",
+                survivors,
+            )
+            time.sleep(3)
+            continue
+
         try:
             PORT_FILE.unlink(missing_ok=True)
         except OSError:
@@ -759,7 +707,8 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
             # restart. No dependency sync — nothing about the checkout changed.
             _agent_restart_requested.clear()
             log.info("Restarting the agent to adopt the saved first-run configuration.")
-            _kill_stale_runtime_ports(port)
+            # No port sweep here: _pre_generation_cleanup at the top of the
+            # next iteration runs it as its third phase.
             continue
 
         if exit_code == RESTART_EXIT_CODE:
@@ -783,7 +732,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
                         "import them — see the pip output above for the cause.",
                         MAX_CRASH_RESTARTS, CRASH_WINDOW_SEC,
                     )
-            _kill_stale_runtime_ports(port)
+            # No port sweep here: _pre_generation_cleanup owns it next iteration.
             continue
 
         now = time.time()
@@ -794,7 +743,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
             break
 
         log.info("Agent crashed. Restarting in 3s...")
-        _kill_stale_runtime_ports(port)
+        # No port sweep here: _pre_generation_cleanup owns it next iteration.
         time.sleep(3)
 
 def _request_agent_restart() -> None:
@@ -1050,13 +999,15 @@ def _headless_signal_handler(signum, frame) -> None:
     _shutdown_event.set()
 
 
-def _open_browser_detached(url: str) -> None:
+def _open_browser_detached(url: str) -> threading.Thread:
     """Open the default browser without ever blocking the caller.
 
     `webbrowser.open` waits for the child on a stdlib-resolved console
     browser (w3m/lynx or an unrecognized $BROWSER), which would stall the
     keep-alive loop for that browser's lifetime; the URL is already printed,
-    so the open is best-effort and rides a daemon thread.
+    so the open is best-effort and rides a daemon thread. Returns the thread
+    so a short-lived caller (the already-running notice) can bound-join it
+    before process exit would kill the daemon thread under the opener.
 
     DELIBERATE (owner-approved): the opened browser is the USER'S own
     application, intentionally outside process custody and launcher teardown —
@@ -1070,7 +1021,9 @@ def _open_browser_detached(url: str) -> None:
         except Exception:
             log.info("Could not open the default browser for %s", url, exc_info=True)
 
-    threading.Thread(target=_open, name="ouroboros-open-browser", daemon=True).start()
+    thread = threading.Thread(target=_open, name="ouroboros-open-browser", daemon=True)
+    thread.start()
+    return thread
 
 
 def _run_headless_main(url: str, port: int, lifecycle_thread: threading.Thread) -> None:
@@ -1135,10 +1088,31 @@ def main():
     if not acquire_pid_lock():
         log.error("Another instance already running.")
         if _headless:
+            # The lock loss usually races the FIRST launcher's bootstrap
+            # (repeated Open clicks): the port file may be absent (unlinked
+            # pre-start) or stale from an older run on another port. Poll
+            # briefly for a healthy server, re-reading the file between
+            # probes, so Open during bootstrap lands on the live UI; on
+            # timeout fall back to the last-read port (best-effort notice;
+            # the bound is soft — a probe straddling the deadline may run
+            # its own urlopen timeout, a couple of seconds of overshoot).
+            port = _read_port_file()
+            deadline = time.time() + 10.0
+            while time.time() < deadline and not _wait_for_server(port, timeout=1.0):
+                time.sleep(0.5)
+                port = _read_port_file()
+            existing_url = f"http://127.0.0.1:{port}"
             print(
-                f"Ouroboros is already running at http://127.0.0.1:{_read_port_file()}",
+                f"Ouroboros is already running at {existing_url}",
                 file=sys.stderr,
             )
+            # Desktop-icon launches have no visible stderr, so the notice
+            # alone reads as "Open does nothing". Surface the running
+            # instance the same way a fresh headless boot would — open the
+            # default browser at it. Bounded join: the open rides a daemon
+            # thread (see _open_browser_detached), and returning immediately
+            # would end the process under the opener before it fires.
+            _open_browser_detached(existing_url).join(timeout=5.0)
             return
         webview.create_window(
             "Ouroboros",
@@ -1254,6 +1228,7 @@ def main():
 
     # Clear any stale server process or ports before starting the new agent
     _cleanup_recorded_server_process("preflight")
+    _reap_same_install_strays("preflight")
     _kill_stale_runtime_ports(port)
     try:
         PORT_FILE.unlink(missing_ok=True)
