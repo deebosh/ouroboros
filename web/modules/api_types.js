@@ -742,4 +742,4 @@
  * @property {?boolean} check_ok
  */
 
-export const GATEWAY_CONTRACT_VERSION = '6.103.25';
+export const GATEWAY_CONTRACT_VERSION = '6.103.26';

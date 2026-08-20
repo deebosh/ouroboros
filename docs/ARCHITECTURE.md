@@ -1,5 +1,5 @@
-# Ouroboros v6.103.25 — Architecture & Reference
-# Ouroboros v6.103.25 — Architecture & Reference
+# Ouroboros v6.103.26 — Architecture & Reference
+# Ouroboros v6.103.26 — Architecture & Reference
 
 This file is NOT a changelog. Version history lives in README.md, git tags, and commit log.
 
@@ -493,7 +493,7 @@ A pre-existing cross-platform residual remains: shutdown admission is not atomic
 │   │           ├── auth_token.json ← content-hash-bound Host Service token for reviewed live extensions
 │   │           ├── extension_calls/ ← transient per-call child-process payload/result JSON files for isolated-dep extension catalog/tool/route/WS dispatch; files are private runtime transport state and are removed after each dispatch
 │   │           └── __extension_imports/<pid>-<uuid>/skill/  ← Phase 4 staged import tree for type:extension skills (in-process host loads tag the leaf with the owner PID; created on load, removed on unload; see §13.1)
-│   ├── claudexor/ ← Ouroboros-owned Claudexor home (`CLAUDEXOR_CONFIG_DIR`): daemon descriptor/token, credential profiles, runs, `ouroboros-owned.json`, `daemon.log` — never the operator's `~/.claudexor`
+│   ├── claudexor/ ← Ouroboros-owned Claudexor home (`CLAUDEXOR_CONFIG_DIR`): daemon descriptor/token, credential profiles, runs, `ouroboros-owned.json`, `daemon.log`, `spawn.lock` — never the operator's `~/.claudexor`. The `spawn.lock` file (v6.103.25) is the inter-process file lock around `OwnedClaudexorDaemon.ensure_running()` — distinct from `data/state/cx/install.lock` (install serializes runtime tree preparation; spawn serializes daemon process startup under this home). Held by `acquire_exclusive_file_lock` for the spawn polling window plus a small cleanup margin; stale ceiling catches a holder whose Python process died between `open(O_EXCL)` and `finally` release.
 │   ├── memory/
 │   │   ├── identity.md     ← Agent's self-description (persistent)
 │   │   ├── scratchpad.md   ← Working memory (auto-generated from scratchpad_blocks.json)
