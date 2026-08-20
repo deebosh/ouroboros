@@ -45,9 +45,9 @@ direction for paths the code produces but the tree omits.
 
 ## 1. Settings plane
 
-`settings.json` is the owner's document and the most-written file in the tree. Its
-writer set is already pinned twice, and this section stays consistent with both pins
-rather than re-deriving a different list:
+`settings.json` is the owner's document, and the one durable file whose writer set is
+already pinned twice. This section stays consistent with both pins rather than
+deriving a different list:
 `tests/test_settings_read_seam.py::test_the_three_settings_writers_are_exactly_these_three`
 enumerates the AST-visible writers across the five modules that may touch it, and
 `tests/test_runtime_mode_authorship.py::test_every_settings_writer_routes_through_the_shared_prologue`

@@ -117,12 +117,13 @@ somewhere in the suite.
 
 ### `ouroboros/loop.py` — 146 bindings, 88 private
 
-The reference case for the whole family. Its runtime consumers are **exclusively its
-own nine leaves** (`loop_acceptance`, `loop_acceptance_review`, `loop_budget`,
+The reference case for the whole family. Its runtime consumers are **exclusively nine
+of its own leaves** (`loop_acceptance`, `loop_acceptance_review`, `loop_budget`,
 `loop_delivery`, `loop_forced_finalization`, `loop_messages`, `loop_model_call`,
 `loop_nudges`, `loop_round_limits`), every one of them reading through the D33
-call-time handle `_loop()`. Nothing outside the loop family imports a private name
-from it. That is the point the pin's docstring makes and this scan confirms: a
+call-time handle `_loop()`; the other two, `loop_llm_call` and `loop_tool_execution`,
+read nothing back through the parent. Nothing outside the loop family imports a
+private name from it. That is the point the pin's docstring makes and this scan confirms: a
 surviving private re-export exists either because `run_llm_loop`'s own body calls it,
 or because a *sibling leaf* reads it through the rendezvous binding — and retiring
 those would replace one shared seam with a mesh of sibling handles.
@@ -146,16 +147,22 @@ re-export cannot silently resurrect a second address.
 
 ### `ouroboros/tools/registry.py` — 39 lines, 32 bindings, 26 private
 
-The smallest facade and the most-consumed. Its **public** half — `ToolRegistry`,
-`ToolContext`, `ToolEntry`, `BrowserState` — is imported by **86 files**, which makes
-this 39-line module one of the widest import surfaces in the tree. Its **private**
-half is the opposite: 17 of the 26 private bindings have no consumer at all, and their
-only reader is `tests/test_registry_core.py::test_registry_core_extraction_preserves_only_proven_facades`,
+The smallest facade and the most-consumed. Three descriptor names carry almost all of
+it — `ToolContext` (70 files), `ToolEntry` (37), `ToolRegistry` (16) — which makes this
+39-line module one of the widest import surfaces in the tree, **86 files** in total.
+
+The split between public and private is not clean, and that is the finding. Three
+*private* bindings also have live runtime consumers —
+`_authorized_managed_update_resolver` (6 files), `_builtin_tool_availability` and
+`_compose_execute_result` — while `BrowserState`, a public name, is read only by
+tests. The remaining 17 private bindings have no consumer at all: their only reader is
+`tests/test_registry_core.py::test_registry_core_extraction_preserves_only_proven_facades`,
 which enumerates them as strings.
 
-So the two halves warrant opposite treatment: the public half is a real dependency hub
-that must not move, and the private half is pure contract, retained because the split
-promised it and the ledger marks the rows pending upstream transfer.
+So the halves warrant opposite treatment, but the line falls on measured consumers
+rather than on the leading underscore: a real dependency hub that must not move, a
+handful of private names doing real work, and a contract tail retained because the
+split promised it and the ledger marks the rows pending upstream transfer.
 
 Leaves: `tool_resolution` (16), `registry_guards` (11), `tool_context` (2),
 `tool_catalog`, `registry_core`, `tool_result`.
@@ -188,7 +195,7 @@ The narrowest split: one leaf (`update_merge_plan`), four names, one runtime con
 The largest contract-only population in the tree, and the sharpest example of the
 class. Only **four** product files read anything through it
 (`review_evidence_sections`, `control_delegation`, `tools/delegate`,
-`tools/join_ledger`); its six `control_*` leaves own the bodies; and the remaining 64
+`tools/join_ledger`); its seven `control_*` leaves own the bodies; and the remaining 64
 bindings — the whole `_attach_swarm_intent` / `_wait_for_routing_annotation` /
 `_prepare_child_drive` family, plus re-exported utilities like `load_settings`,
 `save_settings`, `append_jsonl`, `sha256`, `run_cmd`, `Path` and `Any` — have no
@@ -242,8 +249,9 @@ alone.
 `ouroboros/tool_access.py` (25 across 52) have the lowest contract-only ratios of any
 large facade. `ouroboros/tools/review_helpers.py` is the same shape (42 across 24).
 For these, "facade" is the wrong mental model: the re-exports are the module's public
-API, and the leaves below them are implementation detail. `config.py`'s ten private
-bindings are the only compatibility surface it has.
+API, and the leaves below them are implementation detail. Only ten of `config.py`'s 79
+bindings are private at all, and only 13 have no reader anywhere — the lowest
+contract-only share in the table.
 
 ### Two facades whose consumers are almost entirely tests
 
