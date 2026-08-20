@@ -1410,3 +1410,33 @@ class TestResponseGroundingGate:
 
         assert "response ungrounded" in result
         assert usage == {"cost": 0.99}, "usage preserved when Gate B rejects"
+
+
+def test_deep_max_output_tokens_cap_prevents_100k_402_trap():
+    """Regression: ibl-be9ba2d99b25 (task c7862982).
+
+    Pre-fix: deep_self_review called chat_observed with max_tokens=100_000,
+    causing an OpenRouter account-level 402 ("requested up to 100000 tokens,
+    but can only afford 56") and an $11.00 charge for a zero-tool-call
+    review. The fix landed in 8506304f (v6.103.9) by lowering the constant
+    to 10_000; this test locks that cap so the rot cannot return via a
+    tempting "just bump it back up" edit. Raise WITH a backpressure
+    rationale (and rotate this test accordingly), not by accident.
+    """
+    from ouroboros.deep_self_review import _DEEP_MAX_OUTPUT_TOKENS
+
+    assert _DEEP_MAX_OUTPUT_TOKENS <= 10_000, (
+        f"_DEEP_MAX_OUTPUT_TOKENS={_DEEP_MAX_OUTPUT_TOKENS} exceeds the 10k cap. "
+        "The 100k default was the rot captured by ibl-be9ba2d99b25 ($11.00 wasted "
+        "on task c7862982). If a future review genuinely needs more output, raise "
+        "the cap WITH a backpressure rationale, not by editing this constant."
+    )
+
+    # Belt-and-braces: the constant must be >0 (a zero would silently under-deliver
+    # the review just as effectively as a 100k default would over-charge). The 10k
+    # ceiling implies a minimum of roughly 1k for any honest findings list.
+    assert _DEEP_MAX_OUTPUT_TOKENS >= 1_000, (
+        f"_DEEP_MAX_OUTPUT_TOKENS={_DEEP_MAX_OUTPUT_TOKENS} is suspiciously small. "
+        "The review's findings section needs at least a few hundred tokens; below "
+        "1k the structural-utility of the review collapses."
+    )
