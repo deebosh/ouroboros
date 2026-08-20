@@ -85,9 +85,15 @@ def test_official_fetch_timeout_kills_the_process_tree(monkeypatch):
     assert calls == [proc]
     assert proc not in shell._active_subprocesses
 
-def test_dependency_sync_is_panic_tracked_and_killed_on_timeout(monkeypatch):
+def test_dependency_sync_is_panic_tracked_and_killed_on_timeout(monkeypatch, tmp_path):
     import ouroboros.platform_layer as platform_layer
     from ouroboros.tools import shell
+
+    # The timeout branch LOGS through git_ops.DRIVE_ROOT; unbound, this test is
+    # one process-global drift away from appending to the LIVE supervisor log
+    # (observed: nondeterministic live writes during full-battery serial runs).
+    monkeypatch.setattr(git_ops, "DRIVE_ROOT", tmp_path / "data")
+    (tmp_path / "data" / "logs").mkdir(parents=True)
 
     killed = []
 
