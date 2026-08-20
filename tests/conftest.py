@@ -128,16 +128,19 @@ def _bind_pytest_repo_root() -> None:
     git_ops.REPO_DIR.mkdir(parents=True, exist_ok=True)
 
 
-@pytest.fixture(autouse=True)
-def _runtime_roots_stay_off_the_live_data_root():
+def _assert_runtime_roots_off_live():
     """Fail-closed invariant (spec 487/783): no runtime-root module global may
     END a test resolving into the operator's LIVE data root. The session binder
     above starts every root on the pytest temp root; a test that rebinds one
     without restoring it poisons every later test in its worker — the observed
     symptom was a later, correctly-written test appending to the LIVE
     supervisor log. This names the poisoning test instead of the victim.
+
+    Called from the pytest_runtest_teardown hook wrapper (below), not an
+    autouse fixture: the check must run AFTER every function-scoped finalizer —
+    an autouse fixture's teardown ran before the test's own monkeypatch.undo,
+    flagging properly-restored fuse tests.
     """
-    yield
     if _PYTEST_DATA_DIR is None:
         return
     live_roots = [
@@ -161,7 +164,10 @@ def _runtime_roots_stay_off_the_live_data_root():
     ):
         if not value:
             continue
-        resolved = pathlib.Path(value).resolve(strict=False)
+        try:
+            resolved = pathlib.Path(value).resolve(strict=False)
+        except (TypeError, ValueError):
+            continue  # a non-pathlike stand-in (injected fake) cannot name a live root
         for live in live_roots:
             if resolved == live or live in resolved.parents:
                 offenders.append(f"{name}={value} (live root {live})")
@@ -533,6 +539,7 @@ def pytest_runtest_teardown(item, nextitem):  # noqa: ARG001
     yield  # fixture finalizers and teardown run here
     teardown_loop.close()
     asyncio.set_event_loop(None)
+    _assert_runtime_roots_off_live()
 
 
 # Pre-v5.15 conftest exported four fixtures (``make_git_repo``, ``tool_context``,
