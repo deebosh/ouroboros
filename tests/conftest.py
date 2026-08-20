@@ -126,13 +126,20 @@ def _bind_pytest_runtime_roots() -> None:
         return
     root = _PYTEST_DATA_DIR.resolve(strict=False)
     import ouroboros.config as config
-    from supervisor import queue, state, workers
+    from supervisor import git_ops, message_bus, queue, state, workers
 
     config.DATA_DIR = root
     config.SETTINGS_PATH = root / "settings.json"
     state.init(root, state.TOTAL_BUDGET_LIMIT)
     queue.init(root)
     workers.DRIVE_ROOT = root
+    # The two root globals the spec baseline names as missing from this binder
+    # (spec 783): git_ops.DRIVE_ROOT freezes config.DATA_DIR at import time, so
+    # a pre-conftest import keeps the operator's root and any test that reaches
+    # a git_ops logging branch appends to the LIVE supervisor log (observed);
+    # message_bus.DATA_DIR has the same import-order exposure.
+    git_ops.DRIVE_ROOT = root
+    message_bus.DATA_DIR = root
     # spawn_workers hands str(workers.REPO_DIR) to every child, and the child binds git_ops to
     # it — so leaving this at the live default would send workers started BY A TEST back at the
     # operator's checkout, undoing the isolation above.
