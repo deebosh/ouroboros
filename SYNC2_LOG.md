@@ -169,4 +169,138 @@ immutable).
 
 ## Resolution log
 
-(filled in as the merge is resolved)
+`git merge --no-commit --no-ff 8028f1df` produced 7 conflicted files. Everything
+else auto-merged and was verified by reading the result, not by trusting git.
+
+| conflict | resolution |
+| --- | --- |
+| `tests/test_extension_loader.py` | Whole upstream block dropped (`--ours`): v7 had already moved those tests to sibling suites. The one changed test's hunk was re-homed into `tests/test_extension_reload_all.py`, its owner. |
+| `tests/fixtures/chat_logs_ui_static_checks.json` | Parsed-entry union: v7's 207 entries + upstream's 7, re-serialized with v7's exact spelling (`separators=(",", ":")`, `ensure_ascii=False`, no trailing newline), byte-identical prefix asserted. |
+| `ouroboros/size_ratchet_manifest.py` | Generated data — kept v7's, then re-proved by `regenerate_size_ratchet.py --check`. Upstream's own edit (dropping `launcher.py` from `BAND_PATHS`, dropping `llm.py` byte debt) is meaningless here: launcher.py stays in the band after the split, and v7's llm.py is 716 lines. |
+| `ouroboros/llm.py` | `--ours` (v7 gutted the file), hunks re-homed. See below. |
+| `docs/ARCHITECTURE.md` | Two hunks. The module-tree block kept v7's ten-mixin listing with upstream's `llm_probe.py` row inserted after `llm_pricing.py`; the settings-save paragraph kept v7's retired-timeout sentence and took upstream's three new sentences (document lock, `asyncio.to_thread`, the bounded status beat) before the closing sentence. |
+| `ouroboros/gateway/onboarding.py` | Import block takes both names (`settings_document_digest` + `settings_document_mutation`); upstream's `_persist` lock body auto-merged around v7's digest. |
+| `ouroboros/gateway/settings.py` | Six body conflicts, resolved per the union rule below. |
+
+### llm.py hunks, re-homed
+
+| upstream declaration | v7 owner | verbatim vs 8028f1df |
+| --- | --- | --- |
+| `LLMClient._resolve_remote_target` | `llm_routing.py::_ProviderRoutingMixin` | byte-identical |
+| `LLMClient._new_remote_client` (new) | `llm_routing.py::_ProviderRoutingMixin` | byte-identical |
+| `LLMClient._get_remote_client` | `llm_routing.py::_ProviderRoutingMixin` | byte-identical |
+| `LLMClient.probe_oversized_context` | `llm_routing.py::_ProviderRoutingMixin` | byte-identical |
+| `LLMClient.probe_provider_readiness` (new) | `llm_routing.py::_ProviderRoutingMixin` | byte-identical |
+| `LLMClient._new_gigachat_client` (new) | `llm_gigachat.py::_GigaChatLaneMixin` | byte-identical |
+| `LLMClient._get_gigachat_client` | `llm_gigachat.py::_GigaChatLaneMixin` | byte-identical |
+
+All seven were compared declaration-by-declaration against `8028f1df:ouroboros/llm.py`
+before the merge was committed, so the ledger's verbatim rows hold against the new base.
+`llm_routing.py` shed the four `llm_attempt` imports and the three `usage_accounting`
+imports the probe body used to need, and its module docstring now says where the probe
+transport lives.
+
+`ouroboros/llm_probe.py` is adopted whole with one change: its lazy accounting import
+points at `ouroboros.llm_attempt` (the owner) instead of `ouroboros.llm` (the facade),
+because an `llm_*` leaf must never import its parent — pinned by
+`tests/test_llm_extraction.py::test_llm_leaves_never_import_their_parent`, which now
+covers `llm_probe` along with the other ten leaves.
+
+### The settings write seam — how the two designs compose
+
+Both sides fixed the same class of race and neither is redundant:
+
+- v7 `_owner_update_settings(transform, expected_digest)` moves the read-merge-write
+  INSIDE the settings FILE lock and adds a document-digest precondition.
+- upstream `settings_document_mutation()` is an in-PROCESS lock held across the write
+  AND the post-commit environment projection, plus `asyncio.to_thread` so a save never
+  freezes the event loop.
+
+The file lock cannot order two in-process writers' `os.environ` projections; the digest
+cannot see a queue change. So: upstream's structure is adopted verbatim (the `_sync`
+split, the `to_thread` hop, the lock spans, the comments) and v7's write mechanism stays
+as the body. Where upstream re-read the document inside its lock, that read is dropped —
+v7's transform already reads inside the file lock, and the digest carries the refusal.
+
+Per endpoint:
+
+- `runtime_mode` — digest and deciding read stay pre-lock (both sides had them there);
+  the write is wrapped in the document lock.
+- `auto_grant` — no digest (the body carries the whole decision); the write and the env
+  projection share the lock.
+- `context_mode` — upstream's under-lock re-prove of BOTH halves of the idle guard is
+  kept. It is NOT subsumed by the digest: `_has_running_agent_tasks()` reads the queue,
+  which changes without touching the settings document.
+- `scope_review_floor`, `safety_mode` — their pre-lock read only fed the audit line's
+  `previous` value, so digest and read moved INSIDE the lock; the audit now names the
+  value the write actually replaced. This is the one place the resolution is tighter
+  than either side alone.
+
+Lock order is document → file at every call site (the five endpoints, the generic save,
+the onboarding transaction), so no inversion exists. `settings_document_mutation()` is a
+plain `Lock`, and nothing under it re-enters it.
+
+### launcher.py: the size gate
+
+Upstream's launcher.py is 1572 lines. v7 activated `MODULE_DEBT_1500` with an EMPTY set,
+and the layer is shrink-only (`ouroboros/review.py`), so no new >1500 entry can be
+admitted — the first-parent census that would authorize one is empty. The Windows-only
+pythonnet/pywebview preparation (`_show_windows_message`,
+`_prepare_windows_webview_runtime`, `_windows_dll_dir_handles`, 102 lines) moved verbatim
+into `ouroboros/launcher_windows_runtime.py` INSIDE the merge; launcher.py re-exports the
+two functions under their original names. Result: launcher.py 1474 lines, still in the
+band, `BAND_PATHS["launcher.py"]` unchanged (`None`, and surviving band rationales are
+immutable).
+
+Why this cluster and not the server-record cluster: the record helpers are monkeypatched
+through the launcher module in four suites (`launcher.DATA_DIR`, `launcher.pid_is_alive`,
+…), so moving them would have forced test rewrites. The Windows cluster has no
+monkeypatch surface at all and only one source-scan pin, which the re-export satisfies.
+
+### Upstream assertions adapted at the test (never by weakening the runtime)
+
+1. `tests/test_provider_key_test.py::_bypass_accounting` patched
+   `ouroboros.llm.execute_physical_attempt`. In v7 `_execute_candidate` lives in
+   `llm_attempt.py` and reads the name from THAT module, so the patch was dead and six
+   tests failed. Re-pointed at `llm_attempt` — the same seam, named at its owner, exactly
+   as ten existing v7 suites already do.
+2. `tests/test_settings_read_seam.py::test_every_owner_endpoint_reaches_the_same_normalized_read`
+   named the async endpoints. After upstream's thread hop the document work lives in the
+   `_sync` bodies (and one level deeper for the generic save), so the expected set names
+   those. The contract — one seam, not six patches — is unchanged.
+3. `tests/test_llm_extraction.py` gained `llm_probe` in `_LEAVES`, so the leaf rules
+   (never import the parent, no cycles, ≥200 and ≤1000 lines) bind it too.
+
+## Follow-ups
+
+- `899a912f` — `MERGE_BASE_SHA` → `8028f1df`; three MIGRATION_v7.md rows for the launcher
+  extraction (two facade, one not); `tests/_v7_ledger_inventories.py` gains
+  `merge_adopt_pr257_facade_rows` / `merge_adopt_pr257_no_facade_rows`, expanded into
+  `implemented` beside the v6.105 block so the ledger test does not drop them into the
+  pending bucket; `tests/test_launcher_sync.py` gains the facade characterization test.
+
+## Version carriers
+
+All declared carrier spans (`ouroboros/tools/release_sync.py::VERSION_CARRIER_SPANS`)
+agree at `6.105.1` after the merge, and both sides carried the same value going in:
+`VERSION`, `pyproject.toml`, `web/package.json`,
+`web/modules/api_types.js` (`GATEWAY_CONTRACT_VERSION`), the README badge, the README
+Version History block, the `docs/ARCHITECTURE.md` header, and `uv.lock`'s root package.
+`GATEWAY_CONTRACT_VERSION` is deliberately unmoved: PR #257's gateway change is purely
+additive (`ProviderTestRequest`/`ProviderTestResponse`, one route, two `__all__` names).
+
+## Gate receipts
+
+| gate | result |
+| --- | --- |
+| `scripts/v7_evidence.py check-migration` | `MIGRATION_v7.md OK` — rc 0 |
+| `scripts/v7_evidence.py check` | `v7 evidence OK (5bce0cee…047e8)` — rc 0 |
+| `scripts/regenerate_size_ratchet.py --check` | silent pass — rc 0 (no regeneration needed: nothing entered or left a tracked debt band) |
+| `ruff check . --select F` | `All checks passed!` — rc 0 |
+| `pytest tests/test_v7_verbatim_moves.py` | `1 passed in 58.72s` — rc 0 |
+| `pytest tests/test_v7_migration_ledger.py` | `1 passed in 228.49s` — rc 0 |
+| `pytest tests/ -n 16` (default lanes, not serial) | `10312 passed, 3 skipped, 28 warnings in 430.91s` — rc 0 |
+| `pytest tests/ -m serial` | `431 passed, 12 skipped, 10406 deselected in 236.01s` — rc 0 |
+| `cd web && npm test` | `# pass 584 / # fail 0` — rc 0 |
+
+`git rev-parse HEAD` was re-read after every pytest invocation and never moved.
