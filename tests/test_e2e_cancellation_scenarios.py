@@ -34,9 +34,11 @@ WHAT THE PAID PASS NEEDS (operator, later, under controlled keys):
 - ``OUROBOROS_E2E_CANCEL=paid``; the mock lane needs nothing but disk.
 - ONE provider credential in the isolated settings the harness builds, passed BY NAME:
   export ``OUROBOROS_E2E_PAID_KEY_ENV=<name of the env var holding the key>`` and the
-  harness reads that variable. This suite never reads, prints or persists a key value, and
-  never touches ``~/ouro/data/settings.json``. The workspace key pool (``~/ouro/file1.txt``)
-  is the operator's source for the value; ``hope*`` buckets last.
+  harness reads that variable. The key value IS persisted — into the isolated server's own
+  ``settings.json``, which ``write_settings_file`` creates at mode 0600 before the key bytes
+  land — because the server can only read credentials from its settings file. The suite never
+  prints a key value and never touches ``~/ouro/data/settings.json``. The workspace key pool
+  (``~/ouro/file1.txt``) is the operator's source for the value; ``hope*`` buckets last.
 - ``OUROBOROS_E2E_PAID_MODEL`` — the exact slug every slot is pinned to, e.g.
   ``openrouter::<cheap-slug>``. A cheap model is right: the scenarios need tool-calling and
   a terminating final turn, not reasoning quality.
