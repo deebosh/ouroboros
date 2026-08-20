@@ -540,6 +540,11 @@ def test_migration_table_is_valid_and_uses_only_spec_approved_pending_owners():
     )
     retired_delta_ids = {
         "ouroboros/launcher_onboarding.py::save_settings": "D03",
+        # Panel finding (fable seat, 2026-08-20): the snapshot-path shadow
+        # collapse is harness-observable (state.init required; queue.init alone
+        # no longer redirects), so the retired row carries the D18 queue
+        # single-authority id instead of the observable-identical "none".
+        "supervisor/queue.py::QUEUE_SNAPSHOT_PATH": "D18",
         "ouroboros/loop_tool_execution.py::_FAILURE_PREFIXES": "D02",
         "ouroboros/loop_tool_execution.py::_FAILURE_MARKERS": "D02",
         "ouroboros/loop_tool_execution.py::_EXIT_CODE_RE": "D02",
