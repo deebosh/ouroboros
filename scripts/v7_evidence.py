@@ -194,6 +194,9 @@ def _probe_ref(repo: pathlib.Path, ref: str) -> dict[str, Any]:
         # Windows resolves the home directory through USERPROFILE (ntpath.expanduser
         # ignores HOME entirely), so a child that calls Path.home() dies without it.
         env["USERPROFILE"] = env["HOME"]
+        # Windows children print to a cp1252 stdout by default and die on the
+        # first non-cp1252 character of the canonical JSON; pin both ends utf-8.
+        env["PYTHONIOENCODING"] = "utf-8"
         try:
             completed = subprocess.run(
                 [sys.executable, str(pathlib.Path(__file__).resolve()), "_probe"],
@@ -202,6 +205,7 @@ def _probe_ref(repo: pathlib.Path, ref: str) -> dict[str, Any]:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=90,
             )
         except subprocess.CalledProcessError as exc:

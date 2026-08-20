@@ -780,11 +780,14 @@ def test_light_actionable_redirects_keep_legacy_mapping_without_light_remap(
         "tool_result_meta": {},
     }
     # The refusal CONTRACT (status/code/text/meta, asserted above) is identical on
-    # every OS; the ROUTE differs. On POSIX the access-layer detector produces the
-    # legacy TEXT and the adapter wraps it (3 calls). On Windows pytest's tmp_path
-    # arrives in 8.3 short form, resolve() expands it, relative_to() misses — the
-    # access detector stays silent and the resolution-layer detector answers with
-    # a NATIVE ToolResult instead (0 adapter calls): the second line of defense,
-    # same product outcome.
-    assert len(adapter_calls) == (0 if os.name == "nt" else 3)
+    # every OS; the ROUTE can differ for the PATH-based scenario only. On POSIX the
+    # access-layer detector produces the legacy TEXT and the adapter wraps it
+    # (3 calls). On Windows pytest's tmp_path arrives in 8.3 short form, resolve()
+    # expands it, relative_to() misses — the access detector stays silent and the
+    # resolution-layer detector answers with a NATIVE ToolResult instead (0 adapter
+    # calls): the second line of defense, same product outcome. The cognitive
+    # scenario detects by ARGS (root=runtime_data), path-free, so it keeps the
+    # adapter route on every OS.
+    expected_adapter_calls = 0 if (os.name == "nt" and scenario != "cognitive") else 3
+    assert len(adapter_calls) == expected_adapter_calls
     assert downstream_calls == []
