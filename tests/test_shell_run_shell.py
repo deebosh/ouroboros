@@ -17,6 +17,7 @@ distinct branch of the cascade).
 from __future__ import annotations
 
 import pathlib
+import signal
 from subprocess import CompletedProcess
 from types import SimpleNamespace
 
@@ -546,9 +547,13 @@ def test_executor_and_local_shell_results_publish_identical_exit_facts(
     )
     _run_shell(executor_ctx, ["fixture-command"])
 
+    # The identical-facts contract is the point; the NAME of signal 9 is the
+    # platform's honest spelling (Windows' signal module has no SIGKILL, so the
+    # producer's fallback prints SIG9 there).
+    expected_signal = "SIGKILL" if hasattr(signal, "SIGKILL") else "SIG9"
     assert dict(_published(local_ctx).meta) == {
         "exit_code": -9,
-        "signal": "SIGKILL",
+        "signal": expected_signal,
     }
     assert dict(_published(executor_ctx).meta) == dict(_published(local_ctx).meta)
     assert _published(executor_ctx).code == _published(local_ctx).code == "SHELL_EXIT_ERROR"

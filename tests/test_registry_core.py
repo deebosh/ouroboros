@@ -627,7 +627,10 @@ def test_light_binding_root_redirect_is_native_without_invented_metadata(
             lambda _cls, *_args, **_kwargs: pytest.fail("legacy adapter used")
         ),
     )
-    target = str(home / "Desktop" / "report.html")
+    # as_posix(): the dispatch layer normalizes path args to forward slashes, so
+    # the refusal echoes the posix spelling; feed it in that spelling so the
+    # expected repr matches on Windows too (POSIX: identical to str()).
+    target = (home / "Desktop" / "report.html").as_posix()
     args = {"path": target, "content": "<html></html>"}
     text = (
         "⚠️ ROOT_REQUIRED_USER_FILES: an absolute home path "
@@ -735,7 +738,9 @@ def test_light_actionable_redirects_keep_legacy_mapping_without_light_remap(
             "Read the current state before writing (Bible P12)."
         )
     else:
-        target = str(home / "Desktop" / "report.html")
+        # as_posix() for the same reason as in
+        # test_light_binding_root_redirect_is_native_without_invented_metadata.
+        target = (home / "Desktop" / "report.html").as_posix()
         args = {"path": target, "content": "<html></html>"}
         expected_text = (
             "⚠️ ROOT_REQUIRED_USER_FILES: an absolute home path "

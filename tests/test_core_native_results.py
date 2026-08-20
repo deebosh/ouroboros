@@ -15,6 +15,7 @@ adapter fails here rather than in a differential run over a regenerated golden.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import types
 
@@ -92,7 +93,7 @@ def _readonly_ctx(repo: pathlib.Path, drive: pathlib.Path) -> ToolContext:
             "read_file",
             {"path": "missing.txt"},
             "LEGACY_WARNING",
-            "⚠️ NOT_FOUND: file does not exist: {repo}/missing.txt",
+            "⚠️ NOT_FOUND: file does not exist: {repo}{sep}missing.txt",
         ),
         (
             "read_file",
@@ -150,7 +151,7 @@ def test_read_and_list_terminals_are_native_through_the_registry(
 ):
     repo, drive = _tree(tmp_path)
     tools = ToolRegistry(repo_dir=repo, drive_root=drive)
-    expected = text.format(repo=repo)
+    expected = text.format(repo=repo, sep=os.sep)
 
     result = tools.execute_result(tool, dict(args))
 
@@ -253,8 +254,10 @@ def test_user_files_path_refusal_stays_a_policy_denial(tmp_path, monkeypatch):
 
     for published, target in ((read, outside), (listed, repo)):
         assert published.code == "USER_FILES_PATH_BLOCKED"
+        # {str(target)!r} mirrors the producer's `{raw_text!r}`: on Windows the
+        # repr of the path string doubles the backslashes, on POSIX it is just quoting.
         assert published.text == (
-            f"⚠️ USER_FILES_PATH_BLOCKED: user_files path blocked: absolute path '{target}' "
+            f"⚠️ USER_FILES_PATH_BLOCKED: user_files path blocked: absolute path {str(target)!r} "
             f"is outside the user_files home ({home}). Use root='active_workspace' for "
             "workspace paths, or a home-relative path (e.g. 'Desktop/file.txt') for user files."
         )
@@ -458,7 +461,14 @@ def test_payload_selector_and_search_refusals_keep_their_own_codes(tmp_path):
         lambda: core._write_file(plain, path="adir", content="x", root="task_drive"),
     )
     assert write_failure.code == "WRITE_FILE_BLOCKED"
-    assert write_failure.text.startswith("⚠️ WRITE_FILE_ERROR: IsADirectoryError: ")
+    # The point is the WRITE_FILE_BLOCKED disposition; the OS spells the refusal
+    # differently (POSIX: IsADirectoryError; Windows: PermissionError WinError 5).
+    if os.name == "nt":
+        assert write_failure.text.startswith(
+            ("⚠️ WRITE_FILE_ERROR: IsADirectoryError: ", "⚠️ WRITE_FILE_ERROR: PermissionError: ")
+        )
+    else:
+        assert write_failure.text.startswith("⚠️ WRITE_FILE_ERROR: IsADirectoryError: ")
 
 
 def test_room_write_refusals_are_policy_denials(tmp_path, monkeypatch):

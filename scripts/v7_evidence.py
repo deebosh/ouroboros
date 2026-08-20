@@ -100,18 +100,28 @@ def _test_for_path(path: str, stream: str) -> str:
     if path.startswith("tests/") and path.endswith(".py"): return path
     if path.startswith("web/tests/") and path.endswith(".js"): return path
     return {"T": "tests/test_tool_api_v2_public_surface.py", "S": "tests/test_task_status_flow.py", "L": "tests/test_loop_misc.py", "W": "tests/test_devtools_benchmarks.py"}[stream]
+def _child_python_env(env: dict[str, str]) -> dict[str, str]:
+    """A Windows child python cannot even boot without SystemRoot (and tempfile
+    needs TEMP/TMP), so forward them; POSIX children ignore the absent keys."""
+    for key in ("SystemRoot", "TEMP", "TMP"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    return env
 def _census(repo: pathlib.Path, ref: str) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="ouro-v7-census-") as temp:
         checkout = pathlib.Path(temp)
         _safe_extract_tar(_git(repo, "archive", "--format=tar", ref, text=False), checkout)  # type: ignore[arg-type]
+        # The tracked-path list arrives on stdin, not argv: a full-repo JSON in an
+        # argv element blows the Windows CreateProcess command-line cap (WinError 206).
         code = ("import json,pathlib,sys; from ouroboros.review import iter_gated_modules; "
-                "items=iter_gated_modules(pathlib.Path(sys.argv[1]),repo_paths=json.loads(sys.argv[2])); "
+                "items=iter_gated_modules(pathlib.Path(sys.argv[1]),repo_paths=json.loads(sys.stdin.read())); "
                 "print(json.dumps([{'path':x.path,'lines':x.line_count,'utf8_bytes':x.utf8_bytes} for x in items]))")
         data = checkout.parent / "data"
-        env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(repo), "PYTHONDONTWRITEBYTECODE": "1",
+        env = _child_python_env({"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(repo), "PYTHONDONTWRITEBYTECODE": "1",
             "OUROBOROS_APP_ROOT": str(checkout.parent), "OUROBOROS_REPO_DIR": str(checkout),
-            "OUROBOROS_DATA_DIR": str(data), "OUROBOROS_SETTINGS_PATH": str(data / "settings.json")}
-        output = subprocess.run([sys.executable, "-c", code, str(checkout), _canonical_json(_tracked_paths(repo, ref))],
+            "OUROBOROS_DATA_DIR": str(data), "OUROBOROS_SETTINGS_PATH": str(data / "settings.json")})
+        output = subprocess.run([sys.executable, "-c", code, str(checkout)],
+                                input=_canonical_json(_tracked_paths(repo, ref)),
                                 cwd=repo, env=env, check=True, capture_output=True, text=True).stdout
         modules = json.loads(output)
     hard_paths = {row["path"] for row in modules if row["lines"] > 1500}
@@ -166,7 +176,7 @@ def _probe_ref(repo: pathlib.Path, ref: str) -> dict[str, Any]:
         _safe_extract_tar(archive_bytes, checkout)  # type: ignore[arg-type]
         settings = data / "settings.json"
         settings.write_text('{"MCP_ENABLED":false,"MCP_SERVERS":[]}\n', encoding="utf-8")
-        env = {
+        env = _child_python_env({
             "HOME": str(root / "home"),
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
@@ -180,7 +190,7 @@ def _probe_ref(repo: pathlib.Path, ref: str) -> dict[str, Any]:
             "OUROBOROS_BG_WAKEUP_MIN": "60",
             "OUROBOROS_BG_WAKEUP_MAX": "3600",
             "GITHUB_TOKEN": "fixture-not-a-secret",
-        }
+        })
         completed = subprocess.run(
             [sys.executable, str(pathlib.Path(__file__).resolve()), "_probe"],
             cwd=checkout,

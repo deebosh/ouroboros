@@ -138,11 +138,14 @@ def test_c5_each_hold_tick_restamps_the_root_fence(tmp_path, monkeypatch):
     )
 
     ostop._settle_descendants_hard(q, "A")
-    tl.CANCELLED_ROOT_FENCES["A"] = _stale(tl._CANCELLED_ROOT_FENCE_GRACE_SEC + 60)
+    planted = _stale(tl._CANCELLED_ROOT_FENCE_GRACE_SEC + 60)
+    tl.CANCELLED_ROOT_FENCES["A"] = planted
 
     ostop._settle_descendants_hard(q, "A")  # the next sweep tick of the same episode
 
-    assert tl.CANCELLED_ROOT_FENCES["A"] != _stale(0), "sanity: stamps are timestamps"
+    # Compare against the PLANTED stale stamp, not a freshly minted one: on
+    # Windows the ~15ms clock tick can mint the identical "now" twice.
+    assert tl.CANCELLED_ROOT_FENCES["A"] != planted, "sanity: the tick re-stamped the fence"
     fresh = datetime.fromisoformat(str(tl.CANCELLED_ROOT_FENCES["A"]).replace("Z", "+00:00"))
     age = datetime.now(timezone.utc).timestamp() - fresh.timestamp()
     assert age < tl._CANCELLED_ROOT_FENCE_GRACE_SEC, "the root fence is re-stamped"

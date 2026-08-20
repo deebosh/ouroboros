@@ -73,8 +73,12 @@ def _write_carriers(repo, version, *, history=("7.0.0", "6.104.0"), intro="Intro
         + _history_rows(*history)
     )
     (repo / "docs").mkdir(exist_ok=True)
+    # encoding pinned: the header carries an em dash, and Windows' locale codec
+    # (cp1252) would otherwise commit non-utf-8 bytes that the carrier-span
+    # resolver cannot decode — the file then stays a conflict instead of clean.
     (repo / "docs" / "ARCHITECTURE.md").write_text(
-        f"# Ouroboros v{version} — Architecture & Reference\n\nArchitecture body.\n"
+        f"# Ouroboros v{version} — Architecture & Reference\n\nArchitecture body.\n",
+        encoding="utf-8",
     )
     (repo / "uv.lock").write_text(
         'version = 1\n\n[[package]]\nname = "ouroboros"\n'

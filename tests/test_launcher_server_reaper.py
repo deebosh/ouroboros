@@ -15,9 +15,13 @@ import pytest
 from ouroboros import launcher_server_reaper as reaper
 from ouroboros import process_containment as containment
 
-REPO = "/opt/Ouroboros/repo"
-DATA = "/opt/Ouroboros/data"
-OURS = f"/opt/Ouroboros/python/bin/python3 {REPO}/server.py"
+# normpath: the finder spells `<REPO_DIR>/server.py` and the data dir through
+# pathlib, so the fake command lines and env values must carry the PLATFORM
+# spelling (backslashes on Windows) or nothing ever matches there. On POSIX
+# normpath is the identity for these literals.
+REPO = os.path.normpath("/opt/Ouroboros/repo")
+DATA = os.path.normpath("/opt/Ouroboros/data")
+OURS = "/opt/Ouroboros/python/bin/python3 " + os.path.join(REPO, "server.py")
 
 
 def _install_fakes(monkeypatch, pids, commands, env_states, groups=None):
@@ -150,6 +154,7 @@ def test_self_parent_caller_exclusions_and_known_groups_are_skipped(monkeypatch)
     assert proven == [9990503] and unproven == []
 
 
+@pytest.mark.skipif(os.name != "posix", reason="`ps -u $(getuid)` enumeration is the POSIX path; Windows never sweeps")
 def test_candidate_enumeration_uses_one_unbranded_full_width_ps_read(monkeypatch):
     """ps, not a pattern-scoped pgrep: candidate selection must not depend on
     the install path containing any particular word (REPO_DIR is configurable);

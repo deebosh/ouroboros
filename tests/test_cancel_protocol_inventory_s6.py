@@ -489,6 +489,8 @@ def test_c10_the_http_and_supervisor_roots_come_from_one_configured_value():
 
     app = types.SimpleNamespace(state=types.SimpleNamespace(drive_root="/pinned/root"))
     request = types.SimpleNamespace(app=app)
-    assert str(request_drive_root(request)) == "/pinned/root", (
+    # Path-compare, not string-compare: Windows spells the same bound value
+    # with backslashes.
+    assert pathlib.Path(str(request_drive_root(request))) == pathlib.Path("/pinned/root"), (
         "the ingress root is whatever the app was bound to, never a re-derivation"
     )

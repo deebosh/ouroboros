@@ -51,7 +51,11 @@ if out:
             capture_output=True, text=True,
         ).stdout.strip(),
         "machinery_root": str(here),
-        "cwd": os.getcwd(),
+        # resolve() while the directory still exists: on Windows the child is
+        # spawned with an 8.3 short-name temp cwd (C:\\Users\\RUNNER~1\\...) while
+        # __file__.resolve() reports the long form; both sides are recorded in
+        # the one canonical spelling so the equality below is about identity.
+        "cwd": str(pathlib.Path.cwd().resolve()),
         "data_dir": os.environ.get("OUROBOROS_DATA_DIR", ""),
     }), encoding="utf-8")
 raise SystemExit(1)

@@ -585,6 +585,9 @@ def _gated_js_paths(repo: pathlib.Path, paths: Iterable[str]) -> tuple[set[str],
         env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(script_repo), "PYTHONDONTWRITEBYTECODE": "1",
                "OUROBOROS_APP_ROOT": temp, "OUROBOROS_REPO_DIR": str(script_repo),
                "OUROBOROS_DATA_DIR": str(data), "OUROBOROS_SETTINGS_PATH": str(data / "settings.json")}
+        for key in ("SystemRoot", "TEMP", "TMP"):  # a Windows child python cannot boot without SystemRoot
+            if os.environ.get(key):
+                env[key] = os.environ[key]
         try:
             output = subprocess.run([sys.executable, "-c", code, json.dumps(js_paths)], cwd=script_repo,
                                     env=env, check=True, capture_output=True, text=True).stdout

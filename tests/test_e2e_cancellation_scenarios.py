@@ -58,6 +58,7 @@ there as "the scenario needs adjusting" until the artifacts say otherwise.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import time
 import uuid
@@ -755,6 +756,7 @@ def test_e8_budget_drain_fails_queued_tasks_and_settles_their_intents(e2e_clone,
         server.stop()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits are meaningless on Windows")
 def test_settings_file_is_created_secret_safe(tmp_path):
     """No lane marker: this contract must hold in the ordinary battery. The paid
     lane's settings file carries a live API key on a shared host, so the file

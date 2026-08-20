@@ -285,6 +285,13 @@ _SERIAL_TEST_FILES = frozenset({
     # under -n the replace-family no-side-effect pins (replace_env["calls"] == []) intermittently
     # observe git calls leaked by co-located modules. Same module-global class -> serial lane.
     "test_update_apply_routing.py",
+    # Wall-clock heavyweight, not a process-global mutator: its per-symbol git
+    # verification takes ~4 minutes of subprocess churn on the slower macOS and
+    # Windows runners, and the PARALLEL pass's --timeout=300/thread kills the
+    # whole xdist worker there ("node down: Not properly terminated"). The
+    # serial pass carries no per-test timeout, so the ledger check runs to
+    # completion in that lane on every OS.
+    "test_v7_migration_ledger.py",
 })
 
 

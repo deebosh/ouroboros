@@ -265,7 +265,9 @@ def test_background_tool_dispatches_typed_result_once_and_preserves_text(tmp_pat
         live.append(background._event_queue.get_nowait()["data"])
     finished = next(event for event in live if event["type"] == "tool_call_finished")
     assert finished["is_error"] is False
-    tool_log = json.loads((drive_root / "logs" / "tools.jsonl").read_text().strip())
+    # explicit utf-8: the runtime writes utf-8, and the byte-exact snowman must
+    # not be re-decoded with the Windows locale codec (cp1252 mojibake).
+    tool_log = json.loads((drive_root / "logs" / "tools.jsonl").read_text(encoding="utf-8").strip())
     assert tool_log["result_preview"] == exact_text
 
 
