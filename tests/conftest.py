@@ -128,14 +128,17 @@ def _runtime_roots_stay_off_the_live_data_root():
     if not str(live):
         return
     import ouroboros.config as config
-    from supervisor import git_ops, message_bus, workers
+    from supervisor import git_ops, message_bus, queue, state, workers
 
     offenders = []
     for name, value in (
         ("config.DATA_DIR", config.DATA_DIR),
+        ("config.SETTINGS_PATH", config.SETTINGS_PATH),
         ("git_ops.DRIVE_ROOT", git_ops.DRIVE_ROOT),
         ("message_bus.DATA_DIR", message_bus.DATA_DIR),
         ("workers.DRIVE_ROOT", workers.DRIVE_ROOT),
+        ("state.DRIVE_ROOT", state.DRIVE_ROOT),
+        ("queue.DRIVE_ROOT", getattr(queue, "DRIVE_ROOT", None)),
     ):
         if not value:
             continue
