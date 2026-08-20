@@ -186,7 +186,15 @@ def write_text_atomic(
     tmp = path.with_name(tmp_name)
     try:
         if fsync:
-            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            # O_BINARY: without it Windows' CRT opens the fd in text mode and
+            # os.write silently rewrites \n as \r\n — a byte-canonical consumer
+            # (the frozen tool manifest's exact-bytes verify) then refuses the
+            # file it just wrote. POSIX has no O_BINARY; getattr keeps it 0.
+            fd = os.open(
+                str(tmp),
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0),
+                0o644,
+            )
             try:
                 os.write(fd, content.encode("utf-8"))
                 os.fsync(fd)
