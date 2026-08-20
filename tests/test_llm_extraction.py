@@ -90,9 +90,10 @@ _MIXIN_OWNERS = {
     ),
     (llm_routing, "_ProviderRoutingMixin"): (
         "_explicit_cache_affinity_identity _get_async_remote_client _get_client _get_local_client "
-        "_get_remote_client _make_no_proxy_async_client _make_no_proxy_client _no_proxy_timeout "
-        "_openrouter_session_identity _parse_provider_model _prompt_cache_identity "
-        "_qualified_model_name _resolve_remote_target probe_oversized_context"
+        "_get_remote_client _make_no_proxy_async_client _make_no_proxy_client _new_remote_client "
+        "_no_proxy_timeout _openrouter_session_identity _parse_provider_model "
+        "_prompt_cache_identity _qualified_model_name _resolve_remote_target "
+        "probe_oversized_context probe_provider_readiness"
     ),
     (llm_messages, "_MessageShapingMixin"): (
         "_REASONING_CONTENT_BLOCK_TYPES _content_with_system_notice_marker "
@@ -116,7 +117,7 @@ _MIXIN_OWNERS = {
     ),
     (llm_gigachat, "_GigaChatLaneMixin"): (
         "_chat_gigachat _get_gigachat_client _gigachat_function_result _gigachat_messages "
-        "_gigachat_text _normalize_gigachat_response"
+        "_gigachat_text _new_gigachat_client _normalize_gigachat_response"
     ),
     (llm_local, "_LocalLaneMixin"): "_chat_local _prepare_messages_for_local_context",
     (llm_openai_compatible, "_OpenAICompatibleLaneMixin"): (
@@ -189,13 +190,20 @@ def test_llm_client_members_resolve_to_their_mixin_owners():
 
 
 def test_llm_client_member_inventory_is_unchanged():
-    """The composed class exposes exactly the pre-split member set."""
+    """The composed class exposes exactly the member set of the tree it was split from.
+
+    The digest moved once, deliberately: the final upstream cutoff (PR #257) added three
+    methods to ``LLMClient`` in the base — ``_new_remote_client``, ``probe_provider_readiness``
+    and ``_new_gigachat_client`` — and the adopting merge re-homed them into the leaves that
+    own their siblings. Three genuinely new base members is the only sanctioned reason this
+    pin may move; anything else is a member appearing or vanishing without provenance.
+    """
     assert _defined_members(pathlib.Path(llm.__file__), "LLMClient") == _PARENT_MEMBERS
     moved = {name for names in _MIXIN_OWNERS.values() for name in names.split()}
     composed = sorted(moved | _PARENT_MEMBERS)
     assert hashlib.sha256(
         json.dumps(composed, separators=(",", ":")).encode()
-    ).hexdigest() == "d91d9838932b05fd5ce7c2f844814f093b1bed64a8d3d51c728675d36001a248"
+    ).hexdigest() == "84006da5cb3e40f04b19b559630e4767ef016f01af99c5269b6a81aeea35199f"
     for name in composed:
         assert hasattr(LLMClient, name), name
 
