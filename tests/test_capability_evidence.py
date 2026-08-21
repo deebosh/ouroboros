@@ -462,6 +462,12 @@ def test_density_retention_preserves_fresh_high_witness_without_refreshing_its_t
 
     for index, density in enumerate((1.0, 1.1, 1.2, 1.3, 1.4, 1.5)):
         _DENSITY_MEMO.clear()
+        # A controlled, strictly-advancing clock: with the real one, Windows'
+        # ~15ms tick stamps several of these six records with the IDENTICAL
+        # observed_at, "newest" becomes ambiguous for retention, and the
+        # 1.5-wins assertion below flakes (observed on the first Windows CI).
+        record_ts = (now + datetime.timedelta(seconds=index + 1)).isoformat()
+        monkeypatch.setattr(ce, "utc_now_iso", lambda _ts=record_ts: _ts)
         record_token_density(
             tmp_path, "m/one", prompt_chars=400_000,
             prompt_tokens=int(density * 100_000), route_fp=f"route-low-{index}",
