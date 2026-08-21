@@ -169,7 +169,9 @@ def test_nested_pytest_keeps_the_original_live_root_marker(tmp_path):
     # same passthrough precedent as the scrubbed-child test above. The conftest
     # Popen patch injects the OUROBOROS_* markers this test is actually about.
     if os.name == "nt":
-        for key in ("SystemRoot", "TEMP", "TMP"):
+        # USERPROFILE too: the conftest now resolves the canonical home root,
+        # and ntpath's expanduser chain ignores HOME entirely.
+        for key in ("SystemRoot", "TEMP", "TMP", "USERPROFILE"):
             if os.environ.get(key):
                 env[key] = os.environ[key]
     code = """
@@ -183,14 +185,22 @@ print(json.dumps({
 }))
 """
 
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=repo,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=repo,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        # A bare exit-1 from a CI runner is undiagnosable (the probe class);
+        # name the child's own words.
+        raise AssertionError(
+            f"nested conftest child failed (exit {exc.returncode}); "
+            f"stderr tail: {(exc.stderr or '')[-2000:]!r}"
+        ) from exc
 
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     assert pathlib.Path(payload["live_root"]).resolve(strict=False) == pathlib.Path(

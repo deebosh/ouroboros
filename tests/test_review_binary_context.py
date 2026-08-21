@@ -18,6 +18,12 @@ def _repo(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True)
+    # The read-error tests simulate corruption by deleting a LOOSE object; a
+    # background `gc --auto` (spawned by `git merge` on a busy CI box) can pack
+    # objects first, and the pack copy then satisfies the read the test just
+    # broke — one flake per ~10 full runs. Determinism over background tidiness.
+    subprocess.run(["git", "config", "gc.auto", "0"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=tmp_path, check=True)
     (tmp_path / "f.py").write_text("a\nb\nc\nd\ne\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True,
