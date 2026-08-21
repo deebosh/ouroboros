@@ -1,5 +1,5 @@
-# Ouroboros v6.103.28 — Architecture & Reference
-# Ouroboros v6.103.28 — Architecture & Reference
+# Ouroboros v6.103.29 — Architecture & Reference
+# Ouroboros v6.103.29 — Architecture & Reference
 
 This file is NOT a changelog. Version history lives in README.md, git tags, and commit log.
 
@@ -947,6 +947,55 @@ Campaign cleanup is deterministic and custody-aware. A no-op or abandoned cycle 
 Post-task evolution is owner-gated and default-off. The worker may recommend one backlog item by writing a request, but only the supervisor may convert that request into one normal campaign cycle. An owner stop closes the campaign, clears queued requests, persists a sentinel, and cannot be autonomously reversed; only an owner-authorized start clears it. Evolution is hard-blocked in `light` runtime mode at every entry point and uses the normal task/review path in `advanced` or `pro`.
 
 Loop self-checkpoints remain plain user-message reminders. They deliberately avoid a second structured, tool-less reflection protocol in the hot loop: strict parsing and prompt-shape changes previously produced unusable records and destroyed cache continuity. Durable learning belongs to the post-task reflection flow below.
+
+##### Background consciousness context assembly — overflow diagnostics + mode-aware compression
+
+`BackgroundConsciousness._build_context()` assembles the BG-mode prompt from
+governance (BIBLE + ARCHITECTURE), memory (scratchpad, identity, world,
+dialogue, registry), knowledge (knowledge index + Pattern Register),
+backlog digest, health invariants, drive state, runtime, recent dialogue /
+progress / tools / events / supervisor / reflections, and ephemeral owner
+observations. The whole assembly is bounded by `BG_CONTEXT_MAX_CHARS` (≈1.2M
+chars / ≈300K tokens; `ouroboros/context_budget.py`); P1 §6 forbids silent
+truncation of cognitive artifacts, so a wakeup that would exceed the limit
+is **skipped**, not slimmed.
+
+Two structural fixes (BIBLE P2 — make a recurring failure class structurally
+impossible) ship together:
+
+- **Per-section attribution on overflow (`ibl-consciousness-context-overflow`).
+  Every section is tracked by name and char count BEFORE the final join
+  (`self._last_context_sections` on success, also carried by the typed
+  `_ConsciousnessOverflow` exception on overflow). The
+  `consciousness_context_overflow` event in `logs/events.jsonl` now carries
+  `total_chars`, `max_chars`, `mode`, the full `sections` list (each
+  `{name, chars}`), and a pre-sorted `top_contributors` (top 5, descending).
+  Prior shape `{ts, type, error}` left the owner to infer top contributors
+  from logs; the new shape lets a future investigation name which sections
+  crossed the limit without re-running the wakeup.
+
+- **Mode-aware assembly (`OUROBOROS_CONTEXT_MODE` owner coupling, v6.80.0).
+  BG mode honours the owner toggle on every wakeup:
+  - `max` (default): full BG context as today.
+  - `low`: the ARCHITECTURE section uses the navigation-map form via
+    `context_layout.architecture_context_section` (already wired inside
+    `build_governance_sections`); the improvement backlog digest
+    (`format_backlog_digest`, an action-hint projection of the durable
+    backlog, not a P1 cognitive artifact) is **skipped**; the ephemeral
+    owner-observation queue is **drained** but not appended (deferred to the
+    next wakeup). Knowledge index, Pattern Register, identity, scratchpad
+    and recent dialogue horizon stay full — P1 preservation, granularity
+    varies (per `context.py`'s existing low-mode widening of the chat tail
+    when a consolidated offset exists).
+
+The `_think_scoped` overflow handler catches `_ConsciousnessOverflow`
+first (it IS an `OverflowError`, so existing callers still match) and emits
+the rich event; a defensive second `except OverflowError` preserves the
+prior minimal `{ts, type, error}` shape for any future builder that
+raises an untyped overflow. A test file
+`tests/test_consciousness_section_diagnostics.py` locks the event shape,
+the typed exception, the section tracker, and the low/max mode behaviour
+end-to-end.
 Tool API v2 exposes neutral canonical names directly. Public schemas use
 `read_file`, `list_files`, `search_code`, `write_file`, `edit_text`,
 `edit_batch`, `apply_patch`,

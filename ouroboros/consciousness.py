@@ -25,7 +25,7 @@ from ouroboros.utils import (
     truncate_for_log,
     utc_now_iso,
 )
-from ouroboros.config import get_consciousness_model, resolve_effort, resolve_temperature
+from ouroboros.config import get_consciousness_model, get_context_mode, resolve_effort, resolve_temperature
 from ouroboros.pricing import infer_provider_from_model
 from ouroboros.llm import LLMClient
 from ouroboros.memory import Memory
@@ -41,6 +41,56 @@ from ouroboros.context_budget import (
 )
 
 log = logging.getLogger(__name__)
+
+
+class _ConsciousnessOverflow(OverflowError):
+    """OverflowError carrying per-section diagnostics for consciousness context.
+
+    The bare ``OverflowError`` raised from ``_build_context`` cannot name which
+    sections crossed the ``BG_CONTEXT_MAX_CHARS`` limit; this subclass carries
+    the breakdown so the overflow event in ``logs/events.jsonl`` can surface
+    top contributors (structural fix for ``ibl-consciousness-context-overflow``:
+    the prior event only carried ``{ts, type, error}``, so future investigations
+    could not name which sections crossed the limit without inferring from logs).
+    """
+    def __init__(self, *, total_chars: int, max_chars: int, mode: str,
+                 sections: List[Any]) -> None:
+        self.total_chars = int(total_chars)
+        self.max_chars = int(max_chars)
+        self.mode = str(mode or "")
+        # sections is List[Tuple[str, int]] — coerce defensively.
+        norm: List[tuple] = []
+        for entry in sections or []:
+            try:
+                name, chars = entry  # type: ignore[misc]
+            except (TypeError, ValueError):
+                continue
+            norm.append((str(name), int(chars)))
+        self.sections = norm
+        # Top 5 contributors (descending chars).
+        self.top_contributors = sorted(norm, key=lambda x: -x[1])[:5]
+        over = max(0, self.total_chars - self.max_chars)
+        super().__init__(
+            f"Background consciousness context too large "
+            f"({self.total_chars:,} chars, {over:,} over the {self.max_chars:,} limit, "
+            f"mode={self.mode}). Top contributors: "
+            f"{[(n, c) for n, c in self.top_contributors]}"
+        )
+
+
+def _label_section(content: str, fallback: str) -> str:
+    """Best-effort label from a section's leading '## Header' marker.
+
+    Falls back to the caller-supplied position-based label when the section is
+    missing a recognised heading (the low-mode ARCHITECTURE navigation map, for
+    example, is built without a leading ``## ARCHITECTURE.md`` header)."""
+    head = str(content or "")[:200]
+    if head.startswith("## "):
+        first_line = head.split("\n", 1)[0]
+        label = first_line[3:].strip()
+        if label:
+            return label[:80].lower().replace(" ", "_").replace("(", "").replace(")", "").replace("/", "_")
+    return fallback
 
 
 class BackgroundConsciousness:
@@ -275,9 +325,36 @@ class BackgroundConsciousness:
         """Run one context/LLM/tools cycle; False preserves skip/error status."""
         try:
             context = self._build_context()
-        except OverflowError as exc:
+        except _ConsciousnessOverflow as exc:
             # P1: skip the cycle rather than silently truncating cognitive context.
+            # Structural fix for ibl-consciousness-context-overflow: emit
+            # per-section attribution so the owner can see which sections
+            # crossed the BG_CONTEXT_MAX_CHARS limit. The previous event row
+            # only carried {ts, type, error}, leaving investigation to infer
+            # top contributors from logs.
             log.warning("consciousness: wakeup cycle skipped: %s", exc)
+            self._last_idle_reason = "context_overflow"
+            append_jsonl(self._drive_root / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "consciousness_context_overflow",
+                "error": str(exc),
+                "total_chars": exc.total_chars,
+                "max_chars": exc.max_chars,
+                "mode": exc.mode,
+                "sections": [
+                    {"name": name, "chars": chars}
+                    for name, chars in exc.sections
+                ],
+                "top_contributors": [
+                    {"name": name, "chars": chars}
+                    for name, chars in exc.top_contributors
+                ],
+            })
+            return False
+        except OverflowError as exc:
+            # Defensive: a bare OverflowError from a future builder change
+            # should still skip without losing the existing minimal event shape.
+            log.warning("consciousness: wakeup cycle skipped (untyped overflow): %s", exc)
             self._last_idle_reason = "context_overflow"
             append_jsonl(self._drive_root / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
@@ -466,41 +543,84 @@ class BackgroundConsciousness:
         return "You are Ouroboros in background consciousness mode. Think."
 
     def _build_context(self) -> str:
+        """Assemble the BG consciousness context; per-section attribution on overflow.
+
+        Each section is tracked by name and char count BEFORE the final join, so
+        the ``_ConsciousnessOverflow`` raised below carries the breakdown that
+        the structured overflow event emits (structural fix for
+        ``ibl-consciousness-context-overflow``: prior event had only
+        ``{ts, type, error}``, leaving the owner to infer top contributors from
+        logs).
+
+        Mode-aware assembly honours ``OUROBOROS_CONTEXT_MODE`` (BIBLE P1 + the
+        v6.80.0 owner coupling): in ``low`` we skip the improvement backlog
+        digest (an action-hint, not a core cognitive artifact) and the
+        ephemeral observations queue (a transient injection, not memory). The
+        ARCHITECTURE navigation-map vs full-text split is already wired inside
+        ``build_governance_sections`` via ``context_layout``. Knowledge index,
+        Pattern Register, identity, scratchpad and recent dialogue horizon stay
+        full in both modes — P1 preservation, granularity varies.
+        """
         from ouroboros.agent import Env
         env = Env(repo_dir=self._repo_dir, drive_root=self._drive_root)
         memory = Memory(drive_root=self._drive_root, repo_dir=self._repo_dir)
         bg_task = {"id": "bg-consciousness", "type": "consciousness"}
+        # Mode is read fresh each call — owner toggle takes effect on next wakeup.
+        context_mode = get_context_mode()
 
-        parts = [self._load_bg_prompt()]
+        # Per-section attribution: name + char count for every part we append.
+        # The OverflowError below cannot name what crossed the limit unless each
+        # section reports its size; this is the diagnostic backbone.
+        sections: List[Any] = []
+        parts: List[str] = []
+
+        bg_prompt = self._load_bg_prompt()
+        parts.append(bg_prompt)
+        sections.append(("bg_prompt", len(bg_prompt)))
 
         if not (self._repo_dir / "docs" / "ARCHITECTURE.md").is_file():
             logging.getLogger(__name__).warning(
                 "consciousness: docs/ARCHITECTURE.md not found or empty"
             )
-        parts.extend(build_governance_sections(env, warn_large=True, warn_label="consciousness"))
+        gov_sections = build_governance_sections(env, warn_large=True, warn_label="consciousness")
+        parts.extend(gov_sections)
+        for idx, g in enumerate(gov_sections):
+            sections.append((_label_section(g, f"governance[{idx}]"), len(g)))
 
-        parts.extend(build_memory_sections(memory))
+        mem_sections = build_memory_sections(memory)
+        parts.extend(mem_sections)
+        for idx, m in enumerate(mem_sections):
+            sections.append((_label_section(m, f"memory[{idx}]"), len(m)))
 
-        parts.extend(
-            build_knowledge_sections(
-                env,
-                warn_large=True,
-                pattern_header="## Pattern Register",
-            )
+        knowledge_sections = build_knowledge_sections(
+            env,
+            warn_large=True,
+            pattern_header="## Pattern Register",
         )
+        parts.extend(knowledge_sections)
+        for idx, k in enumerate(knowledge_sections):
+            sections.append((_label_section(k, f"knowledge[{idx}]"), len(k)))
 
-        try:
-            from ouroboros.improvement_backlog import format_backlog_digest
+        # Improvement backlog digest: low-mode compression (not a core cognitive
+        # artifact; it's an action-hint projection of the durable backlog).
+        include_backlog = context_mode != "low"
+        if include_backlog:
+            try:
+                from ouroboros.improvement_backlog import format_backlog_digest
 
-            backlog_digest = format_backlog_digest(self._drive_root, limit=8, max_chars=4000)
-            if backlog_digest:
-                parts.append(backlog_digest)
-        except Exception:
-            log.debug("Failed to include improvement backlog in consciousness context", exc_info=True)
+                backlog_digest = format_backlog_digest(self._drive_root, limit=8, max_chars=4000)
+                if backlog_digest:
+                    parts.append(backlog_digest)
+                    sections.append(("backlog_digest", len(backlog_digest)))
+            except Exception:
+                log.debug("Failed to include improvement backlog in consciousness context", exc_info=True)
+        else:
+            sections.append(("backlog_digest_skipped_low_mode", 0))
 
         health_section = build_health_invariants(env)
         if health_section:
             parts.append(health_section)
+            sections.append(("health_invariants", len(health_section)))
 
         # Full drive state: no clip_text here.
         state_json = safe_read(env.drive_path("state/state.json"), fallback="{}")
@@ -508,50 +628,87 @@ class BackgroundConsciousness:
             log.warning(
                 "consciousness: drive state JSON is large (%d chars)", len(state_json)
             )
-        parts.append("## Drive state\n\n" + state_json)
+        state_section = "## Drive state\n\n" + state_json
+        parts.append(state_section)
+        sections.append(("drive_state", len(state_section)))
 
-        parts.append(build_runtime_section(env, bg_task))
+        runtime_section = build_runtime_section(env, bg_task)
+        parts.append(runtime_section)
+        sections.append(("runtime", len(runtime_section)))
 
-        # Empty task_id includes recent sections across tasks.
-        parts.extend(build_recent_sections(memory, env, task_id=""))
+        # Empty task_id includes recent sections across tasks. The P1 horizon is
+        # preserved by build_recent_sections itself (low mode widens the chat
+        # tail when consolidated_offset>0); we do NOT skip it here.
+        recent_sections = build_recent_sections(memory, env, task_id="")
+        parts.extend(recent_sections)
+        for idx, r in enumerate(recent_sections):
+            sections.append((_label_section(r, f"recent[{idx}]"), len(r)))
 
-        observations = []
+        # Observations: low-mode compression (ephemeral queue-injected hints, not
+        # memory; deferring them to the next wakeup is safe — they are NOT a P1
+        # cognitive artifact). We still drain the queue in low mode so observations
+        # do not accumulate forever, but they are NOT appended to the context.
+        include_observations = context_mode != "low"
+        drained_observations: List[str] = []
         while not self._observations.empty():
             try:
-                observations.append(self._observations.get_nowait())
+                drained_observations.append(self._observations.get_nowait())
             except queue.Empty:
                 break
-        if observations:
-            parts.append("## Recent observations\n\n" + "\n".join(
-                f"- {o}" for o in observations[-10:]))
+        if include_observations and drained_observations:
+            obs_section = "## Recent observations\n\n" + "\n".join(
+                f"- {o}" for o in drained_observations[-10:])
+            parts.append(obs_section)
+            sections.append(("observations", len(obs_section)))
+        else:
+            sections.append(
+                ("observations_skipped_low_mode" if not include_observations
+                 else "observations", 0)
+            )
 
         bg_info_lines = [
             f"BG budget spent: ${self._bg_spent_usd:.4f}",
             f"Current wakeup interval: {self._next_wakeup_sec}s",
             f"Current model: {self._model}",
+            f"Context mode: {context_mode}",
         ]
-        parts.append("## Background consciousness info\n\n" + "\n".join(bg_info_lines))
+        bg_info_section = "## Background consciousness info\n\n" + "\n".join(bg_info_lines)
+        parts.append(bg_info_section)
+        sections.append(("bg_info", len(bg_info_section)))
 
         # P1 guard: warn when large, fail the wakeup instead of truncating artifacts.
         _BG_TOTAL_WARN_CHARS = BG_CONTEXT_WARN_CHARS   # ~150K tokens — warn but proceed
         _BG_TOTAL_MAX_CHARS = BG_CONTEXT_MAX_CHARS  # ~300K tokens — fail fast (P1 compliance)
         full_text = "\n\n".join(parts)
-        if len(full_text) > _BG_TOTAL_MAX_CHARS:
+        total_chars = len(full_text)
+        if total_chars > _BG_TOTAL_MAX_CHARS:
             log.warning(
-                "consciousness: context too large (%d chars > %d limit) — "
-                "skipping wakeup cycle; groom memory (knowledge, patterns, scratchpad) "
-                "to reduce size",
-                len(full_text), _BG_TOTAL_MAX_CHARS,
+                "consciousness: context too large (%d chars > %d limit, mode=%s) — "
+                "skipping wakeup cycle; top contributors: %s; "
+                "groom memory (knowledge, patterns, scratchpad) to reduce size",
+                total_chars, _BG_TOTAL_MAX_CHARS, context_mode,
+                sorted(sections, key=lambda x: -x[1])[:5],
             )
-            raise OverflowError(
-                f"Background consciousness context too large ({len(full_text):,} chars). "
-                "Groom memory to continue."
+            # Stash on self for any post-mortem tool that inspects without reading
+            # the events row (e.g. a future operator dashboard).
+            self._last_context_sections = sections
+            self._last_context_mode = context_mode
+            self._last_context_total = total_chars
+            raise _ConsciousnessOverflow(
+                total_chars=total_chars,
+                max_chars=_BG_TOTAL_MAX_CHARS,
+                mode=context_mode,
+                sections=sections,
             )
-        if len(full_text) > _BG_TOTAL_WARN_CHARS:
+        if total_chars > _BG_TOTAL_WARN_CHARS:
             log.warning(
-                "consciousness: context is large (%d chars) — consider grooming memory",
-                len(full_text),
+                "consciousness: context is large (%d chars, mode=%s) — consider grooming memory",
+                total_chars, context_mode,
             )
+        # Stash for tests / post-mortem observability even on success.
+        self._last_context_sections = sections
+        self._last_context_mode = context_mode
+        self._last_context_total = total_chars
         return full_text
 
     _BG_TOOL_WHITELIST = frozenset({
