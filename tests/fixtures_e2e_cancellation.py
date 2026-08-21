@@ -253,6 +253,14 @@ def driver_at(recorder: RecordingEndpoint) -> IsolatedServer:
 
 def paid_model_and_key() -> tuple:
     """Resolve the paid lane's model slug and credential BY NAME (never by value)."""
+    if os.name != "posix":
+        # Fail-closed (sol micro-delta finding, 2026-08-21): the paid lane
+        # persists a LIVE provider key into the isolated settings file, and
+        # owner-only permissions are only guaranteed on POSIX (0600 via
+        # fchmod). Windows' chmod does not produce an owner-only DACL, so the
+        # key bytes could land under an inherited ACL - refuse the lane
+        # instead of writing a secret we cannot protect.
+        pytest.skip("paid lane is POSIX-only: owner-only key-file permissions cannot be guaranteed here")
     model = str(os.environ.get("OUROBOROS_E2E_PAID_MODEL") or "").strip()
     key_env = str(os.environ.get("OUROBOROS_E2E_PAID_KEY_ENV") or "").strip()
     if not model or not key_env:
@@ -338,7 +346,9 @@ def write_settings_file(settings_path: pathlib.Path, settings: dict) -> None:
         fh.write(json.dumps(settings, indent=2))
     if not hasattr(os, "fchmod"):
         # Windows has no fchmod and POSIX mode bits are advisory there anyway;
-        # best-effort re-stamp after the handle is closed.
+        # best-effort re-stamp after the handle is closed. A LIVE key never
+        # reaches this branch: paid_model_and_key() refuses the paid lane on
+        # non-POSIX outright, so only the mock lane's stub value lands here.
         os.chmod(settings_path, 0o600)
 
 
