@@ -11,14 +11,11 @@ import time
 
 import pytest
 
-# Self-recursion protection: this file tests the gate's `run_hermetic_pytest` which
-# spawns real pytest subprocesses. Adding `--timeout=300 --timeout-method=thread` to the
-# serial pass (ibl-28f3c68cfaae / ibl-0a1c8a8b432f) bound the hang itself, but the
-# recursive pytest-timeout inside the inner subprocess is unobservable from outside
-# the inner run — the outer test sees "exit nonzero" with no signal of why. Test-of-
-# the-gate coverage belongs in an integration suite that drives `run_hermetic_pytest`
-# end to end without nesting pytest under pytest. Skip the whole file here; reopen
-# coverage when that suite lands.
+# Self-recursion protection: this file tests `run_hermetic_pytest`, which spawns real pytest
+# subprocesses. The outer `--timeout` bounds the hang, but the inner subprocess's own
+# pytest-timeout is unobservable from outside — the outer test just sees "exit nonzero". This
+# coverage belongs in an integration suite that drives it end to end without nesting pytest
+# under pytest. Skip the whole file here; reopen coverage when that suite lands.
 pytestmark = pytest.mark.skip(
     reason="self-recursion protection: preflight subprocess tested in integration suite, not unit"
 )
@@ -40,32 +37,21 @@ def _preflight_plugin_problems() -> list:
         return _verify_preflight_plugins(sys.executable, pathlib.Path(probe))
 
 
-# Probed ONCE, at import, and stated in exactly ONE place.
+# Probed ONCE, at import, stated in exactly ONE place. The real-spawn tests below run a NESTED
+# pytest under `sys.executable`; the gate is fail-closed (`run_hermetic_pytest` returns
+# PREFLIGHT_PLUGIN_MISSING unless that interpreter carries pytest-xdist and pytest-timeout), so
+# without this marker an unprovisioned interpreter would fail every one of those tests on the
+# same single environment fact instead of on its own subject, drowning the one useful message.
+# The fact is asserted once (in `test_plugin_verification_passes_on_the_interpreter_running_
+# this_suite`) and otherwise carried by this marker; the hermetic/stubbed tests stay
+# UNCONDITIONAL since they pin the fail-closed behaviour itself.
 #
-# The real-spawn tests further down run a NESTED pytest under `sys.executable`,
-# and the gate is deliberately fail-closed: `run_hermetic_pytest` returns
-# PREFLIGHT_PLUGIN_MISSING before any pass unless that interpreter really carries
-# pytest-xdist and pytest-timeout. On an interpreter without them, every one of
-# those tests fails on that single environment fact instead of on its own
-# subject — a dozen identical failures, none of which is about the behaviour
-# under test, and all of which drown the one message that would tell an operator
-# what to install.
-#
-# So the fact is asserted once (below, in
-# `test_plugin_verification_passes_on_the_interpreter_running_this_suite`) and
-# otherwise carried by this marker. The hermetic and stubbed tests stay
-# UNCONDITIONAL — they are the ones that pin the fail-closed behaviour itself,
-# and they must never be silenced by the environment they are describing.
-#
-# The skip must not be able to conceal ITSELF, which is what an earlier revision
-# did: the control test carried this same marker, so its `_PREFLIGHT_PLUGIN_
-# PROBLEMS == []` assertion was skipped in precisely the case where it would have
-# failed, and an unprovisioned run reported a clean suite with a dozen quiet
-# skips while every behavioural proof of the parallel-pass machinery went
-# unexecuted. `OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS` is the seam that fixes that:
-# where the environment is provisioned (CI's `quick-test`/`full-test` set it, and
-# a repair-round gate command should too) the control test HARD-FAILS on a
-# missing plugin instead of skipping, so the twelve skips can never be silent.
+# The skip must not conceal ITSELF: an earlier revision let the control test carry this same
+# marker, so its own `_PREFLIGHT_PLUGIN_PROBLEMS == []` assertion skipped exactly when it would
+# have failed, reporting a clean suite while every behavioural proof went unexecuted.
+# `OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS` fixes that: where the environment is provisioned (CI's
+# `quick-test`/`full-test` set it) the control test HARD-FAILS on a missing plugin instead of
+# skipping, so the twelve skips can never be silent.
 _PREFLIGHT_PLUGIN_PROBLEMS = _preflight_plugin_problems()
 
 _REQUIRE_PLUGINS_ENV = "OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS"
@@ -92,10 +78,7 @@ def _commit_all(repo: pathlib.Path) -> None:
     _git(repo, "add", ".")
     subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
-        cwd=str(repo),
-        check=True,
-        capture_output=True,
-        text=True,
+        cwd=str(repo), check=True, capture_output=True, text=True,
     )
 
 
@@ -104,14 +87,13 @@ def _delete_loose_object(repo: pathlib.Path, oid: str) -> None:
     assert obj_path.exists(), (
         "fixture assumption: a fresh repo keeps this object loose"
     )
-    # git stores loose objects read-only; Windows refuses to unlink a
-    # read-only file (WinError 5), so lift the bit first.
+    # git stores loose objects read-only; Windows refuses to unlink a read-only file (WinError 5).
     obj_path.chmod(0o644)
     obj_path.unlink()
 
 
 def _make_repo(tmp_path: pathlib.Path, files: dict[str, str]) -> pathlib.Path:
-    """Init a tiny git repo whose `tests/` holds only the given probe files."""
+    """Tiny git repo whose `tests/` holds only the given probe files."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init")
@@ -1404,13 +1386,11 @@ def test_the_production_entry_points_do_not_short_circuit_a_deleted_suite(
 # the untracked-file copy. The staged/unstaged diff pair it replaced could not
 # express an
 # unmerged index — the state an assisted managed-update resolver (or any
-# merge_pr flow) is in when the advisory preflight runs: `git diff --cached`
-# renders each conflicted path as a literal "* Unmerged path" stub and
-# `git diff` as a combined `--cc` hunk, which `git apply` REJECTS when the
-# payload holds nothing else (rc=128) and silently DROPS when ordinary hunks
-# accompany it. These tests pin both halves of the universal scheme: the
-# unmerged shapes the old pair corrupted, and the ordinary merged shapes the
-# old pair handled — which the one-diff capture must keep handling.
+# merge_pr flow) is in when the advisory preflight runs: `git diff --cached` renders each
+# conflicted path as a literal "* Unmerged path" stub and `git diff` as a combined `--cc` hunk,
+# which `git apply` REJECTS when the payload holds nothing else (rc=128) and silently DROPS when
+# ordinary hunks accompany it. These tests pin both halves: the unmerged shapes the old pair
+# corrupted, and the ordinary merged shapes it handled — which the one-diff capture must keep.
 
 
 def _start_conflicted_merge(

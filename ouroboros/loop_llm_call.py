@@ -908,6 +908,62 @@ def _clear_custom_receipts(accumulated_usage: Dict[str, Any]) -> None:
     accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, None)
 
 
+def _persist_llm_request_observability(
+    drive_root: pathlib.Path,
+    *,
+    messages: List[Dict[str, Any]],
+    send_messages: List[Dict[str, Any]],
+    tools: Optional[List[Dict[str, Any]]],
+    model: str,
+    effort: str,
+    use_local: bool,
+    allow_server_web_search: bool,
+    response_cache_bypass_requested: bool,
+    temperature: Optional[float],
+    task_id: str,
+    llm_call_id: str,
+    execution_id: str,
+    round_id: str,
+    round_idx: int,
+    attempt: int,
+    context_fit_event_fields: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Fail-soft observability record for one LLM request; never raises."""
+    try:
+        return persist_call(
+            drive_root,
+            task_id=task_id,
+            call_id=f"{llm_call_id}_request",
+            call_type="llm_request",
+            payload=public_custody_projection({
+                "messages": messages,
+                "send_messages": send_messages,
+                "tools": tools or [],
+                "model": model,
+                "reasoning_effort": effort,
+                "max_tokens": MAIN_LOOP_MAX_TOKENS,
+                "use_local": bool(use_local),
+                "allow_server_web_search": bool(allow_server_web_search),
+                "response_cache_bypass_requested": response_cache_bypass_requested,
+                "temperature": temperature,
+            }),
+            manifest={
+                "execution_id": execution_id,
+                "round_id": round_id,
+                "llm_call_id": llm_call_id,
+                "round": round_idx,
+                "attempt": attempt + 1,
+                "model": model,
+                "reasoning_effort": effort,
+                "response_cache_bypass_requested": response_cache_bypass_requested,
+                **context_fit_event_fields,
+            },
+        )
+    except Exception:
+        log.debug("Failed to persist LLM request observability payload", exc_info=True)
+        return {}
+
+
 def call_llm_with_retry(
     llm: LLMClient,
     messages: List[Dict[str, Any]],
@@ -939,9 +995,7 @@ def call_llm_with_retry(
     execution_id = str(accumulated_usage.setdefault("execution_id", new_execution_id()))
     round_id = f"{execution_id}:round:{round_idx}"
     context_fit_event_fields = (
-        _context_fit_event_fields(accumulated_usage)
-        if physical_context is not None
-        else {}
+        _context_fit_event_fields(accumulated_usage) if physical_context is not None else {}
     )
     transient_budget = _attempt_loop_budget(max_retries, attempt_cap)
     response_cache_bypass_requested = False
@@ -952,8 +1006,7 @@ def call_llm_with_retry(
         try:
             send_messages = _prepare_main_messages(
                 messages, model=model, llm=llm, accumulated_usage=accumulated_usage,
-                drive_root=drive_root, task_id=task_id, event_queue=event_queue,
-                use_local=use_local,
+                drive_root=drive_root, task_id=task_id, event_queue=event_queue, use_local=use_local,
             )
             _emit_live_log(event_queue, {
                 "type": "llm_round_started",
@@ -985,38 +1038,15 @@ def call_llm_with_retry(
                 kwargs["temperature"] = temperature
             if tools:
                 kwargs["tools"] = tools
-            try:
-                request_ref = persist_call(
-                    drive_root,
-                    task_id=task_id,
-                    call_id=f"{llm_call_id}_request",
-                    call_type="llm_request",
-                    payload=public_custody_projection({
-                        "messages": messages,
-                        "send_messages": send_messages,
-                        "tools": tools or [],
-                        "model": model,
-                        "reasoning_effort": effort,
-                        "max_tokens": MAIN_LOOP_MAX_TOKENS,
-                        "use_local": bool(use_local),
-                        "allow_server_web_search": bool(allow_server_web_search),
-                        "response_cache_bypass_requested": response_cache_bypass_requested,
-                        "temperature": temperature,
-                    }),
-                    manifest={
-                        "execution_id": execution_id,
-                        "round_id": round_id,
-                        "llm_call_id": llm_call_id,
-                        "round": round_idx,
-                        "attempt": attempt + 1,
-                        "model": model,
-                        "reasoning_effort": effort,
-                        "response_cache_bypass_requested": response_cache_bypass_requested,
-                        **context_fit_event_fields,
-                    },
-                )
-            except Exception:
-                log.debug("Failed to persist LLM request observability payload", exc_info=True)
+            request_ref = _persist_llm_request_observability(
+                drive_root, messages=messages, send_messages=send_messages, tools=tools,
+                model=model, effort=effort, use_local=use_local,
+                allow_server_web_search=allow_server_web_search,
+                response_cache_bypass_requested=response_cache_bypass_requested,
+                temperature=temperature, task_id=task_id, llm_call_id=llm_call_id,
+                execution_id=execution_id, round_id=round_id, round_idx=round_idx,
+                attempt=attempt, context_fit_event_fields=context_fit_event_fields,
+            )
             # Vision preparation is outside the Main-only physical binding.
             resp_msg, usage = _send_main_candidate(
                 llm, kwargs, model=model, use_local=use_local, deadline_ts=deadline_ts,

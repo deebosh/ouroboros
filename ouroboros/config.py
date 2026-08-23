@@ -198,14 +198,12 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_OR_PROVIDER": "",
     # search_code total wall-clock budget (seconds) bounding the rg walk + the fallback walk.
     "OUROBOROS_SEARCH_CODE_WALL_SEC": "45",
-    # NOTE: OUROBOROS_OBSERVABILITY_KEEP_RAW (writes UNREDACTED secret-bearing payloads to
-    # disk) is intentionally NOT a settings/UI carrier — it is an env-only operator debug
-    # override so a self-change or non-owner save can never enable secret logging.
-    # Generative context-window probe machinery: when enabled AND a caller passes
-    # allow_generative=True, confirms a route's >=1M window from a FREE over-window
-    # reject; *_CHARS sizes the padding. Since the settings-time Max gate retirement
-    # no production surface passes allow_generative=True (dormant; kept for tests
-    # and future explicit owner probes).
+    # NOTE: OUROBOROS_OBSERVABILITY_KEEP_RAW (writes UNREDACTED secret-bearing payloads to disk)
+    # is intentionally NOT a settings/UI carrier — env-only operator debug so a self-change or
+    # non-owner save can never enable secret logging.
+    # Generative context-window probe: when enabled AND a caller passes allow_generative=True,
+    # confirms a route's >=1M window from a FREE over-window reject; *_CHARS sizes the padding.
+    # Dormant since the settings-time Max gate retirement (kept for tests/future owner probes).
     "OUROBOROS_GENERATIVE_PROBE": "1",
     "OUROBOROS_GENERATIVE_PROBE_CHARS": "5000000",
     # Pre-commit review: comma-separated provider-tagged model list
@@ -252,9 +250,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Scope review: one or more reviewer slots; enforcement follows OUROBOROS_REVIEW_ENFORCEMENT.
     "OUROBOROS_SCOPE_REVIEW_MODELS": ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"]),
     "OUROBOROS_SCOPE_REVIEW_MODEL": OPENROUTER_REVIEW_DEFAULTS["scope"][0],
-    # DEPRECATED, enforcement-inert (v6.80.0): stored, owner-only (dedicated audited endpoint), but
-    # NOTHING consults it — whether the BIBLE P3 blocking scope review applies follows owner-only
-    # OUROBOROS_CONTEXT_MODE. Degraded opt-in key: removed.
+    # DEPRECATED, enforcement-inert (v6.80.0): stored, owner-only, but nothing consults it — BIBLE
+    # P3 blocking scope review applicability follows owner-only OUROBOROS_CONTEXT_MODE instead.
     "OUROBOROS_SCOPE_REVIEW_FLOOR": "blocking_1m",
     "OUROBOROS_TASK_REVIEW_MODE": "auto",
     # LLM safety-supervisor coverage (owner-only, like runtime/context mode):
@@ -265,10 +262,9 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     #   off   — no LLM safety calls at all; the deterministic registry sandbox, protected-path
     #           policy and light-mode guards STAY ON. Every non-full mode audits durably.
     "OUROBOROS_SAFETY_MODE": "full",
-    # Safety-supervisor LLM call shaping (v6.54.3 parse-bug fix): a tight output
-    # budget + no reasoning keeps the light model from spending its whole budget on
-    # hidden reasoning and returning a 1-token/empty body that fails JSON parse and
-    # then fail-closed blocks a benign command. Registered numeric SSOT (no inline literals).
+    # Safety-supervisor LLM call shaping (v6.54.3 parse-bug fix): a tight output budget + no
+    # reasoning keeps the light model from spending its whole budget on hidden reasoning and
+    # returning a 1-token/empty body that fails JSON parse and fail-closed blocks a benign command.
     "OUROBOROS_SAFETY_MAX_TOKENS": 2000,
     "OUROBOROS_SAFETY_CALL_TIMEOUT_SEC": 60,
     # v6.54.3 transport-timeout SSOT (deadline package D). web_search: 480 keeps the
@@ -288,12 +284,11 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # STRING "N"|"unlimited": plan review, acceptance (passes = cycles - 1), commit gate and skill review (paid cycles per root task / manual snapshot); identical material is never re-reviewed for pay on any gate.
     "OUROBOROS_REVIEW_MAX_CYCLES": "2",
     "OUROBOROS_ACCEPTANCE_RESERVE_PCT": 5,
-    # Prompt-cache TTL, one honest GLOBAL override (owner decision 2026-08-08, batch #2 Q2=A): applied to
-    # EVERY cache_control breakpoint on the Anthropic-normalizing family — main loop, review lanes, safety
-    # supervisor alike — at the ONE send-time finalizer (llm._normalize_payload_cache_ttl). 'default' = bare
-    # markers (provider default 5m tier); '5m'/'1h' = the explicit Anthropic ephemeral tiers ('1h' bills cache
-    # writes at the documented 2x-vs-1.25x ratio). Non-Anthropic wire formats are a NO-OP by construction
-    # (Gemini documents no ttl field — the v5.30.0 outage class).
+    # Prompt-cache TTL, one honest GLOBAL override (owner decision 2026-08-08): applied to EVERY
+    # cache_control breakpoint on the Anthropic-normalizing family at the ONE send-time finalizer
+    # (llm._normalize_payload_cache_ttl). 'default' = bare markers (provider default 5m tier);
+    # '5m'/'1h' = the explicit Anthropic ephemeral tiers ('1h' bills at the documented 2x ratio).
+    # Non-Anthropic wire formats are a NO-OP by construction (Gemini has no ttl field — v5.30.0 outage class).
     "OUROBOROS_PROMPT_CACHE_TTL": "1h",
     # Reasoning effort per task type: none | low | medium | high
     "OUROBOROS_EFFORT_TASK": "medium",
@@ -354,24 +349,15 @@ CLAUDEXOR_PROTOCOL_MAJOR: int = 3
 # delegation instead of losing the lane; a floor set to the newest daemon anyone happens to run is not conservative,
 # it is an outage (3.2.1 here refused the operator's own 3.2.0 engine and took read-only delegation down with it).
 CLAUDEXOR_MIN_VERSION: str = "3.2.0"
-# The MARKER floor: the oldest engine whose SCHEMA ACCEPTS `execution.delegated`, which is
-# the only delegated-lane question a version can answer honestly. Measured: `RunExecution`
-# is `.strict()` and has no `delegated` key below 3.3.0, so the field is a 400 (live against
-# the running 3.2.0 daemon, which names `/execution/delegated` in `fieldErrors`) and the run
-# never starts. Refusing here turns a certain failure into a typed one before a token is
-# spent — the only work this number does. It cannot be a probe either: the marker is nested
-# under `execution` while the catalog lists TOP-LEVEL keys, and the one behavioural probe is
-# to send it, which on an engine that accepts it STARTS THE RUN.
-#
-# It is NOT the floor for a BOUNDARY existing. It used to be, pinned at 3.3.2 (macOS
-# Seatbelt), and a version standing in for "a boundary was applied" lies in both directions:
-# Claudexor's `docs/DELEGATED_CONFINEMENT.md` says the mechanism is macOS-only, so a build
-# declares the same number on a host where it applies nothing — and a version describes a
-# BUILD, never what THIS attempt did. That question goes to the attempt record
-# (`gateways.claudexor.attempt_containment`), and a run reporting no mechanism is DISCLOSED,
-# not refused: the child already holds a shell here, so the step to "shell plus token" does
-# not buy a lane-wide refusal (AGENTS.md "Disclose instead of forbid"). Two gates, two
-# questions, no overlap; bands: docs/DELEGATED_ADMISSION.md.
+# The MARKER floor: the oldest engine whose SCHEMA ACCEPTS `execution.delegated` — the only
+# delegated-lane question a version can answer honestly. `RunExecution` is `.strict()` with no
+# `delegated` key below 3.3.0, so refusing here turns a certain 400 into a typed one before a
+# token is spent. It cannot be a probe: sending it as a probe on an engine that accepts it
+# STARTS THE RUN. It is NOT the floor for a BOUNDARY existing (that was 3.3.2, macOS Seatbelt,
+# docs/DELEGATED_CONFINEMENT.md) — a version can't stand in for "a boundary was applied" since a
+# build declares the same number on a host where the (macOS-only) mechanism applies nothing;
+# that question goes to the attempt record instead (`gateways.claudexor.attempt_containment`,
+# DISCLOSED not refused per AGENTS.md). Two gates, two questions; bands: docs/DELEGATED_ADMISSION.md.
 CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION: str = "3.3.0"
 
 

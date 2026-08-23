@@ -383,13 +383,11 @@ def _resolve_task_cost_ceiling(
     )
 
 
-# Bounded staleness for the two DECIDING cost surfaces (ceiling check and
-# milestone note). The free stash is refreshed by every dispatch under this
-# root — at most one round old, zero reads — but ONE round can block 900s in
-# wait_tasks while children spend (the shape both dead waves had), and the
-# pacing refresh only covers deadline-less tasks, so a round outliving this
-# bound pays for exactly one real projection read. Never per-round (see the
-# usage_accounting telemetry note and the e4a87344 contention class).
+# Bounded staleness for the two DECIDING cost surfaces (ceiling check and milestone note). The
+# free stash is refreshed by every dispatch under this root — at most one round old, zero reads
+# — but ONE round can block 900s in wait_tasks while children spend, and pacing refresh only
+# covers deadline-less tasks, so a round outliving this bound pays for one real projection read.
+# Never per-round (see usage_accounting telemetry note, e4a87344 contention class).
 _TREE_ACCOUNTING_MAX_STALE_SEC = 120.0
 
 
@@ -6034,18 +6032,14 @@ def _maybe_inject_finalization_nudges(
         emit_progress("No-op attempt nudge injected before final response.")
         llm_trace["reasoning_notes"].append("No-op attempt nudge injected before final response.")
         return True
-    # P2 one-shot final-answer-marker nudge: the turn produced REAL work AND
-    # visible prose but no FINAL ANSWER marker — the typed extractor would drop
-    # it and a forced/deadline finalization would score empty. Strengthen the
-    # BEHAVIOR (ask the agent to mark its OWN answer), never mine prose into a
-    # claimed answer (Bible P5). Own latch, ordered AFTER verify/red/A3
-    # (grounding outranks formatting); mutually exclusive with the A3 no-op
-    # nudge; forced paths return earlier. Structural facts only. The protocol
-    # gate alone suffices: answer_protocol="final_answer_line" itself declares
-    # a machine-extracted deliverable, so the nudge must not ALSO require a
-    # declared expected_output — GAIA-shaped contracts keep expected_output
-    # empty, and that extra gate once suppressed the only salvage surface
-    # (a v6.56.0 run finalized a last-round refusal empty despite 24 calls).
+    # P2 one-shot final-answer-marker nudge: the turn produced REAL work AND visible prose but
+    # no FINAL ANSWER marker — the typed extractor would drop it and a forced/deadline
+    # finalization would score empty. Strengthen the BEHAVIOR (ask the agent to mark its OWN
+    # answer), never mine prose into a claimed answer (Bible P5). Ordered AFTER verify/red/A3;
+    # mutually exclusive with the A3 no-op nudge; forced paths return earlier. The protocol gate
+    # alone suffices — must not ALSO require expected_output, since GAIA-shaped contracts keep it
+    # empty and that once suppressed the only salvage surface (v6.56.0: a run finalized empty
+    # despite 24 calls).
     if (
         not getattr(tools._ctx, "_final_marker_nudged", False)
         and _answer_protocol_active(tools._ctx)  # v6.60.0: marker nudge is protocol-gated

@@ -495,10 +495,8 @@ def usage_breakdown(
             "by_category": by_category,
             "by_task": by_task,
             "by_root": by_root,
-            # Execution-axis filter (v6.91): the delegated (subscription-harness) rows
-            # only — a VIEW over the same rows for "where did the money go" readers,
-            # never a third monetary sum or authority. Disclosed-free sessions settle
-            # at $0 here; undisclosed spend stays in `unknown`.
+            # Execution-axis filter (v6.91): delegated (subscription-harness) rows only — a VIEW
+            # for "where did the money go", never a third sum. Free sessions settle at $0; undisclosed spend stays in `unknown`.
             "delegated": _with_integrity(
                 _breakdown_bucket([row for row in rows if str(row.get("kind") or "") == "subscription_session"]),
                 integrity_degraded,
@@ -553,10 +551,9 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
 
         prompt_cache_ttl = str(request.prompt_cache_ttl or "").strip().lower()
         if prompt_cache_ttl not in PROMPT_CACHE_TTL_SCALE:
-            # An inspectable marker-free candidate writes no cache at all. Keep
-            # the historical conservative base-tier reservation without
-            # misreporting a TTL on the eventual physical settlement. Opaque
-            # construction sites still fall back to the owner setting.
+            # An inspectable marker-free candidate writes no cache at all. Keep the historical
+            # conservative base-tier reservation without misreporting a TTL on the eventual
+            # physical settlement. Opaque construction sites still fall back to the owner setting.
             prompt_cache_ttl = (
                 "default"
                 if request.candidate_measurement_kind == "canonical_json_v1"
@@ -701,11 +698,9 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
             root_task_id=scope.root_task_id,
         )
     ensure_legacy_imported(root)
-    # IMPORTANT: live catalog I/O belongs before ``with _locked_with_fsync(root)``
-    # below. The lock protects only the atomic budget read/check/append
-    # transaction; ``_locked_with_fsync`` releases the lock before the kernel-level
-    # ``os.fsync`` so a SIGALRM can interrupt the flush (the SIGKILL-on-timeout
-    # class fixed in v6.100.5).
+    # IMPORTANT: live catalog I/O belongs before ``with _locked_with_fsync(root)`` below. The lock
+    # protects only the atomic budget read/check/append transaction; ``_locked_with_fsync`` releases
+    # it before the kernel-level ``os.fsync`` so a SIGALRM can interrupt the flush (v6.100.5).
     bound = _reservation_cost(request)
     pricing_known = bound is not None
     attempt_id = uuid.uuid4().hex

@@ -747,8 +747,7 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
 
 # Closed set of task_type values the owner temperature endpoint accepts. Mirrors the
 # `OUROBOROS_EFFORT_*` keys: only the two documented task types are owner-settable.
-# An unknown task_type is a 400 (per the context_mode endpoint's rejection of unknown
-# values at line 853).
+# An unknown task_type is a 400 (per the context_mode endpoint's rejection of unknown values).
 _VALID_TEMPERATURE_TASK_TYPES = {"task", "consciousness"}
 
 

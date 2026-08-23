@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from hashlib import sha256
 import json
 import logging
@@ -11,7 +10,6 @@ import pathlib
 import re
 import shlex
 import signal
-import stat
 import subprocess
 import threading
 import time
@@ -42,6 +40,22 @@ from ouroboros.tool_access import (
     user_files_path_block_reason,
 )
 from ouroboros.utils import safe_relpath
+from ouroboros.tools.shell_grep_argv import (  # noqa: F401 - moved to its own module; compatibility re-export
+    _GREP_BACKSLASH_PIPE_PATTERN,
+    _GREP_REGEX_MODE_FLAGS,
+    _GREP_TOOLS,
+    _NO_MATCH_EXIT_TOOLS,
+    _grep_has_explicit_regex_mode,
+    _is_search_no_match,
+    _maybe_autocorrect_grep_backslash_pipe,
+)
+from ouroboros.tools.shell_output_fingerprint import (  # noqa: F401 - moved to its own module; compatibility re-export
+    _OUTPUT_DIR_MAX_BYTES,
+    _OUTPUT_DIR_MAX_FILES,
+    _bounded_directory_fingerprint,
+    _directory_fingerprint_from_entries,
+    _fingerprint_output,
+)
 from ouroboros.deadline_utils import deadline_remaining_sec
 from ouroboros.workspace_executor import execute as executor_execute
 from ouroboros.workspace_executor import executor_ref_from_ctx
@@ -54,8 +68,6 @@ _active_subprocesses: set = set()
 _subprocess_lock = threading.Lock()
 _RUN_SHELL_DEFAULT_TIMEOUT_SEC = 360
 _CONTROL_DIR_BACKUP_MAX_BYTES = 5 * 1024 * 1024
-_OUTPUT_DIR_MAX_FILES = 1000
-_OUTPUT_DIR_MAX_BYTES = 50 * 1024 * 1024
 
 
 def _tracked_subprocess_run(cmd, **kwargs):
@@ -375,59 +387,6 @@ def _resolve_declared_output(
         for label, root in _allowed_output_roots(ctx, work_dir, cwd_root, binding)
     )
     return None, f"output escapes allowed artifact roots: {text}; allowed_roots: {allowed}"
-
-
-def _directory_fingerprint_from_entries(root: pathlib.Path, entries: list[tuple[str, os.stat_result, pathlib.Path]]) -> str:
-    digest = hashlib.sha256()
-    for rel, st, child in sorted(entries, key=lambda item: item[0]):
-        digest.update(rel.encode("utf-8", errors="replace"))
-        digest.update(str(st.st_mode).encode())
-        digest.update(str(st.st_size).encode())
-        digest.update(str(st.st_mtime_ns).encode())
-        if stat.S_ISLNK(st.st_mode):
-            try:
-                digest.update(os.readlink(child).encode("utf-8", errors="replace"))
-            except OSError:
-                pass
-    return digest.hexdigest()
-
-
-def _bounded_directory_fingerprint(path: pathlib.Path) -> tuple[bool, int, str]:
-    root = pathlib.Path(path).resolve(strict=False)
-    total = 0
-    entries: list[tuple[str, os.stat_result, pathlib.Path]] = []
-    try:
-        for child in root.rglob("*"):
-            try:
-                st = child.lstat()
-            except OSError:
-                continue
-            try:
-                rel = child.resolve(strict=False).relative_to(root).as_posix()
-            except ValueError:
-                rel = safe_relpath(str(child))
-            entries.append((rel, st, child))
-            if child.is_file() and not child.is_symlink():
-                total += st.st_size
-            if len(entries) > _OUTPUT_DIR_MAX_FILES:
-                return True, total, f"too_many_entries:{_OUTPUT_DIR_MAX_FILES}"
-            if total > _OUTPUT_DIR_MAX_BYTES:
-                return True, total, f"too_many_bytes:{_OUTPUT_DIR_MAX_BYTES}"
-        return True, total, _directory_fingerprint_from_entries(root, entries)
-    except OSError:
-        return False, -1, ""
-
-
-def _fingerprint_output(path: pathlib.Path) -> tuple[bool, int, str]:
-    try:
-        if path.is_dir():
-            return _bounded_directory_fingerprint(path)
-        if not path.is_file():
-            return False, -1, ""
-        raw = path.read_bytes()
-        return True, len(raw), sha256(raw).hexdigest()
-    except OSError:
-        return False, -1, ""
 
 
 def _snapshot_declared_outputs(
@@ -817,68 +776,6 @@ _USER_FILE_REDIRECT_RE = re.compile(
 # Undeclared-output stat filter (v6.56.0): a text-scan candidate counts as a real write only if it
 # exists with mtime >= command_start - this slack (covers coarse FS mtime granularity, e.g. FAT 2s).
 _OUTPUT_STAT_SLACK_SEC = 2.0
-
-# Portable grep fix: GNU basic-regex "\|" fails on BSD grep in argv mode.
-_GREP_TOOLS = frozenset(("grep", "egrep", "fgrep"))
-_GREP_REGEX_MODE_FLAGS = frozenset((
-    "-E", "--extended-regexp",
-    "-P", "--perl-regexp",
-    "-F", "--fixed-strings",
-    "-G", "--basic-regexp",
-))
-_GREP_BACKSLASH_PIPE_PATTERN = re.compile(r'\\\|')
-_NO_MATCH_EXIT_TOOLS = frozenset(("grep", "egrep", "fgrep", "rg", "ag", "ack"))
-
-
-def _is_search_no_match(res: subprocess.CompletedProcess) -> bool:
-    tool = pathlib.Path(str(res.args[0] if res.args else "")).name.lower()
-    return (
-        int(res.returncode) == 1
-        and tool in _NO_MATCH_EXIT_TOOLS
-        and not str(res.stderr or "").strip()
-    )
-
-
-def _grep_has_explicit_regex_mode(cmd: List[str]) -> bool:
-    """Return whether grep argv already chooses regex/string flavor."""
-    if not cmd:
-        return False
-    tool = pathlib.Path(cmd[0]).name.lower()
-    if tool in ("egrep", "fgrep"):
-        return True
-    for arg in cmd[1:]:
-        if not isinstance(arg, str):
-            continue
-        if arg in _GREP_REGEX_MODE_FLAGS:
-            return True
-        if arg.startswith("--"):
-            continue
-        # Short options may be clustered, e.g. `grep -rnE pattern path`.
-        if arg.startswith("-") and any(flag in arg[1:] for flag in ("E", "P", "F", "G")):
-            return True
-    return False
-
-
-def _maybe_autocorrect_grep_backslash_pipe(cmd: List[str]) -> tuple[List[str], str]:
-    if not cmd or pathlib.Path(cmd[0]).name.lower() not in _GREP_TOOLS:
-        return cmd, ""
-    if _grep_has_explicit_regex_mode(cmd):
-        return cmd, ""
-    corrected = list(cmd)
-    changed_args: list[str] = []
-    for idx, arg in enumerate(corrected[1:], start=1):
-        if isinstance(arg, str) and _GREP_BACKSLASH_PIPE_PATTERN.search(arg):
-            corrected[idx] = _GREP_BACKSLASH_PIPE_PATTERN.sub("|", arg)
-            changed_args.append(arg)
-    if not changed_args:
-        return cmd, ""
-    corrected.insert(1, "-E")
-    return corrected, (
-        "⚠️ SHELL_REGEX_AUTO_CORRECTED: converted grep backslash-escaped "
-        "alternation (\\|) to extended regex mode (`grep -E`) and rewrote "
-        f"{changed_args!r} to use `|`.\n"
-    )
-
 
 def _validate_shell_argv(cmd: List[str]) -> str:
     """Cascade validation of a shell argv after autocorrect.

@@ -123,10 +123,7 @@ def collect_routes(
         api_tasks_create,
         api_tasks_list,
     )
-    from ouroboros.gateway.ui_preferences import (
-        api_ui_preferences_get,
-        api_ui_preferences_post,
-    )
+    from ouroboros.gateway.ui_preferences import api_ui_preferences_get, api_ui_preferences_post
     from ouroboros.gateway.onboarding_host import onboarding_page
     from ouroboros.gateway.settings import (
         api_claude_code_install,
