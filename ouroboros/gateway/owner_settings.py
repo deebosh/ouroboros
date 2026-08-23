@@ -32,10 +32,12 @@ re-implemented (or silently skipped) per call site:
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import logging
 import pathlib
+import threading
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from starlette.requests import Request
@@ -43,13 +45,14 @@ from starlette.responses import JSONResponse
 
 from ouroboros.config import DATA_DIR
 from ouroboros.config import SETTINGS_DEFAULTS as _SETTINGS_DEFAULTS
+from ouroboros.context_mode_compat import normalize_context_mode_compat
 from ouroboros.gateway._helpers import json_error, request_drive_root
 from ouroboros.utils import append_jsonl, atomic_write_json, utc_now_iso
 
 log = logging.getLogger(__name__)
 
-# The context mode and its derived authority bit are authored together, by the owner endpoint
-# or by the system auto-downgrade — never by a generic save (see prepare_settings_for_persist).
+# The context mode and its one-window false provenance tombstone are authored together by
+# the owner endpoint, never by a generic save (see prepare_settings_for_persist).
 _CONTEXT_MODE_KEYS = ("OUROBOROS_CONTEXT_MODE", "OUROBOROS_CONTEXT_MODE_AUTO_LOW")
 
 # The two per-task-type temperature keys are authored together by the owner temperature
@@ -58,6 +61,27 @@ _CONTEXT_MODE_KEYS = ("OUROBOROS_CONTEXT_MODE", "OUROBOROS_CONTEXT_MODE_AUTO_LOW
 # complete surface for temperature: there is no companion auto-low bit (the resolver
 # itself decides None vs the float; an owner-null POST clears both).
 _TEMPERATURE_KEYS = ("OUROBOROS_TEMPERATURE_TASK", "OUROBOROS_TEMPERATURE_CONSCIOUSNESS")
+
+
+# In-PROCESS serialization for every read-merge-write on the settings document.
+# The FILE lock inside ``_owner_write_settings`` serializes only the WRITES: a
+# writer that reads the document, merges (possibly for a long time, off the
+# event loop), then writes, would silently revert a single-decision endpoint
+# that landed in between. Every event-loop writer used to inherit this
+# serialization for free from the loop itself; a threaded writer does not.
+# A read-fingerprint ``precondition`` (the onboarding transaction) refuses
+# THIS writer's own stale merge, but cannot stop a lock-holding writer whose
+# read predated this write from landing afterwards — so the onboarding
+# transaction holds this lock TOO, from its write through its environment
+# projection and hot-reload effects, symmetric with the generic save.
+_settings_document_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def settings_document_mutation():
+    """Hold the in-process document lock across one read-merge-write."""
+    with _settings_document_lock:
+        yield
 
 
 class SettingsPreconditionFailed(RuntimeError):
@@ -176,6 +200,9 @@ def _owner_read_settings_raw() -> Dict[str, Any]:
         if _config.SETTINGS_PATH.exists():
             raw = json.loads(_config.SETTINGS_PATH.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
+                raw = normalize_context_mode_compat(
+                    raw, settings_path=_config.SETTINGS_PATH, warn_ambiguous=True,
+                )
                 merged.update(raw)
     except Exception:
         log.debug("Failed to read raw owner settings; using defaults", exc_info=True)
@@ -195,8 +222,8 @@ def _owner_write_settings(
 
     Skipping that ONE ratchet is the whole reason this writer exists; everything else comes from
     ``config.prepare_settings_for_persist``, the single point both persisting writers pass through.
-    An endpoint that genuinely authors a disk-authored key (context mode, safety mode, the derived
-    auto-low flag) must name it in ``authored_keys`` — otherwise a POST about an unrelated key would
+    An endpoint that genuinely authors a disk-authored key (context mode, safety mode, the false
+    compatibility tombstone) must name it in ``authored_keys`` — otherwise a POST about an unrelated key would
     author a mode decision out of the defaults merge that ``_owner_read_settings_raw`` performs.
 
     The settings lock is REQUIRED, not attempted: a timed-out acquisition raises
@@ -237,6 +264,7 @@ __all__ = [
     "CommitBoundary",
     "SettingsLockUnavailable",
     "SettingsPreconditionFailed",
+    "settings_document_mutation",
     "_CONTEXT_MODE_KEYS",
     "_owner_audit",
     "_owner_read_settings_raw",

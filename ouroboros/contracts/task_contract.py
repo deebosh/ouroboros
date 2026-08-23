@@ -313,7 +313,12 @@ def effective_acceptance_claims(
     if ingress:
         return ingress, "ingress_contract"
     wave = closed_plan_wave if isinstance(closed_plan_wave, Mapping) else {}
-    plan_claims = normalize_acceptance_claims(wave.get("acceptance_claims"))
+    # v2 waves freeze the whole reviewed SPEC (claims inside it); a v1 wave carried
+    # a bare ``acceptance_claims`` list — read as the legacy fallback.
+    spec = wave.get("spec") if isinstance(wave.get("spec"), Mapping) else {}
+    plan_claims = normalize_acceptance_claims(
+        spec.get("acceptance_claims") if spec else wave.get("acceptance_claims")
+    )
     if plan_claims:
         return plan_claims, "plan_review"
     return [], ""
@@ -426,6 +431,16 @@ def build_task_contract(task: Mapping[str, Any] | None) -> Dict[str, Any]:
         or ""
     ).strip()
     task_type = str(merged.get("task_type") or task.get("type") or "task").strip() or "task"
+    capability_ceiling = None
+    if merged.get("capability_ceiling") is not None:
+        from ouroboros.presence_authority import (
+            presence_ceiling_from_payload,
+            presence_ceiling_payload,
+        )
+
+        capability_ceiling = presence_ceiling_payload(
+            presence_ceiling_from_payload(merged.get("capability_ceiling"))
+        )
 
     acceptance_claims = normalize_acceptance_claims(
         merged.get("acceptance_claims")
@@ -497,6 +512,8 @@ def build_task_contract(task: Mapping[str, Any] | None) -> Dict[str, Any]:
     for key in ("notes", "review_notes"):
         if merged.get(key):
             contract[key] = merged.get(key)
+    if capability_ceiling is not None:
+        contract["capability_ceiling"] = capability_ceiling
     return contract
 
 

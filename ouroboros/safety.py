@@ -104,6 +104,10 @@ TOOL_POLICY: Dict[str, str] = {
 
     # Control / messaging / internal side effects.
     "schedule_subagent": POLICY_SKIP,
+    # One-shot deferred follow-up through the existing supervisor scheduler: the
+    # future task re-enters normal admission/safety, so registration itself has
+    # no reach beyond what the task already has (same reasoning as schedule_subagent).
+    "schedule_followup": POLICY_SKIP,
     # Delegated sessions: the access profile is derived HOST-SIDE from the calling
     # task's own authority and cannot be widened by the model, so the nanny verbs add
     # no reach beyond what the task already has (same reasoning as schedule_subagent).
@@ -128,6 +132,10 @@ TOOL_POLICY: Dict[str, str] = {
     "send_photo": POLICY_SKIP,
     "send_video": POLICY_SKIP,
     "send_file": POLICY_SKIP,
+    "presence_finish": POLICY_SKIP,
+    "presence_cancel_work": POLICY_SKIP,
+    "configure_presence": POLICY_SKIP,
+    "initiate_presence": POLICY_SKIP,
     "forward_to_worker": POLICY_SKIP,
     "compact_context": POLICY_SKIP,
     "enable_tools": POLICY_SKIP,

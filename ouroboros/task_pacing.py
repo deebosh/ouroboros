@@ -25,7 +25,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from ouroboros.config import (
-    get_acceptance_max_improvement_passes,
     get_acceptance_reserve_pct,
     get_acceptance_review_est_sec,
     get_finalization_grace_sec,
@@ -33,6 +32,12 @@ from ouroboros.config import (
 )
 from ouroboros.contracts.task_contract import answer_protocol_active, normalize_budget_profile
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
+from ouroboros.review_cycles import (
+    REASON_REVIEW_CYCLES_EXHAUSTED,
+    emit_review_cycles_exhausted,
+    get_acceptance_max_improvement_passes,
+    review_max_cycles,
+)
 from ouroboros.utils import append_jsonl, iter_jsonl_objects, utc_now_iso
 
 
@@ -48,6 +53,14 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # policy has one home (this module is the pacing-threshold SSOT).
 NANNY_REMINDER_ROUNDS = 8
 NANNY_REMINDER_USD = 2.0
+# Early FIRST reminder for a harness-dispatched task that has made NO delegate
+# verb call at all (owner-approved 2026-08-15): cheap children finish in 4-8
+# rounds under the dollar threshold and never heard the reminder — live E2E
+# showed 4 children with 0 delegate_start calls doing all research natively.
+# The first firing comes at this round count regardless of dollars; after any
+# delegate activity, and for every re-arm after the first firing, the ordinary
+# dual-axis thresholds above apply unchanged. Same SSOT home as its siblings.
+NANNY_FIRST_REMINDER_ROUNDS = 3
 _ACCEPTANCE_TIMING_EVENT = "task_acceptance_review_timing"
 log = logging.getLogger(__name__)
 
@@ -270,23 +283,26 @@ def effective_max_improvement_passes(
 ) -> Optional[int]:
     """The COUNT axis for improvement passes.
 
-    An explicit task-local cap always binds. Required+Blocking without one is
-    intentionally unbounded by a *local count* (deadline and global lifecycle
-    rails still apply). Other legacy policies retain their historical default."""
+    An explicit task-local cap always binds (owner "Hurry up" overlays 0).
+    Without one, the shared review-cycle cap binds under EVERY policy —
+    Required+Blocking included (owner decisions D10/D20): passes = cycles - 1
+    from ``OUROBOROS_REVIEW_MAX_CYCLES`` (``review_cycles.py``), ``None`` only
+    when that setting is ``unlimited``. Deadline and global lifecycle rails
+    apply on top. The one-minor ``until_deadline`` alias keeps its historical
+    meaning outside Required+Blocking: with a deadline the count axis is off."""
     cap = profile.get("max_improvement_passes")
     # An explicit task-local cap is authoritative under every policy, including
     # the one-minor ``until_deadline`` compatibility alias.
     if cap is not None:
         return max(0, int(cap))
-    # Required+Blocking has no implicit local count cap.  Deadline, global task
-    # rails and an explicitly supplied cap still stop it.
-    if required_blocking:
+    if (
+        not required_blocking
+        and profile.get("improvement_policy") == "until_deadline"
+        and has_deadline
+    ):
         return None
-    if profile.get("improvement_policy") == "until_deadline" and has_deadline:
-        return None
-    if cap is None:
-        cap = get_acceptance_max_improvement_passes()
-    return max(0, int(cap))
+    cap = get_acceptance_max_improvement_passes()
+    return None if cap is None else max(0, int(cap))
 
 
 def improvement_pass_allowed(
@@ -296,19 +312,32 @@ def improvement_pass_allowed(
     *,
     required_blocking: bool = False,
     estimated_sec: Optional[float] = None,
+    ctx: Any = None,
 ) -> Tuple[bool, str]:
     """Gate 2: one more improvement/obligation pass?
 
-    An explicit count cap and the deadline/reserve rail are independent. For
-    Required+Blocking with no explicit cap, only real system rails bound the
-    loop; ``adaptive`` stops early once the spendable window can no longer fit a
-    review comfortably (2× the estimate)."""
+    The count cap (task-local or the shared review-cycle cap) and the
+    deadline/reserve rail are independent; ``adaptive`` stops early once the
+    spendable window can no longer fit a review comfortably (2× the estimate).
+    Under Required+Blocking the SHARED cap (no task-local cap) exhausting is the
+    typed ``review_cycles_exhausted`` reason (owner D10/D27) and — when ``ctx``
+    is supplied — the typed escalation event; a task-local cap (owner hurry,
+    budget_profile) keeps the generic ``improvement_passes_exhausted``."""
     cap = effective_max_improvement_passes(
         profile,
         has_deadline=snapshot.has_deadline,
         required_blocking=required_blocking,
     )
     if cap is not None and passes_done >= cap:
+        if required_blocking and profile.get("max_improvement_passes") is None:
+            if ctx is not None:
+                emit_review_cycles_exhausted(
+                    getattr(ctx, "event_queue", None),
+                    getattr(ctx, "budget_drive_root", "") or getattr(ctx, "drive_root", ""),
+                    surface="task_acceptance", task_id=str(getattr(ctx, "task_id", "") or ""),
+                    cycles_paid=passes_done + 1, cap=cap + 1, enforcement="blocking",
+                )
+            return False, REASON_REVIEW_CYCLES_EXHAUSTED
         return False, "improvement_passes_exhausted"
     if not snapshot.has_deadline:
         return True, ""
@@ -664,6 +693,125 @@ def _workspace_delivery(ctx: Any) -> bool:
         except Exception:
             return False
     return bool(getattr(ctx, "workspace_root", None))
+
+
+def acceptance_rails_line(
+    budget_snapshot: Any,
+    budget_profile: Dict[str, Any],
+    passes_done: int,
+    loop_rails: Optional[Dict[str, Any]],
+    *,
+    required_blocking: bool,
+    workspace: bool = False,
+) -> str:
+    """Fail-soft wrapper: the rails line is advisory context; it must never
+    take down the acceptance path (fable review r2 #3). Extracted from
+    ``loop.py`` (S3 byte offset) — pacing display belongs to the pacing SSOT."""
+    try:
+        return _acceptance_rails_line_inner(
+            budget_snapshot, budget_profile, passes_done, loop_rails,
+            required_blocking=required_blocking, workspace=workspace,
+        )
+    except Exception:
+        log.debug("acceptance rails line failed soft", exc_info=True)
+        return ""
+
+
+def _acceptance_rails_line_inner(
+    budget_snapshot: Any,
+    budget_profile: Dict[str, Any],
+    passes_done: int,
+    loop_rails: Optional[Dict[str, Any]],
+    *,
+    required_blocking: bool,
+    workspace: bool = False,
+) -> str:
+    """One line naming every active termination source with its remaining
+    headroom (v6.74.0 A1, owner Q6): money, time, rounds, review passes. Each
+    rail comes from its real source — the usage ledger projection, the
+    BudgetSnapshot, the loop's round counter, and the pacing pass cap — and an
+    unavailable rail is omitted rather than guessed. For workspace deliveries
+    the line also carries the tree directive (v6.74.4) — a delivery-state
+    instruction, not a termination source. Fail-soft: never raises."""
+    parts: list[str] = []
+    rails = loop_rails if isinstance(loop_rails, dict) else {}
+    try:
+        money_bits: list[str] = []
+        cost = rails.get("task_cost_usd")
+        if cost is not None:
+            money_bits.append(f"${float(cost):.2f} spent this task")
+        try:
+            from ouroboros.usage_accounting import current_usage_scope, usage_projection
+
+            scope = current_usage_scope()
+            if scope is not None and scope.root_task_id:
+                projection = usage_projection(
+                    scope.drive_root, root_task_id=scope.root_task_id,
+                )
+                remaining = projection.get("remaining_known_usd")
+                if remaining is not None:
+                    money_bits.append(f"${float(remaining):.2f} budget left")
+        except Exception:
+            log.debug("rails: budget projection unavailable", exc_info=True)
+        if money_bits:
+            parts.append("money: " + ", ".join(money_bits))
+    except (TypeError, ValueError):
+        pass
+    try:
+        if getattr(budget_snapshot, "has_deadline", False):
+            parts.append(
+                f"time: {max(0.0, budget_snapshot.remaining_sec) / 60:.0f} min left "
+                f"({budget_snapshot.reserve_sec / 60:.0f} min finalization reserve)"
+            )
+    except (TypeError, ValueError):
+        pass
+    try:
+        round_idx = rails.get("round_idx")
+        max_rounds = rails.get("max_rounds")
+        if round_idx is not None and max_rounds:
+            parts.append(f"rounds: {int(round_idx)}/{int(max_rounds)}")
+    except (TypeError, ValueError):
+        pass
+    try:
+        cap = effective_max_improvement_passes(
+            budget_profile,
+            has_deadline=bool(getattr(budget_snapshot, "has_deadline", False)),
+            required_blocking=required_blocking,
+        )
+        if cap is None:
+            # None comes from either the unlimited shared cap or the non-RB
+            # ``until_deadline``+deadline alias path; only claim the former when true.
+            why = "review cycles unlimited; " if review_max_cycles() is None else ""
+            parts.append(
+                f"review passes: {int(passes_done)} done, no local count cap "
+                f"({why}deadline/budget rails bind)"
+            )
+        else:
+            passes_part = f"review passes: {int(passes_done)}/{int(cap)}"
+            # v6.74.4 freeze directive (count axis): the pass launched at
+            # cap-1 is the last one improvement_pass_allowed will admit, so
+            # say so. cap==0 never feeds a capsule back; skip the clause, and
+            # passes_done >= cap (supersede-reset re-review) is not a launch.
+            if 0 <= int(passes_done) < int(cap) and int(passes_done) + 1 >= int(cap):
+                passes_part += " — FINAL improvement pass, no further passes will run"
+            parts.append(passes_part)
+    except (TypeError, ValueError):
+        pass
+    try:
+        # v6.74.4: EVERY workspace improvement capsule carries the tree
+        # directive, not just the provably-final one — a deadline/cost rail
+        # can end the loop between capsules (commit triad r1, sol), and the
+        # tree ships as-is on any forced end.
+        if workspace:
+            parts.append(
+                "workspace delivery: the deliverable is your working tree as "
+                "it stands when the task ends — keep it in a VERIFIED state "
+                "(rebuild, verify, and commit if the task calls for a commit) "
+                "and revert unverified edits rather than shipping them"
+            )
+    except (TypeError, ValueError):
+        pass
+    return "; ".join(parts)
 
 
 def build_time_budget_note(

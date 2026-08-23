@@ -216,7 +216,7 @@ _USER_FILES_ALLOWED_DOTNAMES = frozenset({
 _TOP_LEVEL_PRINCIPAL_POLICY: dict[str, set[str]] = {
     "active_workspace": {"read", "list", "search", "write", "edit", "shell", "vcs", "review", "service"},
     "system_repo": {"read", "list", "search", "write", "edit", "shell", "vcs", "review", "service"},
-    "runtime_data": {"read", "list", "write", "edit"},
+    "runtime_data": {"read", "list", "search", "write", "edit"},
     "task_drive": {"read", "list", "write", "edit", "shell", "service"},
     "skill_payload": {"read", "list", "search", "write", "edit", "review", "shell"},
     "artifact_store": {"read", "list", "write", "shell", "service"},
@@ -277,7 +277,6 @@ _POLICY: dict[str, dict[str, set[str]]] = {
         **{root: {"read", "list", "search"} for root in _READONLY_RESOURCE_ROOTS},
     },
 }
-
 _SUBAGENT_CAPABILITY_TO_OPERATION: dict[str, Operation] = {
     "write": "write",
     "edit": "edit",
@@ -393,9 +392,10 @@ def decide_tool_access(
     allowed = operation in _POLICY.get(profile, {}).get(root, set())
     if allowed:
         return ToolAccessDecision(True, guard=f"{profile}:{root}:{operation}")
+    allowed_roots = ", ".join(sorted(r for r, ops in _POLICY.get(profile, {}).items() if operation in ops)) or "(none)"
     return ToolAccessDecision(
         False,
-        reason=f"profile={profile} cannot {operation} root={root}",
+        reason=f"profile={profile} cannot {operation} root={root}. Roots your profile can {operation}: {allowed_roots}.",
         guard=f"{profile}:{root}:{operation}",
     )
 
@@ -573,6 +573,7 @@ def filesystem_affordance_map(ctx: Any, *, runtime_mode: str = "") -> dict[str, 
         "profile": profile,
         "writable_roots": writable_roots,
         "readonly_roots": readonly_roots,
+        "searchable_roots": sorted(root for root, ops in policy.items() if "search" in ops),
         # Environment fact, not another policy gate.
         "invisible_roots": sorted(_ALL_ROOTS - set(policy)),
         "root_paths": root_paths,
@@ -589,6 +590,16 @@ def filesystem_affordance_map(ctx: Any, *, runtime_mode: str = "") -> dict[str, 
         result["skill_payload_selector"] = (
             "root=skill_payload requires bucket + skill_name"
         )
+        from ouroboros.skill_payload_binding import selected_manifestless_user_repo_name
+
+        if selected := selected_manifestless_user_repo_name(
+            ctx,
+            canonical_data_root(ctx),
+        ):
+            result["skill_payload_selector"] += (
+                "; omit bucket only for the exact selected manifestless "
+                f"user_repo target {selected}"
+            )
     _room = project_room_lens_dir(ctx)
     if _room is not None:
         # In this chat the project room is the active/default filesystem focus.
@@ -1265,58 +1276,18 @@ def _skill_payload_base(
     skill_name: str,
     allow_missing: bool = False,
 ) -> tuple[pathlib.Path, str, str]:
-    """Select one physical skill package without reading lifecycle state."""
-    from ouroboros.skill_loader import (
-        _sanitize_skill_name,
-        _select_skill_location,
-        _skill_location_inventory,
-    )
-    requested_location = str(location or "").strip().lower()
-    allowed_locations = {"external", "clawhub", "ouroboroshub", "native", "user_repo"}
-    canonical_name = _sanitize_skill_name(skill_name)
-    if not str(skill_name or "").strip() or canonical_name == "_unnamed":
-        raise ValueError("root=skill_payload requires a non-empty skill_name")
-    state_root = canonical_data_root(ctx)
-    candidates = _skill_location_inventory(state_root)
-    if not requested_location and operation == "review":
-        identity = tuple(item for item in candidates if item.name == canonical_name)
-        if not identity:
-            raise ValueError(f"skill {canonical_name!r} was not found")
-        requested_location = identity[0].location
-    elif requested_location not in allowed_locations:
-        raise ValueError(
-            "root=skill_payload requires bucket/location in "
-            "external|clawhub|ouroboroshub|native|user_repo"
-        )
-    if requested_location in {"native", "user_repo"} and profile not in _TOP_LEVEL_PRINCIPAL_PROFILES:
-        raise ValueError(
-            f"profile={profile} cannot select skill location={requested_location}"
-        )
-    if requested_location == "native" and operation in {"write", "edit", "shell"}:
-        raise ValueError(
-            "installed native skills are read/review only; edit their seed via root=system_repo"
-        )
+    """Select one physical package and project its effective source."""
+    from ouroboros.skill_payload_binding import resolve_skill_payload_base
 
-    selected = _select_skill_location(
-        candidates,
-        name=canonical_name,
-        location=requested_location,
-        require_unique_identity=operation not in {"read", "list", "search"},
-    )
-    if selected is not None:
-        return selected.skill_dir.resolve(strict=False), selected.location, selected.name
-    if (
-        operation == "write"
-        and allow_missing
-        and requested_location in {"external", "clawhub", "ouroboroshub"}
-    ):
-        return (
-            (state_root / "skills" / requested_location / canonical_name).resolve(strict=False),
-            requested_location,
-            canonical_name,
-        )
-    raise ValueError(
-        f"skill {canonical_name!r} was not found in location {requested_location!r}"
+    return resolve_skill_payload_base(
+        ctx,
+        drive_root=canonical_data_root(ctx),
+        profile=profile,
+        top_level=profile in _TOP_LEVEL_PRINCIPAL_PROFILES,
+        operation=operation,
+        location=location,
+        skill_name=skill_name,
+        allow_missing=allow_missing,
     )
 
 
@@ -1582,8 +1553,8 @@ def build_resolved_resource_binding(
             skill_name=selected_skill,
             allow_missing=(
                 operation == "write"
-                and selected_bucket.lower() == "external"
                 and _is_skill_create_signal(path)
+                and selected_bucket.lower() in {"", "external", "user_repo"}
             ),
         )
     elif room is not None:

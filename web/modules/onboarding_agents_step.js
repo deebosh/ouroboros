@@ -7,8 +7,9 @@
 // и что они ротироваться будут.»
 //
 // So the step is a VALUE LADDER, not a form: one API key already runs
-// Ouroboros, one agent plan moves the delegated and commit-review work onto
-// that plan, several accounts rotate. Two honesty constraints are load-bearing
+// Ouroboros, one agent plan moves delegated work onto that plan, eligible
+// plans can also move review work, and several accounts rotate. Two honesty
+// constraints are load-bearing
 // and must survive every future edit:
 //
 //   * A subscription NEVER satisfies the startup gate (D-1). The main agent is
@@ -16,8 +17,9 @@
 //     breath as the benefit, because a wizard that implies otherwise sends the
 //     owner to a first run that refuses to start.
 //   * "Rides a plan" is not "free", and NOT every reviewer moves. Commit triad,
-//     scope and the advisory pre-reviewer move; plan review, task acceptance
-//     and skill review stay API-only today (D15). The footnote carries both.
+//     scope, the advisory pre-reviewer and plan review (each triad row's own
+//     delivery) move; task acceptance and skill review stay API-only today
+//     (D15). The footnote carries both.
 //
 // The rotation artwork is a STATIC SVG — inline, no library, no animation
 // (no comparable product animates this, and motion here would be noise). It is
@@ -34,19 +36,32 @@
 //
 // Pure helpers up top are node-tested without a DOM.
 
+import { apiClient } from './api_client.js';
 import { claudexorStatus, accountRows, familyLabel } from './claudexor_status_store.js';
 import { LOGIN_CARD_FULL, createLoginCardController } from './harness_login_cards.js';
+import {
+    availableSubagentsEditorHost,
+    createAvailableSubagentsEditor,
+} from './subagents_settings.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 
-// The families the ratified install matrix covers (subscription_install_presets
-// PRESET_HARNESSES). A connected harness outside this list contributes no
-// preset seat, so offering it here would promise something the compiler
-// refuses.
+// Every supported task harness in the linear Available-subagents compiler.
+// Reviewer policy remains a separate core-only projection: Agy is task-only and
+// must never be omitted here merely because it creates no reviewer seats.
 export const AGENT_FAMILIES = [
     { harness: 'claude', label: 'Claude Code' },
     { harness: 'codex', label: 'Codex' },
     { harness: 'cursor', label: 'Cursor' },
+    { harness: 'agy', label: 'Antigravity' },
 ];
+
+const REVIEW_CAPABLE_AGENT_HARNESSES = new Set(['claude', 'codex', 'cursor']);
+
+// Completion must not hang on an engine that is down. Three attempts over
+// roughly 1.2 seconds convert a transport blip into a proven cancel; anything
+// longer stops being a blip.
+const LOGIN_RELEASE_RETRIES = 2;
+const LOGIN_RELEASE_RETRY_MS = 600;
 
 // AGENT_FAMILIES still carries the label the STEP renders for a family it lists
 // before any discovery has answered; the shared `familyLabel` owns every name
@@ -64,8 +79,9 @@ export const VALUE_LADDER = [
     {
         tone: 'Better',
         title: 'Add one agent plan',
-        body: 'Delegated subagents and commit review — the triad and the scope pass — '
-            + 'run inside that plan instead of billing your API key per call. The main '
+        body: 'Delegated subagents run inside that plan instead of billing your API key '
+            + 'per call. Claude Code, Codex, and Cursor plans can also move commit review; '
+            + 'task-only plans such as Antigravity do not change reviewer routes. The main '
             + 'agent keeps using the API key or local model you configured above: a '
             + 'plan cannot run it.',
     },
@@ -80,8 +96,8 @@ export const VALUE_LADDER = [
 
 export const LADDER_FOOTNOTE =
     'Riding a plan is not free — it moves that work onto a subscription you already '
-    + 'pay for instead of adding per-call API charges. Plan review, task acceptance and '
-    + 'skill review stay on the API key for now.';
+    + 'pay for instead of adding per-call API charges. Task acceptance and skill review '
+    + 'stay on the API key for now; plan review follows each triad row.';
 
 // ---------------------------------------------------------------------------
 // Pure helpers.
@@ -92,9 +108,14 @@ export function connectedHarnesses(snapshot) {
     // stable family order. `accountRows` is the SSOT projection of the status
     // payload (native CLI session + verified credential profiles alike), so
     // this step and the accounts panel can never disagree about "connected".
+    // An account the owner switched OFF is skipped however healthy its login:
+    // rotation never takes it, so counting it here would declare a family
+    // connected on a pool the engine will not use. Absent stays connected —
+    // the same fail-open `enabled` projection the accounts panel applies.
     const passed = new Set(
         accountRows(snapshot)
-            .filter((row) => String(row?.status?.verification || '') === 'passed')
+            .filter((row) => row?.enabled !== false
+                && String(row?.status?.verification || '') === 'passed')
             .map((row) => String(row.harness || '')),
     );
     return AGENT_FAMILIES.map((f) => f.harness).filter((harness) => passed.has(harness));
@@ -103,6 +124,7 @@ export function connectedHarnesses(snapshot) {
 export function harnessAccountCount(snapshot, harness) {
     return accountRows(snapshot).filter(
         (row) => row.harness === harness
+            && row?.enabled !== false
             && String(row?.status?.verification || '') === 'passed',
     ).length;
 }
@@ -133,6 +155,35 @@ export function subscriptionDeclaration({ connected = [], skipPresets = false } 
     return {
         subscriptionsConnected: (connected || []).length > 0,
         skipSubscriptionPresets: Boolean(skipPresets),
+    };
+}
+
+/** Open provider/local/model draft shared by preview and final completion. */
+export function onboardingSettingsDraft({
+    state = {}, providerFields = [], budgetFields = [], modelSlots = [],
+    trim = (value) => String(value || '').trim(),
+} = {}) {
+    const clean = (value) => trim(value);
+    return {
+        ...Object.fromEntries(providerFields.map(
+            (field) => [field.settingKey, clean(state[field.stateKey])],
+        )),
+        ...Object.fromEntries(budgetFields.map(
+            (field) => [field.settingKey, Number(state[field.stateKey] || 0)],
+        )),
+        OUROBOROS_REVIEW_ENFORCEMENT: clean(state.reviewEnforcement) || 'advisory',
+        OUROBOROS_SKILLS_REPO_PATH: clean(state.skillsRepoPath),
+        LOCAL_MODEL_SOURCE: clean(state.localSource),
+        LOCAL_MODEL_FILENAME: clean(state.localFilename),
+        LOCAL_MODEL_CONTEXT_LENGTH: Number(state.localContextLength || 0),
+        LOCAL_MODEL_N_GPU_LAYERS: Number(state.localGpuLayers || 0),
+        LOCAL_MODEL_CHAT_FORMAT: clean(state.localChatFormat),
+        LOCAL_ROUTING_MODE: clean(state.localSource)
+            ? (clean(state.localRoutingMode) || 'cloud') : 'cloud',
+        ...Object.fromEntries(modelSlots.map(
+            (slot) => [slot.settingKey, clean(state[slot.stateKey])],
+        )),
+        OUROBOROS_RUNTIME_MODE: clean(state.runtimeMode) || 'advanced',
     };
 }
 
@@ -250,14 +301,35 @@ export function agentsOutcomeText(connected = [],
     const labels = joinLabels(familyLabels(connected, snapshot));
     if (skipPresets) {
         return `${labels} ${connected.length === 1 ? 'is' : 'are'} connected, but you chose to `
-            + 'finish without agent defaults: reviewers and subagents stay on your API '
-            + 'access. Everything stays editable in Settings → Agents.';
+            + 'skip the automatic subscription preset. The Available subagents draft below '
+            + 'is still saved exactly as you edit it; other agent defaults stay unchanged.';
     }
-    return `${labels} ${connected.length === 1 ? 'is' : 'are'} connected. When you finish, `
-        + 'Ouroboros will try to move commit review, the scope pass, the advisory '
-        + 'pre-review and delegated subagents onto '
-        + `${connected.length === 1 ? 'it' : 'them'}. If those models cannot be read at `
-        + 'that moment nothing is changed, and you can finish without agent defaults.';
+    const reviewerHarnesses = connected.filter(
+        (harness) => REVIEW_CAPABLE_AGENT_HARNESSES.has(harness),
+    );
+    const taskOnlyHarnesses = connected.filter(
+        (harness) => !REVIEW_CAPABLE_AGENT_HARNESSES.has(harness),
+    );
+    const clauses = [
+        `${labels} ${connected.length === 1 ? 'is' : 'are'} connected. When you finish, `
+            + 'Ouroboros will try to add subscription-backed choices to Available subagents '
+            + `through ${connected.length === 1 ? 'it' : 'them'}.`,
+    ];
+    if (reviewerHarnesses.length) {
+        const reviewerLabels = familyLabels(reviewerHarnesses, snapshot);
+        clauses.push(`${joinLabels(reviewerLabels)} can `
+            + 'also move commit review, the scope pass, the advisory pre-review and '
+            + 'their plan-review rows.');
+    }
+    if (taskOnlyHarnesses.length) {
+        const taskOnlyLabels = familyLabels(taskOnlyHarnesses, snapshot);
+        clauses.push(`${joinLabels(taskOnlyLabels)} `
+            + `${taskOnlyHarnesses.length === 1 ? 'is task-only and does' : 'are task-only and do'} `
+            + 'not change reviewer routes.');
+    }
+    clauses.push('If those models cannot be read at that moment nothing is changed, '
+        + 'and you can finish without subscription presets.');
+    return clauses.join(' ');
 }
 
 export function familyStatusText(snapshot, harness, { accountsKnown = true } = {}) {
@@ -270,6 +342,24 @@ export function familyStatusText(snapshot, harness, { accountsKnown = true } = {
     };
 }
 
+export function subagentPreviewStatusSignature(view, snapshot) {
+    return JSON.stringify([
+        view?.reads?.catalog || '',
+        view?.reads?.accounts || '',
+        (snapshot?.harnesses || []).map((harness) => [
+            String(harness?.id || ''),
+            String(harness?.models_error || ''),
+            (harness?.models || []).map((model) => String(model?.id || model?.value || model || '')),
+        ]),
+        accountRows(snapshot).map((row) => [
+            String(row?.harness || ''),
+            String(row?.profileId || row?.profile_id || row?.id || ''),
+            row?.enabled !== false,
+            String(row?.status?.verification || ''),
+        ]),
+    ]);
+}
+
 // ---------------------------------------------------------------------------
 // The rotation diagram: ONE static SVG, no script, no animation.
 // ---------------------------------------------------------------------------
@@ -280,7 +370,8 @@ const ARROW_ID = 'ouro-agents-rotation-arrow';
 
 export function rotationDiagramSvg() {
     // Top to bottom in one glance: the API/local source runs the main agent,
-    // the stack of agent accounts runs reviews and subagents, and both feed the
+    // the stack of agent accounts runs subagents (and eligible plans run
+    // reviews), and both feed the
     // one Ouroboros in the middle. The cycle glyph beside the stack plus its
     // caption say what rotation MEANS — "one window spent, the next takes
     // over". Stacked rather than side-by-side because the figure lives in a
@@ -313,7 +404,7 @@ export function rotationDiagramSvg() {
 
     <rect x="2" y="124" width="356" height="76" rx="9" class="agents-rotation-group"></rect>
     <text x="16" y="142">Agent plans</text>
-    <text x="16" y="157" class="agents-rotation-sub">run reviews and subagents</text>
+    <text x="16" y="157" class="agents-rotation-sub">run subagents · eligible plans run reviews</text>
     <rect x="16" y="163" width="102" height="15" rx="5"></rect>
     <text x="24" y="175" class="agents-rotation-sub">Account 1</text>
     <rect x="16" y="181" width="102" height="15" rx="5"></rect>
@@ -395,6 +486,14 @@ export function agentsStepHtml() {
             <div id="agents-login-host"></div>
             <div id="agents-outcome" class="agent-outcome"></div>
         </div>
+        <div class="panel-card" id="agents-available-subagents-card">
+            <h3>Available subagents</h3>
+            <div class="agent-ladder-note">
+                This generated draft is what Ouroboros will see. Describe when each numbered
+                subagent is useful, then adjust its route, model, effort, or account pin if needed.
+            </div>
+            ${availableSubagentsEditorHost('onboarding-available-subagents')}
+        </div>
     `;
 }
 
@@ -409,6 +508,9 @@ export function agentsStepHtml() {
  * @param {Function} [options.fetchImpl]  transport for the login card
  * @param {Function} [options.isVisible]  is the Agents step on screen right now
  * @param {Function} [options.onChange]   called with the connected harness list
+ * @param {Function} [options.previewPayload] current open provider/local draft
+ * @param {Function} [options.previewTransport] injectable preview request
+ * @param {Function} [options.onSubagentsChange] receives the editable canonical list
  * @returns {object} controller
  */
 export function createAgentsStep({
@@ -417,6 +519,9 @@ export function createAgentsStep({
     fetchImpl = null,
     isVisible = () => true,
     onChange = () => {},
+    previewPayload = () => ({}),
+    previewTransport = (payload) => apiClient.previewOnboardingSubagents(payload),
+    onSubagentsChange = () => {},
 } = {}) {
     const getDoc = typeof doc === 'function' ? doc : () => doc;
     const state = {
@@ -425,7 +530,13 @@ export function createAgentsStep({
         disposed: false,
         unsubscribe: null,
         pageHideBound: null,
+        pageHideTarget: null,
         listHtml: null,
+        previewGeneration: 0,
+        previewAppliedSignature: '',
+        previewPending: false,
+        previewError: '',
+        previewStatusSignature: '',
     };
 
     function el(id) {
@@ -442,14 +553,82 @@ export function createAgentsStep({
     // machine, exactly the remote/headless first run — would have no way to
     // finish. A dead end is worst at first run, so onboarding mounts the same
     // card Settings mounts.
-    const login = createLoginCardController({
-        host: () => el('agents-login-host'),
-        store,
-        mode: LOGIN_CARD_FULL,
+    function createLogin() {
+        return createLoginCardController({
+            host: () => el('agents-login-host'),
+            store,
+            mode: LOGIN_CARD_FULL,
+            doc: getDoc,
+            ...(fetchImpl ? { fetchImpl } : {}),
+            onSettled: () => { store.refresh(); paint(); },
+        });
+    }
+
+    let login = createLogin();
+    const subagents = createAvailableSubagentsEditor({
+        hostId: 'onboarding-available-subagents',
         doc: getDoc,
-        ...(fetchImpl ? { fetchImpl } : {}),
-        onSettled: () => { store.refresh(); paint(); },
+        win: () => getDoc()?.defaultView,
+        store,
+        onChange: onSubagentsChange,
+        baselineLabel: 'Generated draft',
     });
+
+    function previewRequest() {
+        return {
+            ...(previewPayload() || {}),
+            ...subscriptionDeclaration({
+                connected: state.connected,
+                skipPresets: state.skipPresets,
+            }),
+        };
+    }
+
+    function currentPreviewSignature() {
+        return JSON.stringify(previewRequest());
+    }
+
+    async function refreshSubagentsPreview({ force = false } = {}) {
+        if (state.disposed || subagents.dirty) return false;
+        const payload = previewRequest();
+        const signature = JSON.stringify(payload);
+        if (!force && signature === state.previewAppliedSignature && subagents.loaded) return true;
+        state.previewPending = true;
+        state.previewError = '';
+        const generation = ++state.previewGeneration;
+        try {
+            const response = await previewTransport(payload);
+            if (state.disposed || generation !== state.previewGeneration) return false;
+            const result = subagents.applyGeneratedPreview(response);
+            if (!result.applied) {
+                state.previewError = result.error || 'Available subagents preview was not applied.';
+                return false;
+            }
+            state.previewAppliedSignature = signature;
+            onSubagentsChange(subagents.setting);
+            return true;
+        } catch (error) {
+            if (state.disposed || generation !== state.previewGeneration) return false;
+            state.previewError = String(error?.message || error);
+            subagents.setPreviewFailure(error);
+            return false;
+        } finally {
+            if (generation === state.previewGeneration) state.previewPending = false;
+        }
+    }
+
+    function invalidateGeneratedPreview() {
+        if (subagents.dirty) return;
+        state.previewGeneration += 1;
+        state.previewAppliedSignature = '';
+        state.previewPending = false;
+        state.previewError = '';
+    }
+
+    function ensureLogin() {
+        if (!login || login.disposed) login = createLogin();
+        return login;
+    }
 
     function paint() {
         if (state.disposed) return;
@@ -483,13 +662,14 @@ export function createAgentsStep({
                 snapshot,
             });
         }
-        login.render();
+        login?.render();
     }
 
     function bindConnectButtons(list) {
         list.querySelectorAll('[data-agent-connect]').forEach((button) => {
             button.addEventListener('click', () => {
-                login.start(button.getAttribute('data-agent-connect'), '');
+                if (state.disposed) return;
+                ensureLogin().start(button.getAttribute('data-agent-connect'), '');
             });
         });
     }
@@ -499,9 +679,13 @@ export function createAgentsStep({
             ? connectedHarnesses(store.snapshot)
             : [];
         const changed = next.join(',') !== state.connected.join(',');
+        const statusSignature = subagentPreviewStatusSignature(view, store.snapshot);
+        const statusChanged = statusSignature !== state.previewStatusSignature;
+        state.previewStatusSignature = statusSignature;
         state.connected = next;
         paint();
         if (changed) onChange([...state.connected]);
+        if (changed || statusChanged) refreshSubagentsPreview({ force: statusChanged });
     }
 
     /** Mount into the step DOM the wizard just rendered. */
@@ -509,66 +693,90 @@ export function createAgentsStep({
         if (state.disposed) return;
         if (!state.unsubscribe) {
             state.unsubscribe = store.subscribe(adopt, { visible: isVisible });
-            const document_ = getDoc();
-            if (document_?.addEventListener) {
+            const pageHideTarget = getDoc()?.defaultView;
+            if (pageHideTarget?.addEventListener) {
                 // The wizard never unmounts itself, so the ONE listener this
                 // controller holds is released on a real unload as well as by
                 // dispose(). A bfcache hide (`persisted`) is NOT an unload: the
                 // page can come back, and tearing down here would restore a
                 // wizard whose Agents step no longer reads anything.
-                state.pageHideBound = (event) => { if (!event?.persisted) dispose(); };
-                document_.addEventListener('pagehide', state.pageHideBound);
+                state.pageHideTarget = pageHideTarget;
+                state.pageHideBound = (event) => {
+                    if (event?.persisted !== true) detach();
+                };
+                pageHideTarget.addEventListener('pagehide', state.pageHideBound);
             }
         }
         // A remount rebuilds the DOM the wizard just replaced.
         state.listHtml = null;
         paint();
+        subagents.mount();
+        refreshSubagentsPreview();
         store.refresh();
     }
 
     /**
-     * Shut the step down and report whether the LOGIN was actually let go.
+     * Ask the login controller for its exact custody result.
      *
-     * The shared controller's disposer is asynchronous and answers a custody
-     * verdict: `false` means the cancel could not be proven, so it deliberately
-     * retains the job id and stays retryable. Settings awaits that verdict; this
-     * step used to call the disposer blind and return `undefined`, which threw
-     * the answer away — and, worse, latched `state.disposed` first, so the one
-     * documented recovery (call the disposer again) was unreachable from here.
-     * A deferred create POST made that visible: completion was announced while
-     * the POST was still in flight, and a cancel that then answered 503 left a
-     * live login job with no owner.
+     * Cleanup and local departure are deliberately separate. `retained` means
+     * another cancel is pointless; `unknown` remains retryable for the wizard's
+     * existing bounded window. Neither result is rewritten as release proof.
      *
-     * So: the step only latches itself once custody is genuinely released, and
-     * the caller can await the same Boolean the Settings host already reads.
-     *
-     * @returns {Promise<boolean>} whether the login was released.
+     * @returns {Promise<'released'|'retained'|'unknown'>}
      */
     async function dispose() {
-        if (state.disposed) return true;
-        const released = await login.dispose();
-        if (!released) {
-            // Custody is still ours. Leave the step usable so the disposer can
-            // be retried against the same retained job, and keep the listeners
-            // that let the retry render — releasing them here would strand the
-            // job exactly as before.
-            return false;
+        if (state.disposed) return 'unknown';
+        // The controller remains the custody SSOT even after its own
+        // recovery-face Close: repeated dispose returns its remembered honest
+        // detach status without sending another lifecycle request.
+        return login ? login.dispose() : 'released';
+    }
+
+    /** Resolve sign-in custody as far as the bounded completion window proves. */
+    async function disposeForCompletion() {
+        // A known retained job cannot be improved by repeating cancel; only an
+        // unknown transport result remains retryable. Local detach still makes
+        // no claim that the daemon released process custody.
+        let custody = await dispose();
+        for (let attempt = 0; custody === 'unknown' && attempt < LOGIN_RELEASE_RETRIES; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, LOGIN_RELEASE_RETRY_MS));
+            custody = await dispose();
         }
+        if (custody === 'retained') {
+            console.warn('onboarding: the agent engine could not confirm that the sign-in process stopped; '
+                + 'the next Connect will return to that attempt.');
+        } else if (custody === 'unknown') {
+            console.warn('onboarding: sign-in cleanup remained unknown after '
+                + `${LOGIN_RELEASE_RETRIES + 1} attempts; the agent engine still owns that job `
+                + 'and the next Connect will recover its current state.');
+        }
+        detach();
+        return custody;
+    }
+
+    /** Leave locally without claiming the daemon released process custody. */
+    function detach() {
+        if (state.disposed) return;
         state.disposed = true;
+        login?.detach();
+        subagents.destroy();
         if (state.unsubscribe) state.unsubscribe();
         state.unsubscribe = null;
-        const document_ = getDoc();
-        if (state.pageHideBound && document_?.removeEventListener) {
-            document_.removeEventListener('pagehide', state.pageHideBound);
+        if (state.pageHideBound && state.pageHideTarget?.removeEventListener) {
+            state.pageHideTarget.removeEventListener('pagehide', state.pageHideBound);
         }
         state.pageHideBound = null;
-        return true;
+        state.pageHideTarget = null;
+        state.listHtml = null;
+        login = null;
     }
 
     return {
         mount,
         paint,
         dispose,
+        disposeForCompletion,
+        detach,
         get connected() { return [...state.connected]; },
         // The payload the family names are spoken from. The wizard's review
         // step renders the SAME families one screen later, and without this it
@@ -577,7 +785,33 @@ export function createAgentsStep({
         // summary. Same store, same snapshot, one spelling.
         get snapshot() { return store?.snapshot || null; },
         get accountsKnown() { return accountsKnown(); },
-        setSkipPresets(value) { state.skipPresets = Boolean(value); paint(); },
+        get availableSubagents() { return subagents.setting; },
+        get generatedPreviewReady() {
+            if (subagents.dirty) return true;
+            try {
+                return subagents.loaded && !state.previewPending && !state.previewError
+                    && state.previewAppliedSignature === currentPreviewSignature();
+            } catch (error) {
+                return false;
+            }
+        },
+        get previewPending() { return state.previewPending; },
+        get previewError() { return state.previewError; },
+        validateSubagents() { return subagents.validate(); },
+        refreshSubagentsPreview,
+        invalidateGeneratedPreview,
+        setSkipPresets(value) {
+            const next = Boolean(value);
+            let refreshed = Promise.resolve(true);
+            if (next !== state.skipPresets) {
+                state.skipPresets = next;
+                refreshed = refreshSubagentsPreview({ force: true });
+            } else if (!subagents.dirty && !state.previewPending) {
+                refreshed = refreshSubagentsPreview({ force: true });
+            }
+            paint();
+            return refreshed;
+        },
         declaration({ skipPresets = state.skipPresets } = {}) {
             return subscriptionDeclaration({ connected: state.connected, skipPresets });
         },

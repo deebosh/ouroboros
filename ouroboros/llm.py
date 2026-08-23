@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -13,74 +14,106 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ouroboros.provider_models import (
-    PROVIDER_PREFIXES,
-    normalize_anthropic_model_id,
-    normalize_model_identity,
-    resolve_minimax_base_url,
+from ouroboros.provider_models import OPENROUTER_DEFAULTS, PROVIDER_PREFIXES, normalize_anthropic_model_id, normalize_model_identity, resolve_minimax_base_url
+from ouroboros.anthropic_native_custody import (
+    anthropic_replay_scoped,
+    custody_private_key,
+    is_replayed_native_content,
+    mark_replayed_receipts_consumed,
+    native_content_for_replay,
+    retain_native_assistant_content,
+    scrub_native_custody,
+)
+from ouroboros.request_wire_recovery import (
+    finalize_wire_response,
+    note_provider_metadata_drop_fields,
+    note_wire_send_failed,
+    note_wire_send_succeeded,
+    plan_next_wire_retry,
+    prepare_wire_payload_for_send,
+    request_wire_scoped,
 )
 from ouroboros.usage_accounting import (
     AttemptRequest,
+    PhysicalAttemptPreconditionFailed,
+    PhysicalAttemptPreparationFailed,
     UsageAccountingError,
     UsageScope,
     capture_attempt_ids,
+    current_physical_attempt_context,
+    current_physical_attempt_predicate,
     current_usage_scope,
     execute_physical_attempt,
     execute_physical_attempt_async,
+    last_physical_attempt_capture,
     usage_scope,
 )
 from ouroboros.utils import in_worker_process
 
 log = logging.getLogger(__name__)
 
-DEFAULT_LIGHT_MODEL = "google/gemini-3.6-flash"
+DEFAULT_LIGHT_MODEL = OPENROUTER_DEFAULTS["light"]
 _FALSE_LIKE_ENV_VALUES = {"", "0", "false", "no", "off"}
-# Provider-valid cache_control TTL values (Anthropic ephemeral cache tiers,
-# passed through by OpenRouter). Anything else is normalized to the bare marker.
+# Provider-valid Anthropic ephemeral-cache tiers.
 _VALID_CACHE_TTLS = frozenset({"5m", "1h"})
 
-# Wall-clock horizon of an APPLIED prompt-cache TTL, keyed by the value the
-# send-time finalizer REPORTS into usage metadata. ONLY the two NAMED tiers have
-# a horizon: they were stamped on the wire, so the number is the recorded fact
-# itself. This is a units conversion — deliberately NOT a route-level predictor
-# that could disagree with the payload after route-filter/promotion/cap.
+# Only explicit wire tiers have a knowable horizon; bare "default" does not.
 _CACHE_TTL_SECONDS = {"5m": 300, "1h": 3600}
+from ouroboros.context_budget import (
+    CONTEXT_OVERFLOW_CODES,
+    context_overflow_message,
+)
+
+
+def _structured_error_values(payload: Any) -> Set[str]:
+    if not isinstance(payload, dict):
+        return set()
+    nodes = [payload]
+    if isinstance(payload.get("error"), dict):
+        nodes.append(payload["error"])
+    return {
+        str(node.get(key) or "").strip().lower()
+        for node in nodes
+        for key in ("code", "type")
+        if str(node.get(key) or "").strip()
+    }
+
+
+def _is_structured_context_overflow_exception(exc: BaseException) -> bool:
+    """Read only facts attached to this exception; never a stale ContextVar."""
+    values = {
+        str(getattr(exc, key, "") or "").strip().lower()
+        for key in ("code", "type")
+        if str(getattr(exc, key, "") or "").strip()
+    }
+    values.update(_structured_error_values(getattr(exc, "body", None)))
+    capture = getattr(exc, "physical_attempt_capture", None)
+    if capture is not None:
+        values.update({
+            str(getattr(capture, key, "") or "").strip().lower()
+            for key in ("provider_code", "provider_error_type")
+            if str(getattr(capture, key, "") or "").strip()
+        })
+    return bool(values & CONTEXT_OVERFLOW_CODES)
+
+
+def _is_structured_context_overflow_body(error: Any) -> bool:
+    return bool(_structured_error_values(error) & CONTEXT_OVERFLOW_CODES)
 
 
 def cache_ttl_seconds(applied_ttl: Any) -> Optional[int]:
-    """Seconds of provider cache lifetime for a RECORDED applied TTL, else None.
-
-    ``None`` for empty/unknown AND for ``"default"``. ``"default"`` records one
-    fact only — a BARE ephemeral marker went out — and a bare marker names no
-    tier: the finalizer reports it for any payload carrying markers, including
-    routes it never normalizes (a Gemini send keeps bare markers and reports
-    ``"default"``, and Gemini/OpenAI/Grok/DeepSeek retention is implicit and
-    provider-defined, not 5 minutes). Turning that into "300s" would be the
-    second TTL truth this design forbids — a predictor derived from a route the
-    recorded fact does not carry. Readers therefore stay SILENT on a bare
-    marker; silence beats a fabricated horizon (BIBLE P1)."""
+    """Return seconds only for an explicit TTL carried by the candidate."""
     return _CACHE_TTL_SECONDS.get(str(applied_ttl or "").strip().lower())
 
 
 def supports_message_cache_control(model: str) -> bool:
-    """Providers whose OpenRouter route honors message-level cache_control breakpoints.
-
-    Single source of truth for the prompt-cache family check (was an inline hardcoded
-    ``startswith`` list at the request-build site).
-    """
+    """Whether the OpenRouter family honors message cache breakpoints."""
     m = str(model or "").strip().lstrip("~")
     return m.startswith("anthropic/") or m.startswith("google/gemini-")
 
 
 def _route_normalizes_cache_breakpoints(target: Dict[str, Any]) -> bool:
-    """Routes whose assembled payload the send-time finalizer may MUTATE: exactly the
-    Anthropic ephemeral-cache family the two deleted per-builder marking sites served —
-    direct Anthropic plus OpenRouter ``anthropic/*`` (the family fact stays owned by
-    ``supports_message_cache_control``). Every other route — direct OpenAI,
-    OpenAI-compatible, Cloud.ru, MiniMax, GigaChat, unsupported OpenRouter families, and Gemini
-    (whose explicit cache documents no ``ttl`` field, so its markers stay bare) — is
-    observed byte-for-byte, never mutated (Provider Independence).
-    """
+    """Whether the send-time finalizer may normalize cache breakpoints."""
     if str(target.get("provider") or "") == "anthropic":
         return True
     model = str(target.get("resolved_model") or "").strip().lstrip("~")
@@ -92,19 +125,7 @@ def _route_normalizes_cache_breakpoints(target: Dict[str, Any]) -> bool:
 
 
 def _reasoning_signature_portable_across_or_providers(model: str) -> bool:
-    """Families whose replayed reasoning signatures SURVIVE an OpenRouter same-model
-    cross-provider failover — so the ``allow_fallbacks=false`` continuity pin is
-    unnecessary and would only defeat rate-limit resilience by stranding a turn on one
-    throttled upstream when a healthy sibling endpoint could serve it.
-
-    Verified live via a same-model replay probe (2026-06: generate reasoning forcing
-    provider A, replay the assistant turn forcing each sibling provider B, observe HTTP
-    200): Anthropic thinking-block signatures port across Anthropic / Bedrock / Vertex /
-    Azure; Gemini reasoning ports across Google Vertex / AI-Studio; OpenAI
-    encrypted-reasoning items port across OpenAI / Azure. Other families (e.g.
-    ``z-ai/glm``, ``deepseek``) are UNVERIFIED and keep the conservative pin; the reactive
-    ``_openrouter_signature_retry_kwargs`` 400 strip-and-retry is the safety net for every
-    family if a cross-provider switch ever rejects a replayed signature."""
+    """Whether replay signatures are verified portable across same-model providers."""
     m = str(model or "").strip().lstrip("~")
     return (
         m.startswith("anthropic/")
@@ -114,11 +135,8 @@ def _reasoning_signature_portable_across_or_providers(model: str) -> bool:
 
 
 _OR_PROVIDER_PRESETS = {
-    # Everyday resilience: fail over to another PROVIDER of the SAME model on a
-    # rate-limit/5xx (the model — and its context window — is unchanged), while the
-    # default sticky provider keeps the prompt cache warm. No throughput hopping.
+    # Same-model provider failover versus reproducible provider pinning.
     "resilience": {"allow_fallbacks": True},
-    # Reproducibility (fixed-model benchmark runs): pin, no provider failover.
     "repro": {"allow_fallbacks": False},
 }
 
@@ -138,26 +156,11 @@ def _resolve_or_provider() -> Dict[str, Any]:
         return {}
     return dict(parsed) if isinstance(parsed, dict) else {}
 _OPTIONAL_SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
-# Droppable optional request params = sampling + structured-output + effort hint.
-# response_format is request INTENT, not required semantics: every consumer keeps a
-# text-parse fallback (e.g. the safety supervisor's bracket-scan). reasoning_effort
-# is likewise a hint — a provider that names-and-rejects it (e.g. an older model
-# refusing "none") gets the same one-shot strip-and-retry instead of failing the
-# call outright (review round 6: a rejected safety call would fail CLOSED and
-# block benign commands).
-# output_config / thinking are the Anthropic-direct adaptive-thinking effort carriers
-# (v6.57.0); an OLDER Claude that rejects them gets the same strip-and-retry rather than
-# a hard 400 — the effort control degrades gracefully to "no forced thinking".
+# Provider-rejected optional intent may be removed by the one-shot retry ladder.
 _OPTIONAL_DROPPABLE_PARAMS = _OPTIONAL_SAMPLING_PARAMS + (
     "response_format", "reasoning_effort", "output_config", "thinking",
 )
-# Mandatory-value marker family (v6.73.2) — ONE constant consumed by BOTH the
-# broad classifier tuple and _mandatory_value_rejection. If they ever drifted, a
-# new mandatory phrasing added to the classifier alone would pass classification
-# but miss the floor predicate and fall through to the drop machinery — durably
-# stripping the reasoning carrier, the exact poison the exclusivity rule
-# prevents. Bare "required" is deliberately absent (common schema-validation
-# token; a drop-path false positive could durably strip response_format).
+# Shared by the classifier and floor predicate; bare "required" is too broad.
 _MANDATORY_VALUE_MARKERS = ("mandatory", "cannot be disabled", "must be enabled")
 
 
@@ -212,13 +215,7 @@ def _attempt_request(
     *,
     source: Optional[str] = None,
 ) -> AttemptRequest:
-    """Build a secret-free, linear reservation for one physical send.
-
-    ``source`` is semantic attribution, not merely the transport name.  Generic
-    chat sends therefore adopt a bound ``UsageScope`` source (acceptance,
-    planning, synthesis, and so on).  Truly unscoped sends keep the historical
-    ``llm.chat`` fallback.
-    """
+    """Build secret-free facts for one final inspectable candidate."""
     prompt_payload = {
         key: value
         for key, value in payload.items()
@@ -239,18 +236,125 @@ def _attempt_request(
             if bound_scope is not None and bound_scope.source
             else "llm.chat"
         )
+    raw = _canonical_candidate_bytes(payload)
+    context = _canonical_candidate_bytes({
+        key: payload[key] for key in ("system", "messages", "tools", "functions") if key in payload
+    })
     return AttemptRequest(
         model=str(target.get("usage_model") or target.get("resolved_model") or payload.get("model") or ""),
         provider=str(target.get("provider") or "unknown"),
         prompt_tokens_estimate=max(0, prompt_chars // 4),
         max_completion_tokens=int(payload.get("max_completion_tokens") or payload.get("max_tokens") or 0),
         source=str(request_source or ""),
-        # The APPLIED wire TTL for reservation pricing (G3-5): a payload whose
-        # markers say 5m/default must not be admission-priced at the extended 1h
-        # write tier. A marker-free payload writes nothing to cache at all, so
-        # "default" (the base write tier) is already a safe upper bound for it.
-        prompt_cache_ttl=_applied_payload_cache_ttl(payload) or "default",
+        prompt_cache_ttl=_applied_payload_cache_ttl(payload) or "",
+        candidate_raw_sha256=hashlib.sha256(raw).hexdigest(),
+        candidate_raw_size_bytes=len(raw),
+        candidate_context_sha256=hashlib.sha256(context).hexdigest(),
+        candidate_context_size_bytes=len(context),
+        candidate_measurement_kind="canonical_json_v1",
+        physical_context=current_physical_attempt_context(),
     )
+
+
+def _canonical_candidate_bytes(payload: Dict[str, Any]) -> bytes:
+    return json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False, default=str,
+    ).encode("utf-8")
+
+
+def _physical_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the send copy with capsule metadata removed only from context turns."""
+    candidate = copy.deepcopy(payload)
+
+    def _strip(value: Any) -> None:
+        if isinstance(value, dict):
+            value.pop("_context_capsule", None)
+            for child in value.values():
+                _strip(child)
+        elif isinstance(value, list):
+            for child in value:
+                _strip(child)
+
+    for key in ("system", "messages"):
+        _strip(candidate.get(key))
+    return candidate
+
+
+def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptRequest):
+    """Close over one final candidate without putting it in accounting rows."""
+    predicate = current_physical_attempt_predicate()
+
+    def _persist(reservation):
+        fresh = _attempt_request(
+            {"provider": request.provider, "usage_model": request.model}, candidate,
+            source=request.source,
+        )
+        identity = (
+            fresh.candidate_raw_sha256, fresh.candidate_raw_size_bytes,
+            fresh.candidate_context_sha256, fresh.candidate_context_size_bytes,
+        )
+        expected = (
+            request.candidate_raw_sha256, request.candidate_raw_size_bytes,
+            request.candidate_context_sha256, request.candidate_context_size_bytes,
+        )
+        if identity != expected:
+            raise PhysicalAttemptPreparationFailed(
+                "physical candidate changed before dispatch", attempt_id=reservation.attempt_id,
+            )
+        from ouroboros.observability import persist_physical_candidate
+
+        scope = current_usage_scope()
+        persisted = persist_physical_candidate(
+            reservation.drive_root,
+            task_id=str(scope.task_id if scope is not None else request.task_id),
+            attempt_id=reservation.attempt_id,
+            candidate=candidate,
+            candidate_facts={
+                "candidate_raw_sha256": request.candidate_raw_sha256,
+                "candidate_raw_size_bytes": request.candidate_raw_size_bytes,
+                "candidate_context_sha256": request.candidate_context_sha256,
+                "candidate_context_size_bytes": request.candidate_context_size_bytes,
+                "candidate_measurement_kind": request.candidate_measurement_kind,
+                "physical_context": (
+                    dict(vars(request.physical_context)) if request.physical_context is not None else None
+                ),
+            },
+        )
+        if predicate is not None:
+            try:
+                accepted = predicate(request)
+            except BaseException as exc:
+                # Persistence already succeeded. Preserve the only durable link
+                # even when the host predicate itself raises before returning.
+                try:
+                    exc.candidate_manifest_ref = persisted["manifest_ref"]
+                except Exception:
+                    pass
+                raise
+            if accepted is False:
+                failure = PhysicalAttemptPreconditionFailed(
+                    "physical candidate precondition rejected dispatch",
+                    attempt_id=reservation.attempt_id,
+                )
+                failure.candidate_manifest_ref = persisted["manifest_ref"]
+                raise failure
+        return persisted["manifest_ref"]
+
+    return _persist
+
+
+def _execute_candidate(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
+    """Keep existing two-argument injected executors usable."""
+    if "before_dispatch" not in inspect.signature(execute_physical_attempt).parameters:
+        return execute_physical_attempt(request, send)
+    return execute_physical_attempt(request, send, before_dispatch=before_dispatch)
+
+
+async def _execute_candidate_async(request: AttemptRequest, send: Any, before_dispatch: Any) -> Any:
+    if "before_dispatch" not in inspect.signature(execute_physical_attempt_async).parameters:
+        return await execute_physical_attempt_async(request, send)
+    return await execute_physical_attempt_async(request, send, before_dispatch=before_dispatch)
 
 
 def _split_markdown_sections(text: str) -> Tuple[str, List[Tuple[str, str]]]:
@@ -361,6 +465,8 @@ def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
 
 def add_usage(total: Dict[str, Any], usage: Dict[str, Any]) -> None:
     """Accumulate usage from one LLM call into a running total."""
+    from ouroboros.request_wire_recovery import merge_request_wire_usage
+
     for k in ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "cache_write_tokens"):
         total[k] = int(total.get(k) or 0) + int(usage.get(k) or 0)
     if usage.get("cost") is not None:
@@ -369,6 +475,7 @@ def add_usage(total: Dict[str, Any], usage: Dict[str, Any]) -> None:
             total["cost_final"] = False
     else:
         total["cost_final"] = False
+    merge_request_wire_usage(total, usage)
 
 
 def fetch_openrouter_pricing(*, timeout_sec: float = 5.0) -> Dict[str, Tuple[Optional[float], ...]]:
@@ -459,9 +566,7 @@ def fetch_openrouter_pricing(*, timeout_sec: float = 5.0) -> Dict[str, Tuple[Opt
                         tier_row = (tier_prompt, tier_cached, tier_write, tier_completion)
                         tiers.append((min_prompt_tokens, tier_row))
                     except (TypeError, ValueError):
-                        log.warning(
-                            "Skipping malformed pricing override for %s", model_id,
-                        )
+                        log.warning("Skipping malformed pricing override for %s", model_id)
             if tiers:
                 row = PricingSchedule(row, tuple(tiers))
             pricing_dict[model_id] = row
@@ -669,6 +774,7 @@ class LLMClient:
 
     @staticmethod
     def _parameter_rejection_error(exc: BaseException) -> bool:
+        """Legacy model-global diagnostic; production uses request-wire recovery."""
         text = str(exc or "").lower()
         if not text:
             return False
@@ -697,8 +803,6 @@ class LLMClient:
                 "deprecated",
                 "invalid parameter",
                 "extraneous",
-                # Strict pydantic-style servers (Anthropic direct, vLLM/SGLang)
-                # reject unknown fields as "Extra inputs are not permitted".
                 "not permitted",
                 # VALUE-rejection families (v6.73.2). Mandatory-enable family —
                 # the parameter is supported but its DISABLED/bottom value is
@@ -775,21 +879,13 @@ class LLMClient:
             try:
                 from ouroboros.capability_evidence import get_rejected_params
                 from ouroboros.config import DATA_DIR
-                # Authoritative refresh: the durable reader applies the expiry,
-                # and every reactive in-process rejection is also recorded
-                # durably, so replacing (not unioning) lets expired entries
-                # actually evict from a long-running process.
-                cls._REJECTED_PARAMS_CACHE[durable_key] = set(
-                    get_rejected_params(DATA_DIR, durable_key)
-                )
+                cls._REJECTED_PARAMS_CACHE[durable_key] = set(get_rejected_params(DATA_DIR, durable_key))
             except Exception:
                 pass
         for key in {model_id, normalize_model_identity(model_id)}:
             out.update(cls._REJECTED_PARAMS_CACHE.get(key, set()))
         return out
 
-    # Sentinel for the OpenRouter NESTED effort carrier (extra_body.reasoning) in the
-    # rejected-params cache — top-level pops cannot reach it (triad r6).
     _NESTED_REASONING_PARAM = "extra_body.reasoning"
 
     @classmethod
@@ -807,13 +903,6 @@ class LLMClient:
     # DATA_DIR-scoped) survives restart. Key = normalized model identity. Fail-open.
     _EFFORT_CEILING_CACHE: Dict[str, str] = {}
     _EFFORT_CEILING_LOADED: Set[str] = set()
-
-    # v6.73.2 — learned reasoning-effort FLOORS: the value-too-low mirror of the
-    # ceilings, for endpoints where reasoning is MANDATORY and "none"/"minimal"
-    # 400s ("Reasoning is mandatory ... cannot be disabled"). Unlike the sticky
-    # ceilings, floors EXPIRE in the durable store (provider policy changes), so
-    # the process cache re-syncs hourly like _REJECTED_PARAMS_CACHE — a
-    # long-running process heals the same way a restart does.
     _EFFORT_FLOOR_CACHE: Dict[str, str] = {}
     _EFFORT_FLOOR_LOADED: Dict[str, float] = {}
     _EFFORT_FLOOR_RELOAD_SEC = 3600.0
@@ -850,10 +939,6 @@ class LLMClient:
         prev = cls._EFFORT_FLOOR_CACHE.get(key, "")
         if not prev or effort_rank(value) > effort_rank(prev):
             cls._EFFORT_FLOOR_CACHE[key] = value
-        # Stamp LOADED so the fresh in-process record is authoritative over an
-        # immediately-following durable re-read: if the durable write silently
-        # failed (fail-open store), an unstamped key would reload "" and discard
-        # the floor just learned — no-opping the in-flight recovery (adv r1).
         cls._EFFORT_FLOOR_LOADED[key] = time.monotonic()
         try:
             from ouroboros.capability_evidence import record_effort_floor
@@ -884,17 +969,7 @@ class LLMClient:
 
     @classmethod
     def clamp_effort_for_route(cls, model_id: str, effort: str) -> str:
-        """The effort this route will ACTUALLY run: the request clamped into the
-        route's learned ``[floor, ceiling]`` band.
-
-        Public because the SCHEDULER must answer the same question the dispatcher
-        will answer when it discloses a capability delta. It exposes the whole band
-        on purpose: a public ceiling accessor let a caller re-derive the clamp from
-        half the evidence, which is not one reader of the predicate but a second,
-        DISAGREEING copy of it — the route with a learned floor ran an effort no
-        record named. ``_clamp_effort_for_model`` is this plus the per-call
-        disclosure, so the band is decided in exactly one body.
-        """
+        """Resolve the legacy diagnostic model-global effort band."""
         ceiling = cls._effort_ceiling_for(model_id)
         floor = cls._effort_floor_for(model_id)
         if not ceiling and not floor:
@@ -906,21 +981,9 @@ class LLMClient:
         return applied
 
     def _clamp_effort_for_model(self, model_id: str, effort: str) -> str:
-        """Clamp a requested effort into the route's learned [floor, ceiling] band.
-        Owner values are honored inside the real band; an ACTUAL clamp is recorded on
-        the client (thread-local) and merged into THIS call's usage dict by the chat
-        methods, so the change lands in the durable llm_usage event as
-        ``reasoning_effort_clamped={requested, applied, reason}`` (BIBLE P1 — never
-        silent). ONE disclosure per call with a DIRECTION-DERIVED reason: applied
-        below requested → ``learned_ceiling`` (v6.57.0, value-too-high), applied
-        above requested → ``learned_floor`` (v6.73.2, reasoning-mandatory endpoints).
-        The band itself is ``clamp_effort_for_route`` (ceiling first, then the floor
-        wins on a practically impossible conflict — a provider-required minimum
-        outranks a learned maximum); this method is that plus the disclosure."""
+        """Legacy clamp plus diagnostic disclosure; production dispatch bypasses it."""
         if not hasattr(self, "_effort_clamp_tls"):
             self._effort_clamp_tls = threading.local()
-        # Reset at every payload build: a note left by an ABORTED earlier attempt on
-        # this thread must never mis-attribute a clamp to the next call.
         self._effort_clamp_tls.pending = None
         from ouroboros.config import effort_rank
         applied = self.clamp_effort_for_route(model_id, effort)
@@ -947,12 +1010,7 @@ class LLMClient:
 
     @classmethod
     def _record_effort_ceiling(cls, model_id: str, current_effort: str) -> None:
-        """A provider rejected `current_effort` for this model → the ceiling is one step
-        below it. Record in-process + durably so subsequent calls clamp immediately.
-        FLOOR (adversarial r1): never learn a ceiling below "low" — a rejection of the
-        lowest thinking tiers means the CARRIER is unsupported (the existing drop-param
-        retry handles that); recording "none"/"minimal" would permanently disable
-        thinking for the whole route off one bad request."""
+        """Record a legacy model-global ceiling for diagnostics."""
         from ouroboros.config import effort_one_step_down, effort_rank
         key = normalize_model_identity(model_id) or str(model_id or "")
         eff = str(current_effort or "").strip().lower()
@@ -962,7 +1020,6 @@ class LLMClient:
         if effort_rank(ceiling) < effort_rank("low"):
             return
         prev = cls._EFFORT_CEILING_CACHE.get(key)
-        # A lower ceiling always wins (never silently regain a rejected level).
         if prev and effort_rank(prev) <= effort_rank(ceiling):
             return
         cls._EFFORT_CEILING_CACHE[key] = ceiling
@@ -989,11 +1046,7 @@ class LLMClient:
 
     @staticmethod
     def _set_payload_effort(payload: Dict[str, Any], effort: str) -> None:
-        """Pure setter: write ``effort`` into whichever carrier shape(s) the
-        payload holds — top-level ``reasoning_effort``, ``output_config.effort``,
-        or the OpenRouter nested ``extra_body.reasoning.effort`` (the same shapes
-        ``_payload_effort`` reads). Policy/disclosure live in
-        ``_clamp_effort_for_model``; this only mutates the payload."""
+        """Write effort into each carrier already present in the payload."""
         if "reasoning_effort" in payload:
             payload["reasoning_effort"] = effort
         oc = payload.get("output_config")
@@ -1010,35 +1063,16 @@ class LLMClient:
         exc: BaseException,
     ) -> Optional[Dict[str, Any]]:
         cls = type(self)
+        if _is_structured_context_overflow_exception(exc):
+            return None
         if not cls._parameter_rejection_error(exc):
             return None
         _err_text = str(exc or "").lower()
         _effort_implicated = any(
             k in _err_text for k in ("reasoning_effort", "output_config", "thinking", "reasoning", "effort")
         )
-        # v6.73.2 — a MANDATORY-value rejection is handled EXCLUSIVELY here and
-        # never feeds the drop machinery below: dropping (and durably
-        # remembering) the reasoning carrier would strip effort control for
-        # every lane of this model — including blocking reviewers at high — for
-        # 14 days. Two sub-cases:
-        #   * bottom-tier effort ("none"/"minimal"): "reasoning cannot be
-        #     disabled here" → learn a floor of "low", re-clamp through the ONE
-        #     effort authority (_clamp_effort_for_model, which records the
-        #     learned_floor disclosure), and retry with the carrier PRESERVED.
-        #   * any other effort: the rejection is not about our value being too
-        #     low (e.g. an endpoint objecting to `exclude`); raising cannot help
-        #     and dropping would poison — propagate unrecovered (status quo).
-        # Gated on the NARROW mandatory-value predicate, never on generic
-        # effort mentions: a genuine "reasoning is not supported" rejection at
-        # "none" must still DROP the carrier below (capability-absent and
-        # value-forbidden need OPPOSITE remedies).
         if cls._mandatory_value_rejection(exc):
             requested = cls._payload_effort(payload)
-            # The floor is EXPLICITLY tied to the effort carrier: the error
-            # text must implicate reasoning/effort AND the payload must carry a
-            # bottom-tier effort. A non-effort mandatory error (e.g.
-            # "response_format is mandatory") never learns a floor — and never
-            # drops either (exclusivity) — it propagates (triad r1).
             if not _effort_implicated or requested not in ("none", "minimal"):
                 return None
             cls._record_effort_floor(model_id, "low")
@@ -1054,51 +1088,19 @@ class LLMClient:
             )
             return retry_payload
         present = {param for param in _OPTIONAL_DROPPABLE_PARAMS if param in payload}
-        # v6.73.2 (triad r1 critical): bind the drop to the parameter(s) the
-        # provider actually NAMED in the error. Historically every present
-        # optional param was dropped AND durably remembered on any match; with
-        # the value-marker families widening the entry surface, an unbound
-        # "temperature must be between 0 and 2" on a direct-OpenAI payload
-        # carrying temperature + reasoning_effort would durably strip effort
-        # control for 14 days. When the text names none of the present params
-        # (e.g. the generic "requested parameter" phrasing), the legacy
-        # drop-all-present fallback is kept — the classifier already required
-        # SOME param signal, and a bare retry maximizes recovery there.
-        # Providers name params in dotted alias forms too ("invalid value for
-        # reasoning.effort" names our reasoning_effort carrier); canonicalize
-        # dots to underscores for the match so an alias never empties _named
-        # and re-triggers the drop-all fallback (triad r2).
         _err_compact = _err_text.replace(".", "_")
         _named = {param for param in present if param in _err_text or param in _err_compact}
-        # The nested OpenRouter carrier is a NAMED candidate too (codex final
-        # review): an error implicating reasoning/effort names THAT carrier —
-        # resolving it here (before the fallback) keeps a nested-carrier error
-        # from emptying _named and drop-all-stripping unrelated neighbors.
         _eb = payload.get("extra_body")
         _nested_reasoning = isinstance(_eb, dict) and isinstance(_eb.get("reasoning"), dict)
         if _nested_reasoning and _effort_implicated:
             _named.add(cls._NESTED_REASONING_PARAM)
             present.add(cls._NESTED_REASONING_PARAM)
         if _named:
-            # thinking + output_config are ONE paired Anthropic effort carrier
-            # (set together at build); a rejection naming either drops both —
-            # a half-carrier (adaptive thinking with no effort, or vice versa)
-            # is not a meaningful degradation target.
             if _named & {"thinking", "output_config"}:
                 _named |= {"thinking", "output_config"} & present
             present = _named
-        # The OpenRouter lane carries effort NESTED as extra_body.reasoning.effort —
-        # invisible to the top-level scan above, so an xhigh/max rejection there
-        # would neither retry nor learn a ceiling nor disclose (triad r6). Treat the
-        # nested carrier as droppable when the error implicates effort.
-        # (nested-carrier candidacy resolved above, before the named fallback)
         if not present:
             return None
-        # v6.57.0: if the error SPECIFICALLY implicates an effort carrier, learn the
-        # route's ceiling as one step below the requested effort so the NEXT call clamps
-        # immediately (converges over calls; this call still degrades by dropping the
-        # carrier). The text check is required: a GENERIC parameter rejection (e.g. a
-        # temperature-only refusal) must NOT teach a phantom effort ceiling.
         if (
             present & {"reasoning_effort", "output_config", "thinking", cls._NESTED_REASONING_PARAM}
             and _effort_implicated
@@ -1108,8 +1110,6 @@ class LLMClient:
         retry_payload = copy.deepcopy(payload)
         for param in present:
             if param == cls._NESTED_REASONING_PARAM:
-                # Remove ONLY the nested reasoning carrier; provider routing and any
-                # other extra_body keys must survive the retry.
                 _retry_eb = retry_payload.get("extra_body")
                 if isinstance(_retry_eb, dict):
                     _retry_eb.pop("reasoning", None)
@@ -1204,6 +1204,8 @@ class LLMClient:
         exc: BaseException,
     ) -> Optional[Dict[str, Any]]:
         """Remove only an explicitly rejected cache control or affinity once."""
+        if _is_structured_context_overflow_exception(exc):
+            return None
         provider = str(target.get("provider") or "").strip().lower()
         extra_body = payload.get("extra_body")
         param = ""
@@ -1295,7 +1297,18 @@ class LLMClient:
             return f"google/{resolved_model}"
         return f"openai-compatible/{resolved_model}"
 
-    def _resolve_remote_target(self, model: str) -> Dict[str, Any]:
+    def _resolve_remote_target(
+        self,
+        model: str,
+        settings: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        explicit_settings = settings is not None
+
+        def configured(key: str, default: Any = "") -> Any:
+            if explicit_settings:
+                return settings.get(key, default)  # type: ignore[union-attr]
+            return os.environ.get(key, default)
+
         provider, resolved_model = self._parse_provider_model(model)
         usage_model = self._qualified_model_name(provider, resolved_model)
 
@@ -1304,7 +1317,7 @@ class LLMClient:
                 "provider": provider,
                 "resolved_model": resolved_model,
                 "usage_model": usage_model,
-                "api_key": os.environ.get("OPENAI_API_KEY", ""),
+                "api_key": configured("OPENAI_API_KEY", ""),
                 "base_url": "https://api.openai.com/v1",
                 "default_headers": {},
                 "supports_openrouter_extensions": False,
@@ -1317,9 +1330,10 @@ class LLMClient:
                 "provider": provider,
                 "resolved_model": resolved_model,
                 "usage_model": self._qualified_model_name(provider, resolved_model),
-                "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+                "api_key": configured("ANTHROPIC_API_KEY", ""),
                 "base_url": "https://api.anthropic.com/v1",
                 "default_headers": {},
+                "contract_headers": {"anthropic-version": "2023-06-01"},
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
             }
@@ -1329,8 +1343,8 @@ class LLMClient:
                 "provider": provider,
                 "resolved_model": resolved_model,
                 "usage_model": usage_model,
-                "api_key": os.environ.get("MINIMAX_API_KEY", ""),
-                "base_url": resolve_minimax_base_url(os.environ.get("MINIMAX_REGION", "")),
+                "api_key": configured("MINIMAX_API_KEY", ""),
+                "base_url": resolve_minimax_base_url(configured("MINIMAX_REGION", "")),
                 "default_headers": {},
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
@@ -1341,9 +1355,9 @@ class LLMClient:
                 "provider": provider,
                 "resolved_model": resolved_model,
                 "usage_model": usage_model,
-                "api_key": os.environ.get("CLOUDRU_FOUNDATION_MODELS_API_KEY", ""),
+                "api_key": configured("CLOUDRU_FOUNDATION_MODELS_API_KEY", ""),
                 "base_url": (
-                    os.environ.get("CLOUDRU_FOUNDATION_MODELS_BASE_URL", "") or ""
+                    configured("CLOUDRU_FOUNDATION_MODELS_BASE_URL", "") or ""
                 ).strip() or "https://foundation-models.api.cloud.ru/v1",
                 "default_headers": {},
                 "supports_openrouter_extensions": False,
@@ -1356,18 +1370,18 @@ class LLMClient:
             # holds the authorization key (base64 client_id:secret) for the OAuth
             # flow, OR user/password for basic auth against an internal endpoint.
             # base_url/scope/verify are carried for the `_chat_gigachat` path.
-            verify_raw = (os.environ.get("GIGACHAT_VERIFY_SSL_CERTS", "") or "").strip().lower()
+            verify_raw = (configured("GIGACHAT_VERIFY_SSL_CERTS", "") or "").strip().lower()
             return {
                 "provider": provider,
                 "resolved_model": resolved_model,
                 "usage_model": usage_model,
-                "api_key": os.environ.get("GIGACHAT_CREDENTIALS", ""),
-                "user": (os.environ.get("GIGACHAT_USER", "") or "").strip(),
-                "password": os.environ.get("GIGACHAT_PASSWORD", "") or "",
+                "api_key": configured("GIGACHAT_CREDENTIALS", ""),
+                "user": (configured("GIGACHAT_USER", "") or "").strip(),
+                "password": configured("GIGACHAT_PASSWORD", "") or "",
                 "base_url": (
-                    os.environ.get("GIGACHAT_BASE_URL", "") or ""
+                    configured("GIGACHAT_BASE_URL", "") or ""
                 ).strip() or "https://api.giga.chat/v1",
-                "scope": (os.environ.get("GIGACHAT_SCOPE", "") or "").strip() or "GIGACHAT_API_PERS",
+                "scope": (configured("GIGACHAT_SCOPE", "") or "").strip() or "GIGACHAT_API_PERS",
                 "verify_ssl_certs": verify_raw not in ("0", "false", "no", "off"),
                 "default_headers": {},
                 "supports_openrouter_extensions": False,
@@ -1375,16 +1389,26 @@ class LLMClient:
             }
 
         if provider == "openai-compatible":
-            compatible_key = (os.environ.get("OPENAI_COMPATIBLE_API_KEY", "") or "").strip()
-            compatible_base_url = (os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "") or "").strip()
-            legacy_base_url = (os.environ.get("OPENAI_BASE_URL", "") or "").strip()
-            legacy_key = (os.environ.get("OPENAI_API_KEY", "") or "").strip()
+            compatible_key = (configured("OPENAI_COMPATIBLE_API_KEY", "") or "").strip()
+            compatible_base_url = (configured("OPENAI_COMPATIBLE_BASE_URL", "") or "").strip()
+            legacy_base_url = (configured("OPENAI_BASE_URL", "") or "").strip()
+            legacy_key = (configured("OPENAI_API_KEY", "") or "").strip()
+            # A request-local mapping is authoritative as a PAIR: when its
+            # dedicated compatible endpoint is present, an explicitly empty
+            # compatible key must not be rehydrated from the legacy OpenAI key.
+            # Ordinary env-based chat keeps the historical per-field fallback.
+            if explicit_settings and compatible_base_url:
+                api_key = compatible_key
+                base_url = compatible_base_url
+            else:
+                api_key = compatible_key or legacy_key
+                base_url = compatible_base_url or legacy_base_url
             return {
                 "provider": provider,
                 "resolved_model": resolved_model,
                 "usage_model": usage_model,
-                "api_key": compatible_key or legacy_key,
-                "base_url": compatible_base_url or legacy_base_url,
+                "api_key": api_key,
+                "base_url": base_url,
                 "default_headers": {},
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
@@ -1417,7 +1441,7 @@ class LLMClient:
                 "gemini_native": True,
             }
 
-        current_api_key = self._api_key_override
+        current_api_key = configured("OPENROUTER_API_KEY", "") if explicit_settings else self._api_key_override
         if current_api_key is None:
             current_api_key = os.environ.get("OPENROUTER_API_KEY", "")
         return {
@@ -1425,7 +1449,7 @@ class LLMClient:
             "resolved_model": resolved_model,
             "usage_model": usage_model,
             "api_key": current_api_key,
-            "base_url": self._base_url,
+            "base_url": "https://openrouter.ai/api/v1" if explicit_settings else self._base_url,
             "default_headers": {
                 "HTTP-Referer": "https://ouroboros.local/",
                 "X-Title": "Ouroboros",
@@ -1438,105 +1462,55 @@ class LLMClient:
         target = self._resolve_remote_target("openrouter::")
         return self._get_remote_client(target)
 
+    @staticmethod
+    def _new_remote_client(target: Dict[str, Any]):
+        from openai import OpenAI
+
+        kwargs: Dict[str, Any] = {
+            "api_key": str(target.get("api_key") or ""),
+            "max_retries": 0,
+        }
+        base_url = str(target.get("base_url") or "")
+        headers = dict(target.get("default_headers") or {})
+        if base_url:
+            kwargs["base_url"] = base_url
+        if headers:
+            kwargs["default_headers"] = headers
+        return OpenAI(**kwargs)
+
     def _get_remote_client(self, target: Dict[str, Any]):
         base_url = str(target.get("base_url") or "")
         api_key = str(target.get("api_key") or "")
-        headers_dict = dict(target.get("default_headers") or {})
-        headers = tuple(sorted((str(k), str(v)) for k, v in headers_dict.items()))
+        headers = tuple(sorted(
+            (str(k), str(v)) for k, v in dict(target.get("default_headers") or {}).items()
+        ))
         cache_key = (str(target.get("provider") or ""), base_url, api_key, headers)
-
-        client = self._remote_clients.get(cache_key)
-        if client is None:
-            from openai import OpenAI
-
-            kwargs: Dict[str, Any] = {
-                "api_key": api_key,
-                "max_retries": 0,
-            }
-            if base_url:
-                kwargs["base_url"] = base_url
-            if headers_dict:
-                kwargs["default_headers"] = headers_dict
-            client = OpenAI(**kwargs)
-            self._remote_clients[cache_key] = client
-        return client
+        if cache_key not in self._remote_clients:
+            self._remote_clients[cache_key] = self._new_remote_client(target)
+        return self._remote_clients[cache_key]
 
     def probe_oversized_context(
         self, model: str, content: str, *,
         base_url: str = "", max_output_tokens: int = 8, timeout: float = 20.0,
         api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Capability probe: send ONE deliberately over-window request on the model's
-        OpenAI-compatible route and report the RAW outcome for window classification.
+        from ouroboros.llm_probe import probe_oversized_context
 
-        This is a capability check, NOT a chat turn: it deliberately bypasses the
-        chat-round path (a probe must not count as an LLM round) but still records its
-        physical provider attempt in monetary accounting, and NEVER raises. The expected free case is a 4xx pre-inference
-        reject whose body carries the limit; a rare 200-accept returns the echo +
-        prompt_tokens (the caller treats it as possibly-paid -> owner-ack, never a
-        silent confirm). When an explicit ``base_url`` is given (Settings save/toggle
-        passes the route being fingerprinted) it overrides the env-resolved one so a
-        route change verifies the NEW endpoint. Returns
-        ``{ok, status_code, body, echoed_text, usage_prompt}``.
-        """
-        try:
-            target = self._resolve_remote_target(model)
-            if str(base_url or "").strip():
-                target = {**target, "base_url": str(base_url).strip()}
-            if api_key is not None:
-                target = {**target, "api_key": api_key}
-            oai = self._get_remote_client(target)
-            # resolved_model is the provider REQUEST model ("gpt-5.5"), not the
-            # slash-qualified usage/tracking name the API would reject.
-            resolved_model = str(target.get("resolved_model") or model.split("::")[-1])
-            provider = str(target.get("provider") or "")
-        except Exception as exc:  # pragma: no cover - setup failure -> fail-closed
-            return {"ok": False, "status_code": None, "body": f"probe setup failed: {type(exc).__name__}",
-                    "echoed_text": "", "usage_prompt": 0}
-        # Direct OpenAI GPT-5/o-series reject ``max_tokens`` and require
-        # ``max_completion_tokens``; other OpenAI-compatible stacks take max_tokens.
-        cap = {"max_completion_tokens": max_output_tokens} if provider == "openai" else {"max_tokens": max_output_tokens}
-        probe_payload = {
-            "model": resolved_model,
-            "messages": [{"role": "user", "content": content}],
-            "temperature": 0,
-            **cap,
-        }
+        return probe_oversized_context(
+            self, model, content, base_url=base_url,
+            max_output_tokens=max_output_tokens, timeout=timeout, api_key=api_key,
+        )
 
-        def _dispatch_probe() -> Any:
-            return execute_physical_attempt(
-                _attempt_request(target, probe_payload, source="capability_probe"),
-                lambda: oai.with_options(timeout=timeout).chat.completions.create(**probe_payload),
-            )
+    def probe_provider_readiness(
+        self,
+        model: str,
+        *,
+        settings: Dict[str, Any],
+        timeout: float = 20.0,
+    ) -> Dict[str, Any]:
+        from ouroboros.llm_probe import probe_provider_readiness
 
-        try:
-            if current_usage_scope() is None:
-                # Owner/settings probes run outside a task, but they are still
-                # physical provider attempts. Give that system activity one
-                # stable ledger identity instead of misclassifying it as an
-                # unattributed task. A task-bound probe keeps its caller's
-                # canonical task/root attribution and budget rails unchanged.
-                with usage_scope(UsageScope(
-                    task_id="system:capability_probe",
-                    root_task_id="system:capability_probe",
-                    category="capability_probe",
-                    source="capability_probe",
-                )):
-                    resp = _dispatch_probe()
-            else:
-                resp = _dispatch_probe()
-            echoed, usage_prompt = "", 0
-            try:
-                echoed = str(resp.choices[0].message.content or "")
-                usage_prompt = int(getattr(getattr(resp, "usage", None), "prompt_tokens", 0) or 0)
-            except Exception:
-                pass
-            return {"ok": True, "status_code": 200, "body": "", "echoed_text": echoed, "usage_prompt": usage_prompt}
-        except Exception as exc:
-            status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-            body = str(getattr(exc, "message", "") or getattr(exc, "body", "") or str(exc))
-            return {"ok": False, "status_code": status if isinstance(status, int) else None,
-                    "body": body, "echoed_text": "", "usage_prompt": 0}
+        return probe_provider_readiness(self, model, settings=settings, timeout=timeout)
 
     def _get_local_client(self):
         port = int(os.environ.get("LOCAL_MODEL_PORT", "8766"))
@@ -1631,7 +1605,7 @@ class LLMClient:
         flatten_tool_content_blocks: bool,
         allow_cache_ttl: bool = False,
     ) -> List[Dict[str, Any]]:
-        cleaned = copy.deepcopy(messages)
+        cleaned = scrub_native_custody(messages)
         for msg in cleaned:
             content = msg.get("content")
             if not isinstance(content, list):
@@ -1644,10 +1618,7 @@ class LLMClient:
             else:
                 for block in content:
                     if isinstance(block, dict):
-                        # Anthropic 400s on cache_control set for an EMPTY text block;
-                        # only cache a text block that actually has text (image/tool
-                        # blocks keep their cache_control). Pure removal of an invalid
-                        # cache_control — never rewrites content, so all lanes are safe.
+                        # Strict providers reject cache markers on empty text.
                         empty_text = (
                             block.get("type") == "text"
                             and not str(block.get("text") or "").strip()
@@ -1655,14 +1626,7 @@ class LLMClient:
                         if (allow_message_cache_control
                                 and isinstance(block.get("cache_control"), dict)
                                 and not empty_text):
-                            # A caller-declared cache TTL survives normalization only
-                            # on routes whose upstream documents the field (Anthropic
-                            # ephemeral tiers — the caller passes allow_cache_ttl for
-                            # anthropic/*) and only as a provider-valid value
-                            # ("5m"/"1h"); everywhere else it collapses to the bare
-                            # ephemeral marker (Gemini's explicit cache has a fixed,
-                            # non-refreshing 5m TTL and no documented ttl field —
-                            # an unknown field risks a hard 400 on every call).
+                            # Keep TTL only where the route documents it.
                             ttl = str(block["cache_control"].get("ttl") or "")
                             block["cache_control"] = (
                                 {"type": "ephemeral", "ttl": ttl}
@@ -1671,18 +1635,12 @@ class LLMClient:
                             )
                         else:
                             block.pop("cache_control", None)
-                        # Internal metadata (image eviction captions/paths)
-                        # never leaves the process — strict providers 400 on
-                        # unknown content-block fields.
-                        for key in [k for k in block if str(k).startswith("_")]:
+                        # Known host metadata never leaves the send copy.
+                        for key in ("_caption", "_source_path", "_context_capsule"):
                             block.pop(key, None)
         return cleaned
 
-    # Provider-private reasoning CONTENT blocks (Anthropic/Gemini-via-OpenRouter
-    # shape: content:[{type:"thinking"|"reasoning", signature:...}]) carry a
-    # signature that only the PRODUCING upstream family can validate. Replaying
-    # them to another family is the source of the 400 "Invalid `signature` in
-    # `thinking` block" fallback death.
+    # Provider-private reasoning blocks are valid only on their producing family.
     _REASONING_CONTENT_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
 
     @classmethod
@@ -1699,7 +1657,7 @@ class LLMClient:
         OpenAI-compatible servers (vLLM/SGLang) reject an echoed ``reasoning_content``
         with HTTP 400 ``Extra inputs are not permitted``, so it must be scrubbed on
         the cloudru / openai-compatible / local lanes too."""
-        cleaned = copy.deepcopy(messages)
+        cleaned = scrub_native_custody(messages)
         for msg in cleaned:
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
                 continue
@@ -1908,13 +1866,9 @@ class LLMClient:
         kwargs: Dict[str, Any],
         exc: Exception,
     ) -> Optional[Dict[str, Any]]:
-        """Structural recovery for provider 400s caused by replaying reasoning
-        metadata: when the request CARRIED replayed reasoning artifacts AND the
-        provider returned 400, strip the artifacts and retry the SAME model once.
-        The trigger is structural (request shape + 400 status), NOT an error-string
-        allowlist — so every provider phrasing of this failure class is covered.
-        ``_reroute_same_model_kwargs`` returns None when no reasoning was present,
-        so a genuine (non-reasoning) 400 still propagates unchanged."""
+        """Strip replayed reasoning once for a non-overflow OpenRouter 400."""
+        if _is_structured_context_overflow_exception(exc):
+            return None
         if not target.get("supports_openrouter_extensions"):
             return None
         if not self._is_http_status(exc, 400):
@@ -2008,9 +1962,15 @@ class LLMClient:
         with a 400 ``Invalid `signature` in `thinking` block``. Same family ->
         return ``messages`` unchanged (preserve reasoning continuity). On a switch
         returns a sanitized COPY; the canonical transcript is never mutated."""
+        switched = str(from_model or "").strip() != str(to_model or "").strip()
+        has_native_custody = any(
+            any(custody_private_key(key) for key in message)
+            for message in messages if isinstance(message, dict)
+        )
+        prepared = scrub_native_custody(messages) if switched and has_native_custody else messages
         if cls._model_family(from_model) == cls._model_family(to_model):
-            return messages
-        return cls._strip_openrouter_roundtrip_metadata(messages)
+            return prepared
+        return cls._strip_openrouter_roundtrip_metadata(prepared)
 
     @staticmethod
     def _provider_body_error(resp_dict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -2068,7 +2028,9 @@ class LLMClient:
         except Exception:
             return None
         err = self._provider_body_error(resp_dict)
-        if not err or not self._is_transient_body_error(err):
+        if not err or _is_structured_context_overflow_body(err):
+            return None
+        if not self._is_transient_body_error(err):
             return None
         reroute = self._reroute_same_model_kwargs(
             target, kwargs, allow_portable_reasoning=True
@@ -2091,28 +2053,13 @@ class LLMClient:
         kwargs: Dict[str, Any],
         target: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Body-error-in-200 twin of the exception-path
-        ``_openrouter_signature_retry_kwargs`` strip-and-retry.
-
-        OpenRouter passes some upstream 400s through the BODY of an HTTP-200
-        response. When such a 400 rejects replayed encrypted reasoning items
-        ("The encrypted content for item rs_... could not be ..."), the request
-        is deterministically poisoned for the current upstream: the classic
-        exception-path strip-and-retry (v6.28.0/v6.37.0) never sees it, and
-        loop_llm_call classifies the typed bad_request as PERMANENT — the task
-        dies (field incidents 2026-07: 14/210 baseline tasks, then whole
-        v6.65.x benchmark waves after 429-reroutes started preserving items).
-        Strip the replayed reasoning metadata once and retry, exactly like the
-        exception path would. Genuine bad_request 400s are untouched: without
-        replayed reasoning metadata ``_reroute_same_model_kwargs`` returns
-        None, and the marker gate keeps unrelated 400s out.
-        """
+        """Strip replayed encrypted reasoning for a non-overflow body 400."""
         try:
             resp_dict = resp.model_dump()
         except Exception:
             return None
         body_err = self._provider_body_error(resp_dict)
-        if not isinstance(body_err, dict):
+        if not isinstance(body_err, dict) or _is_structured_context_overflow_body(body_err):
             return None
         try:
             code = int(body_err.get("code") or 0)
@@ -2135,22 +2082,13 @@ class LLMClient:
         kwargs: Dict[str, Any],
         usage_model: str,
     ) -> Optional[Dict[str, Any]]:
-        """Body-error-in-200 twin of the exception-path parameter-rejection
-        recovery (v6.73.2, triad r3). OpenRouter passes some upstream 400s
-        through the BODY of an HTTP-200; a parameter/value rejection delivered
-        that way ("Reasoning is mandatory ... cannot be disabled",
-        "temperature must be between 0 and 2") would otherwise bypass
-        ``_retry_without_optional_sampling`` entirely and return the dead
-        response. Feed the body-error MESSAGE through the SAME classifier/
-        recovery seam once — floor-or-propagate for mandatory-value, named-drop
-        for the rest — so both transports close the same class. Non-400 and
-        unmatched errors return None (untouched)."""
+        """Apply exception-path parameter recovery to a non-overflow body 400."""
         try:
             resp_dict = resp.model_dump()
         except Exception:
             return None
         body_err = self._provider_body_error(resp_dict)
-        if not isinstance(body_err, dict):
+        if not isinstance(body_err, dict) or _is_structured_context_overflow_body(body_err):
             return None
         try:
             code = int(body_err.get("code") or 0)
@@ -2188,6 +2126,8 @@ class LLMClient:
                     holders.append(item)
                 content = item.get("content")
                 if isinstance(content, list):
+                    if is_replayed_native_content(content):
+                        continue
                     for block in content:
                         if not isinstance(block, dict):
                             continue
@@ -2375,6 +2315,7 @@ class LLMClient:
             usage["ledger_attempt_ids"] = list(attempt_ids)
             return message, usage
 
+    @request_wire_scoped
     async def chat_async(
         self,
         messages: List[Dict[str, Any]],
@@ -2533,9 +2474,7 @@ class LLMClient:
                 flatten_tool_content_blocks=True,
             )
         )
-        # Local llama.cpp lane has no vision: replace image blocks with an
-        # explicit placeholder (a raw image_url block would be str()-flattened
-        # into the prompt as base64 noise).
+        # Local llama.cpp has no vision; avoid flattening base64 into the prompt.
         for msg in clean_messages:
             content = msg.get("content")
             if not isinstance(content, list):
@@ -2580,23 +2519,18 @@ class LLMClient:
             kwargs["tools"] = clean_tools
             kwargs["tool_choice"] = tool_choice
         if timeout and timeout > 0:
-            # Honor the caller's per-request timeout on the local lane too
-            # (v6.54.3: the safety-supervisor timeout SSOT must bound every
-            # route safety can use, not only the remote ones).
             kwargs["timeout"] = float(timeout)
 
+        candidate = _physical_candidate(kwargs)
+        local_target = {"provider": "local", "usage_model": "local-model"}
         last_exc: Optional[Exception] = None
         for attempt in range(3):
             try:
-                resp = execute_physical_attempt(
-                    AttemptRequest(
-                        model="local-model",
-                        provider="local",
-                        prompt_tokens_estimate=max(0, _estimate_message_chars(clean_messages) // 4),
-                        max_completion_tokens=local_max,
-                        source="llm.local",
-                    ),
-                    lambda: client.chat.completions.create(**kwargs),
+                request = _attempt_request(local_target, candidate, source="llm.local")
+                resp = _execute_candidate(
+                    request,
+                    lambda: client.chat.completions.create(**candidate),
+                    _candidate_before_dispatch(candidate, request),
                 )
                 last_exc = None
                 break
@@ -2605,7 +2539,8 @@ class LLMClient:
             except Exception as exc:
                 last_exc = exc
                 err = str(exc)
-                if "context_length_exceeded" in err:
+                if (_is_structured_context_overflow_exception(exc)
+                        or context_overflow_message(err)):
                     raise LocalContextTooLargeError(err) from exc
                 if attempt == 2:
                     log.warning("Local model request failed: %s", exc)
@@ -2872,12 +2807,13 @@ class LLMClient:
     def _build_anthropic_messages(
         self,
         messages: List[Dict[str, Any]],
+        target: Optional[Dict[str, Any]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         messages = self._normalize_system_message_placement(messages)
         system_blocks: List[Dict[str, Any]] = []
         anthropic_messages: List[Dict[str, Any]] = []
 
-        for msg in messages:
+        for message_index, msg in enumerate(messages):
             role = str(msg.get("role") or "").strip().lower()
             if role == "system":
                 system_blocks.extend(self._anthropic_blocks_from_content(msg.get("content")))
@@ -2892,26 +2828,36 @@ class LLMClient:
                 continue
 
             if role == "assistant":
-                assistant_blocks = self._anthropic_blocks_from_content(msg.get("content"))
-                for tool_call in msg.get("tool_calls") or []:
-                    function = tool_call.get("function") or {}
-                    raw_args = function.get("arguments")
-                    parsed_args: Any = {}
-                    if isinstance(raw_args, str):
-                        try:
-                            parsed_args = json.loads(raw_args) if raw_args.strip() else {}
-                        except Exception:
-                            parsed_args = {"raw": raw_args}
-                    elif raw_args is not None:
-                        parsed_args = raw_args
-                    if not isinstance(parsed_args, dict):
-                        parsed_args = {"value": parsed_args}
-                    assistant_blocks.append({
-                        "type": "tool_use",
-                        "id": str(tool_call.get("id") or ""),
-                        "name": str(function.get("name") or ""),
-                        "input": parsed_args,
-                    })
+                matching_results = []
+                cursor = message_index + 1
+                while cursor < len(messages) and str(messages[cursor].get("role") or "") == "tool":
+                    matching_results.append(str(messages[cursor].get("tool_call_id") or ""))
+                    cursor += 1
+                assistant_blocks = (
+                    native_content_for_replay(msg, target, matching_results)
+                    if target is not None else None
+                )
+                if assistant_blocks is None:
+                    assistant_blocks = self._anthropic_blocks_from_content(msg.get("content"))
+                    for tool_call in msg.get("tool_calls") or []:
+                        function = tool_call.get("function") or {}
+                        raw_args = function.get("arguments")
+                        parsed_args: Any = {}
+                        if isinstance(raw_args, str):
+                            try:
+                                parsed_args = json.loads(raw_args) if raw_args.strip() else {}
+                            except Exception:
+                                parsed_args = {"raw": raw_args}
+                        elif raw_args is not None:
+                            parsed_args = raw_args
+                        if not isinstance(parsed_args, dict):
+                            parsed_args = {"value": parsed_args}
+                        assistant_blocks.append({
+                            "type": "tool_use",
+                            "id": str(tool_call.get("id") or ""),
+                            "name": str(function.get("name") or ""),
+                            "input": parsed_args,
+                        })
                 self._coalesce_anthropic_message(anthropic_messages, "assistant", assistant_blocks)
                 continue
 
@@ -2963,38 +2909,16 @@ class LLMClient:
     def _sanitize_chat_completion_tools(
         tools: Optional[List[Dict[str, Any]]],
     ) -> List[Dict[str, Any]]:
-        sanitized_tools: List[Dict[str, Any]] = []
-        seen_tool_names: Set[str] = set()
-        provider_name_re = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-        for tool in tools or []:
-            if not isinstance(tool, dict):
-                continue
-            tool_copy = dict(tool)
-            function = tool_copy.get("function") or {}
-            if isinstance(function, dict):
-                function_copy = dict(function)
-                name = str(function_copy.get("name") or "").strip()
-                if not name:
-                    continue
-                if not provider_name_re.match(name):
-                    log.warning("Dropping provider-invalid tool schema name: %s", name)
-                    continue
-                if name in seen_tool_names:
-                    log.warning("Dropping duplicate tool schema: %s", name)
-                    continue
-                seen_tool_names.add(name)
-                function_copy["name"] = name
-                function_copy["description"] = LLMClient._stringify_tool_description(
-                    function_copy.get("description")
-                )
-                if not isinstance(function_copy.get("parameters"), dict):
-                    function_copy["parameters"] = {"type": "object", "properties": {}}
-                tool_copy["function"] = function_copy
-            else:
-                continue
-            sanitized_tools.append(tool_copy)
-        sanitized_tools.sort(key=lambda tool: str((tool.get("function") or {}).get("name") or ""))
-        return sanitized_tools
+        from ouroboros.openai_chat_dispatch import sanitize_function_tools
+
+        def _warn(reason: str, name: str) -> None:
+            log.warning("Dropping %s tool schema name: %s", reason, name)
+
+        return sanitize_function_tools(
+            tools,
+            description_normalizer=LLMClient._stringify_tool_description,
+            on_drop=_warn,
+        )
 
     @staticmethod
     def _openrouter_main_web_search_tool() -> Optional[Dict[str, Any]]:
@@ -3020,18 +2944,19 @@ class LLMClient:
     def _build_anthropic_tool_choice(tool_choice: Any) -> Optional[Dict[str, Any]]:
         if not tool_choice or tool_choice == "auto":
             return None
-        if tool_choice in {"required", "any"}:
-            return {"type": "any"}
-        if tool_choice == "none":
-            return {"type": "none"}
         if isinstance(tool_choice, dict):
             function = tool_choice.get("function") or {}
             name = str(function.get("name") or "").strip()
             if name:
                 return {"type": "tool", "name": name}
-        if isinstance(tool_choice, str):
-            return {"type": "tool", "name": tool_choice}
-        return None
+            return None
+        if not isinstance(tool_choice, str):
+            return None
+        if tool_choice in {"required", "any"}:
+            return {"type": "any"}
+        if tool_choice == "none":
+            return {"type": "none"}
+        return {"type": "tool", "name": tool_choice}
 
     @staticmethod
     def _cache_write_split(raw_usage: Dict[str, Any]) -> Dict[str, int]:
@@ -3130,8 +3055,8 @@ class LLMClient:
         usage["cost_final"] = bool(
             usage.get("cost") is not None and not usage.get("cost_estimated")
         )
-        # v6.61.1 (Q7 disclosure): a learned-ceiling clamp on this call rides the usage
-        # event — "requested xhigh → applied high (learned_ceiling)" is never silent.
+        # Preserve any legacy diagnostic disclosure already staged by a compatibility
+        # caller; normal dispatch adaptation is disclosed through usage.request_wire.
         _clamp_note = self._pop_effort_clamp_disclosure()
         if _clamp_note:
             usage["reasoning_effort_clamped"] = _clamp_note
@@ -3151,8 +3076,14 @@ class LLMClient:
         stop_reason = resp_dict.get("stop_reason")
         if stop_reason:
             message["stop_reason"] = str(stop_reason)
+        message = retain_native_assistant_content(message, content_blocks, target)
+        if tool_calls or str(message.get("content") or "").strip():
+            message = mark_replayed_receipts_consumed(message)
+        finalize_wire_response(message, usage)
         return message, usage
 
+    @request_wire_scoped
+    @anthropic_replay_scoped
     def _chat_anthropic(
         self,
         target: Dict[str, Any],
@@ -3168,38 +3099,24 @@ class LLMClient:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         import requests
 
-        system, anthropic_messages = self._build_anthropic_messages(messages)
+        system, anthropic_messages = self._build_anthropic_messages(messages, target)
         payload: Dict[str, Any] = {
             "model": str(target.get("resolved_model") or ""),
             "messages": anthropic_messages,
             "max_tokens": max_tokens,
         }
-        # v6.57.0 — direct Anthropic honors the configured reasoning effort instead of
-        # silently dropping it (the old `del reasoning_effort` made the effort control a
-        # no-op for direct Opus). Modern Claude (Opus 4.7+/Sonnet 5/Fable-5) uses ADAPTIVE
-        # thinking + top-level `output_config.effort` (manual budget_tokens now 400s), with
-        # levels low|medium|high|xhigh|max — a superset of our scale, so the normalized
-        # value maps 1:1 (none→omit thinking = no forced reasoning). A model that rejects
-        # `output_config`/`thinking` triggers the same param-rejection retry as other
-        # optional params (learned + dropped), so an older Claude never hard-fails on this.
-        _eff = self._clamp_effort_for_model(
-            str(target.get("usage_model") or target.get("resolved_model") or ""),
-            normalize_reasoning_effort(reasoning_effort),
-        )
-        if _eff and _eff != "none":
+        # Modern Anthropic uses adaptive thinking plus output_config.effort.
+        _eff = normalize_reasoning_effort(reasoning_effort)
+        if _eff == "none":
+            payload["thinking"] = {"type": "disabled"}
+        elif _eff:
             payload["thinking"] = {"type": "adaptive"}
-            # Anthropic's documented effort set is low|medium|high|xhigh|max — it has
-            # no "minimal", so OUR lowest thinking tier maps to the provider's floor
-            # (adversarial r1: the old identity mapping could send an out-of-range
-            # value and poison the route's learned ceiling).
+            # Anthropic has no "minimal" effort; map it to the provider floor.
             payload["output_config"] = {"effort": "low" if _eff == "minimal" else _eff}
         if system:
             payload["system"] = system
-        usage_model = str(target.get("usage_model") or target.get("resolved_model") or "")
         if temperature is not None:
             payload["temperature"] = temperature
-        self._apply_rejected_param_cache(payload, usage_model)
-
         anthropic_tools = self._build_anthropic_tools(tools)
         if anthropic_tools:
             payload["tools"] = anthropic_tools
@@ -3217,6 +3134,12 @@ class LLMClient:
         request_timeout = float(timeout) if timeout and timeout > 0 else 120
 
         def _send(candidate: Dict[str, Any]):
+            candidate = _physical_candidate(candidate)
+            candidate = prepare_wire_payload_for_send(
+                target, candidate, api_surface="messages",
+            )
+            request = _attempt_request(target, candidate, source="llm.anthropic")
+
             def _post():
                 if no_proxy:
                     # Build a session with proxy detection disabled for macOS fork-safety.
@@ -3234,13 +3157,20 @@ class LLMClient:
                 return sent
 
             try:
-                return execute_physical_attempt(
-                    _attempt_request(target, candidate, source="llm.anthropic"),
+                result = _execute_candidate(
+                    request,
                     _post,
+                    _candidate_before_dispatch(candidate, request),
                 )
+                note_wire_send_succeeded(last_physical_attempt_capture())
+                return result
             except UsageAccountingError:
                 # Central UAE discard, driver parity (triad r4).
                 self._pop_effort_clamp_disclosure()
+                note_wire_send_failed()
+                raise
+            except Exception:
+                note_wire_send_failed()
                 raise
 
         try:
@@ -3248,17 +3178,26 @@ class LLMClient:
         except UsageAccountingError:
             raise  # _send already discarded any pending clamp note (triad r4)
         except Exception as exc:
-            retry_payload = self._retry_without_optional_sampling(payload, usage_model, exc)
+            retry_payload = plan_next_wire_retry(payload, error=exc)
             if retry_payload is None:
                 self._pop_effort_clamp_disclosure()
                 raise
-            try:
-                response = _send(retry_payload)
-            except Exception:
-                # Terminal retry death: discard any pending effort-clamp note
-                # (sync-driver parity; plan-review r3).
+            for _ in range(8):
+                try:
+                    response = _send(retry_payload)
+                    break
+                except UsageAccountingError:
+                    raise
+                except Exception as retry_exc:
+                    retry_payload = plan_next_wire_retry(
+                        retry_payload, error=retry_exc,
+                    )
+                    if retry_payload is None:
+                        self._pop_effort_clamp_disclosure()
+                        raise
+            else:
                 self._pop_effort_clamp_disclosure()
-                raise
+                raise RuntimeError("request-wire recovery action bound exhausted") from exc
         return self._normalize_anthropic_response(
             response.json(),
             target,
@@ -3268,6 +3207,42 @@ class LLMClient:
     # ------------------------------------------------------------------
     # GigaChat (native `gigachat` library — NOT OpenAI-compatible)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _new_gigachat_client(
+        target: Dict[str, Any],
+        timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
+    ):
+        """Build a GigaChat library client for the given target."""
+        try:
+            from gigachat import GigaChat
+        except ImportError as exc:  # pragma: no cover - exercised only without the dep
+            raise RuntimeError(
+                "The 'gigachat' package is required to use gigachat:: models. "
+                "Install it with: pip install gigachat"
+            ) from exc
+        kwargs: Dict[str, Any] = {
+            "scope": str(target.get("scope") or "GIGACHAT_API_PERS"),
+            "verify_ssl_certs": bool(target.get("verify_ssl_certs", True)),
+        }
+        for source, destination in (
+            ("api_key", "credentials"), ("user", "user"), ("password", "password"),
+            ("base_url", "base_url"),
+        ):
+            value = str(target.get(source) or "")
+            # Provider Test carries an explicit access-token field to suppress
+            # inherited auth.  Its empty credential is equally authoritative:
+            # omitting it would let the library reload GIGACHAT_CREDENTIALS.
+            if value or (source == "api_key" and "access_token" in target):
+                kwargs[destination] = value
+        if "access_token" in target:
+            kwargs["access_token"] = str(target.get("access_token") or "")
+        if timeout and timeout > 0:
+            kwargs["timeout"] = float(timeout)
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+        return GigaChat(**kwargs)
+
     def _get_gigachat_client(self, target: Dict[str, Any], timeout: Optional[float] = None):
         """Build (and cache) a GigaChat library client for the given target.
 
@@ -3289,29 +3264,9 @@ class LLMClient:
         timeout_key = float(timeout) if timeout and timeout > 0 else None
         cache_key = (credentials, user, password, scope, base_url, verify, timeout_key)
 
-        client = self._gigachat_clients.get(cache_key)
-        if client is None:
-            try:
-                from gigachat import GigaChat
-            except ImportError as exc:  # pragma: no cover - exercised only without the dep
-                raise RuntimeError(
-                    "The 'gigachat' package is required to use gigachat:: models. "
-                    "Install it with: pip install gigachat"
-                ) from exc
-            kwargs: Dict[str, Any] = {"scope": scope, "verify_ssl_certs": verify}
-            if credentials:
-                kwargs["credentials"] = credentials
-            if user:
-                kwargs["user"] = user
-            if password:
-                kwargs["password"] = password
-            if base_url:
-                kwargs["base_url"] = base_url
-            if timeout_key is not None:
-                kwargs["timeout"] = timeout_key
-            client = GigaChat(**kwargs)
-            self._gigachat_clients[cache_key] = client
-        return client
+        if cache_key not in self._gigachat_clients:
+            self._gigachat_clients[cache_key] = self._new_gigachat_client(target, timeout=timeout)
+        return self._gigachat_clients[cache_key]
 
     @staticmethod
     def _gigachat_text(content: Any) -> str:
@@ -3524,9 +3479,12 @@ class LLMClient:
         # hidden reasoning and return empty content/tool_calls when
         # reasoning_effort is sent. Keep the native path deterministic.
 
-        completion = execute_physical_attempt(
-            _attempt_request(target, payload, source="llm.gigachat"),
-            lambda: client.chat(payload),
+        candidate = _physical_candidate(payload)
+        request = _attempt_request(target, candidate, source="llm.gigachat")
+        completion = _execute_candidate(
+            request,
+            lambda: client.chat(candidate),
+            _candidate_before_dispatch(candidate, request),
         )
         return self._normalize_gigachat_response(completion, target)
 
@@ -3858,14 +3816,15 @@ class LLMClient:
         from ouroboros.provider_models import supports_vision
         if not supports_vision(resolved_model):
             messages = self._replace_image_blocks_with_placeholder(messages)
-        # OpenAI reasoning models (gpt-5*, o-series) reject legacy max_tokens
-        # with a deterministic 400 — they require max_completion_tokens.
-        openai_reasoning_model = provider == "openai" and resolved_model.startswith(
-            ("gpt-5", "o1", "o3", "o4")
-        )
-        token_limit_key = "max_completion_tokens" if openai_reasoning_model else "max_tokens"
+        # Official direct OpenAI Chat uses the current completion-token carrier:
+        # provider-wide; model names are not capability authority across routes.
+        direct_openai = provider == "openai"
+        token_limit_key = "max_completion_tokens" if direct_openai else "max_tokens"
         if not target.get("supports_openrouter_extensions"):
-            # Non-OpenRouter providers do not accept cache_control.
+            prepared_tools = [
+                {k: v for k, v in tool.items() if k != "cache_control"}
+                for tool in self._sanitize_chat_completion_tools(tools)
+            ]
             clean_messages = self._strip_openrouter_roundtrip_metadata(
                 self._copy_messages_with_cache_policy(
                     messages,
@@ -3887,25 +3846,19 @@ class LLMClient:
                     # OpenAI's named affinity key keeps requests sharing the
                     # stable governance prefix on the same cache bucket.
                     kwargs["prompt_cache_key"] = cache_identity
-            if openai_reasoning_model:
+            requested_effort = normalize_reasoning_effort(reasoning_effort)
+            if direct_openai:
                 # Direct-OpenAI route honors the configured OUROBOROS_EFFORT_*
                 # lanes instead of silently dropping them (OpenRouter parity).
-                # v6.57.0: clamp to the route's learned ceiling (e.g. a model that
-                # tops out at high never re-errors on a global xhigh — it clamps down).
-                _oa_eff = self._clamp_effort_for_model(
-                    str(target.get("usage_model") or resolved_model),
-                    normalize_reasoning_effort(reasoning_effort),
-                )
-                kwargs["reasoning_effort"] = _oa_eff
+                # Exact-route request-wire evidence, not legacy model-global
+                # rows, owns any provider-required adaptation after this build.
+                kwargs["reasoning_effort"] = requested_effort
             if temperature is not None:
                 kwargs["temperature"] = temperature
             if response_format:
                 kwargs["response_format"] = dict(response_format)
-            if tools:
-                kwargs["tools"] = [
-                    {k: v for k, v in tool.items() if k != "cache_control"}
-                    for tool in self._sanitize_chat_completion_tools(tools)
-                ]
+            if prepared_tools:
+                kwargs["tools"] = prepared_tools
                 kwargs["tool_choice"] = tool_choice
             if bypass_response_cache and provider == "openai-compatible":
                 # Must ride in extra_body: the OpenAI SDK rejects unknown top-level
@@ -3914,13 +3867,9 @@ class LLMClient:
                 _eb = kwargs.setdefault("extra_body", {})
                 if isinstance(_eb, dict):
                     _eb["cache"] = {"no-cache": True}
-            self._apply_rejected_param_cache(kwargs, str(target.get("usage_model") or resolved_model))
             return kwargs
 
-        effort = self._clamp_effort_for_model(
-            str(target.get("usage_model") or resolved_model),
-            normalize_reasoning_effort(reasoning_effort),
-        )
+        effort = normalize_reasoning_effort(reasoning_effort)
         raw_return_reasoning = os.environ.get("OUROBOROS_RETURN_REASONING")
         return_reasoning = (
             True if raw_return_reasoning is None
@@ -4019,7 +3968,6 @@ class LLMClient:
 
         # With require_parameters, unsupported params cause OpenRouter 404s.
         # Unknown capabilities mean no stripping.
-        self._apply_rejected_param_cache(kwargs, resolved_model)
         if skip_capability_fetch:
             # "Skip" means skip the NETWORK fetch (no_proxy fork-safety), not
             # ignore an already-warm capability cache: a worker forked after the
@@ -4033,13 +3981,11 @@ class LLMClient:
         else:
             supported = self._get_supported_parameters(resolved_model)
         if supported is not None:
-            for optional_param in _OPTIONAL_DROPPABLE_PARAMS:
-                if optional_param not in supported and optional_param in kwargs:
-                    log.debug(
-                        "Model %s does not list %s in supported_parameters; stripping",
-                        resolved_model, optional_param,
-                    )
-                    kwargs.pop(optional_param, None)
+            unsupported = [
+                optional_param for optional_param in _OPTIONAL_DROPPABLE_PARAMS
+                if optional_param not in supported and optional_param in kwargs
+            ]
+            note_provider_metadata_drop_fields(unsupported)
         return kwargs
 
     def _normalize_remote_response(
@@ -4048,6 +3994,7 @@ class LLMClient:
         target: Dict[str, Any],
         skip_cost_fetch: bool = False,
         prompt_cache_ttl: Optional[str] = None,
+        wire_completion: Any = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Normalize an OpenAI-compatible response; skip_cost_fetch keeps no_proxy pure."""
         usage = resp_dict.get("usage") or {}
@@ -4060,6 +4007,7 @@ class LLMClient:
         if _body_err:
             usage["provider_error"] = {
                 "code": _body_err.get("code"),
+                "type": _body_err.get("type"),
                 "message": str(_body_err.get("message") or "")[:300],
                 "kind": "rate_limit" if self._is_transient_body_error(_body_err) and str(_body_err.get("code")) == "429"
                 else ("provider_transient" if self._is_transient_body_error(_body_err) else "provider_error"),
@@ -4166,9 +4114,8 @@ class LLMClient:
         usage["cost_final"] = bool(
             usage.get("cost") is not None and not usage.get("cost_estimated")
         )
-        # v6.61.1 (Q7 disclosure): a learned-ceiling clamp recorded at payload build
-        # (_build_remote_kwargs → _clamp_effort_for_model) rides THIS call's usage —
-        # covers both the OpenRouter and the OpenAI-compatible direct lanes.
+        # Preserve any legacy diagnostic disclosure already staged by a compatibility
+        # caller; normal dispatch adaptation is disclosed through usage.request_wire.
         _clamp_note = self._pop_effort_clamp_disclosure()
         if _clamp_note:
             usage["reasoning_effort_clamped"] = _clamp_note
@@ -4176,7 +4123,11 @@ class LLMClient:
         _cache_note = self._pop_cache_breakpoint_disclosure()
         if _cache_note:
             usage["prompt_cache_breakpoints_reduced"] = _cache_note
+        from ouroboros.openai_chat_dispatch import normalize_direct_openai_completion
 
+        msg, usage = normalize_direct_openai_completion(msg, usage, wire_completion)
+        _custom_receipts = usage.get("_request_wire_custom_receipts", ())
+        finalize_wire_response(msg, usage, custom_receipts=_custom_receipts)
         return msg, usage
 
     @staticmethod
@@ -4237,48 +4188,85 @@ class LLMClient:
                 deduped.append(p)
         return "\n".join(deduped).strip()
 
+    @request_wire_scoped
     def _create_chat_completion_with_retries(
         self,
         create_fn: Any,
         kwargs: Dict[str, Any],
         target: Dict[str, Any],
     ) -> Any:
-        usage_model = str(target.get("usage_model") or target.get("resolved_model") or "")
-
         def _send(candidate: Dict[str, Any]) -> Any:
+            candidate = _physical_candidate(candidate)
+            candidate = prepare_wire_payload_for_send(
+                target, candidate, api_surface="chat.completions",
+            )
+            request = _attempt_request(target, candidate)
             try:
-                return execute_physical_attempt(
-                    _attempt_request(target, candidate),
+                result = _execute_candidate(
+                    request,
                     lambda: create_fn(**candidate),
+                    _candidate_before_dispatch(candidate, request),
                 )
+                note_wire_send_succeeded(last_physical_attempt_capture())
+                return result
             except UsageAccountingError:
-                # Admission failed pre-dispatch on ANY send (initial, cache
-                # retry, reroute, strip, param/floor resend): no response will
-                # consume a pending effort-clamp note — discard it centrally so
-                # it cannot misattach to a later non-clamping call (triad r4).
+                # Admission failure cannot leave its disclosure for a later call.
                 self._pop_effort_clamp_disclosure()
+                note_wire_send_failed()
+                raise
+            except Exception:
+                note_wire_send_failed()
                 raise
 
-        def _recover_existing(candidate: Dict[str, Any], failure: Exception) -> Any:
-            """Preserve the pre-v6.64 optional/signature recovery ladder."""
+        def _body_error(response: Any) -> Optional[Dict[str, Any]]:
             try:
-                retry_kwargs = self._retry_without_optional_sampling(candidate, usage_model, failure)
-                if retry_kwargs is not None:
+                return self._provider_body_error(response.model_dump())
+            except Exception:
+                return None
+
+        def _recover_existing(
+            candidate: Dict[str, Any],
+            *,
+            failure: Optional[Exception] = None,
+            response: Any = None,
+        ) -> Any:
+            """One bounded exception/body state machine, then signature recovery."""
+            try:
+                current_candidate = candidate
+                current_failure = failure
+                current_response = response
+                signature_used = False
+                for _ in range(8):
+                    if current_failure is None:
+                        body = _body_error(current_response)
+                        retry_kwargs = plan_next_wire_retry(
+                            current_candidate, error=body, body_error=True,
+                        )
+                        if retry_kwargs is None:
+                            return current_response
+                    else:
+                        retry_kwargs = plan_next_wire_retry(
+                            current_candidate, error=current_failure,
+                        )
+                        if retry_kwargs is None and not signature_used:
+                            retry_kwargs = self._openrouter_signature_retry_kwargs(
+                                target, current_candidate, current_failure,
+                            )
+                            signature_used = retry_kwargs is not None
+                        if retry_kwargs is None:
+                            raise current_failure
+                    current_candidate = retry_kwargs
                     try:
-                        return _send(retry_kwargs)
+                        current_response = _send(retry_kwargs)
+                        current_failure = None
                     except UsageAccountingError:
                         raise
                     except Exception as retry_exc:
-                        stripped_kwargs = self._openrouter_signature_retry_kwargs(
-                            target, retry_kwargs, retry_exc,
-                        )
-                        if stripped_kwargs is None:
-                            raise retry_exc
-                        return _send(stripped_kwargs)
-                stripped_kwargs = self._openrouter_signature_retry_kwargs(target, candidate, failure)
-                if stripped_kwargs is None:
-                    raise failure
-                return _send(stripped_kwargs)
+                        current_failure = retry_exc
+                        current_response = None
+                if current_failure is not None:
+                    raise current_failure
+                return current_response
             except Exception:
                 # The recovery ladder died terminally: discard any pending
                 # effort-clamp note (e.g. the floored learning retry's
@@ -4297,12 +4285,16 @@ class LLMClient:
             cache_retry_kwargs = self._retry_without_prompt_cache_parameter(kwargs, target, exc)
             if cache_retry_kwargs is not None:
                 try:
-                    return _send(cache_retry_kwargs)
+                    resp = _send(cache_retry_kwargs)
+                    kwargs = cache_retry_kwargs
                 except UsageAccountingError:
                     raise
                 except Exception as cache_retry_exc:
-                    return _recover_existing(cache_retry_kwargs, cache_retry_exc)
-            return _recover_existing(kwargs, exc)
+                    return _recover_existing(
+                        cache_retry_kwargs, failure=cache_retry_exc,
+                    )
+            else:
+                return _recover_existing(kwargs, failure=exc)
         # HTTP-200 success can still carry a transient provider body-error
         # (OpenRouter passes 429/5xx through the body); reroute once to a healthy
         # endpoint of the SAME model while request kwargs are still mutable.
@@ -4321,72 +4313,96 @@ class LLMClient:
         strip_kwargs = self._strip_kwargs_for_encrypted_body_error(resp, kwargs, target)
         if strip_kwargs is not None:
             try:
-                return _send(strip_kwargs)
+                resp = _send(strip_kwargs)
+                kwargs = strip_kwargs
             except UsageAccountingError:
                 raise
             except Exception:
                 return resp
-        # A parameter/VALUE rejection delivered as a body-400 (v6.73.2, triad
-        # r3) gets the same one-shot recovery as the exception path — the floor
-        # branch for mandatory-value, the named drop for the rest.
-        param_kwargs = self._param_retry_kwargs_for_body_error(resp, kwargs, usage_model)
-        if param_kwargs is not None:
-            try:
-                return _send(param_kwargs)
-            except UsageAccountingError:
-                raise
-            except Exception:
-                self._pop_effort_clamp_disclosure()
-                return resp
-        return resp
+        return _recover_existing(kwargs, response=resp)
 
+    @request_wire_scoped
     async def _create_chat_completion_with_retries_async(
         self,
         create_fn: Any,
         kwargs: Dict[str, Any],
         target: Dict[str, Any],
     ) -> Any:
-        usage_model = str(target.get("usage_model") or target.get("resolved_model") or "")
-
         async def _send(candidate: Dict[str, Any]) -> Any:
+            candidate = _physical_candidate(candidate)
+            candidate = prepare_wire_payload_for_send(
+                target, candidate, api_surface="chat.completions",
+            )
+            request = _attempt_request(target, candidate)
             try:
-                return await execute_physical_attempt_async(
-                    _attempt_request(target, candidate),
+                result = await _execute_candidate_async(
+                    request,
                     lambda: create_fn(**candidate),
+                    _candidate_before_dispatch(candidate, request),
                 )
+                note_wire_send_succeeded(last_physical_attempt_capture())
+                return result
             except UsageAccountingError:
                 # Sync-driver parity: central UAE discard (triad r4).
                 self._pop_effort_clamp_disclosure()
+                note_wire_send_failed()
+                raise
+            except Exception:
+                note_wire_send_failed()
                 raise
 
-        async def _recover_existing(candidate: Dict[str, Any], failure: Exception) -> Any:
-            """Async parity for the pre-v6.64 optional/signature ladder."""
+        def _body_error(response: Any) -> Optional[Dict[str, Any]]:
             try:
-                return await _recover_existing_inner(candidate, failure)
+                return self._provider_body_error(response.model_dump())
             except Exception:
-                # Terminal ladder death: discard any pending effort-clamp note
-                # (sync-parity; see the sync driver's comment).
+                return None
+
+        async def _recover_existing(
+            candidate: Dict[str, Any],
+            *,
+            failure: Optional[Exception] = None,
+            response: Any = None,
+        ) -> Any:
+            """Async twin of the bounded exception/body state machine."""
+            try:
+                current_candidate = candidate
+                current_failure = failure
+                current_response = response
+                signature_used = False
+                for _ in range(8):
+                    if current_failure is None:
+                        body = _body_error(current_response)
+                        retry_kwargs = plan_next_wire_retry(
+                            current_candidate, error=body, body_error=True,
+                        )
+                        if retry_kwargs is None:
+                            return current_response
+                    else:
+                        retry_kwargs = plan_next_wire_retry(
+                            current_candidate, error=current_failure,
+                        )
+                        if retry_kwargs is None and not signature_used:
+                            retry_kwargs = self._openrouter_signature_retry_kwargs(
+                                target, current_candidate, current_failure,
+                            )
+                            signature_used = retry_kwargs is not None
+                        if retry_kwargs is None:
+                            raise current_failure
+                    current_candidate = retry_kwargs
+                    try:
+                        current_response = await _send(retry_kwargs)
+                        current_failure = None
+                    except UsageAccountingError:
+                        raise
+                    except Exception as retry_exc:
+                        current_failure = retry_exc
+                        current_response = None
+                if current_failure is not None:
+                    raise current_failure
+                return current_response
+            except Exception:
                 self._pop_effort_clamp_disclosure()
                 raise
-
-        async def _recover_existing_inner(candidate: Dict[str, Any], failure: Exception) -> Any:
-            retry_kwargs = self._retry_without_optional_sampling(candidate, usage_model, failure)
-            if retry_kwargs is not None:
-                try:
-                    return await _send(retry_kwargs)
-                except UsageAccountingError:
-                    raise
-                except Exception as retry_exc:
-                    stripped_kwargs = self._openrouter_signature_retry_kwargs(
-                        target, retry_kwargs, retry_exc,
-                    )
-                    if stripped_kwargs is None:
-                        raise retry_exc
-                    return await _send(stripped_kwargs)
-            stripped_kwargs = self._openrouter_signature_retry_kwargs(target, candidate, failure)
-            if stripped_kwargs is None:
-                raise failure
-            return await _send(stripped_kwargs)
 
         try:
             resp = await _send(kwargs)
@@ -4396,12 +4412,16 @@ class LLMClient:
             cache_retry_kwargs = self._retry_without_prompt_cache_parameter(kwargs, target, exc)
             if cache_retry_kwargs is not None:
                 try:
-                    return await _send(cache_retry_kwargs)
+                    resp = await _send(cache_retry_kwargs)
+                    kwargs = cache_retry_kwargs
                 except UsageAccountingError:
                     raise
                 except Exception as cache_retry_exc:
-                    return await _recover_existing(cache_retry_kwargs, cache_retry_exc)
-            return await _recover_existing(kwargs, exc)
+                    return await _recover_existing(
+                        cache_retry_kwargs, failure=cache_retry_exc,
+                    )
+            else:
+                return await _recover_existing(kwargs, failure=exc)
         # HTTP-200 success can still carry a transient provider body-error
         # (OpenRouter passes 429/5xx through the body); reroute once to a healthy
         # endpoint of the SAME model while request kwargs are still mutable.
@@ -4420,24 +4440,15 @@ class LLMClient:
         strip_kwargs = self._strip_kwargs_for_encrypted_body_error(resp, kwargs, target)
         if strip_kwargs is not None:
             try:
-                return await _send(strip_kwargs)
+                resp = await _send(strip_kwargs)
+                kwargs = strip_kwargs
             except UsageAccountingError:
                 raise
             except Exception:
                 return resp
-        # Sync-driver parity (v6.73.2, triad r3): parameter/VALUE rejections
-        # delivered as a body-400 recover through the same seam.
-        param_kwargs = self._param_retry_kwargs_for_body_error(resp, kwargs, usage_model)
-        if param_kwargs is not None:
-            try:
-                return await _send(param_kwargs)
-            except UsageAccountingError:
-                raise
-            except Exception:
-                self._pop_effort_clamp_disclosure()
-                return resp
-        return resp
+        return await _recover_existing(kwargs, response=resp)
 
+    @request_wire_scoped
     def _chat_remote(
         self,
         target: Dict[str, Any],
@@ -4499,6 +4510,7 @@ class LLMClient:
                     target,
                     skip_cost_fetch=True,
                     prompt_cache_ttl=prompt_cache_ttl,
+                    wire_completion=resp,
                 )
             finally:
                 try:
@@ -4528,6 +4540,7 @@ class LLMClient:
             resp.model_dump(),
             target,
             prompt_cache_ttl=prompt_cache_ttl,
+            wire_completion=resp,
         )
 
     def vision_query(
@@ -4571,17 +4584,14 @@ class LLMClient:
 
     def default_model(self) -> str:
         """Return the single default model from env. LLM switches via tool if needed."""
-        return os.environ.get("OUROBOROS_MODEL", "x-ai/grok-4.5")
+        return os.environ.get("OUROBOROS_MODEL", OPENROUTER_DEFAULTS["main"])
 
     def available_models(self) -> List[str]:
         """Return list of available models from env (for switch_model tool schema)."""
-        main = os.environ.get("OUROBOROS_MODEL", "x-ai/grok-4.5")
-        heavy = os.environ.get("OUROBOROS_MODEL_HEAVY", "")
+        main = self.default_model()
         light = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
         models = [main]
-        if heavy and heavy != main:
-            models.append(heavy)
-        if light and light != main and light != heavy:
+        if light and light != main:
             models.append(light)
         return models
 
@@ -4614,15 +4624,21 @@ def openrouter_web_search_server_tool(
             },
         }],
     )
+    candidate = _physical_candidate(payload)
     request = _attempt_request(
         {"provider": "openrouter", "usage_model": model, "resolved_model": model},
-        payload,
+        candidate,
         source="web_search.openrouter",
     )
+    before_dispatch = _candidate_before_dispatch(candidate, request)
     if accounting_scope is None:
-        return execute_physical_attempt(request, lambda: client.chat.completions.create(**payload))
+        return _execute_candidate(
+            request, lambda: client.chat.completions.create(**candidate), before_dispatch,
+        )
     with usage_scope(accounting_scope):
-        return execute_physical_attempt(request, lambda: client.chat.completions.create(**payload))
+        return _execute_candidate(
+            request, lambda: client.chat.completions.create(**candidate), before_dispatch,
+        )
 
 
 def anthropic_web_search_server_tool(
@@ -4643,12 +4659,18 @@ def anthropic_web_search_server_tool(
         tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
         messages=[{"role": "user", "content": query}],
     )
+    candidate = _physical_candidate(payload)
     request = _attempt_request(
         {"provider": "anthropic", "usage_model": model, "resolved_model": model},
-        payload,
+        candidate,
         source="web_search.anthropic",
     )
+    before_dispatch = _candidate_before_dispatch(candidate, request)
     if accounting_scope is None:
-        return execute_physical_attempt(request, lambda: client.messages.create(**payload))
+        return _execute_candidate(
+            request, lambda: client.messages.create(**candidate), before_dispatch,
+        )
     with usage_scope(accounting_scope):
-        return execute_physical_attempt(request, lambda: client.messages.create(**payload))
+        return _execute_candidate(
+            request, lambda: client.messages.create(**candidate), before_dispatch,
+        )

@@ -1,6 +1,8 @@
 """Shared helpers for the review stack (advisory, triad, scope reviews).
 
-No imports from other ouroboros.tools modules to avoid circular deps.
+No imports from other ouroboros.tools modules to avoid circular deps; the one
+sanctioned exception is the ``release_sync`` compatibility re-export of
+``check_worktree_version_sync`` (moved to its version-sync home).
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
+from ouroboros.tools.release_sync import check_worktree_version_sync  # noqa: F401 - moved to its version-sync home; compatibility re-export
 from ouroboros.utils import (
     sanitize_tool_result_for_log,
     truncate_review_artifact as _truncate_review_artifact,
@@ -39,9 +42,8 @@ REVIEW_PROMPT_TOKEN_BUDGET = 920_000
 # real Claude scope pack estimated at 739,508 tokens measured 1,166,914 REAL tokens
 # (1.58x) and drew a deterministic 400 "prompt is too long". The density is no longer
 # a hand-set family constant: it is MEASURED per model at the physical send boundary
-# and stored in the capability_evidence ``token_density`` namespace (provenance and
-# cold-start rules live there). It sizes the PROMPT — never the reviewer model or a
-# window floor (BIBLE P3).
+# and stored as timestamped raw witnesses in capability_evidence. It sizes the
+# PROMPT, never the reviewer model or a window floor (BIBLE P3).
 
 
 def calibrated_input_token_limit(
@@ -58,14 +60,12 @@ def calibrated_input_token_limit(
     The STRICTEST of three bounds, so it never exceeds what the historical shape
     allowed: the prompt-size SSOT (``budget_cap``), the density form
     ``(window − output_reserve) / density``, and the historical absolute-margin form
-    ``window − output_reserve − tokenizer_margin``. A model with no observation
-    sizes DOWN from the cold-conservative density, not up from a chars/4 estimate; a
-    MEASURED model uses its own density (stored per model identity as a running
-    maximum, so measurement never loosens that model's cap), and the absolute-margin
-    form keeps every result at or below the pre-measurement cap."""
-    from ouroboros.capability_evidence import resolve_token_density
+    ``window − output_reserve − tokenizer_margin``. The review reducer uses the
+    densest fresh compatible witness with its safety factor, never below the cold
+    1.65 floor; the absolute-margin form remains an independent upper bound."""
+    from ouroboros.capability_evidence import resolve_review_token_density
 
-    density, _ = resolve_token_density(
+    density, _ = resolve_review_token_density(
         drive_root if drive_root is not None else review_drive_root(None), model_id
     )
     return min(
@@ -911,6 +911,8 @@ def build_touched_file_pack(
     paths: list[str] | None = None,
     *,
     represent_binary: bool = False,
+    m0_tree: str = "",  # managed resolutions: binary rows carry the M0 baseline identity
+    staged_tree: str = "",
 ) -> tuple[str, list[str]]:
     """Read changed files into a prompt code pack plus omission list."""
     if paths is None:
@@ -939,10 +941,11 @@ def build_touched_file_pack(
         if not fp.is_file():
             from ouroboros.tools import review_binary_context as binary_context
             deleted_binary = represent_binary and (
-                binary_extension or binary_context.staged_path_is_binary(repo_dir, rel)
+                binary_extension or binary_context.staged_path_is_binary(
+                    repo_dir, rel, m0_tree=m0_tree, staged_tree=staged_tree)
             )
             if deleted_binary:
-                metadata = binary_context.render_staged_binary_metadata(repo_dir, rel)
+                metadata = binary_context.render_staged_binary_metadata(repo_dir, rel, m0_tree=m0_tree)
                 if metadata is not None:
                     parts.append(f"### {rel}\n\n{metadata}")
                     continue
@@ -958,7 +961,7 @@ def build_touched_file_pack(
         if binary_extension or _is_probably_binary(fp):
             if represent_binary:
                 from ouroboros.tools.review_binary_context import render_staged_binary_metadata
-                metadata = render_staged_binary_metadata(repo_dir, rel)
+                metadata = render_staged_binary_metadata(repo_dir, rel, m0_tree=m0_tree)
                 if metadata is None:
                     omitted.append(rel)
                     parts.append(
@@ -1293,67 +1296,66 @@ def build_goal_section(
 
 
 def build_head_snapshot_section(
-    repo_dir: Path,
-    paths: list[str],
+    repo_dir: Path, paths: list[str], *, current_snapshots: dict[str, Path] | None = None,
 ) -> tuple[str, frozenset[str]]:
-    """Build prompt text with HEAD snapshots of touched files.
+    """Build prompt text with HEAD or explicit current snapshots of touched files.
 
-    Returns ``(section_text, included_paths)`` where ``included_paths`` holds
-    exactly the paths whose FULL snapshot text made it into the section. Every
-    other path got an omission marker (sensitive/binary/oversized/new/error),
-    and the caller must NOT report it to the atlas as ``already_included`` —
-    that claim is what the atlas trusts, so a false one bypasses the BIBLE P3
-    required-artifact refusal (XG-1R.4). Same shape as
-    ``build_touched_file_pack``'s ``(section, omitted)`` contract.
+    ``included_paths`` names only FULL snapshots; omission markers must never
+    become Atlas ``already_included`` claims (BIBLE P3 / XG-1R.4).
     """
     if not paths:
         return "(no touched files)", frozenset()
-
+    current_by_label = {str(k).strip(): Path(v) for k, v in (current_snapshots or {}).items()}
     parts: list[str] = []
     included: set[str] = set()
+    def append_bytes(rel: str, raw: bytes, source: str) -> None:
+        if len(raw) > _FILE_SIZE_LIMIT:
+            parts.append(
+                f"### {rel}\n\n*({source} omitted — {len(raw):,} bytes exceeds "
+                f"{_FILE_SIZE_LIMIT:,} byte limit)*\n"
+            )
+        elif _raw_bytes_binary(raw[:_BINARY_SNIFF_BYTES]):
+            parts.append(f"### {rel}\n\n*({source} omitted — binary content detected)*\n")
+        else:
+            lang = Path(rel).suffix.lstrip(".")
+            note = f"*{source}*\n\n" if source != "HEAD snapshot" else ""
+            content = raw.decode("utf-8", errors="replace")
+            parts.append(f"### {rel}\n\n{note}{format_prompt_code_block(content, lang)}\n")
+            included.add(rel)
+
     for rel in paths:
         fp_rel = Path(rel)
         suffix = fp_rel.suffix.lower()
-        # Omit credential-shaped files before reading HEAD snapshot.
+        current_path = current_by_label.get(str(rel).strip())
+        source = "Current skill-payload snapshot (data plane, not Git HEAD)" if current_path else "HEAD snapshot"
         fname_lower = fp_rel.name.lower()
         if suffix in _SENSITIVE_EXTENSIONS or fname_lower in _SENSITIVE_NAMES:
-            parts.append(f"### {rel}\n\n*(HEAD snapshot omitted — sensitive file)*\n")
+            parts.append(f"### {rel}\n\n*({source} omitted — sensitive file)*\n")
             continue
-        # Skip known binary extensions before invoking git.
         if suffix in BINARY_EXTENSIONS:
-            parts.append(f"### {rel}\n\n*(HEAD snapshot omitted — binary file ({suffix}))*\n")
+            parts.append(f"### {rel}\n\n*({source} omitted — binary file ({suffix}))*\n")
             continue
-        ext = Path(rel).suffix.lstrip(".")
-        lang = ext if ext else ""
         try:
-            # Force English git stderr so new-file detection is locale-stable.
-            _git_env = {**os.environ, "LC_ALL": "C", "LANG": "C", "LANGUAGE": "C"}
+            if current_path is not None:
+                if not current_path.is_file():
+                    parts.append(
+                        f"### {rel}\n\n*(Current skill-payload snapshot unavailable — "
+                        "file does not exist or is not a regular file)*\n"
+                    )
+                else:
+                    append_bytes(rel, current_path.read_bytes(), source)
+                continue
             result = subprocess.run(
                 ["git", "show", f"HEAD:{rel}"],
                 cwd=repo_dir,
                 capture_output=True,
                 timeout=10,
-                env=_git_env,
+                env={**os.environ, "LC_ALL": "C", "LANG": "C", "LANGUAGE": "C"},
             )
             if result.returncode == 0 and result.stdout:
-                raw_bytes = result.stdout
-                # Size guard uses raw bytes, not decoded characters.
-                if len(raw_bytes) > _FILE_SIZE_LIMIT:
-                    parts.append(
-                        f"### {rel}\n\n*(HEAD snapshot omitted — {len(raw_bytes):,} bytes exceeds "
-                        f"{_FILE_SIZE_LIMIT:,} byte limit)*\n"
-                    )
-                    continue
-                if _raw_bytes_binary(raw_bytes[:_BINARY_SNIFF_BYTES]):
-                    parts.append(f"### {rel}\n\n*(HEAD snapshot omitted — binary content detected)*\n")
-                    continue
-                # Decode only after binary/size checks.
-                content = raw_bytes.decode("utf-8", errors="replace")
-                parts.append(f"### {rel}\n\n```{lang}\n{content}\n```\n")
-                included.add(rel)
+                append_bytes(rel, result.stdout, source)
                 continue
             if result.returncode != 0:
-                # Distinguish a new file from a real git failure.
                 raw_stderr = result.stderr or b""
                 stderr_str = (
                     raw_stderr.decode("utf-8", errors="replace")
@@ -1370,7 +1372,6 @@ def build_head_snapshot_section(
                 if is_new_file:
                     parts.append(f"### {rel}\n\n*(File is new — no HEAD snapshot)*\n")
                 else:
-                    # Real git failure: tell the reviewer the snapshot is missing.
                     short_err = stderr_str.strip()[:200]
                     parts.append(f"### {rel}\n\n*(HEAD snapshot error — git exited {result.returncode}: {short_err})*\n")
             elif not result.stdout:
@@ -1423,42 +1424,6 @@ def get_advisory_runtime_diagnostics(model: str, prompt_chars: int,
         diag["cli_path"] = "(unavailable)"
 
     return diag
-
-
-def check_worktree_version_sync(repo_dir) -> str:
-    """Return a non-fatal warning when release version carriers disagree."""
-    from ouroboros.tools.release_sync import (
-        is_release_version,
-        version_carrier_desyncs,
-    )
-    repo_dir = Path(repo_dir)
-    try:
-        version_path = repo_dir / "VERSION"
-        if not version_path.exists():
-            return ""
-        version_str = version_path.read_text(encoding="utf-8").strip()
-        if not is_release_version(version_str):
-            return ""
-        pyproject = repo_dir / "pyproject.toml"
-        uv_lock = repo_dir / "uv.lock"
-        web_package = repo_dir / "web" / "package.json"
-        readme = repo_dir / "README.md"
-        arch = repo_dir / "docs" / "ARCHITECTURE.md"
-        api_types = repo_dir / "web" / "modules" / "api_types.js"
-        desync = version_carrier_desyncs(
-            version_str,
-            pyproject_text=pyproject.read_text(encoding="utf-8") if pyproject.exists() else "",
-            uv_lock_text=uv_lock.read_text(encoding="utf-8") if uv_lock.exists() else "",
-            web_package_text=web_package.read_text(encoding="utf-8") if web_package.exists() else "",
-            readme_text=readme.read_text(encoding="utf-8") if readme.exists() else "",
-            arch_text=arch.read_text(encoding="utf-8") if arch.exists() else "",
-            api_types_text=api_types.read_text(encoding="utf-8") if api_types.exists() else "",
-        )
-        if desync:
-            return f"VERSION={version_str} but {', '.join(desync)} differ. Sync version carriers before committing."
-    except Exception:
-        pass
-    return ""
 
 
 def check_worktree_readiness(
@@ -1542,6 +1507,30 @@ def check_worktree_readiness(
             )
     except Exception:
         pass
+
+    # 5. Size-ratchet findings. Never blocking here: the official repository's
+    # CI ``size_ratchet`` lane is the enforcing surface; this warning lets the
+    # agent regenerate the manifest or shrink the debt before the official
+    # line rejects the same finding. Cheap since the history replay retired
+    # (one live inventory plus a couple of git object reads).
+    try:
+        from ouroboros.review import validate_size_ratchet  # local import: ouroboros.review imports this module
+
+        for finding in validate_size_ratchet(repo_dir):
+            warnings.append(f"official CI will enforce: {finding}")
+    except Exception as exc:
+        # A broken validator must not silently disable the only local surface —
+        # but only for a REAL checkout: fixture trees without .git legitimately
+        # cannot run the validator and must stay warning-free.
+        try:
+            is_real_checkout = (pathlib.Path(repo_dir) / ".git").exists()
+        except Exception:
+            is_real_checkout = False
+        if is_real_checkout:
+            warnings.append(
+                f"size-ratchet validator unavailable ({type(exc).__name__}); "
+                "the official CI lane still enforces"
+            )
 
     return warnings
 

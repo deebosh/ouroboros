@@ -38,6 +38,12 @@ class ChatInbound(TypedDict):
     # stays user_id 1; chat_id selects the thread, project_id scopes memory.
     chat_id: NotRequired[int]
     project_id: NotRequired[str]
+    # Per-message sending-surface observables (additive-optional): raw facts the
+    # SPA measures at send time (pywebview bridge presence, ua, viewport,
+    # matchMedia booleans, captured_at). The gateway normalizes through the
+    # closed-key bounded `client_surface.normalize_client_surface`; absence is an
+    # honest gap, never defaulted.
+    client_surface: NotRequired[dict]
 
 
 class TaskConstraintInbound(TypedDict, total=False):
@@ -88,6 +94,10 @@ class ChatOutbound(TypedDict):
     # X3: a repair receipt whose managed task id does not exist yet (the router
     # mints it at promotion). Typed truth instead of an invented id.
     task_id_pending: NotRequired[bool]
+    # "finalizing" on a root's early final answer: the answer is delivered
+    # while post-task synthesis still runs, so the frame is NOT the task's
+    # terminal conclusion — task_done settles the card/turn.
+    task_phase: NotRequired[str]
     ephemeral_decision: NotRequired[bool]
     task_incident: NotRequired[str]
     toast_once: NotRequired[str]
@@ -121,7 +131,10 @@ class ChatOutbound(TypedDict):
     # The completion-seam EVIDENCE the route decision is reconciled against
     # (subagents.envelope_from_task): delegated runs started/settled/succeeded,
     # terminal failure states, disclosed subscription spend (+estimated flag),
-    # engine-reported models. Terminal frames only; its absence means "no
+    # engine-reported models, the additive `nanny_nudge_recorded` flag (a
+    # non-empty finalization nudge was durably stamped), and the additive
+    # `delegate_start_attempted` flag (any durable delegate_start attempt,
+    # refused or started). Terminal frames only; its absence means "no
     # evidence yet", never "ran natively".
     execution_evidence: NotRequired[Dict[str, Any]]
     # The FACT beside the executor_route plan, from the same custody evidence:
@@ -260,6 +273,13 @@ class TypingOutbound(TypedDict):
     # Multi-project: stamps the thread so the client fan-out routes a project
     # task's typing indicator to its panel instead of defaulting to main.
     chat_id: NotRequired[int]
+    activity_id: NotRequired[str]
+    client_message_id: NotRequired[str]
+    phase: NotRequired[str]
+    # Stamped only for direct-registry-tracked turns ("direct_chat" /
+    # "ephemeral_decision"); queued managed tasks emit typing without it, so the
+    # client exempts their entries from /api/state snapshot deletion authority.
+    kind: NotRequired[str]
 
 
 class LogOutbound(TypedDict):
@@ -375,6 +395,11 @@ class UpdateApplyErrorResponse(TypedDict):
     restart_required: NotRequired[bool]
     merge_plan: NotRequired[UpdateMergePlan]
     smoke: NotRequired[Dict[str, Any]]
+    # Stash-first prologue disclosures (additive): how the owner's stashed work
+    # was unwound on an aborted update, and the wave-floor admission numbers.
+    stash_note: NotRequired[str]
+    estimated_wave_usd: NotRequired[Optional[float]]
+    remaining_usd: NotRequired[Optional[float]]
 
 
 class UpdateStatusReadyOutbound(TypedDict):
@@ -496,6 +521,43 @@ class EvolutionStateSnapshot(TypedDict):
     campaign: NotRequired[Dict[str, Any]]
 
 
+class ActiveDirectTurn(TypedDict):
+    """An active in-process direct chat or ephemeral decision turn.
+
+    Snapshot rows in ``StateResponse.active_direct_turns``; every field is
+    always emitted by ``DirectActivityRegistry.snapshot()`` (empty-string for
+    absent optionals), so the mirror marks them all required.
+    """
+
+    activity_id: str
+    chat_id: int
+    project_id: str
+    client_message_id: str
+    kind: str
+    phase: str
+    started_at: float
+
+
+class ActiveChatActivity(TypedDict):
+    """One in-flight chat activity in ``StateResponse.active_chat_activities``.
+
+    The combined snapshot: direct/ephemeral registry turns (same rows as
+    ``active_direct_turns``) plus ROOT managed queue tasks projected as
+    ``kind="managed_task"`` with ``phase`` ``queued`` | ``working`` |
+    ``finalizing`` (final answer stored, post-task synthesis still open).
+    Field shape mirrors ``ActiveDirectTurn`` so one client reducer hydrates
+    both; managed rows carry an empty ``client_message_id``.
+    """
+
+    activity_id: str
+    chat_id: int
+    project_id: str
+    client_message_id: str
+    kind: str
+    phase: str
+    started_at: float
+
+
 class StateResponse(TypedDict):
     """Shape of ``GET /api/state`` (happy path)."""
 
@@ -537,6 +599,11 @@ class StateResponse(TypedDict):
     # project" button (v6.33.0 P2) and render a pointer that opens the bound
     # project's panel (v6.33.0 F4).
     task_bindings: dict
+    active_direct_turns: NotRequired[List[ActiveDirectTurn]]
+    # Combined activity snapshot (direct/ephemeral turns + root managed queue
+    # tasks). Additive beside active_direct_turns, which stays unchanged for
+    # compatibility; new clients hydrate from this field.
+    active_chat_activities: NotRequired[List[ActiveChatActivity]]
 
 
 class SettingsNetworkMeta(TypedDict):
@@ -550,11 +617,25 @@ class SettingsNetworkMeta(TypedDict):
     warning: str
 
 
+class AvailableSubagentsSettingsMeta(TypedDict, total=False):
+    """Saved/migrated intent returned beside ``GET /api/settings``.
+
+    ``candidate`` is an unsaved canonical object.  Absence stays ``None``; a
+    read never materializes the value on disk.
+    """
+
+    source: str
+    diagnostic: str
+    diagnostics: list[Dict[str, Any]]
+    candidate: Optional[Dict[str, Any]]
+
+
 class SettingsMeta(SettingsNetworkMeta, total=False):
     """Complete ``GET /api/settings`` ``_meta`` block."""
 
     custom_secret_keys: list[str]
     setup_contract: Dict[str, Any]
+    available_subagents: AvailableSubagentsSettingsMeta
 
 
 class SettingsSaveResponse(TypedDict, total=False):
@@ -598,6 +679,17 @@ class OwnerScopeReviewFloorResponse(TypedDict):
 class OwnerSafetyModeResponse(TypedDict):
     ok: bool
     safety_mode: str  # full | light | off (v6.54.3)
+
+
+class OwnerSkillPresenceRuntimeRequest(TypedDict):
+    expected_state_fingerprint: str
+    runtime_overrides: Dict[str, Any]
+
+
+class OwnerSkillPresenceRuntimeResponse(TypedDict):
+    ok: bool
+    skill: str
+    presence_runtime: Dict[str, Any]
 
 
 class SkillGrantResponse(TypedDict, total=False):
@@ -678,6 +770,28 @@ class ExtensionsIndexResponse(TypedDict, total=False):
     error: str
 
 
+class SkillPublishPreflightResponse(TypedDict):
+    """Safe selected-skill publication facts; never raw scanner output."""
+
+    ok: bool
+    skill: str
+    repository: str
+    state: Literal["ready", "warnings", "needs_attention", "repairable", "hard_block"]
+    publication_ready: bool
+    task_start_allowed: bool
+    snapshot_hash: str
+    review: Dict[str, Any]
+    scanner: Dict[str, Any]
+    findings: list[Dict[str, Any]]
+    omitted_count: int
+    blocker_count: int
+    warning_count: int
+    audited_false_positive_count: int
+    reason_code: str
+    summary: str
+    repair_hint: str
+
+
 class SkillLifecycleQueueResponse(TypedDict, total=False):
     active: Dict[str, Any]
     events: list[Dict[str, Any]]
@@ -716,6 +830,16 @@ class ModelCatalogResponse(TypedDict, total=False):
     providers: list[Dict[str, Any]]
     models: list[Dict[str, Any]]
     error: str
+
+
+class ProviderTestRequest(TypedDict):
+    provider_id: str
+    overrides: NotRequired[Dict[str, str]]
+
+
+class ProviderTestResponse(TypedDict):
+    ok: bool
+    error: NotRequired[str]
 
 
 class FileBrowserListResponse(TypedDict, total=False):
@@ -829,6 +953,15 @@ class TaskDetailResponse(TypedDict, total=False):
     # the WHY of the pending cancellation (owner text, "subtree cancellation of
     # <root>", "evolution stopped", …). Absent when no reason was recorded.
     cancel_reason: str
+    # S3 (Q1, additive-optional): rides beside a pending ``cancel_state`` when
+    # the open intent is the SOFT stop ("finalize_then_cancel") — the UI shows
+    # "Finalizing…" and offers the hard escalation. Absent on immediate intents.
+    stop_policy: str
+    # S3 (HQ1, additive-optional): the typed owner-hurry observability — the
+    # current block plus the archived history of prior same-id attempts.
+    # Absent on tasks nobody hurried. Task-detail data only, never chat.
+    owner_hurry: OwnerHurryProjection
+    owner_hurry_history: list[OwnerHurryProjection]
     error: str
 
 
@@ -871,8 +1004,89 @@ class ClaudexorStatusResponse(TypedDict, total=False):
     profiles: Dict[str, Any]
     quota: List[Dict[str, Any]]
     reads: ClaudexorStatusReads
+    # UNIFIED ACCOUNT MODEL feature fact (additive-optional): True only when
+    # the engine's own /v2/operations catalog was read and advertises
+    # `GET /v2/account-pools` — the engine change that migrates every default
+    # CLI login into a named registry row, empties `harnessAccounts` and
+    # carries pool routing in the additive `profiles.accountPools` key. False
+    # (or absent, on an older backend) means the legacy native-pseudo-row
+    # rendering; an unreadable catalog fails closed to False.
+    unified_accounts: bool
     subagent_last_delegation: Dict[str, Any]
     error: str
+
+
+class ClaudexorLoginJobResponse(TypedDict, total=False):
+    """The ONE login-job success envelope (frozen browser gateway ABI,
+    issues #124/#151): every ``/api/claudexor/login`` operation — create,
+    snapshot poll, cancel, input, reconcile — answers exactly one top-level
+    bare ``job`` (the daemon's ``ControlSetupJob``), never another envelope
+    nested under it (the double ``job.job`` was issue #124).
+
+    Operation metadata rides BESIDE the job: create adds ``job_id``,
+    ``disclosure_native``, ``setup_login_source`` and (external-terminal
+    flows whose exact packaged attach role was proven) the labelled
+    ``attach_command`` / ``attach_shell`` pair;
+    input keeps its ``ok`` bit; the snapshot poll is the daemon's own
+    ``{job, cursor, sequence, deviceCode?}`` envelope passed through
+    verbatim, so the transient sign-in disclosure lives at the ENVELOPE
+    level, not inside ``job``. ``job`` is required on every operation; all
+    other keys are operation-scoped."""
+
+    job: Required[Dict[str, Any]]
+    # snapshot-only (daemon envelope verbatim)
+    cursor: str
+    sequence: int
+    deviceCode: Dict[str, Any]
+    # create-only metadata
+    job_id: str
+    disclosure_native: bool
+    setup_login_source: Literal[
+        "per_harness", "setup_job_admission", "legacy_global_operation"
+    ]
+    attach_command: str
+    attach_shell: Literal["posix", "powershell"]
+    # input-only compatibility bit
+    ok: bool
+
+
+class ClaudexorVendorCredentialDisposition(TypedDict):
+    """What profile deletion did to a vendor-owned host-user credential."""
+
+    owner: Literal["vendor"]
+    state: Literal["left_unchanged"]
+    scope: Literal["os_user"]
+
+
+class ClaudexorCredentialProfileDeleteResponse(TypedDict):
+    """Exact daemon receipt returned by credential-profile deletion."""
+
+    profile: Dict[str, Any]
+    removed: bool
+    credentialCleanup: Literal["config_dir_removed", "secret_deleted", "none"]
+    cleanupWarning: NotRequired[str]
+    vendorCredentialDisposition: NotRequired[ClaudexorVendorCredentialDisposition]
+
+
+class ClaudexorLoginJobProblem(TypedDict, total=False):
+    """The narrow login-job error envelope (frozen beside the success DTO —
+    the recovery UI consumes both sides of one operation contract): required
+    ``error`` prose, optional stable machine ``code``, optional bounded
+    ``required_actions`` naming the engine's continuation (e.g. reconcile's
+    409 ``setup_termination_unconfirmed`` carries
+    ``["retry_setup_reconciliation"]``). Daemon 404/410 job-absence verdicts,
+    the operation-scoped input/reconcile 409s, and setup-create 400/409 or the
+    frozen retryable 503 terminal-transport probe verdict ride this shape with
+    their original status, stable code, actions and the engine's own sentence.
+    Unmarked transport/discovery 503s and other daemon 5xx stay the proxy's
+    generic 503.
+    Not an action framework: the list mirrors the daemon's own top-level
+    ``ControlProblem.requiredActions`` (at most 16 strings of at most 512
+    chars) and nothing else."""
+
+    error: Required[str]
+    code: str
+    required_actions: List[str]
 
 
 class TaskEvent(TypedDict, total=False):
@@ -893,6 +1107,65 @@ class TaskCancelResponse(TypedDict, total=False):
     # for the subtree cancel, which is COMPLETE by the time this answer is sent;
     # the plain envelope is unchanged.
     cascade: bool
+    # S3 (Q1/Q2, additive): present on the 202 acknowledgement of a
+    # ``{"stop_policy": "finalize_then_cancel"}`` request — the durable intent
+    # is open ("pending") while the bounded finalization attempt runs;
+    # ``stop_policy`` echoes the EFFECTIVE policy of the durable intent
+    # ("immediate" | "finalize_then_cancel"): a graceful request over an
+    # already-hard intent never softens it, and the answer says so. Absent on
+    # the legacy immediate path, which stays byte-identical.
+    cancel_state: str
+    stop_policy: str
+    error: str
+
+
+class TaskHurryRequest(TypedDict):
+    """``POST /api/tasks/{task_id}/hurry`` — the text-free owner hurry control
+    (HQ1 owner decision, paraphrased: no visible chat message ever).
+
+    The body carries ONLY a client-generated stable ``request_id`` (reused on
+    retry so the acknowledgement is idempotent); any other field is refused.
+    There is deliberately no text and no chat side effect anywhere on this
+    path — the durable facts are the typed owner-mailbox control, the
+    ``owner_hurry`` task-result projection, and one non-chat event."""
+
+    request_id: str
+
+
+class OwnerHurryProjection(TypedDict, total=False):
+    """The ``owner_hurry`` block on the task result — task-detail
+    observability, never a chat message. ``state`` is the closed vocabulary
+    requested | applied | not_applied_before_terminal; ``effects`` maps each
+    host-rail effect to its recorded status. ``owner_hurry_history`` rows
+    carry the same shape plus ``archived_at``/``archived_reason`` (rolled over
+    on every same-id requeue by the shared retry-reset)."""
+
+    attempt_key: int
+    request_id: str
+    requested_by: str
+    requested_at: str
+    reason: str
+    state: str
+    effects: Dict[str, str]
+    applied_at: str
+    reconciled_at: str
+    archived_at: str
+    archived_reason: str
+
+
+class TaskHurryResponse(TypedDict, total=False):
+    """Acknowledgement of the typed task-local acceleration control.
+
+    ``duplicate=True`` is the idempotent shape: the same ``request_id`` on the
+    live attempt (or a different id collapsing onto the one armed latch)
+    returns the existing acknowledgement without a second control."""
+
+    ok: bool
+    task_id: str
+    request_id: str
+    state: str
+    attempt_key: int
+    duplicate: bool
     error: str
 
 
@@ -907,14 +1180,24 @@ class OnboardingCompleteRequest(TypedDict, total=False):
     DECLARATIONS about the onboarding run itself.
 
     The settings keys of the shared setup contract ride through unchanged (open
-    shape, same payload the wizard already builds); only the two subscription
-    flags are typed here, because they are not settings. Neither is authority:
+    shape, same payload the wizard already builds); the two subscription flags
+    and canonical actor draft are typed here. None is authority:
     ``subscriptionsConnected`` only tells the server to read the live
     agent account state, and the server re-proves fresh-install status
     on its own before applying anything."""
 
     subscriptionsConnected: bool
     skipSubscriptionPresets: bool
+    OUROBOROS_SUBAGENTS: Dict[str, Any]
+
+
+class OnboardingSubagentsPreviewResponse(TypedDict):
+    """Read-only canonical actor draft returned to Settings/onboarding."""
+
+    ok: bool
+    available_subagents: Dict[str, Any]
+    source: str
+    diagnostics: list[Dict[str, Any]]
 
 
 class OnboardingPresetProjection(TypedDict):
@@ -925,6 +1208,8 @@ class OnboardingPresetProjection(TypedDict):
     onboarding — absence is reported as absence, never as an empty success."""
 
     applied: bool
+    # Open string ABI. Emitted values include not_requested, not_install_time,
+    # skipped_by_owner, configured_by_owner, and applied.
     reason: str
     harnesses: list[str]
     receipt: Dict[str, Any]
@@ -988,6 +1273,8 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/owner/safety-mode",
     "POST /api/owner/capability-ack",
     "POST /api/owner/skills/{skill}/attest-review",
+    "POST /api/owner/skills/{skill}/presence-runtime",
+    "POST /api/skills/{skill}/publish-preflight",
     "GET /api/model-catalog",
     "POST /api/tasks",
     "GET /api/tasks",
@@ -995,6 +1282,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/tasks/{task_id}/artifacts/{name}",
     "GET /api/tasks/{task_id}/events",
     "POST /api/tasks/{task_id}/cancel",
+    "POST /api/tasks/{task_id}/hurry",
     "POST /api/tasks/{task_id}/resume",
     "GET /api/schedules",
     "POST /api/schedules",
@@ -1021,6 +1309,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/chat/upload",
     "DELETE /api/chat/upload",
     "POST /api/openai-compatible/models",
+    "POST /api/providers/test",
     "GET /api/local-model/status",
     "POST /api/local-model/start",
     "POST /api/local-model/stop",
@@ -1036,7 +1325,9 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/claudexor/login/{job_id}",
     "DELETE /api/claudexor/login/{job_id}",
     "POST /api/claudexor/login/{job_id}/input",
+    "POST /api/claudexor/login/{job_id}/reconcile",
     "DELETE /api/claudexor/credential-profiles/{harness}/{profile_id}",
+    "PATCH /api/claudexor/credential-profiles/{harness}/{profile_id}",
     "GET /api/extensions",
     "GET /api/extensions/{skill}/manifest",
     "GET /api/extensions/{skill}/module/{entry}",
@@ -1047,6 +1338,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/skills/{skill}/delete",
     "GET /api/skills/lifecycle-queue",
     "POST /api/skills/{skill}/review",
+    "GET /api/skills/{skill}/review-history/{job_id}",
     "POST /api/skills/{skill}/grants",
     "POST /api/skills/{skill}/reconcile",
     "GET /api/marketplace/clawhub/search",
@@ -1066,6 +1358,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     # overlay frame, plain browser). /api/onboarding stays the readiness probe.
     "GET /onboarding",
     "GET /api/onboarding",
+    "POST /api/onboarding/subagents/preview",
     "POST /api/onboarding/complete",
     "GET /api/claude-code/status",
     "POST /api/claude-code/install",
@@ -1131,8 +1424,11 @@ __all__ = [
     "StatusResponse",
     "HealthResponse",
     "StateResponse",
+    "ActiveDirectTurn",
+    "ActiveChatActivity",
     "EvolutionStateSnapshot",
     "SettingsNetworkMeta",
+    "AvailableSubagentsSettingsMeta",
     "SettingsMeta",
     "SettingsSaveResponse",
     "OwnerRuntimeModeResponse",
@@ -1140,8 +1436,11 @@ __all__ = [
     "OwnerContextModeResponse",
     "OwnerScopeReviewFloorResponse",
     "OwnerSafetyModeResponse",
+    "OwnerSkillPresenceRuntimeRequest",
+    "OwnerSkillPresenceRuntimeResponse",
     "OnboardingCompleteRequest",
     "OnboardingCompleteResponse",
+    "OnboardingSubagentsPreviewResponse",
     "OnboardingPresetFailureResponse",
     "OnboardingPresetProjection",
     "SettingsPostCommitFailureResponse",
@@ -1155,12 +1454,15 @@ __all__ = [
     "ScheduleDeleteResponse",
     "UploadResponse",
     "ExtensionsIndexResponse",
+    "SkillPublishPreflightResponse",
     "SkillLifecycleQueueResponse",
     "MarketplaceSearchResponse",
     "MarketplaceInstalledResponse",
     "LocalModelStatusResponse",
     "McpStatusResponse",
     "ModelCatalogResponse",
+    "ProviderTestRequest",
+    "ProviderTestResponse",
     "FileBrowserListResponse",
     "ChatHistoryResponse",
     "ExecutorRef",
@@ -1172,8 +1474,15 @@ __all__ = [
     "ClaudexorReadState",
     "ClaudexorStatusReads",
     "ClaudexorStatusResponse",
+    "ClaudexorLoginJobResponse",
+    "ClaudexorLoginJobProblem",
+    "ClaudexorVendorCredentialDisposition",
+    "ClaudexorCredentialProfileDeleteResponse",
     "TaskEvent",
     "TaskCancelResponse",
+    "TaskHurryRequest",
+    "TaskHurryResponse",
+    "OwnerHurryProjection",
     "LogTailResponse",
     "HTTP_ENDPOINTS",
     "WS_MESSAGE_TYPES",

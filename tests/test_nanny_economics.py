@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros.task_pacing import NANNY_REMINDER_ROUNDS
+from ouroboros.task_pacing import NANNY_FIRST_REMINDER_ROUNDS, NANNY_REMINDER_ROUNDS
 
 
 @pytest.fixture(autouse=True)
@@ -35,8 +35,11 @@ def _owned_gateway_uses_each_test_transport(monkeypatch):
 # -- B1.1: the contract rides the host instructions ----------------------------
 
 
-def _start_with_contract(tmp_path, monkeypatch, contract):
+def _start_with_contract(
+    tmp_path, monkeypatch, contract, *, prompt="run the tests", compiled_work_order=False,
+):
     import ouroboros.tools.delegate as delegate
+    from ouroboros import subagent_runtime
     from ouroboros.contracts.task_constraint import TaskConstraint
     from ouroboros.gateways import claudexor as gw
     from ouroboros.tools.registry import ToolContext
@@ -73,7 +76,21 @@ def _start_with_contract(tmp_path, monkeypatch, contract):
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "some-route=weak-model:low")
     monkeypatch.setattr(gw, "ClaudexorGateway", lambda *a, **k: _Stub())
     delegate._CUSTODY.clear()
-    payload = json.loads(delegate._delegate_start(ctx, "run the tests"))
+    snapshot = {
+        "schema": 1,
+        "selected_subagent_id": "economics-fixture",
+        "config_fingerprint": "economics-fixture-v1",
+        "route": {
+            "kind": "agent_session",
+            "target_id": "some-route=weak-model",
+            "credential_profile_id": "",
+        },
+        "effort": "low",
+    }
+    payload = json.loads(subagent_runtime.exact_start(ctx, prompt, {
+        "snapshot": snapshot,
+        "compiled_work_order": compiled_work_order,
+    }))
     delegate._CUSTODY.clear()
     assert payload["status"] == "started", payload
     return seen["request"]
@@ -274,6 +291,39 @@ def test_the_cost_axis_alone_can_trigger_the_reminder():
     assert any("metered LLM rounds" in m.get("content", "") for m in msgs)
 
 
+def test_the_reminder_stays_out_of_owner_chat_progress(tmp_path):
+    """Owner decision (2026-08-15): the economics reminder is a model-facing
+    user message plus a typed task_checkpoint event — emit_progress (chat ⚠️
+    lines) stays silent, so the owner chat is not spammed mid-run."""
+    import json
+
+    from ouroboros.task_pacing import NANNY_REMINDER_USD
+    from ouroboros.loop import (
+        _maybe_inject_nanny_economics_reminder,
+        _note_nanny_delegate_activity,
+    )
+
+    ctx = _nanny_ctx()
+    tools = SimpleNamespace(_ctx=ctx)
+    _note_nanny_delegate_activity(ctx, 1, {"cost": 0.0}, [_delegate_call()])
+    _note_nanny_delegate_activity(ctx, 2, {"cost": NANNY_REMINDER_USD}, [])
+    msgs: list = []
+    progress: list = []
+    drive_logs = tmp_path / "logs"
+    drive_logs.mkdir()
+    assert _maybe_inject_nanny_economics_reminder(
+        2, msgs, tools, progress.append,
+        event_queue=None, task_id="t", drive_logs=drive_logs,
+    ) is True
+    assert progress == []
+    assert any("NANNY ECONOMICS REMINDER" in m.get("content", "") for m in msgs)
+    events = [json.loads(line) for line in
+              (drive_logs / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert any(e.get("type") == "task_checkpoint"
+               and e.get("checkpoint_kind") == "nanny_economics_reminder"
+               for e in events)
+
+
 def test_the_rearm_is_dual_axis_a_continuing_dollar_burn_refires_before_8_rounds():
     """F1 (five reviewers converged): after a firing, EITHER a further
     threshold-width of rounds OR a further threshold-width of dollars re-arms.
@@ -397,6 +447,76 @@ def test_zero_baseline_reminder_says_since_task_start():
     assert "since your last delegated-run activity" not in joined
     # The switch_model sanction rides the reminder text (R2-7b).
     assert "switch_model" in joined
+
+
+def test_first_reminder_fires_early_with_zero_delegate_activity():
+    """Owner-approved (2026-08-15): a harness-dispatched nanny that has made NO
+    delegate-verb call hears its FIRST reminder at NANNY_FIRST_REMINDER_ROUNDS
+    regardless of dollars — the live E2E's cheap children finished in 4-8
+    rounds under $0.15 and never heard it."""
+    from ouroboros.loop import (
+        _maybe_inject_nanny_economics_reminder,
+        _note_nanny_delegate_activity,
+    )
+
+    ctx = _nanny_ctx()
+    tools = SimpleNamespace(_ctx=ctx)
+    fired_at = None
+    for round_idx in range(1, NANNY_REMINDER_ROUNDS + 1):
+        # Pennies per round, never a delegate verb: the dollar axis stays cold.
+        _note_nanny_delegate_activity(ctx, round_idx, {"cost": round_idx * 0.01}, [])
+        msgs: list = []
+        if _maybe_inject_nanny_economics_reminder(round_idx, msgs, tools, lambda *_: None):
+            fired_at = round_idx
+            joined = "\n".join(m.get("content", "") for m in msgs)
+            assert "NANNY ECONOMICS REMINDER" in joined
+            assert "since this task started" in joined
+            break
+    assert fired_at == NANNY_FIRST_REMINDER_ROUNDS
+
+
+def test_no_early_fire_once_a_delegate_verb_happened():
+    """The early first-fire is ONLY for a nanny with zero delegate activity:
+    after any delegate verb the ordinary 8-round/$2 dual-axis thresholds apply
+    unchanged, so round NANNY_FIRST_REMINDER_ROUNDS stays silent."""
+    from ouroboros.loop import (
+        _maybe_inject_nanny_economics_reminder,
+        _note_nanny_delegate_activity,
+    )
+
+    ctx = _nanny_ctx()
+    tools = SimpleNamespace(_ctx=ctx)
+    _note_nanny_delegate_activity(ctx, 1, {"cost": 0.0}, [_delegate_call()])
+    fired: list = []
+    for round_idx in range(2, 2 + NANNY_REMINDER_ROUNDS + 1):
+        _note_nanny_delegate_activity(ctx, round_idx, {"cost": 0.05}, [])
+        if _maybe_inject_nanny_economics_reminder(round_idx, [], tools, lambda *_: None):
+            fired.append(round_idx)
+    # Silent through the early horizon; the first fire needs the full
+    # threshold-width of metered rounds since the delegate activity.
+    assert fired == [1 + NANNY_REMINDER_ROUNDS]
+
+
+def test_rearm_after_the_early_first_fire_uses_the_ordinary_thresholds():
+    """Re-arms after the first firing are unchanged: after the early fire at
+    round NANNY_FIRST_REMINDER_ROUNDS, the next one waits a further FULL
+    threshold-width (8 rounds / $2) — the early constant governs only the
+    first firing of a zero-delegation nanny."""
+    from ouroboros.loop import (
+        _maybe_inject_nanny_economics_reminder,
+        _note_nanny_delegate_activity,
+    )
+
+    ctx = _nanny_ctx()
+    tools = SimpleNamespace(_ctx=ctx)
+    fired: list = []
+    for round_idx in range(1, 3 * NANNY_REMINDER_ROUNDS):
+        _note_nanny_delegate_activity(ctx, round_idx, {"cost": 0.0}, [])
+        if _maybe_inject_nanny_economics_reminder(round_idx, [], tools, lambda *_: None):
+            fired.append(round_idx)
+    assert fired[0] == NANNY_FIRST_REMINDER_ROUNDS
+    assert fired[1] - fired[0] == NANNY_REMINDER_ROUNDS
+    assert fired[2] - fired[1] == NANNY_REMINDER_ROUNDS
 
 
 def test_an_expensive_no_tool_round_still_counts(tmp_path):
@@ -550,45 +670,29 @@ def test_forced_wrapup_over_a_succeeded_run_stays_silent_below_threshold(tmp_pat
     assert _forced_delegation_note(ctx, {"tool_calls": []}) == ""
 
 
-# -- B1.1 addendum: the assignment-field truncator is STRICT (F11) --------------
+# -- Configured-session work order wire budget ---------------------------------
 
 
-def test_assignment_field_truncation_is_strict_with_the_marker_inside_the_budget():
-    """F11 (sol #9, probe 4050→4050): the generic preview helper's anti-waste
-    floor let a small overflow pass whole and appended its marker BEYOND the
-    limit. The assignment field is a bounded prompt-channel field: at 4000 it
-    passes untouched, at 4001 it is cut WITH the marker inside 4000, and a
-    multibyte tail is never severed mid-codepoint."""
-    from ouroboros.utils import truncate_within_limit
+def test_work_order_preserves_complete_fields_and_refuses_over_one_total_budget():
+    """No ordinary field becomes a misleading 4k prefix; the total wire bound is atomic."""
+    import pytest
+
+    from ouroboros.subagent_work_order import WorkOrderBudgetExceeded, compile_external_work_order
     from ouroboros.tools.delegate import _ASSIGNMENT_FIELD_CHARS
 
     limit = _ASSIGNMENT_FIELD_CHARS
-    assert limit == 4000
-
-    exact = "a" * limit
-    assert truncate_within_limit(exact, limit) == exact
-
-    over_by_one = "a" * (limit + 1)
-    out = truncate_within_limit(over_by_one, limit)
-    assert len(out) <= limit
-    assert "OMISSION NOTE" in out
-    assert f"original length {limit + 1}" in out
-
-    probe = "a" * 4050
-    out = truncate_within_limit(probe, limit)
-    assert len(out) <= limit, "the 4050→4050 passthrough is the exact probe defect"
-    assert "OMISSION NOTE" in out
-
-    unicode_text = "яё𐍈🚀" * 2000  # multibyte + astral-plane codepoints
-    out = truncate_within_limit(unicode_text, limit)
-    assert len(out) <= limit
-    assert "OMISSION NOTE" in out
-    out.encode("utf-8")  # a mid-codepoint cut would be impossible by slicing, prove it
+    assert limit == 40_000
+    ordinary = "яё𐍈🚀" * 2_000
+    rendered = compile_external_work_order({"id": "child", "objective": ordinary})
+    assert ordinary in rendered and "OMISSION NOTE" not in rendered
+    with pytest.raises(WorkOrderBudgetExceeded) as refused:
+        compile_external_work_order({"id": "child", "objective": "a" * (limit + 1)})
+    assert refused.value.chars > limit
+    assert len(refused.value.sha256) == 64
 
 
-def test_the_contract_block_rides_bounded_through_the_instructions(tmp_path, monkeypatch):
-    """End to end: an oversized objective lands in the run instructions AT the
-    strict bound, marker inside, never 4050 chars of field."""
+def test_an_ordinary_contract_field_reaches_the_run_instructions_complete(tmp_path, monkeypatch):
+    """End to end, the old per-field 4k prefix is gone from the wire."""
     request = _start_with_contract(tmp_path, monkeypatch, {
         "objective": "O" * 4050,
         "expected_output": "ok",
@@ -597,7 +701,31 @@ def test_the_contract_block_rides_bounded_through_the_instructions(tmp_path, mon
     start = instructions.index("HOST TASK OBJECTIVE")
     end = instructions.index("HOST EXPECTED OUTPUT")
     field = instructions[start:end]
-    # The whole labelled block stays within label + strict field budget (+ slack
-    # for the label sentence and separators).
-    assert "OMISSION NOTE" in field
-    assert "O" * 4001 not in field
+    assert "OMISSION NOTE" not in field
+    assert "O" * 4050 in field
+
+
+def test_atomic_compiled_work_order_sends_dynamic_brief_once(tmp_path, monkeypatch):
+    from ouroboros.subagent_work_order import compile_external_work_order
+
+    objective = "UNIQUE_ATOMIC_OBJECTIVE"
+    task = {
+        "id": "t-nanny",
+        "objective": objective,
+        "expected_output": "verified patch",
+        "task_contract": {
+            "objective": objective,
+            "expected_output": "verified patch",
+        },
+    }
+    work_order = compile_external_work_order(task)
+    request = _start_with_contract(
+        tmp_path,
+        monkeypatch,
+        task["task_contract"],
+        prompt=work_order,
+        compiled_work_order=True,
+    )
+    assert request["prompt"].count(objective) == 1
+    assert objective not in request["instructions"]
+    assert "git commit" in request["instructions"]

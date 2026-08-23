@@ -22,7 +22,7 @@
  * @property {?string} supervisor_error
  * @property {string} runtime_mode
  * @property {string} context_mode
- * @property {boolean} context_mode_auto_low  // effective low is a system auto-downgrade, not an owner selection
+ * @property {boolean} context_mode_auto_low  // frozen compatibility field; always false
  * @property {string} safety_mode
  * @property {boolean} skills_repo_configured
  * @property {boolean} github_token_configured
@@ -30,6 +30,30 @@
  * @property {Array<Object>} projects  // active/deleting ProjectEntry sidebar projection
  * @property {Array<number>} project_chat_ids  // complete (uncapped) project chat_ids — WS fan-out isolation SSOT (v6.32.0)
  * @property {Object<string, {project_id: string, chat_id: number}>} task_bindings  // bound task -> its project: suppress the stray "turn into project" button (v6.33.0 P2) + render a pointer that opens the project panel (v6.33.0 F4)
+ * @property {ActiveDirectTurn[]=} active_direct_turns  // active direct/ephemeral chat turns snapshot
+ * @property {ActiveChatActivity[]=} active_chat_activities  // combined snapshot: direct/ephemeral turns + root managed queue tasks
+ */
+
+/**
+ * @typedef {Object} ActiveDirectTurn
+ * @property {string} activity_id
+ * @property {number} chat_id
+ * @property {string} project_id
+ * @property {string} client_message_id
+ * @property {string} kind
+ * @property {string} phase
+ * @property {number} started_at
+ */
+
+/**
+ * @typedef {Object} ActiveChatActivity
+ * @property {string} activity_id
+ * @property {number} chat_id
+ * @property {string} project_id
+ * @property {string} client_message_id  // empty for managed queue rows
+ * @property {string} kind  // direct_chat | ephemeral_decision | managed_task
+ * @property {string} phase  // managed rows: queued | working | finalizing
+ * @property {number} started_at
  */
 
 /**
@@ -55,9 +79,52 @@
  */
 
 /**
+ * @typedef {Object} ProviderTestRequest
+ * @property {string} provider_id
+ * @property {Object<string, string>=} overrides
+ */
+
+/**
+ * @typedef {Object} ProviderTestResponse
+ * @property {boolean} ok
+ * @property {string=} error
+ */
+
+/**
+ * @typedef {Object} AvailableSubagentRoute
+ * @property {'api_model'|'agent_session'} kind
+ * @property {string} target_id
+ * @property {string=} credential_profile_id
+ */
+
+/**
+ * @typedef {Object} AvailableSubagentItem
+ * @property {string} subagent_id
+ * @property {string} name
+ * @property {string} recommended_use
+ * @property {AvailableSubagentRoute} route
+ * @property {string=} effort
+ */
+
+/**
+ * @typedef {Object} AvailableSubagentsSetting
+ * @property {boolean} enabled
+ * @property {AvailableSubagentItem[]} items
+ */
+
+/**
+ * @typedef {Object} AvailableSubagentsSettingsMeta
+ * @property {string=} source
+ * @property {string=} diagnostic
+ * @property {Object[]=} diagnostics
+ * @property {Object|null=} candidate
+ */
+
+/**
  * @typedef {Object} SettingsMeta
  * @property {string[]=} custom_secret_keys
  * @property {Object=} setup_contract
+ * @property {AvailableSubagentsSettingsMeta=} available_subagents
  */
 
 /**
@@ -67,20 +134,37 @@
  * @typedef {Object} OnboardingCompleteRequest
  * @property {boolean=} subscriptionsConnected
  * @property {boolean=} skipSubscriptionPresets
+ * @property {Object=} OUROBOROS_SUBAGENTS
+ */
+
+/**
+ * POST /api/onboarding/subagents/preview accepts the same open provider/local
+ * draft and subscription declarations as onboarding completion. It returns a
+ * canonical editable actor list without persisting anything.
+ * @typedef {OnboardingCompleteRequest} OnboardingSubagentsPreviewRequest
+ */
+
+/**
+ * @typedef {Object} OnboardingSubagentsPreviewResponse
+ * @property {boolean} ok
+ * @property {AvailableSubagentsSetting} available_subagents
+ * @property {string} source
+ * @property {Object[]} diagnostics
  */
 
 /**
  * @typedef {Object} OnboardingPresetProjection
  * @property {boolean} applied
- * @property {string} reason  // not_requested | not_install_time | skipped_by_owner | applied
+ * @property {string} reason  // not_requested | not_install_time | skipped_by_owner | configured_by_owner | applied
  * @property {string[]} harnesses
  * @property {Object} receipt  // per-seat resolution record; {} when nothing was applied
  */
 
 /**
  * Settings, runtime mode, the fresh-install safety default and the durable
- * completion fact land atomically on every success. Preset keys and the one-shot
- * preset marker land only when `preset.applied` is true.
+ * completion fact land atomically on every success. The one-shot preset marker
+ * lands only for the automatic `reason=applied` install preset; an explicit
+ * owner draft may be saved as `configured_by_owner` without reopening it.
  * @typedef {Object} OnboardingCompleteResponse
  * @property {boolean} ok
  * @property {string} status
@@ -122,6 +206,7 @@
  * @property {Array<Object>=} attachments  // [{filename, display_name, mime}] — image uploads become native blocks (v6.26.0)
  * @property {number=} chat_id     // multi-project thread routing (v6.32.0); main chat = 1
  * @property {string=} project_id  // per-project memory scope (v6.32.0)
+ * @property {Object=} client_surface  // raw sending-surface observables measured at send time (pywebview/ua/viewport/matchMedia/captured_at)
  */
 
 /**
@@ -140,6 +225,9 @@
  * @property {boolean=} is_progress
  * @property {string=} task_id
  * @property {boolean=} ephemeral_decision
+ * @property {string=} task_phase
+ *   "finalizing" on a root's early final answer: post-task synthesis still
+ *   runs, so the frame is not the task's terminal conclusion.
  * @property {string=} task_incident
  * @property {string=} toast_once
  * @property {boolean=} task_id_pending
@@ -173,7 +261,8 @@
  *   The completion-seam EVIDENCE the route decision is reconciled against:
  *   {delegated_runs_started, delegated_runs_settled, delegated_runs_succeeded,
  *   delegated_runs_failed, delegated_run_failure_states, evidence_read_failed,
- *   subscription_cost_usd, subscription_cost_estimated, harness_models}.
+ *   subscription_cost_usd, subscription_cost_estimated, harness_models,
+ *   nanny_nudge_recorded, delegate_start_attempted}.
  *   Terminal frames only; absent = "no evidence yet", never "ran natively".
  *   `evidence_read_failed: true` = the custody log exists but could not be
  *   read — zero counts are then UNKNOWN, never a "no run" receipt.
@@ -237,6 +326,17 @@
  * @property {number=} telegram_chat_id
  * @property {string=} system_type
  * @property {number=} chat_id
+ */
+
+/**
+ * @typedef {Object} TypingOutbound
+ * @property {"typing"} type
+ * @property {string} action
+ * @property {number=} chat_id  // multi-project: routes the indicator to the owning panel
+ * @property {string=} activity_id
+ * @property {string=} client_message_id
+ * @property {string=} phase
+ * @property {string=} kind  // stamped only for direct-registry-tracked turns; absent for queued managed tasks (snapshot has no deletion authority over them)
  */
 
 /**
@@ -335,6 +435,40 @@
  * @typedef {Object} ProjectOriginHistoryFields
  * @property {boolean=} origin_projected
  * @property {"origin_omission"=} system_type
+ */
+
+/** Additive history fact: a project-owned Main mirror cannot grant cancel authority.
+ * @typedef {Object} ProjectMirrorHistoryFields
+ * @property {boolean=} project_mirror
+ */
+
+/**
+ * Additive /api/chat/history row fields on `system_type: "skill_review"` rows:
+ * the exact-job reference the producer already writes into chat.jsonl. A row
+ * carrying a non-empty `job_id` lets the Chat card lazily fetch the rendered
+ * review via GET /api/skills/{skill}/review-history/{job_id}; rows without it
+ * (legacy full-text rows) keep local expansion. All fields are additive and
+ * safely ignorable by renderers.
+ * @typedef {Object} SkillReviewHistoryRowFields
+ * @property {string=} skill
+ * @property {string=} status
+ * @property {string=} content_hash
+ * @property {string=} job_id
+ * @property {number=} review_round
+ * @property {number=} snapshot_attempt
+ */
+
+/**
+ * GET /api/skills/{skill}/review-history/{job_id} response: the
+ * server-rendered normalized review block for ONE terminal review record
+ * (raw reviewer text stays in review_history.jsonl; degraded reviewers are
+ * disclosed by model + status). Errors are `{error}` with a typed 404 for
+ * unknown skill/job or unreadable history.
+ * @typedef {Object} SkillReviewHistoryDetailResponse
+ * @property {string} markdown
+ * @property {string} status
+ * @property {string} content_hash
+ * @property {string} job_status
  */
 
 /**
@@ -455,13 +589,45 @@
  * @property {string=} review_profile
  * @property {boolean=} official_hub_verified
  * @property {boolean=} owner_attestable
- * @property {{visible: boolean, disabled: boolean, reason: string}=} submit_hub
+ * @property {{visible: boolean, publication_ready: boolean, task_start_allowed: boolean, disabled: boolean, state: "ready"|"warnings"|"needs_attention"|"repairable"|"hard_block", reason: string}=} submit_hub
  * @property {{current: Object, history: Object[]}=} skill_review
  * @property {boolean=} is_self_authored
  * @property {Object=} grants
  * @property {string[]=} permissions
  * @property {string[]=} conflicts
  * @property {{code: "skill_conflict", skills: string[], omitted: number}=} conflict
+ */
+
+/**
+ * @typedef {Object} SkillPublishFinding
+ * @property {string} path
+ * @property {number} line
+ * @property {string} detector
+ * @property {"low"|"medium"|"high"|"unknown"} confidence
+ * @property {string} reason
+ * @property {"not_attempted"} verification
+ * @property {"blocker"|"warning"|"audited_false_positive"} disposition
+ */
+
+/**
+ * @typedef {Object} SkillPublishPreflightResponse
+ * @property {boolean} ok
+ * @property {string} skill Canonical selected-skill name.
+ * @property {string} repository Canonical case-preserving owner/repo from the configured catalog.
+ * @property {"ready"|"warnings"|"needs_attention"|"repairable"|"hard_block"} state
+ * @property {boolean} publication_ready
+ * @property {boolean} task_start_allowed
+ * @property {string} snapshot_hash
+ * @property {{status?: string, stale?: boolean, profile?: string}} review
+ * @property {{status?: string, engine?: string, version?: string, ruleset_sha256?: string}} scanner
+ * @property {SkillPublishFinding[]} findings
+ * @property {number} omitted_count
+ * @property {number} blocker_count
+ * @property {number} warning_count
+ * @property {number} audited_false_positive_count
+ * @property {string} reason_code
+ * @property {string} summary
+ * @property {string} repair_hint
  */
 
 /**
@@ -474,6 +640,19 @@
  * @property {string=} extension_reason
  * @property {string=} load_error
  * @property {Object=} grants
+ */
+
+/**
+ * @typedef {Object} OwnerSkillPresenceRuntimeRequest
+ * @property {string} expected_state_fingerprint
+ * @property {{model_slot: ("main"|"light"|null), inline_max_rounds: (number|null)}} runtime_overrides
+ */
+
+/**
+ * @typedef {Object} OwnerSkillPresenceRuntimeResponse
+ * @property {boolean} ok
+ * @property {string} skill
+ * @property {Object} presence_runtime
  */
 
 /**
@@ -575,10 +754,19 @@
  * the interim "Cancelling…" from this field, never from a status value.
  * cancel_reason rides beside it when the intent carries a reason (the WHY of
  * the pending cancellation); absent when no reason was recorded.
+ * owner_hurry / owner_hurry_history (S3, HQ1): the typed owner-hurry
+ * observability — the current block plus archived prior-attempt rows.
+ * Absent on tasks nobody hurried. Task-detail data only, never chat.
+ * stop_policy (S3, Q1) rides beside a pending cancel_state when the open
+ * intent is the SOFT stop ("finalize_then_cancel") — the UI shows
+ * "Finalizing…" and offers the hard escalation; absent on immediate intents.
  * @typedef {Object} TaskDetailResponse
  * @property {TaskCostBreakdown=} cost_breakdown
  * @property {string=} cancel_state
  * @property {string=} cancel_reason
+ * @property {string=} stop_policy
+ * @property {OwnerHurryProjection=} owner_hurry
+ * @property {OwnerHurryProjection[]=} owner_hurry_history
  * @property {string=} error
  */
 
@@ -603,6 +791,21 @@
  */
 
 /**
+ * Last settled external leaf projected for the Available-subagents editor.
+ * `selected_subagent_id` is optional only for pre-migration receipts, which
+ * cannot be truthfully attached to a current row.
+ * @typedef {Object} SubagentLastDelegation
+ * @property {string=} selected_subagent_id
+ * @property {string=} route
+ * @property {string=} requested_model
+ * @property {string=} applied_model
+ * @property {string=} requested_profile
+ * @property {string=} applied_profile
+ * @property {string=} run_id
+ * @property {string=} ts
+ */
+
+/**
  * @typedef {Object} ClaudexorStatusResponse
  * @property {Object=} daemon
  * @property {string=} config_dir
@@ -610,8 +813,55 @@
  * @property {Object=} profiles
  * @property {Array<Object>=} quota
  * @property {ClaudexorStatusReads=} reads
- * @property {Object=} subagent_last_delegation
+ * @property {boolean=} unified_accounts
+ * @property {SubagentLastDelegation=} subagent_last_delegation
  * @property {string=} error
+ */
+
+/**
+ * One canonical login-job success envelope. Every operation carries one bare
+ * daemon job at the top level; operation-specific metadata stays beside it.
+ * Snapshot-only deviceCode is envelope-level, never nested inside job.
+ * @typedef {Object} ClaudexorLoginJobResponse
+ * @property {Object} job
+ * @property {string=} cursor
+ * @property {number=} sequence
+ * @property {Object=} deviceCode
+ * @property {string=} job_id
+ * @property {boolean=} disclosure_native
+ * @property {('per_harness'|'setup_job_admission'|'legacy_global_operation')=} setup_login_source
+ * Present only after the exact serving package advertises setup_attach.
+ * @property {string=} attach_command
+ * @property {('posix'|'powershell')=} attach_shell
+ * @property {boolean=} ok
+ */
+
+/**
+ * Narrow typed problem envelope for login-job operations, including the
+ * marked setup-create retryable terminal-probe 503. required_actions is the
+ * daemon's bounded top-level continuation list, not a client-side action
+ * framework; an unmarked discovery/transport 503 stays generic.
+ * @typedef {Object} ClaudexorLoginJobProblem
+ * @property {string} error
+ * @property {string=} code
+ * @property {Array<string>=} required_actions
+ */
+
+/**
+ * @typedef {Object} ClaudexorVendorCredentialDisposition
+ * @property {'vendor'} owner
+ * @property {'left_unchanged'} state
+ * @property {'os_user'} scope
+ */
+
+/**
+ * Exact daemon receipt from deleting one credential-profile binding.
+ * @typedef {Object} ClaudexorCredentialProfileDeleteResponse
+ * @property {Object} profile
+ * @property {boolean} removed
+ * @property {('config_dir_removed'|'secret_deleted'|'none')} credentialCleanup
+ * @property {string=} cleanupWarning
+ * @property {ClaudexorVendorCredentialDisposition=} vendorCredentialDisposition
  */
 
 /**
@@ -639,6 +889,59 @@
  *   v6.82 (P5): echoed only when the request body {"cascade": true} asked for the
  *   subtree cancel, which is complete by the time this answer is sent; the plain
  *   single-task envelope is unchanged.
+ * @property {string=} cancel_state
+ *   S3 (Q1/Q2): "pending" on the 202 acknowledgement of a
+ *   {"stop_policy": "finalize_then_cancel"} request — the durable intent is
+ *   open while the bounded finalization attempt runs. Absent on the legacy
+ *   immediate path.
+ * @property {string=} stop_policy
+ *   The EFFECTIVE policy of the durable intent ("immediate" |
+ *   "finalize_then_cancel"): a graceful request over an already-hard intent
+ *   never softens it, and the answer says so.
+ * @property {string=} error
+ */
+
+/**
+ * POST /api/tasks/{task_id}/hurry — the text-free owner hurry control (HQ1:
+ * no chat message, ever). The body carries ONLY a client-generated stable
+ * request_id (reused on retry); any other field is refused.
+ * @typedef {Object} TaskHurryRequest
+ * @property {string} request_id
+ */
+
+/**
+ * The owner_hurry block on the task result — task-detail observability,
+ * never a chat message. state is the closed vocabulary
+ * requested | applied | not_applied_before_terminal; effects maps each
+ * host-rail effect to its recorded status. History rows carry the same shape
+ * plus archived_at/archived_reason (rolled over on every same-id requeue).
+ * @typedef {Object} OwnerHurryProjection
+ * @property {number=} attempt_key
+ * @property {string=} request_id
+ * @property {string=} requested_by
+ * @property {string=} requested_at
+ * @property {string=} reason
+ * @property {string=} state
+ * @property {Object<string, string>=} effects
+ * @property {string=} applied_at
+ * @property {string=} reconciled_at
+ * @property {string=} archived_at
+ * @property {string=} archived_reason
+ */
+
+/**
+ * Acknowledgement of the typed task-local acceleration control.
+ * duplicate=true is the idempotent shape: the same request_id on the live
+ * attempt (or a different id collapsing onto the one armed latch) returns
+ * the existing acknowledgement without a second control.
+ * @typedef {Object} TaskHurryResponse
+ * @property {boolean} ok
+ * @property {string} task_id
+ * @property {string} request_id
+ * @property {string=} state
+ * @property {number=} attempt_key
+ * @property {boolean=} duplicate
+ * @property {string=} error
  */
 
 /**
@@ -733,6 +1036,9 @@
  * @property {boolean=} restart_required
  * @property {UpdateMergePlan=} merge_plan
  * @property {Object=} smoke
+ * @property {string=} stash_note Stash-first prologue disclosure: how stashed local work was unwound.
+ * @property {?number=} estimated_wave_usd Wave-floor admission estimate (worst-case review-pack caps).
+ * @property {?number=} remaining_usd Remaining model budget the floor compared against.
  */
 
 /**
@@ -742,4 +1048,4 @@
  * @property {?boolean} check_ok
  */
 
-export const GATEWAY_CONTRACT_VERSION = '6.103.29';
+export const GATEWAY_CONTRACT_VERSION = '6.109.0';

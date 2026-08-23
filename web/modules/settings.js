@@ -5,16 +5,20 @@ import { applyMcpSettings, collectMcpSettings, initMcpSettings } from './mcp_set
 import { collectReviewerSlots, initReviewerSlots, reloadReviewerSlots } from './reviewer_slots.js';
 import {
     applySubagentsSettings,
+    availableSubagentsPreviewPayload,
     collectSubagentsSettings,
     initSubagentsSection,
     reloadSubagentsSection,
+    subagentSettingsFingerprint,
+    validateSubagentsDraft,
 } from './subagents_settings.js';
 import { initHarnessAccounts } from './harness_accounts.js';
 import { openConfirmDialog } from './confirm_dialog.js';
-import { SECRET_KEYS, bindSecretInputs, bindSettingsTabs, renderSettingsPage } from './settings_ui.js';
+import { PROVIDER_TEST_INPUTS, SECRET_KEYS, bindSecretInputs, bindSettingsTabs, renderSettingsPage } from './settings_ui.js';
 import { showToast } from './toast.js';
 import { escapeHtmlAttr as escapeHtml, formatDualVersion } from './utils.js';
 import { apiClient, apiFetch, cleanExtensionRoute, extensionRoutePath } from './api_client.js';
+import { claudexorStatus } from './claudexor_status_store.js';
 import { collectSafeFieldValues, renderSafeField, setInlineStatus } from './ui_helpers.js';
 
 let markSettingsDirty = () => {};
@@ -45,6 +49,9 @@ const VALUE_FIELDS = [
     ['s-effort-task', 'OUROBOROS_EFFORT_TASK', 'medium'], ['s-effort-evolution', 'OUROBOROS_EFFORT_EVOLUTION', 'high'],
     ['s-effort-consciousness', 'OUROBOROS_EFFORT_CONSCIOUSNESS', 'high'], ['s-effort-deep-self-review', 'OUROBOROS_EFFORT_DEEP_SELF_REVIEW', 'high'],
     ['s-review-enforcement', 'OUROBOROS_REVIEW_ENFORCEMENT', 'advisory'], ['s-task-review-mode', 'OUROBOROS_TASK_REVIEW_MODE', 'auto'], ['s-runtime-mode', 'OUROBOROS_RUNTIME_MODE', 'advanced'],
+    // Shared paid-review-cycle cap (plan review / task acceptance / commit gate);
+    // the ∞ segment saves the string "unlimited" (SSOT: ouroboros/review_cycles.py).
+    ['s-review-max-cycles', 'OUROBOROS_REVIEW_MAX_CYCLES', '2'],
     ['s-update-channel', 'OUROBOROS_UPDATE_CHANNEL', 'stable'],
     ['s-reasoning-summary', 'OUROBOROS_REASONING_SUMMARY', 'auto'],
     ['s-websearch-backend', 'OUROBOROS_WEBSEARCH_BACKEND', 'auto'],
@@ -55,7 +62,7 @@ const VALUE_FIELDS = [
 ];
 const _SAFETY_MODE_RANK = { full: 2, light: 1, off: 0 };
 const NUMBER_FIELDS = [
-    ['s-workers', 'OUROBOROS_MAX_WORKERS', 10], ['s-active-subagents', 'OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT', 6], ['s-subagent-depth', 'OUROBOROS_MAX_SUBAGENT_DEPTH', 2, true],
+    ['s-workers', 'OUROBOROS_MAX_WORKERS', 10], ['s-presence-max-active', 'OUROBOROS_PRESENCE_MAX_ACTIVE', 2], ['s-active-subagents', 'OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT', 6], ['s-subagent-depth', 'OUROBOROS_MAX_SUBAGENT_DEPTH', 2, true],
     ['s-tool-timeout', 'OUROBOROS_TOOL_TIMEOUT_SEC', 600], ['s-local-port', 'LOCAL_MODEL_PORT', 8766], ['s-local-gpu-layers', 'LOCAL_MODEL_N_GPU_LAYERS', -1, true],
     ['s-task-idle-timeout', 'OUROBOROS_TASK_IDLE_TIMEOUT_SEC', 900], ['s-task-abs-ceiling', 'OUROBOROS_TASK_ABS_CEILING_SEC', 21600],
     ['s-local-ctx', 'LOCAL_MODEL_CONTEXT_LENGTH', 16384], ['s-gc-retention-days', 'OUROBOROS_GC_RETENTION_DAYS', 7],
@@ -71,22 +78,16 @@ function byId(id) {
 }
 
 function applyInputValue(id, value) {
-    byId(id).value = value === undefined || value === null ? '' : value;
+    const el = byId(id);
+    el.value = value === undefined || value === null ? '' : value;
+    // Server-applied snapshot (secrets arrive MASKED): lets the provider-test
+    // handler tell an owner edit apart from the mask, which must never be sent
+    // back as a credential.
+    el.dataset.appliedValue = el.value;
 }
 
 function applyCheckboxValue(id, value) {
     byId(id).checked = isTruthySetting(value);
-}
-
-function syncHeavyModelPlaceholder() {
-    // Owner decision: an empty Heavy slot legally inherits Main, so the empty
-    // field names the model it actually resolves to instead of looking unset.
-    // Display-only — nothing here writes settings.
-    const heavy = byId('s-model-heavy');
-    const main = byId('s-model');
-    if (!heavy || !main) return;
-    const mainValue = String(main.value || '').trim();
-    heavy.placeholder = mainValue ? `inherits Main (${mainValue})` : 'inherits Main';
 }
 
 function isTruthySetting(value) {
@@ -128,7 +129,14 @@ function wireSecretRow(row) {
     const clear = row.querySelector('[data-row-secret-clear]');
     if (input) input.addEventListener('input', () => { if (input.value.trim()) delete input.dataset.forceClear; });
     if (toggle && input) toggle.addEventListener('click', () => { input.type = input.type === 'password' ? 'text' : 'password'; toggle.textContent = input.type === 'password' ? 'Show' : 'Hide'; });
-    if (clear && input) clear.addEventListener('click', () => { input.value = ''; input.type = 'password'; input.dataset.forceClear = '1'; if (toggle) toggle.textContent = 'Show'; markSettingsDirty(); });
+    if (clear && input) clear.addEventListener('click', () => {
+        input.value = ''; input.type = 'password'; input.dataset.forceClear = '1';
+        if (toggle) toggle.textContent = 'Show';
+        markSettingsDirty();
+        // Programmatic value changes fire no 'input' event, but a Clear is an
+        // edit like any other: the provider-test verdict listener must see it.
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
 }
 
 function customSecretRow(key = '', value = '') {
@@ -301,8 +309,8 @@ function collectSecretValue(id, body) {
 
 // Fallback picker pills mirror config defaults plus useful direct-provider ids.
 const SETTINGS_FALLBACK_MODELS = [
-    'x-ai/grok-4.5',
-    'google/gemini-3.6-flash',
+    'google/gemini-3.7-flash',
+    'x-ai/grok-4.6',
     'openai/gpt-5.6-terra',
     'openai/gpt-5.6-sol',
     'openai/gpt-5.6-luna',
@@ -338,6 +346,22 @@ export function moreProvidersCredentialConfigured({
         || (has(gigachatUser) && has(gigachatPassword));
 }
 
+export function providerTestStatusText(result = {}) {
+    if (result?.ok === true) return 'Works';
+    const reason = String(result?.error || '').trim();
+    return reason ? `Not ready — ${reason}` : 'Not ready';
+}
+
+export function providerTestNetworkErrorStatus() {
+    return 'Not ready';
+}
+
+export function providerTestResultIsCurrent({
+    sentGeneration, currentGeneration, sentFingerprint, currentFingerprint,
+} = {}) {
+    return sentGeneration === currentGeneration && sentFingerprint === currentFingerprint;
+}
+
 export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     const page = document.createElement('div');
     page.id = 'page-settings';
@@ -370,9 +394,20 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     let settingsLoaded = false;
     let settingsBaseline = '';
     let settingsDirty = false;
+    const providerTestGenerations = new Map();
+    const providerTestsInFlight = new Set();
     initMcpSettings({ onChange: updateSettingsDirtyState });
     initReviewerSlots({ onChange: () => updateSettingsDirtyState() });
-    initSubagentsSection({ onChange: () => updateSettingsDirtyState() });
+    initSubagentsSection({
+        onChange: () => updateSettingsDirtyState(),
+        isOuterDraftClean: () => !settingsDirty,
+        onGeneratedApply: () => {
+            if (settingsLoaded && !settingsDirty) setSettingsCleanBaseline();
+        },
+        previewGenerated: ({ subscriptionsConnected }) => apiClient.previewOnboardingSubagents(
+            availableSubagentsPreviewPayload(collectBody(), subscriptionsConnected),
+        ),
+    });
     initHarnessAccounts();
 
     function anthropicKeyConfigured() {
@@ -432,8 +467,18 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         });
     }
 
+    // Top-level keys in sorted order: the dirty check compares these strings,
+    // and the status-settle baseline fold below inserts keys AFTER the fact —
+    // equality must not depend on object insertion order. Nested values keep
+    // native stringify (both sides build them through the same code path).
+    function stableSerializeDraft(draft) {
+        return JSON.stringify(Object.fromEntries(
+            Object.entries(draft).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        ));
+    }
+
     function snapshotSettingsDraft() {
-        return JSON.stringify({
+        return stableSerializeDraft({
             ...collectBody(),
             OUROBOROS_RUNTIME_MODE_DRAFT: byId('s-runtime-mode')?.value || 'advanced',
             OUROBOROS_CONTEXT_MODE_DRAFT: byId('s-context-mode')?.value || 'max',
@@ -454,6 +499,34 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         settingsDirty = nextDirty;
         const indicator = byId('settings-unsaved-indicator');
         if (indicator) indicator.classList.toggle('is-visible', settingsDirty);
+    }
+
+    let baselineSettleDisposer = null;
+    function armCleanBaselineOnStatusSettle() {
+        // The sections' Claudexor status probe is fire-and-forget, so the
+        // baseline can be taken before the store-gated collectors have their
+        // facts — and their output changes when a snapshot lands (the accounts
+        // facet, the later include-models upgrade). Absent owner edits, no
+        // store arrival may read as an unsaved change; and every owner edit
+        // flips settingsDirty through its own input handler BEFORE any store
+        // notify, so re-baselining while the draft is clean can never mask
+        // one. Deliberately NOT a one-shot on everSettled: an earlier
+        // model-less read may have settled the store long before the upgrade
+        // this page's collectors actually feed on. A BARE subscription, not a
+        // status surface: this observer must react to snapshots the sections'
+        // own surfaces fetch, never arm the polling chain itself.
+        baselineSettleDisposer?.();
+        baselineSettleDisposer = claudexorStatus.subscribe(() => {
+            // CLEAN drafts only. A late availability repaint may change status
+            // copy but never the canonical actor draft; re-baselining a DIRTY
+            // page would still absorb the owner's real row edit into the clean
+            // baseline, so it remains forbidden.
+            // Disclosed residual: a cold-daemon settle landing AFTER an owner
+            // edit stays inside the unsaved-changes diff until the next save —
+            // rare (the reloads wait a bounded beat for the probe first) and
+            // fail-safe (an over-eager indicator, never a lost edit).
+            if (!settingsDirty && settingsLoaded) setSettingsCleanBaseline();
+        });
     }
 
     function discardUnsavedSettingsDraft() {
@@ -530,6 +603,13 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
 
     function applySettings(s) {
         setupContract = s?._meta?.setup_contract || setupContract || {};
+        // A settings (re)load replaces the values every provider verdict was
+        // earned against — programmatic assignment fires no 'input' events, so
+        // the expiry listener cannot see it; expire the verdicts here.
+        Object.keys(PROVIDER_TEST_INPUTS).forEach((provider) => {
+            providerTestGenerations.set(provider, (providerTestGenerations.get(provider) || 0) + 1);
+        });
+        page.querySelectorAll('[data-provider-test-status]').forEach((el) => { el.textContent = ''; });
         applySecretInputs(page, s);
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => applyInputValue(id, fallback && !s[key] ? fallback : s[key]));
         VALUE_FIELDS.forEach(([id, key, fallback]) => { byId(id).value = s[key] || fallback; });
@@ -537,7 +617,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             applyInputValue(slot.settingsInputId, s[slot.settingKey]);
             if (slot.settingsToggleId) applyCheckboxValue(slot.settingsToggleId, s[`USE_LOCAL_${slot.slot.toUpperCase()}`]);
         });
-        syncHeavyModelPlaceholder();
         applyCheckboxValue('s-auto-grant-reviewed-skills', s.OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS);
         applyCheckboxValue('s-update-autocheck-enabled', s.OUROBOROS_UPDATE_AUTOCHECK_ENABLED);
         // Owner-facing mutative-subagents control shows the EFFECTIVE state when it
@@ -555,7 +634,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         delete mutativeInput.dataset.effortTouched;
         mutativeInput.value =
             ({ true: 'on', false: 'off' }[rawMutative] || (runtimeMode === 'light' ? 'auto' : 'on'));
-        // The delegation route lives next to it in Agents → Delegation.
+        // The actor list lives next to it in Agents → Available subagents.
         applySubagentsSettings(s);
         // Post-task evolution: one owner-facing selector maps to enable + cadence.
         const evoEnabled =
@@ -655,14 +734,22 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         renderExtensionSettingsSections(page, sections);
         renderRequestedSkillSecrets(page, extData.skills || [], data);
         renderCustomSecrets(page, data);
-        // Await the reviewer rows and the Subagents accounts BEFORE the clean
+        // Await reviewer config and the Available-subagents bounded status beat BEFORE the clean
         // baseline: their async arrival must not read as an unsaved owner edit.
+        // (The Claudexor status probe inside them is fire-and-forget — a cold
+        // daemon must not hold the Save button — so its LATER settlement is
+        // re-baselined below.)
         await Promise.all([reloadReviewerSlots(), reloadSubagentsSection()]);
+        // Mark the document loaded before taking the baseline. A generated
+        // preview may settle in the microtask between these statements; its
+        // clean-gated callback must be allowed to fold that exact draft into
+        // the baseline rather than leave a false unsaved change behind.
+        settingsLoaded = true;
         setSettingsCleanBaseline();
+        armCleanBaselineOnStatusSettle();
         closeSettingsModelPickers();
         _renderNetworkHint(data._meta);
         renderClaudeCodeUi();
-        settingsLoaded = true;
         markSettingsDirty = updateSettingsDirtyState;
         syncSettingsLoadState();
         startClaudeCodePolling();
@@ -725,9 +812,9 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             // 6.1: the ONE structured reviewer-slot setting; {} until the rows
             // view has loaded, so an unrelated save cannot blank it.
             ...collectReviewerSlots(),
-            // Same rule for the delegated-subagent route: {} until the accounts
-            // read succeeded, so an unrelated save cannot turn delegation off
-            // because this page could not reach the daemon.
+            // Saved config and live availability are independent: a loaded
+            // actor list is collected even when status is down; only an
+            // unloaded/unparseable editor omits the key on an unrelated save.
             ...collectSubagentsSettings(),
         };
         setupModelSlots().forEach((slot) => {
@@ -930,51 +1017,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (!input) return null;
         const next = input.value || 'max';
         const current = currentSettings?.OUROBOROS_CONTEXT_MODE || 'max';
-        // A displayed `low` that is a system AUTO-DOWNGRADE is not an owner selection
-        // (see the chat toggle): re-picking Low must still POST so the idempotent
-        // endpoint clears the derived flag, otherwise an install whose route cannot be
-        // confirmed >=1M has no reachable way to declare Low and every commit blocks.
-        const derivedLow = String(currentSettings?.OUROBOROS_CONTEXT_MODE_AUTO_LOW || '')
-            .trim().toLowerCase() === 'true';
-        if (next === current && !(next === 'low' && derivedLow)) return null;
-        // Owner-only + hot-apply (saves immediately, no restart). Max needs the active model's
-        // 1M-token window confirmed; on a 409 needs_ack, share the chat-toggle's ack flow
-        // (CW8) — confirm, POST the route-scoped capability-ack, retry — instead of a
-        // generic failure.
-        try {
-            const result = await apiClient.ownerContextMode(next);
-            if (!result || result.ok !== true) {
-                throw new Error(result?.error || 'Context mode change failed.');
-            }
-            return result;
-        } catch (e) {
-            const ack = (e && e.status === 409 && e.body && e.body.needs_ack) ? e.body.needs_ack : null;
-            if (!(next === 'max' && ack && ack.model)) {
-                throw e;
-            }
-            const confirmed = await openConfirmDialog({
-                title: 'Confirm 1M-token context window',
-                body: `${(e.body && e.body.error) || 'Max context mode needs a confirmed 1M-token window.'}\n\n` +
-                    `Confirm that this model supports a 1,000,000-token context window?\n` +
-                    `provider: ${ack.provider || '(default)'}\nmodel: ${ack.model}\n` +
-                    `base_url: ${ack.base_url || '(default)'}\n\n` +
-                    `This applies only to this exact model/provider and is removed if you change it.`,
-                confirmLabel: 'Confirm window',
-            });
-            if (!confirmed) {
-                throw new Error('Max context mode was not confirmed.');
-            }
-            // Throws on a non-ok ack (surfaced by the save handler's catch).
-            await apiClient.ownerCapabilityAck({
-                provider: ack.provider, model: ack.model, base_url: ack.base_url,
-                window_tokens: 1000000, note: 'owner-confirmed via settings save',
-            });
-            const retry = await apiClient.ownerContextMode(next);
-            if (!retry || retry.ok !== true) {
-                throw new Error(retry?.error || 'Context mode change failed after confirmation.');
-            }
-            return retry;
+        if (next === current) return null;
+        const result = await apiClient.ownerContextMode(next);
+        if (!result || result.ok !== true) {
+            throw new Error(result?.error || 'Context mode change failed.');
         }
+        return result;
     }
 
     syncSettingsLoadState();
@@ -1108,16 +1156,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         renderSettingsModelPicker(input);
     });
 
-    // Keep the Heavy inherits-Main hint live while Main is edited (typed
-    // 'input') or picked from the catalog dropdown (dispatched 'change').
-    for (const eventType of ['input', 'change']) {
-        page.addEventListener(eventType, (event) => {
-            if (event.target instanceof Element && event.target.id === 's-model') {
-                syncHeavyModelPlaceholder();
-            }
-        });
-    }
-
     page.addEventListener('mousedown', (event) => {
         const item = event.target instanceof Element
             ? event.target.closest('.model-picker-item')
@@ -1162,6 +1200,74 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                 renderClaudeCodeUi();
                 refreshClaudeCodeStatus();
             });
+        }
+    });
+
+    // Provider readiness probe: one short model request against the card draft.
+    page.querySelector('[data-settings-panel="providers"]')?.addEventListener('click', async (event) => {
+        const button = event.target instanceof Element ? event.target.closest('[data-provider-test]') : null;
+        if (!button) return;
+        const provider = button.dataset.providerTest;
+        if (providerTestsInFlight.has(provider)) return;
+        const status = page.querySelector(`[data-provider-test-status="${provider}"]`);
+        const collectOverrides = () => {
+            const overrides = {};
+            for (const [inputId, settingKey] of Object.entries(PROVIDER_TEST_INPUTS[provider] || {})) {
+                const input = byId(inputId);
+                const value = (input?.value || '').trim();
+                // Only owner-edited fields become overrides: saved secrets render
+                // as MASKED placeholders (gateway mask_settings_secret), and echoing
+                // a mask back as the credential would fail every already-saved key.
+                // An untouched field means "test the saved value server-side"; an
+                // edited-to-empty field (Clear included) sends an explicit empty
+                // override so the probe tests the visible draft, not the old key.
+                if (value !== (input?.dataset.appliedValue ?? '').trim()) {
+                    overrides[settingKey] = value;
+                }
+            }
+            return overrides;
+        };
+        const overrides = collectOverrides();
+        const sentFingerprint = JSON.stringify(overrides);
+        const sentGeneration = providerTestGenerations.get(provider) || 0;
+        providerTestsInFlight.add(provider);
+        button.disabled = true;
+        if (status) status.textContent = 'Testing…';
+        const resultIsCurrent = () => providerTestResultIsCurrent({
+            sentGeneration,
+            currentGeneration: providerTestGenerations.get(provider) || 0,
+            sentFingerprint,
+            currentFingerprint: JSON.stringify(collectOverrides()),
+        });
+        try {
+            const data = await apiClient.providerTest({ provider_id: provider, overrides });
+            if (status && resultIsCurrent()) status.textContent = providerTestStatusText(data);
+        } catch (_error) {
+            if (status && resultIsCurrent()) {
+                status.textContent = providerTestNetworkErrorStatus();
+            }
+        } finally {
+            providerTestsInFlight.delete(provider);
+            button.disabled = false;
+        }
+    });
+
+    // A displayed verdict is only good for the draft it tested: the moment any
+    // field of that card changes, the old OK/Failed would sit beside values it
+    // never saw — clear it instead of letting it vouch for the new draft.
+    page.querySelector('[data-settings-panel="providers"]')?.addEventListener('input', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element) || !target.id) return;
+        for (const [provider, inputs] of Object.entries(PROVIDER_TEST_INPUTS)) {
+            if (target.id in inputs) {
+                providerTestGenerations.set(
+                    provider,
+                    (providerTestGenerations.get(provider) || 0) + 1,
+                );
+                const status = page.querySelector(`[data-provider-test-status="${provider}"]`);
+                if (status) status.textContent = '';
+                break;
+            }
         }
     });
 
@@ -1212,7 +1318,14 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             setStatus('Every-N cadence needs a whole number ≥ 1.', 'warn');
             return;
         }
+        const subagentErrors = validateSubagentsDraft();
+        if (subagentErrors.length) {
+            setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn');
+            return;
+        }
         const body = collectBody();
+        const subagentsChanged = subagentSettingsFingerprint(body.OUROBOROS_SUBAGENTS)
+            !== subagentSettingsFingerprint(currentSettings?.OUROBOROS_SUBAGENTS);
 
         try {
             const data = await apiClient.saveSettings(body);
@@ -1267,13 +1380,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             } else {
                 statusMsg = 'Settings saved. Changes take effect on the next task';
             }
+            if (subagentsChanged && data.agent_task_running) {
+                statusMsg += '. Available subagents take effect for new child tasks; '
+                    + 'the current task keeps its existing routes';
+            }
             if (data.warnings && data.warnings.length) {
                 statusMsg += ' ⚠️ ' + data.warnings.join(' | ');
-                statusType = 'warn';
-            }
-            if (data.context_mode_downgraded) {
-                // The new model can't sustain Max, so context mode auto-dropped to Low.
-                statusMsg = `${statusMsg} ${data.notice || 'Context mode switched to Low.'}`;
                 statusType = 'warn';
             }
             if (runtimeModeResult?.restart_required) {

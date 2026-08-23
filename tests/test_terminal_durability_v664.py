@@ -676,6 +676,65 @@ def test_terminal_emitter_still_withholds_an_unavailable_projection(tmp_path, mo
     assert "cost_usd" not in emitted and "non_final_rows" not in emitted
 
 
+def test_terminal_unknown_zero_cost_stays_nullable(tmp_path):
+    """An attributed opaque dispatch is unknown, never a terminal free $0."""
+    from ouroboros import usage_accounting
+    from supervisor import events
+    from supervisor.state import reconstruct_task_cost
+
+    usage_accounting.record_unmetered_external_dispatch(
+        "terminal-opaque", drive_root=tmp_path, provider="external-skill",
+        task_id="terminal-root", root_task_id="terminal-root",
+    )
+    fields = reconstruct_task_cost("terminal-root", fields=True, drive_root=tmp_path)
+    assert fields["cost_usd"] is None
+    assert fields["accounted_upper_bound_usd"] is None
+    assert fields["unknown_unmetered"] == 1
+
+    task = {
+        "id": "terminal-root", "root_task_id": "terminal-root",
+        "budget_drive_root": str(tmp_path),
+    }
+    terminal = events._authoritative_terminal_cost(
+        "terminal-root", task, dict(task), {}, tmp_path,
+    )
+    assert terminal["cost_usd"] is None
+    assert terminal["accounted_upper_bound_usd"] is None
+    assert terminal["cost_usd_with_children"] is None
+    assert terminal["accounted_upper_bound_usd_with_children"] is None
+    assert terminal["unknown_unmetered"] == 1
+
+
+def test_post_task_checkpoint_keeps_unknown_zero_cost_nullable(tmp_path):
+    import ouroboros.post_task_checkpoint as checkpoint
+    from ouroboros import usage_accounting
+    from ouroboros.task_results import STATUS_COMPLETED, load_task_result, write_task_result
+
+    data = tmp_path / "data"
+    data.mkdir()
+    task_id = "post-task-opaque"
+    write_task_result(
+        data, task_id, STATUS_COMPLETED, root_task_id=task_id,
+        root_phase_checkpoint={"post_task_synthesis": "running"},
+    )
+    usage_accounting.record_unmetered_external_dispatch(
+        "post-opaque", drive_root=data, provider="external-skill",
+        task_id=task_id, root_task_id=task_id,
+    )
+
+    checkpoint.set_root_post_task_checkpoint(
+        SimpleNamespace(drive_root=data),
+        {"id": task_id, "root_task_id": task_id, "status": STATUS_COMPLETED},
+        "completed",
+    )
+    stored = load_task_result(data, task_id)
+    assert stored["cost_usd"] is None
+    assert stored["accounted_upper_bound_usd"] is None
+    assert stored["cost_usd_with_children"] is None
+    assert stored["accounted_upper_bound_usd_with_children"] is None
+    assert stored["unknown_unmetered"] == 1
+
+
 def _install_supervisor(tmp_path, monkeypatch):
     from supervisor import queue, state, workers
 

@@ -866,6 +866,22 @@ def test_a_genuine_crash_is_not_reclassified_by_timeout_text_elsewhere_in_the_ou
     assert "300s per-test limit" not in result
 
 
+def test_diagnosis_keeps_the_failure_summary_tail_when_output_is_cut():
+    """pytest prints FAILURES + the short summary at the END: the bounded
+    diagnosis cuts the MIDDLE, never the tail naming the failing tests."""
+    from ouroboros.preflight_runner import _classify_pass_result
+
+    output = (
+        "= session starts =\n" + ("noise PASSED\n" * 400)
+        + "= FAILURES =\nE assert 0 == 1\nFAILED tests::test_the_culprit\n"
+    )
+    result = _classify_pass_result("parallel", 1, output, 2000, parallel=True)
+    assert result is not None and len(result) <= 2000
+    assert "session starts" in result  # the head survives too
+    assert "...(truncated)..." in result
+    assert "test_the_culprit" in result  # the tail survives the cut
+
+
 @pytest.mark.parametrize("max_output", [1, 40, 200])
 def test_diagnosis_never_overruns_a_declared_max_output(max_output):
     """`_diagnosis` promises the returned string stays inside the caller's
@@ -1765,6 +1781,72 @@ def test_a_staged_change_reverted_in_the_worktree_lands_as_head_content(
     assert seen["reverted.txt"] == "base\n", (
         f"candidate honoured the staged intermediate, not the worktree: {seen!r}"
     )
+
+
+def test_disposable_index_matches_source_while_files_match_live_worktree(
+    tmp_path, two_pass_env, stub_passes, monkeypatch
+):
+    """Tests see both projections: live bytes on disk and staged bytes in Git."""
+    from ouroboros import preflight_runner
+    from ouroboros.preflight_runner import run_hermetic_pytest
+
+    repo = _make_repo(tmp_path, {
+        "tests/test_plain.py": "def test_ok():\n    assert True\n",
+        "dual.txt": "head\n",
+    })
+    (repo / "dual.txt").write_text("staged\n", encoding="utf-8")
+    _git(repo, "add", "dual.txt")
+    (repo / "dual.txt").write_text("live\n", encoding="utf-8")
+
+    stub_passes([])
+    seen: dict[str, str] = {}
+
+    def _spy(agent_python, worktree, temp_root, args, timeout):
+        candidate = pathlib.Path(worktree)
+        seen["live"] = (candidate / "dual.txt").read_text(encoding="utf-8")
+        seen["staged"] = subprocess.run(
+            ["git", "show", ":dual.txt"], cwd=candidate, check=True,
+            capture_output=True, text=True,
+        ).stdout
+        seen["tree"] = subprocess.run(
+            ["git", "write-tree"], cwd=candidate, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        return (0, "", "")
+
+    monkeypatch.setattr(preflight_runner, "_execute_pytest_pass", _spy)
+
+    source_tree = subprocess.run(
+        ["git", "write-tree"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert run_hermetic_pytest(repo, timeout=120) is None
+    assert seen == {"live": "live\n", "staged": "staged\n", "tree": source_tree}
+
+
+def test_non_unmerged_source_write_tree_failure_is_a_hard_block(
+    tmp_path, two_pass_env, stub_passes, monkeypatch
+):
+    from ouroboros import preflight_runner
+    from ouroboros.preflight_runner import run_hermetic_pytest
+
+    repo = _make_repo(tmp_path, {"tests/test_plain.py": "def test_ok():\n    assert True\n"})
+    events = stub_passes([])
+    real_run_git = preflight_runner._run_git
+
+    def _broken_write_tree(repo_dir, args, **kwargs):
+        if pathlib.Path(repo_dir).resolve() == repo.resolve() and list(args) == ["write-tree"]:
+            return subprocess.CompletedProcess(
+                ["git", *args], 128, "", "synthetic index corruption"
+            )
+        return real_run_git(repo_dir, args, **kwargs)
+
+    monkeypatch.setattr(preflight_runner, "_run_git", _broken_write_tree)
+
+    result = run_hermetic_pytest(repo, timeout=120)
+
+    assert result is not None and "PREFLIGHT_SOURCE_INDEX" in result
+    assert "synthetic index corruption" in result
+    assert [event[0] for event in events].count("pass") == 0
 
 
 def test_a_chmod_only_change_reaches_the_candidate(

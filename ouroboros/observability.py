@@ -16,9 +16,9 @@ import pathlib
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from ouroboros.utils import atomic_write_json, utc_now_iso
+from ouroboros.utils import atomic_write_json, replace_atomic, utc_now_iso
 
 
 OBSERVABILITY_DIR = "observability"
@@ -108,6 +108,7 @@ _SECRET_KEY_SEGMENT_MARKERS: Tuple[Tuple[str, ...], ...] = (
 )
 _TOKEN_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     ("bearer_token", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-./+=]{16,}")),
+    ("basic_auth", re.compile(r"(?i)\bBasic\s+[A-Za-z0-9+/=]{16,}")),
     ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b")),
     ("github_token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{30,})\b")),
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
@@ -126,6 +127,10 @@ _TOKEN_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
         "url_credentials",
         re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/@\s:]+):([^/@\s]+)@"),
     ),
+)
+_SECRET_QUERY_PARAM_RE = re.compile(
+    r"(?i)(?P<prefix>[?&])(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)"
+    r"(?P<separator>=)(?P<value>[^&#\s]+)"
 )
 _SECRET_LITERAL_RE = re.compile(
     r"""(?im)(?P<prefix>(?:^|[\s,{])["']?[A-Za-z_][A-Za-z0-9_-]*["']?\s*[:=]\s*["']?)(?P<value>[^"'\s,}]{12,})(?P<suffix>["']?)"""
@@ -279,7 +284,7 @@ def write_blob(drive_root: pathlib.Path, payload: Any, *, kind: str = "json") ->
             with gzip.open(tmp, "wb") as fh:
                 fh.write(raw)
             _chmod_private(tmp)
-            os.replace(tmp, path)
+            replace_atomic(tmp, path)
             _chmod_private(path)
         except Exception:
             if path.exists():
@@ -307,6 +312,41 @@ def write_blob(drive_root: pathlib.Path, payload: Any, *, kind: str = "json") ->
         "size": len(raw),
         "compressed_size": path.stat().st_size if path.exists() else 0,
     }
+
+
+def read_blob_ref(
+    drive_root: pathlib.Path,
+    ref: Dict[str, Any],
+    *,
+    expected_kind: str = "json",
+) -> Any:
+    """Read and verify one content-addressed blob below this drive root."""
+    if not isinstance(ref, dict):
+        raise ValueError("observability blob ref must be an object")
+    kind = str(ref.get("kind") or "")
+    if kind != expected_kind or ref.get("encoding") != "gzip":
+        raise ValueError("observability blob ref has an unexpected kind or encoding")
+    expected_sha = str(ref.get("sha256") or "")
+    try:
+        expected_size = int(ref["size"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("observability blob ref has no valid size") from exc
+    if not expected_sha:
+        raise ValueError("observability blob ref has no sha256")
+
+    root = _observability_root(pathlib.Path(drive_root)).resolve(strict=False)
+    path = pathlib.Path(str(ref.get("path") or "")).resolve(strict=True)
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("observability blob ref points outside its drive") from exc
+    with gzip.open(path, "rb") as handle:
+        raw = handle.read()
+    if len(raw) != expected_size or hashlib.sha256(raw).hexdigest() != expected_sha:
+        raise ValueError("observability blob ref failed size or sha256 verification")
+    if kind == "json":
+        return json.loads(raw.decode("utf-8"))
+    return raw.decode("utf-8", errors="replace")
 
 
 def write_call_manifest(
@@ -359,6 +399,18 @@ def _redact_text(text: str, records: List[RedactionRecord], path: str) -> str:
             return "***REDACTED***"
 
         out = pattern.sub(_repl, out)
+
+    def _query_param_repl(match: re.Match[str]) -> str:
+        if not _is_secret_key_name(match.group("key")):
+            return match.group(0)
+        records.append(RedactionRecord(path=path, rule="secret_query_parameter"))
+        return (
+            f"{match.group('prefix')}{match.group('key')}"
+            f"{match.group('separator')}***REDACTED***"
+        )
+
+    out = _SECRET_QUERY_PARAM_RE.sub(_query_param_repl, out)
+
     def _literal_repl(match: re.Match[str]) -> str:
         prefix = match.group("prefix")
         key_match = _SECRET_LITERAL_KEY_RE.search(prefix)
@@ -419,21 +471,32 @@ def persist_call(
     call_type: str,
     payload: Dict[str, Any],
     manifest: Dict[str, Any] | None = None,
+    keep_raw: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Persist the payload and return refs plus a redacted projection.
 
     By default the AUTHORITATIVE blob (``full_payload_ref``) is the REDACTED value:
     secret VALUES are masked while structure, paths, model route, and all non-secret
-    text/reasoning are preserved (P1 reconstructibility) — so a leaked secret never
-    lands on disk. ``full_payload_redacted=True`` declares this honestly; the
-    ``redaction`` manifest lists every rule that fired. Set
+    text/reasoning are preserved (P1 reconstructibility), except explicit native
+    reasoning custody whose projection retains only type/order/size/digest metadata.
+    ``full_payload_redacted=True`` declares this honestly; the ``redaction`` manifest
+    lists every rule that fired. Set
     ``OUROBOROS_OBSERVABILITY_KEEP_RAW=1`` for a trusted local debug session to persist
-    the raw payload instead (``full_payload_redacted=False``).
+    the raw payload instead (``full_payload_redacted=False``). ``keep_raw=True``
+    forces that existing private raw-plus-projection path for an authoritative
+    checkpoint; ``None`` preserves the environment/default behavior.
     """
 
-    redacted = redact_projection(payload)
-    keep_raw = (os.environ.get("OUROBOROS_OBSERVABILITY_KEEP_RAW") or "").strip().lower() in ("1", "true", "yes", "on")
-    if keep_raw:
+    from ouroboros.anthropic_native_custody import observability_custody_projection
+
+    redacted = redact_projection(observability_custody_projection(payload))
+    effective_keep_raw = keep_raw
+    if effective_keep_raw is None:
+        effective_keep_raw = (
+            (os.environ.get("OUROBOROS_OBSERVABILITY_KEEP_RAW") or "").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+    if effective_keep_raw:
         full_ref = write_blob(drive_root, payload, kind="json")
         projection_ref = write_blob(drive_root, redacted.value, kind="json")
         full_redacted = False
@@ -451,6 +514,10 @@ def persist_call(
             "call_type": call_type,
             "full_payload_ref": full_ref,
             "full_payload_redacted": full_redacted,
+            "full_payload_custody": (
+                "private_unredacted_cas"
+                if effective_keep_raw else "redacted_projection_cas"
+            ),
             "redacted_projection_ref": projection_ref,
             "redaction": redacted.manifest(),
             **dict(manifest or {}),
@@ -463,6 +530,40 @@ def persist_call(
         "manifest_ref": manifest_ref,
         "redaction": redacted.manifest(),
     }
+
+
+def persist_physical_candidate(
+    drive_root: pathlib.Path,
+    *,
+    task_id: str,
+    attempt_id: str,
+    candidate: Dict[str, Any],
+    candidate_facts: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Persist one inspectable post-transform candidate under its attempt id.
+
+    ``candidate_facts`` describe the pre-redaction canonical object. The normal
+    ``persist_call`` refs describe the redacted-by-default CAS blob; the two
+    digest domains are deliberately labelled rather than equated.
+    """
+    from ouroboros.anthropic_native_custody import physical_custody_projection
+
+    projected = physical_custody_projection(candidate)
+    return persist_call(
+        drive_root,
+        task_id=task_id,
+        call_id=attempt_id,
+        call_type="physical_llm_candidate",
+        payload=projected,
+        keep_raw=False,
+        manifest={
+            "candidate_manifest_kind": "physical_llm_candidate",
+            "candidate_raw_digest_basis": "canonical_json_v1_pre_redaction",
+            "redacted_projection_digest_basis": "observability_json_v1_post_default_redaction_cas",
+            "anthropic_native_custody_projected": projected != candidate,
+            **dict(candidate_facts),
+        },
+    )
 
 
 def latest_llm_response_text(drive_root: pathlib.Path, task_id: str) -> str:
@@ -502,11 +603,37 @@ def latest_llm_response_text(drive_root: pathlib.Path, task_id: str) -> str:
             message = payload.get("message") if isinstance(payload, dict) else None
             content = message.get("content") if isinstance(message, dict) else None
             text = str(content or "").strip()
-            if text:
+            if text and not _is_delivery_control_payload(text):
                 return text
         except Exception:
             continue
     return ""
+
+
+def _is_delivery_control_payload(text: str) -> bool:
+    """Whether persisted assistant text is the delivery-control PROTOCOL object.
+
+    S3 (RST-05/RAW-001): while the loop's delivery-control latch is armed the
+    model's persisted response is legitimately ``{"delivery_control": ...}``
+    machine protocol, not prose. A hard kill between response persistence and
+    loop-side resolution used to let raw-salvage promote that JSON into the
+    owner-facing terminal result. This is a STRUCTURAL typed-protocol check
+    (exact JSON object carrying the protocol key, optionally in one markdown
+    fence) — never semantic prose classification. Matching payloads stay
+    forensic evidence in the observability store; they are simply not answers.
+    """
+    body = str(text or "").strip()
+    if body.startswith("```"):
+        first_break = body.find("\n")
+        if first_break != -1 and body.endswith("```"):
+            body = body[first_break + 1:-3].strip()
+    if not (body.startswith("{") and body.endswith("}")):
+        return False
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and "delivery_control" in payload
 
 
 SALVAGED_OUTPUT_NOTE_LIMIT = 4000
@@ -531,7 +658,7 @@ def preserve_salvaged_output(preserve_root: pathlib.Path, task_id: str, text: st
     try:
         tmp.write_text(str(text), encoding="utf-8")
         _chmod_private(tmp)
-        os.replace(tmp, path)
+        replace_atomic(tmp, path)
         _chmod_private(path)
     except Exception:
         try:
@@ -581,18 +708,21 @@ def salvaged_output_note(
         return ""
     if not salvaged:
         return ""
+    # S3 honest naming: a raw fragment is the last persisted INTERMEDIATE model
+    # message — never presented as an "answer" (it bypassed review/finalization).
+    label = "Last persisted intermediate model message (salvaged best-effort, unreviewed"
     preview = truncate_review_artifact(salvaged, SALVAGED_OUTPUT_NOTE_LIMIT)
     if preview == salvaged:
-        return "\n\nLast agent output (salvaged best-effort, unreviewed):\n" + salvaged
+        return f"\n\n{label}):\n" + salvaged
     if preserve_root is not None:
         try:
             full_path = preserve_salvaged_output(pathlib.Path(preserve_root), str(task_id), salvaged)
         except Exception:
             full_path = ""
         if full_path:
-            return ("\n\nLast agent output (salvaged best-effort, unreviewed; "
+            return (f"\n\n{label}; "
                     f"full copy preserved at {full_path}):\n" + preview)
-    return "\n\nLast agent output (salvaged best-effort, unreviewed):\n" + salvaged
+    return f"\n\n{label}):\n" + salvaged
 
 
 def prune_observability_blobs(

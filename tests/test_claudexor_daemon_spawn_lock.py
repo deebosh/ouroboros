@@ -103,8 +103,6 @@ def test_spawn_block_acquires_and_releases_inter_process_file_lock(monkeypatch, 
         raise ClaudexorUnavailable("test_bail", "polling loop ended")
 
     monkeypatch.setattr(owned.OwnedClaudexorDaemon, "_alive_endpoint", fake_alive_endpoint)
-    monkeypatch.setattr(owned.OwnedClaudexorDaemon, "_enable_rotation",
-                        lambda self, endpoint: None)
 
     class FakeRuntime:
         def ensure(self):
@@ -144,8 +142,6 @@ def test_live_daemon_found_inside_lock_skips_spawn(monkeypatch, tmp_path):
                         lambda self: (live_endpoint, "running", ""))
     monkeypatch.setattr(owned.OwnedClaudexorDaemon, "_alive_endpoint",
                         lambda self: live_endpoint)
-    monkeypatch.setattr(owned.OwnedClaudexorDaemon, "_enable_rotation",
-                        lambda self, endpoint: None)
 
     spawn_calls: list[tuple] = []
 
@@ -271,8 +267,6 @@ def test_concurrent_ensure_running_spawns_exactly_once(monkeypatch, tmp_path):
         return FakeProc()
 
     monkeypatch.setattr("ouroboros.process_custody.spawn_supervised", fake_spawn)
-    monkeypatch.setattr(owned.OwnedClaudexorDaemon, "_enable_rotation",
-                        lambda self, endpoint: None)
 
     # Liveness gating: stale UNTIL spawn completes, then alive.
     alive_after_spawn = threading.Event()

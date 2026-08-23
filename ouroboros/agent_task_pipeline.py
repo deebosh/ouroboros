@@ -13,7 +13,6 @@ from typing import Any, Callable, Dict, List
 
 from ouroboros.cost_projection import cost_projection
 from ouroboros.task_results import (
-    TASK_COST_META_FIELDS,
     STATUS_COMPLETED,
     STATUS_FAILED,
     load_task_result,
@@ -29,20 +28,25 @@ from ouroboros.outcomes import (
     artifact_bundle_from_result,
     build_verification_ledger,
     derive_loop_outcome,
+    infra_failed_axes,
     maybe_write_verification_artifact,
     normalize_outcome_axes,
 )
 from ouroboros.contracts.task_contract import build_task_contract
 from ouroboros.subagents import envelope_from_task, substrate_result_fields
+from ouroboros.subagent_messages import subagent_message_meta
 from ouroboros.utils import utc_now_iso, append_jsonl, truncate_review_artifact as _truncate_with_notice
 from ouroboros.post_task_checkpoint import (
     POST_TASK_SYNTHESIS_INFLIGHT as _POST_TASK_SYNTHESIS_INFLIGHT,
     POST_TASK_SYNTHESIS_LOCK as _POST_TASK_SYNTHESIS_LOCK,
     is_root_post_task as _is_root_post_task,
+    post_task_synthesis_is_open as _post_task_synthesis_is_open,
+    post_task_synthesis_is_terminal as _post_task_synthesis_is_terminal,
     root_checkpoint_roots as _root_checkpoint_roots,
     root_post_task_already_completed as _root_post_task_already_completed,
     set_root_post_task_checkpoint as _set_root_post_task_checkpoint,
 )
+from ouroboros.skill_publish_result import apply_skill_publish_receipt_veto
 from ouroboros.task_finalization import (
     build_sealed_final_package,
     build_swarm_efficiency as _build_swarm_efficiency,  # moved (module ceiling); tests import it here
@@ -50,6 +54,8 @@ from ouroboros.task_finalization import (
     register_final_answer_owed,
     sealed_final_prompt_section,
 )
+from ouroboros.dialogue_provenance import is_presence_task, presence_provenance_fields
+from ouroboros.presence_runner import build_presence_result_event
 
 log = logging.getLogger(__name__)
 
@@ -274,11 +280,12 @@ def _pre_synthesis_usage_snapshot(
     return snapshot
 
 
-# The synthesis cost/snapshot renderers live in `ouroboros/synthesis_cost_text.py`
+# The synthesis cost/snapshot projections live in `ouroboros/synthesis_cost_text.py`
 # (extracted at this module's size ceiling); re-exported here because the
 # synthesis prompts, the tests and monkeypatch targets name them on THIS surface.
 from ouroboros.synthesis_cost_text import (  # noqa: F401,E402
     _SYNTHESIS_USAGE_PROMPT_FIELDS,
+    _summary_row_cost_fields,
     _synthesis_cost_text,
     _synthesis_cost_usd,
     _synthesis_usage_snapshot_text,
@@ -387,24 +394,21 @@ def _run_post_task_processing_async(
                 sealed_final=sealed_snapshot,
             )
             result["reflection_entry"] = reflection_entry
-            from ouroboros.project_facts import resolve_project_id
+            if not is_presence_task(task_snapshot):
+                from ouroboros.project_facts import resolve_project_id
 
-            _pid = resolve_project_id(task_snapshot)
-            # Project facts stay project-scoped, but the improvement backlog is
-            # Ouroboros's GLOBAL queue of lessons about its own tooling. A
-            # workspace task can reveal generic friction (bad tools, poor
-            # prompts, broken lifecycle) that should feed post-task evolution
-            # without leaking project facts into canonical memory.
-            _update_improvement_backlog(env, reflection_entry)
-            _apply_reflection_memory_actions(env, reflection_entry, project_id=_pid)
-            try:
-                from ouroboros.post_task_evolution import maybe_promote
+                _pid = resolve_project_id(task_snapshot)
+                # Project facts stay scoped; generic process lessons remain global.
+                _update_improvement_backlog(env, reflection_entry)
+                _apply_reflection_memory_actions(env, reflection_entry, project_id=_pid)
+                try:
+                    from ouroboros.post_task_evolution import maybe_promote
 
-                maybe_promote(env, task_snapshot, reflection_entry, llm_client)
-            except Exception:
-                log.debug("Post-task evolution promotion failed", exc_info=True)
-            if on_reflection is not None:
-                on_reflection(reflection_entry, llm_client)
+                    maybe_promote(env, task_snapshot, reflection_entry, llm_client)
+                except Exception:
+                    log.debug("Post-task evolution promotion failed", exc_info=True)
+                if on_reflection is not None:
+                    on_reflection(reflection_entry, llm_client)
             checkpoint_status = "completed"
         except Exception:
             log.warning("Async post-task processing failed", exc_info=True)
@@ -456,7 +460,7 @@ def recover_pending_root_post_task_synthesis(
         task_id = str(stored.get("task_id") or stored.get("id") or "")
         checkpoint = stored.get("root_phase_checkpoint")
         phase = str(checkpoint.get("post_task_synthesis") or "") if isinstance(checkpoint, dict) else ""
-        if not task_id or phase not in {"pending_once", "running"}:
+        if not task_id or not _post_task_synthesis_is_open(phase):
             continue
         task = {**stored, "id": task_id, "root_task_id": str(stored.get("root_task_id") or task_id)}
         task.setdefault("budget_drive_root", str(root))
@@ -468,16 +472,19 @@ def recover_pending_root_post_task_synthesis(
             drive_path=lambda rel, _root=root: _root / rel,
         )
         if phase == "running":
-            degraded = dict(checkpoint)
-            degraded.update({
-                "post_task_synthesis": "degraded",
-                "post_task_stop_reason": "restart_indeterminate_running",
-            })
-            write_task_result(
-                root, task_id, str(task.get("status") or STATUS_COMPLETED),
-                root_phase_checkpoint=degraded,
+            stored = _set_root_post_task_checkpoint(
+                env,
+                task,
+                "degraded",
+                stop_reason="restart_indeterminate_running",
             )
-            _set_root_post_task_checkpoint(env, task, "refresh")
+            stored_checkpoint = (stored or {}).get("root_phase_checkpoint") or {}
+            stored_phase = str(stored_checkpoint.get("post_task_synthesis") or "")
+            if not _post_task_synthesis_is_terminal(stored_phase):
+                raise RuntimeError(
+                    "Root post-task synthesis recovery did not persist a terminal "
+                    f"checkpoint for {task_id} (stored={stored_phase or 'unavailable'})"
+                )
             recovered += 1
             continue
         usage = {
@@ -590,7 +597,30 @@ def _derive_host_bound_loop_outcome(
 ) -> Dict[str, Any]:
     """Derive once from the current durable mutation-evidence binding."""
     _attach_host_mutation_projection(env, task, llm_trace)
-    return derive_loop_outcome(text or "", usage, llm_trace)
+    loop_outcome = apply_skill_publish_receipt_veto(derive_loop_outcome(text or "", usage, llm_trace), task, llm_trace)
+    return _apply_terminal_custody_outcome(env, task, loop_outcome)
+
+
+def _apply_terminal_custody_outcome(
+    env: Any, task: Dict[str, Any], loop_outcome: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Make the terminal custody audit authoritative for result and event axes."""
+
+    drive_root = task.get("budget_drive_root") or getattr(env, "drive_root", None)
+    if drive_root is None:
+        return loop_outcome
+    existing = load_task_result(drive_root, str(task.get("id") or "")) or {}
+    unreconciled = existing.get("delegated_runs_unreconciled")
+    if not isinstance(unreconciled, list) or not unreconciled:
+        return loop_outcome
+    return {
+        **loop_outcome,
+        "reason_code": "delegated_custody_unreconciled",
+        "outcome_axes": infra_failed_axes(
+            "delegated_custody_unreconciled",
+            review_trigger="delegate_terminal_reconciliation",
+        ),
+    }
 
 
 def emit_task_results(
@@ -599,8 +629,7 @@ def emit_task_results(
     task: Dict[str, Any], text: str,
     usage: Dict[str, Any], llm_trace: Dict[str, Any],
     start_time: float, drive_logs: pathlib.Path,
-    ctx: Any = None,
-    event_queue: Any = None,
+    ctx: Any = None, event_queue: Any = None,
 ) -> None:
     """Emit all end-of-task events to supervisor and run post-task processing."""
     loop_outcome = _derive_host_bound_loop_outcome(env, task, text, usage, llm_trace)
@@ -620,31 +649,28 @@ def emit_task_results(
     # RECORD \u2014 no task_result file, no task_eval ledger row. The cognitive-memory writes
     # (reflection/consolidation/letters-home) are already gated further below; this
     # closes the remaining durable task-record writes. An inline answer + card
-    # resolution (send_message/task_done) and budget metrics still flow so the reply
-    # is visible. A typed routing receipt is presentation metadata attached to the
-    # owner's message, not a replacement for the agent's conversational answer.
-    # Agent.run_task normalizes blank model output before this boundary, so every
-    # finalized response follows the same durable send_message path.
+    # resolution and budget metrics still flow so the reply is visible.
     _ephemeral = bool(task.get("_ephemeral_turn"))
+    _presence = is_presence_task(task)
     _typed_routing_action = (
         str(getattr(ctx, "_typed_routing_action_emitted", "") or "").strip()
         if ctx is not None else ""
     )
     _has_typed_routing_action = bool(_ephemeral and _typed_routing_action)
-    _decision_meta = {"ephemeral_decision": True} if _ephemeral else {}
+    _message_meta = subagent_message_meta(task, task_id=str(task.get("id") or ""))
+    if _ephemeral:
+        _message_meta["ephemeral_decision"] = True
     send_event = {
         "type": "send_message", "chat_id": task["chat_id"],
         "text": text or "\u200b", "log_text": text or "",
         "format": "markdown",
         "task_id": task.get("id"), "ts": utc_now_iso(),
     }
-    if _decision_meta:
-        # MessageBus already carries progress_meta on both progress and final
-        # frames.  The Web client uses this only to suppress the transient
-        # task card; the inline conversational answer itself remains visible.
-        send_event["progress_meta"] = dict(_decision_meta)
-    pending_events.append(send_event)
-
+    if _message_meta:
+        # Final frames carry their own durable identity; replay must not depend
+        # on a nearby progress row that may age out independently.
+        send_event["progress_meta"] = dict(_message_meta)
+    pending_events.append(build_presence_result_event(task, text, ctx) if _presence else send_event)
     duration_sec = round(time.time() - start_time, 3)
     n_tool_calls = len(llm_trace.get("tool_calls", []))
     n_tool_errors = sum(1 for tc in llm_trace.get("tool_calls", [])
@@ -729,7 +755,14 @@ def emit_task_results(
         # a terminal result nobody would ever deliver. The nonblocking lane
         # used to buffer the send with no delivery_id and no owed registration
         # at all. Seam + dedup: ouroboros/task_finalization.py.
-        if _is_root_post_task(task):
+        if _is_root_post_task(task) and not _presence:
+            if not _root_post_task_already_completed(env, task):
+                # The owner's answer leaves BEFORE post-task synthesis: the
+                # typed phase marker rides the frame (progress_meta merges
+                # into the WS chat payload) so the client holds the card on
+                # "Finalizing…" until the settled task_done, instead of
+                # reading the early final as the task's terminal conclusion.
+                send_event.setdefault("progress_meta", {})["task_phase"] = "finalizing"
             register_final_answer_owed(task, send_event, env_drive_root=env.drive_root)
         _store_task_result(
             env, task, text, usage, llm_trace, review_evidence=review_evidence,
@@ -979,6 +1012,11 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
                 expected_output=str(task.get("expected_output") or ""),
             )
         outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
+        loop_outcome = _apply_terminal_custody_outcome(env, task, loop_outcome)
+        if str(loop_outcome.get("reason_code") or "") == "delegated_custody_unreconciled":
+            outcome_axes = normalize_outcome_axes(
+                {"outcome_axes": loop_outcome["outcome_axes"]}
+            )
         execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
         reason_code = str(loop_outcome.get("reason_code") or "")
         status = (
@@ -1046,7 +1084,12 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         if _is_root_post_task(task):
             incoming_checkpoint = llm_trace.get("root_phase_checkpoint")
             existing_checkpoint = existing.get("root_phase_checkpoint")
-            if isinstance(existing_checkpoint, dict) and existing_checkpoint.get("post_task_synthesis") in {"completed", "degraded"}:
+            if (
+                isinstance(existing_checkpoint, dict)
+                and _post_task_synthesis_is_terminal(
+                    existing_checkpoint.get("post_task_synthesis")
+                )
+            ):
                 root_phase_checkpoint = dict(existing_checkpoint)
             elif isinstance(incoming_checkpoint, dict):
                 root_phase_checkpoint = dict(incoming_checkpoint)
@@ -1110,6 +1153,9 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             task_group_id=task.get("task_group_id"),
             task_group=task.get("task_group"),
             subagent_envelope=subagent_envelope,
+            configured_subagent=task.get("configured_subagent"),
+            parent_cognitive_route=task.get("parent_cognitive_route"),
+            subagent_availability=task.get("subagent_availability"),
             metadata=task.get("metadata") if isinstance(task.get("metadata"), dict) else {},
             result=text or "",
             final_answer=str(loop_outcome.get("final_answer") or ""),
@@ -1158,20 +1204,6 @@ Rounds: {rounds}, Cost: {cost_text}
 """
 
 
-def _summary_row_cost_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
-    """Flat task-scope cost fields for the task_summary chat row (v6.82 P1).
-
-    Mapped explicitly from the pre-synthesis usage snapshot
-    (``_pre_synthesis_usage_snapshot``): only the snapshot's own honest keys are
-    copied. Its schema deliberately differs from the full nine-field browser set
-    — it carries no ``cost_usd``/``cost_accounting_error`` — and a non-root
-    snapshot without accounting keys yields nothing. Never fabricates values;
-    the terminal ``task_results`` checkpoint stays the final authority (history
-    replay overrides these row values with it when the result file survives).
-    """
-    return {key: usage[key] for key in TASK_COST_META_FIELDS if key in usage}
-
-
 def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evidence=None,
                       sealed_final=None):
     """Generate a detailed task summary and inject it into chat.jsonl."""
@@ -1189,6 +1221,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
         outcome_axes = normalize_outcome_axes(usage)
         reason_code = str(usage.get("reason_code") or "")
         review_projection = _compact_review_projection(llm_trace)
+        presence_fields = presence_provenance_fields(task)
 
         # Skip LLM summary for trivial tasks.
         if n_tool_calls == 0 and rounds <= 1:
@@ -1204,6 +1237,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 "tool_calls": n_tool_calls, "rounds": rounds,
                 "outcome_axes": outcome_axes, "reason_code": reason_code,
                 **_summary_row_cost_fields(usage),
+                **presence_fields,
                 **({"review_projection": review_projection} if review_projection.get("panels") else {}),
             })
             return
@@ -1253,6 +1287,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 "tool_calls": n_tool_calls, "rounds": rounds,
                 "outcome_axes": outcome_axes, "reason_code": reason_code,
                 **_summary_row_cost_fields(usage),
+                **presence_fields,
                 **({"review_projection": review_projection} if review_projection.get("panels") else {}),
             })
     except Exception:
@@ -1367,6 +1402,7 @@ def _run_reflection(env: Any, llm: Any, task: Dict[str, Any],
                     usage_snapshot_text=_synthesis_usage_snapshot_text(usage),
                     sealed_final_text=sealed_final_prompt_section(sealed_final),
                 )
+                entry = {**entry, **presence_provenance_fields(task)}
                 append_reflection_routed(env, task, entry)
                 return entry
             except Exception:

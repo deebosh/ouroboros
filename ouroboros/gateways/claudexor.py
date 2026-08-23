@@ -63,19 +63,35 @@ class ClaudexorUnavailable(RuntimeError):
     Carries the machine-readable ``code`` so callers classify instead of matching
     prose. Never raised for an ordinary in-run failure — only for "this transport
     is not usable".
+
+    ``required_actions`` retains the daemon's TOP-LEVEL ``ControlProblem.requiredActions``
+    string list when the refusal carried one (e.g. the reconcile 409's
+    ``retry_setup_reconciliation``), bounded to the daemon's own wire limit. It is
+    a preserved fact for the typed error seam, not a client action framework.
     """
 
-    def __init__(self, code: str, message: str, *, status_code: int = 0) -> None:
+    def __init__(self, code: str, message: str, *, status_code: int = 0,
+                 required_actions: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.code = str(code or "claudexor_unavailable")
         self.status_code = int(status_code or 0)
+        self.required_actions = tuple(required_actions or ())
+
+
+# Cross-repo contract (B1): the engine's window-exhausted RunFailure codes. A
+# newer engine (rotation PR-A) reports a spent credential POOL under its own
+# code; both heal on a timer, so both map onto the exhausted class below — with
+# the ORIGINAL code preserved. Any other code stays a generic
+# ClaudexorUnavailable: fail-open, old engines emitting code:null included.
+WINDOW_EXHAUSTED_CODES = ("subscription_window_exhausted", "credential_pool_exhausted")
 
 
 class ClaudexorSubscriptionWindowExhausted(ClaudexorUnavailable):
     """The subscription window is spent and heals on a timer, not on payment."""
 
-    def __init__(self, message: str, *, reset_at: str = "", status_code: int = 0) -> None:
-        super().__init__("subscription_window_exhausted", message, status_code=status_code)
+    def __init__(self, message: str, *, reset_at: str = "", status_code: int = 0,
+                 code: str = "subscription_window_exhausted") -> None:
+        super().__init__(code, message, status_code=status_code)
         self.reset_at = str(reset_at or "")
 
 
@@ -237,6 +253,7 @@ class ClaudexorGateway:
     def __init__(self, endpoint: Optional[DaemonEndpoint] = None, *, home: Optional[pathlib.Path] = None):
         self._endpoint = endpoint if endpoint is not None else discover_daemon(home)
         self._engine_version = ""
+        self._engine_build_sha = ""
         # trust_env=False: a shell HTTP(S)_PROXY must never be able to intercept the
         # loopback control plane (the bearer token rides these requests).
         self._client = httpx.Client(
@@ -267,6 +284,10 @@ class ClaudexorGateway:
     @property
     def engine_version(self) -> str:
         return self._engine_version
+
+    @property
+    def engine_build_sha(self) -> str:
+        return self._engine_build_sha
 
     # -- transport -------------------------------------------------------------
 
@@ -310,6 +331,7 @@ class ClaudexorGateway:
         code = f"http_{response.status_code}"
         message = response.text[:500]
         context: Dict[str, Any] = {}
+        required_actions: tuple[str, ...] = ()
         try:
             body = response.json()
         except ValueError:
@@ -319,6 +341,19 @@ class ClaudexorGateway:
             message = str(body.get("message") or message)
             raw_context = body.get("context")
             context = raw_context if isinstance(raw_context, dict) else {}
+            # The daemon serializes `requiredActions` at the ControlProblem TOP LEVEL
+            # (`daemon-server` projects the field beside code/message; `problem-safety`
+            # bounds the wire list to at most 16 redacted strings of at most 512 chars).
+            # It is deliberately NOT read from `context`: no producer puts it there, and
+            # a context sniff would resurrect the exact had-it-both-ways bug the reset
+            # classification below documents. The bound is mirrored so a foreign body
+            # cannot balloon the retained tuple.
+            raw_actions = body.get("requiredActions")
+            if isinstance(raw_actions, list):
+                required_actions = tuple(
+                    str(item)[:512] for item in raw_actions[:16]
+                    if isinstance(item, str) and item
+                )
         # The CODE decides, exactly as every other classification on this seam does.
         # Sniffing `context` for a reset key instead had it both ways: no producer puts
         # `resetsAt`/`resets_at`/`cooldownUntil` in a ControlProblem context (a spent
@@ -326,12 +361,13 @@ class ClaudexorGateway:
         # quota snapshot), so the transient class was unreachable — while any unrelated
         # refusal that happened to carry one, an `idempotency_conflict` say, would have
         # been announced as a spent subscription window and retried on a timer.
-        if code == "subscription_window_exhausted":
+        if code in WINDOW_EXHAUSTED_CODES:
             return ClaudexorSubscriptionWindowExhausted(
                 message, reset_at=str(context.get("resetsAt") or ""),
-                status_code=response.status_code,
+                status_code=response.status_code, code=code,
             )
-        return ClaudexorUnavailable(code, message, status_code=response.status_code)
+        return ClaudexorUnavailable(code, message, status_code=response.status_code,
+                                    required_actions=required_actions)
 
     # -- operations ------------------------------------------------------------
 
@@ -361,6 +397,7 @@ class ClaudexorGateway:
                 f"Claudexor {version or 'unknown'} is older than the required {CLAUDEXOR_MIN_VERSION}",
             )
         self._engine_version = version
+        self._engine_build_sha = str(engine.get("sha") or "")
         return body
 
     def agent_capabilities(self) -> Dict[str, Any]:
@@ -556,6 +593,27 @@ class ClaudexorGateway:
         )
         return body if isinstance(body, dict) else {}
 
+    def update_credential_profile(self, harness_id: str, profile_id: str,
+                                  *, enabled: bool) -> Dict[str, Any]:
+        """PATCH /v2/credential-profiles/:harness/:profileId — the engine's own
+        Enabled toggle for a NAMED account (``{enabled}`` is the one
+        user-settable routing control the profile row carries).
+
+        Translate-only, like every account surface here: the daemon owns the
+        registry row and rotation policy, and its refusal is the answer. The
+        route exists on 3.5.0 engines already; unified-model engines serve the
+        migrated default logins through it too, because those are ordinary
+        registry rows there."""
+        from urllib.parse import quote
+
+        body = self._request(
+            "PATCH",
+            f"/v2/credential-profiles/{quote(str(harness_id), safe='')}"
+            f"/{quote(str(profile_id), safe='')}",
+            json_body={"enabled": bool(enabled)},
+        )
+        return body if isinstance(body, dict) else {}
+
     def delete_credential_profile(self, harness_id: str, profile_id: str) -> Dict[str, Any]:
         """DELETE /v2/credential-profiles/:harness/:profileId — the engine's own
         removal contract for a NAMED account.
@@ -594,9 +652,11 @@ class ClaudexorGateway:
     def setup_job_call(self, job_id: str, op: str, *, value: str = "") -> Dict[str, Any]:
         """One job-scoped setup call: ``snapshot`` (GET; the transient
         device-code/oauth_url disclosure rides it and is never journaled),
-        ``cancel`` (POST), or ``input`` (POST /v2/setup/jobs/{id}/input —
+        ``cancel`` (POST), ``input`` (POST /v2/setup/jobs/{id}/input —
         deliver ONE line of user input, the claude OAuth paste-code, to a
-        login job that awaits it; engine 3.3.7+).
+        login job that awaits it; engine 3.3.7+), or ``reconcile``
+        (POST /v2/setup/jobs/{id}/reconcile — ask the daemon to prove an
+        unconfirmed termination's process group empty; supported floor 3.2.0).
 
         The input value is live login material, the same custody rule as the
         device code: it rides this loopback request once and is never logged,
@@ -613,6 +673,8 @@ class ClaudexorGateway:
             body = self._request("POST", f"{base}/cancel")
         elif op == "input":
             body = self._request("POST", f"{base}/input", json_body={"value": str(value)})
+        elif op == "reconcile":
+            body = self._request("POST", f"{base}/reconcile")
         else:
             raise ValueError(f"unknown setup job op: {op!r}")
         return body if isinstance(body, dict) else {}
@@ -629,9 +691,22 @@ class ClaudexorGateway:
         ops = body.get("operations") if isinstance(body, dict) else None
         return [row for row in (ops or []) if isinstance(row, dict)]
 
+    def get_settings(self) -> Dict[str, Any]:
+        """GET /v2/settings — the daemon's effective settings snapshot.
+
+        The read half of the rotation reconcile (B3): the snapshot's
+        ``harnesses`` map carries each configured harness's
+        ``profileLimitAction``, so provisioning patches only what is actually
+        missing instead of blind-writing every discovered harness. The route
+        has served since the v2 boundary existed, so every engine past
+        ``CLAUDEXOR_MIN_VERSION`` answers it.
+        """
+        body = self._request("GET", "/v2/settings")
+        return body if isinstance(body, dict) else {}
+
     def patch_settings(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        """POST /v2/settings — the daemon's own live settings patch (used once
-        at provisioning to turn on profile rotation, D28)."""
+        """POST /v2/settings — the daemon's own live settings patch (the
+        write half of the rotation reconcile, D28/B3)."""
         body = self._request("POST", "/v2/settings", json_body=dict(request))
         return body if isinstance(body, dict) else {}
 
@@ -788,6 +863,7 @@ __all__ = [
     "ClaudexorSubscriptionWindowExhausted",
     "ClaudexorUnavailable",
     "DaemonEndpoint",
+    "WINDOW_EXHAUSTED_CODES",
     "attempt_containment",
     "discover_daemon",
     "discover_daemon_at",

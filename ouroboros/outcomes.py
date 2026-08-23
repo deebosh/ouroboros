@@ -100,12 +100,22 @@ OBJECTIVE_BEST_EFFORT = "best_effort"
 # best-effort promotion turned that into "completed" — a lie that hid a real
 # outage from the owner. The rail stamps infra_failed instead (loop.py
 # _handle_provider_unavailable); salvage text still rides the result body.
+# S3 (Q1/Q3=A, 2026-08-15): the typed rail for the owner's "Wrap up"
+# graceful stop — one bounded tool-less finalization turn requested through the
+# durable stop intent. Distinct from every deadline/budget truncation reason.
+# Defined here, above its first consumer set (module-load order).
+REASON_OWNER_REQUESTED_FINALIZATION = "owner_requested_finalization"
 BEST_EFFORT_REASON_CODES = frozenset({
     "budget_exhausted",
     "round_limit",
     "finalization_grace",
     "deadline_local",
     "children_unabsorbed",
+    # S3 (Q1/Q3=A, 2026-08-15): the owner asked the task to summarize and stop.
+    # A successful owner-requested finalization is an honest best-effort
+    # completion — NEVER recorded as the false ``acceptance_bypassed_deadline``
+    # that reusing finalization_grace would persist (CF-02/REASON-001).
+    REASON_OWNER_REQUESTED_FINALIZATION,
 })
 
 # Typed final-answer protocol marker (machine-readable deliverable payload,
@@ -128,6 +138,26 @@ REASON_TOOL_FAILURE = "tool_failure"
 REASON_DELIVERY_CONTROL_DEGRADED = "delivery_control_degraded"
 REASON_CHILD_RESULTS_DEFERRED = "child_results_deferred"
 REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE = "review_skipped_deadline_reserve"
+# HQ1 (2026-08-15): the owner-hurry acceptance-skip reason. A finite typed
+# acceptance-decision reason ONLY — deliberately NOT a member of
+# ACCEPTANCE_BYPASS_REASON_BY_RAIL (it is an owner-approved skip, not a forced
+# rail), never a lifecycle status, commit-review reason, truncation reason, or
+# BEST_EFFORT reason. ``ouroboros/owner_hurry.py`` is the consumer.
+REASON_ACCEPTANCE_SKIPPED_OWNER_HURRY = "owner_hurry"
+# Owner D10/D27 (2026-08-15): the shared review-cycle cap (``review_cycles.py``)
+# spent under BLOCKING enforcement. One typed reason AND event name for both
+# gates: task acceptance (Required+Blocking passes exhausted) stamps it as the
+# acceptance-decision reason; plan review stamps it on the held wave/event. The
+# host objective then terminalizes as BLOCKED (``blocked_with_evidence``) — never
+# ``best_effort`` — with the reviewer findings preserved in the review axis.
+REASON_REVIEW_CYCLES_EXHAUSTED = "review_cycles_exhausted"
+
+# B2b: a BLOCKING plan review whose recorded wave proves its reviewer quorum is
+# STRUCTURALLY unreachable (typed window-exhausted rows leave fewer live slots
+# than the quorum). The gate releases finalization for an agent-CHOSEN honest
+# blocked terminal — the review stays open, implementation stays held, and the
+# objective terminalizes BLOCKED exactly like the spent-cap case above.
+REASON_REVIEW_QUORUM_UNREACHABLE = "plan_review_quorum_unreachable"
 
 # CLOSED mapping: forced-finalization rail (the loop's typed reason_code) -> typed
 # acceptance-bypass reason, stamped by the loop's common forced-finalization recorder
@@ -142,6 +172,9 @@ ACCEPTANCE_BYPASS_REASON_BY_RAIL = {
     "deadline_local": "acceptance_bypassed_deadline",
     "provider_unavailable": "acceptance_bypassed_provider_unavailable",
     "children_unabsorbed": "acceptance_bypassed_children_unabsorbed",
+    # The owner-stop rail bypasses an owed panel because the OWNER asked the
+    # task to wrap up now — its own typed reason, never the deadline's (CF-02).
+    REASON_OWNER_REQUESTED_FINALIZATION: "acceptance_bypassed_owner_requested_finalization",
 }
 ACCEPTANCE_BYPASS_REASONS = frozenset(ACCEPTANCE_BYPASS_REASON_BY_RAIL.values())
 
@@ -597,6 +630,20 @@ def _review_axis(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
 def _objective_axis(review: Dict[str, Any]) -> Dict[str, Any]:
     status = str(review.get("status") or "skipped")
     tier = str(review.get("outcome_tier") or "")
+    decision = review.get("acceptance_decision") if isinstance(review.get("acceptance_decision"), dict) else {}
+    if (
+        str(decision.get("status") or "") == ACCEPTANCE_FINALIZED_UNACCEPTED
+        and str(decision.get("reason") or "") == REASON_REVIEW_CYCLES_EXHAUSTED
+    ):
+        # D27: Required+Blocking acceptance whose shared cap is spent terminalizes
+        # BLOCKED, whatever tier the last (failed) review proposed.
+        return {
+            "status": OBJECTIVE_FAIL,
+            "source": "task_acceptance_review",
+            "review_status": status,
+            "outcome_tier": OUTCOME_TIER_BLOCKED,
+            "reason": REASON_REVIEW_CYCLES_EXHAUSTED,
+        }
     if tier:
         # Reviewer tier is the canonical objective lexicon (completion-coach):
         # solved -> pass, best_effort -> best_effort, blocked_with_evidence ->
@@ -960,6 +1007,25 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
 
     review = _review_axis(llm_trace)
     objective = _objective_axis(review)
+    plan_gate = _trace_mapping(llm_trace, "force_plan_decision")
+    _plan_gate_status = str(plan_gate.get("status") or "")
+    if str(plan_gate.get("enforcement") or "") == "blocking" and (
+        _plan_gate_status == "cycles_exhausted"
+        or (_plan_gate_status == "open" and plan_gate.get("quorum_unreachable"))
+    ):
+        # D27: a blocking plan review whose cycle cap is spent never closed — the
+        # task terminalizes BLOCKED, never best_effort. B2b extends the same honest
+        # terminal to a structurally unreachable reviewer quorum (the agent CHOSE to
+        # finalize; the review itself stays open and implementation stayed held).
+        _quorum_case = _plan_gate_status != "cycles_exhausted"
+        objective.update({
+            "status": OBJECTIVE_FAIL,
+            "source": ("plan_review_quorum_unreachable" if _quorum_case
+                       else "plan_review_cycles_exhausted"),
+            "outcome_tier": OUTCOME_TIER_BLOCKED,
+            "reason": (REASON_REVIEW_QUORUM_UNREACHABLE if _quorum_case
+                       else REASON_REVIEW_CYCLES_EXHAUSTED),
+        })
     if deferred_child_count and objective.get("status") != OBJECTIVE_FAIL:
         objective.update({
             "status": OBJECTIVE_BEST_EFFORT,

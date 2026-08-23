@@ -10,10 +10,19 @@ import test from 'node:test';
 
 import { createClaudexorStatusStore } from '../modules/claudexor_status_store.js';
 import {
+    normalizeProfileName,
+    profileNameSubmission,
+    preserveCardFocus,
     JOB_POLL_GIVE_UP_FAILURES,
-    LOGIN_CARD_COMPACT,
+    LOGIN_CUSTODY_RELEASED,
+    LOGIN_CUSTODY_RETAINED,
+    LOGIN_CUSTODY_UNKNOWN,
+    cancelLoginJob,
     createLoginCardController,
     loginCardHtml,
+    loginReleaseProven,
+    reconcileLoginJob,
+    resolvedJobProfileId,
 } from '../modules/harness_login_cards.js';
 
 const json = (status, body) => ({ ok: status >= 200 && status < 300, status, json: async () => body });
@@ -24,6 +33,24 @@ function fakeHost() {
         contains: () => false,
         querySelector: () => null,
         querySelectorAll: () => [],
+    };
+}
+
+function interactiveHost() {
+    const listeners = new Map();
+    return {
+        innerHTML: '',
+        contains: () => false,
+        querySelector(selector) {
+            const marker = selector.match(/\[([^\]]+)\]/)?.[1] || '';
+            if (!marker || !this.innerHTML.includes(marker)) return null;
+            return {
+                open: false,
+                addEventListener(type, callback) { listeners.set(`${selector}:${type}`, callback); },
+            };
+        },
+        querySelectorAll: () => [],
+        click(selector) { listeners.get(`${selector}:click`)?.({ preventDefault() {} }); },
     };
 }
 
@@ -90,6 +117,45 @@ test('the controller drives create → poll → Connected, and holds the status 
     assert.ok(statusReads >= 1, 'the verdict refreshed the shared status');
 
     ctl.dispose();
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('poll replaces the whole canonical envelope, preserving envelope-level device disclosure', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(200, { job_id: 'job-device', job: { state: 'running' },
+                    attach_command: 'claudexor setup attach job-device', attach_shell: 'powershell',
+                    setup_login_source: 'per_harness', disclosure_native: false });
+            }
+            if (init.method === 'DELETE') return json(200, { job: { state: 'cancelled' } });
+            return json(200, {
+                job: { state: 'waiting_for_input', phase: 'awaiting_user' },
+                cursor: 'c1', sequence: 2,
+                deviceCode: { flow: 'chatgptDeviceCode',
+                    verificationUrl: 'https://auth.example/device', userCode: 'ABCD-1234' },
+            });
+        },
+    });
+    await ctl.start('codex', '');
+    t.mock.timers.tick(3000);
+    await flush();
+    assert.equal(ctl.active?.envelope?.sequence, 2);
+    assert.equal(ctl.active?.attachCommand, 'claudexor setup attach job-device',
+        'replaceable poll envelope must not erase create-only metadata');
+    assert.equal(ctl.active?.attachShell, 'powershell');
+    assert.equal(ctl.active?.setupLoginSource, 'per_harness');
+    assert.match(host.innerHTML, /data-open-signin/);
+    assert.match(host.innerHTML, /ABCD-1234/);
+    await ctl.dispose();
     store.dispose();
     t.mock.timers.reset();
 });
@@ -192,7 +258,7 @@ test('dispose CANCELS the live job before releasing custody, and clears the card
             }
             if (init.method === 'DELETE') {
                 custodyAtDelete = ctl.active?.jobId || '';
-                return json(200, {});
+                return json(200, { job: { state: 'cancelled' } });
             }
             jobPolls += 1;
             return json(200, { job: { state: 'running' } });
@@ -206,7 +272,7 @@ test('dispose CANCELS the live job before releasing custody, and clears the card
     assert.ok(calls.includes('DELETE /api/claudexor/login/job-4'),
         `the live job must be cancelled: ${calls.join(' | ')}`);
     assert.equal(custodyAtDelete, 'job-4', 'custody was still held WHEN the DELETE went out');
-    assert.equal(released, true, 'a proven cancel releases custody');
+    assert.equal(released, LOGIN_CUSTODY_RELEASED, 'a proven cancel releases custody');
     assert.equal(ctl.active, null, '…and only then');
     assert.equal(store.polling, false, 'the login hold was released');
     assert.equal(host.innerHTML, '', 'the disposer cleared the rendered card');
@@ -218,7 +284,7 @@ test('dispose CANCELS the live job before releasing custody, and clears the card
     assert.equal(host.innerHTML, '', 'a disposed controller renders no card');
     // Idempotent, and it does not re-DELETE.
     const deletes = calls.filter((c) => c.startsWith('DELETE')).length;
-    assert.equal(await ctl.dispose(), true);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RELEASED);
     assert.equal(calls.filter((c) => c.startsWith('DELETE')).length, deletes);
     store.dispose();
     t.mock.timers.reset();
@@ -252,7 +318,7 @@ test('a dispose whose cancel is UNPROVEN keeps the job id instead of forgetting 
     await ctl.start('codex', '');
 
     const released = await ctl.dispose();
-    assert.equal(released, false, 'an unproven cancel is reported, not swallowed');
+    assert.equal(released, LOGIN_CUSTODY_UNKNOWN, 'an unproven cancel is reported, not swallowed');
     assert.equal(ctl.active?.jobId, 'job-5', 'the job id is RETAINED — it may still be live');
     assert.equal(host.innerHTML, '', 'the host is cleared either way');
     assert.equal(store.polling, false, 'and nothing stays armed');
@@ -260,6 +326,7 @@ test('a dispose whose cancel is UNPROVEN keeps the job id instead of forgetting 
     t.mock.timers.tick(60000);
     await flush();
     assert.equal(jobPolls, before);
+    ctl.detach();
     store.dispose();
     t.mock.timers.reset();
 });
@@ -291,7 +358,7 @@ test('a Close during the create POST cancels the job that POST installs', async 
             }
             if (init.method === 'DELETE') {
                 custodyAtDelete = ctl.active?.jobId || '';
-                return json(200, {});
+                return json(200, { job: { state: 'cancelled' } });
             }
             return json(200, { job: { state: 'running' } });
         },
@@ -302,7 +369,7 @@ test('a Close during the create POST cancels the job that POST installs', async 
     await starting;
     const closed = await closing;
 
-    assert.equal(closed, true, 'the close RAN — it is queued, never dropped');
+    assert.equal(closed, LOGIN_CUSTODY_RELEASED, 'the close RAN — it is queued, never dropped');
     assert.ok(calls.includes('DELETE /api/claudexor/login/job-after-close'),
         `the job the create installed must be cancelled: ${calls.join(' | ')}`);
     assert.ok(calls.indexOf('DELETE /api/claudexor/login/job-after-close')
@@ -311,6 +378,46 @@ test('a Close during the create POST cancels the job that POST installs', async 
     assert.equal(ctl.active, null, 'and released only after it was proven gone');
     assert.equal(host.innerHTML, '', 'no card left behind');
     ctl.dispose();
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('dispose queued during create adopts a returned fence without repeating cancel', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let releaseCreate;
+    const gate = new Promise((resolve) => { releaseCreate = resolve; });
+    let createStarted = false;
+    let deletes = 0;
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                createStarted = true;
+                await gate;
+                return json(200, { job_id: 'job-create-fence', job: {
+                    state: 'interrupted_unknown', outcome: { reason: 'termination_unconfirmed' },
+                } });
+            }
+            if (init.method === 'DELETE') { deletes += 1; return json(503, {}); }
+            throw new Error(`unexpected ${url}`);
+        },
+    });
+    const starting = ctl.start('codex', '');
+    await flush();
+    assert.equal(createStarted, true);
+    const disposing = ctl.dispose();
+    releaseCreate();
+    await starting;
+    assert.equal(await disposing, LOGIN_CUSTODY_RETAINED);
+    assert.equal(deletes, 0);
+    assert.equal(ctl.active?.jobId, 'job-create-fence');
+    assert.equal(host.innerHTML, '');
+    ctl.detach();
     store.dispose();
     t.mock.timers.reset();
 });
@@ -348,7 +455,10 @@ test('a 2xx create with no job id fails loudly instead of waiting forever', asyn
     t.mock.timers.tick(60000);
     await flush();
     assert.equal(polls, 0, 'nothing is polled for a job that was never created');
-    await ctl.dispose();
+    const closing = ctl.close(ctl.active);
+    assert.equal(host.innerHTML, '', 'Close remains usable without inventing a server identity');
+    assert.equal(await closing, LOGIN_CUSTODY_UNKNOWN);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_UNKNOWN);
     store.dispose();
     t.mock.timers.reset();
 });
@@ -374,7 +484,7 @@ test('malformed 2xx polls count toward the SAME bounded give-up', async (t) => {
             if (url === '/api/claudexor/login' && init.method === 'POST') {
                 return json(200, { job_id: 'job-6', job: { state: 'running' } });
             }
-            if (init.method === 'DELETE') return json(200, {});
+            if (init.method === 'DELETE') return json(200, { job: { state: 'cancelled' } });
             polls += 1;
             return json(200, { ok: true });     // 2xx, no job — meaningless
         },
@@ -414,7 +524,7 @@ test('a 2xx poll carrying an EMPTY job object is a failure, not a healthy pendin
             if (url === '/api/claudexor/login' && init.method === 'POST') {
                 return json(200, { job_id: 'job-7', job: { state: 'running' } });
             }
-            if (init.method === 'DELETE') return json(200, {});
+            if (init.method === 'DELETE') return json(200, { job: { state: 'cancelled' } });
             polls += 1;
             return json(200, { job: {} });          // present, and says nothing
         },
@@ -457,7 +567,7 @@ test('duplicate starts are COALESCED, so a double-click cannot create-cancel-cre
                 await gate;
                 return json(200, { job_id: `job-${created}`, job: { state: 'running' } });
             }
-            if (init.method === 'DELETE') return json(200, {});
+            if (init.method === 'DELETE') return json(200, { job: { state: 'cancelled' } });
             return json(200, { job: { state: 'running' } });
         },
     });
@@ -482,7 +592,49 @@ test('duplicate starts are COALESCED, so a double-click cannot create-cancel-cre
     t.mock.timers.reset();
 });
 
-test('a dispose that RETAINED custody can be retried against the same job', async (t) => {
+test('the pending-start key includes transport and the external start uses the release guard', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let releaseCreate = null;
+    const gate = new Promise((resolve) => { releaseCreate = resolve; });
+    const bodies = [];
+    let deletes = 0;
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const ctl = createLoginCardController({
+        host: fakeHost(), store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                bodies.push(JSON.parse(init.body));
+                if (bodies.length === 1) await gate;
+                return json(200, { job_id: `job-${bodies.length}`, job: { state: 'running' },
+                    ...(bodies.at(-1).transport === 'client_pty'
+                        ? { attach_command: 'claudexor setup attach job-2', attach_shell: 'posix' } : {}) });
+            }
+            if (init.method === 'DELETE') {
+                deletes += 1;
+                return json(200, { job: { state: 'cancelled' } });
+            }
+            return json(200, { job: { state: 'running' } });
+        },
+    });
+    const ordinary = ctl.start('codex', 'work');
+    const external = ctl.start('codex', 'work', 'client_pty');
+    assert.notEqual(ordinary, external, 'different transports must not coalesce');
+    releaseCreate();
+    await Promise.all([ordinary, external]);
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].transport, undefined);
+    assert.equal(bodies[1].transport, 'client_pty');
+    assert.equal(deletes, 1, 'the external start passed through the existing custody release guard');
+    assert.equal(ctl.active.jobId, 'job-2');
+    await ctl.dispose();
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('an unknown dispose can retry cancellation against the same retained job id', async (t) => {
     // The verdict is only useful if the caller can act on it. A retained job
     // must stay cancellable — otherwise a host that refuses to remount while
     // custody is held is stuck forever.
@@ -502,62 +654,817 @@ test('a dispose that RETAINED custody can be retried against the same job', asyn
             if (url === '/api/claudexor/login' && init.method === 'POST') {
                 return json(200, { job_id: 'job-8', job: { state: 'running' } });
             }
-            if (init.method === 'DELETE') { deletes.push(url); return json(deleteStatus, {}); }
+            if (init.method === 'DELETE') {
+                deletes.push(url);
+                return deleteStatus === 200
+                    ? json(200, { job: { state: 'cancelled' } })
+                    : json(deleteStatus, {});
+            }
             return json(200, { job: { state: 'running' } });
         },
     });
     await ctl.start('codex', '');
 
-    assert.equal(await ctl.dispose(), false, 'the daemon refused, so custody is retained');
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_UNKNOWN, 'the daemon refusal leaves custody unknown');
     assert.equal(ctl.active?.jobId, 'job-8');
     assert.equal(deletes.length, 1);
 
     // The retry re-runs the SAME proven-cancel path — it used to answer a
     // permanent `false` off the idempotence branch and never try again.
-    assert.equal(await ctl.dispose(), false, 'still refused, still honest');
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_UNKNOWN, 'still refused, still honest');
     assert.equal(deletes.length, 2, 'and it really re-attempted the cancel');
     deleteStatus = 200;
-    assert.equal(await ctl.dispose(), true, 'the daemon answers, custody is released');
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RELEASED, 'the daemon answers, custody is released');
     assert.equal(ctl.active, null);
     assert.equal(deletes.length, 3);
     // …and now it is idempotent again: nothing left to cancel.
-    assert.equal(await ctl.dispose(), true);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RELEASED);
     assert.equal(deletes.length, 3);
     store.dispose();
     t.mock.timers.reset();
 });
 
-test('compact mode drops the terminal fallback, the paste-code entry and Close, and keeps retry', () => {
-    const active = {
-        harness: 'claude', profile: '', startedAtMs: 0, engineDegraded: true,
-        attachCommand: 'claudexor setup attach j1', error: '', verdict: null, confirming: false,
-        job: { state: 'waiting_for_input', snapshot: { disclosures: { deviceCode: {
-            flow: 'oauth_url_input', verificationUrl: 'https://example.test/signin', userCode: '' } } } },
+test('first active Close retains terminal-unconfirmed custody; second recovery Close detaches synchronously', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const calls = [];
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            calls.push(`${init.method || 'GET'} ${url}`);
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(200, { job_id: 'job-recovery', job: { state: 'running' } });
+            }
+            if (init.method === 'DELETE') return json(200, { job: {
+                state: 'interrupted_unknown', outcome: { reason: 'termination_unconfirmed' },
+            } });
+            return json(200, { job: { state: 'running' } });
+        },
+    });
+    await ctl.start('codex', '');
+
+    assert.equal(await ctl.close(), LOGIN_CUSTODY_RETAINED);
+    assert.equal(calls.filter((call) => call.startsWith('DELETE ')).length, 1);
+    assert.equal(ctl.active?.jobId, 'job-recovery');
+    assert.match(host.innerHTML, /data-login-reconcile/);
+
+    const before = calls.length;
+    const second = ctl.close(ctl.active);
+    assert.equal(host.innerHTML, '', 'the recovery-face Close hides synchronously');
+    assert.equal(ctl.active, null);
+    assert.equal(ctl.disposed, true);
+    assert.equal(calls.length, before, 'local detach starts no lifecycle HTTP');
+    assert.equal(await second, LOGIN_CUSTODY_RETAINED);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RETAINED,
+        'idempotent cleanup must not relabel local detach as release proof');
+    assert.equal(await ctl.close(), LOGIN_CUSTODY_RETAINED);
+    await ctl.start('codex', '');
+    assert.equal(calls.length, before);
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('dispose on an already-visible recovery face returns retained without repeating cancel', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let deletes = 0;
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(200, { job_id: 'job-fence', job: {
+                    state: 'interrupted_unknown', outcome: { reason: 'termination_unconfirmed' },
+                } });
+            }
+            if (init.method === 'DELETE') { deletes += 1; return json(503, {}); }
+            throw new Error(`unexpected ${url}`);
+        },
+    });
+    await ctl.start('codex', '');
+    assert.match(host.innerHTML, /data-login-reconcile/);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RETAINED);
+    assert.equal(deletes, 0, 'repeating cancel cannot reconcile terminal-unconfirmed custody');
+    assert.equal(ctl.active?.jobId, 'job-fence');
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RETAINED);
+    assert.equal(deletes, 0);
+    assert.equal(ctl.detach(), LOGIN_CUSTODY_RETAINED);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RETAINED);
+    assert.equal(deletes, 0);
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('explicit reconcile retains on 409, becomes safe on proof, and only a later retry creates', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const calls = [];
+    let reconcileRound = 0;
+    let creates = 0;
+    const retainedJob = {
+        state: 'interrupted_unknown', outcome: { reason: 'termination_unconfirmed' },
     };
-    const full = loginCardHtml(active, 999999);
-    assert.ok(full.includes('data-login-code-input'), 'full keeps the optional paste-code entry');
-    assert.ok(full.includes('data-login-advanced'), 'full keeps the collapsed terminal fallback');
-    assert.ok(full.includes('data-login-dismiss'));
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            calls.push(`${init.method || 'GET'} ${url}`);
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                creates += 1;
+                return json(200, { job_id: `job-${creates}`, job: creates === 1
+                    ? retainedJob : { state: 'running' } });
+            }
+            if (url.endsWith('/reconcile')) {
+                reconcileRound += 1;
+                return reconcileRound === 1
+                    ? json(409, { error: 'process group is still present',
+                        code: 'setup_termination_unconfirmed',
+                        required_actions: ['retry_setup_reconciliation'] })
+                    : json(200, { job: { ...retainedJob,
+                        terminationReconciliation: { status: 'empty' } } });
+            }
+            if (init.method === 'DELETE') return json(200, { job: { state: 'cancelled' } });
+            return json(200, { job: { state: 'running' } });
+        },
+    });
+    await ctl.start('codex', '');
+    assert.match(host.innerHTML, /data-login-reconcile/, 'a create fence lands directly in recovery');
 
-    const compact = loginCardHtml(active, 999999, { mode: LOGIN_CARD_COMPACT });
-    // The sign-in action itself survives — a card that cannot start the login
-    // would be worse than none.
-    assert.ok(compact.includes('data-open-signin'), 'compact keeps the sign-in link');
-    assert.ok(compact.includes('data-login-state'), 'compact keeps the progress line');
-    assert.ok(!compact.includes('data-login-code-input'));
-    assert.ok(!compact.includes('data-login-advanced'));
-    assert.ok(!compact.includes('data-login-dismiss'));
-    assert.ok(compact.includes(`data-login-mode="${LOGIN_CARD_COMPACT}"`));
+    const first = await ctl.reconcile(ctl.active);
+    assert.equal(first.status, LOGIN_CUSTODY_RETAINED);
+    assert.equal(ctl.active?.jobId, 'job-1');
+    assert.match(host.innerHTML, /process group is still present/);
+    assert.match(host.innerHTML, /data-login-reconcile/);
+    assert.equal(creates, 1, 'reconcile never creates');
 
-    // A settled non-success verdict offers Try again in compact (the wizard has
-    // no account row behind it to retry from).
-    const failed = loginCardHtml({ ...active, verdict: { kind: 'unconfirmed', reason: 'auth_not_ready' } },
-        999999, { mode: LOGIN_CARD_COMPACT });
-    assert.ok(failed.includes('data-login-retry'));
-    assert.ok(failed.includes('Could not confirm the sign-in yet'));
+    const second = await ctl.reconcile(ctl.active);
+    assert.equal(second.status, LOGIN_CUSTODY_RELEASED);
+    assert.match(host.innerHTML, /data-login-retry/);
+    assert.match(host.innerHTML, /no longer blocking/);
+    assert.equal(creates, 1, 'successful reconcile still creates nothing');
 
-    const verified = loginCardHtml({ ...active, verdict: { kind: 'success', reason: '' } },
-        999999, { mode: LOGIN_CARD_COMPACT });
-    assert.ok(verified.includes('Connected.'));
-    assert.ok(!verified.includes('data-login-retry'), 'nothing to retry once verified');
+    await ctl.start('codex', '');
+    assert.equal(creates, 2, 'only the later explicit retry creates exactly once');
+    ctl.detach();
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('an absent reconcile lands the unavailable face, whose next Close actually hides it', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const calls = [];
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            calls.push(`${init.method || 'GET'} ${url}`);
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(200, { job_id: 'job-gone', job: {
+                    state: 'interrupted_unknown', outcome: { reason: 'termination_unconfirmed' },
+                } });
+            }
+            if (url.endsWith('/reconcile')) return json(410, {});
+            throw new Error(`unexpected ${url}`);
+        },
+    });
+    await ctl.start('codex', '');
+    const result = await ctl.reconcile(ctl.active);
+    assert.equal(result.status, LOGIN_CUSTODY_RELEASED);
+    assert.match(host.innerHTML, /no longer available/);
+    const before = calls.length;
+    assert.equal(await ctl.close(ctl.active), LOGIN_CUSTODY_RELEASED);
+    assert.equal(host.innerHTML, '');
+    assert.equal(calls.length, before, 'closing the informational face starts no request');
+    ctl.detach();
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('poll 404 settles immediately to unavailable instead of entering failure backoff', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let polls = 0;
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(200, { job_id: 'job-poll-gone', job: { state: 'running' } });
+            }
+            polls += 1;
+            return json(404, {});
+        },
+    });
+    await ctl.start('codex', '');
+    t.mock.timers.tick(3000);
+    await flush();
+    assert.equal(polls, 1);
+    assert.match(host.innerHTML, /no longer available/);
+    t.mock.timers.tick(60000);
+    await flush();
+    assert.equal(polls, 1, 'absent is terminal client evidence, not a retryable poll failure');
+    assert.equal(await ctl.close(ctl.active), LOGIN_CUSTODY_RELEASED);
+    assert.equal(host.innerHTML, '');
+    ctl.detach();
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('a stale in-flight GET cannot overwrite reconciled-safe state', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let releasePoll;
+    const pollGate = new Promise((resolve) => { releasePoll = resolve; });
+    let pollStarted = false;
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const retainedJob = {
+        state: 'interrupted_unknown', outcome: { reason: 'termination_unconfirmed' },
+    };
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(200, { job_id: 'job-stale', job: { state: 'running' } });
+            }
+            if (url.endsWith('/reconcile')) return json(200, { job: { ...retainedJob,
+                terminationReconciliation: { status: 'empty' } } });
+            if (init.method === 'DELETE') return json(200, { job: retainedJob });
+            pollStarted = true;
+            await pollGate;
+            return json(200, { job: { state: 'running', phase: 'awaiting_user' } });
+        },
+    });
+    await ctl.start('codex', '');
+    t.mock.timers.tick(3000);
+    await flush();
+    assert.equal(pollStarted, true);
+    assert.equal(await ctl.close(), LOGIN_CUSTODY_RETAINED);
+    assert.equal((await ctl.reconcile(ctl.active)).status, LOGIN_CUSTODY_RELEASED);
+    assert.match(host.innerHTML, /no longer blocking/);
+    releasePoll();
+    await flush();
+    assert.match(host.innerHTML, /no longer blocking/);
+    assert.ok(!host.innerHTML.includes('Waiting for the sign-in link'));
+    ctl.detach();
+    store.dispose();
+    t.mock.timers.reset();
+});
+test('a terminal GET overtaking an unconfirmed DELETE keeps the settled card visible', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let releaseDelete; const deleteGate = new Promise((resolve) => { releaseDelete = resolve; });
+    const calls = { create: 0, delete: 0, get: 0 }; const store = createClaudexorStatusStore({ fetchImpl: async () => json(200, statusPayload(true)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} } });
+    const host = fakeHost(); const ctl = createLoginCardController({ host, store, fetchImpl: async (url, init = {}) => {
+        if (url === '/api/claudexor/login' && init.method === 'POST') {
+            calls.create += 1; return json(200, { job_id: 'job-delete-race', job: { state: 'running' } });
+        }
+            if (init.method === 'DELETE') { calls.delete += 1; await deleteGate;
+                return json(503, { error: 'daemon busy' }); }
+        calls.get += 1; return json(200, { job: { state: 'succeeded' } });
+    } });
+    await ctl.start('codex', '');
+    const closing = ctl.close(ctl.active); await flush();
+    assert.equal(calls.delete, 1, 'the active-card Close owns one DELETE');
+    t.mock.timers.tick(3000); await flush();
+    assert.match(host.innerHTML, /Connected\./);
+    releaseDelete(); assert.equal(await closing, LOGIN_CUSTODY_RELEASED);
+    assert.equal(ctl.active?.verdict?.kind, 'success'); assert.match(host.innerHTML, /Connected\./,
+        'the late DELETE must not erase the settled face');
+    assert.deepEqual(calls, { create: 1, delete: 1, get: 1 });
+    t.mock.timers.tick(60000); await flush();
+    assert.equal(calls.get, 1, 'a settled face never rearms job polling');
+    ctl.detach(); store.dispose(); t.mock.timers.reset();
+});
+
+test('unknown dispose remains retryable while an already-flying poll continuation stays inert', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let releasePoll;
+    const pollGate = new Promise((resolve) => { releasePoll = resolve; });
+    let polls = 0;
+    let deletes = 0;
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(200, { job_id: 'job-dispose', job: { state: 'running' } });
+            }
+            if (init.method === 'DELETE') { deletes += 1; return json(503, { error: 'down' }); }
+            polls += 1;
+            await pollGate;
+            return json(200, { job: { state: 'running' } });
+        },
+    });
+    await ctl.start('codex', '');
+    t.mock.timers.tick(3000);
+    await flush();
+    assert.equal(polls, 1);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_UNKNOWN);
+    assert.equal(ctl.disposed, true);
+    assert.equal(ctl.active?.jobId, 'job-dispose');
+    assert.equal(host.innerHTML, '');
+
+    releasePoll();
+    await flush();
+    t.mock.timers.tick(60000);
+    await flush();
+    assert.equal(polls, 1, 'disposed state fences repaint and reschedule');
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_UNKNOWN);
+    assert.equal(deletes, 2, 'disposed+active unknown cleanup retries the same DELETE');
+    assert.equal(ctl.detach(), LOGIN_CUSTODY_UNKNOWN);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_UNKNOWN,
+        'after local detach, unknown must not become false release proof');
+    assert.equal(deletes, 2);
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+test('typed reconcile transport classifies proof, retryable conflict, malformed success and absence', async () => {
+    const retained = await reconcileLoginJob('j1', async () => json(409, {
+        error: 'still present', code: 'setup_termination_unconfirmed',
+        required_actions: ['retry_setup_reconciliation'],
+    }));
+    assert.equal(retained.status, LOGIN_CUSTODY_RETAINED);
+    assert.deepEqual(retained.requiredActions, ['retry_setup_reconciliation']);
+    const safe = await reconcileLoginJob('j1', async () => json(200, { job: {
+        state: 'interrupted_unknown', outcome: { reason: 'termination_unconfirmed' },
+        terminationReconciliation: { status: 'empty' },
+    } }));
+    assert.equal(safe.status, LOGIN_CUSTODY_RELEASED);
+    assert.equal((await reconcileLoginJob('j1', async () => json(200, {}))).status,
+        LOGIN_CUSTODY_UNKNOWN);
+    const malformed = await reconcileLoginJob('j1', async () => json(200, { job: {} }));
+    assert.equal(malformed.status, LOGIN_CUSTODY_UNKNOWN);
+    assert.equal(malformed.envelope, null, 'malformed success cannot erase the latest valid envelope');
+    assert.equal((await reconcileLoginJob('j1', async () => json(200, {
+        job: { state: 'cancelling' },
+    }))).status, LOGIN_CUSTODY_RETAINED);
+    for (const status of [404, 410]) {
+        const gone = await reconcileLoginJob('j1', async () => json(status, {}));
+        assert.equal(gone.status, LOGIN_CUSTODY_RELEASED);
+        assert.equal(gone.absent, true);
+    }
+});
+
+test('the pre-job external action creates client_pty and immediately exposes a labelled command', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = interactiveHost();
+    const bodies = [];
+    let deletes = 0;
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                const body = JSON.parse(init.body);
+                bodies.push(body);
+                if (!body.transport) return json(409, {
+                    error: 'terminal helper unavailable',
+                    code: 'terminal_transport_unavailable',
+                    required_actions: ['use_external_terminal'],
+                });
+                return json(200, {
+                    job_id: 'external-job', job: { state: 'running' },
+                    attach_command: 'CLAUDEXOR_CONFIG_DIR=/owned claudexor setup attach external-job',
+                    attach_shell: 'posix', disclosure_native: false,
+                    setup_login_source: 'per_harness',
+                });
+            }
+            if (init.method === 'DELETE') {
+                deletes += 1;
+                return json(200, { job: { state: 'cancelled' } });
+            }
+            return json(200, { job: { state: 'running' } });
+        },
+    });
+    await ctl.start('one', 'work');
+    assert.equal(ctl.active.absent, true);
+    assert.equal(ctl.active.custodyStatus, LOGIN_CUSTODY_RELEASED);
+    assert.ok(host.innerHTML.includes('data-login-external-terminal'));
+    host.click('[data-login-external-terminal]');
+    await flush();
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[1].transport, 'client_pty');
+    assert.equal(deletes, 0, 'the proven pre-job absence needs no invented DELETE');
+    assert.ok(host.innerHTML.includes('data-login-external-command'), host.innerHTML);
+    assert.ok(host.innerHTML.includes('Command for POSIX shell'), host.innerHTML);
+    assert.ok(host.innerHTML.includes('claudexor setup attach external-job'), host.innerHTML);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RELEASED);
+    assert.equal(deletes, 1, 'dispose releases the newly created external job');
+    store.dispose();
+});
+
+test('Retry preserves the exact active client_pty transport in the next create body', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = interactiveHost();
+    const bodies = [];
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                bodies.push(JSON.parse(init.body));
+                if (bodies.length === 1) return json(400, {
+                    error: 'temporary refusal', code: 'profile_temporarily_unavailable',
+                });
+                return json(200, { job_id: 'retry-external', job: { state: 'running' } });
+            }
+            if (init.method === 'DELETE') return json(200, { job: { state: 'cancelled' } });
+            return json(200, { job: { state: 'running' } });
+        },
+    });
+
+    await ctl.start('one', 'work', 'client_pty');
+    assert.ok(host.innerHTML.includes('data-login-retry'), host.innerHTML);
+    host.click('[data-login-retry]');
+    await flush();
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].transport, 'client_pty');
+    assert.equal(bodies[1].transport, 'client_pty');
+    assert.equal(bodies[1].profile_id, 'work');
+    await ctl.dispose();
+    store.dispose();
+});
+
+test('a durable native-command terminal receipt exposes the external action after polling', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, statusPayload(false)),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(200, { job_id: 'durable-job', job: { state: 'running' } });
+            }
+            return json(200, { job: {
+                state: 'failed',
+                outcome: { reason: 'command_failed' },
+                nativeCommand: { errorCode: 'terminal_transport_failed' },
+            } });
+        },
+    });
+    await ctl.start('one', 'work');
+    t.mock.timers.tick(3000);
+    await flush();
+    assert.ok(host.innerHTML.includes('data-login-external-terminal'), host.innerHTML);
+    assert.ok(host.innerHTML.includes('Continue in external terminal'), host.innerHTML);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RELEASED);
+    store.dispose();
+    t.mock.timers.reset();
+});
+
+// ---------------------------------------------------------------------------
+// The "name the account" face: an engine that returns the typed required-
+// profile action for a DEFAULT login asks for a named account instead of
+// leaving a dead error. The discriminator is the engine's exact typed code +
+// required action — never a harness name, family emptiness or prose.
+// ---------------------------------------------------------------------------
+
+function nameFaceStatusPayload(rows) {
+    return {
+        daemon: { state: 'running', engine_version: '3.5.0', runtime: {} },
+        config_dir: '/home/agent',
+        harnesses: [{ id: 'zephyr' }],
+        profiles: { harnessAccounts: rows, profiles: [] },
+        quota: [],
+    };
+}
+
+const ENGINE_SAID = 'harness "zephyr" has no default credential store: '
+    + 'sign in from a named account (add one first, then start the login from it)';
+const REQUIRED_PROFILE = {
+    error: ENGINE_SAID,
+    code: 'credential_profile_required',
+    required_actions: ['add_named_account'],
+};
+
+test('create-400 on an EMPTY family becomes the name-the-account face, and its submit runs the standard NAMED flow', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, nameFaceStatusPayload([])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    await store.refresh();
+    const host = fakeHost();
+    const posts = [];
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                const body = JSON.parse(init.body);
+                posts.push(body);
+                if (!body.profile_id) return json(400, REQUIRED_PROFILE);
+                return json(200, { job_id: 'job-named', job: { state: 'running', phase: 'awaiting_user' } });
+            }
+            if (init.method === 'DELETE') return json(200, { job: { state: 'cancelled' } });
+            return json(200, { job: { state: 'running' } });
+        },
+    });
+    await ctl.start('zephyr', '');
+    // The engine's own sentence, verbatim (quotes render HTML-escaped).
+    assert.ok(host.innerHTML.includes('has no default credential store: '
+        + 'sign in from a named account (add one first, then start the login from it)'),
+        `the engine's own sentence is shown: ${host.innerHTML}`);
+    assert.equal(ctl.active.needsProfile.message, ENGINE_SAID,
+        'the card holds the engine sentence untouched');
+    assert.match(host.innerHTML, /data-profile-name-input/);
+    assert.match(host.innerHTML, /data-profile-name-submit/);
+    assert.ok(!host.innerHTML.includes('data-login-retry'),
+        'not the dead-end error face — its Try again would repeat the refused default login');
+    assert.ok(!host.innerHTML.includes('data-login-state'),
+        'no live progress line: nothing is running');
+    assert.equal(store.polling, false, 'a refused create holds no status poll');
+
+    // Same validation as Add account: a name normalization would rewrite is
+    // shown back editable, and does NOT start a login.
+    ctl.active.profileNameValue = 'Work Laptop';
+    ctl.submitProfileName();
+    assert.equal(posts.length, 1, 'an unstable name must not be submitted');
+    assert.ok(host.innerHTML.includes('will be saved as &quot;work-laptop&quot;')
+        || host.innerHTML.includes('will be saved as "work-laptop"'), host.innerHTML);
+    assert.equal(ctl.active.profileNameValue, 'work-laptop');
+
+    // The stable name starts the NAMED login through the one standard flow.
+    ctl.submitProfileName();
+    await flush();
+    assert.equal(posts.length, 2);
+    assert.equal(posts[1].harness, 'zephyr');
+    assert.equal(posts[1].profile_id, 'work-laptop');
+    assert.ok(host.innerHTML.includes('(work-laptop)'), `the card now runs the named login: ${host.innerHTML}`);
+    assert.ok(!host.innerHTML.includes('data-profile-name-input'), 'the name face was replaced');
+    await ctl.dispose();
+    store.dispose();
+});
+
+test('the name-the-account continuation preserves an explicit client_pty transport', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, nameFaceStatusPayload([])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    await store.refresh();
+    const host = fakeHost();
+    const posts = [];
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                const body = JSON.parse(init.body);
+                posts.push(body);
+                if (!body.profile_id) return json(400, REQUIRED_PROFILE);
+                return json(200, { job_id: 'named-external', job: { state: 'running' } });
+            }
+            if (init.method === 'DELETE') return json(200, { job: { state: 'cancelled' } });
+            return json(200, { job: { state: 'running' } });
+        },
+    });
+
+    await ctl.start('zephyr', '', 'client_pty');
+    ctl.active.profileNameValue = 'work';
+    ctl.submitProfileName();
+    await flush();
+    assert.equal(posts.length, 2);
+    assert.equal(posts[0].transport, 'client_pty');
+    assert.equal(posts[1].transport, 'client_pty');
+    assert.equal(posts[1].profile_id, 'work');
+    await ctl.dispose();
+    store.dispose();
+});
+
+test('an unrelated create-400 stays ordinary even when the family is empty', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, nameFaceStatusPayload([])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    await store.refresh();
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(400, { error: 'loginFlow is not accepted for this harness' });
+            }
+            return json(404, {});
+        },
+    });
+    await ctl.start('zephyr', '');
+    assert.ok(host.innerHTML.includes('data-login-retry'), `ordinary error face: ${host.innerHTML}`);
+    assert.ok(!host.innerHTML.includes('data-profile-name-input'),
+        'empty-family heuristics must not turn an unrelated 400 into a name request');
+    await ctl.dispose();
+    store.dispose();
+});
+
+test('the typed required-profile action selects the name face independent of family rows', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, nameFaceStatusPayload([
+            { harness_id: 'zephyr', native_login_detected: true },
+        ])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    await store.refresh();
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(400, REQUIRED_PROFILE);
+            }
+            return json(404, {});
+        },
+    });
+    await ctl.start('zephyr', '');
+    assert.match(host.innerHTML, /data-profile-name-input/);
+    await ctl.dispose();
+    store.dispose();
+});
+
+test('required-profile code without its action and unrelated 409 remain ordinary errors', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, nameFaceStatusPayload([])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    await store.refresh();
+    const host = fakeHost();
+    let response = json(400, {
+        error: ENGINE_SAID, code: 'credential_profile_required', required_actions: [],
+    });
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => (
+            url === '/api/claudexor/login' && init.method === 'POST'
+                ? response : json(404, {})),
+    });
+    await ctl.start('zephyr', '');
+    assert.ok(!host.innerHTML.includes('data-profile-name-input'));
+    response = json(409, { error: 'different conflict', code: 'credential_profile_ambiguous',
+        required_actions: ['disable_extra_profiles'] });
+    await ctl.start('zephyr', '');
+    assert.ok(!host.innerHTML.includes('data-profile-name-input'));
+    assert.equal(ctl.active.absent, true, 'a typed pre-job conflict proves no job exists');
+    assert.equal(ctl.active.custodyStatus, LOGIN_CUSTODY_RELEASED);
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_RELEASED);
+    store.dispose();
+});
+
+test('create 5xx / transport death stays the ordinary error face even for an empty family', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, nameFaceStatusPayload([])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    await store.refresh();
+    const host = fakeHost();
+    let mode = '503';
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                if (mode === '503') return json(503, { error: 'daemon_unreachable: connect refused' });
+                throw new Error('network down');
+            }
+            return json(404, {});
+        },
+    });
+    await ctl.start('zephyr', '');
+    assert.ok(host.innerHTML.includes('data-login-retry'), host.innerHTML);
+    assert.ok(!host.innerHTML.includes('data-profile-name-input'),
+        'a 503 is no verdict about the login shape');
+    // Transport death: same rule.
+    mode = 'throw';
+    await ctl.start('zephyr', '');
+    assert.ok(host.innerHTML.includes('data-login-retry'), host.innerHTML);
+    assert.ok(!host.innerHTML.includes('data-profile-name-input'));
+    assert.equal(ctl.active.absent, false,
+        'untyped discovery/transport failure cannot prove whether create ran');
+    assert.equal(await ctl.dispose(), LOGIN_CUSTODY_UNKNOWN);
+    store.dispose();
+});
+
+test('a create-400 NAMED login never asks for a name again (only the default-login shape does)', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, nameFaceStatusPayload([])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    await store.refresh();
+    const host = fakeHost();
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(400, { error: 'profile id is not acceptable' });
+            }
+            return json(404, {});
+        },
+    });
+    await ctl.start('zephyr', 'work');
+    assert.ok(host.innerHTML.includes('data-login-retry'), host.innerHTML);
+    assert.ok(!host.innerHTML.includes('data-profile-name-input'));
+    await ctl.dispose();
+    store.dispose();
+});
+
+test('Close on the name-the-account face detaches as released — the refused create provably made no job', async () => {
+    const store = createClaudexorStatusStore({
+        fetchImpl: async () => json(200, nameFaceStatusPayload([])),
+        doc: { hidden: false, addEventListener() {}, removeEventListener() {} },
+    });
+    await store.refresh();
+    const host = fakeHost();
+    const calls = [];
+    const ctl = createLoginCardController({
+        host, store,
+        fetchImpl: async (url, init = {}) => {
+            calls.push(`${init.method || 'GET'} ${url}`);
+            if (url === '/api/claudexor/login' && init.method === 'POST') {
+                return json(400, REQUIRED_PROFILE);
+            }
+            return json(404, {});
+        },
+    });
+    await ctl.start('zephyr', '');
+    assert.match(host.innerHTML, /data-profile-name-input/);
+    const closed = await ctl.close(ctl.active);
+    assert.equal(closed, LOGIN_CUSTODY_RELEASED, 'no job was ever created, custody is trivially released');
+    assert.equal(host.innerHTML, '', 'the card is gone');
+    assert.ok(!calls.some((c) => c.startsWith('DELETE')), 'nothing to DELETE');
+    store.dispose();
+});
+
+test('the verify-race adopts the job\'s OWN resolved profile id, and only a string one', () => {
+    // Unified engines resolve a default login onto their bootstrap registry
+    // row and the job record names it (plan §K.4) — the row the verify-race
+    // must ask about, because no row with the empty id exists there. A legacy
+    // engine's default job carries null, which reads as the empty-string
+    // address, byte-identical to the old behavior.
+    assert.equal(resolvedJobProfileId({ job: { profileId: 'codex-default' } }), 'codex-default');
+    assert.equal(resolvedJobProfileId({ job: { profileId: null } }), '');
+    assert.equal(resolvedJobProfileId({ job: {} }), '');
+    assert.equal(resolvedJobProfileId({}), '');
+    assert.equal(resolvedJobProfileId(null), '');
+    // Fail-safe against a future non-string spelling: never a coerced name.
+    assert.equal(resolvedJobProfileId({ job: { profileId: 42 } }), '');
+});
+
+test('preserveCardFocus keeps the caret in the name-the-account input across a re-render', () => {
+    let focused = null;
+    const nextInput = {
+        disabled: false,
+        focus() { focused = this; },
+        setSelectionRange(a, b) { this.sel = [a, b]; },
+    };
+    const prior = {
+        selectionStart: 2, selectionEnd: 4,
+        hasAttribute: (attr) => attr === 'data-profile-name-input',
+    };
+    const host = {
+        contains: (el) => el === prior,
+        querySelector: (sel) => (sel === '[data-profile-name-input]' ? nextInput : null),
+    };
+    preserveCardFocus(host, () => {}, { activeElement: prior });
+    assert.equal(focused, nextInput, 'focus lands on the replacement input');
+    assert.deepEqual(nextInput.sel, [2, 4], 'the selection survives the swap');
+});
+
+test('normalizeProfileName enforces the engine slug contract ^[a-z0-9][a-z0-9_-]{0,63}$', () => {
+    // The engine's profile registration refuses anything else; a name the
+    // normalization cannot make legal comes back '' so the dialog asks again
+    // instead of submitting a doomed create.
+    assert.equal(normalizeProfileName('Work Laptop'), 'work-laptop');
+    assert.equal(normalizeProfileName('-lead'), 'lead', 'a slug may not start with a separator');
+    assert.equal(normalizeProfileName('__x_'), 'x_');
+    assert.equal(normalizeProfileName('Работа'), '', 'no ASCII alphanumeric at all cannot become a slug');
+    assert.equal(normalizeProfileName('a'.repeat(80)).length, 64, 'capped at the engine 64');
+    assert.equal(normalizeProfileName('9start'), '9start', 'a digit is a legal first character');
+    const submitted = profileNameSubmission('Работа');
+    assert.equal(submitted.profile, '', 'an unslugifiable name never starts a login');
+    assert.ok(submitted.note.includes('starts with a lowercase letter or digit'));
 });

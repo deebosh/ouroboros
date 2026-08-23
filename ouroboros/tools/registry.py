@@ -149,7 +149,12 @@ _SUBAGENT_SHELL_SECRET_MARKERS = (
     # from a workspace cwd) needs the slash-less marker too.
     "/data/settings.json", "data/settings.json", "ouroboros/data/settings", "file1.txt",
     # Universal credential/secret/control files (relative or absolute).
-    ".env", ".git/config", ".git/credentials", "credentials.json", "tokens.json",
+    # ouroboros-update-tx.json is the managed-update tx marker (.git/…): owner
+    # control state, mirrored on .git/config. Subagent shell only — the
+    # authorized resolver is the MAIN agent and the supervisor/host writers go
+    # through supervisor.update_merge, so neither is affected (synthesis F3).
+    ".env", ".git/config", ".git/credentials", "ouroboros-update-tx.json",
+    "credentials.json", "tokens.json",
     "/.ssh/", ".ssh/", "id_rsa", "id_ed25519", ".netrc", ".npmrc", ".pgpass", ".aws/",
 )
 
@@ -245,15 +250,44 @@ def _managed_update_code_tool_block(ctx: Any, name: str) -> str:
 
 
 def _authorized_managed_update_resolver(ctx: Any) -> bool:
-    """Whether this task is the durable tx-authorized assisted resolver."""
-    try:
-        from supervisor.update_merge import authorized_assisted_task
+    """Whether this task is the durable tx-authorized assisted resolver.
 
-        return bool(authorized_assisted_task(
+    Fail-closed bool for every authority consumer (False = no extra powers).
+    The AUTHORITY-READ failure is additionally distinguished from an honest
+    "not the resolver" via a typed ctx marker (``_managed_authority_read_error``:
+    set on an unreadable read AND on a corrupt tx marker, cleared on every
+    healthy evaluation), so the review-subject builder can fail LOUDLY instead
+    of silently reviewing a possibly-managed candidate as an ordinary full
+    staged capture."""
+    try:
+        from supervisor.update_merge import authorized_assisted_task_strict
+
+        marker_status, tx = authorized_assisted_task_strict(
             getattr(ctx, "task_id", ""),
             getattr(ctx, "task_metadata", None),
-        ))
-    except Exception:
+        )
+        try:
+            if marker_status == "corrupt":
+                # A tx marker EXISTS but cannot be parsed: authority stays
+                # False (fail-closed) for every bool consumer, but the loud
+                # A4 channel must fire — clearing the marker here would let
+                # the review subject silently treat a possibly-managed
+                # candidate as an ordinary full staged diff.
+                setattr(
+                    ctx, "_managed_authority_read_error",
+                    "update_tx_corrupt: the managed update transaction marker "
+                    "exists but could not be parsed",
+                )
+            else:
+                setattr(ctx, "_managed_authority_read_error", "")
+        except Exception:
+            pass
+        return bool(tx)
+    except Exception as exc:
+        try:
+            setattr(ctx, "_managed_authority_read_error", repr(exc))
+        except Exception:
+            pass
         return False
 
 
@@ -872,6 +906,48 @@ def _disabled_tools(ctx: Any) -> frozenset:
     return frozenset(names)
 
 
+def _presence_tool_allowed(ctx: Any, name: str) -> bool:
+    """Positive ceiling for host-admitted presence work; absent is byte-compatible."""
+
+    from ouroboros.presence_authority import (
+        presence_ceiling_allows_tool,
+        presence_ceiling_from_context,
+    )
+
+    ceiling = presence_ceiling_from_context(ctx)
+    if name in {"presence_finish", "presence_cancel_work"}:
+        return ceiling is not None
+    return ceiling is None or presence_ceiling_allows_tool(ceiling, name)
+
+
+def _presence_binding_allowed(ctx: Any, binding: Any) -> bool:
+    from ouroboros.presence_authority import (
+        presence_ceiling_allows_binding,
+        presence_ceiling_from_context,
+    )
+
+    ceiling = presence_ceiling_from_context(ctx)
+    if ceiling is None or binding is None:
+        return True
+    items = binding if isinstance(binding, tuple) else (binding,)
+    return bool(items) and all(presence_ceiling_allows_binding(ceiling, item) for item in items)
+
+
+def _presence_bound_args(ctx: Any, name: str, args: Any) -> tuple[dict[str, Any], str]:
+    try:
+        from ouroboros.presence_authority import apply_presence_argument_bindings
+
+        bound = apply_presence_argument_bindings(ctx, name, dict(args or {}))
+        if not _presence_tool_allowed(ctx, name):
+            return {}, (
+                "⚠️ PRESENCE_CAPABILITY_BLOCKED: "
+                f"{name!r} is outside this presence task's positive capability ceiling."
+            )
+        return bound, ""
+    except Exception as exc:
+        return {}, f"⚠️ PRESENCE_ARGUMENT_BINDING_BLOCKED: {exc}"
+
+
 _GITHUB_TOKEN_TOOLS = frozenset({
     "list_github_prs",
     "get_github_pr",
@@ -935,6 +1011,16 @@ def _target_binding_operation(name: str, args: dict[str, Any]) -> str | None:
         return "service" if name == "start_service" else "shell"
     if name == "verify_and_record" and str(args.get("contract_kind") or "") in _VERIFY_RUN_KINDS:
         return "shell"
+    # CONDITIONAL, never a static map entry (R1 item 1): delegate_start becomes
+    # target-bound only when it explicitly selects an exact skill payload; a
+    # plain or retry call keeps its current active-workspace behavior untouched.
+    # ONLY the known selector value binds here — any other root value falls
+    # through to the handler's TYPED unsupported_root refusal instead of an
+    # untyped ValueError from binding construction (gate fix 9).
+    if (name == "delegate_start"
+            and str(args.get("root") or "").strip() == "skill_payload"
+            and not str(args.get("retry_of") or "").strip()):
+        return "write"
     return None
 
 
@@ -1017,7 +1103,18 @@ def _prepare_public_builtin_args(entry: "ToolEntry", args: dict[str, Any]) -> st
 
     _normalize_tool_call_args(entry, args)
     public_params = set(_entry_public_params(entry))
-    if _entry_has_public_param_schema(entry) and any(key not in public_params for key in args):
+    # A handler may name a bounded set of execution-only legacy parameters.  They
+    # remain absent from its model-visible schema and are therefore usable only by
+    # callers replaying the former wire shape through this real registry path.  The
+    # handler still owns deterministic migration/refusal; this generic seam neither
+    # chooses a route nor special-cases a tool name.
+    hidden_legacy = {
+        str(name)
+        for name in (getattr(entry.handler, "_hidden_legacy_params", ()) or ())
+        if str(name)
+    }
+    accepted_params = public_params | hidden_legacy
+    if _entry_has_public_param_schema(entry) and any(key not in accepted_params for key in args):
         return _format_tool_arg_error(entry)
     try:
         inspect.signature(entry.handler).bind(object(), **args)
@@ -1045,6 +1142,15 @@ def _build_builtin_target_binding(ctx: Any, name: str, args: dict[str, Any]) -> 
             ctx,
             operation=operation,
             process_cwd=str(args.get("cwd") or ""),
+            bucket=str(args.get("bucket") or ""),
+            skill_name=str(args.get("skill_name") or ""),
+        )
+    if name == "delegate_start":
+        return build_resolved_resource_binding(
+            ctx,
+            root=str(args.get("root") or ""),
+            operation="write",
+            path=".",
             bucket=str(args.get("bucket") or ""),
             skill_name=str(args.get("skill_name") or ""),
         )
@@ -1484,8 +1590,8 @@ class ToolRegistry:
 
     _FROZEN_TOOL_MODULES = [
         "browser", "ci", "claude_advisory_review", "compact_context", "control",
-        "core", "delegate", "edit_ops", "evolution_stats", "git", "git_pr", "git_rollback", "github",
-        "health", "join_ledger", "knowledge", "media", "memory_tools", "plan_review", "project_journal",
+        "core", "delegate", "edit_ops", "evolution_stats", "followup", "git", "git_pr", "git_rollback", "github",
+        "health", "join_ledger", "knowledge", "media", "memory_tools", "plan_review", "project_journal", "presence",
         "recent_tasks",
         "query_code", "review", "search", "services", "shell", "skill_exec", "skill_publish",
         "skill_preflight", "subagent_integration", "task_tree", "tool_discovery", "verify",
@@ -1580,6 +1686,7 @@ class ToolRegistry:
             e.name
             for e in self._entries.values()
             if e.name not in disabled  # declarative tool policy (task_contract.disabled_tools)
+            if _presence_tool_allowed(self._ctx, e.name)
             if _builtin_tool_availability(e.name, self._ctx)[0]
             if not local_readonly_subagent or e.name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES
             if not acting_subagent or e.name in ACTING_SUBAGENT_TOOL_NAMES
@@ -1662,6 +1769,7 @@ class ToolRegistry:
             schema
             for entry in self._entries.values()
             if entry.name not in disabled_tools  # declarative tool policy (task_contract.disabled_tools)
+            if _presence_tool_allowed(self._ctx, entry.name)
             if entry.name not in unavailable_tools
             if not local_readonly_subagent or entry.name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES
             if not acting_subagent or entry.name in ACTING_SUBAGENT_TOOL_NAMES
@@ -1706,6 +1814,7 @@ class ToolRegistry:
                         }
                         for tool in _ext_tools.values()
                         if _ext_is_live(str(tool.get("skill") or ""), capability_root, repo_path=str(tool.get("skills_repo_path") or "") or None)
+                        and _presence_tool_allowed(self._ctx, tool["name"])
                         and (not acting_subagent or tool["name"] in acting_grants)
                     ]
             except Exception as exc:
@@ -1729,6 +1838,7 @@ class ToolRegistry:
                             "function": {"name": tool["name"], "description": tool.get("description", ""), "parameters": tool.get("schema", {"type": "object", "properties": {}})},
                         }
                         for tool in _mgr.list_tools_for_registry()
+                        if _presence_tool_allowed(self._ctx, tool["name"])
                         if not acting_subagent or tool["name"] in acting_grants
                     ]
                     # D1: an enabled+configured server returning zero tools WITHOUT
@@ -1755,6 +1865,8 @@ class ToolRegistry:
         result = []
         for e in self._entries.values():
             if e.name in disabled_tools:  # declarative tool policy (task_contract.disabled_tools)
+                continue
+            if not _presence_tool_allowed(self._ctx, e.name):
                 continue
             if e.name in unavailable_tools:
                 continue
@@ -1799,6 +1911,8 @@ class ToolRegistry:
         # residual, not built.
         if requested in _disabled_tools(self._ctx):
             return "disabled by this task's contract (disabled_tools)"
+        if not _presence_tool_allowed(self._ctx, requested):
+            return "outside this presence task's positive capability ceiling"
         if requested not in self._entries:
             return None
         available, reason, _detail = _builtin_tool_availability(requested, self._ctx)
@@ -1822,6 +1936,8 @@ class ToolRegistry:
         # Declarative tool policy applies across ALL discovery sources (built-in, extension, MCP),
         # so enable_tools/discovery can never surface a disabled name — consistent with schemas()/execute().
         if requested in _disabled_tools(self._ctx):
+            return None
+        if not _presence_tool_allowed(self._ctx, requested):
             return None
         entry = self._entries.get(requested)
         if entry:
@@ -1960,7 +2076,7 @@ class ToolRegistry:
         return f"{safety_msg}\n\n---\n{result}" if safety_msg else result
 
     def _protected_shell_block(
-        self, raw_cmd, cmd_path_lower, binding, acting_self_worktree,
+        self, raw_cmd, cmd_path_lower, binding, acting_self_worktree, writeish,
     ) -> Optional[str]:
         """Apply payload/core write guards to the selected physical target."""
         items = _binding_items(binding)
@@ -1975,7 +2091,7 @@ class ToolRegistry:
                 *SKILL_PAYLOAD_CONTROL_FILENAMES,
                 *(SKILL_PAYLOAD_CONTROL_DIRNAMES - {"__pycache__"}),
             )
-        ) and shell_has_write_indicator(raw_cmd):
+        ) and writeish:
             return (
                 "⚠️ SAFETY_VIOLATION: Shell command would modify a skill "
                 "provenance / launcher seed / dependency marker (.clawhub.json, "
@@ -2585,7 +2701,7 @@ class ToolRegistry:
                     )
 
         if protected_shell := self._protected_shell_block(
-            raw_cmd, cmd_path_lower, binding, acting_self_worktree,
+            raw_cmd, cmd_path_lower, binding, acting_self_worktree, writeish,
         ):
             return protected_shell
 
@@ -3081,7 +3197,9 @@ class ToolRegistry:
 
     def execute(self, name: str, args: Dict[str, Any]) -> str:
         name = str(name or "").strip()
-        args = dict(args or {})
+        args, presence_arg_error = _presence_bound_args(self._ctx, name, args)
+        if presence_arg_error:
+            return presence_arg_error
         _route_note = ""
         task_constraint = normalize_task_constraint(getattr(self._ctx, "task_constraint", None))
         local_readonly_subagent = self._is_local_readonly_subagent()
@@ -3104,7 +3222,6 @@ class ToolRegistry:
                     ext_tool = None
             except Exception:
                 ext_tool = None
-
         _mcp_is_name = None
         if entry is None and ext_tool is None:
             try:
@@ -3196,6 +3313,11 @@ class ToolRegistry:
                     str(args.get("root") or "active_workspace"),
                     exc,
                 )
+        if not _presence_binding_allowed(self._ctx, resolved_binding):
+            return (
+                "⚠️ PRESENCE_RESOURCE_BLOCKED: the resolved target is outside "
+                "this presence task's positive resource ceiling."
+            )
         # Fail-closed: an acting child WITHOUT a resolved isolated workspace would
         # have active_workspace/system_repo fall back to the LIVE repo. Confine it
         # to data roots and block shell/coding/service (whose default target is the repo).
@@ -3220,7 +3342,6 @@ class ToolRegistry:
             _runtime_mode = _get_runtime_mode()
         except Exception:
             _runtime_mode = "advanced"
-
         if is_mcp:
             return self._dispatch_mcp_tool(name, args)
         if entry is None:
@@ -3274,7 +3395,6 @@ class ToolRegistry:
                 "(data/skills/<bucket>/<skill>/) or skill_repair constraints. "
                 "Switch to advanced/pro only for reviewed Ouroboros self-modification."
             )
-
         protected_write_paths = []
         if name in _ROOT_ARG_REPO_WRITE_TOOLS:
             root_name = str(args.get("root", "") or "active_workspace")
@@ -3358,9 +3478,7 @@ class ToolRegistry:
             if name in _PROCESS_COMMAND_TOOLS and workspace_mode and acting_self_worktree
             else None
         )
-        worktree_before = (
-            self._worktree_status_snapshot() if entry.mutates_worktree else None
-        )
+        worktree_before = self._worktree_status_snapshot() if entry.mutates_worktree else None
         early_error, result = self._invoke_builtin_handler(
             name, entry, args, resolved_binding, python_resolution, worktree_before,
         )

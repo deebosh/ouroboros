@@ -2,8 +2,8 @@
 
 VERSION remains canonical for author-facing carriers; pyproject receives PEP
 440 spelling, uv.lock mirrors the editable root package, web/package.json keeps
-VERSION spelling, README badge URL escapes hyphens, and changelog prose stays
-manual.
+VERSION spelling, README badge and direct-download URLs stay current, and
+changelog prose stays manual.
 """
 
 from __future__ import annotations
@@ -61,6 +61,120 @@ _UV_LOCK_ROOT_RE = re.compile(
     r'("\nsource = \{ editable = "\." \})',
     re.MULTILINE,
 )
+
+# Public installer names are part of the release metadata projection. Keeping
+# them beside VERSION normalization gives README, the public install page, and
+# the proof builder one deterministic naming source instead of three strings
+# that can drift independently.
+RELEASE_ASSET_TEMPLATES = {
+    "macos-arm64": "Ouroboros-{version}.dmg",
+    "linux-x86_64": "Ouroboros-{version}-linux-x86_64.tar.gz",
+    "linux-appimage-x86_64": "Ouroboros-{version}-linux-x86_64.AppImage",
+    "linux-deb-amd64": "ouroboros_{version}_amd64.deb",
+    "linux-rpm-x86_64": "ouroboros-{version}-1.x86_64.rpm",
+    "linux-rpm-red80-x86_64": "ouroboros-{version}-1.red80.x86_64.rpm",
+    "windows-x64": "Ouroboros-{version}-windows-x64.zip",
+}
+_PUBLIC_REPOSITORY = "razzant/ouroboros"
+
+
+def release_asset_name(proof_id: str, version: str) -> str:
+    """Return the canonical installer filename for one proof id and VERSION."""
+    template = RELEASE_ASSET_TEMPLATES[proof_id]
+    return template.format(version=str(version).strip())
+
+
+def release_asset_download_url(
+    proof_id: str,
+    version: str,
+    *,
+    repository: str = _PUBLIC_REPOSITORY,
+) -> str:
+    """Return an immutable direct URL for one release-bound installer."""
+    normalized_version = str(version).strip()
+    return (
+        f"https://github.com/{repository}/releases/download/v{normalized_version}/"
+        f"{release_asset_name(proof_id, normalized_version)}"
+    )
+
+
+def _sync_readme_download_urls(text: str, version: str) -> str:
+    """Rewrite named Markdown references without touching historical links."""
+    updated = text
+    for proof_id in RELEASE_ASSET_TEMPLATES:
+        expected = release_asset_download_url(proof_id, version)
+        pattern = re.compile(
+            rf"^(\[download-{re.escape(proof_id)}\]:\s*)\S+(\s*)$",
+            re.MULTILINE,
+        )
+        updated = pattern.sub(
+            lambda match, url=expected: f"{match.group(1)}{url}{match.group(2)}",
+            updated,
+        )
+    return updated
+
+
+def _sync_html_download_urls(text: str, version: str) -> str:
+    """Rewrite only anchors explicitly owned by the release projection."""
+    updated = text
+    for proof_id in RELEASE_ASSET_TEMPLATES:
+        expected = release_asset_download_url(proof_id, version)
+        pattern = re.compile(
+            rf'(<a\b(?=[^>]*\bdata-release-download="{re.escape(proof_id)}")'
+            rf'[^>]*\bhref=")[^"]*(")',
+            re.IGNORECASE,
+        )
+        updated = pattern.sub(
+            lambda match, url=expected: f"{match.group(1)}{url}{match.group(2)}",
+            updated,
+        )
+    return updated
+
+
+def _download_url_desyncs(
+    version: str,
+    *,
+    readme_text: str = "",
+    site_install_text: str = "",
+    docs_install_text: str = "",
+    detailed: bool = False,
+) -> List[str]:
+    """Return missing or stale direct-download projection labels."""
+    desync: List[str] = []
+    readme_has_projection = "[download-" in readme_text
+    html_documents = (
+        ("site/install/index.html", site_install_text),
+        ("docs/install/index.html", docs_install_text),
+    )
+    for proof_id in RELEASE_ASSET_TEMPLATES:
+        expected = release_asset_download_url(proof_id, version)
+        if readme_has_projection:
+            reference_pattern = re.compile(
+                rf"^\[download-{re.escape(proof_id)}\]:\s*(\S+)\s*$",
+                re.MULTILINE,
+            )
+            references = reference_pattern.findall(readme_text)
+            if not references or any(url != expected for url in references):
+                desync.append(
+                    f"README.md download {proof_id} (expected {expected})"
+                    if detailed else f"README.md download {proof_id}"
+                )
+        for label, html in html_documents:
+            if 'data-release-download="' not in html:
+                continue
+            anchor_pattern = re.compile(
+                rf'<a\b(?=[^>]*\bdata-release-download="{re.escape(proof_id)}")'
+                rf'[^>]*>',
+                re.IGNORECASE,
+            )
+            anchors = anchor_pattern.findall(html)
+            expected_href = f'href="{expected}"'
+            if not anchors or any(expected_href not in anchor for anchor in anchors):
+                desync.append(
+                    f"{label} download {proof_id} (expected {expected})"
+                    if detailed else f"{label} download {proof_id}"
+                )
+    return desync
 
 
 def _shields_escape(version: str) -> str:
@@ -139,6 +253,9 @@ def version_carrier_desyncs(
     readme_text: str = "",
     arch_text: str = "",
     api_types_text: str = "",
+    download_readme_text: str = "",
+    site_install_text: str = "",
+    docs_install_text: str = "",
     detailed: bool = False,
 ) -> List[str]:
     """Return release-carrier mismatch labels for already-read file contents."""
@@ -174,7 +291,53 @@ def version_carrier_desyncs(
             f"web/modules/api_types.js (expected GATEWAY_CONTRACT_VERSION = '{version}')"
             if detailed else "web/modules/api_types.js"
         )
+    desync.extend(
+        _download_url_desyncs(
+            version,
+            readme_text=download_readme_text,
+            site_install_text=site_install_text,
+            docs_install_text=docs_install_text,
+            detailed=detailed,
+        )
+    )
     return desync
+
+
+def check_worktree_version_sync(repo_dir) -> str:
+    """Return a non-fatal warning when release version carriers disagree.
+
+    Worktree-readiness form of ``version_carrier_desyncs``: reads the live
+    carrier files itself and never raises (moved here from
+    ``review_helpers.py`` — version-sync logic lives with its authority).
+    """
+    repo_dir = Path(repo_dir)
+    try:
+        version_path = repo_dir / "VERSION"
+        if not version_path.exists():
+            return ""
+        version_str = version_path.read_text(encoding="utf-8").strip()
+        if not is_release_version(version_str):
+            return ""
+
+        def _read(rel_path: str) -> str:
+            return path.read_text(encoding="utf-8") if (path := repo_dir / rel_path).exists() else ""
+        desync = version_carrier_desyncs(
+            version_str,
+            pyproject_text=_read("pyproject.toml"),
+            uv_lock_text=_read("uv.lock"),
+            web_package_text=_read("web/package.json"),
+            readme_text=_read("README.md"),
+            arch_text=_read("docs/ARCHITECTURE.md"),
+            api_types_text=_read("web/modules/api_types.js"),
+            download_readme_text=_read("README.md"),
+            site_install_text=_read("site/install/index.html"),
+            docs_install_text=_read("docs/install/index.html"),
+        )
+        if desync:
+            return f"VERSION={version_str} but {', '.join(desync)} differ. Sync version carriers before committing."
+    except Exception:
+        pass
+    return ""
 
 
 def sync_release_metadata(repo_dir: str) -> List[str]:
@@ -253,9 +416,23 @@ def sync_release_metadata(repo_dir: str) -> List[str]:
             ),
             text,
         )
+        new_text = _sync_readme_download_urls(new_text, version)
         if new_text != text:
             readme.write_text(new_text, encoding="utf-8")
             changed.append("README.md")
+
+    for relative in (
+        Path("site/install/index.html"),
+        Path("docs/install/index.html"),
+    ):
+        install_page = root / relative
+        if not install_page.exists():
+            continue
+        text = install_page.read_text(encoding="utf-8")
+        new_text = _sync_html_download_urls(text, version)
+        if new_text != text:
+            install_page.write_text(new_text, encoding="utf-8")
+            changed.append(relative.as_posix())
 
     arch = root / "docs" / "ARCHITECTURE.md"
     if arch.exists():
