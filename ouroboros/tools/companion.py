@@ -57,7 +57,7 @@ def _restart_companion(
         return companion_error
     reason_text = str(reason or "manual restart").strip() or "manual restart"
     if len(reason_text) > 500:
-        return f"⚠️ TOOL_ARG_ERROR (restart_companion): reason must be ≤ 500 chars."
+        return "⚠️ TOOL_ARG_ERROR (restart_companion): reason must be ≤ 500 chars."
 
     supervisor = get_global_supervisor()
     if supervisor is None:

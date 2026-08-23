@@ -415,7 +415,6 @@ DIRECT_PROVIDER_DEFAULTS = {
     "gigachat": GIGACHAT_DIRECT_DEFAULTS,
     "google_genai": GOOGLE_GENAI_DIRECT_DEFAULTS,
     "minimax": MINIMAX_DIRECT_DEFAULTS,
-    "google_genai": GOOGLE_GENAI_DIRECT_DEFAULTS,
 }
 
 # Review panels are declared as provider ROLE sequences, then compiled against

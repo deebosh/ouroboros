@@ -98,7 +98,7 @@ def test_deleted_session_falls_back_to_raw_id_never_resurrected(tmp_path):
     chat must not resurrect it under the same project id, and must not be
     lost either — it falls back to the shared main chat."""
     data = tmp_path / "data"
-    resolved = resolve_external_session_chat_id(data, source="skill:telegram-bridge", external_chat_id=333)
+    resolve_external_session_chat_id(data, source="skill:telegram-bridge", external_chat_id=333)
     projects = list_projects(data)
     project_id = projects[0]["id"]
     begin_project_deletion(data, project_id)

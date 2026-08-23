@@ -29,7 +29,6 @@ Run: ``pytest tests/test_consciousness_section_diagnostics.py -v``
 from __future__ import annotations
 
 import json
-import os
 import queue
 from pathlib import Path
 from typing import Any, Dict, List

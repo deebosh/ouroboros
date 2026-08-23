@@ -24,7 +24,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Optional
 
-import pytest
 
 
 # The preflight hint machinery imports the matrix lazily, so importing the
@@ -303,10 +302,6 @@ def test_acting_subagent_writing_to_artifact_store_fires_hint():
     ``(artifact_store, write, acting_subagent)``; the hint surfaces
     ``active_workspace`` as the alternative.
     """
-    from ouroboros.contracts.task_constraint import (
-    TaskConstraint,
-    VALID_WRITE_SURFACES,
-)
 
     surface = next(iter(VALID_WRITE_SURFACES))  # 'self_worktree' / 'external_workspace' / 'genesis'
     ctx = _ctx_for(
@@ -366,11 +361,11 @@ def test_no_alternatives_returns_none():
     # adds a tool whose op has no allowed alternative for any profile,
     # the function would silently return None for every call — the
     # safe failure mode.
-    tools = _FakeTools(_ctx_for(profile="local_readonly_subagent"))
+    _FakeTools(_ctx_for(profile="local_readonly_subagent"))
     # Sanity: every curated tool has SOME allowed alternative for at
     # least one profile (proves the third gate doesn't mute the hint
     # for any curated entry).
-    from ouroboros.tool_access import decide_tool_access, _POLICY
+    from ouroboros.tool_access import _POLICY
     from ouroboros.tools.registry import _TARGET_BINDING_OPERATIONS
 
     for tool in _PREFLIGHT_ROOT_HINT_TOOLS:

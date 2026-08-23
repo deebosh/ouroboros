@@ -1585,6 +1585,8 @@ def _check_staged_oversized_functions(repo_dir: pathlib.Path) -> Optional[str]:
     unreadable file is reported as None (no error) — the subsequent pytest pass + advisory
     gate + triad + scope review still cover the commit.
     """
+    from ouroboros.review import MAX_FUNCTION_LINES
+
     try:
         proc = subprocess.run(
             ["git", "diff", "--cached", "--name-only", "--diff-filter=AM"],

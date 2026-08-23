@@ -797,7 +797,7 @@ def test_stdio_transport_factory_wires_pipe_capture_and_env(monkeypatch):
     assert cfg is not None
 
     buf = io.StringIO()
-    ctx = mcp_client._transport_factory(cfg, stderr_buffer=buf)
+    mcp_client._transport_factory(cfg, stderr_buffer=buf)
     capture = seen["errlog"]
     assert isinstance(capture, mcp_client._StderrPipeCapture)
 

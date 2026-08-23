@@ -22,6 +22,11 @@ import io
 
 import pytest
 
+try:  # pragma: no cover - trivial version shim
+    BaseExceptionGroup
+except NameError:  # Python <3.11: project's own py3.10 floor ships the backport.
+    from exceptiongroup import BaseExceptionGroup
+
 from ouroboros import mcp_client
 
 
