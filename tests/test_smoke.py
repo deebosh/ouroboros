@@ -601,10 +601,8 @@ class TestStagedOversizedFunction:
 
     def test_oversized_function_detected(self):
         """A function > MAX_FUNCTION_LINES is reported as a violation."""
-        from ouroboros.tools.review_helpers import (
-            _find_oversized_functions,
-            MAX_FUNCTION_LINES,
-        )
+        from ouroboros.review import MAX_FUNCTION_LINES
+        from ouroboros.tools.review_helpers import _find_oversized_functions
         body = "\n".join(f"    x_{i} = {i}" for i in range(MAX_FUNCTION_LINES + 50))
         content = f"def big_function():\n{body}\n"
         violations = _find_oversized_functions(content, "fake.py")
@@ -614,10 +612,8 @@ class TestStagedOversizedFunction:
 
     def test_small_function_passes(self):
         """A function <= MAX_FUNCTION_LINES is NOT reported."""
-        from ouroboros.tools.review_helpers import (
-            _find_oversized_functions,
-            MAX_FUNCTION_LINES,
-        )
+        from ouroboros.review import MAX_FUNCTION_LINES
+        from ouroboros.tools.review_helpers import _find_oversized_functions
         # Tightly under the cap.
         body = "\n".join(f"    x_{i} = {i}" for i in range(MAX_FUNCTION_LINES - 2))
         content = f"def small_function():\n{body}\n"

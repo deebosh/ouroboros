@@ -266,7 +266,6 @@ async def api_state(request: Request) -> JSONResponse:
     try:
         from ouroboros.config import (
             get_context_mode,
-            get_owner_context_mode,
             get_runtime_mode,
             get_safety_mode,
             get_skills_repo_path,
@@ -316,11 +315,8 @@ async def api_state(request: Request) -> JSONResponse:
             "supervisor_error": get_supervisor_error() if callable(get_supervisor_error) else None,
             "runtime_mode": get_runtime_mode(),
             "context_mode": get_context_mode(),
-            # Persistent auto-Low is retired (config.get_owner_context_mode); this
-            # stays a live comparison rather than a frozen False so the narrow
-            # legacy env-forwarded-Low-without-owner-provenance case still shows
-            # up to the owner UI instead of being silently hidden.
-            "context_mode_auto_low": get_owner_context_mode() != get_context_mode(),
+            # Frozen one-window compatibility field. Persistent auto-Low is retired.
+            "context_mode_auto_low": False,
             "temperatures": get_temperatures(),
             "safety_mode": get_safety_mode(),
             "skills_repo_configured": bool(get_skills_repo_path()),

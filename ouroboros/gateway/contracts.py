@@ -584,6 +584,9 @@ class StateResponse(TypedDict):
     # True when the EFFECTIVE `low` is a system auto-downgrade rather than an owner
     # selection: the owner control needs it to offer "confirm Low" on a no-op click.
     context_mode_auto_low: bool
+    # Owner-configured LLM sampling temperature per task type (ouroboros.
+    # temperature_settings.get_temperatures); None per key means "no override".
+    temperatures: Dict[str, Optional[float]]
     safety_mode: str
     skills_repo_configured: bool
     github_token_configured: bool
@@ -1271,6 +1274,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/owner/context-mode",
     "POST /api/owner/scope-review-floor",
     "POST /api/owner/safety-mode",
+    "POST /api/owner/temperature",
     "POST /api/owner/capability-ack",
     "POST /api/owner/skills/{skill}/attest-review",
     "POST /api/owner/skills/{skill}/presence-runtime",

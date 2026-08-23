@@ -74,6 +74,7 @@ TOOL_POLICY: Dict[str, str] = {
     "switch_model": POLICY_SKIP,
     "service_status": POLICY_SKIP,
     "service_logs": POLICY_SKIP,
+    "restart_companion": POLICY_SKIP,
 
     # Mutative but separately guarded by sandbox/revert/review gates.
     "write_file": POLICY_SKIP,

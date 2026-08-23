@@ -23,6 +23,7 @@
  * @property {string} runtime_mode
  * @property {string} context_mode
  * @property {boolean} context_mode_auto_low  // frozen compatibility field; always false
+ * @property {Object<string, ?number>} temperatures  // owner-configured LLM sampling temperature per task type; null per key means "no override"
  * @property {string} safety_mode
  * @property {boolean} skills_repo_configured
  * @property {boolean} github_token_configured
