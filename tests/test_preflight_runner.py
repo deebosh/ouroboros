@@ -11,14 +11,11 @@ import time
 
 import pytest
 
-# Self-recursion protection: this file tests the gate's `run_hermetic_pytest` which
-# spawns real pytest subprocesses. Adding `--timeout=300 --timeout-method=thread` to the
-# serial pass (ibl-28f3c68cfaae / ibl-0a1c8a8b432f) bound the hang itself, but the
-# recursive pytest-timeout inside the inner subprocess is unobservable from outside
-# the inner run — the outer test sees "exit nonzero" with no signal of why. Test-of-
-# the-gate coverage belongs in an integration suite that drives `run_hermetic_pytest`
-# end to end without nesting pytest under pytest. Skip the whole file here; reopen
-# coverage when that suite lands.
+# Self-recursion protection: this file tests `run_hermetic_pytest`, which spawns real pytest
+# subprocesses. The outer `--timeout` bounds the hang, but the inner subprocess's own
+# pytest-timeout is unobservable from outside — the outer test just sees "exit nonzero". This
+# coverage belongs in an integration suite that drives it end to end without nesting pytest
+# under pytest. Skip the whole file here; reopen coverage when that suite lands.
 pytestmark = pytest.mark.skip(
     reason="self-recursion protection: preflight subprocess tested in integration suite, not unit"
 )
@@ -40,32 +37,21 @@ def _preflight_plugin_problems() -> list:
         return _verify_preflight_plugins(sys.executable, pathlib.Path(probe))
 
 
-# Probed ONCE, at import, and stated in exactly ONE place.
+# Probed ONCE, at import, stated in exactly ONE place. The real-spawn tests below run a NESTED
+# pytest under `sys.executable`; the gate is fail-closed (`run_hermetic_pytest` returns
+# PREFLIGHT_PLUGIN_MISSING unless that interpreter carries pytest-xdist and pytest-timeout), so
+# without this marker an unprovisioned interpreter would fail every one of those tests on the
+# same single environment fact instead of on its own subject, drowning the one useful message.
+# The fact is asserted once (in `test_plugin_verification_passes_on_the_interpreter_running_
+# this_suite`) and otherwise carried by this marker; the hermetic/stubbed tests stay
+# UNCONDITIONAL since they pin the fail-closed behaviour itself.
 #
-# The real-spawn tests further down run a NESTED pytest under `sys.executable`,
-# and the gate is deliberately fail-closed: `run_hermetic_pytest` returns
-# PREFLIGHT_PLUGIN_MISSING before any pass unless that interpreter really carries
-# pytest-xdist and pytest-timeout. On an interpreter without them, every one of
-# those tests fails on that single environment fact instead of on its own
-# subject — a dozen identical failures, none of which is about the behaviour
-# under test, and all of which drown the one message that would tell an operator
-# what to install.
-#
-# So the fact is asserted once (below, in
-# `test_plugin_verification_passes_on_the_interpreter_running_this_suite`) and
-# otherwise carried by this marker. The hermetic and stubbed tests stay
-# UNCONDITIONAL — they are the ones that pin the fail-closed behaviour itself,
-# and they must never be silenced by the environment they are describing.
-#
-# The skip must not be able to conceal ITSELF, which is what an earlier revision
-# did: the control test carried this same marker, so its `_PREFLIGHT_PLUGIN_
-# PROBLEMS == []` assertion was skipped in precisely the case where it would have
-# failed, and an unprovisioned run reported a clean suite with a dozen quiet
-# skips while every behavioural proof of the parallel-pass machinery went
-# unexecuted. `OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS` is the seam that fixes that:
-# where the environment is provisioned (CI's `quick-test`/`full-test` set it, and
-# a repair-round gate command should too) the control test HARD-FAILS on a
-# missing plugin instead of skipping, so the twelve skips can never be silent.
+# The skip must not conceal ITSELF: an earlier revision let the control test carry this same
+# marker, so its own `_PREFLIGHT_PLUGIN_PROBLEMS == []` assertion skipped exactly when it would
+# have failed, reporting a clean suite while every behavioural proof went unexecuted.
+# `OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS` fixes that: where the environment is provisioned (CI's
+# `quick-test`/`full-test` set it) the control test HARD-FAILS on a missing plugin instead of
+# skipping, so the twelve skips can never be silent.
 _PREFLIGHT_PLUGIN_PROBLEMS = _preflight_plugin_problems()
 
 _REQUIRE_PLUGINS_ENV = "OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS"
@@ -92,10 +78,7 @@ def _commit_all(repo: pathlib.Path) -> None:
     _git(repo, "add", ".")
     subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
-        cwd=str(repo),
-        check=True,
-        capture_output=True,
-        text=True,
+        cwd=str(repo), check=True, capture_output=True, text=True,
     )
 
 
@@ -104,14 +87,13 @@ def _delete_loose_object(repo: pathlib.Path, oid: str) -> None:
     assert obj_path.exists(), (
         "fixture assumption: a fresh repo keeps this object loose"
     )
-    # git stores loose objects read-only; Windows refuses to unlink a
-    # read-only file (WinError 5), so lift the bit first.
+    # git stores loose objects read-only; Windows refuses to unlink a read-only file (WinError 5).
     obj_path.chmod(0o644)
     obj_path.unlink()
 
 
 def _make_repo(tmp_path: pathlib.Path, files: dict[str, str]) -> pathlib.Path:
-    """Init a tiny git repo whose `tests/` holds only the given probe files."""
+    """Tiny git repo whose `tests/` holds only the given probe files."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init")
@@ -866,6 +848,22 @@ def test_a_genuine_crash_is_not_reclassified_by_timeout_text_elsewhere_in_the_ou
     assert "300s per-test limit" not in result
 
 
+def test_diagnosis_keeps_the_failure_summary_tail_when_output_is_cut():
+    """pytest prints FAILURES + the short summary at the END: the bounded
+    diagnosis cuts the MIDDLE, never the tail naming the failing tests."""
+    from ouroboros.preflight_runner import _classify_pass_result
+
+    output = (
+        "= session starts =\n" + ("noise PASSED\n" * 400)
+        + "= FAILURES =\nE assert 0 == 1\nFAILED tests::test_the_culprit\n"
+    )
+    result = _classify_pass_result("parallel", 1, output, 2000, parallel=True)
+    assert result is not None and len(result) <= 2000
+    assert "session starts" in result  # the head survives too
+    assert "...(truncated)..." in result
+    assert "test_the_culprit" in result  # the tail survives the cut
+
+
 @pytest.mark.parametrize("max_output", [1, 40, 200])
 def test_diagnosis_never_overruns_a_declared_max_output(max_output):
     """`_diagnosis` promises the returned string stays inside the caller's
@@ -1388,13 +1386,11 @@ def test_the_production_entry_points_do_not_short_circuit_a_deleted_suite(
 # the untracked-file copy. The staged/unstaged diff pair it replaced could not
 # express an
 # unmerged index — the state an assisted managed-update resolver (or any
-# merge_pr flow) is in when the advisory preflight runs: `git diff --cached`
-# renders each conflicted path as a literal "* Unmerged path" stub and
-# `git diff` as a combined `--cc` hunk, which `git apply` REJECTS when the
-# payload holds nothing else (rc=128) and silently DROPS when ordinary hunks
-# accompany it. These tests pin both halves of the universal scheme: the
-# unmerged shapes the old pair corrupted, and the ordinary merged shapes the
-# old pair handled — which the one-diff capture must keep handling.
+# merge_pr flow) is in when the advisory preflight runs: `git diff --cached` renders each
+# conflicted path as a literal "* Unmerged path" stub and `git diff` as a combined `--cc` hunk,
+# which `git apply` REJECTS when the payload holds nothing else (rc=128) and silently DROPS when
+# ordinary hunks accompany it. These tests pin both halves: the unmerged shapes the old pair
+# corrupted, and the ordinary merged shapes it handled — which the one-diff capture must keep.
 
 
 def _start_conflicted_merge(
@@ -1765,6 +1761,72 @@ def test_a_staged_change_reverted_in_the_worktree_lands_as_head_content(
     assert seen["reverted.txt"] == "base\n", (
         f"candidate honoured the staged intermediate, not the worktree: {seen!r}"
     )
+
+
+def test_disposable_index_matches_source_while_files_match_live_worktree(
+    tmp_path, two_pass_env, stub_passes, monkeypatch
+):
+    """Tests see both projections: live bytes on disk and staged bytes in Git."""
+    from ouroboros import preflight_runner
+    from ouroboros.preflight_runner import run_hermetic_pytest
+
+    repo = _make_repo(tmp_path, {
+        "tests/test_plain.py": "def test_ok():\n    assert True\n",
+        "dual.txt": "head\n",
+    })
+    (repo / "dual.txt").write_text("staged\n", encoding="utf-8")
+    _git(repo, "add", "dual.txt")
+    (repo / "dual.txt").write_text("live\n", encoding="utf-8")
+
+    stub_passes([])
+    seen: dict[str, str] = {}
+
+    def _spy(agent_python, worktree, temp_root, args, timeout):
+        candidate = pathlib.Path(worktree)
+        seen["live"] = (candidate / "dual.txt").read_text(encoding="utf-8")
+        seen["staged"] = subprocess.run(
+            ["git", "show", ":dual.txt"], cwd=candidate, check=True,
+            capture_output=True, text=True,
+        ).stdout
+        seen["tree"] = subprocess.run(
+            ["git", "write-tree"], cwd=candidate, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        return (0, "", "")
+
+    monkeypatch.setattr(preflight_runner, "_execute_pytest_pass", _spy)
+
+    source_tree = subprocess.run(
+        ["git", "write-tree"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert run_hermetic_pytest(repo, timeout=120) is None
+    assert seen == {"live": "live\n", "staged": "staged\n", "tree": source_tree}
+
+
+def test_non_unmerged_source_write_tree_failure_is_a_hard_block(
+    tmp_path, two_pass_env, stub_passes, monkeypatch
+):
+    from ouroboros import preflight_runner
+    from ouroboros.preflight_runner import run_hermetic_pytest
+
+    repo = _make_repo(tmp_path, {"tests/test_plain.py": "def test_ok():\n    assert True\n"})
+    events = stub_passes([])
+    real_run_git = preflight_runner._run_git
+
+    def _broken_write_tree(repo_dir, args, **kwargs):
+        if pathlib.Path(repo_dir).resolve() == repo.resolve() and list(args) == ["write-tree"]:
+            return subprocess.CompletedProcess(
+                ["git", *args], 128, "", "synthetic index corruption"
+            )
+        return real_run_git(repo_dir, args, **kwargs)
+
+    monkeypatch.setattr(preflight_runner, "_run_git", _broken_write_tree)
+
+    result = run_hermetic_pytest(repo, timeout=120)
+
+    assert result is not None and "PREFLIGHT_SOURCE_INDEX" in result
+    assert "synthetic index corruption" in result
+    assert [event[0] for event in events].count("pass") == 0
 
 
 def test_a_chmod_only_change_reaches_the_candidate(

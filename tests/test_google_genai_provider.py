@@ -11,7 +11,7 @@ monkeypatched to capture URL / params / body — NO real API call, NO live key.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import pytest
 

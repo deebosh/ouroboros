@@ -1,20 +1,76 @@
 # Ouroboros
 
+<a href="https://github.com/oslook/github-trending/blob/1d61d20a46f66a9590286bf23a8ce8db99be3acf/2026-08-04/python_weekly_trending.json"><img src="assets/github-trending.svg" width="250" height="55" alt="GitHub Trending: #9 Python weekly, August 2026"></a>
+
 [![GitHub stars](https://img.shields.io/github/stars/razzant/ouroboros?style=flat&logo=github)](https://github.com/razzant/ouroboros/stargazers)
-[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Frazzant%2Fouroboros%2Fbadges%2Fdownloads.json)](https://github.com/razzant/ouroboros/releases)
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Frazzant%2Fouroboros%2Fbadges%2Fdownloads.json)](https://ouroboros-agent.ai/install/)
 [![Website](https://img.shields.io/badge/website-ouroboros--agent.ai-c93545.svg)](https://ouroboros-agent.ai/)
 [![Technical report](https://img.shields.io/badge/technical_report-arXiv%3A2608.08311-b31b1b.svg)](https://arxiv.org/abs/2608.08311)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](https://github.com/razzant/ouroboros/releases)
-[![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://github.com/razzant/ouroboros/releases)
-[![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)](https://github.com/razzant/ouroboros/releases)
+[![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)][download-macos-arm64]
+[![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://ouroboros-agent.ai/install/#linux)
+[![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)][download-windows-x64]
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.103.29](https://img.shields.io/badge/version-6.103.29-green.svg)](VERSION)
+[![Version 6.109.0](https://img.shields.io/badge/version-6.109.0-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
 It runs as a native desktop app or through a headless CLI. The runtime keeps its repository, durable memory, history, and interface on your machine, while model inference can use remote APIs you configure or a local GGUF model.
+
+> **Changing Ouroboros? Coding agents and people must read [CONTRIBUTING.md](CONTRIBUTING.md) before editing.** It defines the required project context, verification, and separate-agent review flow.
+
+## Download Ouroboros
+
+> **Just want to use Ouroboros? Click the download for your platform below. You do not need to clone this repository or install Python or uv.**
+
+- **macOS 12+ on Apple silicon:** [**Download for macOS (.dmg)**][download-macos-arm64]
+- **Windows x64:** [**Download for Windows (.zip)**][download-windows-x64]
+- **Debian, Ubuntu, or Astra Linux x86_64:** [**Download the Debian package (.deb)**][download-linux-deb-amd64]
+- **Fedora or RHEL x86_64:** [**Download the RPM package (.rpm)**][download-linux-rpm-x86_64]
+- **RED OS 8 x86_64:** [**Download the RED OS package (.rpm)**][download-linux-rpm-red80-x86_64]
+- **Other Linux x86_64:** [**Download the portable AppImage**][download-linux-appimage-x86_64] or the [tar.gz archive][download-linux-x86_64]
+
+Files named `SHA256SUMS`, `release-evidence.json`, `release-smoke-*.json`, and `sbom-*.cdx.json` are verification evidence, not additional installers.
+
+### macOS quick start
+
+1. Click [**Download for macOS (.dmg)**][download-macos-arm64]. The current file is named `Ouroboros-<version>.dmg`.
+2. Open the DMG and drag `Ouroboros.app` onto the **Applications** shortcut.
+3. Open Ouroboros from Applications. If Gatekeeper asks, right-click the app and choose **Open**.
+
+<p align="center">
+  <img src="assets/install-macos.png" width="760" alt="Ouroboros DMG window with a large arrow from Ouroboros.app to the Applications shortcut and Install CLI.command below">
+</p>
+
+### Windows quick start
+
+1. Click [**Download for Windows (.zip)**][download-windows-x64].
+2. Extract the ZIP.
+3. Open the extracted `Ouroboros` folder and run `Ouroboros.exe`.
+
+### Linux quick start
+
+- On Debian, Ubuntu, or Astra Linux, download the `.deb` above and run `sudo apt install ./ouroboros_*_amd64.deb`.
+- On Fedora or RHEL, download the generic `.rpm` above and run `sudo dnf install ./ouroboros-*.x86_64.rpm`. RED OS 8 has its own `red80` package.
+- On another x86_64 distribution, download the AppImage, make it executable with `chmod +x Ouroboros-*.AppImage`, and run it. Git must already be installed.
+
+To run tasks, configure at least one supported remote provider API key or a local GGUF model. The first-run wizard guides model access, review policy, and budget setup.
+
+<details>
+<summary>Optional CLI included with desktop downloads</summary>
+
+The desktop packages already contain an optional CLI installer. On macOS, after copying the app to Applications, double-click `Install CLI.command` in the mounted DMG. On Linux use `./Ouroboros/bin/install-ouroboros-cli`; on Windows use `Ouroboros\bin\install-ouroboros-cli.cmd`. These installers create a user-local `ouroboros` command without sudo. You do not need Python or uv.
+
+</details>
+
+[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.0/Ouroboros-6.109.0.dmg
+[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.0/Ouroboros-6.109.0-windows-x64.zip
+[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.0/ouroboros_6.109.0_amd64.deb
+[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.0/ouroboros-6.109.0-1.x86_64.rpm
+[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.0/ouroboros-6.109.0-1.red80.x86_64.rpm
+[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.0/Ouroboros-6.109.0-linux-x86_64.AppImage
+[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.0/Ouroboros-6.109.0-linux-x86_64.tar.gz
 
 Ouroboros bundles [Claudexor](https://github.com/razzant/claudexor) as its local execution layer for delegated coding and hosted-agent review. Ouroboros owns the task, memory, review, and final integration, while Claudexor runs the selected connected coding harness and returns durable execution evidence. [Explore Claudexor](https://claudexor.ai/).
 
@@ -30,89 +86,6 @@ The charts below are self-reported results on Terminal-Bench 2.1, OSWorld-Verifi
   <a href="https://ouroboros-agent.ai/benchmarks/"><img src="assets/bench-osworld.svg" width="375" alt="OSWorld-Verified: Ouroboros against the public leaderboard, including the matched Claude Sonnet-4.6 pair"></a>
   <a href="https://ouroboros-agent.ai/benchmarks/"><img src="assets/bench-cl-bench.svg" width="375" alt="CL-Bench: Ouroboros against in-context learning baselines, Claude Code, and Codex on matched models"></a>
 </p>
-
-## Install
-
-### macOS (Apple silicon)
-
-1. Open the [latest stable release](https://github.com/razzant/ouroboros/releases/latest) and download `Ouroboros-<version>.dmg`.
-2. Open the DMG and drag `Ouroboros.app` onto the **Applications** shortcut.
-3. Open Ouroboros from Applications. If Gatekeeper asks, right-click the app and choose **Open**.
-
-<p align="center">
-  <img src="assets/install-macos.png" width="760" alt="Ouroboros DMG window with a large arrow from Ouroboros.app to the Applications shortcut and Install CLI.command below">
-</p>
-
-Optional CLI: after the app is in Applications, double-click `Install CLI.command` in the mounted DMG. It creates a user-local `ouroboros` command without sudo.
-
-To run tasks, configure at least one supported remote provider API key or a local GGUF model. The first-run wizard guides model access, review policy, and budget setup.
-
-### Linux and Windows
-
-- **Debian / Ubuntu / Astra Linux x86_64:** when the selected release lists `ouroboros_<version>_amd64.deb`, download it and run `sudo apt install ./ouroboros_<version>_amd64.deb`. It installs Git as a package dependency, installs Ouroboros to `/opt/ouroboros`, puts `ouroboros` on `PATH`, and adds a desktop entry plus an opt-in systemd user unit.
-- **Fedora / RHEL x86_64:** when listed, download `ouroboros-<version>-1.x86_64.rpm` and run `sudo dnf install ./ouroboros-<version>-1.x86_64.rpm`. Same layout, Git dependency, and opt-in user unit as the `.deb`.
-- **RED OS 8 x86_64:** when listed, download `ouroboros-<version>-1.red80.x86_64.rpm` and run `sudo dnf install ./ouroboros-<version>-1.red80.x86_64.rpm`. It carries the `red80` release tag. CI attempts non-blocking install-and-run smokes on Astra Linux 1.8 and RED OS 8; inspect the tagged workflow run for their outcome.
-- **Other Linux x86_64:** from the [selected release](https://github.com/razzant/ouroboros/releases), use `Ouroboros-<version>-linux-x86_64.AppImage` when listed: make it executable and run it, or pass `--cli <args>` for the bundled CLI. Git must already be installed. If that release does not list an AppImage, use the extraction-friendly tarball.
-- **Windows x64:** from the [latest stable release](https://github.com/razzant/ouroboros/releases/latest), download `Ouroboros-<version>-windows-x64.zip`, extract it, and run `Ouroboros\Ouroboros.exe`. The optional CLI installer is `Ouroboros\bin\install-ouroboros-cli.cmd`.
-
-Prerelease artifacts stay on their tag pages; `/releases/latest` points to the latest stable release. If bundled browser tools on Linux need host libraries, run `./Ouroboros/_internal/python-standalone/bin/python3 -m playwright install-deps chromium webkit`. See the [full install and verification guide](https://ouroboros-agent.ai/install/) for source setup and release proof files.
-
-The native `.deb` and `.rpm` never enable or start their user service. It is an
-alternative to launching from the desktop entry and controls only instances
-started through `systemctl --user`. See the [systemd user-service guide](packaging/systemd/README.md).
-
-#### Install the Linux AppImage
-
-When a release lists the AppImage, user-level installation means copying the
-portable executable to a stable path and making it executable; it does not need
-root access. Ouroboros bootstrap still requires Git on the host:
-
-```bash
-VERSION=x.y.z
-install -Dm755 "./Ouroboros-${VERSION}-linux-x86_64.AppImage" \
-  "$HOME/Applications/Ouroboros.AppImage"
-"$HOME/Applications/Ouroboros.AppImage"
-```
-
-The embedded desktop file and icon allow compatible AppImage integration tools
-to register that stable path with the application menu. The same file exposes
-the packaged CLI:
-
-```bash
-"$HOME/Applications/Ouroboros.AppImage" --cli status
-```
-
-If FUSE mounting is unavailable, extract and run ephemerally instead:
-
-```bash
-APPIMAGE_EXTRACT_AND_RUN=1 "$HOME/Applications/Ouroboros.AppImage"
-```
-
-Chromium and WebKit binaries are bundled, but their distro-level shared
-libraries remain host dependencies. If a browser engine reports missing
-libraries, use the native `.deb`/`.rpm` package where available, or extract the
-AppImage and let its bundled Playwright report/install the packages required by
-your distribution:
-
-```bash
-"$HOME/Applications/Ouroboros.AppImage" --appimage-extract
-./squashfs-root/usr/lib/ouroboros/_internal/python-standalone/bin/python3 \
-  -m playwright install-deps chromium webkit
-```
-
-Use your existing **Codex, Claude Code, or Cursor subscriptions** for
-delegated coding and review — Ouroboros drives them through
-[Claudexor](https://github.com/razzant/claudexor), its bundled multi-harness
-engine. Connect accounts in **Settings → Agents**; no separate
-install is needed. Works on macOS and Linux. Release artifacts carry the exact
-reviewed engine archive; source checkouts fetch that same pinned archive on
-first use. Connecting an account installs or repairs the engine in the
-foreground, and delegated work does the same lazily. If that checkout or an
-older package lacks the exact tested Node, the same action obtains its
-review-bound official archive too. A newer pinned engine is staged while the
-current daemon keeps running, then activates on its next natural start. This
-also covers upgrades from older Ouroboros versions that did not bundle
-Claudexor.
 
 ---
 
@@ -175,7 +148,55 @@ Benchmark adapters, run scripts, and per-benchmark methodology live in [`devtool
 
 ---
 
-## Install the isolated CLI with uv
+## Advanced installation
+
+Normal desktop users can stop after the download and quick-start instructions above. The options below are for detailed Linux setup, headless use, and development.
+
+### Packaged Linux details
+
+- **Debian / Ubuntu / Astra Linux x86_64:** [download the `.deb`][download-linux-deb-amd64] and run `sudo apt install ./ouroboros_*_amd64.deb`. It installs Git as a package dependency, installs Ouroboros to `/opt/ouroboros`, puts `ouroboros` on `PATH`, and adds a desktop entry plus an opt-in systemd user unit.
+- **Fedora / RHEL x86_64:** [download the generic `.rpm`][download-linux-rpm-x86_64] and run `sudo dnf install ./ouroboros-*.x86_64.rpm`. It uses the same layout, Git dependency, and opt-in user unit as the `.deb`.
+- **RED OS 8 x86_64:** [download the `red80` package][download-linux-rpm-red80-x86_64] and run `sudo dnf install ./ouroboros-*.red80.x86_64.rpm`. CI also attempts non-blocking install-and-run smokes on Astra Linux 1.8 and RED OS 8; inspect the tagged workflow run for their outcome.
+- **Other Linux x86_64:** use the [AppImage][download-linux-appimage-x86_64] or the extraction-friendly [tar.gz archive][download-linux-x86_64]. Git must already be installed.
+
+The native `.deb` and `.rpm` never enable or start their user service. It is an alternative to launching from the desktop entry and controls only instances started through `systemctl --user`. See the [systemd user-service guide](packaging/systemd/README.md).
+
+#### Install the Linux AppImage
+
+User-level installation means copying the portable executable to a stable path and making it executable; it does not need root access. Ouroboros bootstrap still requires Git on the host:
+
+```bash
+VERSION=x.y.z
+install -Dm755 "./Ouroboros-${VERSION}-linux-x86_64.AppImage" \
+  "$HOME/Applications/Ouroboros.AppImage"
+"$HOME/Applications/Ouroboros.AppImage"
+```
+
+The embedded desktop file and icon allow compatible AppImage integration tools to register that stable path with the application menu. The same file exposes the packaged CLI:
+
+```bash
+"$HOME/Applications/Ouroboros.AppImage" --cli status
+```
+
+If FUSE mounting is unavailable, extract and run ephemerally instead:
+
+```bash
+APPIMAGE_EXTRACT_AND_RUN=1 "$HOME/Applications/Ouroboros.AppImage"
+```
+
+Chromium and WebKit binaries are bundled, but their distro-level shared libraries remain host dependencies. If a browser engine reports missing libraries, use the native `.deb`/`.rpm` package where available, or extract the AppImage and let its bundled Playwright report/install the packages required by your distribution:
+
+```bash
+"$HOME/Applications/Ouroboros.AppImage" --appimage-extract
+./squashfs-root/usr/lib/ouroboros/_internal/python-standalone/bin/python3 \
+  -m playwright install-deps chromium webkit
+```
+
+### Connected coding subscriptions
+
+Use your existing **Codex, Claude Code, or Cursor subscriptions** for delegated coding and review. Ouroboros drives them through [Claudexor](https://github.com/razzant/claudexor), its bundled multi-harness engine. Connect accounts in **Settings → Agents**; no separate Claudexor install is needed. Release artifacts carry the exact reviewed engine and Node archives. Source checkouts obtain those same pinned archives on first use.
+
+### Headless CLI with uv
 
 For a user-level CLI/server install without cloning a working tree, uv can
 build Ouroboros directly from the contribution branch:
@@ -201,11 +222,13 @@ resolved from `pyproject.toml`. Use the source setup below for a lock-verified
 environment, development, repository tests, and the complete browser extras,
 or use a platform release artifact for the packaged desktop runtime.
 
----
+<a id="run-from-source"></a>
 
-## Run from Source
+### Develop or run from source
 
-### Requirements
+Clone the repository only when you plan to contribute, modify Ouroboros, run repository tests, or need a lock-verified development checkout. Normal users should use the packaged downloads above.
+
+#### Requirements
 
 - Python 3.10+
 - uv 0.12.1 (the exact resolver version pinned by this checkout)
@@ -213,7 +236,7 @@ or use a platform release artifact for the packaged desktop runtime.
 - Git
 - [GitHub CLI (`gh`)](https://cli.github.com/), optional unless you use GitHub integration
 
-### Setup
+#### Setup
 
 Install the pinned resolver version:
 
@@ -241,7 +264,7 @@ uv sync --locked --extra browser --group dev
 .\.venv\Scripts\Activate.ps1
 ```
 
-### Run
+#### Run
 
 ```bash
 ouroboros server
@@ -249,11 +272,11 @@ ouroboros server
 
 Then open `http://127.0.0.1:8765` in your browser. The setup wizard will guide you through API key configuration.
 
-### Google Colab
+#### Google Colab
 
 Use [`notebooks/colab_quickstart.py`](notebooks/colab_quickstart.py) as a Colab-compatible cell script when you need a source-mode runtime without the desktop UI. It keeps runtime data on Google Drive and preserves the original Colab path without making it the primary installation flow.
 
-### CLI / Headless
+#### CLI / Headless
 
 The `ouroboros` command attaches to the local runtime by default and starts one when `--start` is passed. It exposes managed tasks, progress streams, artifacts, logs, schedules, settings, skills, and evolution controls without duplicating the server's business logic.
 
@@ -270,7 +293,7 @@ ouroboros schedule list
 
 External workspaces must be separate Git worktree roots and may not overlap Ouroboros's own repository or data directory. Patch, streaming, detached-task, and schedule semantics are documented in the CLI help and the canonical [architecture](docs/ARCHITECTURE.md).
 
-### For Agents
+#### For Agents
 
 Another agent, script, or CI job can invoke Ouroboros through the same gateway-backed CLI:
 
@@ -287,13 +310,13 @@ Use `--jsonl` for a machine-readable event stream and `--detach` when the caller
 
 To change Ouroboros itself, follow [CONTRIBUTING.md](CONTRIBUTING.md) and read [BIBLE.md](BIBLE.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), and [docs/CHECKLISTS.md](docs/CHECKLISTS.md) in full before editing.
 
-### Configuration
+#### Configuration
 
 The first-run wizard and **Settings** configure model access, cognitive roles, local models, review policy, runtime mode, budget, skills, and optional integrations. Ouroboros supports configurable remote providers, compatible endpoints, and local GGUF inference; exact settings and defaults live in [`ouroboros/config.py`](ouroboros/config.py) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 The server binds to `127.0.0.1:8765` by default. Read [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) before exposing it beyond loopback; non-local binds need `OUROBOROS_NETWORK_PASSWORD` or an explicitly trusted external access layer.
 
-### Run Tests
+#### Run Tests
 
 ```bash
 make test
@@ -414,11 +437,11 @@ not paraphrase it.
 ## Contributing
 
 External contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for the complete workflow. Open pull requests against the lowercase
-`ouroboros` branch and leave release-version allocation to maintainers. A
-current OpenRouter triad + scope packet is the optional fast path; pull
-requests without one remain welcome but require more maintainer-side review
-and integration work.
+for the complete agent-first workflow. Open pull requests against lowercase
+`ouroboros`, leave release-version allocation to maintainers, and have a
+separate agent context review the final diff. Any coding harness or configured
+review route may produce the evidence; if none is available, record `NOT_RUN`
+and the reason.
 
 ---
 
@@ -426,21 +449,17 @@ and integration work.
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 6.109.0 | 2026-08-21 | **feat: live task cost and ready-on-open agent accounts.** Running root-task heartbeats now project the existing physical-attempt ledger into one non-final subtree total, so compact Chat and Activity cards advance live without a second timer, endpoint, or client-side sum while preserving reserved, unresolved, and unmetered disclosure (PR #288). Opening Agents now wakes only an already-provisioned stale Claudexor home through the existing owner-action endpoint after a side-effect-free status read; background polling, first-time installs, foreign homes, and repair states remain untouched (PR #289). Fail-closed staged-binary review fixtures now inject exact Git tree-read errors instead of assuming loose object storage, removing the macOS stable-CI race without changing production behavior. |
+| 6.108.1 | 2026-08-21 | **feat: resilient managed updates, skill-defined public presence, and durable chat media.** Managed updates now preserve local work, review the declared resolution delta, reuse exact-tree test evidence, bound paid review cycles, and keep size authority in official CI without trapping evolved forks; this release ratifies the corresponding constitutional amendments for managed resolutions, size authority, and version-neutral contributions (PR #276). Reviewed skills can define owner-bound Presence profiles with explicit capability ceilings, authenticated ingress, correlated follow-up and cancellation, durable provenance, and compact runtime controls (PR #277). Photos and videos are stored content-addressed and replay once after reload, project switching, or history loading while preserving live Web and Telegram delivery with a caption fallback (PR #278). Subagent final answers now retain compact child identity across live delivery and history replay, so they remain inside their nested child cards when nearby progress rows age out (PR #287). Release gating now retries one runtime-classified semantic-empty provider canary response on the same exact route while keeping repeated empty or malformed and permanent responses red, and token-density retention resolves equal clock ticks through persisted observation order without extending witness TTL. |
+| 6.107.0 | 2026-08-21 | **feat: secret-safe skill publishing and portable provider tool contracts.** OuroborosHub publishing now works from an immutable reviewed-byte snapshot, scans the exact candidate through pinned Betterleaks before any GitHub effect, keeps raw findings out of model and durable-result surfaces, guides repair and fresh review through the existing managed-task flow, and treats only a validated pull-request receipt as publication success. The Skills UI exposes the selected-skill preflight and publishing journey without turning its passive card projection into a second readiness authority. Provider compatibility now validates the complete shipped built-in tool registry against portable JSON Schema rules and trusted live canaries across OpenRouter, direct OpenAI, direct Anthropic, GigaChat, and configured optional providers; confirmed contract failures block release preflight while pull-request CI remains secretless. |
+| 6.106.0 | 2026-08-21 | **feat: configurable subagents, managed subscription setup, provider-native reasoning and tool compatibility, and terminal-truth UI.** Available subagents becomes an owner-configured roster with stable internal identities, descriptions, exact API and session routes, immutable task-start snapshots, quiet session supervision, and typed refusal instead of silent substitution. Connect now consumes each harness's `setupLogin` capability, offers the platform-appropriate terminal path, and can install a missing vendor CLI once through the exact pinned Claudexor 3.8.0 runtime before retrying login once, without vendor-specific recipes in Ouroboros. Direct OpenAI requests project custom tools at the physical wire boundary and preserve reasoning effort through bounded task-local recovery; direct Anthropic requests replay complete native assistant tool turns, and custom-origin arguments are schema-validated before execution. Canonical task-result custody and snapshot ordering keep terminal lifecycle, finalization, accounting, activity, and cancel authority monotonic across replicas and reconnects. This release also adds credential testing on every provider card, non-blocking serialized Settings saves, same-install launcher cleanup and Linux running-instance feedback, profile-scoped plan health, reliable account removal confirmation, and bounded Windows atomic-state-write recovery. |
 | 6.103.29 | 2026-08-21 | fix(consciousness): per-section overflow diagnostics + mode-aware BG assembly (closes ibl-consciousness-context-overflow). New typed `_ConsciousnessOverflow(OverflowError)` in `ouroboros/consciousness.py` carries `total_chars`, `max_chars`, `mode`, the full `sections` list (`{name, chars}`), and a pre-sorted `top_contributors` (top 5, descending). The `consciousness_context_overflow` event in `logs/events.jsonl` now carries the same fields, so the owner can identify top contributors without log inference — the prior shape `{ts, type, error}` left the failure class structurally invisible. `_build_context()` tracks every section size before the final join (`self._last_context_sections`); `_think_scoped()` catches `_ConsciousnessOverflow` first and emits the rich event. Mode-aware assembly honours `OUROBOROS_CONTEXT_MODE`: in `low` the improvement backlog digest and the ephemeral observations queue are skipped (deferred to the next wakeup); `max` keeps both. ARCHITECTURE full-vs-nav-map was already wired via `context_layout.architecture_context_section` inside `build_governance_sections` (unchanged). 8 new tests in `tests/test_consciousness_section_diagnostics.py` lock the event shape, the typed exception, the section tracker, and the low/max behaviour end-to-end. |
-| 6.103.28 | 2026-08-20 | fix(review): skip_advisory_review bypass MUST propagate readiness warnings (closes ibl-75fbbfedabce)
-
-The four bypass branches (commit_gate._check_advisory_freshness, plus the three advisory_review sites: reviewer-disabled, key-missing, explicit-skip) used to skip check_worktree_readiness entirely, silently dropping signals like "large diff", "version mismatch", or "ouroboros/supervisor python without test changes" from the durable audit trail. Now every bypass computes readiness at the gate (with carry-forward from a prior matching AdvisoryRunRecord on transient empty computes), persists the result in the AdvisoryRunRecord, the events.jsonl advisory_review_bypassed row, and the chat progress surface. A bypassed commit now means "owner saw these and proceeded", not "warnings silently lost." |
+| 6.103.28 | 2026-08-20 | fix(review): skip_advisory_review bypass MUST propagate readiness warnings (closes ibl-75fbbfedabce). The four bypass branches (commit_gate._check_advisory_freshness, plus the three advisory_review sites: reviewer-disabled, key-missing, explicit-skip) used to skip check_worktree_readiness entirely, silently dropping signals like "large diff", "version mismatch", or "ouroboros/supervisor python without test changes" from the durable audit trail. Now every bypass computes readiness at the gate (with carry-forward from a prior matching AdvisoryRunRecord on transient empty computes), persists the result in the AdvisoryRunRecord, the events.jsonl advisory_review_bypassed row, and the chat progress surface. A bypassed commit now means "owner saw these and proceeded", not "warnings silently lost." |
 | 6.103.27 | 2026-08-20 | fix(deep_self_review): add regression test locking _DEEP_MAX_OUTPUT_TOKENS cap at 10k (closes ibl-be9ba2d99b25) |
 | 6.103.26 | 2026-08-20 | docs(architecture): document `data/claudexor/spawn.lock` (inter-process spawn lock around `OwnedClaudexorDaemon.ensure_running()`) and sync `uv.lock` editable-root version to 6.103.26 (P9 carrier miss carried over from v6.103.25). Post-review follow-ups to commit 029a2b99; closes ibl-e9be0a2bad7e, ibl-dc1d775aac65, ibl-2496ed835439 (the last one is a documented scope-reviewer hallucination: no `Claudexor.unavailable` exists in the tree — the class is `ClaudexorUnavailable`). |
-| 6.103.25 | 2026-08-20 | fix(claudexor-daemon): inter-process file lock around spawn block — closes crd-0003 advisory freshness debt (closes ibl-789ba1c62432, ibl-40d68a55670f, ibl-700af8759241, ibl-5845b8f705af, ibl-bee2172abf6b) |
-| 6.103.0 | 2026-08-16 | Semantic-overlap-aware upstream sync: advisory candidate detection for the managed-update merge engine, plus an opt-in check-and-notify watcher. |
-| 6.102.0 | 2026-08-16 | feat: session isolation by external identity. Each distinct (source, external chat id) pair from an external transport (Telegram bridge, or any skill using inject_chat) now threads into its own auto-provisioned Project instead of collapsing into the single shared main chat. New projects_registry.resolve_external_session_chat_id: deterministic project id hashed from (source, chat_id), reusing create_project idempotent get-or-create, so no separate mapping registry is needed. Wired into supervisor/message_bus.py::enqueue_local_message at ingress, before any downstream routing code runs, so the already-hardened _route_owner_message/_reserved_project_for_chat logic did not need to change. Deliberately never reuses the raw external chat_id as the project chat_id: Telegram group ids are negative and collide with the reserved A2A synthetic-traffic range; every auto-session keeps the ordinary hash-derived positive chat_id, and the real external id survives untouched in the per-chat transport cache for outbound delivery. Auto-sessions get a small marker in the existing Projects sidebar (origin=external_session) instead of a separate parallel UI. 17 new tests (projects_registry unit level + message_bus wiring level). |
-| 6.101.0 | 2026-08-16 | feat: bump_version tool — atomic P9 version-carrier bump replaces hand-run edit sequence. New tool (ouroboros/tools/version_release.py, thin wrapper around release_sync.bump_version_files) that writes VERSION, cascades every derived carrier (pyproject.toml, uv.lock, web/package.json, web/modules/api_types.js, README badge, docs/ARCHITECTURE.md header) via sync_release_metadata, and inserts the changelog row in one atomic mutation — instead of a hand-run sequence of edit_text calls, each an independent worktree mutation capable of staling an already-fresh advisory_review. Structural fix for the recurring advisory_stale commit-readiness debt pattern (crd-0003, 26 occurrences over 3 days). Registered in TOOL_POLICY (POLICY_SKIP), tool_capabilities.CORE_TOOL_NAMES, and registry._REPO_MUTATION_TOOLS (light-mode blocking parity with edit_text/write_file). |
-| 6.100.0 | 2026-08-12 | **feat: delegated runs execute in private snapshots — capture, disposition, and GC carry one honest truth (sprint phase C).** A mutating delegated run never edits the shared tree again: at `delegate_start` the host snapshots the authority target's REAL current state (tracked + staged + eligible untracked, with the sensitive/credential veto decided BEFORE anything is hashed — a blanket `git add -A` would write `.env` blobs into the object database the execution worktree shares) into a baseline commit pinned by a `refs/ouroboros/delegated/` ref, checks out a detached private worktree, and scopes the run there; the typed binding `{execution_root, baseline_sha, target_root, authority_source}` rides the durable custody rows BEFORE the POST, an explicit retry reproduces it exactly (pre-snapshot mutating rows and GC-collected baselines are typed refusals, never re-mints), and pending-invocation orphan recovery carries the FULL binding into the recovered run's row so the startup GC — whose predicate is settled && patch_disposed — never deletes the snapshot holding the child's only work. Terminal reconciliation (orphan sweep, kill path, in-process release) captures the settled run's diff through the ONE drive-rooted capture core, eagerly ONLY where a terminal receipt proves the run over — an absent (daemon-404) or unreadable close captures nothing, because across the owned-daemon boundary the child may still be writing — and capture-at-disposition is the retry point: `integrate_delegated_patch` captures on demand BEFORE applying or rejecting, a capture that fails there is the typed `INTEGRATE_DELEGATED_CAPTURE_FAILED` refusal for BOTH decisions, and `patch_captured` MEANS "a usable artifact exists" (a manifest reporting its own failure never mints the row, pre-existing rows over failed manifests are re-captured on replay, and reject re-checks the manifest before releasing the snapshot). Nothing reaches the shared tree without the explicit owner apply/reject flow: baseline drift is proven per touched path under the git lock before the apply, touched paths are read NUL-safely from `git apply --numstat -z` in both directions, cleanup follows the DURABLE disposition row (`INTEGRATE_DISPOSITION_UNWRITTEN` / `INTEGRATE_APPLIED_UNSTAGED` are typed, never a silent double-apply), the protected-path gate applies only when the target IS the Ouroboros body, and the pending obligation stays visible on the health surface (`undisposed_patches` → "DELEGATED PATCH AWAITS DISPOSITION") until disposed. Beside it: SSOT cost projection (`accounted_upper_bound_usd` under its honest name beside deprecated `cost_usd`; $0-fabrication fixes; the web UI presents upper-bound cost honestly), `delegated_runs_failed` on the execution-evidence receipt, notification chat routing (LifecycleJob.chat_id, task-bound reviews, reaper incident chat), byte-accurate argv/env budgeting with `--prompt-file` transport, and hash-bound skill repair (immutable admission hash, per-write CAS, typed stale terminalization). |
-| 6.99.0 | 2026-08-12 | **feat: delegated runs get a real nanny — delegation-first economics, a light-lane nanny policy, a bounded external-wait lease, and the `delegate_answer` verb (sprint phase B).** The nanny contract now rides the run itself: the child's objective and expected output travel as host-authored run instructions (bounded by the strict `truncate_within_limit` budget — the omission marker INSIDE the limit, never beyond it), so the delegated session pursues the task instead of a paraphrase. The permanent post-success silence in nanny pacing is replaced by a PROPORTIONAL dual-axis reminder: it re-accrues on rounds AND disclosed cost after each delegation and speaks when either axis crosses its threshold — wait rounds do not reset the cost axis, so a wait-heavy nanny is not misread as frugal, and rounds whose provider discloses no cost accrue only on the round axis (unknown is never invented). Lane policy: the executor is resolved BEFORE the model lane, a harness-dispatched nanny defaults `auto` to the light lane (watching a $0 run needs pacing, not opus), an explicitly requested lane always wins, an admission-verified `required_model_lane` suppresses the default entirely, and lane provenance is recorded on the child record. `delegate_wait` holds a typed external-wait lease over a live run: the supervisor's idle rail — and ONLY the idle rail — is spared for one bounded window (window ≤ 1800s < the 2100s tool kill < the 2400s lease ceiling, further clamped under the task's own deadline and the run's `maxSeconds` horizon; explicit deadlines, budget fences and cancel untouched), so a healthy long run is no longer idle-killed mid-wait. A run that parks on an interactive question stops being a dead end: `delegate_wait` returns a typed `waiting_on_user` payload (every harness-authored scalar bounded with cuts counted; the full set spills whole to the task drive under an immutable interaction-addressed name with a sha256/size receipt), and the new `delegate_answer` verb — custody-gated like cancel, carried by the workspace surface and both child profiles wherever the other three verbs are — relays the nanny's answer through the engine's interaction API with typed outcomes (`delivered`/`already_resolved`/`not_found`/`rejected`; transport death or 5xx is `delivery_unknown` with a bounded detail re-read; an internal deadline below the tool budget returns typed instead of hanging). Lanes without an interactive decision channel (codex) are served by the engine through a fresh delegated run rather than a decision reply; a question above the nanny's authority — money, scope, external side effects — escalates to the owner via progress instead of being guessed at. The hosted review poller handles a parked question conditionally: a question whose engine expiry provably lands before the slot deadline is waited out (the engine benign-declines and the session resumes); otherwise the slot terminates early and typed (`review_session_waiting_on_user`, cancelled through the verified-cancel path with the outcome reported honestly — "host-cancelled" only on a verified receipt). |
-
-Older releases are preserved in Git tags and GitHub releases. Older 6.x rows (including 6.96.0, 6.97.1, 6.96.2, 6.95.0, 6.94.0, 6.93.0, 6.92.1, 6.92.0, 6.91.1, 6.90.3, 6.91.0, 6.90.2, 6.90.0, 6.87.5, 6.87.4, 6.87.3, 6.87.2, 6.84.0, 6.87.1, 6.83.0, 6.86.1, 6.81.1, 6.76.0, 6.75.0, 6.74.5, 6.74.4, 6.74.1, 6.74.0, 6.73.2, 6.73.1, 6.73.0, 6.72.0, 6.71.2, 6.71.1, 6.71.0, 6.70.0, 6.69.0, 6.68.0, 6.67.0, 6.66.0, 6.65.4, 6.65.3, 6.65.2, 6.65.1, 6.65.0, 6.64.3, 6.64.2, 6.64.1, 6.64.0, 6.63.0, 6.62.0, 6.61.4, 6.61.3, 6.61.1, 6.61.0, 6.60.0, 6.59.0, 6.58.0, 6.57.0, 6.56.0, 6.55.0, 6.54.4, 6.54.2, 6.54.1, 6.54.0, 6.53.4, 6.53.0, 6.51.0), the 5.2.0 through 5.33.0-rc.6 rows, and former `4.0.0` rows are rolled off to respect the P9 changelog cap; their full bodies remain at their git tags.
-
+| 6.105.0 | 2026-08-18 | **feat: unified accounts, delegation substrate, rotation visibility.** The first tagged release since v6.103.0 — it also carries the untagged 6.104.0 below. The unified-accounts sprint lands a dual-engine account model behind feature detection (an unreadable engine catalog fails closed to the previous behavior): the Accounts UI renders every engine-side profile with honest copy (the "Default CLI login" / "Managed by the X CLI" fictions are retired), enabled+signed-in family counting with a distinct all-disabled state, an Enabled toggle riding a new PATCH credential-profile thin proxy, Remove on every engine-supported row, and a next-up badge; delegation learns an explicit account pin (`OUROBOROS_SUBAGENT_PROFILE` rides the stored canonical body as `credentialProfileId`, replayed byte-identically on retry, with strict per-subject health for every pinned lane including review-session recovery, and requested-vs-applied custody disclosed on the Last delegated run). The rotation-visibility sprint makes lane state typed and visible end to end: `{failure_code, reset_at, http_status}` plus `capability_delta` travel from substrate to render, review panels count paid only when dispatched and DEGRADED replays honestly, pre-fanout health-skip rows carry a material health epoch and reviewer-roster fingerprint as replay identity, `quorum_unreachable` lands as an honest `blocked_with_evidence` terminal, `schedule_followup` gives agents a one-shot deferred wake through the existing scheduler, and quota rotation becomes a GET→conditional-POST reconcile with a durable receipt that never overwrites an explicitly persisted value. The delegation-substrate work closes a claudexord admission race, restates the nanny's delegation mandate, and passes a pinned credential profile through `route_health` to the engine. |
+| 6.104.0 | 2026-08-17 | **feat: the Antigravity (agy) subscription is picked up from Claudexor 3.5.0.** The managed engine pin advances to 3.5.0 (build `efff2f3b`; protocol 3 and Node 24.16.0 unchanged; the archive verified against the release's `runtime-manifest.json` AND `SHA256SUMS`, identity probe green), whose headline is Google's Antigravity CLI as a fourth harness with multi-account quota rotation. The install-preset compiler now RECOGNIZES agy — `HARNESS_AGY` joins `PRESET_HARNESSES`, effort rides inside the model slug like cursor, and an alias table covers the gemini families (`gemini-3.1-pro` publishes high/low only) — while the ratified matrix deliberately stays at the seven claude/codex/cursor combinations: a connected combination without a matrix row compiles to a typed `matrix_row_absent` refusal, checked before discovery validation, replacing a bare `KeyError` that would have turned onboarding completion into an unhandled 500 (the agy seats are an owner decision, dictated separately after living with Antigravity in reviewer roles). The Accounts connect flow learns the no-default-store shape: a first-account login the engine refuses at create time (HTTP 400 with no detected account in the family — no named profile and no detected native login) switches the login card into a name-this-account state carrying the engine's own message instead of a dead-end error — structural, never keyed to a harness name. |
+Older releases are preserved in Git tags and GitHub releases. Older 6.x rows (including 6.103.25, 6.103.0, 6.102.0, 6.101.1, 6.101.0, 6.100.0, 6.99.0, 6.97.2, 6.97.1, 6.105.1, 6.97.0, 6.96.1, 6.96.0, 6.95.0, 6.94.0, 6.93.0, 6.92.1, 6.92.0, 6.91.1, 6.90.3, 6.91.0, 6.90.2, 6.90.0, 6.87.5, 6.87.4, 6.87.3, 6.87.2, 6.84.0, 6.87.1, 6.83.0, 6.86.1, 6.81.1, 6.76.0, 6.75.0, 6.74.5, 6.74.4, 6.74.1, 6.74.0, 6.73.2, 6.73.1, 6.73.0, 6.72.0, 6.71.2, 6.71.1, 6.71.0, 6.70.0, 6.69.0, 6.68.0, 6.67.0, 6.66.0, 6.65.4, 6.65.3, 6.65.2, 6.65.1, 6.65.0, 6.64.3, 6.64.2, 6.64.1, 6.64.0, 6.63.0, 6.62.0, 6.61.4, 6.61.3, 6.61.1, 6.61.0, 6.60.0, 6.59.0, 6.58.0, 6.57.0, 6.56.0, 6.55.0, 6.54.4, 6.54.2, 6.54.1, 6.54.0, 6.53.4, 6.53.0, 6.51.0), the 5.2.0 through 5.33.0-rc.6 rows, and former `4.0.0` rows are rolled off to respect the P9 changelog cap; their full bodies remain at their git tags.
 
 ---
 

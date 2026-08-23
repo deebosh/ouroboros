@@ -10,7 +10,6 @@ Tests core invariants:
 
 Run: python -m pytest tests/test_smoke.py -v
 """
-import ast
 import os
 import pathlib
 import re
@@ -103,7 +102,9 @@ EXPECTED_TOOLS = [
     "run_ci_tests",
     "advisory_review", "review_status",
     "compact_context", "set_tool_timeout", "request_restart",
-    "promote_to_stable", "schedule_subagent", "integrate_subagent_patch", "compare_subagent_patches",
+    "promote_to_stable", "schedule_subagent", "schedule_followup",
+    "configure_presence", "initiate_presence",
+    "integrate_subagent_patch", "compare_subagent_patches",
     # C1: the explicit acceptance seam for a delegated run's captured patch —
     # a first-class tool, so the registry contract must name it.
     "integrate_delegated_patch", "cancel_task",
@@ -127,7 +128,7 @@ EXPECTED_TOOLS = [
     "codebase_health", "knowledge_read", "knowledge_write", "knowledge_list",
     "journal_read", "journal_write", "workpad_read", "workpad_write",
     "promote_chat_to_task", "route_to_project", "list_projects", "steer_task",
-    "ensure_project_scope",
+    "ensure_project_scope", "schedule_followup",
     "memory_map", "memory_update_registry",
     "plan_task", "recent_tasks", "task_acceptance_review", "verify_and_record", "web_search",
     "start_service", "service_status", "service_logs", "stop_service",
@@ -418,32 +419,24 @@ def test_no_env_dumping():
     assert len(violations) == 0, "Dangerous env dumping:\n" + "\n".join(violations)
 
 
-def test_no_oversized_modules():
-    """Principle 7: no non-grandfathered module exceeds the hard gate.
+# The `size_ratchet` lane below BLOCKS only in official-repository CI (a
+# dedicated `pytest tests/ -m size_ratchet` step in quick-test and full-test);
+# default local runs exclude the marker and surface the same validator
+# findings as warnings via check_worktree_readiness and codebase_health.
+# Canonical lane description: docs/DEVELOPMENT.md "Pytest marker lanes".
 
-    Covers Python everywhere plus web/**/*.js (perf/lifecycle sprint): the JS
-    predicate is the SSOT `is_gated_js_module` shared with codebase_health, so
-    the two consumers never diverge. `web/tests/` needs no special-casing here —
-    `_SKIP_DIRS` already prunes any directory named `tests` from the walk.
-    """
-    from ouroboros.review import MAX_MODULE_LINES, is_gated_js_module, module_is_grandfathered
+
+@pytest.mark.size_ratchet
+def test_no_oversized_modules():
+    """Principle 7: exact-path debt is the only exception to the hard gate."""
+    from ouroboros.review import GIANT_PATHS, MAX_MODULE_LINES, iter_gated_modules
 
     max_lines = MAX_MODULE_LINES
-    violations = []
-    for root, dirs, files in os.walk(REPO):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-        for f in files:
-            path = pathlib.Path(root) / f
-            # Compute rel BEFORE filtering: the JS predicate is path-based
-            # (web/** only, vendored/minified .min.js excluded).
-            rel = path.relative_to(REPO).as_posix()
-            if not (f.endswith(".py") or is_gated_js_module(rel)):
-                continue
-            lines = len(path.read_text(encoding="utf-8").splitlines())
-            # Shared matcher (basename OR repo-relative path) — the same one
-            # codebase_health uses, so the two consumers never diverge.
-            if lines > max_lines and not module_is_grandfathered(rel):
-                violations.append(f"{rel}: {lines} lines")
+    violations = [
+        f"{module.path}: {module.line_count} lines"
+        for module in iter_gated_modules(REPO)
+        if module.line_count > max_lines and module.path not in GIANT_PATHS
+    ]
     assert len(violations) == 0, f"Oversized modules (>{max_lines} lines):\n" + "\n".join(violations)
 
 
@@ -468,39 +461,70 @@ def test_complexity_metrics_measures_multiline_signatures_correctly():
     )
     metrics = compute_complexity_metrics([("x.py", source)])
     lengths = {start: length for _path, start, length in metrics["longest_functions"]}
-    # multiline_signature starts at line index 0: signature (4 lines) + 20 body lines.
-    # The bug reported this as ~4 (the signature alone, mistaking its own closing
-    # ")" line for the end of the body).
-    assert lengths[0] >= 20
+    # multiline_signature starts at 1-indexed source line 1 (AST node.lineno):
+    # signature (4 lines) + 20 body lines. The bug this regression-tests reported
+    # this as ~4 (the signature alone, mistaking its own closing ")" line for the
+    # end of the body).
+    assert lengths[1] >= 20
     # single_line (unaffected by the bug) starts right after the blank separator.
-    single_line_start = source.splitlines().index("def single_line(a, b):")
+    single_line_start = source.splitlines().index("def single_line(a, b):") + 1
     assert lengths[single_line_start] >= 5
+
+
+@pytest.mark.size_ratchet
+def test_size_ratchet_manifest_matches_live_tree():
+    """Exact module/function/band/byte debt matches the untruncated candidate tree."""
+    from ouroboros.review import validate_size_ratchet
+
+    errors = validate_size_ratchet(REPO)
+    assert not errors, "Size-ratchet manifest violations:\n" + "\n".join(errors)
+
+
+@pytest.mark.size_ratchet
+def test_size_ratchet_transition_against_explicit_base():
+    """Official CI enforces the pairwise base-vs-tip shrink-only transition.
+
+    CI exports ``OURO_SIZE_RATCHET_BASE_REF`` (PR base SHA / push
+    ``event.before``); without it the check degrades to the tip's parent
+    manifest — the merge-aware local semantics. An all-zeros base (new-branch /
+    tag push) degrades the same way (never a skip), while manifest exactness
+    stays enforced by ``test_size_ratchet_manifest_matches_live_tree``.
+    """
+    from ouroboros.review import validate_size_ratchet_transition_against_base
+
+    base_ref = os.environ.get("OURO_SIZE_RATCHET_BASE_REF") or None
+    errors = validate_size_ratchet_transition_against_base(REPO, base_ref)
+    assert not errors, (
+        f"Size-ratchet pairwise transition violations (base={base_ref or 'HEAD-parent'}):\n" + "\n".join(errors)
+    )
+
+
 def test_js_module_gate_buckets_and_grandfathering():
-    """The JS size gate sees web/**/*.js, exempts chat.js by rel-path only,
-    and excludes vendored/minified payloads and web/tests/."""
+    """The JS size gate sees web/tests and exempts debt by exact rel-path only."""
     from ouroboros.review import compute_complexity_metrics, module_is_grandfathered
 
     sections = [
         ("repo/web/app.js", "x\n" * 2000),                   # gated, over hard gate, not grandfathered
         ("repo/web/modules/chat.js", "x\n" * 4000),          # gated, grandfathered by rel-path
         ("repo/web/vendor/chart.umd.min.js", "x\n" * 9000),  # vendored/minified — excluded
-        ("repo/web/tests/foo.test.js", "x\n" * 9000),        # web/tests/ — excluded
+        ("repo/web/tests/foo.test.js", "x\n" * 9000),        # web/tests/ — gated
         ("repo/ouroboros/small.py", "x\n" * 10),
     ]
     metrics = compute_complexity_metrics(sections)
 
-    assert metrics["js_files"] == 2  # app.js + chat.js; vendored and web/tests excluded
+    assert metrics["js_files"] == 3  # app.js + chat.js + web/tests; vendored excluded
     oversized = {p for p, _n in metrics["oversized_modules"]}
     grandfathered = {p for p, _n in metrics["grandfathered_modules"]}
-    assert "repo/web/app.js" in oversized
-    assert "repo/web/modules/chat.js" in grandfathered
-    assert "repo/web/modules/chat.js" not in oversized
-    for excluded in ("repo/web/vendor/chart.umd.min.js", "repo/web/tests/foo.test.js"):
-        assert excluded not in oversized and excluded not in grandfathered
+    assert "web/app.js" in oversized
+    assert "web/modules/chat.js" in grandfathered
+    assert "web/modules/chat.js" not in oversized
+    assert "web/tests/foo.test.js" in oversized
+    assert "web/vendor/chart.umd.min.js" not in oversized
+    assert "web/vendor/chart.umd.min.js" not in grandfathered
 
     # Grandfather entry is rel-path-keyed: a chat.js anywhere else stays gated.
     assert module_is_grandfathered("web/modules/chat.js")
-    assert module_is_grandfathered("repo/web/modules/chat.js")
+    assert not module_is_grandfathered("repo/web/modules/chat.js")
     assert not module_is_grandfathered("web/other/chat.js")
 
 
@@ -533,61 +557,33 @@ def test_no_bare_except_pass():
 
 # ── AST-based function size check ───────────────────────────────
 
-_SKIP_DIRS = {'.git', '__pycache__', 'tests', 'python-standalone', 'build', 'dist',
-              'venv', '.venv', 'node_modules', 'assets', 'devtools', '.pytest_cache'}
-
 
 def _get_function_sizes():
-    """Return list of (file, func_name, lines) for all functions."""
-    from ouroboros.review import FUNCTION_COUNT_EXCLUDED_FILES
+    """Return exact path/qualname tuples from the production iterator."""
+    from ouroboros.review import iter_gated_functions
 
-    results = []
-    for root, dirs, files in os.walk(REPO):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-        for f in files:
-            if not f.endswith(".py"):
-                continue
-            if f in ("app.py", "demo_app.py"):
-                continue
-            if f in FUNCTION_COUNT_EXCLUDED_FILES:
-                continue
-            path = pathlib.Path(root) / f
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:
-                continue
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    size = node.end_lineno - node.lineno + 1
-                    results.append((f, node.name, size))
-    return results
+    return [(item.path, item.qualname, item.line_count) for item in iter_gated_functions(REPO)]
 
 
+@pytest.mark.size_ratchet
 def test_no_extremely_oversized_functions():
     """No function exceeds the hard gate."""
-    from ouroboros.review import GRANDFATHERED_OVERSIZED_FUNCTIONS, MAX_FUNCTION_LINES
+    from ouroboros.review import FUNCTION_DEBT, MAX_FUNCTION_LINES
 
     violations = []
-    for fname, func_name, size in _get_function_sizes():
-        if (fname, func_name) in GRANDFATHERED_OVERSIZED_FUNCTIONS:
+    for path, qualname, size in _get_function_sizes():
+        if (path, qualname) in FUNCTION_DEBT:
             continue
         if size > MAX_FUNCTION_LINES:
-            violations.append(f"{fname}:{func_name} = {size} lines")
+            violations.append(f"{path}:{qualname} = {size} lines")
     assert len(violations) == 0, \
         f"Functions exceeding {MAX_FUNCTION_LINES} lines:\n" + "\n".join(violations)
 
 
-def test_function_count_reasonable():
-    """Codebase doesn't have too few or too many functions.
-
-    The hard gate value is imported from ouroboros/review.py::MAX_TOTAL_FUNCTIONS;
-    there is no hardcoded assertion number here.
-    """
-    from ouroboros.review import MAX_TOTAL_FUNCTIONS
-
+def test_function_count_has_sanity_floor():
+    """The production inventory still discovers a plausible codebase."""
     sizes = _get_function_sizes()
     assert len(sizes) >= 100, f"Only {len(sizes)} functions — too few?"
-    assert len(sizes) <= MAX_TOTAL_FUNCTIONS, f"{len(sizes)} functions — too many?"
 
 
 # ── Pre-commit staged-snapshot oversized-function gate ──────────────
@@ -605,10 +601,8 @@ class TestStagedOversizedFunction:
 
     def test_oversized_function_detected(self):
         """A function > MAX_FUNCTION_LINES is reported as a violation."""
-        from ouroboros.tools.review_helpers import (
-            _find_oversized_functions,
-            MAX_FUNCTION_LINES,
-        )
+        from ouroboros.review import MAX_FUNCTION_LINES
+        from ouroboros.tools.review_helpers import _find_oversized_functions
         body = "\n".join(f"    x_{i} = {i}" for i in range(MAX_FUNCTION_LINES + 50))
         content = f"def big_function():\n{body}\n"
         violations = _find_oversized_functions(content, "fake.py")
@@ -618,10 +612,8 @@ class TestStagedOversizedFunction:
 
     def test_small_function_passes(self):
         """A function <= MAX_FUNCTION_LINES is NOT reported."""
-        from ouroboros.tools.review_helpers import (
-            _find_oversized_functions,
-            MAX_FUNCTION_LINES,
-        )
+        from ouroboros.review import MAX_FUNCTION_LINES
+        from ouroboros.tools.review_helpers import _find_oversized_functions
         # Tightly under the cap.
         body = "\n".join(f"    x_{i} = {i}" for i in range(MAX_FUNCTION_LINES - 2))
         content = f"def small_function():\n{body}\n"

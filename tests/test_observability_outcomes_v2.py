@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from ouroboros.observability import (
     persist_call,
     posix_private_modes_supported,
+    read_blob_ref,
     redact_projection,
     write_blob,
 )
@@ -33,6 +34,8 @@ def _read_gzip_json(path):
 
 
 def test_redactor_records_key_and_value_rules_without_secret_leak():
+    query_secret = "query-secret-value-123456"
+    basic_secret = "dXNlcjpiYXNpYy1zZWNyZXQtdmFsdWU="
     payload = {
         "OPENAI_API_KEY": "sk-testsecretvalue000000000000",
         "log": "MY_API_KEY=thisisaverylongsecretvalue123456 github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
@@ -59,6 +62,10 @@ def test_redactor_records_key_and_value_rules_without_secret_leak():
             "bearer_token": "verylongbearertokenvalueabcdef",
             "anthropic_secret": "sk-ant-verylongsecretvalue123456",
             "url": "https://user:pass@example.com/path",
+            "request": (
+                f"GET https://example.com/path?api_key={query_secret}&model=test "
+                f"Authorization: Basic {basic_secret}"
+            ),
         },
     }
 
@@ -79,6 +86,8 @@ def test_redactor_records_key_and_value_rules_without_secret_leak():
     assert "stripescretvalue" not in rendered
     assert "verylongsecretvalue" not in rendered
     assert "user:pass" not in rendered
+    assert query_secret not in rendered
+    assert basic_secret not in rendered
     assert redacted.value["prompt_tokens"] == 123
     assert redacted.value["completion_tokens"] == 45
     assert redacted.value["cached_tokens"] == 6
@@ -89,9 +98,12 @@ def test_redactor_records_key_and_value_rules_without_secret_leak():
     assert redacted.value["path"] == "/workspace/reports/summary-long-name.json"
     assert redacted.value["service"] == "background-analysis-service"
     assert redacted.value["public_url"] == "https://example.com/public/long-resource-name"
+    assert "model=test" in redacted.value["nested"]["request"]
     assert redacted.manifest()["redacted"] is True
     rules = {item["rule"] for item in redacted.manifest()["rules"]}
-    assert {"secret_key_name", "url_credentials"} <= rules
+    assert {
+        "basic_auth", "secret_key_name", "secret_query_parameter", "url_credentials",
+    } <= rules
 
 
 def test_redactor_masks_compound_secret_names_without_generic_key_false_positives():
@@ -166,7 +178,8 @@ def test_redactor_masks_segmented_secret_markers_with_trailing_qualifiers():
     assert "prompt_tokens: 123" in redacted.value["log"]
 
 
-def test_persist_call_writes_private_full_and_redacted_refs(tmp_path):
+def test_persist_call_writes_private_full_and_redacted_refs(tmp_path, monkeypatch):
+    monkeypatch.delenv("OUROBOROS_OBSERVABILITY_KEEP_RAW", raising=False)
     # Built by concatenation so the staged source never contains a literal PAT pattern.
     payload = {"tool": "run_command", "args": {"token": "ghp_" + "abcdefghijklmnopqrstuvwxyz123456"}}
 
@@ -207,6 +220,40 @@ def test_persist_call_writes_private_full_and_redacted_refs(tmp_path):
     assert manifest["redaction"]["redacted"] is True
     assert manifest["full_payload_ref"]["sha256"]
     assert refs["manifest_ref"]["sha256"] == __import__("hashlib").sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def test_persist_call_keep_raw_override_preserves_exact_authoritative_payload(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.delenv("OUROBOROS_OBSERVABILITY_KEEP_RAW", raising=False)
+    payload = {
+        "messages": [
+            {
+                "role": "tool",
+                "content": {"token": "actor-visible-token-shaped-evidence"},
+            },
+        ],
+    }
+
+    refs = persist_call(
+        tmp_path,
+        task_id="task-checkpoint",
+        call_id="checkpoint-1",
+        call_type="context_compaction_checkpoint",
+        payload=payload,
+        keep_raw=True,
+    )
+
+    manifest = json.loads(
+        (tmp_path / "observability" / "calls" / "task-checkpoint" / "checkpoint-1.json")
+        .read_text(encoding="utf-8")
+    )
+    assert manifest["full_payload_redacted"] is False
+    assert refs["full_payload_redacted"] is False
+    assert read_blob_ref(tmp_path, manifest["full_payload_ref"]) == payload
+    projection = read_blob_ref(tmp_path, refs["redacted_projection_ref"])
+    assert projection["messages"][0]["content"]["token"] == "***REDACTED***"
+    assert manifest["full_payload_ref"]["sha256"] != refs["redacted_projection_ref"]["sha256"]
 
 
 def test_persist_call_keep_raw_env_persists_unredacted(tmp_path, monkeypatch):

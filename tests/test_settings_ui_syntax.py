@@ -124,7 +124,9 @@ def test_render_settings_page_no_bare_bracket_backtick():
 def test_extension_settings_reuse_closed_safe_field_contract():
     content = SETTINGS_JS.read_text(encoding="utf-8")
     assert "collectSafeFieldValues, renderSafeField, setInlineStatus" in content
-    assert "renderSafeField(field, {}, fieldOptions)" in content
+    # D31 fix: the call site passes the real per-skill saved values (not a bare
+    # {}), so the settings form pre-fills instead of rendering blank.
+    assert "renderSafeField(field, savedValues, fieldOptions)" in content
     assert "pendingExtensionSettings.has(requestKey)" in content
     assert "collectSafeFieldValues(form, spec.fields || [])" in content
     assert "type=\"${escapeHtml(field.type" not in content

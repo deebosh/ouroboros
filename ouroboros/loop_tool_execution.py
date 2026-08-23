@@ -74,7 +74,9 @@ _FAILURE_PREFIXES = (
     "⚠️ INTEGRATE_",
 )
 
-_PLAN_REVIEW_OUTCOMES = frozenset({"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN"})
+# B2 (honest DEGRADED): the no-quorum aggregate is a legal, always-OPEN control
+# outcome — the render layer no longer launders it into REVIEW_REQUIRED.
+_PLAN_REVIEW_OUTCOMES = frozenset({"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN", "DEGRADED"})
 
 
 def _parse_plan_review_control(text: str) -> tuple[str, bool] | None:
@@ -105,7 +107,7 @@ def _parse_plan_review_control(text: str) -> tuple[str, bool] | None:
     closed = payload.get("closed")
     if outcome not in _PLAN_REVIEW_OUTCOMES or type(closed) is not bool:
         return None
-    if (outcome == "GREEN" and not closed) or (outcome == "REVISE_PLAN" and closed):
+    if (outcome == "GREEN" and not closed) or (outcome in {"REVISE_PLAN", "DEGRADED"} and closed):
         return None
     return outcome, closed
 _FAILURE_MARKERS = (
@@ -618,6 +620,10 @@ def _extract_result_metadata(fn_name: str, result: Any, is_error: bool) -> Dict[
             meta["status"] = "ok_autocorrected"
         else:
             meta["status"] = "ok"
+    if fn_name == "submit_skill_to_hub":
+        from ouroboros.skill_publish_result import extract_skill_publish_result_metadata
+
+        meta.update(extract_skill_publish_result_metadata(result))
     return meta
 
 
@@ -1123,15 +1129,49 @@ def handle_tool_calls(
     emit_progress: Callable[[str], None],
 ) -> int:
     """Execute tool calls, append results, and return error count."""
+    from ouroboros.openai_chat_dispatch import (
+        custom_tool_argument_error,
+        custom_validation_by_call_id,
+    )
+
+    validation = tuple(
+        getattr(tools._ctx, "_request_wire_custom_receipts", ()) or ()
+    )
+    tools._ctx._request_wire_custom_receipts = ()
+    validation_by_id = custom_validation_by_call_id(validation)
+
+    def _execute(tc: Dict[str, Any]) -> Dict[str, Any]:
+        receipt = validation_by_id.get(str(tc.get("id") or ""))
+        if receipt is not None and not receipt.allows_execution:
+            fn_name = str((tc.get("function") or {}).get("name") or "").strip()
+            result = custom_tool_argument_error(fn_name, receipt)
+            return {
+                "tool_call_id": str(tc.get("id") or ""),
+                "fn_name": fn_name,
+                "result": result,
+                "is_error": True,
+                "tool_args": {},
+                "args_for_log": {},
+                "is_code_tool": fn_name in tools.CODE_TOOLS,
+                "result_meta": _extract_result_metadata(fn_name, result, True),
+            }
+        return _execute_with_timeout(
+            tools,
+            tc,
+            drive_logs,
+            _get_tool_timeout(
+                tools,
+                str(tc["function"]["name"] or "").strip(),
+                _tc_args(tc),
+            ),
+            task_id,
+            stateful_executor,
+        )
+
     can_parallel = tool_calls_can_run_parallel(tool_calls)
 
     if not can_parallel:
-        results = [
-            _execute_with_timeout(tools, tc, drive_logs,
-                                  _get_tool_timeout(tools, str(tc["function"]["name"] or "").strip(), _tc_args(tc)), task_id,
-                                  stateful_executor)
-            for tc in tool_calls
-        ]
+        results = [_execute(tc) for tc in tool_calls]
     else:
         max_workers = min(len(tool_calls), 8)
         executor = ThreadPoolExecutor(max_workers=max_workers)
@@ -1139,17 +1179,8 @@ def handle_tool_calls(
             future_to_index = {
                 executor.submit(
                     contextvars.copy_context().run,
-                    _execute_with_timeout,
-                    tools,
+                    _execute,
                     tc,
-                    drive_logs,
-                    _get_tool_timeout(
-                        tools,
-                        str(tc["function"]["name"] or "").strip(),
-                        _tc_args(tc),
-                    ),
-                    task_id,
-                    stateful_executor,
                 ): idx
                 for idx, tc in enumerate(tool_calls)
             }
@@ -1243,6 +1274,35 @@ def _maybe_auto_attach_image(
         log.debug("auto-attach image failed", exc_info=True)
 
 
+def reclaim_trace_refs(tool_ctx: Any) -> Dict[str, Any]:
+    """Per-task {tool_call_id: trace_ref} accumulated as tool results append."""
+    refs = getattr(tool_ctx, "_tool_trace_refs", None)
+    return refs if isinstance(refs, dict) else {}
+
+
+def reclaim_negative_memo(tool_ctx: Any) -> set:
+    """Per-task set of non-shrinking reclaim unit keys (created on demand)."""
+    memo = getattr(tool_ctx, "_context_reclaim_negative_memo", None)
+    if not isinstance(memo, set):
+        memo = set()
+        tool_ctx._context_reclaim_negative_memo = memo
+    return memo
+
+
+def prune_reclaim_trace_refs(tool_ctx: Any, messages: List[Dict[str, Any]]) -> None:
+    """Drop trace refs whose tool_call_id left the transcript (post-reclaim bound)."""
+    refs = getattr(tool_ctx, "_tool_trace_refs", None)
+    if not isinstance(refs, dict) or not refs:
+        return
+    live = {
+        str(msg.get("tool_call_id"))
+        for msg in messages
+        if isinstance(msg, dict) and msg.get("tool_call_id")
+    }
+    for call_id in [key for key in refs if key not in live]:
+        del refs[call_id]
+
+
 def process_tool_results(
     results: List[Dict[str, Any]],
     messages: List[Dict[str, Any]],
@@ -1271,9 +1331,28 @@ def process_tool_results(
             "tool_call_id": exec_result["tool_call_id"],
             "content": truncated_result
         })
+        ctx = getattr(tools, "_ctx", None) if tools is not None else None
+        if fn_name == "delegate_wait" and ctx is not None:
+            try:
+                from ouroboros.delegate_supervision import acknowledge_pending_wake
+
+                acknowledge_pending_wake(ctx, truncated_result)
+            except Exception:
+                log.debug("Failed to acknowledge injected delegate wake", exc_info=True)
+
+        # Retain the pre-truncation trace ref per tool_call_id so the context
+        # reclaim materializer can bind exact tool CAS refs into its capsules.
+        trace_ref = exec_result.get("trace_ref")
+        if ctx is not None and isinstance(trace_ref, dict) and trace_ref:
+            refs = getattr(ctx, "_tool_trace_refs", None)
+            if not isinstance(refs, dict):
+                refs = {}
+                ctx._tool_trace_refs = refs
+            refs[str(exec_result["tool_call_id"])] = trace_ref
 
         llm_trace["tool_calls"].append({
             "tool": fn_name,
+            "tool_call_id": exec_result["tool_call_id"],
             "args": _safe_args(exec_result["args_for_log"]),
             # Evidence-parity (v6.71.1): store the SAME view the agent saw
             # (per-tool TOOL_RESULT_LIMITS, head-truncated) rather than a hidden

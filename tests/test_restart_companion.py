@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, List
+from typing import List
 
 import pytest
 
@@ -82,7 +82,7 @@ def _wait_until_dead(supervisor: CompanionSupervisor, key: str, timeout: float =
 def test_restart_alive_companion_stops_then_respawns(tmp_path: pathlib.Path) -> None:
     """Restarting an alive companion stops it (capturing pid_before) and respawns."""
     supervisor = CompanionSupervisor(tmp_path)
-    descriptor = _start_sleepy(supervisor, tmp_path)
+    _start_sleepy(supervisor, tmp_path)
 
     live = supervisor.snapshot()["demo:sleepy"]
     pid_before = int(live["pid"])
@@ -447,7 +447,7 @@ def test_tool_returns_json_with_documented_fields(tmp_path: pathlib.Path) -> Non
     companion_module.get_global_supervisor = lambda: None  # supervisor_uninitialized path
     try:
         ctx = _FakeToolContext(drive_root=tmp_path)
-        result = companion_module._restart_companion(
+        companion_module._restart_companion(
             ctx, skill_name="x", companion_name="y", reason="shape test",
         )
     finally:

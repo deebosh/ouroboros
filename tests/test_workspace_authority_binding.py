@@ -11,7 +11,7 @@ from ouroboros.tools.registry import ToolContext, ToolRegistry
 _EXPECTED_TOP_LEVEL_POLICY = {
     "active_workspace": {"read", "list", "search", "write", "edit", "shell", "vcs", "review", "service"},
     "system_repo": {"read", "list", "search", "write", "edit", "shell", "vcs", "review", "service"},
-    "runtime_data": {"read", "list", "write", "edit"},
+    "runtime_data": {"read", "list", "search", "write", "edit"},
     "task_drive": {"read", "list", "write", "edit", "shell", "service"},
     "skill_payload": {"read", "list", "search", "write", "edit", "review", "shell"},
     "artifact_store": {"read", "list", "write", "shell", "service"},
@@ -35,6 +35,8 @@ def test_shared_top_level_principal_does_not_widen_specialized_profiles():
     assert "shell" not in _POLICY["local_readonly_subagent"]["skill_payload"]
     assert "shell" not in _POLICY["skill_repair"]["skill_payload"]
     assert "skill_payload" not in _POLICY["acting_subagent"]
+    for profile in ("local_readonly_subagent", "skill_repair", "acting_subagent"):
+        assert "search" not in _POLICY[profile]["runtime_data"]
     assert "delegate" in _POLICY["operator_control"]["active_workspace"]
 
 
@@ -61,7 +63,7 @@ def _skill(root: pathlib.Path, location: str, name: str) -> pathlib.Path:
     return skill_dir
 
 
-def test_binding_selects_canonical_skill_from_forked_drive(tmp_path):
+def test_binding_projects_markerless_native_as_external_from_forked_drive(tmp_path):
     repo = tmp_path / "repo"
     parent_data = tmp_path / "parent-data"
     child_data = tmp_path / "child-data"
@@ -87,7 +89,7 @@ def test_binding_selects_canonical_skill_from_forked_drive(tmp_path):
     assert binding.base_path == native.resolve()
     assert binding.target_path == (native / "notes.txt").resolve()
     assert binding.state_drive_root == parent_data.resolve()
-    assert binding.source == "native"
+    assert binding.source == "external"
     assert child_data not in binding.target_path.parents
 
 

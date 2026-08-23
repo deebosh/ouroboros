@@ -87,6 +87,7 @@ class FakeGateway:
         self.cancels = []
         self.artifact_gets = []
         self.health_asked = []
+        self.run_gets = []
         self.project_lookups = []
         self.registrations = []
         self.removals = []
@@ -150,6 +151,7 @@ class FakeGateway:
         return {"runId": "run-1", "runDir": "/tmp/fake-run"}
 
     def get_run(self, run_id, **_kw):
+        self.run_gets.append(run_id)
         if FakeGateway.nonterminal:
             return {"summary": {"state": "running"}, "lastSeq": 1}
         return json.loads(json.dumps(FakeGateway.detail))
@@ -242,6 +244,27 @@ def test_schema_conformant_clean_verdict_survives(tmp_path, fake_route):
     # the schema was asked on the EFFECTIVE route (D19).
     assert "outputSchema" in start
     assert gateway.start_keys[0]  # the invocation id rode the wire
+
+
+def test_structured_session_compares_the_parsed_model_not_the_harness_spec(
+    tmp_path, fake_route,
+):
+    fake_route.detail = _terminal_detail('{"findings": []}', conformance="passed", model="anthropic::claude-fable-5")
+    result = run_review_request(
+        _agent_request(),
+        slots=[_agent_slot(
+            model="fake-review=anthropic/claude-fable-5",
+            session_target="fake-review=anthropic/claude-fable-5",
+        )],
+        drive_root=tmp_path,
+        llm=FakeLLM(),
+    )
+
+    reasons = {
+        item.get("reason")
+        for item in result.actors[0]["usage"].get("capability_delta", [])
+    }
+    assert "session_route_resolves_its_own_model" not in reasons
 
 
 def test_schema_is_not_asked_when_the_manifest_does_not_declare_it(tmp_path, fake_route):
@@ -585,7 +608,155 @@ def test_a_typed_refusal_is_not_relaunched_into_a_second_billed_session(tmp_path
     assert sum(len(inst.start_requests) for inst in fake_route.instances) == 1
     actor = result.actors[0]
     assert actor["status"] == "error"
-    assert "subscription_window_exhausted" in actor["error"]
+    # B1: the typed facts ride the record as FIELDS, never as substrings of the
+    # prose — the code, the healing instant and the transport class all survive.
+    assert actor["failure_code"] == "subscription_window_exhausted"
+    assert actor["reset_at"] == "2030-01-01T00:00:00Z"
+    assert actor["transport_status"] == "provider_transport_error"
+
+
+def test_a_pool_exhausted_terminal_is_typed_like_a_spent_window(tmp_path, fake_route):
+    """Cross-repo forward-compat (B1): a newer engine reports a spent credential POOL
+    with its own RunFailureCode. Same timer-healing semantics, same exception class —
+    with the ORIGINAL code preserved, never relabelled. An unknown code stays the
+    generic typed refusal (fail-open: old engines emit code:null and behave as today)."""
+    from ouroboros.gateways.claudexor import (
+        ClaudexorSubscriptionWindowExhausted, ClaudexorUnavailable)
+    from ouroboros.review_execution import AgentSessionReviewExecutor, ReviewAssignment
+
+    detail = _exhausted_window_detail()
+    detail["summary"]["failure"]["code"] = "credential_pool_exhausted"
+    fake_route.detail = detail
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-pool", call_type="scope_review",
+                         custody_root=tmp_path),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as excinfo:
+        executor.execute()
+    assert excinfo.value.code == "credential_pool_exhausted"
+    assert excinfo.value.reset_at == "2030-01-01T00:00:00Z"
+
+    detail = _exhausted_window_detail()
+    detail["summary"]["failure"]["code"] = "some_future_code"
+    fake_route.detail = detail
+    custody._CUSTODY.clear()
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-unknown", call_type="scope_review",
+                         custody_root=tmp_path / "b"),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorUnavailable) as generic:
+        executor.execute()
+    assert not isinstance(generic.value, ClaudexorSubscriptionWindowExhausted)
+    assert generic.value.code == "some_future_code"
+
+
+def test_pre_dispatch_admission_raises_the_typed_window_class(tmp_path, fake_route, monkeypatch):
+    """Admission health (route_health, before any POST) knew the window was spent but
+    said so in PROSE — the reset instant and the code did not survive to the actor
+    record. B1: the EXISTING exhausted class is raised there, carrying reset_at, and
+    no session is ever started."""
+    from ouroboros.gateways.claudexor import ClaudexorSubscriptionWindowExhausted
+    from ouroboros.review_execution import AgentSessionReviewExecutor, ReviewAssignment
+
+    spent = {"subject": {"harness": "fake-review", "subject_id": "acct"},
+             "freshness": "fresh",
+             "constraints": [{"used_ratio": 1.0, "resets_at": "2030-02-02T00:00:00Z"}]}
+    monkeypatch.setattr(FakeGateway, "quota_snapshots", lambda self: [dict(spent)])
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-admission", call_type="scope_review",
+                         custody_root=tmp_path),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as excinfo:
+        executor.execute()
+    assert excinfo.value.reset_at == "2030-02-02T00:00:00Z"
+
+    # An undated exhaustion (route_health's reason-with-empty-reset shape) is
+    # STILL the typed class — spent with an unknown healing instant. A fresh
+    # executor: a settled typed failure is memoized per executor by design.
+    spent["constraints"] = [{"used_ratio": 1.0}]
+    custody._CUSTODY.clear()
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-admission-undated", call_type="scope_review",
+                         custody_root=tmp_path / "b"),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as undated:
+        executor.execute()
+    assert undated.value.reset_at == ""
+    assert sum(len(inst.start_requests) for inst in fake_route.instances) == 0
+
+
+def test_pre_dispatch_admission_preserves_the_pool_code(tmp_path, fake_route, monkeypatch):
+    """Review fix 2 (cross-PR contract): an UNDATED `credential_pool_exhausted`
+    reason from route_health raises the SAME exhausted class with the POOL code
+    preserved — never flattened to the subscription code; the dated reason-empty
+    shape keeps the subscription default and its reset exactly as before."""
+    from ouroboros import subagents
+    from ouroboros.gateways.claudexor import ClaudexorSubscriptionWindowExhausted
+    from ouroboros.review_execution import AgentSessionReviewExecutor, ReviewAssignment
+
+    monkeypatch.setattr(
+        subagents, "route_health",
+        lambda gateway, route_id, shape, *, route_model="", pinned_profile="": ("credential_pool_exhausted", ""))
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-pool", call_type="scope_review",
+                         custody_root=tmp_path),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as pool:
+        executor.execute()
+    assert pool.value.code == "credential_pool_exhausted"
+    assert pool.value.reset_at == ""
+
+    # Dated, reason-empty shape (the ordinary spent window): unchanged path.
+    monkeypatch.setattr(
+        subagents, "route_health",
+        lambda gateway, route_id, shape, *, route_model="", pinned_profile="": ("", "2030-03-03T00:00:00Z"))
+    custody._CUSTODY.clear()
+    executor = AgentSessionReviewExecutor(
+        ReviewAssignment(request=_agent_request(), slot=_agent_slot(),
+                         call_id="c-dated", call_type="scope_review",
+                         custody_root=tmp_path / "b"),
+        llm=FakeLLM(),
+    )
+    with pytest.raises(ClaudexorSubscriptionWindowExhausted) as dated:
+        executor.execute()
+    assert dated.value.code == "subscription_window_exhausted"
+    assert dated.value.reset_at == "2030-03-03T00:00:00Z"
+    assert sum(len(inst.start_requests) for inst in fake_route.instances) == 0
+
+
+def test_an_expired_cooldown_is_history_not_exhaustion():
+    """The `_exhausted_window` reader (the admission seam above) treated ANY non-empty
+    `cooldown_until` as spent. A cooldown whose instant already PASSED is a stale fact
+    the harness has not refreshed, not positive evidence of a spent window; a FUTURE
+    one still blocks, and an illegible instant keeps the conservative old reading."""
+    from ouroboros.subagents import _exhausted_window
+
+    def _quota(cooldown):
+        class _Q:
+            def quota_snapshots(self):
+                return [{"subject": {"harness": "some-route", "subject_id": "a"},
+                         "freshness": "fresh",
+                         "constraints": [{"used_ratio": 0.4,
+                                          "cooldown_until": cooldown}]}]
+
+            def quota_absences(self):
+                return []
+        return _Q()
+
+    assert _exhausted_window(_quota("2020-01-01T00:00:00Z"), "some-route") == (False, "")
+    assert _exhausted_window(_quota("2099-01-01T00:00:00Z"), "some-route") == (
+        True, "2099-01-01T00:00:00Z")
+    assert _exhausted_window(_quota("soon-ish"), "some-route") == (True, "soon-ish")
 
 
 def test_timeout_cancels_the_run_and_fails_typed(tmp_path, fake_route):
@@ -683,6 +854,159 @@ def _lineage_scope():
 def _custody_rows(drive_root):
     return [json.loads(line) for line in
             custody.event_log_path(drive_root).read_text().splitlines() if line.strip()]
+
+
+def _seed_started_review_invocation(
+    drive_root, *, invocation_id="inv-started", request_task_id="t-b",
+    custody_task_id="t-b", run_id="run-started",
+):
+    """Write the exact request + STARTED facts an interrupted retry recovers."""
+    route_id = "stored-review"
+    request = {
+        "prompt": "review this",
+        "instructions": "stored review instructions",
+        "authPreference": "subscription",
+        "mode": "ask",
+        "access": "readonly",
+        "scope": {"kind": "project", "root": "/tmp/fake-repo"},
+        "harnesses": [route_id],
+        "primaryHarness": route_id,
+        "maxSeconds": 30,
+        "model": "stored-model",
+        "effort": "xhigh",
+        "outputSchema": {"type": "object"},
+    }
+    assert custody.record_start_requested(
+        drive_root, run_id="", task_id=request_task_id,
+        idempotency_key="stored-logical-key", invocation_id=invocation_id,
+        max_seconds=30, request=request, project_id="proj-owned",
+        project_owned=True, route=route_id, surface="scope_review",
+        slot_id="scope_slot_1", root_task_id="stored-root",
+        parent_task_id="stored-parent",
+    )
+    entry = custody.RunCustody(
+        run_id=run_id, task_id=custody_task_id, route_id=route_id,
+        model="stored-model", project_id="proj-owned", project_owned=True,
+        root_task_id="stored-root", parent_task_id="stored-parent",
+        ledger_root=str(drive_root), idempotency_key="stored-logical-key",
+        invocation_id=invocation_id,
+    )
+    assert custody.record_started(drive_root, entry, shape={
+        "effort": "xhigh", "access": "readonly", "mode": "ask",
+        "isolation": "", "delegated": False, "root": "/tmp/fake-repo",
+        "surface": "scope_review", "slot_id": "scope_slot_1",
+    })
+
+
+def test_started_invocation_recovery_reuses_exact_durable_custody(
+    tmp_path, fake_route, monkeypatch,
+):
+    """#167: an already-STARTED retry is wait-only.
+
+    It reuses the original custody/request identity, ignores current route and
+    quota drift, and never writes a second STARTED row.
+    """
+    from ouroboros import subagents
+
+    invocation_id = "inv-started-happy"
+    _seed_started_review_invocation(tmp_path, invocation_id=invocation_id)
+    custody._CUSTODY.clear()  # prove recovery from the durable rows, not the memo
+    state = {"pending_invocation_id": invocation_id}
+
+    monkeypatch.setenv(REVIEW_SESSION_ROUTE_ENV, "drifted-route=drifted-model:low")
+    health_calls = []
+
+    def _health_must_not_run(*args, **kwargs):
+        health_calls.append((args, kwargs))
+        raise AssertionError("route health is admission, not recovery")
+
+    monkeypatch.setattr(subagents, "route_health", _health_must_not_run)
+    fake_route.detail = _terminal_detail(
+        '{"findings": []}', conformance="passed", model="stored-model",
+    )
+
+    facts = _run_session_directly(tmp_path, retry_state=state)
+
+    gateway = fake_route.instances[-1]
+    assert gateway.start_requests == [] and gateway.start_keys == []
+    assert health_calls == []
+    assert gateway.run_gets == ["run-started"]
+    assert gateway.project_lookups == [] and gateway.registrations == []
+    assert gateway.removals == ["proj-owned"]
+    assert facts["run_id"] == "run-started"
+    assert facts["route_id"] == "stored-review"
+    assert facts["model"] == "stored-model"
+    assert facts["schema_asked"] is True
+    assert facts["custody_durable"] is True
+    assert facts["idempotent_recovery"] is True
+    assert facts["settlement"]["settled"] is True
+    assert state == {}
+
+    rows = _custody_rows(tmp_path)
+    started = [row for row in rows if row["type"] == custody.STARTED]
+    assert len(started) == 1, started
+    assert started[0]["route"] == "stored-review"
+    assert started[0]["model"] == "stored-model"
+    assert started[0]["effort"] == "xhigh"
+    assert started[0]["project_id"] == "proj-owned"
+    assert started[0]["project_owned"] is True
+    assert started[0]["idempotency_key"] == "stored-logical-key"
+    assert custody.open_runs(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "case,request_owner,custody_owner,expected_lookup",
+    [
+        ("foreign", "durable-owner", "durable-owner", custody.FOREIGN),
+        ("unknown", "claimant", "claimant", custody.UNKNOWN),
+        ("durable_owner_mismatch", "durable-owner", "claimant", custody.OWNED),
+    ],
+)
+def test_started_invocation_recovery_refuses_unproven_ownership_without_effects(
+    tmp_path, fake_route, monkeypatch, case, request_owner, custody_owner,
+    expected_lookup,
+):
+    """#167: the CURRENT task is claimant, and refusal consumes nothing."""
+    from ouroboros import subagents
+    from ouroboros.review_execution import ReviewRouteUnavailable
+
+    invocation_id = f"inv-started-{case}"
+    _seed_started_review_invocation(
+        tmp_path, invocation_id=invocation_id, request_task_id=request_owner,
+        custody_task_id=custody_owner,
+    )
+    custody._CUSTODY.clear()
+    before = _custody_rows(tmp_path)
+    state = {"pending_invocation_id": invocation_id}
+    lookup_calls = []
+    real_lookup = custody.lookup
+
+    def _tracked_lookup(drive_root, claimant, run_id):
+        lookup_calls.append((drive_root, claimant, run_id))
+        if case == "unknown":
+            return custody.UNKNOWN, None
+        return real_lookup(drive_root, claimant, run_id)
+
+    def _health_must_not_run(*_args, **_kwargs):
+        raise AssertionError("unowned recovery reached route health")
+
+    monkeypatch.setattr(custody, "lookup", _tracked_lookup)
+    monkeypatch.setattr(subagents, "route_health", _health_must_not_run)
+
+    with pytest.raises(ReviewRouteUnavailable, match="corroborate ownership"):
+        _run_session_directly(tmp_path, task_id="claimant", retry_state=state)
+
+    assert [(claimant, run_id) for _drive, claimant, run_id in lookup_calls] == [
+        ("claimant", "run-started")
+    ]
+    if case != "unknown":
+        assert real_lookup(tmp_path, "claimant", "run-started")[0] == expected_lookup
+    assert state == {"pending_invocation_id": invocation_id}
+    assert fake_route.instances == []  # no gateway means no poll, POST, or retirement
+    assert _custody_rows(tmp_path) == before
+    assert not any(row["type"] in (
+        custody.PROJECT_RETIRED, custody.SETTLED, custody.LEDGER_RECORDED,
+    ) for row in before)
 
 
 def test_custody_rows_carry_lineage_from_the_bound_usage_scope(tmp_path, fake_route):
@@ -795,6 +1119,7 @@ def test_retry_replays_the_stored_route_and_registers_nothing_new(tmp_path, fake
     attempt already bound, and writing a durable record that contradicted the bytes on
     the wire.
     """
+    from ouroboros import subagents
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
 
     # Attempt 1: indefinite failure leaves the invocation PENDING.
@@ -808,6 +1133,16 @@ def test_retry_replays_the_stored_route_and_registers_nothing_new(tmp_path, fake
     # The environment is RECONFIGURED between the attempts.
     monkeypatch.setenv(REVIEW_SESSION_ROUTE_ENV, "other-route=other-model:high")
     before = [len(i.registrations) for i in fake_route.instances]
+    health_calls = []
+    real_route_health = subagents.route_health
+
+    def _track_route_health(gateway, route_id, shape, *, route_model="", pinned_profile=""):
+        health_calls.append((route_id, route_model, pinned_profile))
+        return real_route_health(
+            gateway, route_id, shape, route_model=route_model, pinned_profile=pinned_profile,
+        )
+
+    monkeypatch.setattr(subagents, "route_health", _track_route_health)
 
     facts = _run_session_directly(tmp_path, retry_state=state)
 
@@ -817,6 +1152,9 @@ def test_retry_replays_the_stored_route_and_registers_nothing_new(tmp_path, fake
     retry_gateway = fake_route.instances[-1]
     assert retry_gateway.start_requests[0]["primaryHarness"] == "fake-review"
     assert retry_gateway.start_requests[0]["harnesses"] == ["fake-review"]
+    # Pending recovery can still POST, so it remains admission-health gated —
+    # against the STORED route/model, never the drifted current configuration.
+    assert health_calls == [("fake-review", "fake-small", "")]
     # No project lookup or registration happened on the retry: the original
     # attempt's project rides the record.
     assert retry_gateway.project_lookups == []
@@ -824,6 +1162,94 @@ def test_retry_replays_the_stored_route_and_registers_nothing_new(tmp_path, fake
     assert sum(before) == sum(len(i.registrations) for i in fake_route.instances)
     # Same wire key, byte-identical body.
     assert retry_gateway.start_keys == [pending]
+
+
+def test_retry_of_a_pinned_session_health_checks_the_stored_account(tmp_path, fake_route,
+                                                                    monkeypatch):
+    """§K.7 on the review lane's OWN recovery: the stored canonical request
+    carries the account pin (`credentialProfileId`), so a retry's pre-flight
+    health must judge that exact subject — never the harness-wide pool, and
+    never whatever pin the settings drifted to after the original attempt."""
+    from ouroboros import subagents
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.subagents import DelegationRoute
+
+    pinned = DelegationRoute(route_id="fake-review", model="fake-small",
+                             effort="low", profile_id="pinned-account")
+    state: dict = {}
+    fake_route.start_error = ClaudexorUnavailable("daemon_unreachable", "boom", status_code=0)
+    with pytest.raises(ClaudexorUnavailable):
+        _run_session_directly(tmp_path, retry_state=state, session_route=pinned)
+    assert state["pending_invocation_id"]
+
+    # The setting drifts to another route between the attempts.
+    monkeypatch.setenv(REVIEW_SESSION_ROUTE_ENV, "other-route=other-model:high")
+    health_calls = []
+    real_route_health = subagents.route_health
+
+    def _track_route_health(gateway, route_id, shape, *, route_model="", pinned_profile=""):
+        health_calls.append((route_id, route_model, pinned_profile))
+        return real_route_health(
+            gateway, route_id, shape, route_model=route_model, pinned_profile=pinned_profile,
+        )
+
+    monkeypatch.setattr(subagents, "route_health", _track_route_health)
+
+    facts = _run_session_directly(tmp_path, retry_state=state)
+
+    # The health check received the STORED pin — not '' and not the drift.
+    assert health_calls == [("fake-review", "fake-small", "pinned-account")]
+    retry_gateway = fake_route.instances[-1]
+    assert retry_gateway.start_requests[0]["credentialProfileId"] == "pinned-account"
+    # And the fresh STARTED custody row carries the pin, symmetric with the
+    # delegate lane, so the receipt line can disclose a requested-vs-ran drift.
+    started = [r for r in _custody_rows(tmp_path) if r["type"] == custody.STARTED]
+    assert started and started[-1]["profile_id"] == "pinned-account"
+    assert facts["run_id"]
+
+
+def test_pending_retry_replays_the_stored_credential_pin(tmp_path, fake_route):
+    """Phase D1 on the RECOVERY path: the stored request is the durable pin
+    carrier. A pinned slot whose first attempt died mid-flight must replay as
+    PINNED — both past route_health (the row status the pin exists to skip)
+    and on the wire — or the retry re-refuses on the exact class D1 removed."""
+    import dataclasses
+
+    from ouroboros import subagents
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.subagents import parse_subagent_harness
+
+    pinned = dataclasses.replace(parse_subagent_harness("fake-review=fake-small"),
+                                 profile_id="acct-pinned")
+
+    # Attempt 1: pinned start dies indefinite; the invocation stays PENDING.
+    state: dict = {}
+    fake_route.start_error = ClaudexorUnavailable("daemon_unreachable", "boom", status_code=0)
+    with pytest.raises(ClaudexorUnavailable):
+        _run_session_directly(tmp_path, retry_state=state, session_route=pinned)
+    assert state["pending_invocation_id"]
+
+    # Attempt 2: the row now reads permanently unavailable (the agy shape).
+    fake_route.start_error = None
+    fake_route.catalog_entry["status"] = "unavailable"
+    fake_route.catalog_entry["enabled"] = False
+    pins_seen = []
+    real_route_health = subagents.route_health
+
+    def _track(gateway, route_id, shape, *, route_model="", pinned_profile=""):
+        pins_seen.append(pinned_profile)
+        return real_route_health(
+            gateway, route_id, shape, route_model=route_model, pinned_profile=pinned_profile,
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(subagents, "route_health", _track)
+        facts = _run_session_directly(tmp_path, retry_state=state, session_route=pinned)
+
+    assert facts["idempotent_recovery"] is True
+    assert pins_seen == ["acct-pinned"]  # the rebuilt route carries the pin
+    retry_starts = [r for inst in fake_route.instances for r in inst.start_requests]
+    assert retry_starts[-1]["credentialProfileId"] == "acct-pinned"
 
 
 def test_retry_refuses_typed_when_the_stored_prompt_diverges(tmp_path, fake_route):
@@ -945,6 +1371,67 @@ def test_unhealthy_route_refuses_typed_never_falls_back(tmp_path, fake_route):
     assert actor["status"] == "error"
     assert "route_status_degraded" in actor["error"]
     assert llm.calls == []
+    assert not any(inst.start_requests for inst in fake_route.instances)
+
+
+def test_pinned_profile_passes_row_status_through_to_the_engine(tmp_path, fake_route):
+    """Phase D1 (owner batch-2 1A/2): a slot carrying a manual credential pin must
+    not be refused on the harness-row catalog status — a row with no default
+    credential store reads "unavailable" FOREVER by design (agy, engine INV-135)
+    while its named profiles work. The request REACHES the engine with the pinned
+    credentialProfileId on the wire, and the ENGINE's typed refusal propagates
+    typed on this slot: never a silent degrade, never a fallback onto the api route."""
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
+    fake_route.catalog_entry["status"] = "unavailable"
+    fake_route.catalog_entry["enabled"] = False
+    fake_route.start_error = ClaudexorUnavailable(
+        "engine_refuses_profile", "engine typed refusal for this profile", status_code=422)
+    llm = FakeLLM()
+    result = run_review_request(
+        _agent_request(),
+        slots=[_agent_slot(session_target="fake-review=fake-small",
+                           session_profile="acct-pinned")],
+        drive_root=tmp_path, llm=llm)
+    starts = [r for inst in fake_route.instances for r in inst.start_requests]
+    assert len(starts) == 1  # the start attempt was actually posted
+    assert starts[0]["credentialProfileId"] == "acct-pinned"
+    actor = result.actors[0]
+    assert actor["status"] == "error"
+    assert "engine typed refusal for this profile" in actor["error"]
+    assert llm.calls == []  # never a silent fallback onto the api route
+
+
+def test_route_status_refusal_carries_its_typed_code(tmp_path, fake_route):
+    """Phase D2: the route_health refusal rides ReviewRouteUnavailable with a
+    machine-readable `.code` (the rotation sprint's quorum classification keys
+    on failure codes; a bare RuntimeError is invisible to it)."""
+    from ouroboros.review_execution import ReviewRouteUnavailable
+
+    fake_route.catalog_entry["status"] = "unavailable"
+    fake_route.catalog_entry["enabled"] = False
+    with pytest.raises(ReviewRouteUnavailable) as excinfo:
+        _run_session_directly(tmp_path)
+    assert excinfo.value.code == "route_status_unavailable"
+    assert not any(inst.start_requests for inst in fake_route.instances)
+
+
+def test_absent_catalog_row_refuses_typed_even_with_a_pinned_profile(tmp_path, fake_route):
+    """Phase D1 keeps `route_not_in_capability_catalog`: a pin skips only the row
+    STATUS refusal — a route the catalog does not carry at all has no engine row
+    to be authoritative about, so it still refuses typed before any POST."""
+    import dataclasses
+
+    from ouroboros.review_execution import ReviewRouteUnavailable
+    from ouroboros.subagents import parse_subagent_harness
+
+    fake_route.catalog_entry = {"id": "some-other-route", "enabled": True, "status": "ok",
+                                "accessProfilesSupported": ["readonly"]}
+    route = dataclasses.replace(parse_subagent_harness("fake-review=fake-small"),
+                                profile_id="acct-pinned")
+    with pytest.raises(ReviewRouteUnavailable) as excinfo:
+        _run_session_directly(tmp_path, session_route=route)
+    assert excinfo.value.code == "route_not_in_capability_catalog"
     assert not any(inst.start_requests for inst in fake_route.instances)
 
 
@@ -1107,8 +1594,9 @@ def test_mixed_scope_fanout_sends_each_row_over_its_own_route(tmp_path, monkeypa
 
 
 def test_acceptance_rows_stay_api_even_when_triad_routes_delegate(monkeypatch):
-    """D15: task acceptance and plan review are pinned to the API. The triad's
-    route list must not leak into surfaces that pass no route_env_key."""
+    """D15: task acceptance is pinned to the API (plan review follows each configured
+    row's delivery since the spec-gate redesign). The triad's route list must not
+    leak into surfaces that pass no route_env_key."""
     monkeypatch.setenv(TRIAD_REVIEW_ROUTES_ENV, "agent_session,agent_session,agent_session")
     rows = reviewer_slots(["m1", "m2"], effort="high", role_hint="task acceptance")
     assert all(row.route is ReviewRouteKind.API_CHAT for row in rows)
@@ -1367,7 +1855,10 @@ def test_scope_quorum_refuses_a_session_advisory_row_as_authoritative(tmp_path, 
                         effort="", session_target="", session_profile=""),
     ])
     monkeypatch.setattr(parallel_review, "run_cmd", lambda *_a, **_k: "staged diff")
-    monkeypatch.setattr(review, "_run_unified_review", lambda *_a, **_k: None)
+    monkeypatch.setattr(review, "_prepare_unified_review", lambda *_a, **_k: (None, None, True))
+    from ouroboros.tools import review_admission
+    monkeypatch.setattr(review_admission, "prepare_scope_review",
+                        lambda *_a, **_k: ({"packet": 1}, None))
 
     ctx = SimpleNamespace(
         repo_dir=tmp_path, drive_root=tmp_path, task_id="scope-quorum",
@@ -1462,13 +1953,16 @@ def test_triad_session_task_carries_criteria_and_nav_maps_not_evidence():
         rebuttal_section="",
         review_history_section="",
         dev_guide_text="# Dev\n\n## Rules\n\ntext\n",
-        architecture_text="# Arch\n\n## Modules\n\ntext\n",
+        architecture_text="## Parent\nbody\n### Child\nbody\n#### Detail\nbody\n",
     )
     assert "## Review Checklist" in task
     assert "## Goal" in task and "## Scope" in task
     assert "git diff --cached" in task           # subject pointer, not the diff
     assert "DEVELOPMENT.md (navigation map)" in task
     assert "ARCHITECTURE.md (navigation map)" in task
+    assert "- Parent — lines 1-6" in task
+    assert "  - Child — lines 3-6" in task
+    assert "    - Detail — lines 5-6" in task
     assert "Read BIBLE.md in full" in task
 
 
@@ -1508,7 +2002,7 @@ def _all_session_scope_panel(tmp_path, monkeypatch, *, window, provenance):
                    route=ReviewRouteKind.AGENT_SESSION, session_target="claude=fable-5"),
     ])
     monkeypatch.setattr(parallel_review, "run_cmd", lambda *_a, **_k: "staged diff")
-    monkeypatch.setattr(review, "_run_unified_review", lambda *_a, **_k: None)
+    monkeypatch.setattr(review, "_prepare_unified_review", lambda *_a, **_k: (None, None, True))
 
     ctx = _scope_ctx(tmp_path)
     ctx._review_history = []

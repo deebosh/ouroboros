@@ -44,7 +44,8 @@ def _make_env_and_memory(tmpdir: pathlib.Path):
     (repo_dir / "docs" / "ARCHITECTURE.md").write_text(
         "# Ouroboros v5.5.0 — Architecture\n\n## Section A\n\n"
         + _ARCH_BODY_SENTINEL
-        + " alpha\n\n## Section B\n\nbeta\n",
+        + " alpha\n\n### Section A child\n\n#### Section A detail\n\ndetail\n\n"
+        + "## Section B\n\nbeta\n",
         encoding="utf-8",
     )
     (repo_dir / "docs" / "DEVELOPMENT.md").write_text("# DEVELOPMENT.md — Dev Guide", encoding="utf-8")
@@ -250,6 +251,9 @@ def test_low_mode_architecture_is_navigation_map_not_full_body():
     text = _build_system_text(context_mode="low")
     assert "navigation map" in text
     assert "Section A" in text and "Section B" in text  # headings present
+    assert "- Section A — lines 3-12" in text  # parent keeps its complete subtree
+    assert "  - Section A child — lines 7-12" in text
+    assert "    - Section A detail — lines 9-12" in text
     assert _ARCH_BODY_SENTINEL not in text  # full body NOT inlined in low
 
 
@@ -268,29 +272,10 @@ def test_low_mode_development_full_for_direct_chat_tasks_unless_explicitly_disab
     assert "DEVELOPMENT.md" in pure_chat_text  # but named in the on-demand pointer
 
 
-# --- v6.64: exact-route probe-on-first-use, with no invented 200K fallback ---
+# Predicted route pressure no longer changes the document projection. The
+# complete behavioral matrix lives in test_context_fit_v664; this guards the
+# deletion seam from acquiring a compatibility shim.
+def test_predicted_route_downgrade_authority_is_absent():
+    from ouroboros import loop
 
-def test_maybe_downgrade_threads_allow_fetch_and_stays_max_when_confirmed():
-    from types import SimpleNamespace
-    from unittest.mock import patch
-    import ouroboros.context as context_mod
-    from ouroboros.loop import _maybe_downgrade_max_unconfirmed
-
-    seen = {}
-
-    def _fake_route(task, *, allow_fetch=False):
-        seen["allow_fetch"] = allow_fetch
-        return {}, SimpleNamespace(status="confirmed", stale=False, window_tokens=1_000_000)
-
-    with patch.object(context_mod, "_context_fit_route", _fake_route):
-        out = _maybe_downgrade_max_unconfirmed("max", False, "z-ai/glm-5.2", allow_fetch=True)
-    assert out == "max"  # confirmed -> stays max (lazy probe succeeded)
-    assert seen["allow_fetch"] is True  # allow_fetch threaded through
-
-    # Missing evidence is unknown, not a silent 200K route: try Max once.
-    with patch.object(
-        context_mod,
-        "_context_fit_route",
-        lambda *_a, **_kw: ({}, SimpleNamespace(status="unprobeable", stale=False, window_tokens=0)),
-    ):
-        assert _maybe_downgrade_max_unconfirmed("max", False, "m", allow_fetch=True) == "max"
+    assert not hasattr(loop, "_maybe_downgrade_max_unconfirmed")

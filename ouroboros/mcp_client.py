@@ -504,7 +504,7 @@ def _wrap_schema_text_fields(value: Any) -> Any:
 
 class _StderrPipeCapture(io.TextIOBase):
     """TextIO backed by a real OS pipe, suitable for Python 3.14's
-    ``subprocess.Popen(stderr=...)``.
+    ``subprocess`` module passing it as the child's ``stderr``.
 
     Why this exists (closes ``ibl-mcp-discovery-fileno``):
     Python 3.14's ``subprocess._get_handles`` calls

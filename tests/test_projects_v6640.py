@@ -244,7 +244,7 @@ def test_project_main_mirror_never_creates_second_unread_static_contract():
     ]
     assert "mirrorProject && isProjectMirrorFrame(msg)" in fanout
     assert "appendTaskSummaryToLiveCard(msg);" in fanout
-    assert "updateLiveCardFromProgressMessage(msg);" in fanout
+    assert "updateLiveCardFromProgressMessage(msg, { grantCancelAuthority: !isMirror });" in fanout
     assert "incrementUnreadIfNeeded(msg);" in fanout
     assert "incrementUnreadIfNeeded();" not in chat
 
@@ -411,7 +411,9 @@ def test_ephemeral_decision_web_frames_never_create_task_card_or_second_receipt(
     assert "const ephemeralDecisionTaskIds = new Set();" in chat
     register = chat[
         chat.index("function registerEphemeralDecisionFrame"):
-        chat.index("function buildMessageKey")
+        # buildMessageKey moved to chat_activity.js; the next stable symbol
+        # after the register pair bounds the slice now.
+        chat.index("function readPendingReconnectBanner")
     ]
     assert "ephemeralDecisionTaskIds.add(taskId);" in register
     assert "record.root?.remove();" in register

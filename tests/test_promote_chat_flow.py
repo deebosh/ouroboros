@@ -49,6 +49,34 @@ def test_promote_tool_emits_event_with_chat_and_project(tmp_path, monkeypatch):
     assert ctx._typed_routing_action_emitted == "promote_chat_to_task"
 
 
+def test_presence_promotion_preserves_ceiling_and_cannot_choose_new_scope(tmp_path, monkeypatch):
+    from ouroboros.tools.control import _promote_chat_to_task
+
+    _confirm_promote(monkeypatch)
+    contract = {"capability_ceiling": {"digest": "a" * 64}}
+    ctx = types.SimpleNamespace(
+        pending_events=[],
+        event_queue=None,
+        current_chat_id=4242,
+        drive_root=tmp_path,
+        task_metadata={"presence": {"binding_id": "b" * 32}},
+        task_contract=contract,
+    )
+    out = _promote_chat_to_task(
+        ctx,
+        "Research the question",
+        project_name="Injected",
+        workspace_root="/tmp/foreign",
+        source="https://example.invalid/repo.git",
+    )
+    assert out.startswith("OK: task")
+    event = ctx.pending_events[0]
+    assert event["presence"] == {"binding_id": "b" * 32}
+    assert event["task_contract"] == contract
+    assert event["project_id"] == event["project_name"] == ""
+    assert event["workspace_root"] == event["workspace"] == event["source"] == ""
+
+
 def _swarm_ctx(tmp_path, **overrides):
     values = {
         "pending_events": [],
@@ -196,6 +224,60 @@ def test_promoted_named_project_from_projectless_chat_provisions_workspace(tmp_p
     assert workspace_root, "file-less named project must get an auto-provisioned workspace"
     assert (pathlib.Path(workspace_root) / ".git").exists()
     assert str(project.get("working_dir") or "") == workspace_root
+
+
+def test_worker_admits_promoted_presence_with_same_verified_ceiling(tmp_path, monkeypatch):
+    import supervisor.workers as workers
+    from ouroboros.presence_authority import (
+        build_presence_capability_ceiling,
+        presence_ceiling_payload,
+    )
+    from ouroboros.presence_capabilities import (
+        PresenceProfileResolution,
+        PresenceSelection,
+        PresenceToolTarget,
+    )
+    from ouroboros.presence_runtime import ResolvedPresenceRuntime
+
+    resolution = PresenceProfileResolution(
+        active=(PresenceSelection("1" * 64, PresenceToolTarget("builtin", "chat_history")),),
+        missing_required=(),
+        missing_optional=(),
+        orphaned=(),
+        runtime=ResolvedPresenceRuntime("main", 10, 10, False),
+        profile_fingerprint="a" * 64,
+        selection_fingerprint="b" * 64,
+        required_selections_present=True,
+    )
+    ceiling = build_presence_capability_ceiling(
+        skill_name="helper",
+        skill_content_hash="c" * 64,
+        state_fingerprint="d" * 64,
+        resolution=resolution,
+    )
+    contract = {"capability_ceiling": presence_ceiling_payload(ceiling)}
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    enqueued = []
+    ctx = types.SimpleNamespace(
+        enqueue_task=lambda task: enqueued.append(task),
+        persist_queue_snapshot=lambda **_kwargs: True,
+        load_state=lambda: {"owner_chat_id": 1},
+    )
+    outcome = workers.promote_chat_to_task(
+        {
+            "task_id": "presencechild1",
+            "objective": "Continue the research",
+            "chat_id": 4242,
+            "presence": {"binding_id": "e" * 32},
+            "task_contract": contract,
+        },
+        ctx,
+    )
+    assert outcome["status"] == "scheduled"
+    task = enqueued[0]
+    assert task["_presence_origin"] is True
+    assert task["metadata"]["presence"]["binding_id"] == "e" * 32
+    assert task["task_contract"]["capability_ceiling"]["digest"] == ceiling.digest
 
 
 def test_ephemeral_swarm_unconfirmed_promotion_reuses_one_task_id(tmp_path, monkeypatch):
@@ -1238,7 +1320,7 @@ def test_bound_project_history_backfills_task_progress(tmp_path):
         fh.write(json.dumps({"ts": "2026-01-01T00:00:00Z", "direction": "out", "text": "final answer", "chat_id": 1, "task_id": "task-1"}) + "\n")
         fh.write(json.dumps({"ts": "2026-01-01T00:00:01Z", "direction": "in", "text": "raw project chat", "chat_id": project_chat}) + "\n")
     with open(logs / "progress.jsonl", "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"ts": "2026-01-01T00:00:02Z", "type": "send_message", "content": "working", "text": "working", "is_progress": True, "chat_id": 1, "task_id": "task-1", "format": "markdown"}) + "\n")
+        fh.write(json.dumps({"ts": "2026-01-01T00:00:02Z", "type": "send_message", "content": "working", "text": "working", "is_progress": True, "chat_id": 1, "task_id": "task-1", "format": "markdown", "cancelable": True}) + "\n")
 
     api = make_chat_history_endpoint(tmp_path)
 
@@ -1251,10 +1333,15 @@ def test_bound_project_history_backfills_task_progress(tmp_path):
     assert "final answer" in project_texts
     assert "working" in project_texts
     assert "raw project chat" in project_texts
+    project_progress = next(m for m in project_resp["messages"] if m["text"] == "working")
+    assert "project_mirror" not in project_progress
 
     main_resp = json.loads(asyncio.run(api(_Req({}))).body)
     main_texts = [m["text"] for m in main_resp["messages"]]
     assert "working" in main_texts  # main mirrors sanitized progress
+    main_progress = next(m for m in main_resp["messages"] if m["text"] == "working")
+    assert main_progress["cancelable"] is True
+    assert main_progress["project_mirror"] is True
     assert "raw project chat" not in main_texts
     # The bound task's RAW final-answer row (still stored with main chat_id 1) is
     # project-owned via the binding and must NOT leak into the штаб's main history.
@@ -1303,15 +1390,15 @@ def test_bound_task_media_routes_to_project_panel(tmp_path):
         DRIVE_ROOT=tmp_path,
         append_jsonl=lambda *a, **k: None,
         bridge=types.SimpleNamespace(
-            send_photo=lambda cid, data, caption="", mime="": (photo_sent.append(cid) or (True, "")),
-            send_video=lambda cid, data, caption="", mime="": (video_sent.append(cid) or (True, "")),
+            send_photo=lambda cid, data, caption="", mime="", task_id="": (photo_sent.append((cid, task_id)) or (True, "")),
+            send_video=lambda cid, data, caption="", mime="", task_id="": (video_sent.append((cid, task_id)) or (True, "")),
         ),
     )
     blob = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 64).decode()
     _handle_send_photo({"task_id": "task-m", "chat_id": 1, "image_base64": blob, "mime": "image/png"}, ctx)
     _handle_send_video({"task_id": "task-m", "chat_id": 1, "video_base64": blob, "mime": "video/mp4"}, ctx)
-    assert photo_sent == [project_chat]  # binding precedence, not the original main 1
-    assert video_sent == [project_chat]
+    assert photo_sent == [(project_chat, "task-m")]  # binding precedence, not the original main 1
+    assert video_sent == [(project_chat, "task-m")]
 
 
 def test_bound_task_send_message_routes_future_events_to_project(tmp_path):

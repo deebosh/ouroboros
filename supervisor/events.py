@@ -30,9 +30,11 @@ from ouroboros.task_results import (
     load_task_result,
     write_task_result,
 )
-from ouroboros.cost_projection import carry_cost_meta, with_cost_aliases
+from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection, with_cost_aliases
 from ouroboros.outcomes import infra_failed_axes, normalize_outcome_axes
+from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.subagents import intended_lane as intended_subagent_lane
+from ouroboros.subagent_messages import subagent_message_meta
 from ouroboros.contracts.task_contract import build_task_contract, normalize_allowed_resources
 
 log = logging.getLogger(__name__)
@@ -404,7 +406,11 @@ def _compose_subagent_text(
             "[WRITE SURFACE]",
             f"You are a MUTATIVE (acting) child. write_surface={surface}."
             + (f" write_root={write_root}." if write_root else ""),
-            "Make all changes inside the write root only. Do NOT commit, run review / "
+            # Boundary-only wording (decision 2A): this text is frozen at
+            # schedule time, when the executor is unknown — it states WHERE
+            # changes land, never that the child executes them natively itself
+            # (the dispatch-time executor note owns execution framing).
+            "All changes land inside the write root only. Do NOT commit, run review / "
             "runtime / skills lifecycle, enable tools, or write cognitive memory. Your "
             "changes are captured as a workspace.patch and returned to the parent, who "
             "integrates and is the sole committer of the live body. Nested delegation is "
@@ -493,6 +499,8 @@ def _build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
     task_group_id = str(fields.get("task_group_id") or "")
     task_group = fields.get("task_group") if isinstance(fields.get("task_group"), dict) else {}
     subagent_envelope = fields.get("subagent_envelope") if isinstance(fields.get("subagent_envelope"), dict) else {}
+    configured_subagent = fields.get("configured_subagent") if isinstance(fields.get("configured_subagent"), dict) else {}
+    parent_cognitive_route = fields.get("parent_cognitive_route") if isinstance(fields.get("parent_cognitive_route"), dict) else {}
     task: Dict[str, Any] = {
         "id": tid,
         "type": "task",
@@ -528,6 +536,8 @@ def _build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
         "task_group_id": task_group_id,
         "task_group": task_group,
         "subagent_envelope": subagent_envelope,
+        "configured_subagent": configured_subagent,
+        "parent_cognitive_route": parent_cognitive_route,
         "metadata": {
             "parent_task_id": parent_id,
             "root_task_id": root_task_id,
@@ -550,6 +560,8 @@ def _build_scheduled_task_payload(fields: Dict[str, Any]) -> Dict[str, Any]:
             "task_group_id": task_group_id,
             "task_group": task_group,
             "subagent_envelope": subagent_envelope,
+            "configured_subagent": configured_subagent,
+            "parent_cognitive_route": parent_cognitive_route,
         },
     }
     if not drive_root:
@@ -883,6 +895,7 @@ def _handle_task_heartbeat(evt: Dict[str, Any], ctx: Any) -> None:
             _hb_chat_id = _bound_project_chat_id(ctx, task_id, task.get("parent_task_id"), task.get("root_task_id")) or int(task.get("chat_id") or 0)
         except (TypeError, ValueError):
             _hb_chat_id = 0
+        cost_fields = live_root_cost_projection(task_id, task, evt, ctx.DRIVE_ROOT)
         try:
             ctx.bridge.push_log({
                 "ts": evt.get("ts", utc_now_iso()),
@@ -898,6 +911,7 @@ def _handle_task_heartbeat(evt: Dict[str, Any], ctx: Any) -> None:
                 "parent_task_id": evt.get("parent_task_id", ""),
                 "delegation_role": evt.get("delegation_role", ""),
                 "subagent_role": evt.get("subagent_role", ""),
+                **cost_fields,
             })
         except Exception:
             log.debug("Failed to forward task heartbeat to live logs", exc_info=True)
@@ -938,8 +952,56 @@ def _handle_task_dispatch_resolved(evt: Dict[str, Any], ctx: Any) -> None:
 def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
     try:
         chat_id = int(evt.get("chat_id") or 0)
+        task_id = str(evt.get("task_id") or "")
+        phase = str(evt.get("phase") or "thinking")
+        client_msg_id = ""
+        kind = ""
+        if task_id:
+            try:
+                from supervisor.active_activity import get_direct_activity_registry
+                # A registry hit identifies a direct/ephemeral turn; queued
+                # managed tasks also emit typing_start but are not tracked here,
+                # so their frames go out without a kind stamp.
+                entry = get_direct_activity_registry().get(task_id)
+                if entry:
+                    client_msg_id = entry.client_message_id
+                    kind = entry.kind
+            except Exception:
+                pass
+        if not kind and task_id:
+            # A RUNNING queue ROOT is stamped "managed_task" so the client can
+            # reconcile its entry against the /api/state activity snapshot
+            # (which lists queue roots). Subagent typing keeps the legacy
+            # no-kind exemption: no snapshot source enumerates children.
+            try:
+                running = getattr(ctx, "RUNNING", None)
+                meta = running.get(task_id) if isinstance(running, dict) else None
+                task_row = meta.get("task") if isinstance(meta, dict) else None
+                if isinstance(task_row, dict):
+                    from ouroboros.task_results import resolve_task_lineage
+
+                    lineage = resolve_task_lineage(
+                        task_id,
+                        metadata=task_row.get("metadata"),
+                        root_task_id=task_row.get("root_task_id"),
+                        parent_task_id=task_row.get("parent_task_id"),
+                        delegation_role=task_row.get("delegation_role"),
+                        original_task_id=task_row.get("original_task_id"),
+                        timeout_retry_from=task_row.get("timeout_retry_from"),
+                    )
+                    if lineage["is_root_task"]:
+                        kind = "managed_task"
+            except Exception:
+                log.debug("managed typing kind resolution failed for %s", task_id, exc_info=True)
         if chat_id:
-            ctx.bridge.send_chat_action(chat_id, "typing")
+            ctx.bridge.send_chat_action(
+                chat_id,
+                "typing",
+                activity_id=task_id,
+                client_message_id=client_msg_id,
+                phase=phase,
+                kind=kind,
+            )
     except Exception:
         log.debug("Failed to send typing action to chat", exc_info=True)
         pass
@@ -1008,13 +1070,21 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
         # are narration ABOUT the task, never work BY it.
         progress_meta = evt.get("progress_meta") if isinstance(evt.get("progress_meta"), dict) else None
         _running = getattr(ctx, "RUNNING", None)
-        if is_progress and task_id and isinstance(_running, dict):
+        task_row: Dict[str, Any] = {}
+        if task_id and isinstance(_running, dict):
             _m = _running.get(task_id)
             # Mutate in place (see _handle_llm_usage): no write-back, so a cross-thread
             # cancel that popped this task is never resurrected.
             if isinstance(_m, dict):
-                if not evt.get(HOST_NARRATION):
+                if is_progress and not evt.get(HOST_NARRATION):
                     _m["last_progress_at"] = time.time()
+                task_row = _m.get("task") if isinstance(_m.get("task"), dict) else {}
+                child_meta = subagent_message_meta(task_row, task_id=task_id)
+                if child_meta:
+                    event_meta = dict(progress_meta or {})
+                    progress_meta = dict(child_meta)
+                    progress_meta.update(event_meta)
+            if is_progress and isinstance(_m, dict):
                 # v6.82 (P5): host-attested cancelable marker. RUNNING membership is
                 # the supervisor's own truth that this frame belongs to a queue task
                 # that /api/tasks/{id}/cancel can force-cancel. An in-process
@@ -1028,7 +1098,6 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
                 # re-deriving rootness from frame shape), and a subagent's
                 # narration never mints a root-shaped card with a live Cancel.
                 # Copy-on-write: the worker's own event dict is never mutated.
-                task_row = _m.get("task") if isinstance(_m.get("task"), dict) else {}
                 progress_meta = dict(progress_meta or {})
                 for lineage_key in ("root_task_id", "parent_task_id", "delegation_role"):
                     value = str(task_row.get(lineage_key) or "").strip()
@@ -1050,7 +1119,24 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
                         progress_meta["cancelable"] = True
                 except Exception:
                     log.debug("cancelable lineage resolution failed for %s", task_id, exc_info=True)
-        bound_chat = _bound_project_chat_id(ctx, task_id, evt.get("parent_task_id"), evt.get("root_task_id"))
+        if task_id and not is_progress and not task_row and not subagent_message_meta(progress_meta, task_id=task_id):
+            try:
+                from ouroboros.task_status import load_effective_task_result
+
+                result = load_effective_task_result(ctx.DRIVE_ROOT, task_id, materialize_artifacts=False)
+                child_meta = subagent_message_meta(result, task_id=task_id)
+                if child_meta:
+                    event_meta = dict(progress_meta or {})
+                    progress_meta = dict(child_meta)
+                    progress_meta.update(event_meta)
+            except Exception:
+                log.debug("final lineage recovery failed for %s", task_id, exc_info=True)
+        meta = progress_meta or {}
+        bound_chat = _bound_project_chat_id(
+            ctx, task_id,
+            meta.get("parent_task_id") or evt.get("parent_task_id"),
+            meta.get("root_task_id") or evt.get("root_task_id"),
+        )
         chat_id = bound_chat or int(evt["chat_id"])
         ctx.send_with_budget(
             chat_id,
@@ -1061,6 +1147,9 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
             task_id=task_id,
             progress_meta=progress_meta,
             ts=(str(raw_ts) if raw_ts else None),
+            # S3 (Q4): a typed system receipt keeps its role/type end to end.
+            role=str(evt.get("role") or ""),
+            system_type=str(evt.get("system_type") or ""),
         )
         # Registered only AFTER a successful send: if the live copy's send
         # raises, the buffered copy must NOT be suppressed later — "never
@@ -1242,6 +1331,7 @@ def _authoritative_terminal_cost(
     task_id: str, task: Dict[str, Any], result: Dict[str, Any], evt: Dict[str, Any], drive_root: pathlib.Path,
 ) -> Dict[str, Any]:
     """Project one terminal task/root from the physical-attempt authority."""
+    from ouroboros.cost_projection import honest_accounted_amount
     from supervisor.state import reconstruct_task_cost
 
     authority_root = pathlib.Path(task.get("budget_drive_root") or drive_root)
@@ -1282,8 +1372,11 @@ def _authoritative_terminal_cost(
                 root_task_id=str(lineage["root_task_id"] or task_id),
             )
             subtree_final = bool(subtree.get("cost_final"))
+            subtree_amount = honest_accounted_amount(subtree)
             projection.update({
-                "cost_usd_with_children": round(float(subtree.get("accounted_usd") or 0.0), 6),
+                "cost_usd_with_children": (
+                    round(subtree_amount, 6) if subtree_amount is not None else None
+                ),
                 "cost_with_children_partial": not subtree_final,
                 "cost_final": bool(projection.get("cost_final") and subtree_final),
                 # THIRD site of the same class: `non_final_rows` is `cost_final`'s
@@ -1310,7 +1403,7 @@ def _authoritative_terminal_cost(
         )
     checkpoint = result.get("root_phase_checkpoint")
     post_status = str(checkpoint.get("post_task_synthesis") or "") if isinstance(checkpoint, dict) else ""
-    if is_root and post_status in {"pending_once", "running"}:
+    if is_root and post_task_synthesis_is_open(post_status):
         projection["cost_final"] = False
         projection["cost_with_children_partial"] = True
     # SSOT cost naming (C2): re-converge the additive/deprecated alias pairs at
@@ -2114,6 +2207,15 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             final_task_result = load_task_result(ctx.DRIVE_ROOT, str(task_id)) or {}
         except Exception:
             final_task_result = {}
+        if not bool(evt.get("_ephemeral")):
+            try:
+                # §19.7.2 item 5: a hurry the worker never drained loses the
+                # terminal race honestly — not_applied_before_terminal.
+                from ouroboros.owner_hurry import reconcile_terminal
+
+                reconcile_terminal(ctx.DRIVE_ROOT, str(task_id))
+            except Exception:
+                log.debug("owner_hurry terminal reconcile failed for %s", task_id, exc_info=True)
 
     outcome_axes = normalize_outcome_axes({**evt, **(final_task_result if isinstance(final_task_result, dict) else {})})
     reason_code = final_task_result.get("reason_code") or evt.get("reason_code")
@@ -3238,274 +3340,13 @@ def _handle_routing_manual_target(evt: Dict[str, Any], ctx: Any) -> None:
     )
 
 
-def _refuse_steering_while_cancelling(
-    ctx: Any, evt: Dict[str, Any], target: str, chat_id: int, *, notify: bool = True,
-) -> bool:
-    """Whether a cancellation owns this task — refuse the steering write if so.
-
-    Checked TWICE on purpose: once up front (cheap, off the lock) and once inside
-    the transaction that admits the message to the mailbox. Between those two
-    points the queue lock is taken and the durable liveness re-checked, which is
-    exactly the window a cancel ingress lands in; a single up-front check would
-    let a message reach a task the supervisor is already tearing down.
-    """
-    try:
-        from ouroboros.cancel_intents import cancel_pending
-
-        if not cancel_pending(ctx.DRIVE_ROOT, target):
-            return False
-    except Exception:
-        log.debug("steer_task cancel-pending check failed", exc_info=True)
-        return False
-    _emit_routing_receipt(
-        ctx, evt, action="steer_task", target=target, status="rejected",
-        reason="cancel_pending",
-    )
-    if notify and chat_id:
-        try:
-            ctx.send_with_budget(
-                chat_id,
-                f"⚠️ Couldn't steer task {target} — its cancellation is pending "
-                "(the supervisor is tearing it down). Wait for the settled "
-                "outcome or start a new task.",
-            )
-        except Exception:
-            log.debug("steer_task cancel-pending notice failed", exc_info=True)
-    return True
-
-
-def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
-    """Deliver an agent-chosen steering message to an addressable owner root.
-
-    A Project decision is restricted to that room.  A Main decision may address
-    any root in the host-provided global manifest, including a Project-bound root.
-    In both cases this only enforces transport invariants and writes the active
-    task drive; stale targets are reported, never silently respawned.
-    """
-    target = str(evt.get("target_task_id") or "").strip()
-    message = str(evt.get("message") or "").strip()
-    try:
-        chat_id = int(evt.get("chat_id") or 0)
-    except (TypeError, ValueError):
-        chat_id = 0
-    if not target or not message:
-        return
-    # Phase A: refuse NEW steering writes while a cancellation is pending —
-    # steering a task mid-teardown would race the kill and imply the task will
-    # act on the message. BOTH carriers are consulted (durable intent + the
-    # legacy ``cancel_requested`` status latch of pre-migration files). Typed
-    # refusal, owner-visible.
-    if _refuse_steering_while_cancelling(ctx, evt, target, chat_id):
-        return
-    direct_agent = None
-    direct_lock = None
-    direct_active = False
-    try:
-        direct_agent = ctx.get_chat_agent()
-        direct_lock = getattr(direct_agent, "_owner_message_admission_lock", None)
-        if direct_lock is not None:
-            with direct_lock:
-                direct_active = bool(
-                    getattr(direct_agent, "_busy", False)
-                    and getattr(direct_agent, "_accepting_owner_messages", False)
-                    and str(getattr(direct_agent, "_current_task_id", "") or "") == target
-                )
-                if direct_active:
-                    direct_metadata = getattr(direct_agent, "_current_task_metadata", {})
-                    direct_metadata = direct_metadata if isinstance(direct_metadata, dict) else {}
-                    task = {
-                        "id": target,
-                        "chat_id": int(getattr(direct_agent, "_current_chat_id", 0) or 0),
-                        "project_id": str(direct_metadata.get("project_id") or ""),
-                        "_is_direct_chat": True,
-                    }
-    except Exception:
-        direct_active = False
-    if not direct_active:
-        running = getattr(ctx, "RUNNING", None)
-        meta = running.get(target) if isinstance(running, dict) else None
-        task = meta.get("task") if isinstance(meta, dict) and isinstance(meta.get("task"), dict) else (
-            meta if isinstance(meta, dict) else None
-        )
-    if not isinstance(task, dict):
-        pending = getattr(ctx, "PENDING", [])
-        task = next(
-            (row for row in list(pending or []) if isinstance(row, dict) and str(row.get("id") or "") == target),
-            None,
-        )
-
-    def _matches_chat(t: Dict[str, Any]) -> bool:
-        try:
-            if evt.get("allow_global_root"):
-                return True
-            if int(t.get("chat_id") or 0) == chat_id:
-                return True
-        except (TypeError, ValueError):
-            pass
-        # A converted/bound task may keep its original chat_id on the live object
-        # but belong to a project thread — match via the durable binding.
-        try:
-            from ouroboros.projects_registry import project_chat_for_task
-            return int(project_chat_for_task(ctx.DRIVE_ROOT, target) or 0) == chat_id
-        except Exception:
-            return False
-
-    steerable = (
-        isinstance(task, dict)
-        and (direct_active or not task.get("_is_direct_chat"))
-        and str(task.get("delegation_role") or "") != "subagent"
-        and _matches_chat(task)
-    )
-    if not steerable:
-        # Fail visibly: the chosen task is no longer a steerable running task in
-        # this chat. Tell the owner so the agent/owner can answer or spawn instead.
-        client_message_id = str(evt.get("client_message_id") or "").strip()
-        _emit_routing_receipt(
-            ctx, evt, action="steer_task", target=target, status="needs_manual_target",
-            reason="target_not_steerable",
-        )
-        if not client_message_id and chat_id:
-            try:
-                ctx.send_with_budget(
-                    chat_id,
-                    f"⚠️ Couldn't steer task {target} — it isn't running in this chat anymore "
-                    "(it may have finished). I'll answer here or start a new task instead.",
-                )
-            except Exception:
-                log.debug("steer_task stale-target notice failed", exc_info=True)
-        log.info("steer_task: stale/invalid target %s for chat %s", target, chat_id)
-        return
-    # Idempotent delivery: a stable msg_id from client_message_id+target dedups
-    # retries; without a client id use a unique id (avoid false dedup/collision).
-    client_message_id = str(evt.get("client_message_id") or "").strip()
-    msg_id = f"{client_message_id}:{target}" if client_message_id else f"{uuid.uuid4().hex}:{target}"
-    direct_lock_held = False
-    queue_lock_held = False
-    fence_generation_changed = False
-    delivered = False
-    cancel_pending_refused = False
-    active_fence = None
-    staged_manifest: list = []
-    try:
-        from supervisor.queue import ACCEPTANCE_FENCES, _queue_lock, _task_drive_for_task
-        from ouroboros.owner_mailbox import write_owner_message, KIND_OWNER_TEXT
-        if direct_active and direct_lock is not None:
-            direct_lock.acquire()
-            direct_lock_held = True
-            if not (
-                getattr(direct_agent, "_busy", False)
-                and getattr(direct_agent, "_accepting_owner_messages", False)
-                and str(getattr(direct_agent, "_current_task_id", "") or "") == target
-            ):
-                _emit_routing_receipt(
-                    ctx, evt, action="steer_task", target=target, status="needs_manual_target",
-                    reason="target_closed",
-                )
-                return
-        drive = pathlib.Path(ctx.DRIVE_ROOT) if direct_active else _task_drive_for_task(task, target)
-        attachment_note = ""
-        uploads = evt.get("attachment_uploads") if isinstance(evt.get("attachment_uploads"), list) else []
-        if uploads:
-            from ouroboros.artifacts import stage_task_attachments
-            from ouroboros.gateway.tasks import _render_attachment_lines
-
-            # Staging runs after the up-front cancel check (top of this handler)
-            # but BEFORE the transactional re-check below — so the manifest is
-            # kept and the re-check refusal removes the just-staged inputs
-            # (GR2-9) instead of leaving orphaned files in the artifact store
-            # of a task the supervisor is tearing down.
-            staged_manifest = stage_task_attachments(drive, target, uploads)
-            rendered = _render_attachment_lines(staged_manifest)
-            if rendered:
-                attachment_note = f"\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]"
-        if not direct_active:
-            _queue_lock.acquire()
-            queue_lock_held = True
-            live_meta = ctx.RUNNING.get(target) if isinstance(ctx.RUNNING, dict) else None
-            still_pending = any(
-                isinstance(row, dict) and str(row.get("id") or "") == target
-                for row in list(getattr(ctx, "PENDING", []) or [])
-            )
-            if live_meta is None and not still_pending:
-                _emit_routing_receipt(
-                    ctx, evt, action="steer_task", target=target, status="needs_manual_target",
-                    reason="target_finished",
-                )
-                return
-            fence_root = str(task.get("root_task_id") or target)
-            active_fence = ACCEPTANCE_FENCES.get(fence_root)
-            if isinstance(active_fence, dict) and str(active_fence.get("status") or "") == "sealed":
-                _emit_routing_receipt(
-                    ctx, evt, action="steer_task", target=target, status="needs_manual_target",
-                    reason="acceptance_fence_sealed",
-                )
-                return
-        # Re-check INSIDE the admission transaction: the up-front check runs
-        # before the queue lock is taken, and a cancel ingress lands in exactly
-        # that window. Held under the same lock as the write, so the refusal and
-        # the admission cannot both win. No early return here (GR2-9): the
-        # refusal falls through so the staged-input removal and the owner
-        # notice run AFTER the lock is released (a chat send is not something
-        # to hold the global queue lock for — and the old `return` skipped the
-        # notice entirely).
-        if _refuse_steering_while_cancelling(ctx, evt, target, chat_id, notify=False):
-            cancel_pending_refused = True
-        else:
-            if not write_owner_message(
-                drive,
-                f"{message}{attachment_note}",
-                target,
-                msg_id=msg_id,
-                kind=KIND_OWNER_TEXT,
-            ):
-                raise OSError("owner mailbox append was not durable")
-            if direct_active:
-                direct_agent._owner_message_generation = int(
-                    getattr(direct_agent, "_owner_message_generation", 0) or 0
-                ) + 1
-            else:
-                if isinstance(active_fence, dict) and str(active_fence.get("status") or "") == "active":
-                    active_fence["owner_message_generation"] = int(
-                        active_fence.get("owner_message_generation") or 0
-                    ) + 1
-                    fence_generation_changed = True
-            delivered = True
-    except Exception:
-        log.warning("steer_task delivery failed for task %s", target, exc_info=True)
-        _emit_routing_receipt(
-            ctx, evt, action="steer_task", target=target, status="needs_manual_target",
-            reason="mailbox_write_failed",
-        )
-    finally:
-        if queue_lock_held:
-            _queue_lock.release()
-        if direct_lock_held:
-            direct_lock.release()
-    if cancel_pending_refused:
-        # GR2-9: the message was refused, so the inputs staged for it must not
-        # linger in the dying task's artifact store.
-        if staged_manifest:
-            try:
-                from ouroboros.artifacts import remove_staged_attachments
-
-                remove_staged_attachments(staged_manifest)
-            except Exception:
-                log.debug("staged-attachment cleanup failed for %s", target, exc_info=True)
-        if chat_id:
-            try:
-                ctx.send_with_budget(
-                    chat_id,
-                    f"⚠️ Couldn't steer task {target} — its cancellation is pending "
-                    "(the supervisor is tearing it down). Wait for the settled "
-                    "outcome or start a new task.",
-                )
-            except Exception:
-                log.debug("steer_task cancel-pending notice failed", exc_info=True)
-    if delivered:
-        if fence_generation_changed:
-            ctx.persist_queue_snapshot(reason="acceptance_fence_owner_message")
-        log.info("steer_task: delivered to task %s (chat %s) on drive %s", target, chat_id, drive)
-        _emit_routing_receipt(ctx, evt, action="steer_task", target=target, status="delivered")
+# Owner steering delivery (cancel-pending refusal + the steer_task handler)
+# lives in supervisor/steering.py (module-size boundary for this pinned
+# surface); imported back so the dispatch table and callers keep one name.
+from supervisor.steering import (  # noqa: E402 -- intentional re-import
+    _handle_steer_task,
+    _refuse_steering_while_cancelling,  # noqa: F401 -- re-exported for callers/tests
+)
 
 
 def _reject_if_no_chat_target(
@@ -3568,6 +3409,8 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
     task_group_id = str(evt.get("task_group_id") or "").strip()
     task_group = evt.get("task_group") if isinstance(evt.get("task_group"), dict) else {}
     subagent_envelope = evt.get("subagent_envelope") if isinstance(evt.get("subagent_envelope"), dict) else {}
+    configured_subagent = evt.get("configured_subagent") if isinstance(evt.get("configured_subagent"), dict) else {}
+    parent_cognitive_route = evt.get("parent_cognitive_route") if isinstance(evt.get("parent_cognitive_route"), dict) else {}
     task_constraint = evt.get("task_constraint") if isinstance(evt.get("task_constraint"), dict) else None
     required_capabilities = [
         str(item or "").strip().lower()
@@ -3628,6 +3471,8 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
         "task_group_id": task_group_id,
         "task_group": task_group,
         "subagent_envelope": subagent_envelope,
+        "configured_subagent": configured_subagent,
+        "parent_cognitive_route": parent_cognitive_route,
     }
     if delegation_role == "subagent" and (not str(evt.get("objective") or "").strip() or not expected_output):
         detail = "Subagent rejected: schedule_subagent requires objective and expected_output."
@@ -3858,6 +3703,8 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
             "task_group_id": task_group_id,
             "task_group": task_group,
             "subagent_envelope": subagent_envelope,
+            "configured_subagent": configured_subagent,
+            "parent_cognitive_route": parent_cognitive_route,
             "parent_id": parent_id,
         })
         admitted = ctx.enqueue_task(task)
@@ -4179,7 +4026,10 @@ def _handle_send_photo(evt: Dict[str, Any], ctx: Any) -> None:
         if not chat_id or not image_b64:
             return
         photo_bytes = b64mod.b64decode(image_b64)
-        ok, err = ctx.bridge.send_photo(chat_id, photo_bytes, caption=caption, mime=mime)
+        ok, err = ctx.bridge.send_photo(
+            chat_id, photo_bytes, caption=caption, mime=mime,
+            task_id=str(evt.get("task_id") or ""),
+        )
         if not ok:
             ctx.append_jsonl(
                 ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -4218,7 +4068,10 @@ def _handle_send_video(evt: Dict[str, Any], ctx: Any) -> None:
         if not video_b64:
             return
         video_bytes = b64mod.b64decode(video_b64)
-        ok, err = ctx.bridge.send_video(chat_id, video_bytes, caption=caption, mime=mime)
+        ok, err = ctx.bridge.send_video(
+            chat_id, video_bytes, caption=caption, mime=mime,
+            task_id=str(evt.get("task_id") or ""),
+        )
         if not ok:
             ctx.append_jsonl(
                 ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",

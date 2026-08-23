@@ -18,7 +18,7 @@ import queue
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 log = logging.getLogger("review_substrate")
 
@@ -144,6 +144,13 @@ class ReviewActorRecord:
     # consumers from conflating a transport failure, malformed JSON, and a
     # valid semantic DEGRADED verdict.
     transport_status: str = ""
+    # B1 typed failure facts, allowlist-carried off the exception's ATTRIBUTES
+    # (generic across every ClaudexorUnavailable subclass; never exc.__dict__):
+    # the machine code, the healing instant and the HTTP status survive the
+    # substrate as fields instead of flattening into `error` prose.
+    failure_code: str = ""
+    reset_at: str = ""
+    http_status: Optional[int] = None
     parse_status: str = ""
     semantic_verdict: str = ""
     provider: str = ""
@@ -155,6 +162,10 @@ class ReviewActorRecord:
     quorum_contribution: bool = False
     reason: str = ""
     enforcement_impact: str = ""
+
+
+# B1 typed failure facts, ONE shared key tuple (row/wave/last-execution projections).
+TYPED_FAILURE_FACT_KEYS = ("failure_code", "reset_at", "http_status", "transport_status")
 
 
 @dataclass
@@ -882,27 +893,16 @@ def build_improvement_capsule(
     return "\n".join(lines)
 
 
-# Identity prefixes for the configured reviewer surfaces. A surface that fans
-# rows out registers its prefix here rather than spelling one inline, so
-# ``slot_id_for_row`` stays the only place a row id is built.
-SLOT_ID_PREFIX = "slot"
-SCOPE_SLOT_ID_PREFIX = "scope_slot"
-PLAN_SLOT_ID_PREFIX = "plan_slot"
-
-
-def slot_id_for_row(index: int, *, prefix: str = SLOT_ID_PREFIX) -> str:
-    """Identity of the ``index``-th (1-based) configured reviewer row.
-
-    The single mint for reviewer-slot identity, and the reason this module's
-    contract says slot identity is separate from model identity. Naming a row
-    after its own model instead collides two rows that share a model (a supported
-    configuration — ``get_scope_review_models`` preserves duplicates on purpose),
-    collides two model spellings that sanitize alike (``openai::gpt-5`` and
-    ``openai/gpt/5``), and moves a row's identity the moment the owner edits its
-    model, so the row's receipts stop lining up with its own history. The model,
-    the route and the effort are PROPERTIES of a row, never its name.
-    """
-    return f"{prefix}_{int(index)}"
+# The row-identity mint (slot_id_for_row + surface prefixes) moved whole to
+# ouroboros/review_dispatch.py at the module-size gate; the historical names
+# stay importable from here for every existing consumer.
+from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
+    PLAN_SLOT_ID_PREFIX,
+    SCOPE_SLOT_ID_PREFIX,
+    SLOT_ID_PREFIX,
+    slot_id_for_row,
+    stamp_review_paid_on_dispatch,
+)
 
 
 def reviewer_slots(
@@ -1527,12 +1527,16 @@ class ReviewCoordinator:
                 )
             except Exception:
                 response_ref = {}
+            http_status = getattr(exc, "status_code", None)
             return ReviewActorRecord(
                 slot_id=slot.slot_id,
                 model=slot.model,
                 status="error",
                 error=sanitize_tool_result_for_log(error_msg),
                 transport_status=_transport_error_status(exc),
+                failure_code=str(getattr(exc, "code", "") or ""),
+                reset_at=str(getattr(exc, "reset_at", "") or ""),
+                http_status=http_status if isinstance(http_status, int) and http_status else None,
                 prompt_ref=prompt_ref,
                 response_ref=response_ref,
                 duration_sec=round(time.time() - start, 3),
@@ -1571,6 +1575,11 @@ def run_review_request(
     llm: LLMClient | None = None,
     usage_ctx: Any = None,
 ) -> ReviewRunResult:
+    # Write-ahead paid stamp (Q16 dispatch seam): a gate that meters paid
+    # cycles installed a callback on ctx; it durably lands the paid fact
+    # BEFORE the first reviewer transport call. Assembly-only refusals never
+    # reach this line, so undispatched attempts stay outside every ceiling.
+    stamp_review_paid_on_dispatch(usage_ctx)
     coordinator = ReviewCoordinator(llm=llm, drive_root=drive_root, usage_ctx=usage_ctx)
     result = coordinator.run(request, reviewer_slots(role_hint=request.surface) if slots is None else slots)
     if request.surface == "task_acceptance":

@@ -4,10 +4,11 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
-
 
 REPO = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -16,6 +17,18 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 release_proof = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release_proof)
+
+
+def test_release_proof_remains_runnable_without_installed_package():
+    result = subprocess.run(
+        [sys.executable, "-S", str(REPO / "scripts" / "release_proof.py"), "--help"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _digest(path: Path) -> str:
@@ -117,14 +130,49 @@ def test_assemble_binds_every_asset_smoke_and_sbom(tmp_path: Path):
     checksum_lines = (release_dir / "SHA256SUMS").read_text().splitlines()
     assert len(checksum_lines) == 3 * len(release_proof.PROOF_IDS)
     assert checksum_lines == sorted(checksum_lines, key=lambda line: line.split("  ", 1)[1])
-    assert "A clear release note." in notes.read_text()
-    assert "The AppImage runs from a user-writable path" in notes.read_text()
-    assert "v6.87.4...v6.87.5" in notes.read_text()
+    notes_text = notes.read_text()
+    assert "A clear release note." in notes_text
+    assert "## Download" in notes_text
+    assert "verification evidence, not additional installers" in notes_text
+    assert "every installable platform artifact, its SBOM, and its smoke receipt" in notes_text
+    assert "Each installable platform artifact has GitHub build provenance" in notes_text
+    assert "/releases/latest" not in notes_text
+    for proof_id in release_proof.PROOF_IDS:
+        assert release_proof.release_asset_download_url(
+            proof_id,
+            "6.87.5",
+            repository="razzant/ouroboros",
+        ) in notes_text
+    assert "v6.87.4...v6.87.5" in notes_text
     commands = evidence["verification"]["attestationCommands"]
     assert len(commands) == 2
     assert all("--source-digest " + "a" * 40 in command for command in commands)
     assert all("--source-ref refs/tags/v6.87.5" in command for command in commands)
     assert "--predicate-type https://cyclonedx.org/bom" in commands[1]
+
+
+def test_prerelease_notes_link_to_the_exact_prerelease_assets(tmp_path: Path):
+    version = "6.87.5-rc.1"
+    release_dir, version_file, readme = _fixture_release(tmp_path, version=version)
+    notes = tmp_path / "notes.md"
+    args = argparse.Namespace(
+        directory=release_dir,
+        version_file=version_file,
+        readme=readme,
+        repository="razzant/ouroboros",
+        tag=f"v{version}",
+        commit="a" * 40,
+        run_url="https://github.com/razzant/ouroboros/actions/runs/1",
+        previous_tag="v6.87.4",
+        generated_at="2026-08-02T00:00:00+00:00",
+        notes_output=notes,
+    )
+
+    release_proof.command_assemble(args)
+
+    text = notes.read_text(encoding="utf-8")
+    assert f"/releases/download/v{version}/" in text
+    assert "/releases/latest" not in text
 
 
 def test_assemble_rejects_smoke_digest_drift(tmp_path: Path):
@@ -252,6 +300,34 @@ def test_linux_packages_declare_and_resolve_the_git_runtime_dependency():
     assert "command -v git" in smoke
     assert "dpkg --install" not in smoke
     assert "rpm --install" not in smoke
+
+
+def test_every_future_release_receipt_requires_real_embedded_betterleaks():
+    assert set(release_proof.REQUIRED_SMOKE_CHECKS) == set(release_proof.PROOF_IDS)
+    for proof_id, checks in release_proof.REQUIRED_SMOKE_CHECKS.items():
+        assert "embedded_betterleaks_runtime" in checks, proof_id
+
+
+def test_future_final_artifact_lanes_smoke_betterleaks_from_the_artifact():
+    workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    build_job = workflow[
+        workflow.index("  build:") : workflow.index("  vendor-package-smoke:")
+    ]
+    assert build_job.count("scripts/betterleaks_platform_smoke.py") == 4
+    assert '--bundle-root "$MOUNT/Ouroboros.app/Contents/Resources"' in build_job
+    assert '--bundle-root "$SMOKE_ROOT/Ouroboros/_internal"' in build_job
+    assert '--bundle-root "$APPDIR/usr/lib/ouroboros/_internal"' in build_job
+    assert '--bundle-root "$SmokeRoot\\Ouroboros\\_internal"' in build_job
+    assert "betterleaks-standalone/bin/betterleaks" in build_job
+    assert "codesign --verify --strict" in build_job
+    assert "--check embedded_betterleaks_runtime" in build_job
+
+    package_smoke = (REPO / "scripts" / "smoke_linux_packages.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "betterleaks_platform_smoke.py:/tmp/betterleaks_platform_smoke.py:ro" in package_smoke
+    assert "PYTHONPATH=/opt/ouroboros/_internal" in package_smoke
+    assert "--bundle-root /opt/ouroboros/_internal" in package_smoke
 
 
 def test_linux_rpm_stage_recreates_the_absolute_cli_symlink():
@@ -444,7 +520,11 @@ def test_release_workflow_orders_smoke_sbom_attestation_and_draft_verification()
     assert workflow.count('git ls-remote --exit-code origin "$TAG_REF" "$PEELED_REF"') == 2
     assert workflow.count('test "$(git cat-file -t "$TAG_REF")" = "tag"') == 2
     assert workflow.count('[ "$PEELED_SHA" != "$GITHUB_SHA" ]') == 2
-    assert 'target_commitish: ${{ github.sha }}' in workflow
+    create_release_step = workflow[
+        workflow.index("- name: Create draft GitHub Release") :
+        workflow.index("- name: Verify uploaded draft")
+    ]
+    assert "target_commitish:" not in create_release_step
     assert '--source-digest "$GITHUB_SHA"' in workflow
     assert '--source-ref "$GITHUB_REF"' in workflow
     assert '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/ci.yml"' in workflow

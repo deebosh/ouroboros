@@ -5,11 +5,13 @@ from pathlib import Path
 import pytest
 
 from ouroboros.tools.release_sync import (
+    RELEASE_ASSET_TEMPLATES,
     bump_version_files,
     check_history_limit,
     detect_numeric_claims,
     insert_changelog_row,
     normalize_linux_package_version,
+    release_asset_download_url,
     run_release_preflight,
     sync_release_metadata,
     version_carrier_desyncs,
@@ -27,6 +29,21 @@ from ouroboros.tools.release_sync import (  # noqa: E402 — private helpers und
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _download_references(version: str) -> str:
+    return "".join(
+        f"[download-{proof_id}]: {release_asset_download_url(proof_id, version)}\n"
+        for proof_id in RELEASE_ASSET_TEMPLATES
+    )
+
+
+def _download_page(version: str) -> str:
+    return "".join(
+        f'<a data-release-download="{proof_id}" '
+        f'href="{release_asset_download_url(proof_id, version)}">download</a>\n'
+        for proof_id in RELEASE_ASSET_TEMPLATES
+    )
+
 
 def _make_repo(tmp_path: Path, version: str = "4.99.1") -> Path:
     """Create a minimal fake repo with all version-carrier files."""
@@ -62,6 +79,7 @@ def _make_repo(tmp_path: Path, version: str = "4.99.1") -> Path:
     readme_content = (
         "# Ouroboros\n\n"
         + badge_line
+        + _download_references("0.0.0")
         + "\n## Version History\n\n"
         "| Version | Date | Description |\n"
         "|---------|------|-------------|\n"
@@ -74,6 +92,16 @@ def _make_repo(tmp_path: Path, version: str = "4.99.1") -> Path:
     (docs / "ARCHITECTURE.md").write_text(
         "# Ouroboros v0.0.0 — Architecture\n\nContent here.\n",
         encoding="utf-8",
+    )
+    (docs / "install").mkdir()
+    (docs / "install" / "index.html").write_text(
+        _download_page("0.0.0"), encoding="utf-8"
+    )
+
+    site_install = tmp_path / "site" / "install"
+    site_install.mkdir(parents=True)
+    (site_install / "index.html").write_text(
+        _download_page("0.0.0"), encoding="utf-8"
     )
 
     return tmp_path
@@ -179,6 +207,119 @@ class TestSyncReleaseMetadata:
         assert "docs/ARCHITECTURE.md" in changed
         text = (repo / "docs" / "ARCHITECTURE.md").read_text()
         assert "v1.2.3" in text
+
+    def test_syncs_direct_download_urls_from_version(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.2.3")
+
+        changed = sync_release_metadata(str(repo))
+
+        assert "README.md" in changed
+        assert "site/install/index.html" in changed
+        assert "docs/install/index.html" in changed
+        readme = (repo / "README.md").read_text(encoding="utf-8")
+        site_install = (repo / "site" / "install" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        docs_install = (repo / "docs" / "install" / "index.html").read_text(
+            encoding="utf-8"
+        )
+        for proof_id in RELEASE_ASSET_TEMPLATES:
+            expected = release_asset_download_url(proof_id, "1.2.3")
+            assert f"[download-{proof_id}]: {expected}" in readme
+            assert expected in site_install
+            assert expected in docs_install
+
+    def test_prerelease_download_urls_use_exact_tag_not_latest(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.2.3-rc.4")
+
+        sync_release_metadata(str(repo))
+
+        projected = "\n".join([
+            (repo / "README.md").read_text(encoding="utf-8"),
+            (repo / "site" / "install" / "index.html").read_text(encoding="utf-8"),
+            (repo / "docs" / "install" / "index.html").read_text(encoding="utf-8"),
+        ])
+        assert "/releases/download/v1.2.3-rc.4/" in projected
+        assert "/releases/latest/download/" not in projected
+
+    def test_stale_direct_download_url_is_reported(self, tmp_path):
+        repo = _make_repo(tmp_path, "1.2.3")
+        sync_release_metadata(str(repo))
+        readme = (repo / "README.md").read_text(encoding="utf-8")
+        stale_readme = readme.replace(
+            release_asset_download_url("macos-arm64", "1.2.3"),
+            release_asset_download_url("macos-arm64", "1.2.2"),
+        )
+
+        desync = version_carrier_desyncs(
+            "1.2.3",
+            download_readme_text=stale_readme,
+            detailed=True,
+        )
+
+        assert desync == [
+            "README.md download macos-arm64 "
+            f"(expected {release_asset_download_url('macos-arm64', '1.2.3')})"
+        ]
+
+    def test_every_duplicate_readme_reference_must_match_version(self):
+        expected = release_asset_download_url("macos-arm64", "1.2.3")
+        stale = release_asset_download_url("macos-arm64", "1.2.2")
+        readme = _download_references("1.2.3") + (
+            f"[download-macos-arm64]: {stale}\n"
+        )
+
+        desync = version_carrier_desyncs(
+            "1.2.3",
+            download_readme_text=readme,
+            detailed=True,
+        )
+
+        assert desync == [
+            "README.md download macos-arm64 "
+            f"(expected {expected})"
+        ]
+
+    def test_every_marked_html_download_must_match_version(self):
+        expected = release_asset_download_url("macos-arm64", "1.2.3")
+        stale = release_asset_download_url("macos-arm64", "1.2.2")
+        html = _download_page("1.2.3") + (
+            f'<a data-release-download="macos-arm64" href="{stale}">quick start</a>\n'
+        )
+
+        desync = version_carrier_desyncs(
+            "1.2.3",
+            site_install_text=html,
+            detailed=True,
+        )
+
+        assert desync == [
+            "site/install/index.html download macos-arm64 "
+            f"(expected {expected})"
+        ]
+
+    def test_unmarked_legacy_documents_do_not_join_the_projection(self):
+        desync = version_carrier_desyncs(
+            "1.2.3",
+            download_readme_text="# Minimal fixture\n",
+            site_install_text="<h1>Install</h1>\n",
+            docs_install_text="<h1>Install</h1>\n",
+            detailed=True,
+        )
+
+        assert desync == []
+
+    def test_partial_download_projection_reports_missing_members(self):
+        expected = release_asset_download_url("macos-arm64", "1.2.3")
+        readme = f"[download-macos-arm64]: {expected}\n"
+
+        desync = version_carrier_desyncs(
+            "1.2.3",
+            download_readme_text=readme,
+        )
+
+        assert "README.md download macos-arm64" not in desync
+        assert len(desync) == len(RELEASE_ASSET_TEMPLATES) - 1
 
     def test_idempotent_second_call_returns_no_changes(self, tmp_path):
         repo = _make_repo(tmp_path, "1.2.3")
@@ -704,6 +845,7 @@ class TestBumpVersionFiles:
         assert changed == sorted([
             "README.md", "VERSION", "docs/ARCHITECTURE.md", "pyproject.toml",
             "uv.lock", "web/modules/api_types.js", "web/package.json",
+            "docs/install/index.html", "site/install/index.html",
         ])
         assert 'version = "1.0.1"' in (repo / "pyproject.toml").read_text(encoding="utf-8")
         assert "v1.0.1" in (repo / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")

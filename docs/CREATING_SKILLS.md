@@ -34,10 +34,12 @@ OuroborosHub payload, the OWNER may skip the expensive LLM review via the
 manifest-validation floor STILL runs (an invalid or unsafe payload is refused),
 and official-hub payloads are freshly rechecked against the live catalog before
 attestation is persisted. Only the tri-model LLM phase is skipped; the verdict
-is marked `owner-attested` (distinct from an LLM-clean badge) and an
-owner-attested skill cannot be published to a public hub — run the full review
-first. Native, ClawHub, and unverified OuroborosHub payloads are never
-attestable. The agent cannot self-attest (the marker is owner-state).
+is marked `owner-attested` (distinct from an LLM-clean badge) and does not
+confer publication readiness. Choosing Publish may still start the ordinary
+managed publication task, but Ouroboros must complete a fresh full skill review
+before any outbound GitHub effect. Native, ClawHub, and unverified
+OuroborosHub payloads are never attestable. The agent cannot self-attest (the
+marker is owner-state).
 
 There are three skill types:
 
@@ -59,11 +61,12 @@ The **runtime ownership** of an installed skill is also tagged:
 
 User-authored or manually copied skills belong under
 `data/skills/external/<name>/`. The `native` bucket is reserved for
-launcher-seeded skills that carry a `.seed-origin` marker. If a user
-payload is accidentally left under `native/`, Ouroboros no longer migrates it
-automatically; move it to `external/` or reinstall it so the Repair workflow can
-edit and re-review it. Generic file tools also refuse new writes under unseeded
-`native/` payloads and tell the agent to use `external/` instead.
+launcher-seeded skills that carry a `.seed-origin` marker. That marker, not the
+directory name alone, is the ownership fact: an existing payload under
+`native/` without the marker is treated in place as user-managed `external`
+content. Ordinary top-level tasks can inspect, edit, run commands in, or
+delegate that payload without a migration. A marker-present launcher seed stays
+read/review-only, and new skills are still created under `external/`.
 
 ## Manifest schema (`SKILL.md` frontmatter or `skill.json`)
 
@@ -319,17 +322,22 @@ repo commits, extension tools, key grants, and enable/disable flows. Finish
 with `skill_preflight` and `skill_review`; the owner enables or grants access
 after a fresh executable review.
 
-### Light-mode short-form authoring (no repair constraint)
+### Top-level short-form authoring (including light mode)
 
-Under `runtime_mode=light` without a `skill_repair` task constraint,
-`write_file` and `edit_text` can target skill payloads with
-`root=skill_payload`, `bucket` (one of `external` / `clawhub` /
-`ouroboroshub`; `native` is excluded), and `skill_name`. A short relative
+An ordinary top-level task in every runtime mode can target user-managed skill
+payloads with `root=skill_payload`, `bucket` (`external` / `clawhub` /
+`ouroboroshub` / `user_repo`), and `skill_name`. A markerless payload physically
+under `native/` is selected through the logical `external` bucket; a true
+marker-present native seed remains read/review-only. A short relative
 `path` such as `plugin.py` or `lib/utils.py` resolves under
-`data/skills/<bucket>/<skill_name>/`, the same payload root the repair flow
-would pick. Supply both args together — passing only one returns a clear
+the selected physical payload root. Supply both args together — passing only
+one returns a clear
 `bucket and skill_name must be supplied together` error instead of silently
 writing into the drive root.
+
+The constrained Skills UI Repair lane is intentionally narrower and unchanged:
+it still selects only its declared non-native payload and has no shell or
+delegation capability.
 
 To **create a new skill** the payload directory need not pre-exist: writing the
 manifest at the payload root (`path="SKILL.md"` or `path="skill.json"`) is the
@@ -388,6 +396,7 @@ calls and runtime behaviours:
 | `companion_process` | The skill may register a manifest-declared companion subprocess supervised by the host. |
 | `subscribe_event` | The skill may subscribe to manifest-declared host event topics such as `chat.outbound` or `skill.lifecycle`. Chat topics require owner permission grants; `skill.lifecycle` does not. |
 | `inject_chat` | The skill may request Host Service chat injection after an explicit owner permission grant. |
+| `presence` | A reviewed transport skill may submit authenticated non-owner conversation events to the Host Service Presence boundary and poll only their correlated late work. Requires an explicit content-hash-bound owner grant. |
 
 A missing permission causes the matching `register_*` call to raise
 `ExtensionRegistrationError`, surfaced as a skill load error in the
@@ -401,7 +410,7 @@ Some settings keys are protected: `OPENROUTER_API_KEY`,
 `GITHUB_TOKEN`, `OUROBOROS_NETWORK_PASSWORD`. These keys are NEVER
 forwarded to a skill by default, even when listed in
 `env_from_settings`. Custom secret keys stored in Settings → Secrets
-are treated the same way. Host permissions such as `inject_chat` and
+are treated the same way. Host permissions such as `inject_chat`, `presence`, and
 chat event subscriptions also require explicit, content-hash-bound owner
 consent. The desktop launcher's owner-grant bridge records these grants.
 
@@ -451,6 +460,80 @@ unrelated parties — never the breadth of control it exposes. The capability is
 gated by the host (token + fresh review + enablement + content-hash grants) and
 by core owner/chat binding, not by withholding control from the skill. See
 `docs/CHECKLISTS.md` → "Transport and control skills are first-class".
+
+### Presence behavior profiles and transport ingress
+
+Presence separates two ordinary reviewed skills: a **behavior skill** declares
+how an external conversation should be handled, while a **transport skill**
+authenticates provider events and relays them through the loopback Host Service.
+The behavior is portable; provider credentials, room ids, exact tool names, and
+installation-specific resource locations do not belong in its profile.
+
+A behavior skill may add a strict `presence:` block to its manifest:
+
+```yaml
+presence:
+  schema_version: 1
+  instructions_file: presence.md
+  context_topics:
+    - public-conversation-notes
+  runtime_defaults:
+    model_slot: main             # main | light
+    inline_max_rounds: 10
+  capability_requests:
+    - id: research
+      kind: tool                 # tool | script | resource
+      required: false
+      purpose: Look up current public information when a reply needs it.
+    - id: notes
+      kind: resource
+      required: true
+      operations: [read, write]
+      purpose: Maintain conversation notes in a selected confined resource.
+```
+
+Use either non-empty inline `instructions` or `instructions_file`, never both.
+An instructions file must be UTF-8 inside the reviewed payload surface.
+`context_topics` names full knowledge topics to inject for each turn.
+`runtime_defaults` is optional and resolves to a bounded `main` or `light` turn;
+the host clamps `inline_max_rounds` to its global limit. Capability request ids
+are stable portable concepts. After installation, `configure_presence` maps
+them to exact built-in, extension, MCP, script, or confined resource targets;
+required requests must all be selected before admission. These selections and
+runtime overrides are host-owned state. Changing a request's id, kind, or
+resource operations invalidates its selection instead of silently retargeting
+it.
+
+A transport extension declares `permissions: [presence]`, obtains its ordinary
+content-hash-bound skill token, and sends:
+
+- `POST /presence/turn` with exactly `binding_id`, `event`, and optional
+  `staged_files`. The event carries the provider/account/conversation/thread,
+  stable source-event and conversation ids, structured actor/conversation/message
+  facts, and text. Files must already be under that transport skill's state root.
+- `GET /presence/work/{work_ref}?binding_id=...` to poll only late work created
+  by the same owner binding.
+
+The owner-created binding fixes the authenticated transport skill, behavior
+skill, origin scope, and exact proactive destination. The origin is either one
+exact conversation/thread or the explicit account-wide conversation id `*`;
+the latter admits any conversation on that exact provider account while each
+event still receives its own canonical conversation key. For each turn the host
+rechecks install, enablement, executable review, binding identity, and required
+selections, then compiles an immutable positive capability ceiling. A fresh
+agent receives only that ceiling, reviewed instructions, exact event facts, and
+declared context topics. Completion is typed as `message`, `silent`,
+`tool_delivered`, or `deferred`; `deferred` includes a correlated `work_ref`
+only after successful promotion. Promotion and one-shot or recurring follow-up keep the same
+ceiling and reply context rather than widening authority.
+
+Transport custody preserves provider arrival order before Host admission; the
+host serializes one conversation and enforces the installation-wide active-turn
+limit across processes. A current Presence turn may cancel only its own
+binding-and-conversation-correlated `work_ref`. Owner chat or Background
+Consciousness may initiate an existing binding, but the resulting cycle must use
+an explicitly selected transport tool and finish `tool_delivered` to claim that
+an external message was sent.
 
 ## Notifying the owner when work completes
 
@@ -687,23 +770,59 @@ You can read their full source under
 
 ### OuroborosHub (official, curated)
 
-`razzant/OuroborosHub` is the official catalog Ouroboros installs
-from. The normal publishing path is agent-driven:
+`razzant/OuroborosHub` is the official catalog. Finish the local payload and
+configure `GITHUB_TOKEN` in Settings → Secrets, then choose **Publish to
+OuroborosHub** on the skill card or ask Ouroboros in chat. This is one
+agent-driven flow; a separate manual Preflight or Review action is not required
+merely to start it. The browser first runs a read-only preflight for the
+selected skill and asks for explicit public-action confirmation. Cancelling
+creates no task.
 
-1. Finish the local skill under `data/skills/<bucket>/<slug>/`.
-2. Run `skill_preflight` and `skill_review`; submission requires a
-   fresh `clean` review whose stored `content_hash` matches the current
-   payload.
-3. Configure `GITHUB_TOKEN` in Settings → Secrets.
-4. Use the Skills card menu → **Submit to OuroborosHub**, or ask in
-   chat: `Submit skill <slug> to OuroborosHub`.
+The preflight returns one of five states:
 
-The agent calls `submit_skill_to_hub`, infers the upstream destination
-from `OUROBOROS_HUB_CATALOG_URL`, creates or reuses the user's GitHub
-fork, commits `skills/<slug>/...` plus an updated `catalog.json` on a
-`submit/<slug>-v<version>` branch, and opens a PR. If the same version
-already exists in the catalog, bump the skill version and re-review
-before submitting again.
+- `ready` — the current snapshot is locally publication-ready; the managed task
+  repeats the authoritative checks before any public effect.
+- `warnings` — only non-blocking redacted findings remain, and continuing
+  requires explicit confirmation.
+- `needs_attention` — the content, version, or full review still needs work, but
+  the ordinary managed publication task may start so Ouroboros can repair and
+  re-review it.
+- `repairable` — Betterleaks is missing or unhealthy; the ordinary task may
+  start with the exact repair hint.
+- `hard_block` — authority, identity, source, or managed-task admission prevents
+  the task from starting.
+
+If the selected `user_repo` leaf lost its manifest after the card was opened,
+that exact `skill_publish` task may omit `bucket` while it lists/searches/reads
+the leaf and while it creates only the root `SKILL.md` or `skill.json`. Once the
+manifest exists, ordinary discovery, preflight, and fresh review resume.
+Grouping directories, unknown or colliding identities, nested manifests, and
+path escapes are still refused; no parallel `external` payload is created.
+
+Only literal Betterleaks `high` confidence blocks an outbound publication call.
+`medium`, `low`, missing, and unknown confidence remain redacted warnings. For
+an intentional provider-shaped fixture, Ouroboros may add Betterleaks's
+exact-line `betterleaks:allow` annotation. That byte edit makes the hash-bound
+skill review stale, so a fresh full `skill_review` is mandatory before retrying.
+The audit pass records the suppressed exact line as an audited false positive.
+Remove or rotate a real credential instead of allowing it.
+
+Packaged installs include Betterleaks 1.8.1. A source checkout installs the
+exact pinned runtime explicitly with:
+
+`python -m ouroboros.betterleaks_runtime install`
+
+Publish never downloads the scanner automatically. Typed failures return the
+completed stage, external effects, and a repair hint; Ouroboros decides whether
+to inspect, repair, re-review, retry, clean up, or stop.
+
+Publication succeeds only when the task records a validated pull-request
+receipt in the configured Hub repository for this exact skill. A branch,
+commit, refusal report, or unfinished attempt is partial progress, not
+successful publication. The pull request includes only a redacted scanner
+attestation: engine and version, ruleset digest, `blockers=0`, and
+warning/audited counts. It never includes candidate values, snippets, or raw
+scanner output.
 
 ### ClawHub (third-party, registry-driven)
 

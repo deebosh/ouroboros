@@ -12,7 +12,6 @@ import pathlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 from ouroboros.tool_access import (
     _process_root_candidates,

@@ -52,15 +52,19 @@ _POPEN_ALLOWLIST = {
     "ouroboros/tools/skill_exec.py",      # bounded skill run (waited + tracked)
     "ouroboros/tools/skill_preflight.py", # waited preflight child
     "ouroboros/marketplace/isolated_deps.py",  # waited installer child
+    # Connect's vendor-CLI install (domain op, moved here by review wave 3): ONE
+    # waited child spawned+registered atomically under the tools.shell lock,
+    # so /panic's tracked-subprocess sweep can never observe it alive but
+    # untracked (isolated_deps._run template).
+    "ouroboros/claudexor_daemon.py",
     "ouroboros/gateways/claude_code.py",  # waited readonly child (timeout-bound)
     "ouroboros/extension_process_runner.py",  # waited extension child
     "ouroboros/workspace_executor.py",    # custody write-through added at spawn
     "ouroboros/local_model.py",           # custody record added at spawn
     "ouroboros/extension_companion.py",   # custody write-through added at spawn
     "ouroboros/tools/services.py",        # routed through spawn_supervised
-    "supervisor/update_source.py",       # bounded foreground git network calls (waited + killed on timeout)
     "supervisor/update_merge.py",        # bounded pre-restart import/compile smoke
-    "supervisor/git_ops.py",             # bounded dependency sync (waited + panic-tracked)
+    "supervisor/git_ops.py",             # shared bounded Git/dependency helpers (waited + panic-tracked)
     "ouroboros/colab_bootstrap.py",      # bounded Colab clone/fetch helper
 }
 

@@ -14,7 +14,9 @@ from starlette.responses import JSONResponse, Response
 
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.gateway._helpers import _TAIL_WINDOW_START_BYTES, read_rotated_jsonl_entries
+from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.task_results import TASK_COST_META_FIELDS as _TASK_COST_META_FIELDS
+from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, subagent_message_meta
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.utils import utc_now_iso
 
@@ -106,6 +108,11 @@ def _compat_cost_bucket(bucket: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "cost": round(float(bucket.get("settled_usd") or 0.0), 6),
         "calls": int(bucket.get("physical_calls") or 0),
+        # Keep the compatibility tables honest about rows whose settled dollar
+        # amount is zero but whose accounting is still open or undisclosed.
+        "unknown_unmetered": int(bucket.get("unknown_unmetered") or 0),
+        "non_final_rows": int(bucket.get("non_final_rows") or 0),
+        "cost_final": bool(bucket.get("cost_final")),
         "prompt_tokens": int(bucket.get("prompt_tokens") or 0),
         "completion_tokens": int(bucket.get("completion_tokens") or 0),
         "cached_tokens": int(bucket.get("cached_tokens") or 0),
@@ -135,10 +142,12 @@ def _compat_cost_groups(
             continue
         target = result[key]
         for field in (
-            "cost", "calls", "prompt_tokens", "completion_tokens",
+            "cost", "calls", "unknown_unmetered", "non_final_rows",
+            "prompt_tokens", "completion_tokens",
             "cached_tokens", "cache_write_tokens",
         ):
             target[field] += source[field]
+        target["cost_final"] = target["cost_final"] and source["cost_final"]
         for ttl, count in source["prompt_cache_ttls"].items():
             target["prompt_cache_ttls"][ttl] = int(target["prompt_cache_ttls"].get(ttl, 0)) + int(count)
     if (
@@ -443,7 +452,7 @@ def _load_terminal_result(
 ) -> Dict[str, Any]:
     """Effective task result for history projection, cached per request.
 
-    Status/cost projection only — a history GET must never copy artifacts or
+    Status/cost and compact child-identity projection only — a history GET must never copy artifacts or
     claim disposition hashes (materialize contract). The cache is shared
     between the pre-floor lineage terminal-truth pass (perf2 P3 variant A) and
     ``_annotate_terminal_task_truth``, so each task_results file is read at
@@ -465,7 +474,7 @@ def _annotate_terminal_task_truth(
     data_dir: pathlib.Path,
     result_cache: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> None:
-    """Project bounded terminal truth onto the card rows that survive history replay.
+    """Project bounded terminal truth and legacy child identity onto replay rows.
 
     Runs AFTER quota slicing (v6.90.x P2) on exactly the rows the response emits,
     so the endpoint pays for the task ids of the WINDOW, not of the whole parsed
@@ -492,13 +501,42 @@ def _annotate_terminal_task_truth(
             if str(message.get("system_type") or "") == "task_summary"
             and message.get("task_id")
         }
+        legacy_final_task_ids = {
+            str(message.get("task_id") or "")
+            for message in combined
+            if message.get("task_id")
+            and not message.get("is_progress")
+            and str(message.get("role") or "") in {"assistant", "system"}
+            and str(message.get("delegation_role") or "").lower() != "subagent"
+            and str(message.get("task_id") or "") not in progress_task_ids
+        }
         terminal_status_by_task: Dict[str, str] = {}
         terminal_truth_by_task: Dict[str, Dict[str, Any]] = {}
+        legacy_child_meta_by_task: Dict[str, Dict[str, Any]] = {}
         suggested_name_by_task: Dict[str, str] = {}
-        for task_id in progress_task_ids | summary_task_ids:
+        finalizing_tasks: set = set()
+        for task_id in progress_task_ids | summary_task_ids | legacy_final_task_ids:
             result = _load_terminal_result(data_dir, task_id, cache)
+            child_meta = subagent_message_meta(result, task_id=task_id)
+            if child_meta:
+                legacy_child_meta_by_task[task_id] = child_meta
             status = str(result.get("status") or "")
-            if status in FINAL_STATUSES:
+            checkpoint = result.get("root_phase_checkpoint")
+            synthesis = (
+                str(checkpoint.get("post_task_synthesis") or "")
+                if isinstance(checkpoint, dict) else ""
+            )
+            # An OPEN post-task checkpoint means the final answer is stored
+            # but synthesis (and the settled task_done) has not landed: the
+            # task is FINALIZING, not terminal. This covers the plain root
+            # (status already "completed") AND the split-drive project root,
+            # whose canonical status stays scheduled/running until copy-back.
+            # A failed/cancelled record stays terminal immediately, and a
+            # record without a checkpoint keeps the legacy terminal semantics.
+            checkpoint_open = post_task_synthesis_is_open(synthesis)
+            if checkpoint_open and (status == "completed" or status not in FINAL_STATUSES):
+                finalizing_tasks.add(task_id)
+            elif status in FINAL_STATUSES:
                 terminal_status_by_task[task_id] = status
                 terminal_truth: Dict[str, Any] = {
                     "outcome_axes": normalize_outcome_axes(result),
@@ -533,6 +571,13 @@ def _annotate_terminal_task_truth(
             task_id = str(message.get("task_id") or "")
             if not task_id:
                 continue
+            for key, value in legacy_child_meta_by_task.get(task_id, {}).items():
+                message.setdefault(key, value)
+            # Every row of a finalizing task carries the typed phase so replay
+            # (progress cards AND the early final answer row) holds the card
+            # on "Finalizing…" instead of resolving it as done.
+            if task_id in finalizing_tasks:
+                message["task_phase"] = "finalizing"
             if message.get("is_progress") and task_id in terminal_status_by_task:
                 message["task_terminal_status"] = terminal_status_by_task[task_id]
             is_summary = str(message.get("system_type") or "") == "task_summary"
@@ -601,8 +646,8 @@ def _make_thread_filter(
 ):
     """Build the per-request thread-filter closure (perf2 P3 decomposition).
 
-    Returns the ``row_matches_thread`` predicate shared by both stream readers
-    and both transform loops."""
+    Returns the thread predicate plus the producer-owned Main-mirror classifier
+    shared by both stream readers and both transform loops."""
 
     def _bound_project_chat(task_id: str, parent_task_id: str = "", root_task_id: str = "") -> int:
         # Resolve by LINEAGE (own binding -> parent -> root) so a subagent's rows
@@ -641,7 +686,19 @@ def _make_thread_filter(
             return bool(entry.get("is_progress")) or str(entry.get("type") or "") == "task_summary"
         return entry_chat not in project_chat_ids
 
-    return _row_matches_thread
+    def _row_is_project_mirror(entry_chat: int, entry: Optional[dict] = None) -> bool:
+        if thread_id in project_chat_ids or not isinstance(entry, dict):
+            return False
+        return bool(
+            entry_chat in project_chat_ids
+            or _bound_project_chat(
+                str(entry.get("task_id") or ""),
+                str(entry.get("parent_task_id") or ""),
+                str(entry.get("root_task_id") or ""),
+            )
+        )
+
+    return _row_matches_thread, _row_is_project_mirror
 
 
 def _collect_chat_rows(
@@ -650,6 +707,7 @@ def _collect_chat_rows(
     n_human: int,
     row_matches_thread,
     chat_annotations: Dict[str, Any],
+    row_is_project_mirror=None,
 ) -> tuple[list, int]:
     """Read + transform the chat stream.
 
@@ -701,6 +759,18 @@ def _collect_chat_rows(
             annotation = _user_annotation(role, rec["client_message_id"], chat_annotations)
             if annotation is not None:
                 rec["chat_annotation"] = annotation
+            # Skill-review rows already carry the exact-job reference the
+            # producer writes (v6.66.0 a776639f); pass it through so the Chat
+            # card can lazily fetch the full rendered review. Rows without a
+            # job_id (legacy full-text rows) keep today's behavior.
+            if rec["system_type"] == "skill_review":
+                for key in ("skill", "status", "content_hash", "job_id"):
+                    rec[key] = str(entry.get(key, "") or "")
+                for key in ("review_round", "snapshot_attempt"):
+                    try:
+                        rec[key] = int(entry.get(key) or 0)
+                    except (TypeError, ValueError):
+                        rec[key] = 0
             # Delivered document rows carry lightweight media metadata (no
             # base64); surface a msg_type + download_url so the frontend
             # rebuilds the file bubble on reload instead of a bare text line.
@@ -710,7 +780,17 @@ def _collect_chat_rows(
                 rec["mime"] = str(entry.get("mime") or "application/octet-stream")
                 rec["download_url"] = str(entry.get("download_url") or "")
                 rec["caption"] = str(entry.get("caption") or "")
+            elif entry.get("type") in {"photo", "video"} and entry.get("download_url"):
+                rec["msg_type"] = str(entry["type"])
+                rec["mime"] = str(entry.get("mime") or "")
+                rec["download_url"] = str(entry["download_url"])
+                rec["caption"] = str(entry.get("caption") or "")
             _copy_task_summary_metadata(rec, entry)
+            for field in SUBAGENT_MESSAGE_FIELDS:
+                if field in entry:
+                    rec[field] = entry[field]
+            if callable(row_is_project_mirror) and row_is_project_mirror(entry_chat, entry):
+                rec["project_mirror"] = True
             combined.append(rec)
     except Exception as exc:
         log.warning("Failed to read chat history: %s", exc)
@@ -722,6 +802,7 @@ def _collect_progress_rows(
     archive_dir: pathlib.Path,
     n_progress: int,
     row_matches_thread,
+    row_is_project_mirror=None,
 ) -> tuple[list, int]:
     """Read + transform the progress stream.
 
@@ -787,6 +868,8 @@ def _collect_progress_rows(
             for field in _PROGRESS_META_FIELDS:
                 if field in entry:
                     rec[field] = entry[field]
+            if callable(row_is_project_mirror) and row_is_project_mirror(entry_chat, entry):
+                rec["project_mirror"] = True
             combined.append(rec)
     except Exception as exc:
         log.warning("Failed to read progress log: %s", exc)
@@ -975,17 +1058,19 @@ def _assemble_history_response(
     project_chat_ids, project_source_refs, chat_annotations, bindings_by_task = (
         _project_history_context(data_dir, thread_id)
     )
-    row_matches_thread = _make_thread_filter(
+    row_matches_thread, row_is_project_mirror = _make_thread_filter(
         thread_id, project_chat_ids, project_source_refs, bindings_by_task
     )
     chat_path = data_dir / "logs" / "chat.jsonl"
     progress_path = data_dir / "logs" / "progress.jsonl"
     archive_dir = data_dir / "archive"
     combined, chat_quota_rows = _collect_chat_rows(
-        chat_path, archive_dir, n_human, row_matches_thread, chat_annotations
+        chat_path, archive_dir, n_human, row_matches_thread, chat_annotations,
+        row_is_project_mirror,
     )
     progress_rows, progress_quota_rows = _collect_progress_rows(
-        progress_path, archive_dir, n_progress, row_matches_thread
+        progress_path, archive_dir, n_progress, row_matches_thread,
+        row_is_project_mirror,
     )
     combined.extend(progress_rows)
     lifecycle_row = _active_lifecycle_row()

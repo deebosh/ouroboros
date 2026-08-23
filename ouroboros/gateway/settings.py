@@ -29,6 +29,7 @@ from ouroboros.gateway.owner_settings import (
     _owner_audit,
     _owner_read_settings_raw,
     _owner_write_settings,
+    settings_document_mutation,
     owner_write_guard,
     post_commit_failure_response,
     unsaved_error,
@@ -54,8 +55,6 @@ from ouroboros.settings_setup_contract import (
     build_setup_contract,
     parse_budget_setting,
 )
-from ouroboros.utils import append_jsonl, utc_now_iso
-
 log = logging.getLogger(__name__)
 DEFAULT_PORT = int(os.environ.get("OUROBOROS_SERVER_PORT", "8765"))
 
@@ -264,9 +263,8 @@ def _merge_settings_payload(current: Dict[str, Any], body: Dict[str, Any]) -> Di
             "OUROBOROS_RUNTIME_MODE",
             "OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS",
             "OUROBOROS_CONTEXT_MODE",
-            # Derived auto-downgrade state (v6.80.0). Merge-skipped in BOTH directions:
-            # setting it would fake an owner narrowing, and CLEARING it would turn a
-            # system auto-downgrade into an owner-declared scope-review skip.
+            # One-window false provenance tombstone. Generic settings never authors
+            # context intent; the dedicated owner endpoint writes the pair atomically.
             "OUROBOROS_CONTEXT_MODE_AUTO_LOW",
             # CW1 (v6.34.0): the scope-review floor is owner-only and flows ONLY through
             # its dedicated audited endpoint (api_owner_scope_review_floor). Since v6.80.0
@@ -333,6 +331,10 @@ async def _json_body_or_empty(request: Request) -> Any:
 
 
 def _has_running_agent_tasks() -> bool:
+    # Known pre-existing residual: PENDING/RUNNING are read without the queue
+    # lock, so a task mid-handoff (removed from PENDING, not yet in RUNNING)
+    # can be invisible to one snapshot. The context-mode guard tolerates it —
+    # the read races the supervisor thread with or without any settings lock.
     try:
         from supervisor.workers import PENDING, RUNNING, _get_chat_agent
         if PENDING or RUNNING:
@@ -369,6 +371,13 @@ def _has_started_agent_tasks() -> bool:
 async def api_owner_runtime_mode(request: Request) -> JSONResponse:
     """Persist the owner-selected runtime mode for the next boot."""
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_runtime_mode_sync, request, body)
+
+
+def _api_owner_runtime_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
 
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
@@ -383,9 +392,13 @@ async def api_owner_runtime_mode(request: Request) -> JSONResponse:
         # A no-change POST must not rewrite settings.json: the rewrite raced a
         # concurrent generic save (last-writer-wins over a stale read) for zero
         # information gain. The audit and the response stay identical either way.
-        current = dict(old_settings)
-        current["OUROBOROS_RUNTIME_MODE"] = next_mode
-        _owner_write_settings(current)
+        # Re-read under the document lock: the pre-lock read above only decided
+        # whether to write at all, and a threaded generic save may be mid
+        # read-merge-write on the same document.
+        with settings_document_mutation():
+            current = dict(_owner_read_settings_raw())
+            current["OUROBOROS_RUNTIME_MODE"] = next_mode
+            _owner_write_settings(current)
     _owner_audit(
         request,
         "runtime_mode",
@@ -407,13 +420,24 @@ async def api_owner_runtime_mode(request: Request) -> JSONResponse:
 async def api_owner_auto_grant(request: Request) -> JSONResponse:
     """Persist the owner auto-grant toggle outside generic settings writes."""
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_auto_grant_sync, request, body)
+
+
+def _api_owner_auto_grant_sync(request: Request, body: Any) -> JSONResponse:
     if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
         return unsaved_error("'enabled' must be a boolean", 400)
     enabled = bool(body.get("enabled"))
-    current = _owner_read_settings_raw()
-    current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = "true" if enabled else "false"
-    _owner_write_settings(current)
-    os.environ["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"]
+    with settings_document_mutation():
+        current = _owner_read_settings_raw()
+        current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = "true" if enabled else "false"
+        _owner_write_settings(current)
+        # Projected under the SAME lock as the commit: released first, two
+        # writers can commit A->B and project B->A, stranding the live
+        # environment on the loser's value.
+        os.environ["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"]
     _owner_audit(request, "auto_grant", {"enabled": enabled})
     return JSONResponse({"ok": True, "enabled": enabled})
 
@@ -460,74 +484,6 @@ def _active_main_route(
     if use_local:
         provider = "local"
     return {"provider": provider, "model": model, "base_url": base_url, "use_local": use_local}
-
-
-def _max_context_block(settings: Dict[str, Any], *, allow_generative: bool = False):
-    """Capability-Evidence gate for Max context mode (BIBLE P1/P3): Max requires the
-    active main route to carry CONFIRMED/ASSERTED ≥1M evidence, else fail-closed.
-    Returns None when Max is permitted, or a plain-language block payload dict:
-      {error, needs_ack:{route, route_fp, evidence}, window_tokens:int, verified:bool}
-    verified=True means the window is KNOWN and below 1M; False means it could not be
-    confirmed (no provider metadata, or the probe could not reach the provider)."""
-    try:
-        from ouroboros.capability_evidence import probe, confirms_at_least, ONE_MILLION, STATUS_FAILED
-        from ouroboros.config import DATA_DIR
-
-        route = _active_main_route(settings)
-        # Thread the in-flight key into the probe ONLY for the active route's own
-        # provider (openai-compatible or minimax; first-run onboarding, where the key
-        # is not yet on disk). Threading another provider's key would reach
-        # LLMClient.probe_oversized_context and replace that provider's resolved key
-        # on the generative probe path (cross-provider key bleed, since the
-        # generative probe also runs for openai/openrouter/cloudru).
-        route_api_key = None
-        if route.get("provider") == "openai-compatible":
-            route_api_key = str(settings.get("OPENAI_COMPATIBLE_API_KEY") or "") or None
-        elif route.get("provider") == "minimax":
-            route_api_key = str(settings.get("MINIMAX_API_KEY") or "") or None
-        ev = probe(DATA_DIR, provider=route["provider"], model=route["model"],
-                   base_url=route["base_url"], use_local=route["use_local"], allow_fetch=True,
-                   allow_generative=allow_generative, api_key=route_api_key)
-        # Deliberately NOT require_fresh: this gate would DOWNGRADE the owner's own
-        # cognitive horizon, and this module's standing invariant is that a provider
-        # blip must never erase a prior confirmed record (P4/P1). The opposite policy
-        # applies where evidence AUTHORIZES rather than restricts — see
-        # `_review_capability_notices` and the scope-review blocking floor.
-        if confirms_at_least(ev, ONE_MILLION):
-            return None
-        win = int(ev.window_tokens or 0)
-        verified = win > 0  # a known window that simply is not ≥1M
-        # The probe REACHED the provider but it was down (owner decision P4:
-        # "no connection -> error", not a silent downgrade).
-        probe_failed = (ev.status == STATUS_FAILED)
-        if probe_failed:
-            msg = (
-                f"Couldn't reach the provider to verify {route['model']}'s context "
-                "window (no connection). The model was not changed — check the "
-                "connection and try again."
-            )
-        elif verified:
-            msg = (
-                f"Model {route['model']} has a confirmed context window of "
-                f"~{win // 1000}K tokens — below the 1M needed for Max context mode."
-            )
-        else:
-            msg = (
-                f"Couldn't confirm a 1M context window for {route['model']} "
-                "(no provider metadata for this route)."
-            )
-        return {
-            "error": msg,
-            "needs_ack": {**route, "route_fp": ev.route_fp, "evidence": ev.to_json()},
-            "window_tokens": win,
-            "verified": verified,
-            "probe_failed": probe_failed,
-        }
-    except Exception as exc:  # probe machinery could not run => fail-closed (downgrade, not a connectivity error)
-        return {
-            "error": f"Couldn't verify this model's capability for Max context mode: {exc}",
-            "needs_ack": {}, "window_tokens": 0, "verified": False, "probe_failed": False,
-        }
 
 
 # Settings keys a review slot's route can resolve its base URL through. Changing one
@@ -726,119 +682,6 @@ def _review_capability_notices(settings: Dict[str, Any]) -> list:
     return notices
 
 
-def _active_route_confirms_max(
-    settings: Optional[Dict[str, Any]] = None,
-    *,
-    model: str = "",
-    use_local: Optional[bool] = None,
-    allow_fetch: bool = False,
-) -> Optional[bool]:
-    """Return True/False for known route capacity and None when it is unknown.
-
-    CW2 (v6.34.0): does the active main route carry confirmed/asserted >=1M
-    Capability Evidence RIGHT NOW? ``model`` / ``use_local`` pin the probe to the
-    loop's ACTUAL active route (a task model override or a local main lane, CW7) —
-    local routes are probed for their local n_ctx, never skipped. Complements the
-    settings-save gate (checks at write time) and the reactive provider-overflow
-    fallback (recovers after a rejection). Fail-closed on any error.
-
-    ``allow_fetch`` (v6.39, H): the read-only hot path passes False (no network).
-    The ONCE-PER-TASK start-of-loop gate passes True — a LAZY probe-on-first-use so
-    a genuine >=1M route is actually confirmed when CONTEXT_MODE=max is the default
-    and the owner never toggled Low->Max in the UI (the only path that previously
-    wrote evidence). The fetch is self-limiting: ``probe`` returns cached evidence
-    within its TTL (confirmed 24h / failed 10m) without refetching, and writes the
-    SHARED global DATA_DIR store, so concurrent subagents share one probe rather than
-    stampeding. Unknown is deliberately distinct from confirmed sub-1M so the
-    ordinary task path may attempt Max once and react only to real overflow."""
-    try:
-        from ouroboros.capability_evidence import ONE_MILLION, is_known, probe
-        from ouroboros.config import DATA_DIR
-
-        s = settings if isinstance(settings, dict) else _owner_read_settings_raw()
-        route = _active_main_route(s, model_override=model, use_local_override=use_local)
-        ev = probe(
-            DATA_DIR, provider=route["provider"], model=route["model"],
-            base_url=route["base_url"], use_local=route["use_local"], allow_fetch=allow_fetch,
-        )
-        # The known-ness predicate is OWNED by capability_evidence; restating it here
-        # is how the freshness half of it drifted away from the other call sites.
-        if not is_known(ev, require_fresh=True):
-            return None
-        return int(ev.window_tokens or 0) >= ONE_MILLION
-    except Exception:
-        return None
-
-
-def _apply_max_context_auto_downgrade(
-    current: Dict[str, Any],
-    old_effective_settings: Dict[str, Any],
-) -> tuple:
-    """Narrow Max->Low IN PLACE when a model change lands on an unverified route.
-
-    Returns ``(notice, probe_error)``: at most one is set. ``probe_error`` = the
-    provider could not be reached at all; the caller must 503 WITHOUT saving.
-    Max-mode is fail-closed (BIBLE P1/P3): the low->max TOGGLE is gated by
-    api_owner_context_mode, but a model/provider CHANGE in Max must not silently keep
-    Max on an unverified (sub-1M) route. Owner decision (v6.33.0 WS11): the model
-    change ALWAYS succeeds (friction-free); an unconfirmed >=1M route AUTO-DOWNGRADES
-    to Low with a plain notice, never a blocking 409. Uncertainty resolves CLOSED."""
-    from ouroboros.config import get_context_mode
-
-    try:
-        in_max = get_context_mode() == "max"
-    except Exception:
-        in_max = True  # cannot determine the mode -> assume max, re-gate
-    if not in_max:
-        return None, None
-    def _route_key(r):
-        return (r["provider"], r["model"], r["base_url"], r["use_local"])
-    try:
-        route_changed = (
-            _route_key(_active_main_route(current))
-            != _route_key(_active_main_route(old_effective_settings))
-        )
-    except Exception:
-        route_changed = True  # cannot compare routes -> assume changed, re-gate
-    if not route_changed:
-        return None, None
-    block = _max_context_block(current, allow_generative=True)  # fail-closed internally
-    if block is None:
-        return None, None
-    if block.get("probe_failed"):
-        # Owner decision P4: a genuine NO-CONNECTION during the probe is an ERROR, not
-        # a silent downgrade — and the model is NOT saved. (A sub-1M/unprobeable route
-        # still auto-downgrades.)
-        return None, str(
-            block.get("error")
-            or "Couldn't reach the provider to verify the model's context window."
-        )
-    current["OUROBOROS_CONTEXT_MODE"] = "low"
-    os.environ["OUROBOROS_CONTEXT_MODE"] = "low"
-    # SYSTEM-initiated narrowing on an AGENT-REACHABLE path (a plain model POST names
-    # neither the context key nor settings.json — the self-lowering shell guard cannot
-    # see it). Since v6.80.0 the mode also gates the BIBLE P3 blocking scope review, so
-    # the auto-low is marked DERIVED: the OWNER's selection keeps scope review ON.
-    current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "true"
-    os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "true"
-    # Typed attribution row (zero rows got blamed on the OWNER); pre-save: a failed save leaves it env-only-true.
-    try:
-        route = _active_main_route(current)
-        append_jsonl(pathlib.Path(DATA_DIR) / "logs" / "events.jsonl", {
-            "ts": utc_now_iso(), "type": "context_mode_auto_downgraded",
-            "actor": "system_auto_low", "from_mode": "max", "to_mode": "low",
-            "reason": str(block.get("error") or "route_window_unverified"),
-            "provider": str(route.get("provider") or ""),
-            "model": str(route.get("model") or ""), "use_local": bool(route.get("use_local"))})
-    except Exception:
-        log.debug("Failed to record context auto-downgrade event", exc_info=True)
-    return (
-        str(block.get("error") or "")
-        + " Context mode switched to Low. To use Max with this model, confirm it "
-          "supports a 1M-token context window."
-    ), None
-
-
 @owner_write_guard
 async def api_owner_context_mode(request: Request) -> JSONResponse:
     """Persist the owner-selected context mode (low/max).
@@ -847,33 +690,53 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
     task (mirrors the auto-grant toggle), so no restart is required.
     """
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_context_mode_sync, request, body)
+
+
+def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
 
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
-    if raw_mode not in set(_config.VALID_CONTEXT_MODES):
+    from ouroboros.context_mode_compat import VALID_CONTEXT_MODES
+
+    if raw_mode not in set(VALID_CONTEXT_MODES):
         return unsaved_error("'mode' must be one of: low, max", 400)
     next_mode = _config.normalize_context_mode(raw_mode)
-    previous_mode = _config.get_context_mode()
+    previous_mode = _config.get_owner_context_mode()
     if previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
         return unsaved_error(
             "Context mode can only be lowered while Ouroboros is idle. "
             "Wait until no queued or running work remains, then switch Low/Max.",
             409,
         )
-    current = _owner_read_settings_raw()
-    # Hard-block ENABLING max unless the active route's >=1M is confirmed/acked.
-    if next_mode == "max" and previous_mode != "max":
-        block = _max_context_block(current, allow_generative=True)
-        if block is not None:
-            return JSONResponse({"ok": False, "context_mode": previous_mode, **block}, status_code=409)
-    current["OUROBOROS_CONTEXT_MODE"] = next_mode
-    # An explicit owner selection re-authors the value: the derived auto-downgrade flag
-    # is cleared, so `low` chosen HERE really does mean "scope review not performed".
-    current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
-    # This endpoint IS the author of both keys, so they persist even at the shipped default.
-    _owner_write_settings(current, authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
-    os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
-    os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+    with settings_document_mutation():
+        # The idle guard is re-proved UNDER the lock: this thread can block on
+        # it behind a long generic save, and a task started in that window
+        # would otherwise be demoted to low mid-flight on a stale idle answer.
+        # BOTH halves of the predicate re-proved under the lock: the pre-lock
+        # answer above is only a fast path, and a writer that committed while
+        # this thread waited can have changed the very mode being lowered FROM.
+        previous_mode = _config.get_owner_context_mode()
+        if previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
+            return unsaved_error(
+                "Context mode can only be lowered while Ouroboros is idle. "
+                "Wait until no queued or running work remains, then switch Low/Max.",
+                409,
+            )
+        current = _owner_read_settings_raw()
+        current["OUROBOROS_CONTEXT_MODE"] = next_mode
+        # The retired marker survives one compatibility window only as explicit false
+        # provenance, so owner Low still means "scope review not performed" while a bare
+        # forwarded env Low remains owner Max.
+        current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+        # This endpoint IS the author of both keys, so they persist even at the shipped default.
+        _owner_write_settings(current, authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
+        # Same-lock projection: see api_owner_auto_grant.
+        os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
+        os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
     _owner_audit(
         request,
         "context_mode",
@@ -884,8 +747,7 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
 
 # Closed set of task_type values the owner temperature endpoint accepts. Mirrors the
 # `OUROBOROS_EFFORT_*` keys: only the two documented task types are owner-settable.
-# An unknown task_type is a 400 (per the context_mode endpoint's rejection of unknown
-# values at line 853).
+# An unknown task_type is a 400 (per the context_mode endpoint's rejection of unknown values).
 _VALID_TEMPERATURE_TASK_TYPES = {"task", "consciousness"}
 
 
@@ -894,7 +756,7 @@ async def api_owner_temperature(request: Request) -> JSONResponse:
     """Persist an owner-configured LLM sampling temperature per task type.
 
     Owner-only, audited, additive. Mirrors ``api_owner_context_mode`` end-to-end:
-    same settings-lock precondition (``_owner_write_settings``), same
+    same settings-lock precondition (held inside the threaded sync body), same
     ``_owner_audit`` audit row, same ``unsaved_error`` envelope on invalid bodies.
 
     Wire contract (the desktop client is built against this — keep it stable):
@@ -907,6 +769,13 @@ async def api_owner_temperature(request: Request) -> JSONResponse:
       response: {"ok": true, "task_type": <str>, "temperature": <float|null>}
     """
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_temperature_sync, request, body)
+
+
+def _api_owner_temperature_sync(request: Request, body: Any) -> JSONResponse:
     task_type = str((body or {}).get("task_type") or "").strip().lower()
     if task_type not in _VALID_TEMPERATURE_TASK_TYPES:
         return unsaved_error(
@@ -916,7 +785,11 @@ async def api_owner_temperature(request: Request) -> JSONResponse:
     # and a missing key (the default of `.get()`). Anything else is parsed as a float
     # and validated against the closed range.
     raw_temperature = (body or {}).get("temperature", None)
-    from ouroboros import config as _config
+    from ouroboros.temperature_settings import (
+        TEMPERATURE_SCALE_MAX,
+        TEMPERATURE_SCALE_MIN,
+        resolve_temperature,
+    )
 
     if raw_temperature is None or raw_temperature == "":
         next_value: Optional[float] = None
@@ -932,7 +805,7 @@ async def api_owner_temperature(request: Request) -> JSONResponse:
             return unsaved_error(
                 "'temperature' must be a number in [0.0, 2.0] or null", 400
             )
-        if numeric < _config.TEMPERATURE_SCALE_MIN or numeric > _config.TEMPERATURE_SCALE_MAX:
+        if numeric < TEMPERATURE_SCALE_MIN or numeric > TEMPERATURE_SCALE_MAX:
             return unsaved_error(
                 "'temperature' must be a number in [0.0, 2.0] or null", 400
             )
@@ -943,28 +816,29 @@ async def api_owner_temperature(request: Request) -> JSONResponse:
         if task_type == "consciousness"
         else "OUROBOROS_TEMPERATURE_TASK"
     )
-    previous_value = _config.resolve_temperature(task_type)
-    current = _owner_read_settings_raw()
-    # Mirror context_mode: store the authored value verbatim (None and "" both clear
-    # the settings.json slot AND pop the env entry on the next apply_settings_to_env
-    # via config_io.py:381's `if val is None or val == "": os.environ.pop(k, None)`).
-    if next_value is None:
-        current[env_key] = ""
-    else:
-        # Store the float in its canonical Python repr (str(float)) so JSON round-trip
-        # is stable and the next load_settings -> apply_settings_to_env round carries
-        # the exact value through to env.
-        current[env_key] = next_value
-    _owner_write_settings(current, authored_keys=_TEMPERATURE_KEYS)
-    # Mirror the env write that context_mode does at gateway/settings.py:881. The
-    # settings lock's write side already applied env via apply_settings_to_env, so
-    # we read after-write and stamp env to the just-resolved value (the empty
-    # settings.json slot above already popped env; we set it back to "" for
-    # consistency with the cleared state).
-    if next_value is None:
-        os.environ.pop(env_key, None)
-    else:
-        os.environ[env_key] = str(next_value)
+    with settings_document_mutation():
+        previous_value = resolve_temperature(task_type)
+        current = _owner_read_settings_raw()
+        # Mirror context_mode: store the authored value verbatim (None and "" both clear
+        # the settings.json slot AND pop the env entry on the next apply_settings_to_env
+        # via config_io.py:381's `if val is None or val == "": os.environ.pop(k, None)`).
+        if next_value is None:
+            current[env_key] = ""
+        else:
+            # Store the float in its canonical Python repr (str(float)) so JSON round-trip
+            # is stable and the next load_settings -> apply_settings_to_env round carries
+            # the exact value through to env.
+            current[env_key] = next_value
+        _owner_write_settings(current, authored_keys=_TEMPERATURE_KEYS)
+        # Same-lock projection: see api_owner_auto_grant / api_owner_context_mode. The
+        # settings lock's write side already applied env via apply_settings_to_env, so
+        # we read after-write and stamp env to the just-resolved value (the empty
+        # settings.json slot above already popped env; we set it back to "" for
+        # consistency with the cleared state).
+        if next_value is None:
+            os.environ.pop(env_key, None)
+        else:
+            os.environ[env_key] = str(next_value)
     _owner_audit(
         request,
         "temperature",
@@ -1000,14 +874,23 @@ async def api_owner_scope_review_floor(request: Request) -> JSONResponse:
     accepted, stored, audited, and answered with an explicit deprecation notice naming the
     control that actually decides."""
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_scope_review_floor_sync, request, body)
+
+
+def _api_owner_scope_review_floor_sync(request: Request, body: Any) -> JSONResponse:
     raw = str((body or {}).get("floor") or "").strip().lower()
     if raw not in {"blocking_1m", "advisory"}:
         return unsaved_error("'floor' must be one of: blocking_1m, advisory", 400)
-    current = _owner_read_settings_raw()
-    previous = str(current.get("OUROBOROS_SCOPE_REVIEW_FLOOR") or "blocking_1m").strip().lower()
-    current["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
-    _owner_write_settings(current)
-    os.environ["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
+    with settings_document_mutation():
+        current = _owner_read_settings_raw()
+        previous = str(current.get("OUROBOROS_SCOPE_REVIEW_FLOOR") or "blocking_1m").strip().lower()
+        current["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
+        _owner_write_settings(current)
+        # Same-lock projection: see api_owner_auto_grant.
+        os.environ["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
     _owner_audit(
         request,
         "scope_review_floor",
@@ -1034,17 +917,26 @@ async def api_owner_safety_mode(request: Request) -> JSONResponse:
     The deterministic registry sandbox, protected paths, and light-mode guards run
     in every mode (BIBLE P3: the LLM supervisor is a layer, not the floor)."""
     body = await _json_body_or_empty(request)
+    # Off the event loop, under the document lock (held inside): a slow
+    # generic save must not be able to freeze the loop THROUGH this
+    # endpoint's synchronous lock acquisition.
+    return await asyncio.to_thread(_api_owner_safety_mode_sync, request, body)
+
+
+def _api_owner_safety_mode_sync(request: Request, body: Any) -> JSONResponse:
     from ouroboros import config as _config
 
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
     if raw_mode not in set(_config.VALID_SAFETY_MODES):
         return unsaved_error("'mode' must be one of: full, light, off", 400)
-    current = _owner_read_settings_raw()
-    previous = _config.normalize_safety_mode(current.get("OUROBOROS_SAFETY_MODE"))
-    current["OUROBOROS_SAFETY_MODE"] = raw_mode
-    _owner_write_settings(
-        current, authored_keys=("OUROBOROS_SAFETY_MODE",), allow_safety_lowering=True)
-    os.environ["OUROBOROS_SAFETY_MODE"] = raw_mode
+    with settings_document_mutation():
+        current = _owner_read_settings_raw()
+        previous = _config.normalize_safety_mode(current.get("OUROBOROS_SAFETY_MODE"))
+        current["OUROBOROS_SAFETY_MODE"] = raw_mode
+        _owner_write_settings(
+            current, authored_keys=("OUROBOROS_SAFETY_MODE",), allow_safety_lowering=True)
+        # Same-lock projection: see api_owner_auto_grant.
+        os.environ["OUROBOROS_SAFETY_MODE"] = raw_mode
     _owner_audit(
         request,
         "safety_mode",
@@ -1216,6 +1108,21 @@ async def api_settings_get(request: Request) -> JSONResponse:
         and settings.get(key)
     )
     meta["setup_contract"] = build_setup_contract("web")
+    from ouroboros.configured_subagents import (
+        configured_subagents_dict,
+        resolve_settings_subagent_candidate,
+    )
+    # Pure API/local defaults only; the editor enriches a still-clean draft
+    # with connected sessions through the read-only preview endpoint.
+    subagents, candidate_diagnostics = resolve_settings_subagent_candidate(settings)
+    meta["available_subagents"] = {
+        "source": subagents.source,
+        "diagnostic": subagents.diagnostic,
+        "diagnostics": candidate_diagnostics,
+        "candidate": (
+            configured_subagents_dict(subagents.config) if subagents.config is not None else None
+        ),
+    }
     safe["_meta"] = meta
     return JSONResponse(safe)
 
@@ -1367,12 +1274,36 @@ def _apply_settings_save_side_effects(
 
 
 async def api_settings_post(request: Request) -> JSONResponse:
+    # Body parse stays on the loop (it is the only await); everything else runs
+    # in a worker thread. The save body is synchronous work — validation, the
+    # disk write, env projection, hot-reload side effects, and (when review
+    # keys changed) NETWORK evidence fetches for the warning surface — and on
+    # the event loop it froze every other request and WebSocket for the whole
+    # save, which read as the entire app hanging on the Save button.
+    try:
+        body = await request.json()
+    except Exception as exc:
+        # Same answer the broad in-body handler used to give a parse failure.
+        return unsaved_error(str(exc), 400)
+    return await asyncio.to_thread(_api_settings_post_sync, request, body)
+
+
+def _api_settings_post_sync(request: Request, body: Any) -> JSONResponse:
+    # The event loop used to serialize every settings writer for free (no
+    # writer awaited mid read-merge-write); a worker thread does not inherit
+    # that, so the whole body holds the seam-wide document lock — the
+    # single-decision endpoints hold the same lock, and the loop itself stays
+    # free to serve everything else.
+    with settings_document_mutation():
+        return _api_settings_post_locked(request, body)
+
+
+def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
     # Everything below the write is a POST-commit step. The broad handler at the
     # bottom used to answer a failure there with "400, nothing saved" while the
     # bytes were already on disk; `boundary` is what lets it tell the two apart.
     boundary = CommitBoundary()
     try:
-        body = await request.json()
         if not isinstance(body, dict):
             return unsaved_error("JSON body must be an object.", 400)
         channel_key = "OUROBOROS_UPDATE_CHANNEL"
@@ -1395,6 +1326,21 @@ async def api_settings_post(request: Request) -> JSONResponse:
             raw_cadence = str(body.get(cadence_key) or "").strip()
             if raw_cadence and not _config.is_valid_post_task_evolution_cadence(raw_cadence):
                 return unsaved_error(f"{cadence_key} must be one of: off, llm, every_n:<positive int>.", 400)
+        # Shared review-cycle cap: same boundary rule as the cadence — the read-time
+        # getter fails closed to the default, the UI offers only valid segments, but a
+        # direct API client must not persist garbage. Aliases canonicalize to "unlimited".
+        from ouroboros.review_cycles import (
+            REVIEW_MAX_CYCLES_KEY, is_valid_review_max_cycles, normalize_review_max_cycles,
+        )
+        if REVIEW_MAX_CYCLES_KEY in body:
+            raw_cycles = str(body.get(REVIEW_MAX_CYCLES_KEY) or "").strip()
+            if raw_cycles and not is_valid_review_max_cycles(raw_cycles):
+                return unsaved_error(
+                    f"{REVIEW_MAX_CYCLES_KEY} must be a positive integer or 'unlimited'.", 400
+                )
+            if raw_cycles:
+                body = dict(body)
+                body[REVIEW_MAX_CYCLES_KEY] = normalize_review_max_cycles(raw_cycles)
         # Reviewer-slot SSOT (6.1): refuse a malformed structured value with 400;
         # disclose (never block, recommendation A) the all-delegated API fallback
         # (D4) from the INCOMING value. Both live in reviewer_slot_save_check.
@@ -1405,6 +1351,17 @@ async def api_settings_post(request: Request) -> JSONResponse:
                 _reviewer_fallback_warning = reviewer_slot_save_check(str(body["OUROBOROS_REVIEWER_SLOTS"]))
             except ValueError as exc:
                 return unsaved_error(str(exc), 400)
+        subagents_key = "OUROBOROS_SUBAGENTS"
+        if subagents_key in body and body.get(subagents_key) not in (None, ""):
+            from ouroboros.configured_subagents import normalize_configured_subagents
+            try:
+                _subagents, canonical_subagents = normalize_configured_subagents(
+                    body.get(subagents_key)
+                )
+            except ValueError as exc:
+                return unsaved_error(str(exc), 400)
+            body = dict(body)
+            body[subagents_key] = canonical_subagents
         parsed_budget: dict[str, float] = {}
         for budget_key in BUDGET_SETTING_KEYS:
             if budget_key not in body:
@@ -1491,14 +1448,6 @@ async def api_settings_post(request: Request) -> JSONResponse:
         current, provider_defaults_changed, provider_default_keys = apply_runtime_provider_defaults(current)
         if str(current.get("LOCAL_MODEL_SOURCE", "") or "").strip() and not has_startup_ready_provider(current):
             return unsaved_error("Local-only setups must route at least one model to the local runtime.", 400)
-        # Fail-closed Max narrowing on a model/route change (see the helper): the save
-        # always succeeds, but an unverified route drops context sizing to Low, and an
-        # unreachable provider is a 503 that does NOT persist the model.
-        _max_downgrade_notice, _max_probe_error = _apply_max_context_auto_downgrade(
-            current, old_effective_settings
-        )
-        if _max_probe_error:
-            return unsaved_error(_max_probe_error, 503)
         all_changed = [
             k for k in current
             if str(current.get(k, "") or "") != str(old_effective_settings.get(k, "") or "")
@@ -1518,15 +1467,10 @@ async def api_settings_post(request: Request) -> JSONResponse:
         started_before_save = _has_started_agent_tasks()
         settings_to_save = dict(current)
         settings_to_save["OUROBOROS_RUNTIME_MODE"] = pending_runtime_mode
-        # The Max->Low auto-downgrade above is an owner-endpoint, system-initiated
-        # lowering (the new model can't sustain Max), so it is allowed past the
-        # cognitive-horizon guard; an ordinary save never lowers context mode.
-        # The generic POST authors these keys ONLY when the auto-downgrade above actually fired;
-        # a save about a model slot must not author a context mode out of the defaults merge.
+        # A generic POST never authors context intent: changing a model/provider leaves
+        # persistent Low/Max untouched and exact-route fitting happens at task dispatch.
         _owner_write_settings(
             settings_to_save,
-            authored_keys=_CONTEXT_MODE_KEYS if _max_downgrade_notice else (),
-            allow_context_lowering=bool(_max_downgrade_notice),
             boundary=boundary)
         boundary.at("environment projection")
         _apply_settings_to_env(current)
@@ -1618,10 +1562,6 @@ async def api_settings_post(request: Request) -> JSONResponse:
             resp["next_task_changed"] = True
         if warnings:
             resp["warnings"] = warnings
-        if _max_downgrade_notice:
-            resp["context_mode"] = "low"
-            resp["context_mode_downgraded"] = True
-            resp["notice"] = _max_downgrade_notice
         if any(k.startswith("OUROBOROS_SCOPE_REVIEW_MODEL") or k == "OUROBOROS_REVIEW_MODELS"
                or k == "OUROBOROS_REVIEWER_SLOTS" for k in all_changed):
             _unknown = _unrecognised_review_models(

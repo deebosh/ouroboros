@@ -622,10 +622,10 @@ class TestNoProxyLlmChat:
     def test_run_deep_self_review_calls_llm_with_no_proxy_and_configured_effort(self, tmp_repo, tmp_drive, monkeypatch):
         """run_deep_self_review passes no_proxy=True to llm.chat."""
         from ouroboros.deep_self_review import run_deep_self_review
-        small_pack = "x" * 100
+        small_pack = "x" * 50_000
         manifest = {"status": "ok", "selected_count": 1}
         mock_llm = mock.Mock()
-        mock_llm.chat.return_value = ({"content": "Review result."}, {"cost": 0.01})
+        mock_llm.chat.return_value = ({"content": "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."}, {"cost": 0.01})
         monkeypatch.setenv("OUROBOROS_EFFORT_DEEP_SELF_REVIEW", "medium")
 
         with mock.patch(
@@ -633,7 +633,8 @@ class TestNoProxyLlmChat:
             return_value=(
                 small_pack,
                 {
-                    "file_count": 1,
+                    "file_count": 5,
+                    "memory_count": 3,
                     "total_chars": len(small_pack),
                     "skipped": [],
                     "context_manifest": manifest,
@@ -649,7 +650,7 @@ class TestNoProxyLlmChat:
                 model="openai/gpt-5.5-pro",
             )
 
-        assert result == "Review result."
+        assert result == "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."
         mock_llm.chat.assert_called_once()
         _, kwargs = mock_llm.chat.call_args
         assert kwargs.get("no_proxy") is True, "llm.chat must be called with no_proxy=True"
@@ -667,20 +668,20 @@ class TestReviewPackOverflow:
         huge_pack = "x" * 4_000_000  # > 745K-token gate
         small_pack = "y" * 4_000     # comfortably under
         mock_llm = mock.Mock()
-        mock_llm.chat.return_value = ({"content": "Review result."}, {"cost": 0.0})
+        mock_llm.chat.return_value = ({"content": "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."}, {"cost": 0.0})
         build_calls = []
 
         def fake_build(repo_dir, drive_root, fixed_prompt_tokens=0, hard_budget_reduction=0, input_token_limit=0):
             build_calls.append(hard_budget_reduction)
             if hard_budget_reduction:
-                return small_pack, {"file_count": 5, "total_chars": len(small_pack), "skipped": []}
-            return huge_pack, {"file_count": 100, "total_chars": len(huge_pack), "skipped": []}
+                return small_pack, {"file_count": 5, "memory_count": 3, "total_chars": len(small_pack), "skipped": []}
+            return huge_pack, {"file_count": 100, "memory_count": 3, "total_chars": len(huge_pack), "skipped": []}
 
         with (
             mock.patch("ouroboros.deep_self_review.build_review_pack", side_effect=fake_build),
             mock.patch(
                 "ouroboros.llm_observability.chat_observed",
-                return_value=({"content": "Review result."}, {"cost": 0.0}),
+                return_value=({"content": "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."}, {"cost": 0.0}),
             ),
         ):
             result, _usage = run_deep_self_review(
@@ -692,7 +693,7 @@ class TestReviewPackOverflow:
                 model="test-model",
             )
 
-        assert result == "Review result."
+        assert result == "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."
         assert len(build_calls) == 2, "must rebuild once with a tighter budget"
         assert build_calls[1] > 0, "retry must reduce the atlas hard budget"
 
@@ -704,7 +705,7 @@ class TestReviewPackOverflow:
 
         with mock.patch(
             "ouroboros.deep_self_review.build_review_pack",
-            return_value=(huge_pack, {"file_count": 100, "total_chars": 4_000_000, "skipped": []}),
+            return_value=(huge_pack, {"file_count": 100, "memory_count": 3, "total_chars": 4_000_000, "skipped": []}),
         ):
             result, usage = run_deep_self_review(
                 repo_dir=tmp_repo,

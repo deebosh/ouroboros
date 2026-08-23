@@ -409,48 +409,13 @@ def _reconcile_delegated_runs_on_kill(q: Any, task_id: str) -> List[str]:
     still_open: List[str] = []
     audit_failed = False
     try:
-        from ouroboros.delegate_custody import (
-            custody_log_unreadable, open_runs, pending_invocations, reconcile_task_runs,
-        )
+        from ouroboros.delegate_terminal import terminal_reconcile_task
 
-        try:
-            reconcile_task_runs(pathlib.Path(q.DRIVE_ROOT), task_id)
-        except Exception:
-            log.warning(
-                "Delegated-run reconciliation raised for cancelled %s; auditing custody rows",
-                task_id, exc_info=True,
-            )
-        if custody_log_unreadable(pathlib.Path(q.DRIVE_ROOT)):
-            # GR6-4: the custody log EXISTS but cannot be read — the fail-soft
-            # replay would answer [] and the audit would report "cleanly
-            # reconciled" over evidence it never saw. ABSENT stays a clean
-            # empty state; UNREADABLE is typed UNKNOWN through the existing
-            # GR3-7 marker vocabulary and rides the same disclosure surface.
-            log.warning(
-                "delegate custody log unreadable during the teardown audit of %s; "
-                "run state is UNKNOWN", task_id,
-            )
-            audit_failed = True
-            still_open = [f"{RUN_STATE_UNKNOWN_PREFIX}:custody_log_unreadable"]
-        else:
-            still_open = [
-                str(getattr(record, "run_id", "") or "")
-                for record in open_runs(pathlib.Path(q.DRIVE_ROOT))
-                if str(getattr(record, "task_id", "") or "") == task_id
-            ]
-            try:
-                still_open += [
-                    f"invocation:{str(row.get('invocation_id') or '')}"
-                    for row in pending_invocations(pathlib.Path(q.DRIVE_ROOT))
-                    if isinstance(row, dict)
-                    and str(row.get("task_id") or "") == task_id
-                    and str(row.get("invocation_id") or "")
-                ]
-            except Exception:
-                log.warning("pending-invocation audit failed for %s", task_id, exc_info=True)
-                audit_failed = True
-                still_open.append(f"{RUN_STATE_UNKNOWN_PREFIX}:pending_invocation_audit_failed")
-        still_open = [rid for rid in still_open if rid]
+        audit = terminal_reconcile_task(
+            pathlib.Path(q.DRIVE_ROOT), task_id, trigger="cancel_publication",
+        )
+        still_open = [str(item) for item in (audit.get("unreconciled") or []) if str(item)]
+        audit_failed = str(audit.get("audit_status") or "") != "ok"
     except Exception:
         log.warning(
             "Delegated-run open-run audit failed for cancelled %s; run state is UNKNOWN",
@@ -485,3 +450,20 @@ def _reconcile_delegated_runs_on_kill(q: Any, task_id: str) -> List[str]:
     except Exception:
         log.debug("Unreconciled-run disclosure append failed for %s", task_id, exc_info=True)
     return still_open
+
+
+def _cascade_delivery_row_locked(q: Any, task_id: str) -> Dict[str, Any]:
+    """A routing row for a cascade whose ROOT has already left the live maps.
+
+    Caller holds the queue lock. Returns the first live descendant's row (they
+    carry the lineage ``chat_id``), or ``{}`` when the subtree is empty too.
+    (Moved verbatim from ``task_lifecycle.py`` at its module-size boundary.)
+    """
+    for task in q.PENDING:
+        if isinstance(task, dict) and q._is_descendant_of(task, task_id) and task.get("chat_id"):
+            return dict(task)
+    for meta in q.RUNNING.values():
+        task = meta.get("task") if isinstance(meta, dict) else None
+        if isinstance(task, dict) and q._is_descendant_of(task, task_id) and task.get("chat_id"):
+            return dict(task)
+    return {}

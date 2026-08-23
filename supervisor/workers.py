@@ -536,6 +536,13 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         "promotion_admission_token": admission_token,
         **_promoted_force_plan_metadata(evt),
     }
+    presence = evt.get("presence") if isinstance(evt.get("presence"), dict) else None
+    if presence:
+        task["_presence_origin"] = True
+        task["source"] = "presence_promote"
+        task.setdefault("metadata", {})["presence"] = dict(presence)
+        contract = evt.get("task_contract") if isinstance(evt.get("task_contract"), dict) else {}
+        task["task_contract"] = dict(contract)
     if repair_constraint is not None:
         # X3: bind the admission hash to the REAL task id, durably, before the
         # task exists anywhere else — every payload write CAS-checks this chain.
@@ -565,6 +572,11 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         task["origin_message_ref"] = dict(evt["source_ref"])
         if isinstance(evt.get("source_text"), str) and evt.get("source_text"):
             task["origin_message_text"] = evt["source_text"]
+    # Owner Surface Fact: the promoting turn's sending-surface fact lands in
+    # METADATA (the renderer reads task["metadata"]["client_surface"]), never a
+    # top-level key — and metadata may not exist yet (only force_plan creates it).
+    if isinstance(evt.get("client_surface"), dict) and evt.get("client_surface"):
+        task.setdefault("metadata", {})["client_surface"] = dict(evt["client_surface"])
     pid = str(evt.get("project_id") or "").strip()
     if pid:
         # Deletion closes admission before cancellation/quiescence begins. Check
@@ -1040,6 +1052,15 @@ def _run_chat_task(
     ``ephemeral`` marks a SHORT-LIVED same-route turn (run on a separate agent
     instance while the shared chat agent is busy): it carries _ephemeral_turn so
     the task pipeline skips long-term memory / reflection / evolution writes."""
+    task: Optional[dict] = None
+    client_msg_id = ""
+    if task_metadata:
+        _cmid_ref = task_metadata.get("origin_message_ref")
+        if isinstance(_cmid_ref, dict):
+            client_msg_id = str(_cmid_ref.get("client_message_id") or "")
+        if not client_msg_id:
+            client_msg_id = str(task_metadata.get("client_message_id") or "")
+    kind = "ephemeral_decision" if ephemeral else "direct_chat"
     try:
         from ouroboros.contracts.task_contract import attach_task_contract
 
@@ -1172,9 +1193,40 @@ def _run_chat_task(
                 DRIVE_ROOT, str(task["id"]), task["text"], broadcast=_broadcast_task_named
             )
         attach_task_contract(task)
-        events = agent.handle_task(task)
-        for e in events:
-            get_event_q().put(e)
+
+        pid = str(task.get("project_id") or "")
+
+        from supervisor.active_activity import track_direct_activity
+
+        with track_direct_activity(
+            activity_id=str(task["id"]),
+            chat_id=int(chat_id or 0),
+            client_message_id=client_msg_id,
+            project_id=pid,
+            kind=kind,
+            phase="thinking",
+        ):
+            # Announce the authoritative start immediately (owner decision 2A):
+            # the client's `Sending...` retires on this frame, not on a socket
+            # echo, and the frame carries the activity<->client_message_id link
+            # so even a turn that fails before its first LLM round concludes
+            # cleanly via its keyed error final.
+            try:
+                from supervisor.message_bus import get_bridge
+
+                get_bridge().send_chat_action(
+                    int(chat_id or 0),
+                    "typing",
+                    activity_id=str(task["id"]),
+                    client_message_id=client_msg_id,
+                    phase="thinking",
+                    kind=kind,
+                )
+            except Exception:
+                log.debug("Direct-turn start typing announce failed", exc_info=True)
+            events = agent.handle_task(task)
+            for e in events:
+                get_event_q().put(e)
     except Exception as e:
         import traceback
         err_msg = f"⚠️ Error: {type(e).__name__}: {e}"
@@ -1188,7 +1240,29 @@ def _run_chat_task(
             },
         )
         try:
-            send_with_budget(chat_id, err_msg)
+            # Key the error final with the turn's activity id so the client
+            # concludes exactly this turn (active set, 4A) instead of leaving
+            # its `Sending.../Thinking...` state to an unkeyed sweep. If the
+            # failure happened before the start announce was broadcast, the
+            # client has no activity<->client_message_id link yet, so announce
+            # it first: the keyed final right after then retires both the
+            # activity and its linked `Sending...` submission.
+            failed_task_id = str(task.get("id") or "") if isinstance(task, dict) else ""
+            if failed_task_id and client_msg_id:
+                try:
+                    from supervisor.message_bus import get_bridge
+
+                    get_bridge().send_chat_action(
+                        int(chat_id or 0),
+                        "typing",
+                        activity_id=failed_task_id,
+                        client_message_id=client_msg_id,
+                        phase="thinking",
+                        kind=kind,
+                    )
+                except Exception:
+                    log.debug("Failed-turn typing announce failed", exc_info=True)
+            send_with_budget(chat_id, err_msg, task_id=failed_task_id)
         except Exception:
             log.debug("Suppressed exception", exc_info=True)
 
@@ -1511,6 +1585,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                 out_q.put(e2)
         except Exception as _e:
             _log_worker_crash(wid, _drive, "handle_task", _e, _tb.format_exc())
+            return
 
 
 def _write_failure_result(
@@ -1933,6 +2008,8 @@ def kill_workers(
     archive_service_logs: bool = True,
     disable_reason: str = "",
     preserve_pending: bool = False,
+    preserve_running_task_ids: Optional[set[str]] = None,
+    reconcile_delegate_custody: bool = True,
 ) -> None:
     global _WORKER_POOL_DISABLED_REASON
     from supervisor import queue
@@ -1958,16 +2035,43 @@ def kill_workers(
         drained_ids = []
         try:
             done_status = terminal_status or "failed"
-            running_task_ids = set(RUNNING)
+            preserve_running = set(preserve_running_task_ids or ())
+            running_task_ids = set(RUNNING) - preserve_running
             interrupted_roots = {
                 str((meta.get("task") or {}).get("root_task_id") or task_id)
                 for task_id, meta in RUNNING.items()
-                if isinstance(meta, dict)
+                if isinstance(meta, dict) and task_id not in preserve_running
             }
+
+            def _audit_delegate_terminal(task_id: str, trigger: str) -> None:
+                if not reconcile_delegate_custody:
+                    return
+                try:
+                    from ouroboros import delegate_terminal
+
+                    audit = delegate_terminal.terminal_reconcile_task(
+                        DRIVE_ROOT, task_id, trigger=trigger,
+                    )
+                    delegate_terminal.record_terminal_reconciliation(
+                        DRIVE_ROOT, task_id, audit,
+                    )
+                except Exception:
+                    log.warning(
+                        "Terminal delegate reconciliation failed for %s", task_id,
+                        exc_info=True,
+                    )
+
             for task_id in list(RUNNING):
                 meta = RUNNING.get(task_id) or {}
                 task = meta.get("task") if isinstance(meta, dict) and isinstance(meta.get("task"), dict) else {}
+                if task_id in preserve_running:
+                    successor = dict(task)
+                    successor["_attempt"] = int(meta.get("attempt") or task.get("_attempt") or 1) + 1
+                    PENDING.insert(0, successor)
+                    RUNNING.pop(str(task_id), None)
+                    continue
                 try:
+                    _audit_delegate_terminal(str(task_id), "worker_pool_kill")
                     persisted = _write_failure_result(task_id, reason=result_reason, status=terminal_status)
                     if archive_service_logs:
                         try:
@@ -1983,11 +2087,15 @@ def kill_workers(
             if preserve_pending:
                 kept = []
                 for task in PENDING:
+                    if str(task.get("id") or "") in preserve_running:
+                        kept.append(task)
+                        continue
                     parent_id = str(task.get("parent_task_id") or "")
                     root_id = str(task.get("root_task_id") or "")
                     if parent_id and (parent_id in running_task_ids or root_id in interrupted_roots):
                         tid = str(task.get("id") or "")
                         if tid:
+                            _audit_delegate_terminal(tid, "pending_parent_interrupted")
                             persisted = _write_failure_result(
                                 tid,
                                 reason="Parent task was interrupted before this child started.",
@@ -2004,6 +2112,7 @@ def kill_workers(
                     tid = task.get("id")
                     if tid:
                         try:
+                            _audit_delegate_terminal(str(tid), "pending_pool_kill")
                             persisted = _write_failure_result(tid, reason=result_reason, status=terminal_status)
                         except Exception:
                             log.warning("Failed to write failure result for pending task %s", tid, exc_info=True)
@@ -2583,6 +2692,8 @@ def assign_tasks() -> None:
                             task_group_id=task.get("task_group_id"),
                             task_group=task.get("task_group"),
                             subagent_envelope=task.get("subagent_envelope"),
+                            configured_subagent=task.get("configured_subagent"),
+                            parent_cognitive_route=task.get("parent_cognitive_route"),
                             metadata=task.get("metadata") if isinstance(task.get("metadata"), dict) else {},
                             result="Subagent assigned to a worker.",
                         )
@@ -2647,15 +2758,11 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
     crashed_tasks = []
     respawn_ids: List[int] = []
     for wid, w in list(WORKERS.items()):
-        # Variant A: a slot marked `reaping` is owned end-to-end by the background reaper
-        # (kill -> join -> archive -> respawn). Its proc is expected to die mid-reap, so the
-        # crash detector must NOT also respawn it — that double-respawn would orphan a live
-        # worker process. The reaper installs a fresh Worker (reaping=False) when done.
+        # The reaper owns marked slots through replacement; never double-respawn them.
         if getattr(w, "reaping", False):
             continue
         if not w.proc.is_alive():
-            # Reserve the dead slot before the main loop releases the queue lock
-            # to start its replacement. assign_tasks skips reaping slots.
+            # Reserve the dead slot before the queue lock is released.
             w.reaping = True
             dead_detections += 1
             if w.busy_task_id is not None:
@@ -2703,11 +2810,7 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
                 task = meta.get("task") if isinstance(meta, dict) else None
                 if isinstance(task, dict):
                     task_type = str(task.get("type") or "")
-                    # A negative exitcode means the worker died from a signal
-                    # (SIGSEGV/SIGBUS/SIGABRT/SIGKILL). These are deterministic
-                    # infrastructure crashes: retrying the same runtime path
-                    # reproduces them and only burns budget, so they are terminal
-                    # for EVERY task type (not just deep_self_review).
+                    # Signal crashes are terminal infrastructure failures for every task type.
                     is_crash_signal = isinstance(exitcode, int) and exitcode < 0
                     crash_signal = -exitcode if is_crash_signal else None
                     chat_id = coerce_chat_identity(task.get("chat_id"), 0)
@@ -2816,6 +2919,8 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
                             task, str(w.busy_task_id), "failed",
                             reason_code=reason_code, cost_fields=r_cost_fields,
                         )
+                        from ouroboros.delegate_recovery import reconcile_unrecoverable_task
+                        reconcile_unrecoverable_task(DRIVE_ROOT, str(w.busy_task_id))
                     elif task_type == "evolution" and not bool(load_state().get("evolution_mode_enabled")):
                         # Evolution was stopped: do not resurrect a dead evolution
                         # worker into another cycle (mirrors the hard-timeout gate
@@ -2835,9 +2940,17 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
                             task, str(w.busy_task_id), "cancelled",
                             cost_fields=r_cost_fields,
                         )
+                        from ouroboros.delegate_recovery import reconcile_unrecoverable_task
+                        reconcile_unrecoverable_task(DRIVE_ROOT, str(w.busy_task_id))
                     else:
                         task = dict(task)
                         task["_attempt"] = attempt + 1
+                        from ouroboros.delegate_recovery import prepare_worker_crash_handoff
+                        recovery_handoff = prepare_worker_crash_handoff(
+                            DRIVE_ROOT, task, old_attempt=attempt, new_attempt=attempt + 1,
+                            worker_id=wid,
+                            exitcode=exitcode if isinstance(exitcode, int) else None,
+                        )
                         try:
                             from ouroboros.task_results import STATUS_INTERRUPTED, write_task_result
                             write_task_result(
@@ -2847,12 +2960,26 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
                             )
                         except Exception:
                             log.debug("Failed to write interrupted status for %s", w.busy_task_id, exc_info=True)
+                        try:
+                            from ouroboros.owner_hurry import retry_reset
+
+                            retry_reset(
+                                queue._task_drive_for_task(task, str(w.busy_task_id)),
+                                DRIVE_ROOT, str(w.busy_task_id),
+                                reason="worker_crash_requeue",
+                            )
+                        except Exception:
+                            log.debug("Crash-requeue retry reset failed for %s", w.busy_task_id, exc_info=True)
                         admitted = queue.enqueue_task(task, front=True)
                         admission_block = (
                             str(admitted.get("_admission_blocked") or "")
                             if isinstance(admitted, dict) else ""
                         )
                         if admission_block:
+                            from ouroboros.delegate_recovery import veto_worker_retry_handoff
+                            veto_worker_retry_handoff(
+                                DRIVE_ROOT, str(w.busy_task_id), recovery_handoff, admission_block,
+                            )
                             reason_code = "worker_crash_retry_admission_blocked"
                             try:
                                 from ouroboros.task_results import STATUS_FAILED, write_task_result

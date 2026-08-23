@@ -36,17 +36,74 @@ export function jsonPost(url, payload = {}, options = {}) {
 }
 
 /**
+ * Run the read-only publication preflight for one selected skill. Domain
+ * states, including repairable findings, remain successful JSON responses;
+ * only transport/admission refusals reject through fetchJson.
+ * @param {string} skill
+ * @returns {Promise<import('./api_types.js').SkillPublishPreflightResponse>}
+ */
+export function skillPublishPreflight(skill) {
+    return jsonPost(`/api/skills/${encodeURIComponent(skill)}/publish-preflight`, {});
+}
+
+/**
+ * Create one ordinary managed task through the shared task gateway.
+ * @param {import('./api_types.js').TaskCreateRequest} payload
+ * @returns {Promise<import('./api_types.js').TaskCreateResponse>}
+ */
+export function createTask(payload) {
+    return jsonPost('/api/tasks', payload);
+}
+
+/**
  * Cancel a task. With {cascade:true} the server also cancels the task's live
  * subtree and answers only once that teardown has finished; without it the
  * request stays the synchronous single-task cancel (no body — headless compat).
- * Shared by the Chat live-card "Cancel run" action and the Activity tab.
+ * S3 (Q1/Q2): stopPolicy "finalize_then_cancel" requests the soft
+ * finalize-then-stop episode (202 acknowledgement, cancel_state "pending");
+ * "immediate" (or absent) keeps today's hard cancel byte-identical.
+ * Shared by the Chat live-card stop control and the Activity tab.
  * @param {string} taskId
- * @param {{cascade?: boolean}} [options]
+ * @param {{cascade?: boolean, stopPolicy?: string}} [options]
  * @returns {Promise<import('./api_types.js').TaskCancelResponse>}
  */
-export function cancelTask(taskId, { cascade = false } = {}) {
+export function cancelTask(taskId, { cascade = false, stopPolicy = '' } = {}) {
     const url = `/api/tasks/${encodeURIComponent(taskId)}/cancel`;
-    return cascade ? jsonPost(url, { cascade: true }) : fetchJson(url, { method: 'POST' });
+    const policy = String(stopPolicy || '');
+    const body = {
+        ...(cascade ? { cascade: true } : {}),
+        ...(policy && policy !== 'immediate' ? { stop_policy: policy } : {}),
+    };
+    return Object.keys(body).length ? jsonPost(url, body) : fetchJson(url, { method: 'POST' });
+}
+
+/**
+ * Owner hurry (S3, HQ1): the text-free typed task-local acceleration control.
+ * The body carries ONLY the client-generated stable request_id (reuse the same
+ * id on retry — the acknowledgement is idempotent). This path never creates a
+ * chat message anywhere; the durable facts are the typed owner-mailbox control
+ * and the owner_hurry task-result projection.
+ * @param {string} taskId
+ * @param {string} requestId
+ * @returns {Promise<import('./api_types.js').TaskHurryResponse>}
+ */
+export function hurryTask(taskId, requestId) {
+    return jsonPost(
+        `/api/tasks/${encodeURIComponent(taskId)}/hurry`,
+        { request_id: String(requestId || '') },
+        { rejectOkFalse: true },
+    );
+}
+
+/**
+ * Fetch one task's durable detail record, or null when unreachable — the
+ * shared reconcile read used by the cancel/stop card flows.
+ * @param {string} taskId
+ * @returns {Promise<import('./api_types.js').TaskDetailResponse|null>}
+ */
+export async function fetchTaskDetail(taskId) {
+    const resp = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}`);
+    return (resp && typeof resp.json === 'function' && resp.ok !== false) ? resp.json() : null;
 }
 
 export function cleanExtensionRoute(value) {
@@ -101,6 +158,11 @@ export const apiClient = {
      * @returns {Promise<import('./api_types.js').OnboardingCompleteResponse>}
      */
     completeOnboarding: (payload) => jsonPost('/api/onboarding/complete', payload),
+    /**
+     * @param {import('./api_types.js').OnboardingSubagentsPreviewRequest} payload
+     * @returns {Promise<import('./api_types.js').OnboardingSubagentsPreviewResponse>}
+     */
+    previewOnboardingSubagents: (payload) => jsonPost('/api/onboarding/subagents/preview', payload),
     ownerRuntimeMode: (mode) => jsonPost('/api/owner/runtime-mode', { mode }),
     ownerAutoGrant: (enabled) => jsonPost('/api/owner/auto-grant', { enabled: Boolean(enabled) }),
     ownerContextMode: (mode) => jsonPost('/api/owner/context-mode', { mode }),
@@ -115,13 +177,29 @@ export const apiClient = {
     ownerCapabilityAck: (payload) => jsonPost('/api/owner/capability-ack', payload),
     /** @returns {Promise<import('./api_types.js').OpenAICompatibleModelsResponse>} */
     openAICompatibleModels: (payload) => jsonPost('/api/openai-compatible/models', payload),
+    /**
+     * @param {import('./api_types.js').ProviderTestRequest} payload
+     * @returns {Promise<import('./api_types.js').ProviderTestResponse>}
+     */
+    providerTest: (payload) => jsonPost('/api/providers/test', payload),
     extensions: () => fetchJson('/api/extensions', { cache: 'no-store' }),
+    skillPublishPreflight,
+    createTask,
     skillLifecycleQueue: () => fetchJson('/api/skills/lifecycle-queue', { cache: 'no-store' }),
     /** @returns {Promise<import('./api_types.js').SkillDeleteResponse>} */
     deleteSkill: (skill, payloadRoot) => jsonPost(`/api/skills/${encodeURIComponent(skill)}/delete`, {
         payload_root: payloadRoot,
     }),
     skillGrants: (skill, items) => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, { items }),
+    /**
+     * @param {string} skill
+     * @param {import('./api_types.js').OwnerSkillPresenceRuntimeRequest} payload
+     * @returns {Promise<import('./api_types.js').OwnerSkillPresenceRuntimeResponse>}
+     */
+    savePresenceRuntime: (skill, payload) => jsonPost(
+        `/api/owner/skills/${encodeURIComponent(skill)}/presence-runtime`,
+        payload,
+    ),
     chatHistory: (limit = 1000) => fetchJson(`/api/chat/history?limit=${encodeURIComponent(limit)}`, { cache: 'no-store' }),
     projectFromTask: (taskId, id, name, objectiveHint = '') => jsonPost('/api/projects/from-task', { task_id: taskId, id, name, objective_hint: objectiveHint }),
     /** @param {import('./api_types.js').ProjectCreateRequest} payload */
