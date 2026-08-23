@@ -531,7 +531,11 @@ def _host_pid_matches_record(record: dict[str, Any]) -> bool:
         host_pid = int(record.get("host_pid") or 0)
     except (TypeError, ValueError):
         return False
-    if host_pid <= 0:
+    if host_pid <= 1:
+        # pid 1 is the init/pid-namespace root, never a process this executor
+        # spawned — reject outright rather than falling through to the
+        # liveness-only check below, where pid 1 is trivially always alive
+        # and would let a forged record slip past validation.
         return False
     expected = str(record.get("host_command_sha256") or "").strip()
     if not expected:
@@ -611,7 +615,7 @@ def _kill_host_pid(host_pid: Any) -> None:
         pid = int(host_pid)
     except (TypeError, ValueError):
         return
-    if pid <= 0:
+    if pid <= 1:  # 0 = invalid; 1 = init/pid-namespace root, never a spawned child
         return
     if not IS_WINDOWS:
         pgid = process_group_id(pid)

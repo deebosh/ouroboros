@@ -512,7 +512,8 @@ def _web_search(
                 if resp_obj:
                     u = getattr(resp_obj, "usage", None)
                     if u:
-                        usage = u.model_dump() if hasattr(u, "model_dump") else {}
+                        plain_usage = _obj_to_plain(u)
+                        usage = plain_usage if isinstance(plain_usage, dict) else {}
                     sources = _extract_sources_from_response(resp_obj)
 
         text = "".join(text_parts)
