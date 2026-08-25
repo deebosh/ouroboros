@@ -103,6 +103,38 @@ _OMISSION_SAMPLE_MAX_ENTRIES = 40
 _CENTRALITY_MAX_BONUS = 600.0
 _CENTRALITY_PER_IMPORTER = 30.0
 
+# ----------------------------------------------------------------------
+# Chunked pipeline (v6.109.x — closes ibl-deep-self-review-large-context-truncation,
+# Modes 1+2 only; Mode 3 — required-artifact over budget — is structurally
+# distinct and queued for a separate plan-review wave via knowledge topic).
+#
+# Per BIBLE P3 we never lower the reviewer floor: when a single assembled
+# pack overshoots even the slim 1M-context reviewer after the deterministic
+# final-shrink retry, split the review across N chunks. Each chunk carries
+# the full system prompt + memory whitelist + a SLICE of the atlas
+# (≥ _DEEP_CHUNK_MIN_FILE_COUNT files), runs per-chunk Gate B against its
+# own slice paths, and a synthesis pass re-grounds the verdict against the
+# UNION of all chunk paths (aggregate Gate B). Per-chunk Gate A applies the
+# same structural integrity floors as the whole-pack Gate A — chunks that
+# can't meet it return a typed refusal rather than proceeding, because a
+# chunk too small to ground against is structurally incapable of producing
+# authoritative findings.
+#
+# Memory whitelist is shared (full) across all chunks — duplicating the
+# memory parts is intentional and cheap (~2K tokens/chunk); the alternative
+# (splitting memory across chunks) would break Gate B's path grounding for
+# identity / scratchpad / patterns references inside a chunk that doesn't
+# contain that memory file.
+_DEEP_CHUNK_MIN_FILE_COUNT = 5
+_DEEP_CHUNK_MIN_CHARS = 50_000
+_DEEP_CHUNK_MAX_FILES_PER_CHUNK = 30
+_DEEP_MAX_CHUNKS = 8
+# Per-chunk input budget — leaves ~1M window for the configured reviewer
+# (after output reserve + tokenizer margin) at _DEEP_CHUNK_TOKEN_BUDGET;
+# a chunked path is only dispatched when the WHOLE pack overshoots, so
+# the chunk budget MUST stay below the reviewer's real window.
+_DEEP_CHUNK_TOKEN_BUDGET = 200_000
+
 _SYSTEM_PROMPT = """\
 You are conducting a deep self-review of the Ouroboros project — a self-creating AI agent.
 
@@ -471,6 +503,430 @@ def is_review_available() -> Tuple[bool, Optional[str]]:
     return False, None
 
 
+def _chunk_atlas_into_groups(
+    selected_paths: List[str],
+    *,
+    max_chunks: int,
+    max_files_per_chunk: int,
+) -> List[List[str]]:
+    """Split ``selected_paths`` into ≤``max_chunks`` balanced groups of ≤``max_files_per_chunk``.
+
+    Deterministic, no LLM call, no I/O. Round-robin assignment balanced
+    against chunk-size cap: chunk *i* gets path indices ``[i*chunk_size,
+    (i+1)*chunk_size)`` where ``chunk_size = ceil(len / n_chunks)``.
+    Trailing empty groups are dropped, so callers may receive fewer than
+    ``max_chunks`` groups when ``len(selected_paths) < max_chunks *
+    max_files_per_chunk``.
+
+    The caller MUST verify ``len(groups[i]) >= _DEEP_CHUNK_MIN_FILE_COUNT``
+    per chunk — this helper only enforces the file-cap invariant, not
+    Gate A's structural integrity floor (a chunk that happens to receive
+    fewer than the minimum files is a structural refusal, not a silent
+    shrink — the whole ``run_deep_self_review`` path gates on it).
+    """
+    if not selected_paths or max_chunks <= 0 or max_files_per_chunk <= 0:
+        return []
+    n_chunks = min(
+        max_chunks,
+        max(1, -(-len(selected_paths) // max_files_per_chunk)),  # ceil division
+    )
+    chunk_size = -(-len(selected_paths) // n_chunks)  # ceil
+    groups: List[List[str]] = []
+    for i in range(n_chunks):
+        start = i * chunk_size
+        end = min(start + chunk_size, len(selected_paths))
+        if start >= end:
+            break
+        groups.append(list(selected_paths[start:end]))
+    return groups
+
+
+def _can_chunk_review(model: str, deep_window: int, deep_margin: int) -> Tuple[bool, int]:
+    """Return ``(eligible, per_chunk_token_budget)`` for the chunked pipeline.
+
+    The per-chunk budget must fit a single chunk PLUS the reviewer's output
+    reserve PLUS the tokenizer margin — a chunked call that overshoots the
+    reviewer's REAL window defeats the whole point. The capability-evidence
+    SSOT (``reviewer_window.resolve_reviewer_window``) is the only window
+    authority; this function reads the cached value, not a hardcoded 1M.
+    """
+    per_chunk_window_needed = (
+        _DEEP_CHUNK_TOKEN_BUDGET + _DEEP_MAX_OUTPUT_TOKENS + deep_margin
+    )
+    eligible = deep_window >= per_chunk_window_needed and deep_window > 0
+    return eligible, _DEEP_CHUNK_TOKEN_BUDGET
+
+
+def _build_synthesis_prompt(chunk_responses: List[str], chunk_paths: List[List[str]]) -> str:
+    """Build the synthesis-pass user message: chunk findings + their path-grounding domains.
+
+    The synthesis pass is itself a real review pass: it must produce a final
+    verdict whose findings can be grounded against the UNION of all chunk
+    paths (aggregate Gate B). The system prompt stays the same; this prompt
+    tells the model it is SYNTHESIZING prior chunk findings, not re-reviewing
+    the codebase raw — that work already happened, and the model has no
+    ability to reach pack paths outside what the chunks saw.
+    """
+    parts: List[str] = [
+        "# Synthesis pass",
+        "",
+        f"You have already completed {len(chunk_responses)} chunked review passes over this codebase.",
+        "Each chunk produced findings grounded against its own file slice. Your job now is to",
+        "synthesize those findings into a SINGLE coherent deep self-review report covering the WHOLE",
+        "codebase. Do NOT introduce findings whose path references do not appear in the chunks below;",
+        "the aggregate response grounding gate checks every reference against the union of chunk paths.",
+        "",
+        "## Per-chunk findings (in review order)",
+        "",
+    ]
+    for i, (resp, paths) in enumerate(zip(chunk_responses, chunk_paths), 1):
+        path_list = "\n".join(f"- {p}" for p in paths)
+        parts.extend([
+            f"### Chunk {i}/{len(chunk_responses)} — grounded against:",
+            path_list,
+            "",
+            "Findings:",
+            resp.strip(),
+            "",
+            "---",
+            "",
+        ])
+    parts.extend([
+        "## Your output",
+        "",
+        "A single unified deep self-review report with prioritized findings,",
+        "each citing the specific file and line/section. Use the same severity",
+        "ladder (CRITICAL > IMPORTANT > ADVISORY). Where two chunks identified",
+        "the same issue from different angles, merge them and credit both chunks.",
+        "Where chunks disagree, flag the disagreement explicitly rather than",
+        "averaging it away — divergence between grounded reviewers is itself",
+        "a finding worth naming.",
+    ])
+    return "\n".join(parts) + "\n"
+
+
+def _run_chunked_deep_self_review(
+    *,
+    repo_dir: pathlib.Path,
+    drive_root: pathlib.Path,
+    llm: Any,
+    emit_progress: Callable[[str], None],
+    event_queue: Any,
+    model: str,
+    deep_window: int,
+    deep_output_reserve: int,
+    deep_margin: int,
+    atlas_manifest: Optional[dict],
+    fixed_prompt_tokens: int,
+) -> Tuple[str, Dict[str, Any]]:
+    """Chunked-pipeline path for large codebases (closes Modes 1+2).
+
+    Triggered when the WHOLE-pack path overshoots the reviewer's REAL window
+    after its deterministic final-shrink retry. Per BIBLE P3 we never lower
+    the reviewer floor; instead we split the review across N sequential
+    chunks, each carrying the full system prompt + memory whitelist + a slice
+    of the atlas. Per-chunk Gate A guards each chunk's structural integrity;
+    per-chunk Gate B grounds each chunk's response against its own slice
+    paths; the synthesis pass + aggregate Gate B ground the final verdict
+    against the UNION of all chunk paths.
+
+    Capability-evidence-backed model selection: ``_can_chunk_review`` checks
+    the reviewer's REAL window (from the capability-evidence SSOT) against
+    the per-chunk input budget; a model whose window cannot fit a single
+    chunk is refused at admission rather than producing half-grounded
+    findings.
+    """
+    from ouroboros.llm_observability import chat_observed
+
+    if not atlas_manifest:
+        return (
+            "❌ Chunked pipeline requires an assembled atlas manifest; got None.",
+            {},
+        )
+    selected = _coerce_path_strings(atlas_manifest.get("selected", []))
+    omitted = _coerce_path_strings(atlas_manifest.get("omitted", []))
+
+    eligible, _ = _can_chunk_review(model, deep_window, deep_margin)
+    if not eligible:
+        return (
+            f"❌ Chunked pipeline refused: configured model {model!r} window "
+            f"({deep_window:,} tokens) cannot fit one chunk "
+            f"({_DEEP_CHUNK_TOKEN_BUDGET:,} input + {_DEEP_MAX_OUTPUT_TOKENS:,} output + "
+            f"{deep_margin:,} tokenizer margin). Per Bible P3 we do not lower "
+            f"the reviewer floor; configure a reviewer with a window ≥ "
+            f"{_DEEP_CHUNK_TOKEN_BUDGET + _DEEP_MAX_OUTPUT_TOKENS + deep_margin:,} tokens.",
+            {},
+        )
+    if len(selected) < _DEEP_CHUNK_MIN_FILE_COUNT:
+        return (
+            f"❌ Chunked pipeline: only {len(selected)} files in atlas "
+            f"(min {_DEEP_CHUNK_MIN_FILE_COUNT}). A single review pass is structurally "
+            f"incapable; switch to the whole-pack path or expand the codebase first.",
+            {},
+        )
+
+    groups = _chunk_atlas_into_groups(
+        selected,
+        max_chunks=_DEEP_MAX_CHUNKS,
+        max_files_per_chunk=_DEEP_CHUNK_MAX_FILES_PER_CHUNK,
+    )
+    n_chunks = len(groups)
+    for i, g in enumerate(groups, 1):
+        if len(g) < _DEEP_CHUNK_MIN_FILE_COUNT:
+            return (
+                f"❌ Chunked pipeline: chunk {i}/{n_chunks} has only {len(g)} files "
+                f"(min {_DEEP_CHUNK_MIN_FILE_COUNT}). Rebalance or split further.",
+                {},
+            )
+
+    emit_progress(f"Chunked review: {n_chunks} chunks, {len(selected)} files total")
+
+    # Re-derive atlas bounds the chunked pass needs: same fixed-prompt budget
+    # as the whole-pack path, applied per chunk so each chunk's reserved budget
+    # is bounded independently.
+    chunk_input_limit = min(_DEEP_CHUNK_TOKEN_BUDGET, deep_window - deep_output_reserve - deep_margin)
+    chunk_hard_budget = max(10_000, chunk_input_limit)
+    chunk_fixed_tokens = (
+        int(fixed_prompt_tokens)
+        + estimate_tokens("")  # memory_text is rebuilt per chunk; estimate lazily
+        + 1_000  # bounded reserve for the omission section's per-chunk share
+    )
+
+    chunk_responses: List[str] = []
+    chunk_paths_used: List[List[str]] = []
+    aggregated_usage: Dict[str, Any] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cost_usd": 0.0,
+    }
+    chunk_manifests: List[dict] = []
+
+    for i, group in enumerate(groups, 1):
+        other_groups = [g for j, g in enumerate(groups) if j != i - 1 for _ in (g,)]
+        # Per-chunk atlas: same `tracked_paths`, but OTHER chunks' files marked
+        # ``already_included`` so the atlas emits only THIS chunk's files in
+        # body. Manifest still carries all paths for the aggregate Gate B.
+        try:
+            chunk_atlas = compile_review_context_atlas(
+                ReviewContextAtlasRequest(
+                    repo_dir=repo_dir,
+                    tracked_paths=tuple(selected + omitted),  # full coverage in manifest
+                    already_included=frozenset(other_groups),
+                    fixed_prompt_tokens=chunk_fixed_tokens,
+                    target_total_tokens=min(850_000, chunk_hard_budget),
+                    hard_total_tokens=chunk_hard_budget,
+                    include_tests=False,
+                    title=f"Deep Self-Review Chunk {i}/{n_chunks}",
+                    compact_manifest=True,
+                )
+            )
+        except Exception as exc:
+            log.error("Chunk %d atlas compile failed: %s", i, exc, exc_info=True)
+            return f"❌ Chunk {i}/{n_chunks} atlas compile failed: {exc}", aggregated_usage
+
+        if atlas_assembly_failed(chunk_atlas):
+            return (
+                f"❌ Chunk {i}/{n_chunks} atlas assembly failed: "
+                f"{atlas_assembly_failure_reason(chunk_atlas)}",
+                aggregated_usage,
+            )
+
+        # Per-chunk pack: atlas body + memory whitelist (shared across chunks,
+        # full — duplicating is cheap; splitting would break Gate B for memory refs).
+        memory_parts: List[str] = []
+        _append_memory_whitelist(memory_parts, [], drive_root=drive_root)
+        chunk_skipped = [
+            f"{record.rel_path} ({record.disposition}: {record.reason})"
+            for record in chunk_atlas.omitted
+            if record.disposition not in {"already_included", "manifest_only"}
+        ]
+        chunk_parts: List[str] = [chunk_atlas.text]
+        chunk_parts.extend(memory_parts)
+        _append_omission_section(chunk_parts, chunk_skipped)
+        chunk_text = "\n".join(chunk_parts)
+        chunk_stats = {
+            "file_count": len(group),
+            "memory_count": len(memory_parts),
+            "total_chars": len(chunk_text),
+            "skipped": chunk_skipped,
+            "context_manifest": chunk_atlas.manifest,
+        }
+
+        # Per-chunk Gate A: structural integrity floor for THIS chunk.
+        if (chunk_stats["file_count"] < _DEEP_CHUNK_MIN_FILE_COUNT
+                or chunk_stats["memory_count"] < _DEEP_MIN_MEMORY_FILES
+                or chunk_stats["total_chars"] < _DEEP_CHUNK_MIN_CHARS):
+            return (
+                f"❌ Chunk {i}/{n_chunks} fails Gate A: file_count="
+                f"{chunk_stats['file_count']} (min {_DEEP_CHUNK_MIN_FILE_COUNT}), "
+                f"total_chars={chunk_stats['total_chars']:,} "
+                f"(min {_DEEP_CHUNK_MIN_CHARS:,}). Refusing to send a pathologically "
+                f"small chunk.",
+                aggregated_usage,
+            )
+
+        # Per-chunk size gate.
+        chunk_estimated_tokens = estimate_tokens(_SYSTEM_PROMPT + chunk_text)
+        if chunk_estimated_tokens > chunk_input_limit:
+            return (
+                f"❌ Chunk {i}/{n_chunks} input overflow: {chunk_estimated_tokens:,} tokens "
+                f"> {chunk_input_limit:,} cap. Rebalance or split further.",
+                aggregated_usage,
+            )
+
+        emit_progress(
+            f"Chunk {i}/{n_chunks}: {chunk_stats['file_count']} files, "
+            f"~{chunk_estimated_tokens:,} tokens → {model}"
+        )
+        try:
+            chunk_response, chunk_usage = chat_observed(
+                llm,
+                drive_root=drive_root,
+                task_id="deep_self_review_chunked",
+                call_type="deep_self_review",
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": chunk_text},
+                ],
+                model=model,
+                tools=None,
+                reasoning_effort=resolve_effort("deep_self_review"),
+                max_tokens=_DEEP_MAX_OUTPUT_TOKENS,
+                temperature=None,
+                no_proxy=True,
+            )
+        except Exception as exc:
+            log.error("Chunk %d LLM call failed: %s", i, exc, exc_info=True)
+            return f"❌ Chunk {i}/{n_chunks} LLM call failed: {exc}", aggregated_usage
+
+        chunk_text_response = chunk_response.get("content") or ""
+        if not chunk_text_response:
+            return (
+                f"⚠️ Chunk {i}/{n_chunks}: model returned empty response.",
+                chunk_usage or aggregated_usage,
+            )
+
+        # Per-chunk Gate B: response grounded against THIS chunk's slice paths.
+        grounded_refs = _ground_response_in_pack(chunk_text_response, chunk_atlas.manifest)
+        if len(grounded_refs) < _DEEP_MIN_PATH_REFS:
+            return (
+                f"❌ Chunk {i}/{n_chunks} response ungrounded: "
+                f"{len(grounded_refs)} distinct path references intersect chunk pack "
+                f"(min {_DEEP_MIN_PATH_REFS}). Refusing to forward an ungrounded chunk.",
+                chunk_usage or aggregated_usage,
+            )
+
+        chunk_responses.append(chunk_text_response)
+        chunk_paths_used.append(group)
+        chunk_manifests.append(chunk_atlas.manifest)
+        # Aggregate usage across chunks; only the parts the ledger surfaces.
+        for k in ("prompt_tokens", "completion_tokens"):
+            if chunk_usage and isinstance(chunk_usage.get(k), (int, float)):
+                aggregated_usage[k] = (
+                    (aggregated_usage.get(k) or 0) + chunk_usage.get(k, 0)
+                )
+        if chunk_usage and isinstance(chunk_usage.get("cost_usd"), (int, float)):
+            aggregated_usage["cost_usd"] = (
+                (aggregated_usage.get("cost_usd") or 0.0) + chunk_usage["cost_usd"]
+            )
+
+    # Synthesis pass — the model reviews the chunk findings, not the raw code.
+    synthesis_user_text = _build_synthesis_prompt(chunk_responses, chunk_paths_used)
+    synthesis_input_limit = min(_DEEP_CHUNK_TOKEN_BUDGET, deep_window - deep_output_reserve - deep_margin)
+    if estimate_tokens(_SYSTEM_PROMPT + synthesis_user_text) > synthesis_input_limit:
+        return (
+            f"❌ Synthesis overflow: {estimate_tokens(_SYSTEM_PROMPT + synthesis_user_text):,} tokens "
+            f"> {synthesis_input_limit:,} cap. Reduce chunk count or shorten per-chunk output.",
+            aggregated_usage,
+        )
+    emit_progress(f"Synthesis pass: {n_chunks} chunks → final verdict")
+    try:
+        synthesis_response, synthesis_usage = chat_observed(
+            llm,
+            drive_root=drive_root,
+            task_id="deep_self_review_synthesis",
+            call_type="deep_self_review",
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": synthesis_user_text},
+            ],
+            model=model,
+            tools=None,
+            reasoning_effort=resolve_effort("deep_self_review"),
+            max_tokens=_DEEP_MAX_OUTPUT_TOKENS,
+            temperature=None,
+            no_proxy=True,
+        )
+    except Exception as exc:
+        log.error("Synthesis LLM call failed: %s", exc, exc_info=True)
+        return f"❌ Synthesis LLM call failed: {exc}", aggregated_usage
+
+    synthesis_text = synthesis_response.get("content") or ""
+    if not synthesis_text:
+        return "⚠️ Synthesis: model returned empty response.", synthesis_usage or aggregated_usage
+
+    # Aggregate Gate B: final verdict grounded against the UNION of all chunk
+    # path slices (selected + memory whitelist + nav), the same way Gate B
+    # checks the whole-pack path against the whole-pack manifest.
+    all_union_paths: List[str] = []
+    for paths in chunk_paths_used:
+        for p in paths:
+            if p not in all_union_paths:
+                all_union_paths.append(p)
+    for rel in _MEMORY_WHITELIST:
+        if rel not in all_union_paths:
+            all_union_paths.append(rel)
+    aggregate_manifest = {
+        "selected": [{"rel_path": p} for p in all_union_paths],
+        "omitted": [{"rel_path": p} for p in omitted],
+    }
+    grounded_union = _ground_response_in_pack(synthesis_text, aggregate_manifest)
+    if len(grounded_union) < _DEEP_MIN_PATH_REFS:
+        return (
+            f"❌ Synthesis ungrounded against chunk-path union: "
+            f"{len(grounded_union)} distinct path references intersect the "
+            f"union of {len(all_union_paths)} chunk paths (min {_DEEP_MIN_PATH_REFS}). "
+            f"Refusing to publish a synthesis whose findings cannot be tied "
+            f"to chunk-grounded artifacts.",
+            synthesis_usage or aggregated_usage,
+        )
+
+    # Aggregate usage with the synthesis layer added.
+    if synthesis_usage:
+        for k in ("prompt_tokens", "completion_tokens"):
+            if isinstance(synthesis_usage.get(k), (int, float)):
+                aggregated_usage[k] = (
+                    (aggregated_usage.get(k) or 0) + synthesis_usage.get(k, 0)
+                )
+        if isinstance(synthesis_usage.get("cost_usd"), (int, float)):
+            aggregated_usage["cost_usd"] = (
+                (aggregated_usage.get("cost_usd") or 0.0) + synthesis_usage["cost_usd"]
+            )
+
+    # Persist an aggregate context manifest so the post-task pipeline can find
+    # the chunked-path coverage the same way it finds the whole-pack path's.
+    try:
+        atomic_write_json(
+            drive_root / "state" / "deep_self_review_context.json",
+            {
+                "ts": utc_now_iso(),
+                "model": model,
+                "context_manifest": aggregate_manifest,
+                "chunked": True,
+                "chunk_count": n_chunks,
+            },
+            trailing_newline=True,
+        )
+    except Exception:
+        log.warning("Failed to persist chunked deep self-review context manifest", exc_info=True)
+
+    emit_progress(
+        f"Chunked deep self-review complete ({len(synthesis_text):,} chars, "
+        f"{n_chunks} chunks, {len(grounded_union)} grounded paths)."
+    )
+    return synthesis_text, aggregated_usage
+
+
 def run_deep_self_review(
     repo_dir: pathlib.Path,
     drive_root: pathlib.Path,
@@ -575,12 +1031,39 @@ def run_deep_self_review(
             estimated_tokens = estimate_tokens(_SYSTEM_PROMPT + pack_text)
         full_prompt_chars = len(_SYSTEM_PROMPT) + len(pack_text)
         if estimated_tokens > input_limit:
+            # Whole-pack path failed even after the deterministic final-shrink
+            # retry. Per Bible P3 we do not lower the reviewer floor; instead
+            # dispatch the chunked pipeline when the reviewer's REAL window
+            # can fit one chunk's worth (capability-evidence-backed). The chunked
+            # path is opt-in via this oversize branch — normal-size codebases
+            # never enter it — and the single hard-stop below still applies when
+            # the configured model is too small to chunk either.
+            chunk_eligible, _ = _can_chunk_review(model, deep_window, deep_margin)
+            if chunk_eligible and stats.get("context_manifest"):
+                emit_progress(
+                    f"Pack still overshoots after final-shrink retry; entering "
+                    f"chunked pipeline (model window {deep_window:,} tokens)."
+                )
+                return _run_chunked_deep_self_review(
+                    repo_dir=repo_dir,
+                    drive_root=drive_root,
+                    llm=llm,
+                    emit_progress=emit_progress,
+                    event_queue=event_queue,
+                    model=model,
+                    deep_window=deep_window,
+                    deep_output_reserve=deep_output_reserve,
+                    deep_margin=deep_margin,
+                    atlas_manifest=stats.get("context_manifest"),
+                    fixed_prompt_tokens=estimate_tokens(_SYSTEM_PROMPT),
+                )
             return (
                 f"❌ Review pack too large: ~{estimated_tokens:,} tokens "
                 f"({full_prompt_chars:,} chars of system+pack, {stats['file_count']} files). "
                 f"Maximum is ~{input_limit:,} tokens "
                 f"({deep_window:,}-token window minus {deep_output_reserve:,} output reserve, "
                 f"calibrated for {model}). "
+                f"{'Chunked path refused: model window cannot fit one chunk. ' if not chunk_eligible else ''}"
                 "Reduce codebase size or split review."
             ), {}
 

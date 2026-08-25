@@ -1441,3 +1441,317 @@ def test_deep_max_output_tokens_cap_prevents_100k_402_trap():
         "The review's findings section needs at least a few hundred tokens; below "
         "1k the structural-utility of the review collapses."
     )
+
+
+# ----------------------------------------------------------------------
+# Chunked pipeline (v6.109.x — closes Modes 1+2 of
+# ibl-deep-self-review-large-context-truncation).
+# ----------------------------------------------------------------------
+
+from ouroboros.deep_self_review import (  # noqa: E402
+    _chunk_atlas_into_groups,
+    _can_chunk_review,
+    _build_synthesis_prompt,
+    _run_chunked_deep_self_review,
+    _DEEP_CHUNK_TOKEN_BUDGET,
+    _DEEP_CHUNK_MIN_FILE_COUNT,
+    _DEEP_CHUNK_MIN_CHARS,
+    _DEEP_MAX_CHUNKS,
+    _DEEP_CHUNK_MAX_FILES_PER_CHUNK,
+    _DEEP_MAX_OUTPUT_TOKENS,
+)
+
+
+class TestChunkAtlasIntoGroups:
+    def test_empty_returns_empty(self):
+        assert _chunk_atlas_into_groups([], max_chunks=8, max_files_per_chunk=30) == []
+
+    def test_zero_chunks_returns_empty(self):
+        assert _chunk_atlas_into_groups(["a.py"], max_chunks=0, max_files_per_chunk=30) == []
+
+    def test_zero_files_per_chunk_returns_empty(self):
+        assert _chunk_atlas_into_groups(["a.py"], max_chunks=8, max_files_per_chunk=0) == []
+
+    def test_single_file_single_chunk(self):
+        groups = _chunk_atlas_into_groups(
+            ["only.py"], max_chunks=8, max_files_per_chunk=30
+        )
+        assert groups == [["only.py"]]
+
+    def test_balanced_distribution(self):
+        files = [f"file_{i}.py" for i in range(24)]
+        groups = _chunk_atlas_into_groups(
+            files, max_chunks=8, max_files_per_chunk=30
+        )
+        # 24 files / 8 chunk cap = ceil(24/30) = 1 chunk; OR ceil(24/8) depending on path.
+        # The helper caps chunks at min(max_chunks, ceil(len/max_files_per_chunk)).
+        # ceil(24/30)=1, so n_chunks=1, chunk_size=24 — single chunk holds all.
+        assert len(groups) == 1
+        assert groups[0] == files
+
+    def test_chunk_cap_respected(self):
+        files = [f"file_{i}.py" for i in range(120)]
+        groups = _chunk_atlas_into_groups(
+            files, max_chunks=8, max_files_per_chunk=30
+        )
+        # 120 / 30 = 4 chunks (cap 8 unused here).
+        assert len(groups) == 4
+        assert all(len(g) <= 30 for g in groups)
+        # All input files preserved, no duplicates.
+        flat = [p for g in groups for p in g]
+        assert sorted(flat) == sorted(files)
+        assert len(flat) == len(files)
+
+    def test_max_chunks_enforced_above_file_floor(self):
+        # When file_cap would suggest MORE chunks than max_chunks allows,
+        # max_chunks dominates — chunks grow past the file cap to fit all
+        # the files into the smaller chunk count. 90 files with max_chunks=2
+        # → ceil(90/30)=3 desired chunks, but capped at 2 → 2 chunks of 45.
+        files = [f"file_{i}.py" for i in range(90)]
+        groups = _chunk_atlas_into_groups(
+            files, max_chunks=2, max_files_per_chunk=30
+        )
+        assert len(groups) == 2
+        assert all(len(g) == 45 for g in groups)
+        flat = [p for g in groups for p in g]
+        assert sorted(flat) == sorted(files)
+
+    def test_file_floor_enforced_when_max_chunks_allows_more(self):
+        # Inverse: when max_chunks allows MORE chunks than file_cap needs,
+        # file_cap dominates — fewer chunks is the right answer. 60 files
+        # with max_chunks=4, file_cap=30 → ceil(60/30)=2, min(4,2)=2.
+        files = [f"file_{i}.py" for i in range(60)]
+        groups = _chunk_atlas_into_groups(
+            files, max_chunks=4, max_files_per_chunk=30
+        )
+        assert len(groups) == 2
+        assert all(len(g) == 30 for g in groups)
+
+    def test_deterministic(self):
+        files = [f"file_{i}.py" for i in range(50)]
+        g1 = _chunk_atlas_into_groups(
+            files, max_chunks=8, max_files_per_chunk=30
+        )
+        g2 = _chunk_atlas_into_groups(
+            files, max_chunks=8, max_files_per_chunk=30
+        )
+        assert g1 == g2
+
+    def test_chunk_size_balanced(self):
+        # 100 files, 4 chunks: each gets ceil(100/4)=25 files.
+        files = [f"file_{i}.py" for i in range(100)]
+        groups = _chunk_atlas_into_groups(
+            files, max_chunks=4, max_files_per_chunk=30
+        )
+        assert len(groups) == 4
+        # ceil(100/4)=25, exactly: all 25.
+        assert all(len(g) == 25 for g in groups)
+        # First chunk holds indices 0-24, second 25-49, etc.
+        assert groups[0] == files[0:25]
+        assert groups[1] == files[25:50]
+        assert groups[2] == files[50:75]
+        assert groups[3] == files[75:100]
+
+    def test_underfilled_chunks_dropped(self):
+        # 5 files with cap 8 chunks: produces 1 chunk (not 8).
+        files = [f"file_{i}.py" for i in range(5)]
+        groups = _chunk_atlas_into_groups(
+            files, max_chunks=8, max_files_per_chunk=30
+        )
+        assert len(groups) == 1
+        assert groups[0] == files
+
+
+class TestCanChunkReview:
+    def test_1m_window_eligible(self):
+        eligible, budget = _can_chunk_review("any-model", 1_000_000, 155_000)
+        # 200K (chunk) + 10K (output) + 155K (margin) = 365K ≤ 1M → eligible.
+        assert eligible is True
+        assert budget == _DEEP_CHUNK_TOKEN_BUDGET
+
+    def test_too_small_window_refused(self):
+        # 300K window can't fit chunk + output + margin.
+        eligible, budget = _can_chunk_review("any-model", 300_000, 155_000)
+        assert eligible is False
+        assert budget == _DEEP_CHUNK_TOKEN_BUDGET  # budget is always reported
+
+    def test_zero_window_refused(self):
+        eligible, _ = _can_chunk_review("any-model", 0, 155_000)
+        assert eligible is False
+
+    def test_exact_threshold_eligible(self):
+        # deep_window == chunk + output + margin → eligible (>=).
+        threshold = _DEEP_CHUNK_TOKEN_BUDGET + _DEEP_MAX_OUTPUT_TOKENS + 155_000
+        eligible, _ = _can_chunk_review("any-model", threshold, 155_000)
+        assert eligible is True
+
+    def test_one_below_threshold_refused(self):
+        threshold = _DEEP_CHUNK_TOKEN_BUDGET + _DEEP_MAX_OUTPUT_TOKENS + 155_000
+        eligible, _ = _can_chunk_review("any-model", threshold - 1, 155_000)
+        assert eligible is False
+
+
+class TestBuildSynthesisPrompt:
+    def test_carries_all_chunk_paths(self):
+        responses = [
+            "Chunk 1 found X in ouroboros/a.py and ouroboros/b.py.",
+            "Chunk 2 found Y in tests/test_a.py.",
+        ]
+        paths = [
+            ["ouroboros/a.py", "ouroboros/b.py"],
+            ["tests/test_a.py"],
+        ]
+        prompt = _build_synthesis_prompt(responses, paths)
+        assert "Chunk 1" in prompt
+        assert "Chunk 2" in prompt
+        assert "ouroboros/a.py" in prompt
+        assert "ouroboros/b.py" in prompt
+        assert "tests/test_a.py" in prompt
+        # Must explicitly bind synthesis to the chunks' paths (no raw re-review).
+        assert "synthesize" in prompt.lower()
+        assert "union of chunk paths" in prompt.lower() or "chunk paths" in prompt.lower()
+
+    def test_chunk_ordering_preserved(self):
+        # Critical: prompt's chunk order must match chunk_paths order so the
+        # synthesis model knows which finding is grounded against which slice.
+        responses = ["alpha", "beta", "gamma"]
+        paths = [["a.py"], ["b.py"], ["c.py"]]
+        prompt = _build_synthesis_prompt(responses, paths)
+        assert prompt.index("Chunk 1/3") < prompt.index("Chunk 2/3") < prompt.index("Chunk 3/3")
+        assert prompt.index("alpha") < prompt.index("beta") < prompt.index("gamma")
+
+    def test_marks_disagreement_as_finding(self):
+        """Per design: chunk disagreement is itself a finding, not averaged away."""
+        prompt = _build_synthesis_prompt(["resp"], [["file.py"]])
+        assert "disagree" in prompt.lower() or "disagreement" in prompt.lower()
+
+    def test_empty_inputs_safe(self):
+        # Defensive: empty chunk_responses shouldn't crash; just produces the header.
+        prompt = _build_synthesis_prompt([], [])
+        assert "Synthesis pass" in prompt
+        assert "synthesize" in prompt.lower()
+
+
+class TestChunkedPipelineRefusal:
+    def test_no_manifest_refuses(self):
+        text, usage = _run_chunked_deep_self_review(
+            repo_dir=pathlib.Path("/tmp/fake"),
+            drive_root=pathlib.Path("/tmp/fake_drive"),
+            llm=None,
+            emit_progress=lambda m: None,
+            event_queue=None,
+            model="any-model",
+            deep_window=1_000_000,
+            deep_output_reserve=10_000,
+            deep_margin=155_000,
+            atlas_manifest=None,
+            fixed_prompt_tokens=0,
+        )
+        assert "Chunked pipeline requires an assembled atlas manifest" in text
+        assert usage == {}
+
+    def test_window_too_small_refuses_with_p3_message(self):
+        manifest = {"selected": [{"rel_path": f"f{i}.py"} for i in range(30)], "omitted": []}
+        text, usage = _run_chunked_deep_self_review(
+            repo_dir=pathlib.Path("/tmp/fake"),
+            drive_root=pathlib.Path("/tmp/fake_drive"),
+            llm=None,
+            emit_progress=lambda m: None,
+            event_queue=None,
+            model="any-model",
+            deep_window=100_000,  # too small
+            deep_output_reserve=10_000,
+            deep_margin=155_000,
+            atlas_manifest=manifest,
+            fixed_prompt_tokens=0,
+        )
+        assert "Chunked pipeline refused" in text
+        assert "P3" in text or "reviewer floor" in text
+        assert usage == {}
+
+    def test_too_few_selected_refuses(self):
+        manifest = {"selected": [{"rel_path": "a.py"}, {"rel_path": "b.py"}], "omitted": []}
+        text, usage = _run_chunked_deep_self_review(
+            repo_dir=pathlib.Path("/tmp/fake"),
+            drive_root=pathlib.Path("/tmp/fake"),
+            llm=None,
+            emit_progress=lambda m: None,
+            event_queue=None,
+            model="any-model",
+            deep_window=1_000_000,
+            deep_output_reserve=10_000,
+            deep_margin=155_000,
+            atlas_manifest=manifest,
+            fixed_prompt_tokens=0,
+        )
+        assert "only 2 files in atlas" in text
+        assert "min 5" in text
+
+
+class TestChunkedGateAEnforcement:
+    """Per-chunk Gate A is the structural integrity floor — a chunk that
+    receives too few files or too few chars MUST refuse, not silently shrink.
+
+    Tested at the helper boundary: ``_chunk_atlas_into_groups`` does not
+    enforce Gate A (caller responsibility), so this test goes through
+    ``_run_chunked_deep_self_review`` with an underpopulated chunk group
+    forced via a tight max_files_per_chunk — but the production code uses
+    ``_DEEP_CHUNK_MAX_FILES_PER_CHUNK = 30``, so we test the post-grouping
+    Gate A check by passing a manifest whose total selected is just over
+    the threshold AND whose chunks, after grouping, each have ≥
+    ``_DEEP_CHUNK_MIN_FILE_COUNT`` — verifying the standard happy path does
+    not reject on Gate A. The refusing path is covered by
+    ``TestChunkedPipelineRefusal::test_too_few_selected_refuses``.
+    """
+
+    def test_balanced_chunks_pass_per_chunk_gate_a(self):
+        # 60 files → 2 chunks of 30. Each is at the file-cap edge but well
+        # above _DEEP_CHUNK_MIN_FILE_COUNT=5. This is the happy-path grouping.
+        files = [f"ouroboros/m{i}.py" for i in range(60)]
+        groups = _chunk_atlas_into_groups(
+            files, max_chunks=_DEEP_MAX_CHUNKS, max_files_per_chunk=_DEEP_CHUNK_MAX_FILES_PER_CHUNK
+        )
+        # 60 files / 30 cap = 2 chunks of 30 each.
+        assert len(groups) == 2
+        assert all(len(g) == 30 for g in groups)
+        assert all(len(g) >= _DEEP_CHUNK_MIN_FILE_COUNT for g in groups)
+
+
+class TestChunkPipelineConstants:
+    """Pin the structural invariants of the chunked-pipeline bounds."""
+
+    def test_min_file_count_at_least_5(self):
+        # Per-chunk Gate A's structural floor must match the whole-pack Gate A's.
+        # Lowering it here would let a 1-2-file chunk produce grounded-but-empty
+        # findings — the same hallucination class the whole-pack Gate A refuses.
+        assert _DEEP_CHUNK_MIN_FILE_COUNT >= 5, (
+            "Per-chunk Gate A's file-count floor cannot be lower than the "
+            "whole-pack Gate A's (which is 5)."
+        )
+
+    def test_min_chars_matches_whole_pack(self):
+        # Per-chunk Gate A's char floor equals the whole-pack's. Different
+        # thresholds would mean "small pack is OK if chunked" — exactly the
+        # hallucination class the whole-pack floor was added to prevent.
+        from ouroboros.deep_self_review import _DEEP_MIN_PACK_CHARS
+        assert _DEEP_CHUNK_MIN_CHARS == _DEEP_MIN_PACK_CHARS, (
+            "Per-chunk Gate A must use the same char floor as whole-pack Gate A."
+        )
+
+    def test_max_chunks_bounded(self):
+        # Each chunk costs a separate review LLM call. Capping at a small
+        # number bounds the worst-case cost of a chunked deep self-review;
+        # large enough to handle real-world large codebases without splitting
+        # the review into trivial sub-reviews.
+        assert 1 <= _DEEP_MAX_CHUNKS <= 16
+        assert _DEEP_CHUNK_MAX_FILES_PER_CHUNK >= _DEEP_CHUNK_MIN_FILE_COUNT
+
+    def test_chunk_budget_smaller_than_full_pack(self):
+        # The per-chunk budget is intentionally smaller than the whole-pack
+        # cap so each chunk fits comfortably in the reviewer's REAL window
+        # even when the full pack does not. If chunk budget >= whole-pack cap
+        # the chunked path is mathematically equivalent to the whole-pack path
+        # and we lose the dispatch rationale.
+        from ouroboros.deep_self_review import _DEEP_INPUT_TOKEN_LIMIT
+        assert _DEEP_CHUNK_TOKEN_BUDGET <= _DEEP_INPUT_TOKEN_LIMIT
+
