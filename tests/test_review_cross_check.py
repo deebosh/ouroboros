@@ -266,6 +266,106 @@ class TestCrossCheckDefensiveBoundaries:
 
 
 # ---------------------------------------------------------------------------
+# Fail-closed — per-file OSError must not silently produce a downgrade
+# ---------------------------------------------------------------------------
+
+class TestFailClosedOnPerFileOSError:
+    """self_consistency (triad finding ibl-e8665b941f7e follow-up).
+
+    A partial walk where ANY per-file ``OSError`` occurred (on ``stat`` or
+    ``open``) must NOT claim ``identifier == absent``. The unreadable file
+    might be the one containing the identifier, so we conservatively keep
+    the finding critical. The cross-check is fail-closed: incomplete
+    evidence == no downgrade.
+    """
+
+    def test_open_oserror_on_real_file_fails_closed(
+        self, fake_repo: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If ``open()`` raises OSError on a real file, fail-closed: True.
+
+        The identifier ``ouroborosproject_naming`` is genuinely absent from
+        the repo (the only file referencing it is inside ``__pycache__``,
+        which the walker skips). Without OSError, the function returns
+        ``False`` (absent). WITH OSError on one file open during the walk,
+        the function MUST return ``True`` (fail-closed) so we do not
+        silently downgrade a critical finding based on incomplete
+        evidence.
+        """
+        real_open = open
+        failing_path = str(fake_repo / "claudexor_daemon.py")
+
+        def patched_open(file, *args, **kwargs):
+            if str(file) == failing_path:
+                raise OSError("simulated permission denied on open")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", patched_open)
+
+        # Genuinely absent identifier, but the walk hits an OSError.
+        # Fail-closed must return True (treat as present).
+        assert _identifier_present_in_repo(
+            "ouroborosproject_naming", fake_repo,
+        ) is True
+
+    def test_stat_oserror_on_real_file_fails_closed(
+        self, fake_repo: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If ``stat()`` raises OSError on a real file, fail-closed: True.
+
+        Same fail-closed contract applies when the per-file ``stat()`` call
+        (size check before reading) raises OSError — that file is the one
+        we cannot prove does NOT contain the identifier.
+        """
+        import pathlib
+
+        real_stat = pathlib.Path.stat
+        failing_path = str(fake_repo / "claudexor_daemon.py")
+
+        def patched_stat(self, *args, **kwargs):
+            if str(self) == failing_path:
+                raise OSError("simulated permission denied on stat")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "stat", patched_stat)
+
+        # Identifier is absent from readable files, but stat on one file
+        # raised OSError. Fail-closed must return True.
+        assert _identifier_present_in_repo(
+            "ouroborosproject_naming", fake_repo,
+        ) is True
+
+    def test_walk_failure_without_oserror_still_returns_absent(
+        self, fake_repo: Path,
+    ) -> None:
+        """Negative control: no OSError, no OSError tracker set, returns False.
+
+        When the walker completes successfully and the identifier is NOT
+        in any file, the function returns ``False`` (absent). The
+        fail-closed tracker must not over-trigger on the clean path.
+        """
+        # Without any OSError, ``ouroborosproject_naming`` is absent from
+        # the readable files (the ``__pycache__`` copy is skipped by
+        # SKIP_DIRS), so the function returns False — not True.
+        assert _identifier_present_in_repo(
+            "ouroborosproject_naming", fake_repo,
+        ) is False
+
+    def test_real_identifier_still_found_with_clean_walk(
+        self, fake_repo: Path,
+    ) -> None:
+        """Positive control: real identifier, clean walk, returns True.
+
+        The fail-closed tracker must not break the happy path: when the
+        identifier IS in a readable file, we still return True (without
+        needing to scan the rest of the tree).
+        """
+        assert _identifier_present_in_repo(
+            "ClaudexorUnavailable", fake_repo,
+        ) is True
+
+
+# ---------------------------------------------------------------------------
 # Off-by-default — existing call sites see no behavioral change
 # ---------------------------------------------------------------------------
 
