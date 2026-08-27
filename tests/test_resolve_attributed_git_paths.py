@@ -564,5 +564,152 @@ def test_r4_full_mutation_attribution_module_suite_passes():
     assert callable(resolve_attributed_git_paths)
 
 
+# ---------------------------------------------------------------------------
+# W1-W3: fingerprint-match carve-out for the narrow preexisting-dirty exception.
+# ---------------------------------------------------------------------------
+
+
+def _two_dirty_with_baseline(
+    tmp_path: pathlib.Path,
+    *,
+    owner_change_after: bool,
+    foreign_change_after: bool,
+    task_id: str,
+):
+    """Set up two pre-existing-dirty files at baseline plus a task-owned clean file.
+
+    ``owner.txt`` is the path whose fingerprint should match baseline after
+    capture (the task legitimately owns its observed content even when that
+    content is dirty vs HEAD). ``foreign.txt`` is a different pre-existing
+    dirty path whose fingerprint is changed by some other (non-task) writer —
+    it triggers ``preexisting_dirty_changed`` because its fingerprint DIFFERS
+    from baseline.
+
+    Toggle which file is rewritten after capture via the boolean flags.
+    """
+    from ouroboros.mutation_attribution import capture_mutation_baseline
+    root = _repo(tmp_path, extra_files=("owned.txt", "foreign.txt", "clean.txt"))
+    data = tmp_path / "data"
+    write_task_result(data, task_id, STATUS_RUNNING)
+    # Both files are dirty BEFORE the baseline is captured.
+    (root / "owned.txt").write_text("owned before\n", encoding="utf-8")
+    (root / "foreign.txt").write_text("foreign before\n", encoding="utf-8")
+    capture_mutation_baseline(
+        data,
+        task_id,
+        [{"surface_type": "system_repo", "host_root": str(root)}],
+    )
+    # After baseline: independently choose which pre-dirty file changes.
+    if foreign_change_after:
+        (root / "foreign.txt").write_text("foreign after\n", encoding="utf-8")
+    if owner_change_after:
+        (root / "owned.txt").write_text("owned after\n", encoding="utf-8")
+    # The task also rewrites a clean-at-baseline file (not strictly required
+    # for the W-tests, but mirrors the T3 fixture).
+    (root / "clean.txt").write_text("task change\n", encoding="utf-8")
+    return root, data
+
+
+def test_w1_explicit_pre_dirty_path_with_matching_fingerprint_admits(tmp_path):
+    """W1: a pre-existing-dirty path whose fingerprint matches baseline is admitted.
+
+    Two pre-existing-dirty files (``owned.txt`` + ``foreign.txt``). The
+    foreign writer mutates ``foreign.txt`` after baseline, so
+    ``preexisting_dirty_changed`` is in blockers. ``owned.txt`` is left
+    untouched after baseline — its current fingerprint equals the task's
+    observed baseline fingerprint, so the task legitimately owns it.
+
+    Naming ``owned.txt`` MUST succeed via the fingerprint-match carve-out.
+    """
+    from ouroboros.mutation_attribution import resolve_attributed_git_paths
+    root, data = _two_dirty_with_baseline(
+        tmp_path,
+        owner_change_after=False,
+        foreign_change_after=True,
+        task_id="task-w1",
+    )
+
+    selected, evidence, error = resolve_attributed_git_paths(
+        data, "task-w1", root, ["owned.txt"],
+    )
+    assert selected == ["owned.txt"], (
+        f"expected owned.txt admitted via fingerprint match, got selected={selected!r} "
+        f"error={error!r}"
+    )
+    assert error == ""
+    # The blocker and excluded list are preserved for reviewers.
+    assert "preexisting_dirty_changed" in evidence["blockers"]
+    assert "owned.txt" in evidence["excluded_preexisting_dirty"]
+    assert "foreign.txt" in evidence["excluded_preexisting_dirty"]
+
+
+def test_w2_pre_dirty_path_with_differing_fingerprint_remains_blocked(tmp_path):
+    """W2: a pre-existing-dirty path whose fingerprint DIFFERS stays blocked.
+
+    Same setup as W1 but the user names ``foreign.txt`` — its fingerprint
+    differs from baseline (cross-task contamination). The fingerprint-match
+    carve-out must NOT admit it.
+    """
+    from ouroboros.mutation_attribution import resolve_attributed_git_paths
+    root, data = _two_dirty_with_baseline(
+        tmp_path,
+        owner_change_after=False,
+        foreign_change_after=True,
+        task_id="task-w2",
+    )
+
+    selected, evidence, error = resolve_attributed_git_paths(
+        data, "task-w2", root, ["foreign.txt"],
+    )
+    assert selected == [], (
+        f"foreign.txt MUST be blocked (fingerprint differs from baseline), "
+        f"got selected={selected!r}"
+    )
+    assert ("subset" in error) or ("GIT_ATTRIBUTION_BLOCKED" in error)
+    # Both excluded paths are still recorded for reviewers.
+    assert "owned.txt" in evidence["excluded_preexisting_dirty"]
+    assert "foreign.txt" in evidence["excluded_preexisting_dirty"]
+
+
+def test_w3_external_writer_observed_remains_fail_closed(tmp_path):
+    """W3: external_writer_observed flag keeps fingerprint-match fail-closed.
+
+    Same baseline geometry as W1 (named path fingerprint matches baseline),
+    but the mutation evidence carries an additional ``external_writer_observed``
+    flag. The narrow exception is gated on ``blockers == {preexisting_dirty_changed}``
+    — every other global flag remains fail-closed regardless of fingerprint
+    match.
+    """
+    from ouroboros.mutation_attribution import resolve_attributed_git_paths
+    root, data = _two_dirty_with_baseline(
+        tmp_path,
+        owner_change_after=False,
+        foreign_change_after=True,
+        task_id="task-w3",
+    )
+    # Inject the security-flag into the durable evidence.
+    current = load_task_result(data, "task-w3") or {}
+    evidence_blob = dict(current.get("mutation_evidence") or {})
+    evidence_blob["flags"] = [{"flag": "external_writer_observed"}]
+    write_task_result(
+        data, "task-w3",
+        current.get("status", STATUS_RUNNING),
+        mutation_evidence=evidence_blob,
+    )
+
+    selected, evidence, error = resolve_attributed_git_paths(
+        data, "task-w3", root, ["owned.txt"],
+    )
+    assert selected == [], (
+        f"external_writer_observed MUST block even with matching fingerprint, "
+        f"got selected={selected!r}"
+    )
+    assert "GIT_ATTRIBUTION_BLOCKED" in error
+    # Both blockers must surface in the error (per T13 contract).
+    assert "preexisting_dirty_changed" in error
+    assert "external_writer_observed" in error
+    assert "owned.txt" in evidence["excluded_preexisting_dirty"]
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -520,34 +520,69 @@ def attributed_git_candidates(
         "base_commit": str(git.get("base_commit") or ""),
         "base_tree": str(git.get("base_tree") or ""),
         "canonical_root": str(root),
+        "dirty_fingerprints": fingerprints,
     }
 
 
-def _explicit_selection_can_narrow_dirty_blocker(
+def _compute_admissible_set(
     selected: Sequence[str],
     evidence: Mapping[str, Any],
-    blockers: Sequence[str],
-) -> bool:
-    """Allow an explicit path set to proceed when only ``preexisting_dirty_changed`` blocks.
+    *,
+    repo_root: pathlib.Path | None = None,
+) -> set[str]:
+    """Return the set of paths the caller may select under the narrow exception.
 
-    The narrow exception admits a non-empty explicit request only when:
+    The narrow exception admits a non-empty explicit request when every
+    selected path is admissible:
 
-    1. every selected path is a clean-at-baseline candidate (already computed
-       by :func:`attributed_git_candidates`);
-    2. no selected path belongs to ``excluded_preexisting_dirty``;
-    3. the sole blocker is ``preexisting_dirty_changed`` — every other global
-       flag remains fail-closed.
+    1. every selected path is a clean-at-baseline candidate (already
+       computed by :func:`attributed_git_candidates`); OR
+    2. every selected path that lies in ``excluded_preexisting_dirty``
+       has a CURRENT fingerprint equal to the task's observed BASELINE
+       fingerprint — the task legitimately owns its observed content
+       even when that content is dirty vs HEAD; AND
+    3. no selected path has a fingerprint DIFFERENT from the task's
+       baseline (cross-task contamination stays fail-closed).
 
-    Evidence is preserved unchanged for reviewers; this helper only describes
-    whether the blocker may be narrowed for the staging decision.
+    The caller separately enforces the blocker gate — the narrow exception
+    only applies when the sole blocker is ``preexisting_dirty_changed``;
+    every other global flag remains fail-closed.
+
+    Returns the empty set when the helper cannot prove the selected paths
+    admissible (no fingerprint match available, or ``repo_root`` not
+    provided).
     """
-    if set(blockers) != {"preexisting_dirty_changed"}:
-        return False
     candidates = {str(path) for path in evidence.get("candidates") or []}
     excluded = {
         str(path) for path in evidence.get("excluded_preexisting_dirty") or []
     }
-    return bool(selected) and set(selected) <= candidates and not (set(selected) & excluded)
+    baseline_fingerprints = {
+        str(path): fp
+        for path, fp in (evidence.get("dirty_fingerprints") or {}).items()
+    }
+    selected_set = {str(path) for path in selected}
+    if not selected_set:
+        return set()
+    # Path 1 fast-path: selected ⊆ candidates (no excluded paths touched).
+    if selected_set <= candidates and not (selected_set & excluded):
+        return candidates
+    # Path 2: pre-existing-dirty paths whose fingerprint is UNCHANGED from
+    # the task's observed baseline are owned content. Cross-task contamination
+    # (paths whose fingerprint DIFFERS from baseline) stays blocked.
+    if repo_root is None or not baseline_fingerprints:
+        return set()
+    fingerprint_matched: set[str] = set()
+    for path in excluded:
+        baseline_fp = baseline_fingerprints.get(path)
+        if baseline_fp is None:
+            continue
+        current_fp = _path_fingerprint(pathlib.Path(repo_root) / path)
+        if current_fp == baseline_fp:
+            fingerprint_matched.add(path)
+    admissible = candidates | fingerprint_matched
+    if selected_set <= admissible:
+        return admissible
+    return set()
 
 
 def resolve_attributed_git_paths(
@@ -591,12 +626,17 @@ def resolve_attributed_git_paths(
             "⚠️ GIT_NO_ATTRIBUTED_CHANGES: no clean-at-baseline task-owned paths "
             "are available to stage."
         )
-    if blockers and not (
+    admissible = _compute_admissible_set(
+        normalized_selected, evidence,
+        repo_root=pathlib.Path(repo_root),
+    )
+    narrow_exception_ok = (
         explicit_paths is not None
-        and _explicit_selection_can_narrow_dirty_blocker(
-            normalized_selected, evidence, blockers,
-        )
-    ):
+        and bool(normalized_selected)
+        and set(normalized_selected) <= admissible
+        and set(blockers) == {"preexisting_dirty_changed"}
+    )
+    if blockers and not narrow_exception_ok:
         return [], evidence, (
             "⚠️ GIT_ATTRIBUTION_BLOCKED: clean task attribution is unavailable "
             f"({', '.join(blockers)}). Automatic staging is disabled; preserve the "
@@ -607,7 +647,7 @@ def resolve_attributed_git_paths(
         selected = candidates
     else:
         selected = normalized_selected
-        outside = sorted(set(selected) - set(candidates))
+        outside = sorted(set(selected) - admissible)
         if outside:
             return [], evidence, (
                 "⚠️ GIT_ATTRIBUTION_BLOCKED: explicit paths must be a subset of "
