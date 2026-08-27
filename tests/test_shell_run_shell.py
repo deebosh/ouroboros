@@ -666,3 +666,96 @@ def test_run_shell_does_not_restore_outside_the_system_repo(tmp_path, fake_subpr
 
     assert "PROTECTED_PATH_AUTO_RESTORED" not in result
     assert (other_repo / "BIBLE.md").read_text() == "tampered\n"
+
+
+# ---------------------------------------------------------------------------
+# ibl-e357d33b9c54 regression surface — heredoc-via-run_command-bash-c class
+# ---------------------------------------------------------------------------
+#
+# Background: a heredoc whose body lives inside a `bash -c "..."` script
+# reaches the shell as a single argv element. The bash interpreter parses
+# the script text natively, so a body of `<<EOF\nbody\nEOF` is valid
+# shell syntax inside the script (the heredoc body is part of the script
+# text, NOT external stdin). Before the fix, the argv-validator's glued-
+# redirect check (step 4 of the cascade) matched `<<EOF` as if it were a
+# free-standing redirect arg and surfaced a misleading "Use ['sh','-c',...]
+# for redirection" error — even when the caller was ALREADY using
+# `bash -c "..."`. The class-level fix gates step 4 on `_SHELL_INTERPRETERS`
+# so shell-script argv reaches the interpreter untouched; non-shell argv
+# still get the redirect-shape guard (the existing
+# test_run_shell_blocks_glued_redirect regression in test_shell_redirect_guard
+# confirms that half).
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # Heredoc at the very start of the script body — the previously-broken case.
+        ["bash", "-c", "<<EOF\nbody\nEOF"],
+        ["sh", "-c", "<<'MARK'\nbody\nMARK"],
+        # Heredoc mid-script after a command — has always worked, included
+        # to lock in that we did not regress.
+        ["bash", "-c", "cat <<EOF\nbody\nEOF"],
+        ["bash", "-c", "for i in 1 2 3; do cat <<EOF\nline $i\nEOF; done"],
+        # Nested heredoc inside a conditional.
+        ["bash", "-c", "if true; then\n    cat <<'EOF'\nnested-conditional-heredoc\nEOF\nfi"],
+        # Heredoc with variable expansion in the body — proves the fix is not
+        # tied to literal-only bodies.
+        ["bash", "-c", "foo=bar; cat <<EOF\nval is $foo\nEOF"],
+        # zsh / fish / pwsh surface — all in _SHELL_INTERPRETERS.
+        ["zsh", "-c", "<<'EOF'\nzsh-heredoc\nEOF"],
+        ["pwsh", "-c", "$x = 1; Write-Output $x"],
+    ],
+)
+def test_run_shell_accepts_heredoc_inside_shell_script(cmd):
+    """Class-level regression for ibl-e357d33b9c54: heredoc-shaped substrings
+    are NOT a redirect arg when they are inside a `bash -c "..."` (or any
+    _SHELL_INTERPRETERS-equivalent) script body. The validator must return
+    an empty string, not the misleading redirect warning — bash itself
+    parses the script text natively and reads the heredoc body from it
+    (no external stdin required for `bash -c`)."""
+    from ouroboros.tools.shell import _validate_shell_argv
+
+    err = _validate_shell_argv(list(cmd))
+    assert err == "", (
+        f"_validate_shell_argv rejected legitimate shell-script heredoc argv "
+        f"{cmd!r}: {err!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        "2>/dev/null", "2>&1", ">out.log", ">>app.log", "&>all.log", ">&2",
+        "1>x", "2>>err", "<<EOF", "<<<word", "0<in.txt", "2<&1", "<",
+    ],
+)
+def test_run_shell_glued_redirect_still_blocked_without_shell(arg):
+    """Regression guard: the _SHELL_INTERPRETERS gate must NOT extend to
+    non-shell argv. A `find ... 2>/dev/null` style argv (no shell interpreter
+    in cmd[0]) must STILL be refused — the original safety guarantee from
+    v6.37.0 (test_shell_redirect_guard.py:18) survives the class-level fix."""
+    from ouroboros.tools.shell import _validate_shell_argv
+
+    err = _validate_shell_argv(["somecmd", "arg1", arg])
+    assert "SHELL_CMD_ERROR" in err
+    assert arg in err
+
+
+def test_run_shell_bash_c_heredoc_runs_end_to_end(tmp_path, fake_subprocess):
+    """End-to-end smoke: the actual subprocess invocation sees `bash -c "..."`
+    reach it UNCHANGED after the validator. The fake_subprocess fixture
+    records the argv that would have been executed; we assert the heredoc
+    script body is passed through verbatim, NOT intercepted by
+    `_run_shell` as a redirect error."""
+    calls = fake_subprocess(stdout="hello via heredoc\n")
+    script = "<<EOF\nhello via heredoc\nEOF\n"
+    result = _run_shell(_ctx(tmp_path), ["bash", "-c", script])
+    assert "SHELL_CMD_ERROR" not in result
+    assert "Shell redirection" not in result
+    assert calls, "fake_subprocess recorded no calls"
+    argv_seen = calls[0]["cmd"]
+    assert isinstance(argv_seen, (list, tuple))
+    assert any("hello via heredoc" in str(item) for item in argv_seen), (
+        f"Heredoc script body did not reach subprocess; argv was {argv_seen!r}"
+    )

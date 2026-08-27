@@ -845,14 +845,30 @@ def _validate_shell_argv(cmd: List[str]) -> str:
     # as a literal arg — the program then dies cryptically ("find:
     # 2>/dev/null: unknown primary"). Surface the same actionable hint
     # before subprocess runs.
-    for arg in cmd:
-        if _GLUED_REDIRECT_RE.match(arg):
-            return (
-                f'⚠️ SHELL_CMD_ERROR: Shell redirection "{arg}" found in cmd array. '
-                'Subprocess does not interpret shell syntax, so it reaches the '
-                'program as a literal argument. '
-                'Use ["sh", "-c", "your command with redirects"] for redirection.'
-            )
+    #
+    # GATE on _SHELL_INTERPRETERS (closes ibl-e357d33b9c54 / class of heredoc-via-
+    # bash-c false positives): when the executable IS a shell interpreter
+    # (`sh`/`bash`/`zsh`/`fish`/`cmd`/`powershell`/`pwsh`), every following argv
+    # element is shell-syntax content — typically `cmd[1]="-c"` and then the
+    # script body. A heredoc start (`<<EOF`) at the beginning of a script body is
+    # VALID shell (the shell reads the body from the script text itself; external
+    # stdin is irrelevant for `bash -c "..."`). Without this gate, a call like
+    # `["bash", "-c", "<<EOF\nbody\nEOF"]` falsely hit this step and surfaced
+    # "Use [...'-c',...] for redirection" even though the caller was already doing
+    # exactly that — a class-level false positive unrelated to the underlying OS
+    # behavior (which works fine, verified empirically). The gate mirrors the
+    # env_ref and embedded_op gates at steps 1+6: argv syntax-checks belong to
+    # the "argv without a shell" case, never to the "argv whose content is a
+    # shell script" case.
+    if cmd and pathlib.Path(cmd[0]).name.lower() not in _SHELL_INTERPRETERS:
+        for arg in cmd:
+            if _GLUED_REDIRECT_RE.match(arg):
+                return (
+                    f'⚠️ SHELL_CMD_ERROR: Shell redirection "{arg}" found in cmd array. '
+                    'Subprocess does not interpret shell syntax, so it reaches the '
+                    'program as a literal argument. '
+                    'Use ["sh", "-c", "your command with redirects"] for redirection.'
+                )
 
     # cmd has exactly ONE element: that element is not "one argument among
     # several" (where operator-looking text can be legitimate content, e.g.
