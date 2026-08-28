@@ -1837,6 +1837,16 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
                 ),
                 "reason": "extraction_incomplete_transcript_exceeds_bound",
             }]
+        # ibl-01b310c0ce18: canonicalize_session_verdict emits `cross_check`
+        # audit entries for ALL three branches (schema/strict/light_model_extraction)
+        # when repo_root is set. Promote them to top-level `usage` so the
+        # audit trail survives _verdict_result's downstream merge — the light
+        # branch used to keep them under `usage['extraction']`; schema/strict
+        # dropped them silently. Promotion is idempotent: do not overwrite an
+        # already-present audit key with stale extraction data.
+        cc_audit = extraction_usage.get("cross_check")
+        if cc_audit and not usage.get("cross_check"):
+            usage["cross_check"] = cc_audit
         usage["verdict_method"] = method
         # P1: the cognitive artifact is the SESSION's own output, and canonicalization
         # legitimately destroys it — a schema-conformant `{"findings": []}` becomes `[]`
