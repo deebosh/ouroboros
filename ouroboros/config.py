@@ -135,12 +135,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_PRICING_TTL_SEC": 21600,
     # Main-loop round ceiling (was an inline literal in loop.py — hot-reloadable now).
     "OUROBOROS_MAX_ROUNDS": 200,
-    # ibl-long-task-context-growth-latency: when a single task's measured input
-    # (Main-fit prompt estimate) reaches this many tokens, the loop auto-schedules
-    # one tool-history compaction for the next round (same engine as the manual
-    # compact_context tool). 0 disables the automatic trigger; the manual tool is
-    # unaffected either way.
-    "OUROBOROS_AUTO_COMPACT_PROMPT_TOKENS": 180000,
     # Same-model attempt budget for TRANSIENT provider failure classes
     # (finish_reason=null, 429/5xx/overloaded); floored at the caller's base
     # retry budget. Permanent classes fail fast regardless.

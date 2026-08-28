@@ -74,9 +74,6 @@ class _CompactionRoundContext:
     round_idx: int
     event_queue: Optional[queue.Queue]
     emit_progress: Callable[[str], None]
-    # Main-fit prompt-token estimate from the PREVIOUS round (0 when unknown);
-    # drives the ibl-long-task-context-growth-latency automatic compaction trigger.
-    prompt_token_estimate: int = 0
 
 
 def _provider_failure_hint(accumulated_usage: Dict[str, Any]) -> str:
@@ -3318,52 +3315,15 @@ def _context_overflow_retries(tool_ctx: Any) -> set[Tuple[str, str]]:
     return retries
 
 
-# ibl-long-task-context-growth-latency: how many recent tool units the automatic
-# trigger keeps raw (mirrors the manual compact_context default), and the minimum
-# number of rounds between two automatic compactions so a still-large estimate
-# cannot re-fire every round.
-_AUTO_COMPACT_KEEP_RECENT = 6
-_AUTO_COMPACT_MIN_ROUND_GAP = 3
-
-
-def _auto_compact_prompt_token_threshold() -> int:
-    """Prompt-token estimate at/above which the loop auto-schedules a compaction.
-
-    0 (or an invalid override) disables the automatic trigger.
-    """
-    from ouroboros.config import SETTINGS_DEFAULTS
-
-    default = int(SETTINGS_DEFAULTS["OUROBOROS_AUTO_COMPACT_PROMPT_TOKENS"])
-    try:
-        return max(0, int(os.environ.get("OUROBOROS_AUTO_COMPACT_PROMPT_TOKENS", str(default))))
-    except (ValueError, TypeError):
-        log.warning("Invalid OUROBOROS_AUTO_COMPACT_PROMPT_TOKENS, defaulting to %s", default)
-        return default
-
-
 def _run_round_compaction(
     messages: List[Dict[str, Any]],
     ctx: _CompactionRoundContext,
 ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """Apply a pending manual reclaim, or auto-schedule one when the measured
-    context has grown past ``OUROBOROS_AUTO_COMPACT_PROMPT_TOKENS``
-    (ibl-long-task-context-growth-latency). The manual ``compact_context`` tool
-    still takes precedence; the automatic path never overrides a manual request.
-    """
+    """Run only an explicit manual reclaim; Main fit owns automatic decisions."""
     pending = getattr(ctx.tools._ctx, "_pending_compaction", None)
-    auto = False
-    if pending is None:
-        threshold = _auto_compact_prompt_token_threshold()
-        last_auto = getattr(ctx.tools._ctx, "_last_auto_compact_round", None)
-        gap_ok = last_auto is None or (ctx.round_idx - int(last_auto)) >= _AUTO_COMPACT_MIN_ROUND_GAP
-        if threshold > 0 and int(ctx.prompt_token_estimate or 0) >= threshold and gap_ok:
-            pending = _AUTO_COMPACT_KEEP_RECENT
-            auto = True
-            ctx.tools._ctx._last_auto_compact_round = ctx.round_idx
     if pending is None:
         return messages, None
-    if not auto:
-        ctx.tools._ctx._pending_compaction = None
+    ctx.tools._ctx._pending_compaction = None
     rebuilt, receipt, usage = compact_tool_history_llm(
         messages,
         keep_recent=max(0, int(pending)),
@@ -3373,18 +3333,13 @@ def _run_round_compaction(
         trace_refs_by_tool_call_id=reclaim_trace_refs(ctx.tools._ctx),
     )
     _emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
-        "checkpoint_kind": "context_reclaim_auto" if auto else "context_reclaim_manual",
+        "checkpoint_kind": "context_reclaim_manual",
         "round": ctx.round_idx,
         "status": receipt.status,
         "reclaimed_tokens": receipt.reclaimed_tokens,
         "goal_reached": receipt.goal_reached,
         "checkpoint_ref": receipt.checkpoint_ref,
     })
-    if auto:
-        ctx.emit_progress(
-            f"🧹 Context reclaim auto-scheduled at ~{int(ctx.prompt_token_estimate):,} "
-            f"prompt tokens (keeping the last {_AUTO_COMPACT_KEEP_RECENT} tool units raw)."
-        )
     if receipt.status in {"checkpoint_failed", "summarizer_failed", "binding_mismatch"}:
         ctx.emit_progress(
             f"⚠️ Context compaction kept the transcript unchanged ({receipt.status})."
@@ -6957,9 +6912,6 @@ def run_llm_loop(
                     round_idx=round_idx,
                     event_queue=event_queue,
                     emit_progress=emit_progress,
-                    prompt_token_estimate=int(
-                        accumulated_usage.get("_context_prompt_estimate") or 0
-                    ),
                 ),
             )
             if tools._ctx.messages is not messages:
