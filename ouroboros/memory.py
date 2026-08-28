@@ -169,16 +169,28 @@ class Memory:
                 updated = [*blocks, new_block]
                 if len(updated) <= _SCRATCHPAD_MAX_BLOCKS:
                     return updated
-                evicted = updated[:-_SCRATCHPAD_MAX_BLOCKS]
-                for eb in evicted:
+                # FIFO eviction that respects pinning (ibl-3d7b7b7d5dc9):
+                # pinned blocks are exempt; we evict the oldest ELIGIBLE
+                # block until the list is back under cap. The block we just
+                # appended (updated[-1]) is never an eviction target — if the
+                # only eligible victims are pinned older blocks, we let the
+                # list grow past the cap rather than drop the newest write.
+                while len(updated) > _SCRATCHPAD_MAX_BLOCKS:
+                    evicted_idx = next(
+                        (i for i, b in enumerate(updated[:-1]) if not b.get("pinned", False)),
+                        None,
+                    )
+                    if evicted_idx is None:
+                        break
+                    evicted_block = updated.pop(evicted_idx)
                     append_jsonl(self.journal_path(), {
                         "ts": utc_now_iso(),
                         "type": "block_evicted",
-                        "evicted_block_ts": eb.get("ts", ""),
-                        "evicted_block_source": eb.get("source", ""),
-                        "evicted_block_content": eb.get("content", ""),
+                        "evicted_block_ts": evicted_block.get("ts", ""),
+                        "evicted_block_source": evicted_block.get("source", ""),
+                        "evicted_block_content": evicted_block.get("content", ""),
                     })
-                return updated[-_SCRATCHPAD_MAX_BLOCKS:]
+                return updated
 
             self.mutate_scratchpad_blocks(_append)
         except Exception:
@@ -210,6 +222,127 @@ class Memory:
             log.debug("Failed to write scratchpad size to journal", exc_info=True)
 
         return new_block
+
+    def prune_scratchpad_block(
+        self, *, index: Optional[int] = None, ts: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Explicitly prune a scratchpad block by index or ts.
+
+        Distinct from FIFO eviction: every successful prune is journaled as
+        ``block_pruned`` with the pruned block's ts/source/content preserved,
+        so the audit trail can distinguish explicit removal from automatic
+        eviction. Pinning does NOT protect from explicit prune — pinning is
+        a policy on auto-eviction, not permanence (callers that want
+        permanence should remove the pin first, then prune).
+
+        Mutators pass through ``mutate_scratchpad_blocks`` so the underlying
+        JSON write + markdown regen are atomic with the journal entry.
+
+        Raises ``IndexError`` if ``index`` is out of range, ``KeyError`` if
+        no block matches ``ts``. Exactly one of ``index``/``ts`` is required
+        — passing both or neither is a ``ValueError``.
+        """
+        if (index is None) == (ts is None):
+            raise ValueError(
+                "prune_scratchpad_block requires exactly one of index or ts"
+            )
+
+        def _prune(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            if index is not None:
+                if index < 0 or index >= len(blocks):
+                    raise IndexError(
+                        f"scratchpad block index {index} out of range "
+                        f"[0, {len(blocks)})"
+                    )
+                pruned = blocks.pop(index)
+                mode = "index"
+                key = index
+            else:
+                found_idx = next(
+                    (i for i, b in enumerate(blocks) if b.get("ts") == ts),
+                    None,
+                )
+                if found_idx is None:
+                    raise KeyError(f"no scratchpad block with ts={ts!r}")
+                pruned = blocks.pop(found_idx)
+                mode = "ts"
+                key = ts
+            append_jsonl(self.journal_path(), {
+                "ts": utc_now_iso(),
+                "type": "block_pruned",
+                "pruned_block_ts": pruned.get("ts", ""),
+                "pruned_block_source": pruned.get("source", ""),
+                "pruned_block_content": pruned.get("content", ""),
+                "prune_mode": mode,
+                "prune_key": key,
+            })
+            return blocks
+
+        self.mutate_scratchpad_blocks(_prune)
+        return {
+            "pruned": True,
+            "mode": "index" if index is not None else "ts",
+            "key": index if index is not None else ts,
+        }
+
+    def pin_scratchpad_block(self, ts: str) -> Dict[str, Any]:
+        """Mark a scratchpad block as pinned (exempt from FIFO eviction).
+
+        Pinning does NOT protect from explicit ``prune_scratchpad_block`` —
+        pinning is a policy on auto-eviction, not permanence. Journaled as
+        ``block_pinned`` with the pinned block's ts.
+
+        Raises ``KeyError`` if no block matches ``ts``, ``ValueError`` if
+        the block is already pinned (idempotency check — surfaces explicit
+        errors instead of silent double-journal).
+        """
+        def _pin(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            for b in blocks:
+                if b.get("ts") == ts:
+                    if b.get("pinned"):
+                        raise ValueError(
+                            f"scratchpad block ts={ts!r} is already pinned"
+                        )
+                    b["pinned"] = True
+                    b["pinned_at"] = utc_now_iso()
+                    append_jsonl(self.journal_path(), {
+                        "ts": utc_now_iso(),
+                        "type": "block_pinned",
+                        "pinned_block_ts": ts,
+                    })
+                    return blocks
+            raise KeyError(f"no scratchpad block with ts={ts!r}")
+
+        self.mutate_scratchpad_blocks(_pin)
+        return {"pinned": True, "ts": ts}
+
+    def unpin_scratchpad_block(self, ts: str) -> Dict[str, Any]:
+        """Remove the pinned flag from a scratchpad block, restoring it to
+        FIFO eviction candidacy. Journaled as ``block_unpinned``.
+
+        Raises ``KeyError`` if no block matches ``ts``, ``ValueError`` if
+        the block is not currently pinned.
+        """
+        def _unpin(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            for b in blocks:
+                if b.get("ts") == ts:
+                    if not b.get("pinned"):
+                        raise ValueError(
+                            f"scratchpad block ts={ts!r} is not pinned"
+                        )
+                    b.pop("pinned", None)
+                    b.pop("pinned_at", None)
+                    b["unpinned_at"] = utc_now_iso()
+                    append_jsonl(self.journal_path(), {
+                        "ts": utc_now_iso(),
+                        "type": "block_unpinned",
+                        "unpinned_block_ts": ts,
+                    })
+                    return blocks
+            raise KeyError(f"no scratchpad block with ts={ts!r}")
+
+        self.mutate_scratchpad_blocks(_unpin)
+        return {"unpinned": True, "ts": ts}
 
     def regenerate_scratchpad_md(self) -> None:
         bp = self.scratchpad_blocks_path()

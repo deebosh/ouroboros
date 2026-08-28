@@ -12,7 +12,7 @@ import time
 import uuid
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros.config import (
     apply_settings_to_env,
@@ -1945,39 +1945,101 @@ def _chat_history(
     return mem.chat_history(count=count, offset=offset, search=search, **filters)
 
 
-def _update_scratchpad(ctx: ToolContext, content: str) -> str:
-    """LLM-driven scratchpad update — appends a timestamped block (Constitution P5: LLM-first)."""
+def _update_scratchpad(
+    ctx: ToolContext,
+    content: str = "",
+    action: str = "append",
+    index: Optional[int] = None,
+    ts: Optional[str] = None,
+) -> str:
+    """LLM-driven scratchpad update (Constitution P5: LLM-first).
+
+    action='append' (default): append a timestamped block. 10+ char minimum
+    and project-scope no-op guard preserved from the original handler.
+
+    action='prune': explicitly remove one block by index (positional) or ts
+    (timestamp). XOR — exactly one of index/ts required. Distinct from FIFO
+    eviction; journaled as ``block_pruned``.
+
+    action='pin': mark a block as pinned (exempt from FIFO eviction). Pinning
+    does NOT protect from explicit prune. Journaled as ``block_pinned``.
+
+    action='unpin': remove the pinned flag, restoring FIFO candidacy.
+    Journaled as ``block_unpinned``.
+
+    All four actions honor the project-scope guard (no per-project scratchpad;
+    project tasks must use ``knowledge_write`` for durable project facts).
+    """
     if str(getattr(ctx, "project_id", "") or "").strip():
         # Project-scoped tasks have no per-project scratchpad and must never write
         # the canonical scratchpad (outbound isolation). Persist project facts via
         # knowledge_write instead (routed to the per-project store).
         return ("OK: scratchpad is not used for project-scoped tasks (no per-project "
                 "scratchpad). Persist durable project facts with knowledge_write.")
-    if not content or not isinstance(content, str) or len(content.strip()) < 10:
-        return (
-            "⚠️ REJECTED: content is empty or too short "
-            f"(got {type(content).__name__}, len={len(content) if isinstance(content, str) else 'N/A'}). "
-            "Scratchpad must have meaningful content (10+ chars). "
-            "This likely means the tool call was malformed — check your arguments."
-        )
+
     from ouroboros.memory import Memory
     mem = Memory(drive_root=ctx.drive_root)
     mem.ensure_files()
-    try:
-        block = mem.append_scratchpad_block(
-            content,
-            source="task",
-            metadata={
-                "task_id": str(getattr(ctx, "task_id", "") or ""),
-                "task_type": str(getattr(ctx, "current_task_type", "") or ""),
-                "delegation_role": str((getattr(ctx, "task_metadata", {}) or {}).get("delegation_role", "")) if isinstance(getattr(ctx, "task_metadata", {}), dict) else "",
-            },
-        )
-    except RuntimeError as exc:
-        if "LEGACY_SCRATCHPAD_REQUIRES_MANUAL_UPGRADE" in str(exc):
-            return f"⚠️ {exc}"
-        raise
-    return f"OK: scratchpad block appended ({len(content)} chars, ts={block.get('ts', '?')[:16]})"
+
+    if action == "append":
+        if not content or not isinstance(content, str) or len(content.strip()) < 10:
+            return (
+                "⚠️ REJECTED: content is empty or too short "
+                f"(got {type(content).__name__}, len={len(content) if isinstance(content, str) else 'N/A'}). "
+                "Scratchpad must have meaningful content (10+ chars). "
+                "This likely means the tool call was malformed — check your arguments."
+            )
+        try:
+            block = mem.append_scratchpad_block(
+                content,
+                source="task",
+                metadata={
+                    "task_id": str(getattr(ctx, "task_id", "") or ""),
+                    "task_type": str(getattr(ctx, "current_task_type", "") or ""),
+                    "delegation_role": str((getattr(ctx, "task_metadata", {}) or {}).get("delegation_role", "")) if isinstance(getattr(ctx, "task_metadata", {}), dict) else "",
+                },
+            )
+        except RuntimeError as exc:
+            if "LEGACY_SCRATCHPAD_REQUIRES_MANUAL_UPGRADE" in str(exc):
+                return f"⚠️ {exc}"
+            raise
+        return f"OK: scratchpad block appended ({len(content)} chars, ts={block.get('ts', '?')[:16]})"
+
+    if action == "prune":
+        if (index is None) == (ts is None):
+            return ("⚠️ REJECTED: prune requires exactly one of 'index' or 'ts' "
+                    f"(got index={index!r}, ts={ts!r}).")
+        try:
+            mem.prune_scratchpad_block(index=index, ts=ts)
+        except IndexError as exc:
+            return f"⚠️ REJECTED: {exc}"
+        except KeyError as exc:
+            return f"⚠️ REJECTED: {exc}"
+        return f"OK: scratchpad block pruned (mode={'index' if index is not None else 'ts'}, key={index if index is not None else ts})"
+
+    if action == "pin":
+        if not ts:
+            return "⚠️ REJECTED: pin requires 'ts' (timestamp of the block to pin)"
+        try:
+            mem.pin_scratchpad_block(ts)
+        except KeyError as exc:
+            return f"⚠️ REJECTED: {exc}"
+        except ValueError as exc:
+            return f"⚠️ REJECTED: {exc}"
+        return f"OK: scratchpad block pinned (ts={ts})"
+
+    if action == "unpin":
+        if not ts:
+            return "⚠️ REJECTED: unpin requires 'ts' (timestamp of the block to unpin)"
+        try:
+            mem.unpin_scratchpad_block(ts)
+        except KeyError as exc:
+            return f"⚠️ REJECTED: {exc}"
+        except ValueError as exc:
+            return f"⚠️ REJECTED: {exc}"
+        return f"OK: scratchpad block unpinned (ts={ts})"
+
+    return f"⚠️ REJECTED: unknown action {action!r} (expected append|prune|pin|unpin)"
 
 
 def _send_user_message(ctx: ToolContext, text: str, reason: str = "") -> str:
@@ -2838,14 +2900,19 @@ def get_tools() -> List[ToolEntry]:
         }, _chat_history),
         ToolEntry("update_scratchpad", {
             "name": "update_scratchpad",
-            "description": "Append a block to your working memory (scratchpad). Each call adds a "
-                           "timestamped block; oldest blocks are auto-evicted when the cap (10) is reached. "
-                           "Write what matters NOW — active tasks, decisions, observations. "
-                           "Persists across sessions, read at every task start. "
-                           "No-op on a project-scoped task (no per-project scratchpad); use knowledge_write for project facts.",
+            "description": "Update your working memory (scratchpad). action='append' (default) "
+                           "adds a timestamped block; oldest blocks are auto-evicted when the cap "
+                           "(10) is reached, unless they are pinned. action='prune' explicitly "
+                           "removes one block by index or ts. action='pin'/'unpin' toggles the "
+                           "FIFO-eviction exemption flag (pinning does NOT protect from explicit "
+                           "prune). No-op on a project-scoped task (no per-project scratchpad); "
+                           "use knowledge_write for project facts.",
             "parameters": {"type": "object", "properties": {
-                "content": {"type": "string", "description": "Content for this scratchpad block"},
-            }, "required": ["content"]},
+                "action": {"type": "string", "enum": ["append", "prune", "pin", "unpin"], "default": "append", "description": "What to do: append (default), prune, pin, or unpin."},
+                "content": {"type": "string", "description": "Content for this scratchpad block (required for action='append'; 10+ chars)."},
+                "index": {"type": "integer", "description": "Zero-based positional index for action='prune'."},
+                "ts": {"type": "string", "description": "Block timestamp (ISO-8601) for action='prune'/'pin'/'unpin'."},
+            }, "required": [], "additionalProperties": False},
         }, _update_scratchpad),
         ToolEntry("send_user_message", {
             "name": "send_user_message",
