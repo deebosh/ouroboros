@@ -593,6 +593,16 @@ def _identifier_present_in_repo(identifier: str, repo_root: pathlib.Path) -> boo
     if not identifier or len(identifier) < 3:
         return True  # trivially present, never claim hallucination on short tokens
 
+    # Fail-closed tracker: any per-file I/O uncertainty (stat/open/exists
+    # raising OSError on a file we wanted to inspect) is recorded here.
+    # If the walk completes without finding the identifier AND we observed
+    # at least one OSError, we cannot substantiate "absent" — the caller's
+    # downgrade path must treat the identifier as present to avoid
+    # fabricating a downgrade from incomplete evidence. Aligns the
+    # per-file catch arms with the function docstring's "Errors default
+    # to 'present'" contract.
+    saw_any_oserror = False
+
     # Fast path 1: dotted-path module resolution. ``ouroboros.review_execution``
     # → ``repo_root/ouroboros/review_execution.py`` or
     # ``repo_root/ouroboros/review_execution/__init__.py``.
@@ -614,6 +624,7 @@ def _identifier_present_in_repo(identifier: str, repo_root: pathlib.Path) -> boo
                     if candidate.exists():
                         return True
                 except OSError:
+                    saw_any_oserror = True
                     continue
         except (OSError, ValueError):
             pass
@@ -641,16 +652,18 @@ def _identifier_present_in_repo(identifier: str, repo_root: pathlib.Path) -> boo
                     if fp.stat().st_size > 1_000_000:
                         continue
                 except OSError:
+                    saw_any_oserror = True
                     continue
                 try:
                     with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
                         if identifier in fh.read():
                             return True
                 except OSError:
+                    saw_any_oserror = True
                     continue
     except OSError:
         return True  # walk failed: default to "present" to avoid false downgrade
-    return False
+    return saw_any_oserror
 
 
 # Patterns used to extract code-shaped claims from a finding's reason/item.
