@@ -35,6 +35,7 @@ _MODEL_DEFAULTS = {
         "light": str(SETTINGS_DEFAULTS["OUROBOROS_MODEL_LIGHT"]),
         "vision": str(SETTINGS_DEFAULTS["OUROBOROS_MODEL_VISION"]),
         "consciousness": str(SETTINGS_DEFAULTS["OUROBOROS_MODEL_CONSCIOUSNESS"]),
+        "chat": str(SETTINGS_DEFAULTS["OUROBOROS_MODEL_CHAT"]),
         "fallback": str(SETTINGS_DEFAULTS["OUROBOROS_MODEL_FALLBACKS"]),
     },
     "openai": {key: value for key, value in OPENAI_DIRECT_DEFAULTS.items() if key != "heavy"},
@@ -48,6 +49,7 @@ _MODEL_DEFAULTS["local"] = dict(_MODEL_DEFAULTS["openrouter"])
 for _profile_defaults in _MODEL_DEFAULTS.values():
     _profile_defaults.setdefault("consciousness", "")
     _profile_defaults.setdefault("vision", "")
+    _profile_defaults.setdefault("chat", "")
 
 _STEPS = _rows(("id", "title", "railCopy", "copy", "footer"), (
     ("providers", "Add your access", "Keys + local", "Fill at least one remote key or a local model source. The next step adapts to what you configured here.", "Paste only what you already have. OpenRouter, direct provider keys, and an optional local model can coexist."),
@@ -96,6 +98,7 @@ _MODEL_SLOTS = _rows(("slot", "stateKey", "settingKey", "inputId", "label", "not
     ("main", "mainModel", "OUROBOROS_MODEL", "main-model", "Main Model", "Primary reasoning and long-form work.", "s-model", "s-local-main"),
     ("light", "lightModel", "OUROBOROS_MODEL_LIGHT", "light-model", "Light Model", "Fast summaries, lightweight internal work, reflections, and the default Fast scout. Empty uses Main.", "s-model-light", "s-local-light"),
     ("vision", "visionModel", "OUROBOROS_MODEL_VISION", "vision-model", "Vision Model", "Caption and VLM lane. Empty uses Main.", "s-model-vision", ""),
+    ("chat", "chatModel", "OUROBOROS_MODEL_CHAT", "chat-model", "Chat Model", "Interactive chat replies. Empty uses Main. Tasks you launch from chat still use Main.", "s-model-chat", ""),
     ("consciousness", "consciousnessModel", "OUROBOROS_MODEL_CONSCIOUSNESS", "consciousness-model", "Consciousness Model", "High-horizon background consciousness. Empty uses Main.", "s-model-consciousness", "s-local-consciousness"),
     ("fallback", "fallbackModel", "OUROBOROS_MODEL_FALLBACKS", "fallback-model", "Fallback Model", "Fallback and resilience path.", "s-model-fallback", "s-local-fallback"),
 ))

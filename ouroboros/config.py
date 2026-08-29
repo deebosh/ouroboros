@@ -102,6 +102,10 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_MODEL_HEAVY": OPENROUTER_DEFAULTS["heavy"],
     "OUROBOROS_MODEL_LIGHT": OPENROUTER_DEFAULTS["light"],
     "OUROBOROS_MODEL_VISION": OPENROUTER_DEFAULTS["vision"],
+    # Interactive chat lane; empty means "use OUROBOROS_MODEL". Only the
+    # direct-chat loop reads it — a real task launched FROM chat still runs on
+    # OUROBOROS_MODEL.
+    "OUROBOROS_MODEL_CHAT": OPENROUTER_DEFAULTS["chat"],
     "OUROBOROS_IMAGE_INPUT_MODE": "auto",
     # Background consciousness is a high-horizon loop, not a cheap helper lane.
     "OUROBOROS_MODEL_CONSCIOUSNESS": OPENROUTER_DEFAULTS["consciousness"],
@@ -384,6 +388,12 @@ def get_heavy_model() -> str:
 def get_vision_model() -> str:
     """Return the vision/caption model slot; empty falls back to OUROBOROS_MODEL."""
     return str(os.environ.get("OUROBOROS_MODEL_VISION", "") or "").strip() or _main_model()
+
+
+def get_chat_model() -> str:
+    """Interactive-chat slot; empty falls back to Main. Only the direct-chat loop
+    uses this — a task launched from chat keeps OUROBOROS_MODEL."""
+    return str(os.environ.get("OUROBOROS_MODEL_CHAT", "") or "").strip() or _main_model()
 
 
 def get_image_input_mode() -> str:

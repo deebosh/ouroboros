@@ -100,6 +100,7 @@ PROVIDER_CREDENTIAL_GROUPS: dict[str, tuple[str, ...]] = {
 ACTIVE_MODEL_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT",
     "OUROBOROS_MODEL_VISION", "OUROBOROS_MODEL_CONSCIOUSNESS",
+    "OUROBOROS_MODEL_CHAT",
     "OUROBOROS_MODEL_FALLBACKS", "OUROBOROS_MODEL_FALLBACK",
     "OUROBOROS_MODEL_DEEP_SELF_REVIEW", "OUROBOROS_WEBSEARCH_MODEL",
     "OUROBOROS_REVIEW_MODELS", "OUROBOROS_SCOPE_REVIEW_MODELS",
@@ -311,6 +312,7 @@ OPENROUTER_DEFAULTS = {
     "light": "openai/gpt-5.6-luna",
     "vision": "",
     "consciousness": "",
+    "chat": "",
     "fallback": "openai/gpt-5.6-luna",
     "deep_self_review": "openai/gpt-5.6-sol-pro",
 }

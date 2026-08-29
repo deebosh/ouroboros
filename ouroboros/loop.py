@@ -15,7 +15,7 @@ import logging
 
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, add_usage
 from ouroboros import task_pacing
-from ouroboros.config import adaptive_quorum, get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode, resolve_effort
+from ouroboros.config import adaptive_quorum, get_chat_model, get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode, resolve_effort
 from ouroboros.temperature_settings import resolve_temperature
 from ouroboros.review_cycles import REASON_REVIEW_CYCLES_EXHAUSTED
 from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_DELIVERY_CONTROL_DEGRADED, REASON_OWNER_REQUESTED_FINALIZATION, RESULT_INFRA_FAILED, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects
@@ -6789,7 +6789,12 @@ def run_llm_loop(
     ctx._delivery_evidence_fingerprint = ""
     _initialize_owner_directives(ctx, messages)
     task_model_override = str(getattr(ctx, "task_model_override", "") or "").strip()
-    active_model = task_model_override or llm.default_model()
+    # Interactive chat turns route through the dedicated Chat slot
+    # (OUROBOROS_MODEL_CHAT, empty -> Main). Headless tasks — including a real
+    # task launched from a chat session — keep the Main model. An explicit
+    # per-task model override still wins over both.
+    _chat_turn = bool(getattr(ctx, "is_direct_chat", False))
+    active_model = task_model_override or (get_chat_model() if _chat_turn else llm.default_model())
     active_effort = initial_effort
     if getattr(ctx, "task_use_local_override", None) is not None:
         active_use_local = bool(ctx.task_use_local_override)
