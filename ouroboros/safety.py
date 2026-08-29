@@ -548,6 +548,7 @@ _PROVIDER_KEY_ENV = {
     "minimax": "MINIMAX_API_KEY",
     "openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
     "cloudru": "CLOUDRU_FOUNDATION_MODELS_API_KEY",
+    "qwen": "QWEN_API_KEY",
     "gigachat": "GIGACHAT_CREDENTIALS",
 }
 

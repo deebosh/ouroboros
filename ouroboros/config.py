@@ -74,6 +74,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OPENAI_COMPATIBLE_BASE_URL": "",
     "CLOUDRU_FOUNDATION_MODELS_API_KEY": "",
     "CLOUDRU_FOUNDATION_MODELS_BASE_URL": "https://foundation-models.api.cloud.ru/v1",
+    "QWEN_API_KEY": "",
+    "QWEN_BASE_URL": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     "GIGACHAT_CREDENTIALS": "",
     "GIGACHAT_USER": "",
     "GIGACHAT_PASSWORD": "",
@@ -534,6 +536,7 @@ def _exclusive_direct_remote_provider_env() -> str:
     has_legacy_base = bool(str(os.environ.get("OPENAI_BASE_URL", "") or "").strip())
     has_compatible = bool(str(os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "") or "").strip())
     has_cloudru = bool(str(os.environ.get("CLOUDRU_FOUNDATION_MODELS_API_KEY", "") or "").strip())
+    has_qwen = bool(str(os.environ.get("QWEN_API_KEY", "") or "").strip())
     has_gigachat = bool(str(os.environ.get("GIGACHAT_CREDENTIALS", "") or "").strip()) or (
         bool(str(os.environ.get("GIGACHAT_USER", "") or "").strip())
         and bool(str(os.environ.get("GIGACHAT_PASSWORD", "") or "").strip())
@@ -546,7 +549,7 @@ def _exclusive_direct_remote_provider_env() -> str:
         return ""
     direct = [name for name, present in (
         ("openai", has_openai), ("anthropic", has_anthropic), ("minimax", has_minimax),
-        ("cloudru", has_cloudru), ("gigachat", has_gigachat),
+        ("cloudru", has_cloudru), ("qwen", has_qwen), ("gigachat", has_gigachat),
     ) if present]
     return direct[0] if len(direct) == 1 else ""
 

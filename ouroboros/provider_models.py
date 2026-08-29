@@ -31,6 +31,7 @@ PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
     ("minimax::", "minimax"),
     ("cloudru::", "cloudru"),
     ("gigachat::", "gigachat"),
+    ("qwen::", "qwen"),
     ("google_genai::", "google_genai"),
     ("openai-compatible::", "openai-compatible"),
     ("openrouter::", "openrouter"),
@@ -42,6 +43,7 @@ PROVIDER_ENV_KEYS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "minimax": "MINIMAX_API_KEY",
     "cloudru": "CLOUDRU_FOUNDATION_MODELS_API_KEY",
+    "qwen": "QWEN_API_KEY",
     "google_genai": "OUROBOROS_GEMINI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
@@ -68,6 +70,7 @@ PROVIDER_CREDENTIAL_GROUPS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_API_KEY",),
     "minimax": ("MINIMAX_API_KEY", "MINIMAX_REGION"),
     "cloudru": ("CLOUDRU_FOUNDATION_MODELS_API_KEY", "CLOUDRU_FOUNDATION_MODELS_BASE_URL"),
+    "qwen": ("QWEN_API_KEY", "QWEN_BASE_URL"),
     "gigachat": (
         "GIGACHAT_CREDENTIALS", "GIGACHAT_PASSWORD", "GIGACHAT_USER",
         "GIGACHAT_BASE_URL", "GIGACHAT_SCOPE", "GIGACHAT_VERIFY_SSL_CERTS",
@@ -366,6 +369,17 @@ GIGACHAT_DIRECT_DEFAULTS = {
     "fallback": "gigachat::GigaChat-2-Max",
 }
 
+QWEN_DEFAULT_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+# Alibaba DashScope (Qwen) OpenAI-compatible runtime. qwen3-max is the current
+# flagship; qwen-plus is the cost/latency middle tier used for the light lane.
+QWEN_DIRECT_DEFAULTS = {
+    "main": "qwen::qwen3-max",
+    "heavy": "qwen::qwen3-max",
+    "light": "qwen::qwen-plus",
+    "fallback": "qwen::qwen-plus",
+}
+
 MINIMAX_DIRECT_DEFAULTS = {
     "main": "minimax::MiniMax-M3",
     "heavy": "minimax::MiniMax-M3",
@@ -413,6 +427,7 @@ DIRECT_PROVIDER_DEFAULTS = {
     "anthropic": ANTHROPIC_DIRECT_DEFAULTS,
     "cloudru": CLOUDRU_DIRECT_DEFAULTS,
     "gigachat": GIGACHAT_DIRECT_DEFAULTS,
+    "qwen": QWEN_DIRECT_DEFAULTS,
     "google_genai": GOOGLE_GENAI_DIRECT_DEFAULTS,
     "minimax": MINIMAX_DIRECT_DEFAULTS,
 }
@@ -428,6 +443,7 @@ DIRECT_PROVIDER_REVIEW_ROLES = {
     "anthropic": ("main", "main", "main"),
     "cloudru": ("main", "main", "main"),
     "gigachat": ("main", "main", "main"),
+    "qwen": ("main", "main", "main"),
     "minimax": ("main", "light", "light"),
 }
 
@@ -572,6 +588,8 @@ def normalize_model_identity(model: str) -> str:
         return f"gigachat/{text[len('gigachat::'):]}"
     if text.startswith("minimax::"):
         return f"minimax/{text[len('minimax::'):]}"
+    if text.startswith("qwen::"):
+        return f"qwen/{text[len('qwen::'):]}"
     if text.startswith("google_genai::"):
         return f"google/{text[len('google_genai::'):]}"
     if text.startswith("anthropic::"):

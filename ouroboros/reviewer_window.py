@@ -136,6 +136,7 @@ def reviewer_route(model_id: str, *, session: bool = False) -> tuple:
         "openai": "OPENAI_BASE_URL",
         "openai-compatible": "OPENAI_COMPATIBLE_BASE_URL",
         "cloudru": "CLOUDRU_FOUNDATION_MODELS_BASE_URL",
+        "qwen": "QWEN_BASE_URL",
         "gigachat": "GIGACHAT_BASE_URL",
     }.get(provider, "")
     base_url = str(load_settings().get(settings_key) or "") if settings_key else ""

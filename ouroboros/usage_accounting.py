@@ -1057,7 +1057,7 @@ def settle_attempt(
 
 # Cache-inclusive prompt totals are measurable; GigaChat's semantics remain unknown.
 _CACHE_INCLUSIVE_PROMPT_TOKEN_PROVIDERS = frozenset({
-    "openrouter", "openai", "openai-compatible", "cloudru", "local", "anthropic",
+    "openrouter", "openai", "openai-compatible", "cloudru", "qwen", "local", "anthropic",
 })
 
 

@@ -829,7 +829,7 @@ def _metadata_fetch_transport_failed(provider: str, model: str, use_local: bool)
         return False
 
 
-_GENERATIVE_PROBE_PROVIDERS = {"cloudru", "openai-compatible", "minimax", "openai", "openrouter"}
+_GENERATIVE_PROBE_PROVIDERS = {"cloudru", "qwen", "openai-compatible", "minimax", "openai", "openrouter"}
 _PROBE_CANARIES = ["OBOCANARYBEGIN7Q", "OBOCANARYMID7Q", "OBOCANARYEND7Q"]
 
 

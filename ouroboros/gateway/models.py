@@ -295,6 +295,22 @@ def _provider_specs(
             ),
         ))
 
+    qwen_api_key = str(settings.get("QWEN_API_KEY", "") or "").strip()
+    if qwen_api_key:
+        qwen_base_url = str(settings.get("QWEN_BASE_URL", "") or "").strip()
+        if not qwen_base_url:
+            qwen_base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        specs.append((
+            "qwen",
+            lambda client: _fetch_openai_compatible_model_catalog(
+                client,
+                "qwen",
+                "Qwen (DashScope)",
+                qwen_api_key,
+                qwen_base_url,
+            ),
+        ))
+
     gigachat_credentials = str(settings.get("GIGACHAT_CREDENTIALS", "") or "").strip()
     gigachat_user = str(settings.get("GIGACHAT_USER", "") or "").strip()
     gigachat_password = str(settings.get("GIGACHAT_PASSWORD", "") or "").strip()

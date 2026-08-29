@@ -450,6 +450,8 @@ def _provider_base_url(settings: Dict[str, Any], provider: str) -> str:
         return str(settings.get("OPENAI_COMPATIBLE_BASE_URL") or "")
     if provider == "cloudru":
         return str(settings.get("CLOUDRU_FOUNDATION_MODELS_BASE_URL") or "")
+    if provider == "qwen":
+        return str(settings.get("QWEN_BASE_URL") or "")
     if provider == "gigachat":
         return str(settings.get("GIGACHAT_BASE_URL") or "")
     if provider == "minimax":

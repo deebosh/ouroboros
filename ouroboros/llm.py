@@ -1284,6 +1284,8 @@ class LLMClient(GoogleGenAIChatMixin):
             return f"gigachat/{resolved_model}"
         if provider == "minimax":
             return f"minimax/{resolved_model}"
+        if provider == "qwen":
+            return f"qwen/{resolved_model}"
         if provider == "google_genai":
             # v6.103.8 — direct Google Generative AI route. The qualified
             # usage name follows the OpenRouter convention (``google/<model>``)
@@ -1357,6 +1359,26 @@ class LLMClient(GoogleGenAIChatMixin):
                 "base_url": (
                     configured("CLOUDRU_FOUNDATION_MODELS_BASE_URL", "") or ""
                 ).strip() or "https://foundation-models.api.cloud.ru/v1",
+                "default_headers": {},
+                "supports_openrouter_extensions": False,
+                "supports_generation_cost": False,
+            }
+
+        if provider == "qwen":
+            # Alibaba DashScope (Qwen) — OpenAI-compatible, so it reuses the
+            # OpenAI client transport like cloudru/minimax. Base URL defaults to
+            # the international endpoint; set QWEN_BASE_URL to
+            # https://dashscope.aliyuncs.com/compatible-mode/v1 for the China region.
+            from ouroboros.provider_models import QWEN_DEFAULT_BASE_URL
+
+            return {
+                "provider": provider,
+                "resolved_model": resolved_model,
+                "usage_model": usage_model,
+                "api_key": configured("QWEN_API_KEY", ""),
+                "base_url": (
+                    configured("QWEN_BASE_URL", "") or ""
+                ).strip() or QWEN_DEFAULT_BASE_URL,
                 "default_headers": {},
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,

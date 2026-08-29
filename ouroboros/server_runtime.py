@@ -273,6 +273,7 @@ def _exclusive_direct_remote_provider(settings: dict) -> str:
     has_legacy_openai_base = bool(_setting_text(settings, "OPENAI_BASE_URL"))
     has_compatible = bool(_setting_text(settings, "OPENAI_COMPATIBLE_BASE_URL"))
     has_cloudru = bool(_setting_text(settings, "CLOUDRU_FOUNDATION_MODELS_API_KEY"))
+    has_qwen = bool(_setting_text(settings, "QWEN_API_KEY"))
     has_gigachat = bool(_setting_text(settings, "GIGACHAT_CREDENTIALS")) or (
         bool(_setting_text(settings, "GIGACHAT_USER"))
         and bool(_setting_text(settings, "GIGACHAT_PASSWORD"))
@@ -288,6 +289,7 @@ def _exclusive_direct_remote_provider(settings: dict) -> str:
             ("anthropic", has_anthropic),
             ("minimax", has_minimax),
             ("cloudru", has_cloudru),
+            ("qwen", has_qwen),
             ("gigachat", has_gigachat),
         ) if present
     ]

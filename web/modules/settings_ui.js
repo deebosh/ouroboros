@@ -113,6 +113,16 @@ const PROVIDER_CARDS = [
         },
     },
     {
+        id: 'qwen', title: 'Qwen (DashScope)', icon: '', hint: 'Alibaba DashScope OpenAI-compatible runtime', advanced: true,
+        fields: [
+            { id: 's-qwen-key', settingKey: 'QWEN_API_KEY', label: 'API Key', placeholder: 'sk-... (DashScope API key)' },
+            { id: 's-qwen-base-url', label: 'Base URL', placeholder: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' },
+        ],
+        testProvider: 'qwen',
+        testInputs: { 's-qwen-key': 'QWEN_API_KEY', 's-qwen-base-url': 'QWEN_BASE_URL' },
+        note: 'Use model values like <code>qwen::qwen3-max</code> or <code>qwen::qwen-plus</code> in the Models tab to route directly through DashScope. Base URL defaults to the international endpoint; use <code>https://dashscope.aliyuncs.com/compatible-mode/v1</code> for the China (Beijing) region.',
+    },
+    {
         id: 'minimax', title: 'MiniMax', icon: '', hint: 'Direct regional OpenAI-compatible runtime', advanced: true,
         fields: [
             { id: 's-minimax-key', settingKey: 'MINIMAX_API_KEY', label: 'API Key', placeholder: 'MiniMax API key' },

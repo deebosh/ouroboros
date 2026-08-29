@@ -132,8 +132,8 @@ def test_onboarding_compact_access_step_keeps_default_width_two_column():
 
 
 def test_settings_more_providers_collapse_keeps_inputs_mounted():
-    """Rarely used provider cards (Cloud.ru, MiniMax, GigaChat) collapse under a
-    "More providers" details wrapper, but their inputs must stay mounted:
+    """Rarely used provider cards (Cloud.ru, Qwen, MiniMax, GigaChat) collapse
+    under a "More providers" details wrapper, but their inputs must stay mounted:
     settings.js applyInputValue has no null guard, so a missing input id
     breaks settings load. The wrapper auto-opens when configured."""
     ui = _read("web/modules/settings_ui.js")
@@ -141,7 +141,7 @@ def test_settings_more_providers_collapse_keeps_inputs_mounted():
     css = _read("web/settings.css")
 
     assert 'id="settings-more-providers"' in ui
-    assert ui.count("advanced: true") == 3
+    assert ui.count("advanced: true") == 4
     assert "PROVIDER_CARDS.filter((card) => !card.advanced)" in ui
     assert "PROVIDER_CARDS.filter((card) => card.advanced)" in ui
     assert "syncMoreProvidersDisclosure" in settings
