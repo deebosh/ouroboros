@@ -36,6 +36,73 @@ async def api_health(_request: Request) -> JSONResponse:
     })
 
 
+async def api_review_continuations(request: Request) -> JSONResponse:
+    """Owner-visible surface for open review continuations + work_uncommitted tasks.
+
+    ibl-local-27745117e0e1: combines two complementary signals — the durable
+    review-continuation rows in ``state/review_continuations/`` (a task whose
+    final review attempt was blocked/interrupted) AND the recent task-results
+    whose terminal ``outcome_axes.execution.reason_code`` is
+    ``work_uncommitted`` (a task that finalized cleanly but left tracked files
+    dirty without a commit). Both surfaces belong on the owner dashboard:
+    the first is "the review pipeline blocked", the second is "the work is
+    not in git yet". Returned as one badge feed so a single /api call can drive
+    the dashboard toast and the boot startup-check.
+    """
+    try:
+        drive_root = request_drive_root(request)
+        # Local imports keep the gateway import-time cheap and avoid pulling
+        # the heavy agent_startup_checks module at server startup.
+        from ouroboros.agent_startup_checks import (
+            check_review_continuations,
+            list_work_uncommitted_tasks,
+        )
+        from ouroboros.task_continuation import list_review_continuations
+
+        env = _state_attr(
+            request,
+            "env",
+            _SimpleEnv(drive_root=drive_root),
+        )
+        check_payload, _ = check_review_continuations(env)
+        continuations, corrupt = list_review_continuations(drive_root)
+        uncommitted = list_work_uncommitted_tasks(drive_root)
+        rows = list(check_payload.get("open_review_continuations") or [])
+        interrupted = list(check_payload.get("interrupted_tasks") or [])
+        return JSONResponse({
+            "status": check_payload.get("status") or "ok",
+            "count": len(rows),
+            "rows": rows[:20],
+            "interrupted_tasks": interrupted[:20],
+            "corrupt": corrupt[:20],
+            "work_uncommitted": uncommitted[:20],
+            "work_uncommitted_count": len(uncommitted),
+            "raw_continuation_count": len(continuations),
+        })
+    except Exception as exc:  # noqa: BLE001 — surface as a typed error envelope
+        log.exception("api_review_continuations failed")
+        return JSONResponse({
+            "status": "error",
+            "error": str(exc),
+            "count": 0,
+            "rows": [],
+        }, status_code=500)
+
+
+class _SimpleEnv:
+    """Minimal stand-in for ``ServerEnv`` so startup-check helpers can be called
+    from the gateway without dragging the full env surface across the boundary.
+
+    The startup-check helpers read ``env.drive_root`` and ``env.repo_dir``; we
+    only need a drive_root today (the work-uncommitted list reads from the
+    runtime data tree, not the repo working tree)."""
+
+    __slots__ = ("drive_root",)
+
+    def __init__(self, drive_root: Any) -> None:
+        self.drive_root = drive_root
+
+
 def _state_snapshot(request: Request) -> Dict[str, Any]:
     """Collect every heavy synchronous input for the ``/api/state`` payload.
 

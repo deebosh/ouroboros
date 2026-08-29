@@ -137,6 +137,14 @@ REASON_DEEP_SELF_REVIEW_ERROR = "deep_self_review_error"
 REASON_TOOL_FAILURE = "tool_failure"
 REASON_DELIVERY_CONTROL_DEGRADED = "delivery_control_degraded"
 REASON_CHILD_RESULTS_DEFERRED = "child_results_deferred"
+# ibl-local-27745117e0e1: a task that ran (no provider failure, no tool errors,
+# no delivery control degradation) but TERMINATED with staged/modified tracked
+# files left uncommitted in the repo. Distinct from a clean no-op: the agent
+# DID change tracked files; it just did not commit. Surfaced through
+# outcome_axes.execution.reason_code AND a `work_uncommitted` event so the
+# gateway's ``/api/review-continuations`` route AND the boot startup-check can
+# pick it up — a typed observation, not a verdict.
+REASON_WORK_UNCOMMITTED = "work_uncommitted"
 REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE = "review_skipped_deadline_reserve"
 # HQ1 (2026-08-15): the owner-hurry acceptance-skip reason. A finite typed
 # acceptance-decision reason ONLY — deliberately NOT a member of
@@ -364,6 +372,79 @@ def latest_unreconciled_masked_verification(drive_root: Any, task_id: str) -> Op
     masked-check finalization nudge (the agent may still finalize). Distinct from the red nudge:
     that fires on a RED check; this fires on a green check whose exit code may be laundered."""
     return latest_unreconciled_masked_pass(read_verification_receipts(drive_root, task_id))
+
+
+def detect_work_uncommitted(
+    repo_dir: Any,
+    *,
+    max_files: int = 50,
+    timeout_sec: float = 5.0,
+) -> List[str]:
+    """Return porcelain lines for tracked-file changes left uncommitted in ``repo_dir``.
+
+    The shape is the same as ``git status --porcelain`` (e.g. ``" M ouroboros/x.py"``,
+    ``"M  ouroboros/y.py"``, ``"?? untracked.txt"``). Untracked-file entries (``??``)
+    are NOT included — they are a different surface, not "work the agent should have
+    committed". The returned list is bounded to ``max_files`` (the underlying
+    ``--porcelain`` output is small in practice). Returns an empty list when the
+    working tree is clean OR when the repository is unreadable / not a git repo.
+
+    The check is READ-ONLY by construction — ``git status --porcelain`` never mutates
+    state. ``repo_dir`` may be a string or ``pathlib.Path``; both are accepted.
+
+    Implementation note: ``subprocess.run`` is preferred over a pure-python git parser
+    because git itself owns the porcelain output contract (whitespace columns, rename
+    detection, submodule entries); re-implementing it would drift. The timeout is
+    short — the working-tree check is in the task-finalization hot path, and a stuck
+    git invocation here must NEVER delay finalization beyond the loop's own budget.
+    """
+    if not repo_dir:
+        return []
+    try:
+        repo_path = pathlib.Path(str(repo_dir))
+    except (TypeError, ValueError):
+        return []
+    if not repo_path.exists() or not repo_path.is_dir():
+        return []
+    try:
+        import subprocess  # local import: keep the module import-time cheap
+
+        completed = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+    if completed.returncode != 0:
+        return []
+    lines: List[str] = []
+    for raw_line in (completed.stdout or "").splitlines():
+        line = raw_line.rstrip("\r")
+        if not line or len(line) < 3:
+            continue
+        if line.startswith("?? "):
+            continue  # untracked: explicitly excluded (see docstring)
+        lines.append(line)
+        if len(lines) >= max_files:
+            break
+    return lines
+
+
+def _failure_block_for_work_uncommitted(files: List[str]) -> Dict[str, Any]:
+    """Build the ``failure`` block for a ``work_uncommitted`` reason.
+
+    Centralised so the dashboard, the boot startup-check, and the reason-chain share
+    a single shape. The ``files`` list is the output of ``detect_work_uncommitted``
+    (bounded at the source)."""
+    return {
+        "kind": "work_uncommitted",
+        "reason_code": REASON_WORK_UNCOMMITTED,
+        "files": list(files or []),
+    }
 
 
 def latest_agent_defined_verification(drive_root: Any, task_id: str) -> Optional[Dict[str, Any]]:
@@ -847,8 +928,22 @@ _INFRA_TEXT_PREFIXES = (
 )
 
 
-def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a typed LoopOutcome-compatible dict."""
+def derive_loop_outcome(
+    final_text: str,
+    usage: Dict[str, Any],
+    llm_trace: Dict[str, Any],
+    *,
+    repo_dir: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Return a typed LoopOutcome-compatible dict.
+
+    ``repo_dir`` is an OPTIONAL keyword-only argument: when provided, the function
+    probes the working tree via ``detect_work_uncommitted`` and, on a CLEAN
+    otherwise-OK run, downgrades to ``EXECUTION_DEGRADED`` with
+    ``REASON_WORK_UNCOMMITTED`` so dashboards and the boot startup-check can pick
+    up a task that finalized with tracked-file changes uncommitted. ``repo_dir=None``
+    preserves the historical behavior (the disk-touching check is opt-in).
+    """
 
     usage_status = str(usage.get("execution_status") or usage.get("result_status") or "").strip()
     usage_reason = str(usage.get("reason_code") or "").strip()
@@ -983,6 +1078,19 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
             "reason_code": reason_code,
             "tool_errors": tool_errors[:20],
         }
+    elif repo_dir is not None and execution_status == EXECUTION_OK:
+        # ibl-local-27745117e0e1: a task that ran cleanly but left tracked files
+        # dirty without a commit. The git-status probe is cheap and read-only;
+        # narrower than a provider/tool/deferred failure but distinct from a clean
+        # no-op (the agent DID change tracked files). The narrow eligibility gate
+        # preserves stronger classifications above; this branch only fires when
+        # the existing chain left execution OK with REASON_FINAL_MESSAGE — the
+        # honest observation, not a verdict.
+        work_uncommitted_files = detect_work_uncommitted(repo_dir)
+        if work_uncommitted_files:
+            execution_status = EXECUTION_DEGRADED
+            reason_code = REASON_WORK_UNCOMMITTED
+            failure = _failure_block_for_work_uncommitted(work_uncommitted_files)
 
     # A skipped-or-bypassed eligible panel is not a verdict, but cannot remain clean;
     # preserve stronger classifications and degrade only the false-green remainder.

@@ -209,6 +209,91 @@ def check_budget(env: Any) -> Tuple[dict, int]:
         }, 1
 
 
+def list_work_uncommitted_tasks(
+    drive_root: Any,
+    *,
+    statuses: Optional[List[str]] = None,
+    max_age_days: float = 7.0,
+) -> List[Dict[str, Any]]:
+    """Surface tasks whose last outcome_axes.execution.reason_code == "work_uncommitted".
+
+    The detector (``ouroboros.outcomes.detect_work_uncommitted``) is the SSOT for
+    what counts as "staged/modified tracked files without a commit". This helper
+    walks the persisted task_results for any record whose recent outcome carries
+    that reason code AND whose terminal status is not already settled-clean. The
+    intent: pair each work_uncommitted detection with its task identity so the
+    dashboard can badge BOTH the open review-continuation rows AND the uncommitted
+    work rows on a single /api/review-continuations surface.
+
+    Args:
+        drive_root: the runtime data root.
+        statuses: optional explicit status filter (defaults to all terminal states).
+        max_age_days: bound the scan window — old work_uncommitted records that
+            were never followed up fall off the active badge surface (a row whose
+            task settled-with-commit-or-cancel-on-owner-action also falls off,
+            because ``list_task_results`` returns the latest persisted record).
+    """
+    import datetime as _dt
+
+    try:
+        from ouroboros.outcomes import REASON_WORK_UNCOMMITTED
+        from ouroboros.task_results import (
+            STATUS_CANCELLED,
+            STATUS_COMPLETED,
+            STATUS_FAILED,
+            STATUS_INTERRUPTED,
+            STATUS_REJECTED_DUPLICATE,
+            list_task_results,
+        )
+    except Exception:
+        return []
+
+    statuses = statuses or [
+        STATUS_COMPLETED,
+        STATUS_FAILED,
+        STATUS_CANCELLED,
+        STATUS_INTERRUPTED,
+        STATUS_REJECTED_DUPLICATE,
+    ]
+    rows: List[Dict[str, Any]] = []
+    cutoff = _dt.datetime.now(tz=_dt.timezone.utc) - _dt.timedelta(days=max_age_days)
+    try:
+        records = list_task_results(drive_root, statuses=list(statuses))
+    except Exception:
+        return []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        ts_str = str(record.get("updated_at") or record.get("ts") or "").strip()
+        if ts_str:
+            try:
+                then = _dt.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if then.tzinfo is None:
+                    then = then.replace(tzinfo=_dt.timezone.utc)
+                if then < cutoff:
+                    continue
+            except ValueError:
+                pass
+        axes = record.get("outcome_axes") if isinstance(record.get("outcome_axes"), dict) else {}
+        execution = axes.get("execution") if isinstance(axes.get("execution"), dict) else {}
+        reason = str(execution.get("reason_code") or "").strip()
+        if reason != REASON_WORK_UNCOMMITTED:
+            continue
+        failure = execution.get("failure") if isinstance(execution.get("failure"), dict) else {}
+        files = failure.get("files") if isinstance(failure.get("files"), list) else []
+        rows.append({
+            "task_id": str(record.get("task_id") or ""),
+            "status": str(record.get("status") or ""),
+            "reason_code": reason,
+            "files": [str(item) for item in files][:20],
+            "updated_at": ts_str,
+            "source": "work_uncommitted",
+        })
+        if len(rows) >= 20:
+            break
+    return rows
+
+
 def check_review_continuations(env: Any) -> Tuple[dict, int]:
     try:
         from ouroboros.task_continuation import list_review_continuations
@@ -265,6 +350,35 @@ def check_review_continuations(env: Any) -> Tuple[dict, int]:
             rows.append(row)
             if task_status == STATUS_INTERRUPTED:
                 interrupted.append(row)
+
+        # ibl-local-27745117e0e1: ALSO surface tasks whose terminal outcome carried
+        # ``work_uncommitted`` (i.e. the task ran cleanly but left tracked files
+        # dirty). Combine under the same ``open_review_continuations`` surface so
+        # the dashboard badge / boot startup-check see one combined picture.
+        try:
+            uncommitted = list_work_uncommitted_tasks(env.drive_root)
+            for item in uncommitted:
+                task_id = str(item.get("task_id") or "")
+                if not task_id:
+                    continue
+                task_status = str((task_by_id.get(task_id) or {}).get("status") or "")
+                rows.append({
+                    "task_id": task_id,
+                    "task_status": task_status or item.get("status") or "missing",
+                    "source": "work_uncommitted",
+                    "stage": "task_finalization",
+                    "repo_key": "",
+                    "tool_name": "",
+                    "attempt": 0,
+                    "block_reason": "work_uncommitted",
+                    "obligation_ids": [],
+                    "critical_findings": 0,
+                    "advisory_findings": len(item.get("files") or []),
+                    "files": list(item.get("files") or [])[:20],
+                    "updated_ts": item.get("updated_at") or "",
+                })
+        except Exception:
+            pass
 
         status = "ok"
         issues = 0

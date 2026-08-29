@@ -111,7 +111,7 @@ def collect_routes(
         api_projects_create,
         api_projects_list,
     )
-    from ouroboros.gateway.state import api_health, api_state
+    from ouroboros.gateway.state import api_health, api_review_continuations, api_state
     from ouroboros.gateway.skill_publish import skill_publish_routes
     from ouroboros.gateway.tasks import (
         api_task_artifact,
@@ -151,6 +151,11 @@ def collect_routes(
     routes: list[BaseRoute] = [
         Route("/api/health", endpoint=api_health),
         Route("/api/state", endpoint=api_state),
+        # ibl-local-27745117e0e1: owner-visible surface for open review
+        # continuations + work_uncommitted tasks (count + rows + status).
+        # Distinct from the boot startup-check so the dashboard can badge /
+        # toast live without waiting for a restart.
+        Route("/api/review-continuations", endpoint=api_review_continuations, methods=["GET"]),
         Route("/api/extensions", endpoint=api_extensions_index, methods=["GET"]),
         Route("/api/extensions/{skill}/manifest", endpoint=api_extension_manifest, methods=["GET"]),
         Route("/api/extensions/{skill}/module/{entry}", endpoint=api_extension_module, methods=["GET"]),

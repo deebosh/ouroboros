@@ -1265,6 +1265,7 @@ class OnboardingPresetFailureResponse(TypedDict):
 HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/health",
     "GET /api/state",
+    "GET /api/review-continuations",
     "GET /api/settings",
     "POST /api/settings",
     "GET /api/ui/preferences",
