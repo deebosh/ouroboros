@@ -31,6 +31,17 @@ log = logging.getLogger(__name__)
 _CAPSULE_VERSION = 1
 _SUMMARY_CONTRACT_VERSION = 1
 _SUMMARY_OUTPUT_TOKENS = 32_768
+# Reasoning/JSON headroom and a defensive floor for the PER-CALL wire
+# ``max_tokens`` cap. The summarizer route is a reasoning model
+# (minimax::MiniMax-M2.7-highspeed); with a blanket
+# ``max_tokens=_SUMMARY_OUTPUT_TOKENS`` it over-generates — measured up to 17.5k
+# completion tokens for a single chunk it was asked to summarize in a few
+# hundred, ~280s wall-clock. Map/fold call latency correlates ~1.0 with
+# completion tokens and not with prompt tokens, so the wire budget is sized to
+# the summaries actually requested (Σ per-part summary_budget_tokens × 2) plus
+# headroom, clamped to [_SUMMARY_WIRE_MIN_TOKENS, _SUMMARY_OUTPUT_TOKENS].
+_SUMMARY_WIRE_MIN_TOKENS = 1_024
+_SUMMARY_WIRE_HEADROOM_TOKENS = 2_048
 _BLOCKS_PER_BATCH = 8
 _MIN_CAPSULE_BYTES = 512
 _SHA256_HEX = frozenset("0123456789abcdef")
@@ -479,13 +490,27 @@ def _call_summarizer(
     source_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     client = LLMClient()
     use_local = bool(spec.get("use_local"))
+    # Size the wire budget to the summaries this call actually asks for, not a
+    # blanket 32k that lets the reasoning-model route ramble (see the constants
+    # above). The batch prompt requests one entry per source_id, so expected
+    # output ≈ Σ per-part budgets; 2x + headroom covers reasoning tokens and JSON
+    # framing. The SummarizerContextOverflow split path shrinks ``parts`` on a
+    # retry, so the cap tightens with it automatically.
+    budget_sum = sum(int(summary_budgets[part.root_id]) for part in parts)
+    wire_max_tokens = min(
+        int(spec.get("output_budget") or _SUMMARY_OUTPUT_TOKENS),
+        max(_SUMMARY_WIRE_MIN_TOKENS, budget_sum * 2 + _SUMMARY_WIRE_HEADROOM_TOKENS),
+    )
+    # Map is mechanical extraction — the provider floor is enough and cheaper.
+    # Fold synthesizes across chunks, so keep the configured (low) effort there.
+    effort = "minimal" if phase == "map" else str(spec.get("effort") or "low")
     common = {
         "drive_root": drive_root,
         "task_id": task_id,
         "call_type": f"context_compaction_{phase}",
         "model": str(spec.get("model") or ""),
-        "reasoning_effort": str(spec.get("effort") or "low"),
-        "max_tokens": int(spec.get("output_budget") or _SUMMARY_OUTPUT_TOKENS),
+        "reasoning_effort": effort,
+        "max_tokens": wire_max_tokens,
         "use_local": use_local,
     }
 

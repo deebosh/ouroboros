@@ -6270,6 +6270,11 @@ def _run_main_reclaim(
         "reclaim_goal_tokens": request.reclaim_goal_tokens,
         "reclaimed_tokens": receipt.reclaimed_tokens,
         "goal_reached": receipt.goal_reached,
+        # Selected-unit count makes the "requested every round, nothing worth
+        # summarizing" pattern visible without a separate per-round event: a
+        # long run of status in {no_eligible, below_floor} with a low count is
+        # the structural-over-target signature.
+        "selected_unit_count": len(receipt.selected_unit_ids),
         "checkpoint_ref": receipt.checkpoint_ref,
     })
     return receipt

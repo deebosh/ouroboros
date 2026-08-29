@@ -249,9 +249,13 @@ def test_complete_summarizer_payload_has_no_head_or_structural_omission(
     assert "CONTENT_OMITTED" not in prompt
     assert "LONG_STRING" not in prompt
     assert summaries == {part.source_id: "complete"}
-    assert seen["max_tokens"] == 32_768
+    # Wire max_tokens is sized to the summaries this call asks for (Σ budgets ×2
+    # + headroom), not a blanket 32k that lets the reasoning route ramble.
+    assert seen["max_tokens"] == 700 * 2 + cc._SUMMARY_WIRE_HEADROOM_TOKENS
+    assert seen["max_tokens"] < cc._SUMMARY_OUTPUT_TOKENS
     assert seen["model"] == "m"
-    assert seen["reasoning_effort"] == "low"
+    # Map is mechanical extraction — provider-floor reasoning effort.
+    assert seen["reasoning_effort"] == "minimal"
     assert usage["prompt_tokens"] == 17
 
 
