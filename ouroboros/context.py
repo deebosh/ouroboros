@@ -1492,6 +1492,150 @@ def _context_fit_route(
     return resolve_context_fit_route(task, allow_fetch=allow_fetch)
 
 
+def measure_context_section_bytes(
+    env: Any,
+    core: ContextCore,
+    *,
+    mode: str = "max",
+    tool_schemas: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Return per-section byte contributions of the rendered context.
+
+    One SSOT helper for "which section is heavy" — walks every captured
+    ContextCore source plus the optional tool_schemas blob and records the
+    byte cost of each, so the operator can see WHICH section is heavy
+    instead of guessing (per task-latency determination 2026-08-29 rec #4).
+
+    The result also includes:
+
+      * ``assembled_system_content_bytes`` — the byte length of the rendered
+        system content (when ``_render_context_system_content`` is
+        available); this is the canonical reconciliation target the per-section
+        numbers MUST sum to (modulo the tool_schemas tuple, which lives beside
+        ``messages`` on the wire and is intentionally excluded from this
+        reconciliation — a separate ``tool_schemas_bytes`` entry owns it).
+      * ``tool_schemas_bytes`` — bytes for the JSON-serialized tool-schemas
+        blob when supplied.
+      * ``total_bytes`` — sum of all entries above (system + tool_schemas).
+
+    Args:
+        env: the task env (used to render reference_doc_sections).
+        core: a captured ``ContextCore`` (the unit passed to
+            ``_render_context_system_content``).
+        mode: owner context mode (``"max"`` or ``"low"``). Controls the form
+            of the ARCHITECTURE section (full vs nav map).
+        tool_schemas: optional tool-schema list to size. Pass ``None`` (the
+            default) to omit; pass ``[]`` to record a zero-byte entry.
+    """
+    base_prompt_bytes = len((core.base_prompt or "").encode("utf-8"))
+    bible_bytes = len((core.bible_md or "").encode("utf-8"))
+
+    ref_parts = reference_doc_sections(
+        env,
+        context_mode=mode,
+        include_development=core.docs_need_development,
+        architecture_text=core.architecture_md,
+        development_text=core.development_md,
+    )
+    ref_breakdown: Dict[str, int] = {}
+    for index, part in enumerate(ref_parts):
+        first_line = (part.split("\n", 1)[0] or "").strip()
+        if first_line.startswith("## "):
+            title = first_line[3:].strip() or f"reference_doc_part_{index}"
+        else:
+            title = f"reference_doc_part_{index}"
+        # Disambiguate duplicate titles by suffixing the index (rare; safe).
+        if title in ref_breakdown:
+            title = f"{title}#{index}"
+        ref_breakdown[title] = len((part or "").encode("utf-8"))
+    reference_doc_sections_bytes = sum(ref_breakdown.values())
+
+    semi_stable_bytes = len((core.semi_stable_text or "").encode("utf-8"))
+    dynamic_bytes = len((core.dynamic_text or "").encode("utf-8"))
+    user_content_bytes = len((core.user_content_json or "").encode("utf-8"))
+
+    if tool_schemas is None:
+        tool_schemas_bytes: Optional[int] = None
+    else:
+        tool_schemas_bytes = len(
+            json.dumps(
+                tool_schemas,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        )
+
+    measurement: Dict[str, Any] = {
+        "base_prompt_bytes": base_prompt_bytes,
+        "bible_md_bytes": bible_bytes,
+        "reference_doc_sections_bytes": reference_doc_sections_bytes,
+        "reference_doc_sections_breakdown": ref_breakdown,
+        "semi_stable_bytes": semi_stable_bytes,
+        "dynamic_bytes": dynamic_bytes,
+        "user_content_bytes": user_content_bytes,
+        "tool_schemas_bytes": tool_schemas_bytes,
+        "mode": str(mode or "max"),
+    }
+    # Reconciliation against the rendered system content: every byte that
+    # enters the system block has to land in this map, and the sum of the
+    # system-side entries MUST equal the length of the rendered system
+    # content. The user_content and tool_schemas blobs live beside messages
+    # on the wire and are intentionally NOT included in the system-content
+    # reconciliation — they are surfaced separately for transparency.
+    rendered_system_content_bytes: Optional[int] = None
+    try:
+        system_content = _render_context_system_content(env, core, mode=mode)
+        rendered_system_content_bytes = len(
+            json.dumps(system_content, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        )
+    except Exception:
+        log.debug("Could not render system content for measurement reconciliation", exc_info=True)
+    measurement["assembled_system_content_bytes"] = rendered_system_content_bytes
+    system_side_sum = (
+        base_prompt_bytes
+        + bible_bytes
+        + reference_doc_sections_bytes
+        + semi_stable_bytes
+        + dynamic_bytes
+    )
+    measurement["system_side_total_bytes"] = system_side_sum
+    if rendered_system_content_bytes is not None:
+        # The rendered system content is a JSON list of blocks; the per-section
+        # sum joins those blocks with "\n\n" via "\n\n".join(static_parts) plus
+        # the semi_stable / dynamic text blocks. A small constant delta for the
+        # join separators + JSON structural characters is expected — we record
+        # it for the operator instead of asserting equality, so a future
+        # contract drift (e.g., a new system block) surfaces as a measurable
+        # delta, not a silent overwrite.
+        measurement["system_side_delta_bytes"] = (
+            rendered_system_content_bytes - system_side_sum
+        )
+    measurement["total_bytes"] = (
+        system_side_sum
+        + user_content_bytes
+        + (tool_schemas_bytes or 0)
+    )
+    return measurement
+
+
+def last_section_measurement(ctx: Any) -> Optional[Dict[str, Any]]:
+    """Return the last ``measure_context_section_bytes`` result stored on ctx.
+
+    Tests and operators use this reader to inspect what the most recent
+    ``build_llm_messages`` call measured, without having to plumb the dict
+    through every call site. Returns ``None`` when no measurement has been
+    recorded on this ctx (e.g., callers that bypass ``build_llm_messages``
+    or pre-date the probe).
+    """
+    if ctx is None:
+        return None
+    try:
+        return getattr(ctx, "context_section_measurement", None)
+    except Exception:
+        return None
+
+
 def build_context_fit_plan(
     env: Any,
     memory: Memory,
