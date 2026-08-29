@@ -517,7 +517,7 @@ def update_budget_from_usage(usage: Dict[str, Any]) -> None:
         breakdown = usage_breakdown(DRIVE_ROOT)
         total_limit = float(TOTAL_BUDGET_LIMIT or 0.0)
         projection = (
-            usage_projection(DRIVE_ROOT, global_limit_usd=total_limit)
+            usage_projection(DRIVE_ROOT, global_limit_usd=total_limit, include_roots=False)
             if total_limit > 0
             else {key: breakdown.get(key) for key in (
                 "settled_usd", "confirmed_usd", "estimated_usd", "reserved_usd",
