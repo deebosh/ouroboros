@@ -201,21 +201,27 @@ def test_section_size_tracking_is_deterministic_on_success(tmp_path):
 
     sections = bc._last_context_sections
     assert isinstance(sections, list)
-    assert all(isinstance(n, str) and isinstance(c, int) for n, c in sections)
-    assert all(c >= 0 for _, c in sections)
+    # Each entry is (name, char_count, drop_priority) — the drop-priority field
+    # was added by the graceful-degradation fix (ibl-local-31f19191be34).
+    assert all(isinstance(n, str) and isinstance(c, int) for n, c, *_ in sections)
+    assert all(c >= 0 for _n, c, *_ in sections)
     # bg_prompt is always first.
     assert sections[0][0] == "bg_prompt"
-    # The seeded ARCHITECTURE is the biggest contributor.
-    arch_entry = next(((n, c) for n, c in sections if n.startswith("architecture")), None)
+    # ARCHITECTURE is now inlined as a navigation map in BOTH modes (the BG loop
+    # reads the full body on demand via read_file), so its section is present
+    # and non-empty but bounded far below the raw doc size.
+    arch_entry = next(
+        ((n, c) for n, c, *_ in sections if n.startswith("architecture")), None
+    )
     assert arch_entry is not None
-    assert arch_entry[1] >= 300_000
+    assert 0 < arch_entry[1] < 100_000
     # Stashed mode + total are consistent with the joined full_text:
     # full_text = "\n\n".join(parts), so total >= sum(section chars). The exact
     # arithmetic depends on whether every part is tracked (it is) and on the
     # number of separator chars (2 per gap), so we verify the inequality that
     # must hold without coupling to the exact count.
     assert bc._last_context_mode in {"low", "max"}
-    sum_chars = sum(c for _, c in sections)
+    sum_chars = sum(c for _n, c, *_ in sections)
     assert bc._last_context_total >= sum_chars
     # And the gap between sum and total is bounded by 2 per non-empty section.
     assert bc._last_context_total <= sum_chars + 2 * len(sections)
@@ -258,7 +264,7 @@ def test_low_mode_skips_backlog_and_observations(tmp_path, monkeypatch):
     assert "SENTINEL_BACKLOG_DIGEST_PAYLOAD_42" not in ctx
     # The section tracker recorded the skip.
     sections = bc._last_context_sections
-    section_names = {n for n, _ in sections}
+    section_names = {s[0] for s in sections}
     assert "backlog_digest_skipped_low_mode" in section_names
     # Observations were drained (queue cleared) but not appended under low mode.
     assert "observations_skipped_low_mode" in section_names
@@ -294,9 +300,9 @@ def test_max_mode_keeps_backlog_and_observations(tmp_path, monkeypatch):
     assert "SENTINEL_BACKLOG_DIGEST_PAYLOAD_42" in ctx
     # Observations section IS appended.
     sections = bc._last_context_sections
-    section_names = {n for n, _ in sections}
+    section_names = {s[0] for s in sections}
     assert "observations" in section_names
-    obs_entry = dict(sections)["observations"]
+    obs_entry = {s[0]: s[1] for s in sections}["observations"]
     assert obs_entry > 0
     # Stamped mode is max.
     assert bc._last_context_mode == "max"

@@ -391,13 +391,25 @@ def usage_projection(
     root_task_id: str = "",
     global_limit_usd: Optional[float] = None,
     include_roots: bool = True,
+    bound_by_root: bool = True,
 ) -> Dict[str, Any]:
     """Return a replayed global projection, or one root/subtree projection.
 
     ``include_roots=False`` skips building the per-root ``by_root`` map for
     hot-path readers that never consume it (``/api/state``); the slim result
     still carries ``limit_usd``/``remaining_known_usd`` — the two fields
-    ``budget_remaining`` consumes. The default keeps the full contract."""
+    ``budget_remaining`` consumes. The default keeps the full contract.
+
+    ``bound_by_root=True`` (the default, structural fix for
+    ``ibl-local-31f19191be34``) keeps ``by_root`` entries that have non-zero
+    monetary activity — any root where ``settled_usd``, ``reserved_usd``,
+    ``accounted_usd`` or ``attempt_counts`` is positive. Inactive roots are
+    omitted from the projection; the legacy 1100+ entry ``by_root`` map was
+    bloating ``state/state.json`` (~453K chars, ~1144 root entries) and the
+    consciousness context that re-inlined the file. Pass
+    ``bound_by_root=False`` for the rare caller that needs the full historical
+    root list (e.g. an audit query).
+    """
     root = _drive_root(drive_root)
     if root_task_id:
         cache_key = ("usage_projection", root_task_id, "", None, True)
@@ -422,6 +434,7 @@ def usage_projection(
         "usage_projection", "", "",
         configured_limit if apply_limit else None,
         include_roots,
+        bound_by_root,
     )
 
     def render_global(final: list, integrity_degraded: bool) -> Dict[str, Any]:
@@ -437,6 +450,27 @@ def usage_projection(
             result["by_root"] = {}
             for rid in sorted(grouped_rows):
                 root_rows = grouped_rows[rid]
+                if bound_by_root:
+                    # Structural fix: drop roots with no monetary activity from
+                    # the per-root projection. The full map of inactive roots
+                    # bloated state.json (453K chars, ~1144 mostly-zero
+                    # entries) and the consciousness context that re-inlined
+                    # the file. Active = settled/reserved/accounted > 0 or any
+                    # attempt recorded.
+                    root_summary = _summary(root_rows)
+                    _attempts = root_summary.get("attempt_counts") or {}
+                    _attempt_total = (
+                        sum(int(v or 0) for v in _attempts.values())
+                        if isinstance(_attempts, dict)
+                        else int(_attempts or 0)
+                    )
+                    if (
+                        _number(root_summary.get("settled_usd")) in (None, 0.0)
+                        and _number(root_summary.get("reserved_usd")) in (None, 0.0)
+                        and _number(root_summary.get("accounted_usd")) in (None, 0.0)
+                        and _attempt_total == 0
+                    ):
+                        continue
                 known_limits = [
                     value
                     for value in (_number(row.get("root_limit_usd")) for row in root_rows)

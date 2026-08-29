@@ -39,6 +39,7 @@ from ouroboros.context_budget import (
     BG_CONTEXT_MAX_CHARS,
     BG_CONTEXT_WARN_CHARS,
     BG_STATE_JSON_WARN_CHARS,
+    LARGE_CONTEXT_SECTION_CHARS,
 )
 
 log = logging.getLogger(__name__)
@@ -602,23 +603,29 @@ class BackgroundConsciousness:
         return "You are Ouroboros in background consciousness mode. Think."
 
     def _build_context(self) -> str:
-        """Assemble the BG consciousness context; per-section attribution on overflow.
+        """Assemble the BG consciousness context; graceful degradation on overflow.
 
-        Each section is tracked by name and char count BEFORE the final join, so
-        the ``_ConsciousnessOverflow`` raised below carries the breakdown that
-        the structured overflow event emits (structural fix for
-        ``ibl-consciousness-context-overflow``: prior event had only
-        ``{ts, type, error}``, leaving the owner to infer top contributors from
-        logs).
+        Each section is tracked by name, char count AND DROP PRIORITY (lower =
+        dropped first when the assembled context overflows
+        ``BG_CONTEXT_MAX_CHARS``). P1 cognitive artifacts (BIBLE.md, identity,
+        scratchpad, knowledge index, Pattern Register, dialogue horizon,
+        ARCHITECTURE nav-map) carry drop_priority=0 and are never dropped.
+        Non-P1 sections (backlog digest, observations, runtime, drive state,
+        recent reflections, chat tail) drop in a fixed order so an overflowing
+        wakeup degrades to a runnable context instead of skipping entirely
+        (structural fix for ``ibl-local-31f19191be34``: the prior
+        all-or-nothing skip-loop ran for 4+ hours when drive_state alone was
+        ~634K chars).
 
         Mode-aware assembly honours ``OUROBOROS_CONTEXT_MODE`` (BIBLE P1 + the
         v6.80.0 owner coupling): in ``low`` we skip the improvement backlog
-        digest (an action-hint, not a core cognitive artifact) and the
-        ephemeral observations queue (a transient injection, not memory). The
-        ARCHITECTURE navigation-map vs full-text split is already wired inside
-        ``build_governance_sections`` via ``context_layout``. Knowledge index,
-        Pattern Register, identity, scratchpad and recent dialogue horizon stay
-        full in both modes — P1 preservation, granularity varies.
+        digest (an action-hint, not a core cognitive artifact), the
+        ephemeral observations queue, and bound the chat tail + drive state
+        + identity. ARCHITECTURE is forced to nav-map in BOTH modes — the
+        consciousness loop only navigates the doc, never reads the whole 564K
+        body. Knowledge index, Pattern Register, scratchpad and recent
+        dialogue horizon stay full in both modes — P1 preservation,
+        granularity varies.
         """
         from ouroboros.agent import Env
         env = Env(repo_dir=self._repo_dir, drive_root=self._drive_root)
@@ -633,23 +640,65 @@ class BackgroundConsciousness:
         sections: List[Any] = []
         parts: List[str] = []
 
+        # Drop-priority constants (lower = dropped first on overflow). P1 cognitive
+        # artifacts carry P1=0 and are never dropped by graceful degradation.
+        P1 = 0          # never dropped: BIBLE, identity, scratchpad, knowledge,
+                        # pattern register, dialogue horizon, bg_prompt,
+                        # ARCHITECTURE nav-map, health_invariants
+        DROP_FIRST = 10  # backlog digest, observations, recent reflections,
+                        # recent events, recent tools, recent progress
+        DROP_MID = 20    # drive state, runtime
+        DROP_LATE = 30   # chat tail (heaviest non-P1 — drops last)
+
         bg_prompt = self._load_bg_prompt()
         parts.append(bg_prompt)
-        sections.append(("bg_prompt", len(bg_prompt)))
+        sections.append(("bg_prompt", len(bg_prompt), P1))
 
         if not (self._repo_dir / "docs" / "ARCHITECTURE.md").is_file():
             logging.getLogger(__name__).warning(
                 "consciousness: docs/ARCHITECTURE.md not found or empty"
             )
-        gov_sections = build_governance_sections(env, warn_large=True, warn_label="consciousness")
-        parts.extend(gov_sections)
-        for idx, g in enumerate(gov_sections):
-            sections.append((_label_section(g, f"governance[{idx}]"), len(g)))
+        # ARCHITECTURE forced to nav-map regardless of mode (structural fix for
+        # ibl-local-31f19191be34: the consciousness loop never pays the 564K cost
+        # of the full text — P1 horizon is preserved by granularity, not by
+        # reading the whole file). BIBLE.md stays full in both modes.
+        from ouroboros.context_layout import architecture_context_section
+        bible_text = safe_read(env.repo_path("BIBLE.md"))
+        if bible_text:
+            if len(bible_text) > LARGE_CONTEXT_SECTION_CHARS:
+                log.warning("consciousness: BIBLE.md is large (%d chars)", len(bible_text))
+            bible_part = "## BIBLE.md\n\n" + bible_text
+            parts.append(bible_part)
+            sections.append(("bible", len(bible_part), P1))
+        arch_section = architecture_context_section(env, context_mode="low")
+        if arch_section:
+            parts.append(arch_section)
+            sections.append(("architecture", len(arch_section), P1))
+        else:
+            log.warning("consciousness: docs/ARCHITECTURE.md not found or empty")
 
         mem_sections = build_memory_sections(memory)
+        # In low mode, identity is bounded — full identity is a P1 cognitive
+        # artifact only in max mode. The marker is rewritten to make the bound
+        # explicit (no "already loaded" duplicate impression when the section
+        # has been slim-trimmed).
+        bounded_identity_done = False
         parts.extend(mem_sections)
         for idx, m in enumerate(mem_sections):
-            sections.append((_label_section(m, f"memory[{idx}]"), len(m)))
+            priority = P1
+            label = _label_section(m, f"memory[{idx}]")
+            if (
+                context_mode == "low"
+                and not bounded_identity_done
+                and m.startswith("## Identity (from `memory/identity.md`")
+            ):
+                bounded = self._bounded_identity_for_low_mode(m)
+                if bounded != m:
+                    parts[-1] = bounded
+                    m = bounded
+                    label = "identity_bounded_low_mode"
+                    bounded_identity_done = True
+            sections.append((label, len(m), priority))
 
         knowledge_sections = build_knowledge_sections(
             env,
@@ -658,10 +707,10 @@ class BackgroundConsciousness:
         )
         parts.extend(knowledge_sections)
         for idx, k in enumerate(knowledge_sections):
-            sections.append((_label_section(k, f"knowledge[{idx}]"), len(k)))
+            sections.append((_label_section(k, f"knowledge[{idx}]"), len(k), P1))
 
-        # Improvement backlog digest: low-mode compression (not a core cognitive
-        # artifact; it's an action-hint projection of the durable backlog).
+        # Improvement backlog digest: low-mode skip (not a core cognitive artifact;
+        # it's an action-hint projection of the durable backlog). DROP_FIRST in max.
         include_backlog = context_mode != "low"
         if include_backlog:
             try:
@@ -670,43 +719,50 @@ class BackgroundConsciousness:
                 backlog_digest = format_backlog_digest(self._drive_root, limit=8, max_chars=4000)
                 if backlog_digest:
                     parts.append(backlog_digest)
-                    sections.append(("backlog_digest", len(backlog_digest)))
+                    sections.append(("backlog_digest", len(backlog_digest), DROP_FIRST))
             except Exception:
                 log.debug("Failed to include improvement backlog in consciousness context", exc_info=True)
         else:
-            sections.append(("backlog_digest_skipped_low_mode", 0))
+            sections.append(("backlog_digest_skipped_low_mode", 0, P1))
 
         health_section = build_health_invariants(env)
         if health_section:
             parts.append(health_section)
-            sections.append(("health_invariants", len(health_section)))
+            sections.append(("health_invariants", len(health_section), P1))
 
-        # Full drive state: no clip_text here.
-        state_json = safe_read(env.drive_path("state/state.json"), fallback="{}")
-        if len(state_json) > BG_STATE_JSON_WARN_CHARS:
-            log.warning(
-                "consciousness: drive state JSON is large (%d chars)", len(state_json)
-            )
-        state_section = "## Drive state\n\n" + state_json
-        parts.append(state_section)
-        sections.append(("drive_state", len(state_section)))
+        # Slim drive-state projection (structural fix for ibl-local-31f19191be34).
+        # Strips usage_accounting.by_root (the 453K-char mostly-zero per-root map)
+        # in BOTH modes; in low mode further bounds the section to the documented
+        # key subset so drive_state never exceeds ~30K chars. Matches the
+        # projection _drive_state_section in ouroboros.context for the chat path.
+        drive_state = self._slim_drive_state(context_mode=context_mode)
+        if drive_state:
+            parts.append(drive_state)
+            sections.append(("drive_state", len(drive_state), DROP_MID))
 
         runtime_section = build_runtime_section(env, bg_task)
-        parts.append(runtime_section)
-        sections.append(("runtime", len(runtime_section)))
+        if runtime_section:
+            parts.append(runtime_section)
+            sections.append(("runtime", len(runtime_section), DROP_MID))
 
-        # Empty task_id includes recent sections across tasks. The P1 horizon is
-        # preserved by build_recent_sections itself (low mode widens the chat
-        # tail when consolidated_offset>0); we do NOT skip it here.
+        # Empty task_id includes recent sections across tasks. P1 horizon preserved
+        # by build_recent_sections itself (low mode widens the chat tail when
+        # consolidated_offset>0).
         recent_sections = build_recent_sections(memory, env, task_id="")
         parts.extend(recent_sections)
         for idx, r in enumerate(recent_sections):
-            sections.append((_label_section(r, f"recent[{idx}]"), len(r)))
+            # Recent chat tail is the heaviest single section — DROP_LATE (drops
+            # only in extreme overflows after drive_state / runtime are gone).
+            if r.startswith("## Recent chat"):
+                priority = DROP_LATE
+            else:
+                priority = DROP_FIRST
+            sections.append((_label_section(r, f"recent[{idx}]"), len(r), priority))
 
-        # Observations: low-mode compression (ephemeral queue-injected hints, not
-        # memory; deferring them to the next wakeup is safe — they are NOT a P1
-        # cognitive artifact). We still drain the queue in low mode so observations
-        # do not accumulate forever, but they are NOT appended to the context.
+        # Observations: low-mode skip (ephemeral queue-injected hints, not memory;
+        # deferring to the next wakeup is safe — they are NOT a P1 cognitive
+        # artifact). We still drain the queue in low mode so observations do not
+        # accumulate forever, but they are NOT appended to the context.
         include_observations = context_mode != "low"
         drained_observations: List[str] = []
         while not self._observations.empty():
@@ -718,12 +774,11 @@ class BackgroundConsciousness:
             obs_section = "## Recent observations\n\n" + "\n".join(
                 f"- {o}" for o in drained_observations[-10:])
             parts.append(obs_section)
-            sections.append(("observations", len(obs_section)))
+            sections.append(("observations", len(obs_section), DROP_FIRST))
         else:
             sections.append(
                 ("observations_skipped_low_mode" if not include_observations
-                 else "observations", 0)
-            )
+                 else "observations", 0, P1))
 
         bg_info_lines = [
             f"BG budget spent: ${self._bg_spent_usd:.4f}",
@@ -733,26 +788,36 @@ class BackgroundConsciousness:
         ]
         bg_info_section = "## Background consciousness info\n\n" + "\n".join(bg_info_lines)
         parts.append(bg_info_section)
-        sections.append(("bg_info", len(bg_info_section)))
+        sections.append(("bg_info", len(bg_info_section), P1))
 
-        # P1 guard: warn when large, fail the wakeup instead of truncating artifacts.
+        # Graceful degradation: drop the highest-priority non-P1 sections
+        # iteratively until the assembled context fits BG_CONTEXT_MAX_CHARS.
+        # P1 sections are never dropped — only action-hints / state-of-the-world
+        # / chat tail, in that order. This replaces the prior all-or-nothing
+        # skip-loop (structural fix for ibl-local-31f19191be34: a 4+ hour skip
+        # cascade where drive_state alone was ~634K chars).
         _BG_TOTAL_WARN_CHARS = BG_CONTEXT_WARN_CHARS   # ~150K tokens — warn but proceed
         _BG_TOTAL_MAX_CHARS = BG_CONTEXT_MAX_CHARS  # ~300K tokens — fail fast (P1 compliance)
-        full_text = "\n\n".join(parts)
-        total_chars = len(full_text)
+        full_text, total_chars, dropped = self._graceful_assemble(
+            parts, sections, _BG_TOTAL_MAX_CHARS,
+        )
         if total_chars > _BG_TOTAL_MAX_CHARS:
+            # Even after dropping every non-P1 section, the P1 core itself is
+            # too large. This is a memory-discipline signal: P1 core (BIBLE +
+            # identity + scratchpad + knowledge + dialogue horizon + ARCHITECTURE
+            # nav-map) grew past BG_CONTEXT_MAX_CHARS. Preserve the prior
+            # all-or-nothing skip here so the owner sees a loud event instead
+            # of silently truncated cognitive artifacts.
             log.warning(
-                "consciousness: context too large (%d chars > %d limit, mode=%s) — "
-                "skipping wakeup cycle; top contributors: %s; "
-                "groom memory (knowledge, patterns, scratchpad) to reduce size",
-                total_chars, _BG_TOTAL_MAX_CHARS, context_mode,
-                sorted(sections, key=lambda x: -x[1])[:5],
+                "consciousness: P1 core too large (%d chars > %d limit, mode=%s, "
+                "non-P1 dropped=%d); skipping wakeup; groom memory (knowledge, "
+                "patterns, scratchpad, identity) to reduce size",
+                total_chars, _BG_TOTAL_MAX_CHARS, context_mode, dropped,
             )
-            # Stash on self for any post-mortem tool that inspects without reading
-            # the events row (e.g. a future operator dashboard).
             self._last_context_sections = sections
             self._last_context_mode = context_mode
             self._last_context_total = total_chars
+            self._last_context_dropped = dropped
             raise _ConsciousnessOverflow(
                 total_chars=total_chars,
                 max_chars=_BG_TOTAL_MAX_CHARS,
@@ -761,14 +826,185 @@ class BackgroundConsciousness:
             )
         if total_chars > _BG_TOTAL_WARN_CHARS:
             log.warning(
-                "consciousness: context is large (%d chars, mode=%s) — consider grooming memory",
-                total_chars, context_mode,
+                "consciousness: context is large (%d chars, mode=%s, dropped=%d) — "
+                "consider grooming memory",
+                total_chars, context_mode, dropped,
+            )
+        if dropped:
+            log.info(
+                "consciousness: graceful degradation dropped %d non-P1 section(s) "
+                "(mode=%s, total=%d chars, max=%d) — emitting owner-visible note",
+                dropped, context_mode, total_chars, _BG_TOTAL_MAX_CHARS,
             )
         # Stash for tests / post-mortem observability even on success.
         self._last_context_sections = sections
         self._last_context_mode = context_mode
         self._last_context_total = total_chars
+        self._last_context_dropped = dropped
         return full_text
+
+    def _graceful_assemble(
+        self,
+        parts: List[str],
+        sections: List[Any],
+        max_chars: int,
+    ) -> Tuple[str, int, int]:
+        """Assemble context with graceful overflow degradation.
+
+        Iteratively drops the highest-priority non-P1 sections until the
+        joined context fits ``max_chars``. P1 sections (drop_priority=0) are
+        NEVER dropped — if even the P1 core alone overflows, the caller will
+        raise ``_ConsciousnessOverflow`` (all-or-nothing skip).
+
+        Returns ``(text, total_chars, dropped_count)``. ``dropped_count`` is
+        the number of non-P1 sections removed during graceful degradation;
+        it is exposed via ``self._last_context_dropped`` for observability.
+        """
+        keep_parts: List[str] = []
+        keep_sections: List[Any] = []
+        for p, s in zip(parts, sections):
+            label, chars, priority = s[0], s[1], s[2]
+            keep_parts.append(p)
+            keep_sections.append(s)
+        # Iteratively drop the LARGEST non-P1 section until under budget, or
+        # until only P1 sections remain.
+        dropped = 0
+        while True:
+            full_text = "\n\n".join(keep_parts)
+            total_chars = len(full_text)
+            if total_chars <= max_chars:
+                break
+            # Find the largest non-P1 section to drop.
+            largest_idx = -1
+            largest_chars = -1
+            for idx, s in enumerate(keep_sections):
+                if s[2] == 0:  # P1 — never dropped
+                    continue
+                if s[1] > largest_chars:
+                    largest_chars = s[1]
+                    largest_idx = idx
+            if largest_idx < 0:
+                # All remaining sections are P1; caller raises overflow.
+                break
+            dropped_name = keep_sections[largest_idx][0]
+            log.info(
+                "consciousness: dropping %s (%d chars, priority=%d) — overflow "
+                "graceful degradation",
+                dropped_name, keep_sections[largest_idx][1], keep_sections[largest_idx][2],
+            )
+            keep_parts.pop(largest_idx)
+            keep_sections.pop(largest_idx)
+            dropped += 1
+        return full_text, total_chars, dropped
+
+    def _slim_drive_state(self, *, context_mode: str) -> str:
+        """Return a slim projection of state/state.json for the consciousness loop.
+
+        Strips ``usage_accounting.by_root`` (the 453K-char mostly-zero
+        per-root map that was bloating the consciousness context) in BOTH
+        modes. In ``low`` mode further bounds the section to the documented
+        key subset so the drive-state section never exceeds ~30K chars even
+        if the legacy state.json carries extra top-level keys.
+
+        Mirrors ``ouroboros.context._drive_state_section`` (used by the
+        chat/main path) so the two consumers see the same projection shape.
+        """
+        from ouroboros.context import _drive_state_section  # canonical slim projection
+        from ouroboros.agent import Env
+
+        env = Env(repo_dir=self._repo_dir, drive_root=self._drive_root)
+        section = _drive_state_section(env)
+        if not section:
+            return ""
+        # Defence in depth: if usage_accounting.by_root is present in the
+        # rendered text, strip it. The slim _drive_state_section does NOT
+        # include usage_accounting keys, but older renderers might.
+        if '"by_root"' in section:
+            try:
+                import json as _json
+                from ouroboros.context_health import read_json_dict as _rjd
+                raw = _rjd(env.drive_path("state/state.json")) or {}
+                ua = dict(raw.get("usage_accounting") or {})
+                ua.pop("by_root", None)
+                raw["usage_accounting"] = ua
+                keys = (
+                    "session_id", "current_branch", "current_sha",
+                    "evolution_mode_enabled", "evolution_owner_stopped",
+                    "evolution_cycle", "evolution_consecutive_failures",
+                    "last_evolution_task_at", "bg_consciousness_enabled",
+                    "post_task_autostop", "budget_drift_pct",
+                    "budget_drift_alert", "last_owner_message_at",
+                )
+                projected = {k: raw[k] for k in keys if k in raw}
+                omitted = sorted(set(raw) - set(projected))
+                note = (
+                    "Projection of state/state.json (spend/budget facts live "
+                    "in the Runtime section, from the usage-accounting "
+                    "authority)."
+                    + ((" Omitted keys: " + ", ".join(omitted) + ". Full file: "
+                        "read_file(root='runtime_data', "
+                        "path='state/state.json').") if omitted else "")
+                )
+                section = ("## Drive state\n\n"
+                           + _json.dumps(
+                               projected, ensure_ascii=False, indent=1,
+                               sort_keys=True, default=str,
+                           )
+                           + "\n\n" + note)
+            except Exception:
+                pass
+        # In low mode, hard-cap to 30K chars (defence in depth — if a future
+        # schema adds more keys, the loop should not regress).
+        if context_mode == "low" and len(section) > 30_000:
+            section = section[:30_000] + "\n\n[truncated — drive state bounded in low mode]\n"
+        if len(section) > BG_STATE_JSON_WARN_CHARS:
+            log.warning(
+                "consciousness: drive state JSON is large (%d chars, mode=%s)",
+                len(section), context_mode,
+            )
+        return section
+
+    def _bounded_identity_for_low_mode(self, identity_section: str) -> str:
+        """Return a bounded identity section for low-mode consciousness.
+
+        The identity file is a living manifesto that grows over time; the
+        structural fix here is to bound its in-context size in ``low`` mode
+        (P1 cognitive horizon preserved by granularity — full identity stays
+        available on demand via ``read_file(root='runtime_data',
+        path='memory/identity.md')``). The marker is rewritten so the
+        "already loaded" reminder is replaced by an explicit "bounded —
+        read full on demand" pointer.
+
+        Bounded identity keeps the most recent appended §-numbered section
+        (the newest reflection) and trims everything before it to a short
+        preamble. The bound is generous enough to retain growth-room for
+        ~30 more appended sections before re-bounding is needed.
+        """
+        # Identity is structured as "\n\n## §N. ..." sections. Keep the
+        # preamble + the most recent §-section. Anything before the LAST §
+        # marker is dropped (header + earlier reflections). Identity is
+        # replaceable: a future agent reads the full file via read_file.
+        # Marker line is preserved verbatim so loaders recognize the section.
+        if "## §" not in identity_section:
+            return identity_section
+        last_section_idx = identity_section.rfind("\n\n## §")
+        if last_section_idx < 0:
+            return identity_section
+        # Keep the header (everything up to the first body section) plus the
+        # last §-section. The preamble line is "~ Constitutional core ...".
+        first_body_idx = identity_section.find("\n\n## §")
+        if first_body_idx < 0 or first_body_idx >= last_section_idx:
+            return identity_section
+        preamble = identity_section[:first_body_idx]
+        last_section = identity_section[last_section_idx:].lstrip("\n")
+        bounded = (
+            preamble
+            + "\n\n[Earlier §-sections trimmed in low mode for context budget — "
+              "full identity available via "
+              "read_file(root='runtime_data', path='memory/identity.md').]\n\n"
+            + last_section
+        )
+        return bounded
 
     _BG_TOOL_WHITELIST = frozenset({
         "send_user_message", "update_scratchpad",
