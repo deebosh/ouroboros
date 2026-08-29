@@ -42,6 +42,12 @@ _SUMMARY_OUTPUT_TOKENS = 32_768
 # headroom, clamped to [_SUMMARY_WIRE_MIN_TOKENS, _SUMMARY_OUTPUT_TOKENS].
 _SUMMARY_WIRE_MIN_TOKENS = 1_024
 _SUMMARY_WIRE_HEADROOM_TOKENS = 2_048
+# Absolute ceiling on a single unit's summary budget. The old formula allowed a
+# summary up to ``source_tokens // 2`` — "summarize an 80k unit into 40k" is not
+# a summary, and it is what let the reasoning route emit 17k-token completions
+# (~280s). A tool unit is a command plus its output; 6k tokens is ample to
+# preserve late facts, hypotheses, consequential errors, and next steps.
+_PER_UNIT_SUMMARY_CEILING_TOKENS = 6_000
 _BLOCKS_PER_BATCH = 8
 _MIN_CAPSULE_BYTES = 512
 _SHA256_HEX = frozenset("0123456789abcdef")
@@ -727,7 +733,7 @@ def _select_units(
         if unit.predicted_reclaim_tokens <= 0:
             continue
         source_tokens = max(1, len(unit.source_text.encode("utf-8")) // 4)
-        summary_budget = min(_SUMMARY_OUTPUT_TOKENS, max(
+        summary_budget = min(_PER_UNIT_SUMMARY_CEILING_TOKENS, max(
             512, min(source_tokens // 2, max(512, int(request.reclaim_goal_tokens))),
         ))
         memo_key = _negative_memo_key(unit, summary_budget_tokens=summary_budget, spec=spec)
