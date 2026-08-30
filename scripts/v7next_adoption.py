@@ -2,7 +2,7 @@
 """Validate ADOPTION_v7next.md — the v7-side adoption manifest (Ф0 skeleton).
 
 The manifest enumerates every v7-side delta that must be re-applied on top of
-the v7next upstream base: the 17 approved semantic-delta families from the
+the v7next upstream base: the 18 approved semantic-delta families from the
 frozen reference ledger (``ouroboros_v7_wip @ 9f691656`` —
 ``scripts/v7_migration.py::APPROVED_SEMANTIC_DELTAS`` minus ``"none"``) plus
 the campaign-decision items of plan §6 (ABI package 7.0) and §7 (completeness)
@@ -42,10 +42,15 @@ REQUIRED_DELTAS = (
     "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D11",
     "D13", "D18", "D31", "D33", "D34", "D35", "D36", "D37", "D38",
 )
+# Required non-delta inventory (F0 phase review F2): the ABI package and the
+# compatibility retirements are release-gated too, not only the D-families.
+REQUIRED_ABI = tuple(f"ABI-{n}" for n in range(1, 11))
+REQUIRED_CPL = tuple(f"CPL-{n}" for n in range(1, 8))
 KINDS = frozenset({"semantic-delta", "plan-item", "class-return"})
-DISPOSITIONS = frozenset({"retain", "re-prove", "superseded-by-upstream", "pending-decision"})
-STATUSES = frozenset({"pending", "in-progress", "done"})
-PHASES = frozenset({"F0", "F1", "F2", "F3", "F4", "F5", "F6"})
+DISPOSITIONS = frozenset({"retain", "re-prove", "superseded-by-upstream",
+                          "pending-decision", "post-release"})
+STATUSES = frozenset({"pending", "in-progress", "done", "deferred"})
+PHASES = frozenset({"F0", "F1", "F2", "F3", "F4", "F5", "F6", "POST"})
 ID_RE = re.compile(r"^(D\d\d|ABI-\d+|CPL-\d+|R-[A-Z0-9]+|TRAIN-[A-Za-z0-9._-]+)$")
 
 
@@ -122,10 +127,31 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
             errors.append(f"required semantic delta {d} is missing")
         elif row["kind"] != "semantic-delta":
             errors.append(f"{d}: must be kind=semantic-delta, got {row['kind']!r}")
+    # F0 phase review F2: the ABI package and compatibility retirements are part
+    # of the release inventory too — deleting their rows must turn --release red.
+    for rid in (*REQUIRED_ABI, *REQUIRED_CPL):
+        row = by_id.get(rid)
+        if row is None:
+            errors.append(f"required row {rid} is missing")
+        elif row["kind"] != "plan-item":
+            errors.append(f"{rid}: must be kind=plan-item, got {row['kind']!r}")
+    # Row-specific coupling: post-release is a single coherent state, not three
+    # independent knobs (prevents e.g. disposition=post-release with status=done
+    # quietly counting as shipped).
+    for r in rows:
+        post_bits = [r["disposition"] == "post-release", r["status"] == "deferred",
+                     r["phase"] == "POST"]
+        if any(post_bits) and not all(post_bits):
+            errors.append(
+                f"{r['id']}: post-release rows need disposition=post-release + "
+                f"status=deferred + phase=POST together, got "
+                f"{r['disposition']}/{r['status']}/{r['phase']}")
     if release:
         for r in rows:
             if r["disposition"] == "pending-decision":
                 errors.append(f"release: {r['id']} still pending-decision")
+            if r["disposition"] == "post-release":
+                continue  # explicitly deferred out of v7.0 by an owner decision
             if r["status"] != "done":
                 errors.append(f"release: {r['id']} status {r['status']!r} != done")
     return errors

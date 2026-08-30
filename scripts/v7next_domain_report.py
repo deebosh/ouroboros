@@ -39,6 +39,10 @@ MANIFEST = REPO_ROOT / "scripts" / "v7next_domains.toml"
 REPORT = REPO_ROOT / "docs" / "v7next" / "DOMAIN_QUOTIENT_REPORT.md"
 
 STRICT, TYPE_ONLY, LAZY, DYNAMIC = "strict", "type_checking", "lazy", "dynamic"
+# Executed at import time but failure-tolerant / entrypoint-only (F0 review F4):
+# a `try: import x except ImportError/Exception` or an import under
+# `if __name__ == "__main__"` must not stand as a strict cycle witness.
+GUARDED = "guarded"
 
 
 def module_name(path: str) -> str:
@@ -56,6 +60,34 @@ def is_type_checking_test(test: ast.expr) -> bool:
     return False
 
 
+def is_main_guard_test(test: ast.expr) -> bool:
+    """`if __name__ == "__main__":` — the body never runs on import."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq) and len(test.comparators) == 1):
+        return False
+    sides = (test.left, test.comparators[0])
+    has_name = any(isinstance(s, ast.Name) and s.id == "__name__" for s in sides)
+    has_main = any(isinstance(s, ast.Constant) and s.value == "__main__" for s in sides)
+    return has_name and has_main
+
+
+_SWALLOWING = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
+
+
+def try_swallows_import_failure(node: ast.Try) -> bool:
+    """True when at least one handler catches import failure (or everything)."""
+    for h in node.handlers:
+        if h.type is None:  # bare except
+            return True
+        types = h.type.elts if isinstance(h.type, ast.Tuple) else [h.type]
+        for t in types:
+            if isinstance(t, ast.Name) and t.id in _SWALLOWING:
+                return True
+            if isinstance(t, ast.Attribute) and t.attr in _SWALLOWING:
+                return True
+    return False
+
+
 class ImportCollector(ast.NodeVisitor):
     """Collect (kind, raw dotted target or ImportFrom base+names, lineno)."""
 
@@ -64,12 +96,15 @@ class ImportCollector(ast.NodeVisitor):
         # each record: (kind, base_or_module, aliases (() for plain import), lineno)
         self._depth = 0  # function nesting depth
         self._tc = 0     # TYPE_CHECKING nesting depth
+        self._guard = 0  # __main__-guard / failure-swallowing-try nesting depth
 
     def _kind(self) -> str:
         if self._tc:
             return TYPE_ONLY
         if self._depth:
             return LAZY
+        if self._guard:
+            return GUARDED
         return STRICT
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -89,14 +124,31 @@ class ImportCollector(ast.NodeVisitor):
 
     def visit_If(self, node: ast.If) -> None:
         tc = is_type_checking_test(node.test)
+        mg = is_main_guard_test(node.test)
         if tc:
             self._tc += 1
+        if mg:
+            self._guard += 1
         for child in node.body:
             self.visit(child)
         if tc:
             self._tc -= 1
+        if mg:
+            self._guard -= 1
         for child in node.orelse:
             self.visit(child)
+
+    def visit_Try(self, node: ast.Try) -> None:
+        swallows = try_swallows_import_failure(node)
+        if swallows:
+            self._guard += 1
+        for child in node.body:
+            self.visit(child)
+        if swallows:
+            self._guard -= 1
+        for part in (node.handlers, node.orelse, node.finalbody):
+            for child in part:
+                self.visit(child)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -180,6 +232,7 @@ def main() -> int:
     edges: dict[str, dict[tuple[str, str], list[int]]] = {
         STRICT: defaultdict(list), TYPE_ONLY: defaultdict(list),
         LAZY: defaultdict(list), DYNAMIC: defaultdict(list),
+        GUARDED: defaultdict(list),
     }
     dynamic_unresolved: list[tuple[str, int]] = []
 
@@ -363,6 +416,7 @@ def main() -> int:
     L.append("")
 
     for kind, title in ((LAZY, "Lazy imports (function-level)"),
+                        (GUARDED, "Guarded imports (__main__-only / failure-swallowing try)"),
                         (TYPE_ONLY, "TYPE_CHECKING imports"),
                         (DYNAMIC, "Dynamic imports (importlib / __import__)")):
         pairs = edges[kind]

@@ -169,6 +169,7 @@ BAND_PATHS = {
     "ouroboros/utils.py": None,
     "ouroboros/workspace_executor.py": None,
     "scripts/run_external_review.py": None,
+    "scripts/v7next_transplant.py": "F0 phase-review CRITICAL hardening: whole-leaf runtime invariants (handle existence/shape, declared/preamble disjointness, unread-declared) added to the byte-proof verifier; campaign tool retires with F6, not a runtime module",
     "skills/telegram/plugin.py": None,
     "skills/telegram/scripts/companion.py": None,
     "skills/telegram/scripts/sidecar.py": None,

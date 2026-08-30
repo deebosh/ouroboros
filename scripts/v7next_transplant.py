@@ -738,16 +738,22 @@ def _lockstep_tokens(up_text: str, leaf_text: str, sites: List[ast.Attribute],
 
 
 def verify_transplant(upstream_source: str, leaf_source: str, symbols: List[str],
-                      declared: Any, handle: str) -> Dict[str, Any]:
+                      declared: Any, handle: str,
+                      leaf_owned: Optional[Set[str]] = None) -> Dict[str, Any]:
     """The PROOF: per moved symbol, inverse-normalize the leaf span and require
-    (1) AST equality with the upstream span (ast.dump, no attributes) and
-    (2) byte-identical tokens outside the rewritten references.
+    (1) AST equality with the upstream span (ast.dump, no attributes),
+    (2) byte-identical tokens outside the rewritten references, AND
+    (3) a byte-identical round trip. Beyond the per-symbol spans it validates the
+    WHOLE leaf as a runnable module (F0 phase review, audit 2026-08-30): the
+    handle must be defined exactly once with the canonical body, no name may be
+    both declared and preamble-bound (ambiguous ownership), every declared name
+    must actually be read, and nothing unexpected may sit at top level.
     """
     declared = frozenset(declared)
     up_spans = extract_spans(upstream_source, symbols)
     leaf_spans = extract_spans(leaf_source, symbols)
     report: Dict[str, Any] = {"ok": True, "symbols": {}, "handle_reads": [],
-                              "unread_declared": []}
+                              "unread_declared": [], "leaf_invariants": []}
     reads: Set[str] = set()
     for span in _unique_spans(leaf_spans):
         up = up_spans[span.name]
@@ -828,8 +834,71 @@ def verify_transplant(upstream_source: str, leaf_source: str, symbols: List[str]
             report["ok"] = False
     report["handle_reads"] = sorted(reads)
     report["unread_declared"] = sorted(declared - reads)
-    _flag_undeclared_top_level(leaf_source, symbols, handle, report)
+    _flag_undeclared_top_level(leaf_source, symbols, handle, report, leaf_owned)
+    _validate_leaf_invariants(leaf_source, symbols, declared, handle, reads, report,
+                              leaf_owned)
     return report
+
+
+def _validate_leaf_invariants(leaf_source: str, symbols: List[str], declared: frozenset,
+                              handle: str, reads: Set[str], report: Dict[str, Any],
+                              leaf_owned: Optional[Set[str]]) -> None:
+    """Whole-leaf invariants a byte-faithful span proof cannot see (audit 2026-08-30
+    CRITICAL): the leaf must be a runnable module, not just faithful fragments."""
+    owned = set(leaf_owned or _PREAMBLE_OK_ASSIGN_DEFAULT)
+    problems: List[str] = []
+    tree = ast.parse(leaf_source)
+    # (a) when the leaf reads anything through the handle (or declares names),
+    # the handle must be defined exactly once, as a canonical parameterless
+    # function whose body returns/points at a parent module (never `return None`).
+    # A projection-only leaf (zero handle reads, zero declared) may omit it.
+    handle_defs = [n for n in tree.body
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   and n.name == handle]
+    handle_required = bool(reads or declared)
+    if handle_required and len(handle_defs) != 1:
+        problems.append(f"handle {handle!r} defined {len(handle_defs)} times, expected 1")
+    elif len(handle_defs) > 1:
+        problems.append(f"handle {handle!r} defined {len(handle_defs)} times, expected at most 1")
+    elif handle_defs:
+        hd = handle_defs[0]
+        if hd.args.args or hd.args.kwonlyargs or hd.args.vararg or hd.args.kwarg:
+            problems.append(f"handle {handle!r} must take no parameters")
+        returns = [n for n in ast.walk(hd) if isinstance(n, ast.Return)]
+        if not returns or any(
+                isinstance(r.value, ast.Constant) and r.value.value is None
+                or r.value is None for r in returns):
+            problems.append(f"handle {handle!r} body must return the parent module, "
+                            "never None / bare return")
+    # (b) declared names and preamble-bound names must be DISJOINT (ambiguous
+    # ownership: a name both imported locally and read through the handle).
+    preamble_bound: Set[str] = set()
+    span_names = set(symbols) | {handle}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                preamble_bound.add((a.asname or a.name).split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name not in span_names:
+                preamble_bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id not in span_names:
+                    preamble_bound.add(t.id)
+    overlap = declared & preamble_bound
+    if overlap:
+        problems.append(f"names both declared and preamble-bound (ambiguous ownership): "
+                        f"{sorted(overlap)}")
+    # (c) every declared name must actually be read through the handle.
+    if declared - reads:
+        problems.append(f"declared but never read through {handle}(): "
+                        f"{sorted(declared - reads)}")
+    # (d) leaf-owned allowlist must not silently absorb a declared name.
+    if owned & declared:
+        problems.append(f"leaf-owned allowlist overlaps declared set: {sorted(owned & declared)}")
+    report["leaf_invariants"] = problems
+    if problems:
+        report["ok"] = False
 
 
 _PREAMBLE_OK_ASSIGN_DEFAULT = frozenset({"log"})

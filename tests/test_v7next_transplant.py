@@ -563,14 +563,19 @@ def test_cli_emit_and_check_roundtrip(tmp_path):
 # ---------------------------------------------------------------------------
 
 _MUT_UP = "def f(a, b):\n    return a  +  b + PARENT\n"
-_MUT_LEAF_OK = "def f(a, b):\n    return a  +  b + _h().PARENT\n"
+_MUT_FN = "def f(a, b):\n    return a  +  b + _h().PARENT\n"
+# A COMPLETE, runnable leaf (F0 review: verify the whole module, not a fragment).
+_MUT_LEAF_OK = ('"""doc"""\nfrom __future__ import annotations\n'
+                "from ouroboros import config as _parent\n\n\n"
+                "def _h():\n    return _parent\n\n\n" + _MUT_FN)
 
 
 def test_mutation_whitespace_change_fails_byte_proof():
     """Inter-token whitespace edits are invisible to the token proof; the
     mandatory byte round trip must catch them."""
     from scripts.v7next_transplant import verify_transplant
-    leaf_ws = "def f(a, b):\n    return a + b + _h().PARENT\n"  # collapsed spaces
+    fn_ws = "def f(a, b):\n    return a + b + _h().PARENT\n"  # collapsed spaces
+    leaf_ws = _MUT_LEAF_OK.replace(_MUT_FN, fn_ws)
     rep = verify_transplant(_MUT_UP, leaf_ws, ["f"], {"PARENT"}, "_h")
     assert rep["ok"] is False
     assert "byte-identical" in (rep["symbols"]["f"]["detail"] or "")
@@ -587,17 +592,64 @@ def test_mutation_extra_top_level_def_fails():
 
 
 def test_mutation_import_time_side_effect_fails():
-    leaf = "import os\n" + _MUT_LEAF_OK + "\nprint('boom')\n"
+    leaf = _MUT_LEAF_OK + "\nprint('boom')\n"
     from scripts.v7next_transplant import verify_transplant
     rep = verify_transplant(_MUT_UP, leaf, ["f"], {"PARENT"}, "_h")
     assert rep["ok"] is False
     assert any("Expr" in e or "line" in e for e in rep["undeclared_top_level"])
 
 
-def test_preamble_allowlist_still_passes():
-    leaf = ('"""doc"""\nfrom __future__ import annotations\nimport os\n'
-            "log = None\n\ndef _h():\n    return os\n\n" + _MUT_LEAF_OK)
+def test_complete_leaf_passes():
     from scripts.v7next_transplant import verify_transplant
-    rep = verify_transplant(_MUT_UP, leaf, ["f"], {"PARENT"}, "_h")
-    assert rep["undeclared_top_level"] == []
+    rep = verify_transplant(_MUT_UP, _MUT_LEAF_OK, ["f"], {"PARENT"}, "_h")
+    assert rep["undeclared_top_level"] == [] and rep["leaf_invariants"] == []
+    assert rep["ok"] is True
+
+
+# --- F0 phase-review CRITICAL: whole-leaf invariants a span proof cannot see ---
+
+def test_missing_handle_def_fails():
+    """A leaf that reads _h().PARENT but never defines _h is not runnable."""
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, _MUT_FN, ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("defined 0 times" in e for e in rep["leaf_invariants"])
+
+
+def test_handle_returning_none_fails():
+    from scripts.v7next_transplant import verify_transplant
+    bad = _MUT_LEAF_OK.replace("def _h():\n    return _parent",
+                               "def _h():\n    return None")
+    rep = verify_transplant(_MUT_UP, bad, ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("must return the parent module" in e for e in rep["leaf_invariants"])
+
+
+def test_declared_and_preamble_bound_overlap_fails():
+    """PARENT both declared (read via handle) and imported in the preamble =
+    ambiguous ownership."""
+    from scripts.v7next_transplant import verify_transplant
+    bad = _MUT_LEAF_OK.replace("from ouroboros import config as _parent\n",
+                               "from ouroboros import config as _parent\nimport PARENT\n")
+    rep = verify_transplant(_MUT_UP, bad, ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("ambiguous ownership" in e for e in rep["leaf_invariants"])
+
+
+def test_unread_declared_name_fails():
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, _MUT_LEAF_OK, ["f"], {"PARENT", "UNUSED"}, "_h")
+    assert rep["ok"] is False
+    assert any("never read through" in e for e in rep["leaf_invariants"])
+
+
+def test_projection_only_leaf_without_handle_passes():
+    """A leaf with zero handle reads and zero declared names (pure projection,
+    e.g. context_runtime_facts.py) legitimately carries no handle def."""
+    from scripts.v7next_transplant import verify_transplant
+    up = "def g():\n    return 1\n"
+    leaf = ('"""doc"""\nfrom __future__ import annotations\n\n\n'
+            "def g():\n    return 1\n")
+    rep = verify_transplant(up, leaf, ["g"], set(), "_h")
+    assert rep["leaf_invariants"] == []
     assert rep["ok"] is True
