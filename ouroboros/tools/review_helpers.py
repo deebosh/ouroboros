@@ -341,6 +341,13 @@ BINARY_EXTENSIONS = frozenset({
 })
 
 _FILE_SIZE_LIMIT = 1_048_576  # 1 MB per file
+# Per-file inline cap for the advisory prompt budget. Touched files larger than
+# this are replaced by a one-line omission note in the touched pack and added to
+# `omitted` so the existing disclosure path announces them; the staged diff hunk
+# still carries the actual change for the reviewer. The cap is content-size-driven
+# so it generalises beyond any specific carrier list (generated/lock files, install
+# pages, big fixtures, vendor dumps, etc.) without lowering _ADVISORY_PROMPT_MAX_CHARS.
+_ADVISORY_INLINE_FILE_LIMIT = 60_000  # ~15k tokens; aggregate advisory budget is 1.6M chars
 # File-classification constants shared by legacy pack helpers and generated atlases.
 _SENSITIVE_EXTENSIONS = frozenset({
     ".env", ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore",
@@ -870,6 +877,22 @@ def build_touched_file_pack(
             omitted.append(rel)
             logger.warning("Could not read file: %s", rel, exc_info=True)
             parts.append(f"### {rel}\n\n*(omitted — unreadable file: {read_exc})*\n")
+            continue
+
+        # Advisory inline-budget cap: aggregate prompt must stay under
+        # _ADVISORY_PROMPT_MAX_CHARS = 1_600_000. A single large generated
+        # file (uv.lock ~733KB, vendor dumps, install pages, big fixtures)
+        # by itself can blow the budget when combined with governance docs
+        # + diff + checklist. Omit such files from the inline pack and
+        # disclose via the existing `omitted` plumbing; the staged diff
+        # hunk still carries the actual change.
+        if len(content) > _ADVISORY_INLINE_FILE_LIMIT:
+            omitted.append(rel)
+            parts.append(
+                f"### {rel}\n\n"
+                f"*(omitted — {len(content):,} chars exceeds {_ADVISORY_INLINE_FILE_LIMIT:,} "
+                f"char inline limit; staged diff hunk covers the actual change)*\n"
+            )
             continue
 
         ext = fp.suffix.lstrip(".")

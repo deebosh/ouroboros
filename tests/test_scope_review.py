@@ -291,6 +291,98 @@ class TestTouchedFilePack:
         assert "huge.py" in omitted
         assert "omitted" in pack.lower()
 
+    def test_omits_files_over_inline_cap(self, tmp_path):
+        # _ADVISORY_INLINE_FILE_LIMIT is 60_000 chars. Files below _FILE_SIZE_LIMIT
+        # (1MB on disk) but above the inline cap (e.g. uv.lock ~733KB) must be
+        # omitted from the touched pack with a disclosure note — full content
+        # would push the aggregate advisory prompt past _ADVISORY_PROMPT_MAX_CHARS.
+        mod = _get_module("ouroboros.tools.review_helpers")
+        inline_cap = mod._ADVISORY_INLINE_FILE_LIMIT
+        # 80 KB of unique text — over the inline cap, well under 1 MB on disk.
+        content = ("def line_for_test():\n    return 'payload'\n" * 2_400)[:80_000]
+        (tmp_path / "huge_carrier.py").write_text(content, encoding="utf-8")
+        pack, omitted = mod.build_touched_file_pack(tmp_path, ["huge_carrier.py"])
+
+        # File is in omitted list — disclosure plumbing surfaces it.
+        assert "huge_carrier.py" in omitted
+        # Disclosure note is rendered with both the actual char count and the cap.
+        assert "huge_carrier.py" in pack
+        assert f"exceeds {inline_cap:,} char inline limit" in pack
+        assert "staged diff hunk covers the actual change" in pack
+        # Full content is NOT inlined — only the omission note is.
+        assert "def line_for_test" not in pack
+        # Pack stays tiny (a one-line omission note per file).
+        assert len(pack) < 500
+
+    def test_inline_files_still_inlined_below_cap(self, tmp_path):
+        # Files under the inline cap keep their full content in the pack.
+        mod = _get_module("ouroboros.tools.review_helpers")
+        (tmp_path / "small.py").write_text(
+            "def small():\n    return 'tiny payload'\n",
+            encoding="utf-8",
+        )
+        pack, omitted = mod.build_touched_file_pack(tmp_path, ["small.py"])
+
+        assert omitted == []
+        assert "small.py" in pack
+        assert "def small()" in pack
+        assert "tiny payload" in pack
+        assert "inline limit" not in pack
+
+    def test_inline_cap_disclosure_includes_counts(self, tmp_path):
+        # The disclosure note must name BOTH the actual char count AND the cap
+        # so the operator can see why a file was omitted (P1: no silent omission).
+        mod = _get_module("ouroboros.tools.review_helpers")
+        inline_cap = mod._ADVISORY_INLINE_FILE_LIMIT
+        # 100 KB file: actual count must appear verbatim in the note.
+        content = "x" * 100_000
+        (tmp_path / "carrier.lock").write_text(content, encoding="utf-8")
+        pack, omitted = mod.build_touched_file_pack(tmp_path, ["carrier.lock"])
+
+        assert "carrier.lock" in omitted
+        assert "100,000 chars exceeds 60,000 char inline limit" in pack
+
+    def test_advisory_budget_holds_with_multiple_large_files(self, tmp_path):
+        # Simulate the bug scenario: a small diff that bumps several large
+        # generated/carrier files (uv.lock, install pages, api_types.js, etc.).
+        # Each file is below _FILE_SIZE_LIMIT (1MB on disk) but big enough to
+        # blow the aggregate 1.6M-char advisory prompt if all inlined.
+        mod = _get_module("ouroboros.tools.review_helpers")
+        inline_cap = mod._ADVISORY_INLINE_FILE_LIMIT
+        assert inline_cap < 1_600_000, "cap must be meaningfully below prompt budget"
+
+        # Three files each ~200 KB — total raw content ~600 KB. Without the cap,
+        # they'd all be inlined; with the cap, none of them is.
+        for name, size in [
+            ("uv.lock", 200_000),
+            ("site_install_index.html", 200_000),
+            ("api_types.js", 200_000),
+        ]:
+            (tmp_path / name).write_text("y" * size, encoding="utf-8")
+        # Plus one small genuine source file that MUST still be inlined.
+        (tmp_path / "real_change.py").write_text(
+            "def real_change():\n    return 'keep me inline'\n",
+            encoding="utf-8",
+        )
+
+        paths = ["uv.lock", "site_install_index.html", "api_types.js", "real_change.py"]
+        pack, omitted = mod.build_touched_file_pack(tmp_path, paths)
+
+        # All three large files are in the omitted list with disclosed notes.
+        assert "uv.lock" in omitted
+        assert "site_install_index.html" in omitted
+        assert "api_types.js" in omitted
+        # Small file is fully inlined and NOT in omitted.
+        assert "real_change.py" not in omitted
+        assert "def real_change()" in pack
+        # Pack stays well under 1.6M chars — the fix's invariant.
+        # Allow some headroom for the small inlined file + three disclosure notes,
+        # but the budget must be ~cap order, not proportional to the raw file sizes.
+        assert len(pack) < 5_000, (
+            f"touched pack grew to {len(pack):,} chars — cap is not biting; "
+            "the prompt budget will still blow up"
+        )
+
 
 class TestBroaderRepoPack:
     def test_excludes_touched_files(self, tmp_path):
