@@ -185,6 +185,29 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
                 continue  # explicitly deferred out of v7.0 by an owner decision
             if r["status"] != "done":
                 errors.append(f"release: {r['id']} status {r['status']!r} != done")
+            errors.extend(_hook_resolution_errors(r))
+    return errors
+
+
+_HOOK_PATH_RE = re.compile(r"\b(?:tests|scripts|docs)/[\w./-]+\.(?:py|md|toml)\b")
+
+
+def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
+    """Release-bar hook contract (F0 review rounds 1-3): a shipped row's
+    verification hook must RESOLVE — prose alone cannot pass. At least one
+    repo-path reference must be present, and every referenced path must exist
+    in the tree. Outside --release hooks stay free prose (they name future
+    suites while the work is pending)."""
+    hook = row["verification hook"]
+    paths = _HOOK_PATH_RE.findall(hook.replace("\\|", "|"))
+    errors: list[str] = []
+    if not paths:
+        errors.append(
+            f"release: {row['id']} hook has no resolvable repo-path reference "
+            "(tests/, scripts/ or docs/ file) — prose-only hooks cannot ship")
+    for p in paths:
+        if not (REPO_ROOT / p).is_file():
+            errors.append(f"release: {row['id']} hook references missing file {p}")
     return errors
 
 
