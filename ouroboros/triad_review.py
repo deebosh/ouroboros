@@ -105,6 +105,22 @@ def _actor_record(
     )
 
 
+# Reasoning models (MiniMax-M3, DeepSeek-R1, …) emit their chain of thought in an
+# explicit ``<think>…</think>`` block ahead of the verdict. The harness normally
+# strips it, but some provider routes pass it through, and a passthrough block
+# then shows up as a "prose preamble" that the anti-refusal clean-verdict check
+# refuses — a clean ``[]``/``NO_FINDINGS`` review is recorded as unparseable and
+# the reviewer drops out of quorum. Unlike prose, the block is structurally
+# unambiguous (matched tags), so removing a LEADING well-formed block cannot
+# launder a refusal ("I cannot review this diff" carries no ``<think>`` tags).
+_LEADING_THINK_BLOCK_RE = re.compile(r"\A\s*<think\b[^>]*>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def strip_leading_reasoning_block(text: str) -> str:
+    """Drop one leading, well-formed ``<think>…</think>`` reasoning block."""
+    return _LEADING_THINK_BLOCK_RE.sub("", str(text or ""), count=1)
+
+
 def extract_json_array(
     raw: str,
     *,
@@ -113,7 +129,7 @@ def extract_json_array(
     validate_fn: Optional[Callable[[List[Any]], bool]] = None,
 ) -> Optional[List[Any]]:
     """Best-effort extraction of a JSON array from model output."""
-    text = str(raw or "").strip()
+    text = strip_leading_reasoning_block(str(raw or "")).strip()
     candidates = [text]
     if "```" in text:
         for chunk in text.split("```"):
@@ -209,7 +225,7 @@ def extract_fenced_json(text: str) -> Any:
 
 def parse_review_findings(raw_text: str) -> tuple[Any, List[Dict[str, Any]], str]:
     """Reviewer response -> (parsed, findings, signal), by the object/array ladder."""
-    text = str(raw_text or "").strip()
+    text = strip_leading_reasoning_block(str(raw_text or "")).strip()
     parsed: Any = None
     findings: List[Dict[str, Any]] = []
     signal = "UNKNOWN"
@@ -295,7 +311,7 @@ def empty_array_is_verified_clean(raw_text: str) -> bool:
     followed by the sentinel line"); anything looser lets a reviewer opt out of
     the gate with prose.
     """
-    text = str(raw_text or "").strip()
+    text = strip_leading_reasoning_block(str(raw_text or "")).strip()
     if "```" in text:
         # Unwrap a fenced block: ```json\n[]\n```, optionally with the sentinel
         # AFTER the closing fence — a model that fences its JSON puts it there,
