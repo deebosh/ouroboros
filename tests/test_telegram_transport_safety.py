@@ -362,3 +362,31 @@ def test_photo_download_accepts_small_response(monkeypatch):
     encoded, mime = asyncio.run(telegram_api.TelegramClient("token").download_photo("file-id"))
     assert base64.b64decode(encoded) == b"img"
     assert mime == "image/jpeg"
+
+
+def test_telegram_http_clients_pin_trust_env_false(monkeypatch):
+    """Both TelegramClient transports (API calls and file downloads) must ignore
+    ambient proxy environment: on a shared host an HTTP(S)_PROXY would silently
+    route the bot token through a foreign proxy, while every other client in this
+    skill and the runtime's no-proxy LLM clients already pin trust_env=False."""
+    _plugin, telegram_api = _load_skill()
+    real_async_client = httpx.AsyncClient
+    seen: list[dict] = []
+
+    def handler(request):
+        if "/file/" in str(request.url):
+            return httpx.Response(200, content=b"bytes")
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    def client_factory(**kwargs):
+        seen.append(dict(kwargs))
+        return real_async_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(telegram_api.httpx, "AsyncClient", client_factory)
+    client = telegram_api.TelegramClient("token")
+
+    asyncio.run(client.call("getMe"))
+    asyncio.run(client._download_bytes("photos/file_1.jpg"))
+
+    assert len(seen) == 2
+    assert all(kwargs.get("trust_env") is False for kwargs in seen)

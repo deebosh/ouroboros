@@ -570,7 +570,10 @@ class TelegramClient:
         method_text = str(method or "")
         safe_method = method_text if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", method_text) else "request"
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            # trust_env=False: never route the bot token through an ambient
+            # HTTP(S)_PROXY — parity with every other Telegram client in this
+            # skill and with the runtime's no-proxy LLM clients.
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
                 response = await client.post(f"{self.api_base}/{method_text}", data=data, files=files)
         except httpx.TimeoutException:
             raise TelegramTransportError(f"Telegram API timed out during {safe_method}.") from None
@@ -616,7 +619,7 @@ class TelegramClient:
 
     async def _download_bytes(self, file_path: str) -> bytes:
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
                 async with client.stream("GET", f"{self.file_base}/{file_path}") as response:
                     if response.status_code >= 400:
                         raise RuntimeError(f"Telegram file download returned HTTP {response.status_code}")
