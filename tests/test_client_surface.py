@@ -224,7 +224,8 @@ def _function_calls(tree: ast.AST, func_name: str) -> set[str]:
 
 
 def test_all_three_routing_producers_attach_client_surface():
-    tree = ast.parse((REPO / "ouroboros" / "tools" / "control.py").read_text(encoding="utf-8"))
+    # tools/control.py re-exports them; the producers live in the routing leaf.
+    tree = ast.parse((REPO / "ouroboros" / "tools" / "control_routing.py").read_text(encoding="utf-8"))
     for producer in ("_promote_chat_to_task", "_route_to_project", "_steer_task"):
         calls = _function_calls(tree, producer)
         assert "_attach_client_surface" in calls, (

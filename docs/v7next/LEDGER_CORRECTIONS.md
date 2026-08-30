@@ -749,3 +749,132 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    ast-identical duplicate test bodies between
    tests/test_review_cycles_dispatch.py and
    tests/test_review_cycles_skill_dispatch.py.
+## From the D08 lane (base 92238298, 2026-08-30)
+
+1. Scope executed (the QUIET part): 16 leaves landed from tip bytes with the
+   transplant tool (ast=tokens=byte-roundtrip=True on every span, exit 0,
+   leaf_invariants=[], unread_declared=[]): control_events (rows 2520-2528),
+   control_routing (2529-2536, 3954), control_runtime (2557-2568) — the D08
+   half of the SHARED D07/D08 tools/control.py; queue_schedules (2029-2040 +
+   alias rows 3950-3952); worker_promotion (2045-2054), worker_chat_lane
+   (2055-2060), worker_pool_lifecycle (2065-2076), worker_process (1024-1029);
+   events_chat_delivery (921, 923-929), events_budget (980-984),
+   events_coop_checkpoint (964-969), events_project_routing (955-963),
+   events_schedule_task (945-949, 951, 953-954), events_subagent_admission
+   (930-944), events_worker_reports (985-991), events_runtime_controls
+   (993-997). Facades = tip parent − moved spans + grouped re-export block
+   (noqa discipline); facade audit green: every kept def/assign span
+   byte-identical to `git show HEAD:<monolith>`, every moved name re-exported.
+2. Drift-probe results (reference leaf --check against tip bytes, first step
+   per leaf): whole-leaf byte-true — control_events 9/9, queue_schedules
+   12/12, events_coop_checkpoint 6/6, events_subagent_admission 15/15;
+   byte-falsified by pure upstream drift and re-emitted from tip bytes —
+   control_routing 5/9 spans, control_runtime 7/12, worker_promotion 3/10,
+   worker_chat_lane 2/6, worker_pool_lifecycle 2/12, worker_process 2/6,
+   events_chat_delivery 4/8, events_budget 3/5, events_project_routing 6/9,
+   events_schedule_task 2/9, events_worker_reports 4/7,
+   events_runtime_controls 1/5. "Verbatim" in the ledger was re-proven by
+   bytes in every case; no oracle semantics were replayed over tip drift.
+3. SHARED-file convention (tools/control.py, D07/D08): this lane moved ONLY
+   the D08 rows (control_events/routing/runtime per DOMAIN_MAP); the D07 rows
+   (control_scheduling 2543-2556, control_subagent_spec 2537-2542,
+   control_task_results 2569-2579) remain in the facade untouched for the D07
+   lane. Unrowed post-cutoff predecessor-authority family
+   (_MISSING_PREDECESSOR_SELECTOR, _predecessor_selector_error,
+   _attach_predecessor_authority_from_metadata) rides with its only readers
+   (_promote_chat_to_task/_route_to_project) into control_routing — a
+   def-time default-argument read of the sentinel makes a facade-retained
+   copy structurally impossible (F5 theme for the ledger's unrowed census).
+4. HOT-DEFERRED, cancel/custody class (D09; upstream 65b5d19f re-decomposed
+   this ownership — replaying the reference rows would be a second answer):
+   - events_task_done rows 972-979: _resolve_lifecycle_fault reads
+     cancel_intents, _maybe_notify_provider_death reads task_lifecycle,
+     _task_done_durable_fault operates terminalization custody; the family is
+     one dispatch cluster, deferred whole.
+   - events_runtime_controls row 992 (_handle_cancel_task): the cancel ingress
+     handler itself.
+   - row 970 (_close_campaign_after_owner_stop -> queue_transitions.py) and
+     row 971 (events_evolution_done): owner-stop family; 65b5d19f made
+     queue_transitions.py its cancel-transition dumping ground, and the
+     evolution-done handler calls the deferred campaign-closure symbol as a
+     bare local name.
+   - queue_snapshot rows 2017-2020: restore_pending_from_snapshot restores
+     terminalization-retry rows and consults cancel_intents.has_active_intent
+     (65b5d19f machinery); persist snapshots the same fences. Deferred whole
+     (parse_iso_to_ts/_kept_service_pids ride only with their family).
+   - queue_timeouts rows 2021-2028: _enforce_task_timeouts_locked drives
+     cancel_intents/task_reaper/owner_stop.
+   - queue_evolution rows 2041-2044: upstream itself moved
+     _deliver_pending_owner_report/enqueue_evolution_task_if_needed into its
+     own supervisor/evolution_lifecycle.py (65b5d19f); creating the reference
+     leaf beside it would fork evolution-family ownership.
+   - worker_assignment rows 2077-2079 (assign_tasks reshaped by 65b5d19f's
+     600-line workers.py rework; _cancel_unauthorized_evolution) and
+     worker_health rows 2061-2064 (_ensure_workers_healthy_locked writes
+     STATUS_CANCELLED terminal outcomes and terminalizes admission-blocked
+     retries). Both families stay on the facade.
+5. Deferred SEMANTIC-DELTA rows (unsanctioned for this lane; tip bytes stand):
+   1014-1015 (dispatch_event/EVENT_HANDLERS, delta D06 events taxonomy — the
+   event_taxonomy.py leaf and tests/test_event_taxonomy.py are NOT created);
+   1021/1022/2082 (queue.init/workers.init/refresh_timeouts_from_settings,
+   delta D04 retired settings knobs — Q10/F3 territory); retired rows
+   1017-1019, 1030, 2080-2081 (SOFT/HARD_TIMEOUT_SEC, TOTAL_BUDGET_LIMIT,
+   QUEUE_SNAPSHOT_PATH — deletions are semantics, not relocation).
+6. Row 2016 (_handle_schedule_task -> events_schedule_task.py) DEFERRED with
+   a mechanism finding: the function carries the >300-line FUNCTION_DEBT entry
+   keyed by (path, qualname), and THIS tree's transition validator
+   (ouroboros/review.py::validate_manifest_transition) has no same-qualname
+   relocation rule — that rule is reference delta D11, ratchet machinery out
+   of this lane's bounds. The handler stays in the facade with its debt key;
+   the eight quiet schedule-family rows moved. Every seam name it reads
+   (_find_duplicate_task etc.) binds through the facade re-export, so existing
+   facade-targeted test patches keep intercepting (verified green).
+7. Reverse-mapped preamble spots (oracle spelling -> tip truth): queue_schedules
+   `from supervisor.task_lifecycle import record_scheduled_admission` ->
+   `from supervisor.task_admission import ...` (65b5d19f moved it); the two
+   control leaves' `from ouroboros.tools.tool_result import ToolResult,
+   _publish_tool_result` deleted — the module does not exist at tip (D04 lane
+   hot-deferred that organ) and no tip span reads the names; alias mirrors
+   from tip parents: _bound_project_chat_id (supervisor/log_addressing.py,
+   upstream's own extraction), _build_scheduled_task_payload
+   (supervisor/task_dispatch.py), _reject_if_no_chat_target
+   (supervisor/task_admission.py), _once_due/_prune_consumed_once/
+   _record_last_error (supervisor/schedule_time.py, rows 3950-3952 satisfied
+   as leaf preamble imports exactly like the tip parent).
+8. Handle idiom: queue_schedules/_queue, worker_promotion|chat_lane|
+   pool_lifecycle/_pool declared sets re-derived on tip bytes (they grew past
+   the reference table by the post-cutoff facade helpers:
+   _announce_created_project, _apply_presence_promotion_authority,
+   _promoted_scheduled_outcome, _reject_promoted_after_attachment_stage,
+   _relocate_promoted_attachments, _stage_promoted_initial_attachments,
+   _reconcile_confirmed_dead_review_owner); events_project_routing gained the
+   D33-family handle `_events` for the single unrowed facade helper
+   _routing_attachments. All sets pinned in
+   tests/test_module_handle_extraction.py::LEAVES.
+9. Path-keyed mirrors (Δ2 п.10): HOT_CODE_PATHS (supervisor/update_merge_policy.py)
+   += the 12 carried hot leaves (D04-block precedent); FUNCTION_DEBT key NOT
+   relocated (see 6); conftest _SERIAL_TEST_FILES needed no new rows (the new
+   suites are structural). Dead-patch class re-pointed to owner leaves,
+   mirroring the reference adaptations: test_coop_checkpoint_quiescence
+   (events_coop_checkpoint, events_subagent_admission), test_evolution_redesign
+   (queue_schedules._last_skill_schedule_sync), test_schedule_followup
+   (queue_schedules._write_scheduled_tasks), test_worker_crash_retry
+   (supervisor.worker_process trio), test_promote_chat_flow
+   (control_events._wait_for_promotion_admission,
+   control_routing._promotion_pool_disabled_from_snapshot),
+   test_evolution_restart_claims (`control_runtime as control`, the reference's
+   exact alias form), test_task_status_flow (control_runtime run_cmd/
+   atomic_write_json), test_extension_loader (worker_main scan reads
+   supervisor/worker_process.py), test_process_resource_leaks (reference
+   bodies verbatim). All touched test files LOSSLESS (name multisets equal).
+10. Pre-existing observation, NOT this lane's defect: tests/
+   test_review_cycles_dispatch.py and tests/test_review_cycles_skill_dispatch.py
+   share 10 ast-identical test bodies at the base SHA (D15-class dup, D06
+   domain) — left for the D06 lane.
+11. Unrowed tip top-level symbols stayed in their facades (F5 census):
+   events.py _handle_main_llm_call_state/_parent_delegation_budget/
+   _routing_attachments; queue.py 26 names (fences/admission/cancel seam);
+   workers.py 88 names (65b5d19f terminalization-retry/custody machinery);
+   control.py HIDDEN_LEGACY_SCHEDULE_PARAMS, _context_task_depth,
+   _materialize_child_attachment_manifest, maybe_emit_delegated_run_fanout,
+   get_tools + the predecessor family that rode into control_routing.

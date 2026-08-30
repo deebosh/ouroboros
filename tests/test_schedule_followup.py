@@ -502,7 +502,8 @@ def test_identical_last_error_does_not_rewrite_the_table_every_tick(tmp_path, mo
     })
     writes = []
     real_write = queue._write_scheduled_tasks
-    monkeypatch.setattr(queue, "_write_scheduled_tasks",
+    from supervisor import queue_schedules
+    monkeypatch.setattr(queue_schedules, "_write_scheduled_tasks",
                         lambda data, drive_root=None: (writes.append(1), real_write(data, drive_root))[1])
     queue.check_scheduled_tasks()
     assert len(writes) == 1  # first tick records both typed errors

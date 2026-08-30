@@ -168,6 +168,7 @@ BAND_PATHS = {
     "skills/telegram/scripts/sidecar.py": None,
     "supervisor/evolution_lifecycle.py": None,
     "supervisor/message_bus.py": "push_log gained the A2A frame suppression and explicit-addressing contract comments in the live log routing fix (fix/main-chat-leak sprint); the module sat at exactly 1000 lines before it",
+    "supervisor/queue.py": "v7next D08 partial split: 1587->1265 after the schedules family moved to supervisor/queue_schedules.py; the residue keeps the deferred snapshot/timeouts/evolution rows (cancel/custody-entangled, F2)",
     "supervisor/task_reaper.py": "Entered the band from 907 lines: timeout-retry admission now serializes queue publication, reciprocal result lineage, cancellation-wins handoff, and failed-terminal-write custody in the existing off-loop reaper owner.",
     "supervisor/terminal_delivery.py": None,
     "tests/test_acting_subagents.py": None,

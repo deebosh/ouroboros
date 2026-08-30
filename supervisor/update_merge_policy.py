@@ -30,6 +30,20 @@ HOT_CODE_PATHS = frozenset({
     "ouroboros/config.py",
     "supervisor/queue.py",
     "supervisor/events.py",
+    # v7 D08 split leaves: code that moved out of the hot control/queue/events
+    # monoliths keeps the label (same parity rule as the D04 block above).
+    "ouroboros/tools/control_events.py",
+    "ouroboros/tools/control_routing.py",
+    "ouroboros/tools/control_runtime.py",
+    "supervisor/queue_schedules.py",
+    "supervisor/events_budget.py",
+    "supervisor/events_chat_delivery.py",
+    "supervisor/events_coop_checkpoint.py",
+    "supervisor/events_project_routing.py",
+    "supervisor/events_runtime_controls.py",
+    "supervisor/events_schedule_task.py",
+    "supervisor/events_subagent_admission.py",
+    "supervisor/events_worker_reports.py",
 })
 
 

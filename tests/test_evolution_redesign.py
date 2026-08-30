@@ -1139,7 +1139,8 @@ body
 
     queue.resync_skill_schedules(tmp_path)
     before = queue.list_scheduled_tasks(tmp_path)["tasks"][0]
-    monkeypatch.setattr(queue, "_last_skill_schedule_sync", queue.time.monotonic())
+    from supervisor import queue_schedules
+    monkeypatch.setattr(queue_schedules, "_last_skill_schedule_sync", queue.time.monotonic())
     queue.check_scheduled_tasks()
 
     assert pending == []

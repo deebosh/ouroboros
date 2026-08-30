@@ -3368,11 +3368,12 @@ def test_handle_text_response_keeps_full_reasoning_note():
 
 def test_request_restart_latches_reason_until_task_end(tmp_path, monkeypatch):
     from ouroboros.tools import control as control_module
+    from ouroboros.tools import control_runtime
 
-    monkeypatch.setattr(control_module, "run_cmd", lambda *args, **kwargs: "value")
+    monkeypatch.setattr(control_runtime, "run_cmd", lambda *args, **kwargs: "value")
     written = {}
     monkeypatch.setattr(
-        control_module,
+        control_runtime,
         "atomic_write_json",
         lambda path, payload: written.setdefault(str(path), payload),
     )

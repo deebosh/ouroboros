@@ -155,7 +155,8 @@ def test_reload_all_called_from_server_startup():
     else:
         assert False, "lifespan function not found in server.py"
 
-    worker_src = (pathlib.Path(__file__).resolve().parent.parent / "supervisor" / "workers.py").read_text(encoding="utf-8")
+    # v7next D08: worker_main lives in its extraction owner supervisor/worker_process.py
+    worker_src = (pathlib.Path(__file__).resolve().parent.parent / "supervisor" / "worker_process.py").read_text(encoding="utf-8")
     worker_tree = ast.parse(worker_src)
     for node in ast.walk(worker_tree):
         if isinstance(node, ast.FunctionDef) and node.name == "worker_main":
@@ -169,7 +170,7 @@ def test_reload_all_called_from_server_startup():
             )
             assert "pytest_default_real_data_dir" in body_text
             return
-    assert False, "worker_main function not found in supervisor/workers.py"
+    assert False, "worker_main function not found in supervisor/worker_process.py"
 
 
 def test_reload_all_tears_down_stale_extensions(tmp_path):

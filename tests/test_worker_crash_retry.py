@@ -116,6 +116,7 @@ def test_worker_main_exits_after_post_bootstrap_task_exception(monkeypatch, tmp_
     import ouroboros.process_custody as process_custody
     import ouroboros.utils as utils
     import supervisor.workers as W
+    import supervisor.worker_process as WP
 
     repo = tmp_path / "repo"
     drive = tmp_path / "drive"
@@ -140,9 +141,9 @@ def test_worker_main_exits_after_post_bootstrap_task_exception(monkeypatch, tmp_
 
     incoming = InputQueue()
     crashes = []
-    monkeypatch.setattr(W, "_bind_worker_repo_root", lambda *_a, **_k: None)
-    monkeypatch.setattr(W, "_prepare_worker_task_runtime", lambda: None)
-    monkeypatch.setattr(W, "_log_worker_crash", lambda *args: crashes.append(args))
+    monkeypatch.setattr(WP, "_bind_worker_repo_root", lambda *_a, **_k: None)
+    monkeypatch.setattr(WP, "_prepare_worker_task_runtime", lambda: None)
+    monkeypatch.setattr(WP, "_log_worker_crash", lambda *args: crashes.append(args))
     monkeypatch.setattr(platform_layer, "create_new_session", lambda: None)
     monkeypatch.setattr(process_custody, "start_parent_lifeline", lambda **_k: None)
     monkeypatch.setattr(config, "initialize_runtime_mode_baseline", lambda: None)

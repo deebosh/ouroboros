@@ -45,6 +45,32 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/usage_legacy_import.py": ("ouroboros/usage_accounting.py", "_usage", frozenset({
         "_legacy_snapshot", "_locked", "_read_records_locked",
     })),
+    # D08 lane rows. The queue/pool declared sets grew past the reference table
+    # where post-cutoff upstream helpers stayed on the facade (the deferred
+    # cancel/custody organ); every set below is the tool-derived exact read set.
+    "supervisor/events_project_routing.py": ("supervisor/events.py", "_events", frozenset({
+        "_routing_attachments",
+    })),
+    "supervisor/queue_schedules.py": ("supervisor/queue.py", "_queue", frozenset({
+        "DRIVE_ROOT", "PENDING", "RUNNING", "SCHEDULED_TASKS_FILE", "_queue_lock",
+        "enqueue_task", "load_state", "persist_queue_snapshot",
+    })),
+    "supervisor/worker_chat_lane.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "REPO_DIR", "_chat_agent_lock", "_ephemeral_chat_lock",
+        "_get_chat_agent", "_origin_from_mapping", "_repo_writer_turn_allowed",
+        "_report_binding_failure", "get_event_q", "load_state", "send_with_budget",
+    })),
+    "supervisor/worker_pool_lifecycle.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "REPO_DIR", "WORKERS", "Worker", "_WORKER_PIDS_FILENAME",
+        "_get_ctx", "_reconcile_confirmed_dead_review_owner", "get_event_q",
+        "kill_workers", "load_state", "reconstruct_task_cost", "send_with_budget",
+    })),
+    "supervisor/worker_promotion.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "PENDING", "REPO_DIR", "RUNNING", "_announce_created_project",
+        "_apply_presence_promotion_authority", "_promoted_scheduled_outcome",
+        "_reject_promoted_after_attachment_stage", "_relocate_promoted_attachments",
+        "_stage_promoted_initial_attachments",
+    })),
 }
 
 

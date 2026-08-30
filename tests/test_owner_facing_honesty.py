@@ -612,9 +612,10 @@ def test_ephemeral_turn_producer_sets_flag():
     chat-turn producer actually sets it (integration seam, run-2 gate finding)."""
     import inspect
 
-    from supervisor import workers
+    # v7next D08: the chat-turn producer lives in supervisor/worker_chat_lane.py
+    from supervisor import worker_chat_lane
 
-    src = inspect.getsource(workers)
+    src = inspect.getsource(worker_chat_lane)
     assert 'task["_ephemeral_turn"] = True' in src
 
 
