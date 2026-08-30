@@ -295,6 +295,71 @@ def prune_task_drives(
     return report
 
 
+def prune_task_results(
+    parent_drive_root: pathlib.Path,
+    *,
+    retention_days: Optional[int] = None,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Bound ``data/task_results/`` (razzant/ouroboros#139).
+
+    ``task_results/<id>.json`` and ``task_results/artifacts/<id>/`` accumulate
+    with no prune — ``list_task_results`` glob+parses every file on each
+    ``/api/tasks`` request and SSE tick. Delete the result JSON and its artifact
+    subtree for tasks that are terminal AND older than the GC retention window,
+    EXCEPT any task that still has an open review continuation (its result is
+    load-bearing until the review resumes).
+    """
+    from ouroboros.retention import age_cutoff
+    from ouroboros.task_results import task_results_dir
+
+    parent = pathlib.Path(parent_drive_root)
+    base = task_results_dir(parent, create=False)
+    days = _resolve_retention_days(retention_days)
+    cutoff = age_cutoff(days, now)
+    report: Dict[str, Any] = {
+        "retention_days": days, "scanned": 0, "pruned": [], "skipped": [], "errors": [],
+    }
+    if not base.is_dir():
+        return report
+
+    try:
+        from ouroboros.task_continuation import list_review_continuations
+
+        continuations, _ = list_review_continuations(parent)
+        protected = {str(c.task_id) for c in continuations}
+    except Exception:
+        # Fail CLOSED: if the open-continuation set can't be read, prune nothing.
+        report["errors"].append({"task_id": "*", "error": "review-continuation set unreadable; skipped all"})
+        return report
+
+    artifacts_base = base / "artifacts"
+    for path in sorted(base.glob("*.json")):
+        task_id = path.stem
+        report["scanned"] += 1
+        try:
+            validate_task_id(task_id)
+            result = load_task_result(parent, task_id) or {}
+            status = str(result.get("status") or "").lower()
+            if status not in _FINAL_STATUSES:
+                report["skipped"].append({"task_id": task_id, "reason": "task_not_terminal", "status": status})
+                continue
+            if task_id in protected:
+                report["skipped"].append({"task_id": task_id, "reason": "open_review_continuation"})
+                continue
+            if _timestamp_from_result(result, path.stat().st_mtime) > cutoff:
+                report["skipped"].append({"task_id": task_id, "reason": "younger_than_retention"})
+                continue
+            path.unlink()
+            artifact_dir = artifacts_base / task_id
+            if artifact_dir.is_dir():
+                shutil.rmtree(artifact_dir)
+            report["pruned"].append({"task_id": task_id, "path": str(path)})
+        except Exception as exc:
+            report["errors"].append({"task_id": task_id, "error": f"{type(exc).__name__}: {exc}"})
+    return report
+
+
 def prune_task_trees(
     parent_drive_root: pathlib.Path,
     *,

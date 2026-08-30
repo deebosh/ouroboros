@@ -2206,6 +2206,52 @@ def test_startup_prune_removes_only_old_terminal_task_scratch(tmp_path):
     assert any(item["task_id"] == "freshterminal" and item["reason"] == "younger_than_retention" for item in report["skipped"])
 
 
+def test_prune_task_results_removes_old_terminal_json_and_artifacts(tmp_path):
+    """razzant/ouroboros#139: bound task_results/. Old terminal results + their
+    artifact subtree go; young / non-terminal / open-review-continuation ones stay.
+    """
+    from ouroboros.headless import prune_task_results
+
+    data = tmp_path / "data"
+    (data / "task_results").mkdir(parents=True)
+    now = time.time()
+    old_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now - 8 * 86400))
+    fresh_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now))
+
+    write_task_result(data, "oldterminal", "completed", result="done", ts=old_iso)
+    write_task_result(data, "oldrunning", "running", result="working", ts=old_iso)
+    write_task_result(data, "freshterminal", "completed", result="done", ts=fresh_iso)
+    write_task_result(data, "oldbutreviewed", "completed", result="done", ts=old_iso)
+
+    art = data / "task_results" / "artifacts" / "oldterminal"
+    art.mkdir(parents=True)
+    (art / "patch.diff").write_text("diff", encoding="utf-8")
+
+    # An open review continuation pins oldbutreviewed's result.
+    from ouroboros.task_continuation import ReviewContinuation, save_review_continuation
+
+    save_review_continuation(
+        data,
+        ReviewContinuation(
+            task_id="oldbutreviewed", source="blocked_review", stage="preflight",
+            tool_name="commit_reviewed",
+        ),
+    )
+
+    report = prune_task_results(data, retention_days=7, now=now)
+
+    assert [item["task_id"] for item in report["pruned"]] == ["oldterminal"]
+    assert not (data / "task_results" / "oldterminal.json").exists()
+    assert not art.exists()
+    assert (data / "task_results" / "freshterminal.json").exists()
+    assert (data / "task_results" / "oldrunning.json").exists()
+    assert (data / "task_results" / "oldbutreviewed.json").exists()
+    reasons = {item["task_id"]: item["reason"] for item in report["skipped"]}
+    assert reasons["oldrunning"] == "task_not_terminal"
+    assert reasons["freshterminal"] == "younger_than_retention"
+    assert reasons["oldbutreviewed"] == "open_review_continuation"
+
+
 def test_external_child_task_budget_uses_parent_drive_state(tmp_path, monkeypatch):
     from ouroboros import usage_accounting
     from ouroboros.agent import Env, OuroborosAgent

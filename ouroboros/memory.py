@@ -514,13 +514,14 @@ class Memory:
         log_name: str,
         max_entries: Optional[int] = None,
         exclude_a2a: bool = False,
+        tail_bytes: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         path = self.logs_path(log_name)
         if not path.exists():
             return []
         try:
             entries = []
-            for entry in iter_jsonl_objects(path, max_entries=max_entries):
+            for entry in iter_jsonl_objects(path, max_entries=max_entries, tail_bytes=tail_bytes):
                 if exclude_a2a and is_a2a_chat_id(entry.get("chat_id")):
                     continue
                 entries.append(entry)
@@ -529,8 +530,12 @@ class Memory:
             log.warning("Failed to read JSONL entries from %s", log_name, exc_info=True)
             return []
 
-    def read_jsonl_tail(self, log_name: str, max_entries: int = 100) -> List[Dict[str, Any]]:
-        return self._read_jsonl_entries(log_name, max_entries=max_entries)
+    def read_jsonl_tail(
+        self, log_name: str, max_entries: int = 100, *, tail_bytes: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        # ``tail_bytes`` (razzant/ouroboros#131): seek to the last N bytes instead
+        # of streaming the whole (unbounded) log to keep only ``max_entries``.
+        return self._read_jsonl_entries(log_name, max_entries=max_entries, tail_bytes=tail_bytes)
 
     def read_jsonl_tail_after_offset(
         self,

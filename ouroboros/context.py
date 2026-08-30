@@ -1117,19 +1117,26 @@ def build_recent_sections(
     if chat_summary:
         sections.append("## Recent chat\n\n" + chat_summary)
 
+    # razzant/ouroboros#131: these three logs are unbounded and were fully
+    # streamed each prompt just to keep the last 200 rows. A ~1 MB tail window
+    # comfortably holds 200 rows of any of them; a pathological giant-row log
+    # degrades to fewer rows rather than a full read.
+    _RECENT_LOG_TAIL_BYTES = 1_048_576
     for log_name, header, formatter in (
         ("progress.jsonl", "## Recent progress", lambda rows: memory.summarize_progress(rows, limit=50)),
         ("tools.jsonl", "## Recent tools", memory.summarize_tools),
         ("events.jsonl", "## Recent events", memory.summarize_events),
     ):
-        entries = memory.read_jsonl_tail(log_name, 200)
+        entries = memory.read_jsonl_tail(log_name, 200, tail_bytes=_RECENT_LOG_TAIL_BYTES)
         if task_id:
             entries = [e for e in entries if str(e.get("task_id", "")).strip() == task_id]
         summary = formatter(entries)
         if summary:
             sections.append(f"{header}\n\n{summary}")
 
-    supervisor_summary = memory.summarize_supervisor(memory.read_jsonl_tail("supervisor.jsonl", 200))
+    supervisor_summary = memory.summarize_supervisor(
+        memory.read_jsonl_tail("supervisor.jsonl", 200, tail_bytes=_RECENT_LOG_TAIL_BYTES)
+    )
     if supervisor_summary:
         sections.append("## Supervisor\n\n" + supervisor_summary)
 
