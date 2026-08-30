@@ -48,7 +48,13 @@ from ouroboros.context_health import (
 from ouroboros.context_health import (
     safe_read as safe_read,
 )
-from ouroboros.context_layout import architecture_context_section
+from ouroboros.context_fit import (
+    _render_context_system_content,
+)
+from ouroboros.context_layout import (
+    architecture_context_section,
+    reference_doc_sections,
+)
 from ouroboros.contracts.task_contract import normalize_bool
 from ouroboros.memory import Memory
 from ouroboros.utils import (
@@ -1654,6 +1660,67 @@ def build_context_fit_plan(
 ) -> ContextFitPlan:
     """Compatibility wrapper over the cohesive context-fit implementation."""
     core = _capture_context_core(env, memory, task, review_context_builder, ctx)
+    # Instrument: per-task context section byte attribution
+    # (closes ibl-local-29a81a770be0). Called ONCE per task — subsequent
+    # rounds see the stashed measurement on ctx and skip. No behavioural
+    # change to the rendered context: this is the probe step, the follow-up
+    # shrinks based on what the probe surfaces.
+    if ctx is not None and getattr(ctx, "context_section_measurement", None) is None:
+        try:
+            mode_for_measurement = str(
+                preferred_mode or get_context_mode() or "max"
+            )
+            measurement = measure_context_section_bytes(
+                env, core, mode=mode_for_measurement,
+            )
+            setattr(ctx, "context_section_measurement", measurement)
+            try:
+                from ouroboros.utils import append_jsonl as _append_jsonl
+                from ouroboros.utils import utc_now_iso as _utc_now_iso
+
+                _per_section_bytes = {
+                    k: v
+                    for k, v in measurement.items()
+                    if isinstance(k, str) and k.endswith("_bytes")
+                }
+                _event = {
+                    "ts": _utc_now_iso(),
+                    "type": "context_section_sizes",
+                    "task_id": str(task.get("id") or ""),
+                    "mode": measurement.get("mode"),
+                    "per_section_bytes": _per_section_bytes,
+                    "reference_doc_sections_breakdown": measurement.get(
+                        "reference_doc_sections_breakdown", {}
+                    ),
+                    "assembled_system_content_bytes": measurement.get(
+                        "assembled_system_content_bytes"
+                    ),
+                    "system_side_total_bytes": measurement.get(
+                        "system_side_total_bytes"
+                    ),
+                    "system_side_delta_bytes": measurement.get(
+                        "system_side_delta_bytes"
+                    ),
+                }
+                try:
+                    _append_jsonl(
+                        env.drive_path("logs") / "events.jsonl", _event
+                    )
+                except Exception:
+                    log.debug(
+                        "context_section_sizes: append_jsonl failed",
+                        exc_info=True,
+                    )
+            except Exception:
+                log.debug(
+                    "context_section_sizes: event build failed",
+                    exc_info=True,
+                )
+        except Exception:
+            log.debug(
+                "context_section_sizes: measurement failed; skipping",
+                exc_info=True,
+            )
     return _build_context_fit_plan(
         env,
         core,
