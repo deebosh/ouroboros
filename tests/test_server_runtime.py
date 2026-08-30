@@ -851,12 +851,14 @@ def test_a_fresh_local_first_install_still_authors_safety_light(tmp_path, monkey
     assert (changed and settings_path.exists()), "an existing install still persists it"
     assert wizard_authors_safety_light() is False
 
-    # ...and both pre-onboarding normalizers really implement that decision.
-    # The server joins the launcher here: it now starts BEFORE first-run
-    # onboarding, so its own boot normalization could create the file just as
-    # easily (behavioural coverage: tests/test_onboarding_host.py).
+    # ...and the pre-onboarding normalizers implement at least that decision.
+    # The launcher has since gone further and persists nothing at all, which
+    # satisfies the fresh-install rule by construction rather than by a
+    # carve-out that has to be got right; the server still carries the guarded
+    # write and joins it when its own lane lands the retirement (behavioural
+    # coverage: tests/test_onboarding_host.py).
     repo = cfg.pathlib.Path(__file__).parent.parent
     launcher_host = (repo / "ouroboros" / "launcher_onboarding.py").read_text(encoding="utf-8")
     server_src = (repo / "server.py").read_text(encoding="utf-8")
-    assert "if provider_defaults_changed and _settings_path.exists():" in launcher_host
+    assert "save_settings(" not in launcher_host
     assert "if provider_defaults_changed and _settings_path.exists():" in server_src

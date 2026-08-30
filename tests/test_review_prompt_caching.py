@@ -488,10 +488,13 @@ def test_global_ttl_docstrings_name_every_consumer():
 
     repo = pathlib.Path(__file__).resolve().parents[1]
     call = re.compile(r"resolve_prompt_cache_ttl\(\)")
+    # The definition site is not a consumer: `settings_scales.py` owns the setting's
+    # closed scale and `config.py` re-exports it as the settings import surface.
+    definition_sites = {"config.py", "settings_scales.py"}
     consumers = sorted(
         p.relative_to(repo).as_posix()
         for p in (repo / "ouroboros").rglob("*.py")
-        if p.name != "config.py" and call.search(p.read_text(encoding="utf-8"))
+        if p.name not in definition_sites and call.search(p.read_text(encoding="utf-8"))
     )
     assert consumers == [
         "ouroboros/llm.py",

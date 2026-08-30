@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 
+from ouroboros.settings_defaults import OPENROUTER_DEFAULTS, OPENROUTER_REVIEW_DEFAULTS  # noqa: F401
+
 # MiniMax exposes the same OpenAI-compatible API on two regional hosts. Keep the
 # mapping centralized so transport, capability evidence, and settings diagnostics
 # fingerprint the exact endpoint selected by the owner.
@@ -295,32 +297,6 @@ def provider_credential_plan(
         "planned_keys": sorted(planned),
         "fail_open": fail_open,
     }
-
-
-# Shipped router profile. Keeping the root-loop role policy beside the direct
-# provider profiles gives onboarding, runtime defaults, and tests one vocabulary
-# instead of repeating model ids across those surfaces.
-OPENROUTER_DEFAULTS = {
-    "main": "google/gemini-3.7-flash",
-    "heavy": "",
-    "light": "openai/gpt-5.6-luna",
-    "vision": "",
-    "consciousness": "",
-    "fallback": "openai/gpt-5.6-luna",
-    "deep_self_review": "openai/gpt-5.6-sol-pro",
-}
-
-OPENROUTER_REVIEW_DEFAULTS = {
-    "triad": (
-        "google/gemini-3.7-flash",
-        "openai/gpt-5.6-terra",
-        "anthropic/claude-opus-5",
-    ),
-    "scope": ("openai/gpt-5.6-terra",),
-    # Routed catalog id (the retired Claude-SDK spelling migrated same-model);
-    # without provider credentials the advisory gate records an audited bypass.
-    "advisory": "anthropic/claude-sonnet-5",
-}
 
 
 OPENAI_DIRECT_DEFAULTS = {

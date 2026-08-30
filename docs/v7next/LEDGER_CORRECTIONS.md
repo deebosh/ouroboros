@@ -357,3 +357,85 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
     facade for now), and the reference's extra HOT_CODE_PATHS row for
     ouroboros/tools/extension_dispatch.py (nothing moved there on this tree —
     adding it is an oracle delta beyond relocation parity).
+## From the D12 lane (base d830cdba, 2026-08-30)
+13. Split rows 855-867 (settings_scales), 868-879 (model_slots), 880-886
+   (review_model_routes) — RE-PROVEN against tip bytes: every span of the three
+   reference leaves is ast=tokens=bytes=True against
+   `git show HEAD:ouroboros/config.py` (drift-probe first, exit 0); the leaves
+   landed from tip bytes and differ from the reference only in BETWEEN-SPAN
+   comments upstream rewrote inside config.py (EFFORT_SCALE header now names
+   exact-route request-wire recovery; the PROMPT_CACHE_TTL comment rewrapped) —
+   carried from tip, since the span proof is blind to inter-span comment lines.
+14. Shared-leaf rows 840-846/852-854 (config.py) + 3238-3241 (provider_models.py)
+   -> settings_defaults.py — BYTE-FALSIFIED as a copy source on 4 of 12 spans,
+   transform still valid: upstream rewrote SETTINGS_DEFAULTS (advisory slot is
+   the routed id `anthropic/claude-sonnet-5`, `CLAUDE_CODE_MODEL` retired,
+   MAX_SUBAGENT_DEPTH default 2->3, `OUROBOROS_SOFT/HARD_TIMEOUT_SEC` live
+   again with a display-only note, plus new PRESENCE/SUBAGENTS/CLAUDEXOR/
+   REVIEW_NATIVE_* keys), RETIRED_SETTING_KEYS (upstream itself retired only
+   PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC and kept SOFT/HARD live — the
+   reference's D04 retirement of those two knobs is DIVERGENT-SUPERSEDED and
+   must be re-derived in its own return, not replayed), ENDPOINT_AUTHORED_
+   SETTINGS (+OUROBOROS_SUBAGENT_PRESET_RECEIPT) and OPENROUTER_REVIEW_DEFAULTS
+   (routed advisory id + comment). Leaf emitted FULL from BOTH parents (the
+   shared-leaf convention: drift-probe per parent separately; the final
+   transplant --check runs against the two parents concatenated into one
+   upstream source so every span is verified in a single exit-0 report).
+   provider_models.py was touched ONLY by span removal + the settings_defaults
+   re-export import; its call-time `from ouroboros.config import ...` imports
+   are tip truth (D02-owned) and stand.
+15. Split rows 887-912 (runtime_limits) — 3 spans byte-falsified by upstream
+   drift (get_websearch_timeout_sec docstring; get_search_code_wall_sec now
+   routes through _clamped_number_setting; get_max_subagent_depth reads the
+   named cap), all re-emitted from tip bytes. STRUCTURAL: upstream reshaped
+   `MAX_ACTIVE_SUBAGENTS_HARD_CAP = 500` into the tuple statement
+   `MAX_ACTIVE_SUBAGENTS_HARD_CAP, MAX_SUBAGENT_DEPTH_HARD_CAP = 500, 10`;
+   the UNROWED twin (consumed by ouroboros/tools/control_delegation.py via
+   config) rides the rowed statement into runtime_limits and the facade
+   re-exports both — the carried ledger must mint its row at F5. Tool note:
+   the hardened --check flags this one statement as `assignment to <complex
+   target>` under undeclared_top_level even though BOTH bound names are
+   requested symbols (Tuple-target blind spot; every span proof in the same
+   report is green, leaf_invariants=[]) — the one lane gate that exits 2 with
+   a proven false-positive cause; the tool wants Tuple support at F5.
+16. Rows 918-920 (launcher_onboarding, semantic delta D03/settings seam,
+   launcher half) — RE-PROVEN applicable and LANDED: the module is
+   byte-identical between tip and merge-base (zero upstream drift), so the
+   reference bytes apply verbatim; the pin renamed per row 920. The SERVER
+   half of the same seam (rows 1080-1081, server.py lifespan) is NOT landed —
+   server.py keeps the tip guarded write and its old pin; it returns with the
+   D11 lane. Two unrowed oracle test adaptations were mirrored because they
+   pin exactly this delta and go red without it: test_onboarding_wizard.py::
+   test_the_launcher_onboarding_module_authors_no_onboarding_settings
+   (reference bytes) and tests/test_server_runtime.py (launcher clause ->
+   `"save_settings(" not in launcher_host`; the server clause KEEPS the tip
+   guard-string assertion, diverging from the reference's both-sides form
+   until D11 lands).
+17. Rows 913-917 (the rest of the D03 settings seam: config.py
+   normalize_settings_raw/serialize_settings, gateway/owner_settings digest +
+   locked update, packaged_cli writer) — HOT-DEFERRED: upstream rewrote
+   load_settings_lock_held's read path through the NEW post-cutoff
+   settings_integrity module (read_settings_json_verified /
+   SettingsIntegrityError raise-through), which the reference does not have;
+   replaying the reference seam verbatim would revert the integrity feature
+   (the re-prove-trap class, entry 3). The whole seam machinery re-derives
+   against tip bytes in its own return; its pin tests/test_settings_read_seam.py
+   (a DOMAIN_MAP D12 pin) defers WITH the machinery — not transplanted by this
+   lane.
+18. Pin adaptations recorded: test_settings_env_on_disk.py re-pinned one
+   literal to tip bytes (ENDPOINT_AUTHORED_SETTINGS gains
+   OUROBOROS_SUBAGENT_PRESET_RECEIPT — same upstream train as entry 14);
+   test_config_extraction.py gains MAX_SUBAGENT_DEPTH_HARD_CAP in the owner
+   inventory, Tuple-target parsing in its _top_level_names helper, and a
+   narrowed provider_models clause (the reference's "no ouroboros.config
+   import anywhere" + top-level model_slots import clauses type against the
+   reference's D02 rework of provider_models and return with the D02 lane;
+   the surviving clauses pin no IMPORT-TIME config read and leaf-object
+   identity of both moved literals).
+19. settings_integrity.py — NEW upstream module (post-cutoff, absent from the
+   reference and the merge base), already D12 in scripts/v7next_domains.toml;
+   no ledger rows; upstream bytes stand. Non-split D12 modules re-proven:
+   colab_bootstrap.py / onboarding_wizard.py / secret_masking.py /
+   update_channels.py byte-identical across tip==ref==merge-base;
+   settings_setup_contract.py / subscription_install_presets.py pure upstream
+   drift (ref==merge-base, zero v7 delta) — upstream bytes stand.

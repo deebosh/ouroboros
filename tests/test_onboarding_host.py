@@ -313,37 +313,45 @@ def test_the_launcher_never_authors_settings_during_first_run(monkeypatch, tmp_p
     assert not (tmp_path / "settings.json").exists()
 
 
-def test_pre_server_normalization_never_creates_the_settings_file(monkeypatch, tmp_path):
-    """The launcher normalizes provider defaults before starting the server, but
-    on a FRESH install it must not persist them: creating settings.json here
-    would destroy the freshness every install-time proof is gated on."""
+def test_pre_server_normalization_never_writes_the_settings_file(monkeypatch, tmp_path):
+    """The launcher normalizes provider defaults before starting the server and
+    persists NONE of it — on a fresh install OR on an existing one.
+
+    The fresh-install half was always the rule (creating settings.json here would
+    destroy the freshness every install-time proof is gated on); the existing-install
+    half is the same objection without the carve-out. Startup is a read, and a read
+    that rewrites the file it read turns a normalization into an owner decision.
+    Nothing is lost: the normalization is applied to the environment here and
+    re-derived by every reader, and the completion save persists it."""
     from ouroboros import config as cfg
     from ouroboros import launcher_onboarding
 
     monkeypatch.setattr(cfg, "SETTINGS_PATH", tmp_path / "settings.json")
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
     monkeypatch.setattr(launcher_onboarding, "load_settings", lambda: {})
-    monkeypatch.setattr(launcher_onboarding, "_apply_settings_to_env", lambda settings: None)
+    applied: list = []
+    monkeypatch.setattr(launcher_onboarding, "_apply_settings_to_env", applied.append)
     monkeypatch.setattr(
         launcher_onboarding,
         "apply_runtime_provider_defaults",
         lambda settings: (dict(settings), True, ["OUROBOROS_MODEL_LIGHT"]),
     )
-    saved: list = []
-    monkeypatch.setattr(
-        launcher_onboarding, "save_settings", lambda settings, **kwargs: saved.append(settings)
+    assert not hasattr(launcher_onboarding, "save_settings"), (
+        "the launcher bound a settings writer again"
     )
 
     _settings, onboarding_required = launcher_onboarding.prepare_first_run_settings()
 
     assert onboarding_required is True
-    assert saved == []
+    assert len(applied) == 1, "the normalization must still reach the environment"
     assert not (tmp_path / "settings.json").exists()
 
-    # An install that ALREADY has a settings file still persists normalization.
+    # An install that ALREADY has a settings file is not a licence to rewrite it.
     (tmp_path / "settings.json").write_text("{}", encoding="utf-8")
+    before = (tmp_path / "settings.json").read_bytes()
     launcher_onboarding.prepare_first_run_settings()
-    assert len(saved) == 1
+    assert (tmp_path / "settings.json").read_bytes() == before
+    assert len(applied) == 2
 
 
 def test_server_boot_normalization_carries_the_same_guard():
