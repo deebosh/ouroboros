@@ -31,8 +31,6 @@ import datetime
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from supervisor.schedule_time import (
     next_cron_time,
     once_due,
