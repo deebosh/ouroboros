@@ -255,3 +255,105 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
     resolved unilaterally); candidate row for the carried ledger at F5.
     Disjoint upstream drift a23e12b1 (push_to_remote test retargeted to
     `_git_network_bounded`) stands.
+## From the D04 lane (base d830cdba, 2026-08-30)
+1. Registry-split rows RE-PROVEN against tip bytes for the four landed tools/
+   leaves (tool_context, tool_catalog, tool_resolution, registry_guards,
+   registry_guard_process — 74 symbols): 61 spans byte-identical between the
+   reference leaves and `git show HEAD:ouroboros/tools/registry.py`; 13 spans
+   BYTE-FALSIFIED as copy sources by PURE UPSTREAM DRIFT (oracle==merge-base,
+   tip moved): _prepare_public_builtin_args, _executor_backend_candidate_allowed,
+   _authorized_managed_update_resolver (404B -> 1843B hardening), _disabled_tools,
+   _detect_runtime_mode_elevation, _SUBAGENT_SHELL_SECRET_MARKERS,
+   _detect_mutative_toggle_self_change, _detect_evolution_owner_control_self_change,
+   _detect_context_mode_self_lowering, _DENIED_READ_OPTIONS,
+   _is_pure_read_inspection, _detect_safety_mode_self_lowering,
+   _detect_owner_skill_attest_self_call. All re-emitted from tip bytes,
+   transplant proof green (ast=tokens=bytes on every symbol, exit 0).
+2. Rows whose reference destination carries the TYPED-RESULT cutover semantics
+   (PURE V7 DELTA; tip==merge-base): 144 (_normalize_dispatch_path_args reduced
+   to a projection), 184 (_binding_error_text native codes), 185
+   (_payload_dispatch_constraint typed second element), 226
+   (_managed_update_code_tool_block thin wrapper), 138 (ToolEntry shallow-frozen
+   — also upstream-drifted: tip added the alias_for field). This lane moved the
+   TIP bodies verbatim; the typed deltas are deliberately NOT ported — they ride
+   with the F2 typed-result organ, not with a byte-preserving relocation of a
+   protected file.
+3. HOT-DEFERRED: ouroboros/tools/registry_core.py (rows 156, 167, 170, 171,
+   174, 175). Evidence: tip ToolRegistry is a 2252-line class (probe: tip span
+   124364B vs reference 49860B, ast_equal=False); the reference slimmed it via
+   17 method->function extractions (rows 189, 224, 225, 230, 235-242, 287,
+   291-293) which change the receiver (self -> registry) and are NOT
+   byte-preserving relocation — out of bounds for the protected
+   tools/registry.py under this lane's mandate. ToolRegistry and the four
+   process/mutation constants stay in the facade; the class also would put the
+   new leaf straight into the >1500 band. Re-split from the upstream form in F2.
+4. HOT-DEFERRED: ouroboros/tools/tool_result.py. 32 of the reference leaf's 33
+   top-level symbols do not exist at tip (the ToolResult/ToolCodeSpec organ,
+   D02-family approved deltas); the single registry-sourced verbatim row 139
+   (_compose_execute_result) also drifted at tip (661B vs 671B). Creating a
+   one-symbol leaf under the organ's name would falsely anchor the F2 re-split;
+   _compose_execute_result stays in the facade.
+5. HOT-DEFERRED: rows 187/188 (ToolRegistry._dispatch_mcp_tool /
+   _dispatch_extension_tool -> extension_dispatch typed dispatchers).
+   tip tools/extension_dispatch.py == merge-base (116 lines); the reference's
+   +177 lines are the producer-boundary ToolResult typing plus method
+   retirement. Upstream bytes stand; the methods stay on the class.
+6. loop_tool_execution.py D04 rows (157, 159-164, 826-828) are ALL
+   retire/rename/type rows of the classifier cutover — nothing is emittable as
+   a byte-preserving span. Shared-monolith convention honored: this lane did
+   not touch ouroboros/loop_tool_execution.py at all (D01 owns the rest).
+7. tools/core.py shared-leaf note (row 353, core.py::active_repo_dir_for ->
+   tool_resolution.py): already satisfied at tip by an import alias
+   (core.py:20 imports it from the registry; the registry facade now re-exports
+   it from tool_resolution — same object). core.py untouched by this lane.
+8. tool_access split rows 495-535 RE-PROVEN against tip bytes: 39/41 spans
+   byte-identical; 2 BYTE-FALSIFIED as copy sources by PURE UPSTREAM DRIFT:
+   _skill_payload_base (upstream re-homed the body into
+   skill_payload_binding.resolve_skill_payload_base — copying the reference
+   leaf would have reverted that refactor) and ResolvedResourceBinding
+   (upstream added the logical_base_path field). Both re-emitted from tip
+   bytes, proof green. The D1 mirror-path defect (safe_relpath lstrip('/'),
+   lying "caller rejects" docstrings) travels in the moved tip bytes UNFIXED,
+   per the lane instruction — it remains an upstream issue-candidate.
+9. Pins carried with disclosed adaptations (identity continuations to tip
+   bytes): tests/test_tool_owner_facades.py (+ the alias_for row in the
+   ToolEntry contract — upstream drift); tests/test_tool_access_extraction.py
+   (4 adaptations, listed in its docstring: tool_module_inventory clause
+   dropped until that leaf lands, backedge check narrowed to import-time
+   imports because the D18/D33 call-time handle is deliberate, one-matrix
+   clause asserts through the facade re-export, size bounds kept);
+   tests/test_workspace_authority_binding.py gains the reference's
+   tool_resolution identity test while its typed companion
+   (_normalize_dispatch_path_args_result) is NOT carried — it pins deferred
+   machinery. test_registry_core.py, test_tool_result*.py and the
+   classification-differential suites are NOT carried for the same reason.
+10. Test-split rows 784-825 (tests/test_tool_capabilities.py -> 4 siblings)
+    RE-PROVEN against tip bytes: 34/42 moved spans byte-identical to the
+    reference siblings, 8 re-emitted from tip (test_search_code_has_result_limit,
+    test_local_readonly_subagent_execute_blocks_forbidden_tools,
+    test_local_readonly_subagent_initial_schemas_are_allowlisted,
+    test_schedule_subagent_in_initial_schemas,
+    test_schedule_subagent_inherits_workspace_executor_ref, and the three
+    test_schedule_subagent_required_*_for_readonly tests). Lossless: 61 == 61
+    test functions, zero lost, zero added, no duplicate names introduced
+    (tree-wide AST dup scan; the 10 pre-existing identical-body duplicates
+    between test_review_cycles_dispatch.py and test_review_cycles_skill_dispatch.py
+    plus the test_tool_registered same-name pair predate this lane — D06/D05
+    territory, reported not touched). 21 unrowed/kept tip tests remain in the
+    remainder; 3 header imports that lost their last reader were dropped there.
+11. Protection-surface closure (code-side, protective-only): the reference
+    extends ouroboros/runtime_mode_policy.py::SAFETY_CRITICAL_PATHS and
+    supervisor/update_merge_policy.py::HOT_CODE_PATHS over the registry split
+    leaves — without that, guard bodies moved out of the protected registry
+    become writable in advanced mode and lose the hot-code label (this tree's
+    own parity rule, tests/test_lc2_owner_facades.py, pins the inverse
+    direction). This lane mirrored the closure for the five leaves that exist
+    here (registry_core.py / tool_result.py rows return with their leaves) and
+    pinned it (tests/test_tool_owner_facades.py::
+    test_registry_split_leaves_keep_protected_label_parity). NOT mirrored —
+    for the owner/F5: the reference's prose updates to prompts/SAFETY.md:10
+    and prompts/SYSTEM.md "Immutable Safety Files" (operator-off-limits
+    runtime prompts; enforcement is code-side, prose enumerates only the
+    facade for now), and the reference's extra HOT_CODE_PATHS row for
+    ouroboros/tools/extension_dispatch.py (nothing moved there on this tree —
+    adding it is an oracle delta beyond relocation parity).

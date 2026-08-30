@@ -19,6 +19,14 @@ HOT_CODE_PATHS = frozenset({
     "ouroboros/size_ratchet_manifest.py",
     "ouroboros/tools/control.py",
     "ouroboros/tools/registry.py",
+    # v7 D04 split leaves: code that merely moved out of the hot registry
+    # keeps the label (parity rule pinned by tests/test_lc2_owner_facades.py
+    # for the inverse direction).
+    "ouroboros/tools/registry_guard_process.py",
+    "ouroboros/tools/registry_guards.py",
+    "ouroboros/tools/tool_catalog.py",
+    "ouroboros/tools/tool_context.py",
+    "ouroboros/tools/tool_resolution.py",
     "ouroboros/config.py",
     "supervisor/queue.py",
     "supervisor/events.py",

@@ -19,6 +19,15 @@ SAFETY_CRITICAL_PATHS = frozenset({
     "ouroboros/runtime_mode_policy.py",
     "ouroboros/tools/extension_dispatch.py",
     "ouroboros/tools/registry.py",
+    # The v7 D04 split moved guard/resolution bodies out of the protected
+    # registry without moving any of the risk, so every inventory that
+    # protects the parent must cover the leaves (label parity — same rule as
+    # the git_ops family).
+    "ouroboros/tools/registry_guard_process.py",
+    "ouroboros/tools/registry_guards.py",
+    "ouroboros/tools/tool_catalog.py",
+    "ouroboros/tools/tool_context.py",
+    "ouroboros/tools/tool_resolution.py",
     "prompts/SAFETY.md",
 })
 

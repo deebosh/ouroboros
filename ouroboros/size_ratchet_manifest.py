@@ -42,7 +42,6 @@ GIANT_PATHS = (
     "tests/test_skill_loader.py",
     "tests/test_skill_review.py",
     "tests/test_task_status_flow.py",
-    "tests/test_tool_capabilities.py",
     "tests/test_ui_smoke_playwright.py",
     "web/modules/chat.js",
     "web/tests/harness_accounts.test.js",

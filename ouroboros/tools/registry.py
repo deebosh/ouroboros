@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import copy
-import hashlib
+import hashlib  # noqa: F401 — historical facade surface
 import inspect
 import logging
 import os
 import pathlib
 import re
-import subprocess
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+import subprocess  # noqa: F401 — historical facade surface
+from dataclasses import dataclass, field  # noqa: F401 — historical facade surface
+from typing import Any, Callable, Dict, List, Optional  # noqa: F401 — historical facade surface
 
 from ouroboros.runtime_mode_policy import (
     PROTECTED_RUNTIME_PATHS,
@@ -43,7 +43,7 @@ from ouroboros.tools.shell_guards import (
     interpreter_write_shape,
     light_shell_repo_mutation,
     non_interpreter_write_shape,
-    parse_porcelain_paths,
+    parse_porcelain_paths,  # noqa: F401 — historical facade surface
     process_shell_guard_args,
     runtime_data_guard_targets,
     shell_writer_targets_protected,
@@ -61,7 +61,7 @@ from ouroboros.protected_artifacts import shell_block_reason as protected_artifa
 from ouroboros.git_shell_policy import run_shell_git_block_reason, workspace_git_safety_violation
 from ouroboros.tool_access import (
     active_tool_profile,
-    binding_targets_system_repo,
+    binding_targets_system_repo,  # noqa: F401 — historical facade surface
     build_resolved_resource_binding,
     canonical_repo_relative_path,
     decide_tool_access,
@@ -70,84 +70,117 @@ from ouroboros.tool_access import (
     _lexical_path_is_relative_to_casefold,
     is_external_workspace,
     light_cognitive_or_root_redirect,
-    normalize_root,
-    normalize_root_relative,
+    normalize_root,  # noqa: F401 — historical facade surface
+    normalize_root_relative,  # noqa: F401 — historical facade surface
     _path_is_relative_to_casefold,
     resource_root_path,
     resolve_shell_cwd,
     shell_cwd_block_message,
-    UserFilesPathBlockedError,
+    UserFilesPathBlockedError,  # noqa: F401 — historical facade surface
     user_files_path_block_reason,
     workspace_mode_block_reason,
 )
 from ouroboros.python_interpreter import record_python_resolution, resolve_process_python
-from ouroboros.utils import safe_relpath
-from ouroboros.contracts.task_constraint import TaskConstraint, VALID_WRITE_SURFACES, normalize_task_constraint
+from ouroboros.utils import safe_relpath  # noqa: F401 — historical facade surface
+from ouroboros.contracts.task_constraint import TaskConstraint, VALID_WRITE_SURFACES, normalize_task_constraint  # noqa: F401 — historical facade surface
 from ouroboros.contracts.skill_payload_policy import (
     SKILL_OWNER_STATE_FILENAMES,
-    SKILL_OWNER_STATE_STEMS,
+    SKILL_OWNER_STATE_STEMS,  # noqa: F401 — historical facade surface
     SKILL_PAYLOAD_CONTROL_DIRNAMES,
     SKILL_PAYLOAD_CONTROL_FILENAMES,
     constraint_bucket_skill,
-    cross_skill_redirect_error,
-    decide_payload_short_form,
-    is_skill_payload_control_filename,
-    is_skill_payload_path,
-    resolve_skill_payload_target,
-    synthesize_payload_constraint,
+    cross_skill_redirect_error,  # noqa: F401 — historical facade surface
+    decide_payload_short_form,  # noqa: F401 — historical facade surface
+    is_skill_payload_control_filename,  # noqa: F401 — historical facade surface
+    is_skill_payload_path,  # noqa: F401 — historical facade surface
+    resolve_skill_payload_target,  # noqa: F401 — historical facade surface
+    synthesize_payload_constraint,  # noqa: F401 — historical facade surface
+)
+
+# v7 D04 split: the owners below were extracted VERBATIM from this module
+# (see each leaf's header); re-exported here so the 80+ historical importers
+# and monkeypatch targets keep working unchanged.
+from ouroboros.tools.tool_catalog import ToolEntry  # noqa: F401 — re-exported moved surface
+from ouroboros.tools.tool_context import BrowserState, ToolContext  # noqa: F401 — re-exported moved surface
+from ouroboros.tools.tool_resolution import (  # noqa: F401 — re-exported moved surface
+    _GENERIC_VCS_TARGET_TOOLS,
+    _IGNORE_ROOT_ARG_TOOLS,
+    _PATH_NORMALIZED_TOOLS,
+    _PROCESS_TARGET_TOOLS,
+    _ROOT_ARG_REPO_WRITE_TOOLS,
+    _SKILL_LIFECYCLE_TARGET_TOOLS,
+    _TARGET_BINDING_OPERATIONS,
+    _TOOL_ARG_ALIASES,
+    _VERIFY_RUN_KINDS,
+    _binding_error_text,
+    _binding_items,
+    _binding_set_is_light_restricted,
+    _binding_set_targets_system_repo,
+    _binding_state_drive_root,
+    _build_builtin_target_binding,
+    _coerce_real_path,
+    _entry_has_public_param_schema,
+    _entry_public_params,
+    _format_tool_arg_error,
+    _handler_public_params,
+    _light_binding_failure_redirect,
+    _normalize_dispatch_path_args,
+    _normalize_tool_call_args,
+    _payload_write_paths,
+    _prepare_public_builtin_args,
+    _target_binding_operation,
+    active_repo_dir_for,
+    system_repo_dir_for,
+)
+from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported moved surface
+    _EPHEMERAL_ALLOWED_TOOLS,
+    _GITHUB_TOKEN_TOOLS,
+    _HEAL_MODE_ALLOWED_TOOLS,
+    _WEB_TOOLS,
+    _authorized_managed_update_resolver,
+    _builtin_tool_availability,
+    _command_mentions_protected_root,
+    _disabled_tools,
+    _executor_backend_candidate_allowed,
+    _heal_protected_payload_sidecar,
+    _light_mode_payload_mutation_allowed,
+    _managed_update_code_tool_block,
+    _payload_dispatch_constraint,
+    _resource_allowed,
+    _stray_skill_payload_failsoft,
+    _task_constraint_path_allowed,
+)
+from ouroboros.tools.registry_guard_process import (  # noqa: F401 — re-exported moved surface
+    _COMMAND_HEAD_WRAPPERS,
+    _DENIED_READ_OPTIONS,
+    _DETACHED_PROCESS_MARKERS,
+    _NESTED_EXECUTION_MARKERS,
+    _NESTED_EXECUTION_TOKENS,
+    _READ_ONLY_GIT_SUBCOMMANDS,
+    _READ_ONLY_INSPECTION_COMMANDS,
+    _SEARCH_TOOL_EXEC_OPTIONS,
+    _SKILL_OWNER_STATE_STEMS,
+    _SUBAGENT_SHELL_SECRET_MARKERS,
+    _TRUSTED_EXECUTABLE_DIRS,
+    _denied_read_option,
+    _detect_context_mode_self_lowering,
+    _detect_evolution_owner_control_self_change,
+    _detect_mutative_toggle_self_change,
+    _detect_owner_skill_attest_self_call,
+    _detect_runtime_mode_elevation,
+    _detect_safety_mode_self_lowering,
+    _detect_scope_review_floor_self_lowering,
+    _format_light_repo_write_block,
+    _git_ref_snapshot,
+    _is_pure_read_inspection,
+    _light_repo_snapshot,
+    _mentions_detached_process,
+    _mentions_skill_owner_state,
+    _subagent_shell_targets_secret,
+    _trusted_read_head,
 )
 
 log = logging.getLogger(__name__)
-def _coerce_real_path(value: Any) -> pathlib.Path | None:
-    if value is None or value.__class__.__module__.startswith("unittest.mock"):
-        return None
-    try:
-        return pathlib.Path(os.fspath(value))
-    except TypeError:
-        return None
-def active_repo_dir_for(ctx: Any) -> pathlib.Path:
-    """Return the active repo/workspace root for real and lightweight test contexts."""
-    active = getattr(ctx, "active_repo_dir", None)
-    if callable(active):
-        try:
-            candidate = active()
-        except Exception:
-            candidate = None
-        path = _coerce_real_path(candidate)
-        if path is not None:
-            return path
-
-    workspace_root = getattr(ctx, "workspace_root", None)
-    workspace_path = _coerce_real_path(workspace_root)
-    if workspace_path is not None:
-        workspace_mode = str(getattr(ctx, "workspace_mode", "") or "").strip()
-        if workspace_mode:
-            return workspace_path
-
-    return pathlib.Path(getattr(ctx, "repo_dir"))
-
-
-def system_repo_dir_for(ctx: Any) -> pathlib.Path:
-    """Return the Ouroboros system repo root, not an external active workspace."""
-
-    return pathlib.Path(getattr(ctx, "system_repo_dir", None) or getattr(ctx, "repo_dir"))
-
-
-def _executor_backend_candidate_allowed(ctx: Any, candidate: str, allowed_roots: List[pathlib.Path]) -> bool:
-    try:
-        from ouroboros.workspace_executor import executor_ref_from_ctx as _executor_ref_from_ctx
-        from ouroboros.workspace_executor import map_backend_path as _executor_map_backend_path
-
-        executor_ref = _executor_ref_from_ctx(ctx)
-        if executor_ref is None:
-            return False
-        resolved = _executor_map_backend_path(executor_ref, candidate)
-        return any(
-            resolved.is_relative_to(root) or _path_is_relative_to_casefold(resolved, root)
-            for root in allowed_roots
-        )
-    except Exception:
-        return False
 
 
 def _executor_backend_candidate_path(ctx: Any, candidate: str) -> pathlib.Path | None:
@@ -185,72 +218,6 @@ def _owner_control_mention_blocks(text_lower: str, detected: bool, writeish: boo
     return writeish or not _is_pure_read_inspection(text_lower)
 
 
-def _detect_runtime_mode_elevation(text_lower: str, *, writeish: bool = True) -> bool:
-    """Detect shell/script attempts to change ``OUROBOROS_RUNTIME_MODE``."""
-    has_save = "save_settings" in text_lower
-    has_mode_key = "ouroboros_runtime_mode" in text_lower
-    has_dotted_path = "ouroboros.config.save_settings" in text_lower
-    detected = (has_save and has_mode_key) or has_dotted_path
-    return _owner_control_mention_blocks(text_lower, detected, writeish)
-
-
-_SUBAGENT_SHELL_SECRET_MARKERS = (
-    # Ouroboros owner secrets/control state. The relative form (no leading slash)
-    # closes the interpreter-string bypass (CW4, v6.34.0): the whole-command
-    # substring scan already catches "/data/settings.json" and "../../data/..",
-    # but a bare "data/settings.json" (e.g. python -c "open('data/settings.json')"
-    # from a workspace cwd) needs the slash-less marker too.
-    "/data/settings.json", "data/settings.json", "ouroboros/data/settings", "file1.txt",
-    # Universal credential/secret/control files (relative or absolute).
-    # ouroboros-update-tx.json is the managed-update tx marker (.git/…): owner
-    # control state, mirrored on .git/config. Subagent shell only — the
-    # authorized resolver is the MAIN agent and the supervisor/host writers go
-    # through supervisor.update_merge, so neither is affected (synthesis F3).
-    ".env", ".git/config", ".git/credentials", "ouroboros-update-tx.json",
-    "credentials.json", "tokens.json",
-    "/.ssh/", ".ssh/", "id_rsa", "id_ed25519", ".netrc", ".npmrc", ".pgpass", ".aws/",
-)
-
-
-def _subagent_shell_targets_secret(cmd_path_lower: str) -> bool:
-    """Deterministic guard: a shell command referencing Ouroboros secrets/credentials
-    or owner-control state (settings.json, ssh keys, token/credential files)."""
-    return any(marker in cmd_path_lower for marker in _SUBAGENT_SHELL_SECRET_MARKERS)
-
-
-def _command_mentions_protected_root(cmd_path_lower: str, root_text: str) -> bool:
-    """Boundary-aware path containment for the workspace shell guard.
-
-    True only when ``root_text`` (a normalised, lower-cased protected root path)
-    appears in the command as a whole path or a parent prefix at a real path
-    boundary — NOT as an incidental substring of an unrelated path that merely
-    shares the prefix (e.g. protected ``/x/data`` must not match ``/x/database``).
-    Used as a coarse catch-all for runtime paths embedded in non-tokenised text
-    (e.g. inside a ``python -c`` string); the precise per-token containment loop
-    still does the authoritative active/protected classification.
-    """
-    if not root_text:
-        return False
-    norm = root_text.rstrip("/")
-    if not norm:
-        return False
-    span = len(norm)
-    limit = len(cmd_path_lower)
-    start = 0
-    while True:
-        idx = cmd_path_lower.find(norm, start)
-        if idx < 0:
-            return False
-        end = idx + span
-        nxt = cmd_path_lower[end] if end < limit else ""
-        # Boundary = end-of-string, a path separator (child path), or a shell
-        # token delimiter (the exact path). A trailing path char (letter/digit/
-        # ``.``/``-``/``_``) means a DIFFERENT sibling path → keep scanning.
-        if nxt == "" or nxt == "/" or nxt in " \t\"')(;:,&|<>":
-            return True
-        start = end
-
-
 def _workspace_write_block_runtime_message(path_text: Any = "") -> str:
     """Guard-B block for a write-shaped command reaching a protected runtime root.
 
@@ -281,217 +248,18 @@ def _workspace_write_block_outside_root_message(path_text: Any = "", work_dir: A
     )
 
 
-def _stray_skill_payload_failsoft(root_arg: str, workspace_mode: bool, task_constraint: Any) -> bool:
-    """Whether stray bucket/skill_name on a write tool should be DROPPED rather than
-    surfaced as SKILL_PAYLOAD_ARG_ERROR. Fail-soft ONLY for a WORKSPACE edit that is
-    NOT skill-authoring: there bucket/skill_name are model noise (the B2 footgun —
-    reflexive bucket="external" on an /app edit). In light/advanced non-workspace
-    skill-authoring (or an explicit root=skill_payload / skill_repair) the specific
-    error is the intended helpful signal."""
-    skill_payload_intent = root_arg == "skill_payload" or bool(
-        task_constraint and getattr(task_constraint, "mode", "") == "skill_repair"
-    )
-    return bool(workspace_mode and not skill_payload_intent)
-
-
-def _detect_mutative_toggle_self_change(text_lower: str, *, writeish: bool = True) -> bool:
-    """Detect shell/script/CLI attempts to change the owner-only mutative-subagents toggle."""
-    has_key = "ouroboros_allow_mutative_subagents" in text_lower
-    has_write = (
-        "save_settings" in text_lower
-        or "settings.json" in text_lower
-        or "/api/settings" in text_lower
-        or "settings set" in text_lower  # `ouroboros settings set <key> <value>` CLI path
-        or "ouroboros.cli" in text_lower
-    )
-    return _owner_control_mention_blocks(text_lower, has_key and has_write, writeish)
-
-
-def _managed_update_code_tool_block(ctx: Any, name: str) -> str:
-    """Block a repo-mutating code tool while a managed-update assisted merge is staged for
-    ANOTHER task (P2/SC2). Returns a block message, or "" when allowed (this is the authorized
-    resolution task, or no managed tx is active). A corrupt tx marker fails closed."""
-    try:
-        from supervisor.update_merge import managed_assisted_tx_for
-
-        if managed_assisted_tx_for(
-            getattr(ctx, "task_id", ""),
-            getattr(ctx, "task_metadata", None),
-        )[1]:
-            return (
-                f"⚠️ MANAGED_UPDATE_IN_PROGRESS: {name!r} is blocked while a managed update merge "
-                "is being resolved (only its authorized resolution task may write the repo). "
-                "Retry after the update lands or is rolled back."
-            )
-    except Exception:
-        return (
-            f"⚠️ MANAGED_UPDATE_STATE_UNAVAILABLE: {name!r} is blocked because the managed "
-            "update transaction state could not be verified. Retry after the update state is "
-            "available or repaired."
-        )
-    return ""
-
-
-def _authorized_managed_update_resolver(ctx: Any) -> bool:
-    """Whether this task is the durable tx-authorized assisted resolver.
-
-    Fail-closed bool for every authority consumer (False = no extra powers).
-    The AUTHORITY-READ failure is additionally distinguished from an honest
-    "not the resolver" via a typed ctx marker (``_managed_authority_read_error``:
-    set on an unreadable read AND on a corrupt tx marker, cleared on every
-    healthy evaluation), so the review-subject builder can fail LOUDLY instead
-    of silently reviewing a possibly-managed candidate as an ordinary full
-    staged capture."""
-    try:
-        from supervisor.update_merge import authorized_assisted_task_strict
-
-        marker_status, tx = authorized_assisted_task_strict(
-            getattr(ctx, "task_id", ""),
-            getattr(ctx, "task_metadata", None),
-        )
-        try:
-            if marker_status == "corrupt":
-                # A tx marker EXISTS but cannot be parsed: authority stays
-                # False (fail-closed) for every bool consumer, but the loud
-                # A4 channel must fire — clearing the marker here would let
-                # the review subject silently treat a possibly-managed
-                # candidate as an ordinary full staged diff.
-                setattr(
-                    ctx, "_managed_authority_read_error",
-                    "update_tx_corrupt: the managed update transaction marker "
-                    "exists but could not be parsed",
-                )
-            else:
-                setattr(ctx, "_managed_authority_read_error", "")
-        except Exception:
-            pass
-        return bool(tx)
-    except Exception as exc:
-        try:
-            setattr(ctx, "_managed_authority_read_error", repr(exc))
-        except Exception:
-            pass
-        return False
-
-
-def _detect_evolution_owner_control_self_change(text_lower: str, *, writeish: bool = True) -> bool:
-    """Detect shell/script/CLI attempts to set the owner-only self-evolution controls:
-    the post-task evolution toggle OR the persistent evolution-objective steer (which
-    biases every evolution campaign, so it is owner-only like the toggle)."""
-    has_key = (
-        "ouroboros_post_task_evolution" in text_lower
-        or "ouroboros_evolution_persistent_objective" in text_lower
-    )
-    has_write = (
-        "save_settings" in text_lower
-        or "settings.json" in text_lower
-        or "/api/settings" in text_lower
-        or "settings set" in text_lower
-        or "ouroboros.cli" in text_lower
-    )
-    return _owner_control_mention_blocks(text_lower, has_key and has_write, writeish)
-
-
-def _detect_context_mode_self_lowering(text_lower: str, *, writeish: bool = True) -> bool:
-    """Detect shell/script attempts to lower the owner-controlled context mode."""
-    mentions_context_key = "ouroboros_context_mode" in text_lower
-    mentions_owner_endpoint = "/api/owner/context-mode" in text_lower
-    mentions_context_endpoint = "context-mode" in text_lower and "/api/owner" in text_lower
-    mentions_context_cli = "context-mode" in text_lower and (
-        "ouroboros settings" in text_lower
-        or "ouroboros.cli" in text_lower
-    )
-    mentions_save = "save_settings" in text_lower or "settings.json" in text_lower
-    mentions_owner_lowering_flag = "allow_context_lowering" in text_lower
-    detected = (
-        mentions_owner_endpoint
-        or mentions_context_endpoint
-        or mentions_context_cli
-        or mentions_owner_lowering_flag
-        or (mentions_context_key and mentions_save)
-    )
-    return _owner_control_mention_blocks(text_lower, detected, writeish)
-
-
 # Commands that can only READ. This is an ALLOWLIST on purpose: an unrecognised
 # command head is treated as executable access, so the enumeration fails CLOSED.
 # (A denylist of "write markers" fails OPEN — every new spelling of a POST walks
 # around it, which is exactly the keyword-gate antipattern BIBLE P5 forbids.)
-_READ_ONLY_INSPECTION_COMMANDS = frozenset({
-    "grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "ripgrep",
-    "cat", "bat", "head", "tail", "less", "more", "nl", "strings",
-    "ls", "find", "fd", "stat", "file", "wc", "sort", "uniq", "cut", "tr", "column",
-    "basename", "dirname", "realpath", "readlink", "diff", "cmp", "jq", "yq",
-    "echo", "printf", "true", "pwd", "date", "tree",
-})
 # Wrappers that do not themselves act: the real command head follows them.
-_COMMAND_HEAD_WRAPPERS = frozenset({
-    "sudo", "env", "command", "builtin", "exec", "nohup", "time", "nice", "ionice",
-    "stdbuf", "\\",
-})
 # ``git`` reads only through these subcommands.
-_READ_ONLY_GIT_SUBCOMMANDS = frozenset({
-    "grep", "log", "show", "diff", "blame", "cat-file", "ls-files", "ls-tree",
-    "rev-parse", "status", "describe",
-})
 # Allowlist MEMBERSHIP IS NOT ENOUGH: several read heads execute or write through their
 # own options. Per command, because short flags are not portable — ``grep -o`` prints
 # matches, ``sort -o`` writes a file. Text reaching here is lowercased, so an upper-case
 # spelling (``git grep -O``, ``fd -X``) collapses onto the same entry.
-_SEARCH_TOOL_EXEC_OPTIONS = frozenset({"--pre", "--pre-glob", "--hostname-bin", "--pager"})
-_DENIED_READ_OPTIONS: dict = {
-    # find/fd run and delete: -exec/-execdir/-ok/-okdir/-x, -delete, and the -f* writers.
-    "find": frozenset({
-        "-exec", "-execdir", "-ok", "-okdir", "-delete",
-        "-fls", "-fprint", "-fprint0", "-fprintf",
-    }),
-    "fd": frozenset({"-x", "--exec", "--exec-batch"}),
-    "rg": _SEARCH_TOOL_EXEC_OPTIONS,
-    "ripgrep": _SEARCH_TOOL_EXEC_OPTIONS,
-    "ag": _SEARCH_TOOL_EXEC_OPTIONS,
-    "ack": _SEARCH_TOOL_EXEC_OPTIONS,
-    # yq edits the named file in place with -i/--inplace; without this the family
-    # read-carve exempted `yq -i '.OUROBOROS_SAFETY_MODE="off"' settings.json` as
-    # "pure inspection" (jq has no in-place edit and stays a stdout-only read).
-    "yq": frozenset({"-i", "--inplace"}),
-    "sort": frozenset({"-o", "--output", "--compress-program"}),
-    "less": frozenset({"-o", "--log-file", "-k", "--lesskey-file"}),
-    "more": frozenset({"-o"}),
-    "file": frozenset({"-c", "--compile"}),
-    # git: external diff/textconv helpers execute a configured program, -o/--output and
-    # git grep -O write or spawn a pager, --exec-path relocates the git binaries.
-    "git": frozenset({
-        "-c", "--config-env", "--exec-path", "--ext-diff", "--textconv",
-        "-o", "--output", "--open-files-in-pager",
-    }),
-}
 # The executable itself must be a bare name or live in a system bin: ``/tmp/evil/grep``
 # and ``./grep`` are shadowing, not inspection.
-_TRUSTED_EXECUTABLE_DIRS = frozenset({
-    "/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin", "/opt/homebrew/bin",
-})
-
-
-def _trusted_read_head(token: str) -> str:
-    """The allowlist-comparable command name, or "" when the executable is untrusted."""
-    if "\\" in token:
-        return ""  # a windows/escaped path is not a form we can resolve — fail closed
-    directory, sep, name = token.rpartition("/")
-    if sep and directory not in _TRUSTED_EXECUTABLE_DIRS:
-        return ""
-    return name.removesuffix(".exe")
-
-
-def _denied_read_option(token: str, denied: frozenset) -> bool:
-    """True when an argument spells an execution/mutation option of its command."""
-    if not token.startswith("-") or token in {"-", "--"}:
-        return False
-    name = token.split("=", 1)[0]
-    if name in denied:
-        return True
-    if name.startswith("--"):
-        return False
-    return any(f"-{letter}" in denied for letter in name[1:])  # bundled short cluster
 
 
 # Spellings that make a shell run a command NESTED inside another one. The read exemption
@@ -499,115 +267,9 @@ def _denied_read_option(token: str, denied: frozenset) -> bool:
 # and a nested command's head is not one of them ("echo" vouching for the "curl -X POST" it
 # interpolates). Refusing the CONSTRUCT rather than enumerating the payloads inside it is the
 # point — no list of "what a write looks like" is ever complete (BIBLE P5).
-_NESTED_EXECUTION_MARKERS = ("$(", "`", "<(", ">(")
 # Bare tokens the lexer emits for the same constructs (and for a plain subshell). These used to
 # be STRIPPED from the token list before the head was taken, which is precisely how the nested
 # command escaped validation; they are refused instead.
-_NESTED_EXECUTION_TOKENS = frozenset({"$", "(", ")", "<(", ">(", "$("})
-
-
-def _is_pure_read_inspection(text_lower: str) -> bool:
-    """True when EVERY command in a shell line is a read-only source inspection.
-
-    Structural, not keyword-based: the line is split into per-command segments with
-    the shared lexer (``shell_parse.shell_segments``) and each segment's HEAD is
-    matched against an allowlist. An unknown head — any interpreter, HTTP client,
-    or shell — is not an inspection, whatever flags or payload spelling it carries.
-
-    Head membership is NECESSARY, NOT SUFFICIENT (review round 2): an allowed head can
-    still execute through its own options (``find -exec``, ``rg --pre``, git's external
-    diff/textconv) or through what precedes it. So the options are validated per command
-    (``_DENIED_READ_OPTIONS``), a leading environment assignment is REFUSED rather than
-    dropped (``PATH=``/``LD_PRELOAD=``/``GIT_EXTERNAL_DIFF=`` change what actually runs),
-    wrappers may not carry their own flags (``env -i``, ``sudo -e``), and the executable
-    must resolve to a bare name or a system bin. Anything unrecognised stays fail-closed.
-
-    NESTED EXECUTION IS REFUSED BEFORE ANY OF THAT (review round 3). Only the heads the lexer
-    actually surfaces get validated, so a command substitution hid its command from every check
-    above: ``echo "$(curl -X POST .../api/owner/scope-review-floor)"`` presented the allowlisted
-    ``echo``, and the write-shape detector does not recognise an HTTP POST, so the exemption was
-    granted to a line that existed to reach the owner-only endpoint. A quoted substitution is
-    one opaque argument token to the lexer, which is why this is a check on the TEXT and on the
-    tokens, not something the per-segment head walk could have caught.
-    """
-    from ouroboros.shell_parse import shell_segments
-
-    if any(marker in text_lower for marker in _NESTED_EXECUTION_MARKERS):
-        return False
-    segments = shell_segments(text_lower)
-    if not segments:
-        return False
-    for segment in segments:
-        if any(token in _NESTED_EXECUTION_TOKENS for token in segment):
-            return False
-        tokens = [token for token in segment if token]
-        while tokens and tokens[0] in _COMMAND_HEAD_WRAPPERS:
-            tokens = tokens[1:]
-            if tokens and tokens[0].startswith("-"):
-                return False  # a wrapper's own options can rebuild the environment
-        if not tokens:
-            continue  # a bare wrapper executes nothing
-        if "=" in tokens[0] and not tokens[0].startswith(("-", "=")):
-            return False  # leading env assignment: never silently discarded
-        head = _trusted_read_head(tokens[0])
-        if head == "git":
-            if len(tokens) < 2 or tokens[1] not in _READ_ONLY_GIT_SUBCOMMANDS:
-                return False
-        elif not head or head not in _READ_ONLY_INSPECTION_COMMANDS:
-            return False
-        denied = _DENIED_READ_OPTIONS.get(head)
-        if denied and any(_denied_read_option(token, denied) for token in tokens[1:]):
-            return False
-        if head == "uniq" and sum(1 for t in tokens[1:] if t == "-" or not t.startswith("-")) >= 2:
-            # uniq's SECOND positional operand is its output file ('-' is the
-            # stdin operand, not a flag): `... | uniq - settings.json` writes.
-            return False
-    return True
-
-
-def _detect_scope_review_floor_self_lowering(text_lower: str, *, writeish: bool = True) -> bool:
-    """Detect shell/script attempts to REACH the owner-controlled scope-review floor
-    (CW1, v6.34.0). ``OUROBOROS_SCOPE_REVIEW_FLOOR`` is deprecated and enforcement-inert
-    since v6.80.0 (scope-review applicability follows the owner context mode), but it is
-    still an owner-only stored setting behind its dedicated audited endpoint, so the agent
-    must not write it through any channel. Mirrors the context-mode guard.
-
-    POLARITY (v6.80.0): naming the owner endpoint or the floor key in a settings context
-    is blocked UNLESS the whole command line is demonstrably read-only inspection
-    (``_is_pure_read_inspection``). The earlier shape — block only on a listed HTTP write
-    marker — failed OPEN: ``python -c "httpx.request('POST', '.../api/owner/
-    scope-review-floor', ...)"`` names the endpoint, matches no marker, and mutated the
-    setting. No substring enumeration of "what a write looks like" is ever complete
-    (BIBLE P5), so the enumeration was inverted to "what a read looks like", where an
-    unrecognised entry is refused rather than admitted.
-
-    Pure source inspection stays allowed: ``grep OUROBOROS_SCOPE_REVIEW_FLOOR
-    data/settings.json`` and ``rg '/api/owner/scope-review-floor' ouroboros/gateway``
-    read and do not act. ``writeish`` is the shell guard's own already-computed
-    write-shape fact (redirects, writer commands, write-mode ``open()``); it disqualifies
-    the read exemption, and its default ``True`` keeps a caller that cannot supply the
-    fact fail-closed."""
-    import urllib.parse
-
-    decoded = urllib.parse.unquote(urllib.parse.unquote(text_lower)).lower()
-    text = f"{text_lower} {decoded}"
-    mentions_floor_key = "ouroboros_scope_review_floor" in text
-    mentions_owner_endpoint = "/api/owner/scope-review-floor" in text
-    mentions_floor_endpoint = "scope-review-floor" in text and "/api/owner" in text
-    mentions_floor_cli = "scope-review-floor" in text and (
-        "ouroboros settings" in text
-        or "ouroboros.cli" in text
-    )
-    mentions_save = "save_settings" in text or "settings.json" in text or "/api/settings" in text
-    reaches_floor = (
-        mentions_owner_endpoint
-        or mentions_floor_endpoint
-        or mentions_floor_cli
-        or (mentions_floor_key and mentions_save)
-    )
-    if not reaches_floor:
-        return False
-    return writeish or not _is_pure_read_inspection(text_lower)
 
 
 def _compose_execute_result(result: str, route_note: str, safety_msg: str) -> str:
@@ -625,137 +287,7 @@ def _compose_execute_result(result: str, route_note: str, safety_msg: str) -> st
     return result
 
 
-def _detect_safety_mode_self_lowering(text_lower: str, *, writeish: bool = True) -> bool:
-    """Detect shell/script attempts to lower the owner-controlled LLM-safety coverage
-    (v6.54.3). OUROBOROS_SAFETY_MODE gates the LLM safety supervisor layer; the agent
-    must not switch it to ``light``/``off`` to remove its own supervision friction
-    (BIBLE P3). Mirrors the context-mode/scope-floor self-lowering guards."""
-    import urllib.parse
-
-    # URL-decode so a percent-encoded endpoint (curl .../safety%2Dmode) cannot
-    # slip the literal scan (review round 6; mirrors the attest-endpoint guard).
-    decoded = urllib.parse.unquote(urllib.parse.unquote(text_lower)).lower()
-    text = f"{text_lower} {decoded}"
-    mentions_mode_key = "ouroboros_safety_mode" in text
-    mentions_owner_endpoint = "/api/owner/safety-mode" in text
-    mentions_mode_endpoint = "safety-mode" in text and "/api/owner" in text
-    mentions_mode_cli = "safety-mode" in text and (
-        "ouroboros settings" in text
-        or "ouroboros.cli" in text
-    )
-    mentions_save = "save_settings" in text or "settings.json" in text or "/api/settings" in text
-    detected = (
-        mentions_owner_endpoint
-        or mentions_mode_endpoint
-        or mentions_mode_cli
-        or (mentions_mode_key and mentions_save)
-    )
-    return _owner_control_mention_blocks(text_lower, detected, writeish)
-
-
-def _detect_owner_skill_attest_self_call(text_lower: str, *, writeish: bool = True) -> bool:
-    """Detect agent attempts to loopback-call the OWNER-ONLY skill owner-attestation endpoint
-    (C1, v6.39). Owner-attestation skips the expensive LLM skill review; it MUST be
-    owner-issued, never agent self-callable — otherwise the agent could self-bypass the
-    immune system's review for its own skill. Mirrors the context-mode/scope-floor guards.
-
-    URL-DECODE first so a percent-encoded path (e.g. ``%61ttest-review`` / ``attest%2Dreview``)
-    — which Starlette decodes back to ``attest-review`` before routing — cannot slip past the
-    literal match (decode twice to catch double-encoding)."""
-    import urllib.parse
-    decoded = urllib.parse.unquote(urllib.parse.unquote(text_lower)).lower()
-    text = f"{text_lower} {decoded}"
-    detected = "/api/owner/skills/" in text and "attest-review" in text
-    return _owner_control_mention_blocks(text_lower, detected, writeish)
-
-
-def _task_constraint_path_allowed(path_text: str, constraint: Optional[TaskConstraint], drive_root: pathlib.Path) -> bool:
-    return is_skill_payload_path(
-        drive_root,
-        path_text or "",
-        constraint=constraint,
-        allow_short_relative=True,
-        allow_control_plane=True,
-    )
-
-def _light_mode_payload_mutation_allowed(
-    *,
-    ctx: Any,
-    tool_name: str,
-    args: Dict[str, Any],
-    runtime_mode: str,
-    effective_constraint: Optional[TaskConstraint],
-    implicit_skill_cwd_allowed: bool,
-    allow_short_relative: bool,
-) -> bool:
-    """Return True for light-mode data skill payload edits that do not touch repo files."""
-
-    # apply_patch/edit_batch are DELIBERATELY absent: they refuse data-plane roots
-    # entirely (repo lanes only), so they can never be a payload edit — in light
-    # mode they stay under the generic repo-mutation block like any repo write.
-    if runtime_mode != "light" or tool_name not in {"edit_text", "write_file"}:
-        return False
-    requested_root = str(args.get("root", "") or "active_workspace")
-    try:
-        requested_root = normalize_root(requested_root)
-    except Exception:
-        requested_root = str(args.get("root", "") or "active_workspace")
-    if requested_root in {"task_drive", "artifact_store", "user_files"}:
-        return True
-    legacy_data_skill_edit = False
-    if tool_name == "edit_text" and requested_root == "active_workspace":
-        try:
-            legacy_target = resolve_skill_payload_target(
-                pathlib.Path(ctx.drive_root),
-                str(args.get("path", "") or ""),
-            )
-            legacy_data_skill_edit = legacy_target.target_path.exists() and not legacy_target.control_plane
-        except Exception:
-            legacy_data_skill_edit = False
-    if requested_root not in {"runtime_data", "skill_payload"} and not legacy_data_skill_edit:
-        return False
-    return is_skill_payload_path(
-        pathlib.Path(ctx.drive_root),
-        str(args.get("path", "") or ""),
-        constraint=effective_constraint,
-        allow_short_relative=allow_short_relative,
-        allow_control_plane=False,
-    )
-
-
-_HEAL_MODE_ALLOWED_TOOLS = frozenset({
-    "read_file",
-    "list_files",
-    "write_file",
-    "edit_text",
-    "list_skills",
-    "skill_review", "skill_preflight",
-})
-
 _HEAL_PROTECTED_PAYLOAD_FILENAMES = SKILL_PAYLOAD_CONTROL_FILENAMES
-
-
-_SKILL_OWNER_STATE_STEMS = SKILL_OWNER_STATE_STEMS
-_DETACHED_PROCESS_MARKERS = ("start_new_session", "new_session", "setsid", "preexec_fn", "nohup")
-
-
-def _mentions_skill_owner_state(text_lower: str) -> bool:
-    if "state" not in text_lower or "skills" not in text_lower:
-        return False
-    for stem in _SKILL_OWNER_STATE_STEMS:
-        if f"{stem}.json" in text_lower:
-            return True
-        if stem in text_lower and ".json" in text_lower:
-            return True
-    return False
-
-
-def _mentions_detached_process(text_lower: str) -> bool:
-    return any(marker in text_lower for marker in _DETACHED_PROCESS_MARKERS)
-
-
-def _heal_protected_payload_sidecar(path_text: str) -> bool:
-    return is_skill_payload_control_filename(path_text)
 
 
 _PROCESS_COMMAND_TOOLS = frozenset({"run_command", "run_script", "start_service"})
@@ -786,140 +318,13 @@ def _shell_guard_required(name: str, args: Dict[str, Any]) -> bool:
 # nothing to rewrite. They are NOT exempt from the canonicalization itself: both
 # the dispatch guards below and their handlers run every payload path through
 # `canonical_repo_relative_path`, the same normalization this seam applies.
-_PATH_NORMALIZED_TOOLS = frozenset({"read_file", "write_file", "edit_text", "list_files", "search_code", "query_code"})
 
 # Repo-lane write tools that take a top-level `root` arg. Every gate keyed to
 # "a write that lands in the repo working tree" must judge the whole set, not
 # the historical write_file/edit_text pair — a new editing primitive that misses
 # one of these gates is a silently weaker lane, not a new capability.
-_ROOT_ARG_REPO_WRITE_TOOLS = frozenset({"write_file", "edit_text", "apply_patch", "edit_batch"})
 
 
-def _payload_write_paths(name: str, args: Dict[str, Any]) -> List[str]:
-    """Repo paths a write tool will touch, in the spelling its guards must judge.
-
-    write_file/edit_text carry `path`/`files[]` and were already canonicalized by
-    `_normalize_dispatch_path_args`. apply_patch addresses files inside the patch
-    text (`*** Update File: <path>`) and edit_batch inside `edits[]`, so their
-    paths reach this point RAW and are canonicalized here — otherwise a
-    protected-path gate reads `repo/BIBLE.md` (not a protected-table member)
-    while the write lands on `BIBLE.md`.
-    """
-
-    paths: List[str] = []
-    if name == "write_file":
-        if isinstance(args.get("path"), str) and args["path"]:
-            paths.append(args["path"])
-        for entry in args.get("files") or []:
-            if isinstance(entry, dict) and isinstance(entry.get("path"), str):
-                paths.append(entry["path"])
-    elif name == "edit_text":
-        if isinstance(args.get("path"), str):
-            paths.append(args["path"])
-    elif name == "edit_batch":
-        for entry in args.get("edits") or []:
-            if isinstance(entry, dict) and isinstance(entry.get("path"), str):
-                paths.append(entry["path"])
-    elif name == "apply_patch":
-        # Derived from the REAL parser (lazy import: edit_ops imports this
-        # module), so the gate can never drift from what apply_patch will do.
-        # An unparseable patch yields no paths and is refused by the handler
-        # before any write, so the gate has nothing to miss.
-        from ouroboros.tools.edit_ops import patch_target_paths
-
-        paths.extend(patch_target_paths(str(args.get("patch") or "")))
-    return [p for p in paths if str(p or "").strip()]
-
-
-def _normalize_dispatch_path_args(ctx: Any, name: str, args: Dict[str, Any]) -> str:
-    """ROOT-FIX (v6.35.0): normalize an absolute / redundant-root-basename
-    active_workspace|system_repo path arg IN PLACE at the dispatch boundary, so
-    the handler AND every downstream guard (protected-path, protected-artifact,
-    accidental-truncation shrink guard) resolve the SAME target. One authoritative
-    normalization point is what makes a guard unable to desync from the operation.
-
-    v6.54.3 root-label fix: returns a dispatch note ("" when nothing rerouted).
-    When ``root='user_files'`` carries an ABSOLUTE path that resolves under the
-    ACTIVE WORKSPACE root, the root label is wrong, not the intent: reads
-    (read_file/list_files/search_code) are auto-routed to
-    ``root='active_workspace'`` with a visible note appended AFTER the result
-    (trailing, so first-line failure classification is never masked),
-    and writes (write_file/edit_text) return an actionable
-    ROOT_REQUIRED_ACTIVE_WORKSPACE redirect instead of a generic access denial.
-    The destination root still passes every downstream gate (profile access
-    decision, protected-path guards, subagent filters) — only the label is
-    corrected, never the authority. ``query_code`` is excluded: its
-    root=user_files external-target contract handles absolute paths natively."""
-    if name not in _PATH_NORMALIZED_TOOLS:
-        return ""
-    root_arg = str(args.get("root") or "active_workspace")
-    if root_arg in ("active_workspace", "system_repo"):
-        try:
-            norm_root = active_repo_dir_for(ctx) if root_arg == "active_workspace" else system_repo_dir_for(ctx)
-            for _key in ("path", "dir"):
-                if isinstance(args.get(_key), str) and args[_key]:
-                    args[_key] = normalize_root_relative(norm_root, args[_key])
-            if isinstance(args.get("files"), list):
-                for _f in args["files"]:
-                    if isinstance(_f, dict) and isinstance(_f.get("path"), str) and _f["path"]:
-                        _f["path"] = normalize_root_relative(norm_root, _f["path"])
-        except Exception:
-            pass
-        return ""
-    if root_arg != "user_files" or name == "query_code":
-        return ""
-    try:
-        workspace = pathlib.Path(active_repo_dir_for(ctx)).resolve(strict=False)
-    except Exception:
-        return ""
-
-    def _under_workspace(text: str) -> bool:
-        if not is_absolute_path_text(text):
-            return False
-        try:
-            pathlib.Path(text).expanduser().resolve(strict=False).relative_to(workspace)
-            return True
-        except (ValueError, OSError, RuntimeError):
-            return False
-
-    candidates: list[str] = []
-    for _key in ("path", "dir"):
-        if isinstance(args.get(_key), str) and args[_key]:
-            candidates.append(args[_key])
-    if isinstance(args.get("files"), list):
-        for _f in args["files"]:
-            if isinstance(_f, dict) and isinstance(_f.get("path"), str) and _f["path"]:
-                candidates.append(_f["path"])
-    hits = [text for text in candidates if _under_workspace(text)]
-    if not hits:
-        return ""
-    if name in ("write_file", "edit_text"):
-        return (
-            "⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE: absolute path "
-            f"{hits[0]!r} is under the active workspace, but root='user_files' does not "
-            "write there. Retry the same call with root='active_workspace' (the same "
-            "path is accepted)."
-        )
-    args["root"] = "active_workspace"
-    try:
-        for _key in ("path", "dir"):
-            if isinstance(args.get(_key), str) and args[_key]:
-                args[_key] = normalize_root_relative(workspace, args[_key])
-        if isinstance(args.get("files"), list):
-            for _f in args["files"]:
-                if isinstance(_f, dict) and isinstance(_f.get("path"), str) and _f["path"]:
-                    _f["path"] = normalize_root_relative(workspace, _f["path"])
-    except Exception:
-        pass
-    return (
-        "⚠️ AUTO_ROUTED_TO_ACTIVE_WORKSPACE: absolute path "
-        f"{hits[0]!r} is under the active workspace; the call ran with "
-        "root='active_workspace'. Pass root='active_workspace' directly for "
-        "workspace paths."
-    )
-
-
-_WEB_TOOLS = frozenset({"web_search", "browse_page", "browser_action", "youtube_transcript"})
 _REPO_MUTATION_TOOLS = frozenset({
     "write_file",
     "commit_reviewed",
@@ -950,69 +355,6 @@ _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS = frozenset({
     "stage_adaptations",
     "stage_pr_merge",
 })
-
-
-def _resource_allowed(ctx: Any, key: str) -> bool:
-    metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
-    contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
-    if not contract and isinstance(getattr(ctx, "task_contract", None), dict):
-        contract = getattr(ctx, "task_contract")
-    resources = {}
-    for source in (metadata, contract):
-        raw = source.get("allowed_resources") if isinstance(source, dict) else None
-        if isinstance(raw, dict):
-            resources.update(raw)
-    if not resources:
-        return True
-    for name in (key, f"allow_{key}"):
-        value = resources.get(name)
-        if isinstance(value, bool):
-            return value
-    if key == "web":
-        for name in ("network", "allow_network", "internet", "external_network"):
-            value = resources.get(name)
-            if isinstance(value, bool) and not value:
-                return False
-    if key == "network":
-        for name in ("web", "allow_web", "internet", "external_network"):
-            value = resources.get(name)
-            if isinstance(value, bool) and not value:
-                return False
-    return True
-
-
-def _disabled_tools(ctx: Any) -> frozenset:
-    """Tool names the task contract withholds (declarative tool policy).
-
-    Independent of ``allowed_resources``: a caller can disable specific tools
-    (e.g. the agent's web_search/browser/VLM tools for a faithful benchmark)
-    WITHOUT setting web/network=false — so shell network egress (git/pip) stays
-    available and the web<->network cross-implication in ``_resource_allowed``
-    never fires.
-    """
-    metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
-    contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
-    if not contract and isinstance(getattr(ctx, "task_contract", None), dict):
-        contract = getattr(ctx, "task_contract")
-    names: set = set()
-    for source in (metadata, contract):
-        raw = source.get("disabled_tools") if isinstance(source, dict) else None
-        if isinstance(raw, (list, tuple)):
-            names.update(str(n).strip() for n in raw if str(n).strip())
-    # D10 compatibility: `claude_code_edit` was retired; saved contracts that
-    # withheld the external coding gateway keep withholding its SUCCESSOR — the
-    # delegated coding session's start verb. The dead name stays in the set
-    # too (harmless: nothing registers it), so old contracts round-trip as-is.
-    if "claude_code_edit" in names:
-        names.add("delegate_start")
-    # Q1 rename compatibility: contracts that withheld `advisory_review` keep
-    # withholding the SAME organ under its new name, and vice versa (a new
-    # contract naming only the new spelling must also silence the alias).
-    if "advisory_review" in names:
-        names.add("preflight_review")
-    if "preflight_review" in names:
-        names.add("advisory_review")
-    return frozenset(names)
 
 
 def _presence_tool_allowed(ctx: Any, name: str) -> bool:
@@ -1057,59 +399,6 @@ def _presence_bound_args(ctx: Any, name: str, args: Any) -> tuple[dict[str, Any]
         return {}, f"⚠️ PRESENCE_ARGUMENT_BINDING_BLOCKED: {exc}"
 
 
-_GITHUB_TOKEN_TOOLS = frozenset({
-    "list_github_prs",
-    "get_github_pr",
-    "comment_on_pr",
-    "list_github_issues",
-    "get_github_issue",
-    "comment_on_issue",
-    "close_github_issue",
-    "create_github_issue",
-    "run_ci_tests",
-    "submit_skill_to_hub",
-    "generate_evolution_stats",
-})
-
-_TOOL_ARG_ALIASES: dict[str, dict[str, str]] = {
-    "*": {"max_entries": "max_results"},
-}
-_IGNORE_ROOT_ARG_TOOLS = frozenset({
-    "commit_reviewed",
-    "vcs_commit_reviewed",
-})
-_GENERIC_VCS_TARGET_TOOLS = frozenset({
-    "vcs_status",
-    "vcs_diff",
-    "vcs_pull_ff",
-    "vcs_restore",
-    "vcs_revert",
-})
-
-_TARGET_BINDING_OPERATIONS = {
-    "read_file": "read",
-    "list_files": "list",
-    "search_code": "search",
-    "query_code": "search",
-    "write_file": "write",
-    "edit_text": "edit",
-    "apply_patch": "edit",
-    "edit_batch": "edit",
-    **{name: "vcs" for name in _GENERIC_VCS_TARGET_TOOLS},
-}
-_SKILL_LIFECYCLE_TARGET_TOOLS = frozenset({
-    "skill_review",
-    "skill_preflight",
-    "submit_skill_to_hub",
-})
-_PROCESS_TARGET_TOOLS = frozenset({"run_command", "run_script", "start_service"})
-_VERIFY_RUN_KINDS = frozenset({
-    "visible_verifier",
-    "explicit_command",
-    "explicit_metric",
-})
-
-
 def _configured_delegate_selector(ctx: Any, name: str, args: dict[str, Any]) -> bool:
     """Configured-actor validation PRECEDES generic target binding.
 
@@ -1127,424 +416,6 @@ def _configured_delegate_selector(ctx: Any, name: str, args: dict[str, Any]) -> 
     )
 
 
-def _target_binding_operation(name: str, args: dict[str, Any]) -> str | None:
-    operation = _TARGET_BINDING_OPERATIONS.get(name)
-    if operation is not None:
-        return operation
-    if name in _SKILL_LIFECYCLE_TARGET_TOOLS:
-        return "review"
-    if name in _PROCESS_TARGET_TOOLS:
-        return "service" if name == "start_service" else "shell"
-    if name == "verify_and_record" and str(args.get("contract_kind") or "") in _VERIFY_RUN_KINDS:
-        return "shell"
-    # CONDITIONAL, never a static map entry (R1 item 1): delegate_start becomes
-    # target-bound only when it explicitly selects an exact skill payload; a
-    # plain or retry call keeps its current active-workspace behavior untouched.
-    # ONLY the known selector value binds here — any other root value falls
-    # through to the handler's TYPED unsupported_root refusal instead of an
-    # untyped ValueError from binding construction (gate fix 9).
-    if (name == "delegate_start"
-            and str(args.get("root") or "").strip() == "skill_payload"
-            and not str(args.get("retry_of") or "").strip()):
-        return "write"
-    return None
-
-
-def _builtin_tool_availability(name: str, ctx: Any = None) -> tuple[bool, str, str]:
-    """Return ``(available, reason, detail)`` for built-in tool credential gates.
-
-    Predicates are lazy to avoid registry import cycles and discovery-time side effects.
-    """
-    # A bare registry (unit tests, static policy inventory, import-time introspection)
-    # is a structural surface, not a running task capability envelope.
-    if not str(getattr(ctx, "task_id", "") or "").strip():
-        metadata = getattr(ctx, "task_metadata", {}) if ctx is not None else {}
-        contract = getattr(ctx, "task_contract", {}) if ctx is not None else {}
-        if not metadata and not contract:
-            return True, "", ""
-    tool = str(name or "").strip()
-    if tool == "web_search":
-        try:
-            from ouroboros.tools.search import _available_web_search_backends
-
-            if not _available_web_search_backends():
-                return False, "missing_credential", "web_search_backend"
-        except ImportError:
-            return True, "", ""
-        except Exception:
-            return True, "", ""
-    if tool in _GITHUB_TOKEN_TOOLS and not os.environ.get("GITHUB_TOKEN", "").strip():
-        return False, "missing_credential", "GITHUB_TOKEN"
-    return True, "", ""
-
-
-def _handler_public_params(handler: Callable[..., Any]) -> list[str]:
-    try:
-        params = list(inspect.signature(handler).parameters)
-    except (TypeError, ValueError):
-        return []
-    return [name for name in params if name not in {"ctx", "_resolved_binding"}]
-
-
-def _entry_public_params(entry: "ToolEntry") -> list[str]:
-    try:
-        params = entry.schema.get("parameters") or {}
-        props = params.get("properties")
-        if isinstance(props, dict):
-            return [str(name) for name in props]
-    except Exception:
-        pass
-    return _handler_public_params(entry.handler)
-
-
-def _entry_has_public_param_schema(entry: "ToolEntry") -> bool:
-    try:
-        params = entry.schema.get("parameters") or {}
-        return isinstance(params.get("properties"), dict)
-    except Exception:
-        return False
-
-
-def _normalize_tool_call_args(entry: "ToolEntry", args: dict[str, Any]) -> None:
-    tool_name = entry.name
-    accepted = set(_entry_public_params(entry))
-    aliases: dict[str, str] = {}
-    aliases.update(_TOOL_ARG_ALIASES.get("*", {}))
-    aliases.update(_TOOL_ARG_ALIASES.get(tool_name, {}))
-    for alias, canonical in aliases.items():
-        if alias in args and canonical in accepted and alias not in accepted and canonical not in args:
-            args[canonical] = args.pop(alias)
-    if tool_name in _IGNORE_ROOT_ARG_TOOLS and "root" in args and "root" not in accepted:
-        args.pop("root", None)
-
-
-def _prepare_public_builtin_args(entry: "ToolEntry", args: dict[str, Any]) -> str:
-    """Normalize and validate only the model-visible builtin argument surface.
-
-    This runs after capability/lineage availability checks but before path
-    normalization, target selection, Python predispatch, or target-sensitive
-    guards. Private dispatch carriers therefore cannot be supplied by the model
-    and invalid public calls cannot trigger target work before rejection.
-    """
-
-    _normalize_tool_call_args(entry, args)
-    public_params = set(_entry_public_params(entry))
-    # A handler may name a bounded set of execution-only legacy parameters.  They
-    # remain absent from its model-visible schema and are therefore usable only by
-    # callers replaying the former wire shape through this real registry path.  The
-    # handler still owns deterministic migration/refusal; this generic seam neither
-    # chooses a route nor special-cases a tool name.
-    hidden_legacy = {
-        str(name)
-        for name in (getattr(entry.handler, "_hidden_legacy_params", ()) or ())
-        if str(name)
-    }
-    accepted_params = public_params | hidden_legacy
-    if _entry_has_public_param_schema(entry) and any(key not in accepted_params for key in args):
-        return _format_tool_arg_error(entry)
-    try:
-        inspect.signature(entry.handler).bind(object(), **args)
-    except TypeError:
-        return _format_tool_arg_error(entry)
-    return ""
-
-
-def _build_builtin_target_binding(ctx: Any, name: str, args: dict[str, Any]) -> Any:
-    """Build the one private physical-target carrier for a builtin call."""
-
-    operation = _target_binding_operation(name, args)
-    if operation is None:
-        return None
-    if name in _SKILL_LIFECYCLE_TARGET_TOOLS:
-        return build_resolved_resource_binding(
-            ctx,
-            root="skill_payload",
-            operation="review",
-            path=".",
-            skill_name=str(args.get("skill") or ""),
-        )
-    if name in _PROCESS_TARGET_TOOLS or name == "verify_and_record":
-        return build_resolved_resource_binding(
-            ctx,
-            operation=operation,
-            process_cwd=str(args.get("cwd") or ""),
-            bucket=str(args.get("bucket") or ""),
-            skill_name=str(args.get("skill_name") or ""),
-        )
-    if name == "delegate_start":
-        return build_resolved_resource_binding(
-            ctx,
-            root=str(args.get("root") or ""),
-            operation="write",
-            path=".",
-            bucket=str(args.get("bucket") or ""),
-            skill_name=str(args.get("skill_name") or ""),
-        )
-    root = str(args.get("root") or "active_workspace")
-    bucket = str(args.get("bucket") or "")
-    skill_name = str(args.get("skill_name") or "")
-
-    def _one(path: str) -> Any:
-        return build_resolved_resource_binding(
-            ctx,
-            root=root,
-            operation=operation,
-            path=path or ".",
-            bucket=bucket,
-            skill_name=skill_name,
-        )
-
-    if name == "write_file" and args.get("files"):
-        return tuple(
-            _one(str(item.get("path") or ""))
-            for item in args.get("files") or []
-            if isinstance(item, dict)
-        )
-    if name == "apply_patch":
-        from ouroboros.tools.edit_ops import patch_target_paths
-
-        return tuple(_one(path) for path in patch_target_paths(str(args.get("patch") or "")))
-    if name == "edit_batch":
-        return tuple(
-            _one(str(item.get("path") or ""))
-            for item in args.get("edits") or []
-            if isinstance(item, dict)
-        )
-    return _one(str(args.get("path") or "."))
-
-
-def _binding_items(binding: Any) -> tuple[Any, ...]:
-    if binding is None:
-        return ()
-    return binding if isinstance(binding, tuple) else (binding,)
-
-
-def _binding_set_targets_system_repo(ctx: Any, binding: Any) -> bool:
-    items = _binding_items(binding)
-    return bool(items) and all(binding_targets_system_repo(ctx, item) for item in items)
-
-
-def _binding_set_is_light_restricted(ctx: Any, binding: Any) -> bool:
-    """Whether light mode must treat this file/VCS target as internal state."""
-    items = _binding_items(binding)
-    return bool(items) and all(
-        binding_targets_system_repo(ctx, item)
-        or (item.root == "runtime_data" and item.source == "runtime_data")
-        for item in items
-    )
-
-
-def _binding_state_drive_root(ctx: Any, binding: Any) -> pathlib.Path:
-    items = _binding_items(binding)
-    if items:
-        return pathlib.Path(items[0].state_drive_root)
-    return pathlib.Path(ctx.drive_root)
-
-
-def _light_binding_failure_redirect(name: str, args: dict[str, Any]) -> str:
-    """Project an existing light-mode UX redirect after a failed target bind."""
-
-    try:
-        from ouroboros.config import get_runtime_mode
-
-        if get_runtime_mode() == "light":
-            return light_cognitive_or_root_redirect(name, args) or ""
-    except Exception:
-        pass
-    return ""
-
-
-def _binding_error_text(name: str, root: str, exc: Exception) -> str:
-    detail = str(exc)
-    if detail.startswith("SKILL_REDIRECT_BLOCKED:"):
-        return f"⚠️ {detail}"
-    if detail.startswith("profile=") and " cannot " in detail:
-        return f"⚠️ TOOL_ACCESS_BLOCKED: {detail.rstrip('.')}."
-    if isinstance(exc, UserFilesPathBlockedError) and name in {
-        "read_file", "list_files", "search_code",
-    }:
-        return f"⚠️ USER_FILES_PATH_BLOCKED: {detail}"
-    if root == "skill_payload" and name in {"write_file", "edit_text"}:
-        return f"⚠️ SKILL_PAYLOAD_ARG_ERROR: {detail}"
-    prefixes = {
-        "read_file": "READ_FILE_ERROR",
-        "list_files": "LIST_FILES_ERROR",
-        "search_code": "SEARCH_ERROR",
-        "query_code": "TOOL_ARG_ERROR (query_code)",
-        "write_file": "WRITE_FILE_ERROR",
-        "edit_text": "EDIT_TEXT_ERROR",
-        "vcs_status": "GIT_ERROR",
-        "vcs_diff": "GIT_ERROR",
-        "vcs_pull_ff": "PULL_ERROR",
-        "vcs_restore": "RESTORE_ERROR",
-        "vcs_revert": "REVERT_ERROR",
-        "skill_review": "SKILL_REVIEW_ERROR",
-        "skill_preflight": "SKILL_PREFLIGHT_ERROR",
-        "submit_skill_to_hub": "SUBMIT_BLOCKED",
-        "run_command": "SHELL_CWD_BLOCKED",
-        "run_script": "SCRIPT_CWD_BLOCKED",
-        "start_service": "SHELL_CWD_BLOCKED",
-        "verify_and_record": "VERIFY_ERROR",
-    }
-    return f"⚠️ {prefixes.get(name, 'TOOL_ERROR')}: {type(exc).__name__}: {detail}"
-
-
-def _payload_dispatch_constraint(
-    ctx: Any,
-    *,
-    name: str,
-    args: dict[str, Any],
-    task_constraint: Optional[TaskConstraint],
-    workspace_mode: bool,
-) -> tuple[Optional[TaskConstraint], str]:
-    """Preserve repair selectors without letting stray selectors retarget work."""
-
-    raw_bucket = str(args.get("bucket", "") or "")
-    raw_skill_name = str(args.get("skill_name", "") or "")
-    explicit_skill_root = str(args.get("root", "") or "").strip().lower() == "skill_payload"
-    short_form_decision = None if explicit_skill_root else decide_payload_short_form(
-        bucket=raw_bucket,
-        skill_name=raw_skill_name,
-        path_text=str(args.get("path", "") or "."),
-        repo_dir=pathlib.Path(ctx.repo_dir),
-        drive_root=pathlib.Path(ctx.drive_root),
-    )
-    if explicit_skill_root:
-        # Binding selection already handled the explicit target. This legacy
-        # constraint exists only for the light-mode data-payload carve-out.
-        synthesized = synthesize_payload_constraint(raw_bucket, raw_skill_name)
-    else:
-        synthesized = (
-            short_form_decision.constraint
-            if short_form_decision is not None
-            and task_constraint
-            and task_constraint.mode == "skill_repair"
-            else None
-        )
-
-    if (
-        (raw_bucket or raw_skill_name)
-        and short_form_decision is not None
-        and short_form_decision.error
-        and name in {"write_file", "edit_text"}
-    ):
-        root_arg = str(args.get("root", "") or "").strip().lower()
-        if _stray_skill_payload_failsoft(root_arg, workspace_mode, task_constraint):
-            log.info(
-                "Ignoring stray bucket/skill_name on %s (workspace edit, root=%s): %s",
-                name,
-                root_arg or "active_workspace",
-                short_form_decision.error[:80],
-            )
-            args.pop("bucket", None)
-            args.pop("skill_name", None)
-            synthesized = None
-        else:
-            return None, f"⚠️ SKILL_PAYLOAD_ARG_ERROR: {short_form_decision.error}"
-
-    redirect_err = cross_skill_redirect_error(task_constraint, synthesized)
-    if redirect_err and name in {"write_file", "edit_text"}:
-        return None, f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}"
-    if task_constraint and task_constraint.mode == "skill_repair":
-        return task_constraint, ""
-    return synthesized or task_constraint, ""
-
-
-def _format_tool_arg_error(entry: "ToolEntry") -> str:
-    params = _entry_public_params(entry)
-    accepted = ", ".join(params) if params else "none"
-    return (
-        f"⚠️ TOOL_ARG_ERROR ({entry.name}): invalid arguments for {entry.name}. "
-        f"Accepted parameters: {accepted}."
-    )
-
-
-def _light_repo_snapshot(repo_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
-    """Worktree tripwire for light-mode shell writes, not rollback machinery."""
-    try:
-        repo = pathlib.Path(repo_dir)
-        status = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-            cwd=str(repo), capture_output=True, text=True, timeout=5,
-        )
-        if status.returncode != 0:
-            return None
-        unstaged = subprocess.run(
-            ["git", "diff", "--binary", "--no-ext-diff"],
-            cwd=str(repo), capture_output=True, text=True, timeout=10,
-        )
-        staged = subprocess.run(
-            ["git", "diff", "--cached", "--binary", "--no-ext-diff"],
-            cwd=str(repo), capture_output=True, text=True, timeout=10,
-        )
-        paths = parse_porcelain_paths(status.stdout)
-        digest = hashlib.sha256()
-        digest.update((status.stdout or "").encode("utf-8", errors="replace"))
-        digest.update((unstaged.stdout if unstaged.returncode == 0 else "").encode("utf-8", errors="replace"))
-        digest.update((staged.stdout if staged.returncode == 0 else "").encode("utf-8", errors="replace"))
-        for rel in paths:
-            try:
-                target = (repo / safe_relpath(rel)).resolve(strict=False)
-                target.relative_to(repo.resolve(strict=False))
-                if target.is_file() and rel in (status.stdout or ""):
-                    stat = target.stat()
-                    digest.update(f"{rel}\0{stat.st_size}\0{stat.st_mtime_ns}".encode("utf-8"))
-            except Exception:
-                continue
-        return {"digest": digest.hexdigest(), "paths": paths}
-    except Exception:
-        return None
-
-
-def _format_light_repo_write_block(before: Dict[str, Any], after: Dict[str, Any], result: str, tool_name: str = "run_command") -> str:
-    before_paths = set(before.get("paths") or [])
-    after_paths = set(after.get("paths") or [])
-    touched = sorted(after_paths | before_paths)
-    listed = ", ".join(touched[:30]) if touched else "(status changed; no paths parsed)"
-    if len(touched) > 30:
-        listed += f", ... (+{len(touched) - 30} more)"
-    return (
-        "⚠️ LIGHT_MODE_REPO_WRITE_BLOCKED: runtime_mode=light detected "
-        f"a mutation of the Ouroboros repository after {tool_name}. "
-        "The command result is blocked and no automatic rollback was attempted "
-        "to avoid overwriting concurrent human edits. "
-        f"Affected/dirty paths: {listed}. Switch to advanced/pro for repo writes.\n\n"
-        "Original command output:\n"
-        f"{result}"
-    )
-
-
-def _git_ref_snapshot(repo_dir: pathlib.Path) -> Optional[Dict[str, str]]:
-    try:
-        repo = pathlib.Path(repo_dir)
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo), capture_output=True, text=True, timeout=5,
-        )
-        refs = subprocess.run(
-            ["git", "show-ref", "--head", "--dereference"],
-            cwd=str(repo), capture_output=True, text=True, timeout=5,
-        )
-        if head.returncode != 0 or refs.returncode not in (0, 1):
-            return None
-        digest = hashlib.sha256()
-        digest.update((head.stdout or "").encode("utf-8", errors="replace"))
-        digest.update((refs.stdout or "").encode("utf-8", errors="replace"))
-        return {"head": (head.stdout or "").strip(), "digest": digest.hexdigest()}
-    except Exception:
-        return None
-
-
-@dataclass
-class BrowserState:
-    """Per-task Playwright lifecycle state."""
-
-    pw_instance: Any = None
-    browser: Any = None
-    page: Any = None
-    last_screenshot_b64: Optional[str] = None
-
-
 # CW3 (v6.34.0): an ephemeral decision turn DECIDES (answer / route / spawn /
 # steer) — it does NOT do durable work; that is the spawned task's job.
 # Enforced as a DEFAULT-DENY ALLOWLIST, not a denylist (a denylist is
@@ -1559,151 +430,6 @@ class BrowserState:
 # LOCAL_READONLY_SUBAGENT_TOOL_NAMES leaked subagent-only tools:
 # schedule_subagent spawns durable children, wait_task/wait_tasks BLOCK a
 # short turn, browser_action INTERACTS with pages).
-_EPHEMERAL_ALLOWED_TOOLS = frozenset({
-    # read / inspect
-    "read_file", "query_code", "search_code", "list_files", "web_search", "browse_page",
-    "chat_history", "recent_tasks", "get_task_result", "vcs_diff", "vcs_status",
-    "analyze_screenshot", "vlm_query",
-    # decide / route / spawn-owner-task / reply
-    "route_to_project", "promote_chat_to_task", "steer_task", "list_projects", "send_photo",
-})
-
-
-@dataclass
-class ToolContext:
-    """Tool execution context passed from the agent."""
-
-    repo_dir: pathlib.Path
-    drive_root: pathlib.Path
-    branch_dev: str = "ouroboros"
-    system_repo_dir: Optional[pathlib.Path] = None
-    workspace_root: Optional[pathlib.Path] = None
-    workspace_mode: str = ""
-    memory_mode: str = ""
-    budget_drive_root: str = ""
-    # Per-project facts scope (Phase 3b): when set, knowledge reads/writes target
-    # the per-project store under the canonical data dir instead of memory/knowledge.
-    project_id: str = ""
-    task_metadata: Dict[str, Any] = field(default_factory=dict)
-    executor_ref: Dict[str, Any] = field(default_factory=dict)
-    pending_events: List[Dict[str, Any]] = field(default_factory=list)
-    current_chat_id: Optional[int] = None
-    current_task_type: Optional[str] = None
-    pending_restart_reason: Optional[str] = None
-    last_push_succeeded: bool = False
-    last_reviewed_commit_sha: str = ""
-    emit_progress_fn: Callable[[str], None] = field(default=lambda _: None)
-
-    # LLM-driven model/effort switch.
-    active_model_override: Optional[str] = None
-    active_effort_override: Optional[str] = None
-    active_use_local_override: Optional[bool] = None
-    task_model_override: Optional[str] = None
-    task_use_local_override: Optional[bool] = None
-    # CW2 (v6.34.0): the loop publishes the effective context mode each round so
-    # switch_model can refuse switching to a sub-1M route while the transcript is max-sized.
-    active_context_mode: str = ""
-
-    # Per-task browser state.
-    browser_state: BrowserState = field(default_factory=BrowserState)
-
-    # Budget tracking for usage events.
-    event_queue: Optional[Any] = None
-    task_id: Optional[str] = None
-
-    # Conversation messages for safety checks.
-    messages: Optional[List[Dict[str, Any]]] = None
-
-    # Structured task constraints, e.g. skill repair payload confinement.
-    task_constraint: Optional[TaskConstraint] = None
-    task_contract: Dict[str, Any] = field(default_factory=dict)
-
-    # Task depth for fork-bomb protection.
-    task_depth: int = 0
-
-    # True inside handle_chat_direct, not a queued worker task.
-    is_direct_chat: bool = False
-    # CW3 (v6.34.0): a SHORT-LIVED same-route "decision" turn (run while the chat
-    # agent is busy). It may answer / route / spawn / steer, but is barred from
-    # durable cognitive-memory / evolution / settings / control-plane mutators
-    # (the WS10 ephemeral contract) — enforced in schemas()/execute().
-    is_ephemeral_turn: bool = False
-
-    # Pre-commit review state.
-    _review_advisory: List[Any] = field(default_factory=list)
-    _review_iteration_count: int = 0
-    _review_history: list = field(default_factory=list)
-
-    def active_repo_dir(self) -> pathlib.Path:
-        if self.is_workspace_mode():
-            return pathlib.Path(self.workspace_root)
-        return pathlib.Path(self.repo_dir)
-
-    def is_workspace_mode(self) -> bool:
-        return (
-            self.workspace_root is not None
-            and bool(str(self.workspace_mode or "").strip())
-            and not workspace_mode_block_reason(self)
-        )
-
-    def repo_path(self, rel: str) -> pathlib.Path:
-        root = self.active_repo_dir()
-        # Accept the paths an agent naturally writes against a workspace root:
-        # an absolute path already INSIDE the root (e.g. /app/out.txt under a
-        # workspace rooted at /app — otherwise re-nested as /app/app/out.txt) and
-        # a redundant root-basename prefix ('app/out.txt'). normalize_root_relative
-        # only ever returns a relative string; paths not under the root fall
-        # through to safe_relpath (kept inside) and the boundary check below.
-        rel_str = normalize_root_relative(root, str(rel))
-        resolved = (root / safe_relpath(rel_str)).resolve()
-        try:
-            resolved.relative_to(root.resolve())
-        except ValueError:
-            raise ValueError(f"Path escapes repo_dir boundary: {rel}")
-        return resolved
-
-    def drive_path(self, rel: str) -> pathlib.Path:
-        resolved = (self.drive_root / safe_relpath(rel)).resolve()
-        try:
-            resolved.relative_to(self.drive_root.resolve())
-        except ValueError:
-            raise ValueError(f"Path escapes drive_root boundary: {rel}")
-        return resolved
-
-    def drive_logs(self) -> pathlib.Path:
-        return (self.drive_root / "logs").resolve()
-
-    def task_drive_root(self) -> pathlib.Path:
-        return (pathlib.Path(self.drive_root).resolve(strict=False) / "task_drives" / task_id_for_artifacts(self)).resolve(strict=False)
-
-    def workspace_executor_ref(self) -> Dict[str, Any]:
-        if isinstance(self.executor_ref, dict) and self.executor_ref:
-            return dict(self.executor_ref)
-        if isinstance(self.task_metadata, dict) and isinstance(self.task_metadata.get("executor_ref"), dict):
-            return dict(self.task_metadata["executor_ref"])
-        return {}
-
-
-@dataclass
-class ToolEntry:
-    """Single tool descriptor."""
-
-    name: str
-    schema: Dict[str, Any]
-    handler: Callable  # fn(ctx: ToolContext, **args) -> str
-    is_code_tool: bool = False
-    timeout_sec: int = 360
-    # Capability flag: tool can mutate the live repo worktree. The dispatcher
-    # snapshots `git status --porcelain` around flagged tools and invalidates
-    # advisory freshness when the worktree ACTUALLY changed — covering error
-    # and timeout paths uniformly, and never invalidating for read-only runs.
-    mutates_worktree: bool = False
-    # Compatibility alias: a renamed tool's old public name. An alias entry is
-    # CALLABLE (execute dispatches it like any entry) but never advertised —
-    # schemas()/available_tools() skip it, so the public surface carries only
-    # the canonical name while saved prompts, memories, and configs that still
-    # use the old spelling keep working.
-    alias_for: str = ""
 
 
 class ToolRegistry:
