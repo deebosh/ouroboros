@@ -575,5 +575,3 @@ def test_review_skill_refuses_mutation_during_deterministic_preflight(tmp_path, 
 
 
 # --- Block C3: structural consecutive-warnings convergence ----------------
-
-
