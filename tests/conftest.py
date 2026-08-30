@@ -170,6 +170,11 @@ def _mock_pollution_files(root: pathlib.Path) -> set[pathlib.Path]:
 # See docs/DEVELOPMENT.md "Pytest marker lanes".
 _SERIAL_TEST_FILES = frozenset({
     "test_workspace_executor.py",
+    # Themed siblings of test_workspace_executor.py; they spawn the same real
+    # processes, so the whole family stays in the serial lane.
+    "test_workspace_executor_services.py",
+    "test_workspace_executor_docker.py",
+    "test_workspace_executor_admission.py",
     "test_workspace_executor_cleanup.py",
     "test_process_custody.py",
     "test_kill_process_tree_orphans.py",

@@ -147,3 +147,53 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    re-sweep loop (65b5d19f), so one live child yields two token-less sweep
    calls instead of one; the pinned durable fact (the owner-stop sweep is
    token-less) is unchanged.
+## From the D17 lane (base def681bd, 2026-08-30)
+7. Runtime split rows 465-494 (`headless.py` -> `headless_status.py` (11) +
+   `workspace_patch_capture.py` (19), "verbatim extraction") — RE-PROVEN at
+   this tip: all 30 spans byte-identical between the reference leaves and
+   `git show HEAD:ouroboros/headless.py` (hardened transplant --check, ast/
+   tokens/bytes all green, both leaves, exit 0). The facade differs from the
+   reference only by upstream residue drift (child_ref promotion machinery,
+   `TASK_COST_META_FIELDS`/`replace_atomic` import changes) — replayed from
+   tip bytes, 947 lines.
+8. Test-split rows for `tests/test_workspace_executor.py` ->
+   `test_workspace_executor_services.py` ("verbatim") — BYTE-FALSIFIED as a
+   copy source for exactly two functions, transform still valid: upstream
+   06339bb7 ("fix: preserve service readiness truth") rewrote
+   `test_executor_local_service_lifecycle_hides_private_snapshot` (the READY
+   marker is now planted before a 25k log suffix and asserted scanned) and
+   upstream a849c9a6 ("fix: preserve executor probe uncertainty") extended
+   `test_executor_service_status_and_durable_record_redact_secret_like_args`
+   (adds the `'"readiness"' not in durable_text` clause). Both re-emitted
+   from tip giant bytes; the other 26 moved wexec spans are byte-identical.
+9. Reference residual `tests/test_headless_cli.py` and sibling
+   `test_headless_workspace_shell.py` carry OTHER domains' v7 spellings
+   inside 9 moved/kept spans (`_run_shell_safety_check(registry, ...)` typed
+   result + `core_file_tools._repo_read` — D04/D05 split; `queue.init(path)`
+   1-arg signature and `supervisor.state.QUEUE_SNAPSHOT_PATH` — D08/D33).
+   On this tree those leaves/signatures do not exist; per §5.3-Δ item 2 every
+   such span was reverse-mapped to the upstream spelling keyed to
+   `git show HEAD:tests/test_headless_cli.py` (upstream: string-returning
+   `registry._run_shell_safety_check`, module-binding `_repo_read`,
+   `queue.init(path, 600, 1800)`, `queue.QUEUE_SNAPSHOT_PATH`). These
+   adaptations return with their owning lanes, not with D17.
+10. Thirteen upstream test functions written after the reference cutoff have
+    NO ledger rows (hcli: 4 task-api + 1 artifact-endpoint; wexec: 6 docker
+    stop/cleanup + 2 readiness). Placed by the split's own theme rule with
+    imports satisfied by the target headers (task_api×4, task_artifacts×1,
+    docker×6, services×2 + one `SimpleNamespace` header import); the carried
+    ledger needs rows minted for them at F5. Placement is disclosed, not
+    ledger-derived.
+11. Row evidence `tests/test_headless_extraction.py` (rows 465-494): the
+    reference pin imports `ouroboros.tool_module_inventory` (a D04-family v7
+    leaf absent from this tree); the transplanted pin keeps every clause that
+    types against THIS tree and replaces the frozen-tool-inventory clause
+    with an oracle-SHA note — the clause returns with the tools lane.
+12. `ouroboros/task_results.py` (upstream-hot, +555 lines drift): the ledger
+    assigns NO D17 runtime split to it, and the reference copy is
+    byte-identical to the merge base (zero v7 delta) — nothing to transplant,
+    upstream bytes stand. Same zero-v7-delta fact re-proven for all 14
+    non-split D17 runtime modules (task_status, retention, coop_checkpoint,
+    projects_registry, project_dialogue, project_lease, project_naming,
+    project_sources, tools/project_journal, workspace_admission,
+    workspace_preflight, workspace_executor, workspace_patch_rules).

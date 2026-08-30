@@ -46,7 +46,7 @@ _POPEN_ALLOWLIST = {
     "ouroboros/packaged_cli.py",          # user-facing CLI wrapper (foreground)
     "ouroboros/cli.py",                   # dev CLI (foreground)
     "ouroboros/server_control.py",        # restart exec path
-    "ouroboros/headless.py",              # waited synchronous child
+    "ouroboros/workspace_patch_capture.py",  # waited synchronous child
     "ouroboros/preflight_runner.py",      # waited hermetic pytest child
     "ouroboros/tools/shell.py",           # bounded foreground commands (waited + tracked)
     "ouroboros/tools/skill_exec.py",      # bounded skill run (waited + tracked)

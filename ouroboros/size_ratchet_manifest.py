@@ -19,7 +19,6 @@ GIANT_PATHS = (
     "supervisor/events.py",
     "supervisor/git_ops.py",
     "supervisor/workers.py",
-    "tests/test_agent_task_pipeline.py",
     "tests/test_cancel_intents_phase_a.py",
     "tests/test_claudexor_owned_daemon.py",
     "tests/test_delegated_subagent_transport.py",
@@ -29,7 +28,6 @@ GIANT_PATHS = (
     "tests/test_extensions_api.py",
     "tests/test_git_ops_recovery.py",
     "tests/test_git_review_pipeline.py",
-    "tests/test_headless_cli.py",
     "tests/test_loop_misc.py",
     "tests/test_model_slot_role_model.py",
     "tests/test_osworld_cu_bridge.py",
@@ -46,7 +44,6 @@ GIANT_PATHS = (
     "tests/test_task_status_flow.py",
     "tests/test_tool_capabilities.py",
     "tests/test_ui_smoke_playwright.py",
-    "tests/test_workspace_executor.py",
     "web/modules/chat.js",
     "web/tests/harness_accounts.test.js",
 )
