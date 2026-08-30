@@ -802,16 +802,80 @@ def verify_transplant(upstream_source: str, leaf_source: str, symbols: List[str]
             if not ok:
                 problems.append(why or "token mismatch")
             entry["byte_identical"] = recovered == up.text
+            if not entry["byte_identical"] and not problems:
+                # MANDATORY (audit 2026-08-30): token equality alone is blind to
+                # inter-token whitespace (`x  + y` == `x + y` as tokens). The
+                # round trip must reproduce the upstream span BYTE-exactly.
+                for k, (a, b) in enumerate(zip(recovered, up.text)):
+                    if a != b:
+                        problems.append(
+                            "inverse-normalized span is not byte-identical to "
+                            f"upstream (first divergence at offset {k}: "
+                            f"{recovered[k:k+20]!r} != {up.text[k:k+20]!r})")
+                        break
+                else:
+                    problems.append(
+                        "inverse-normalized span is not byte-identical to "
+                        "upstream (length differs: "
+                        f"{len(recovered)} != {len(up.text)})")
         entry["handle_reads"] = sorted({s.attr for s in sites})
         reads.update(s.attr for s in sites)
         if problems:
             entry["detail"] = "; ".join(problems)
             report["ok"] = False
-        elif not (entry["ast_equal"] and entry["tokens_equal"]):
+        elif not (entry["ast_equal"] and entry["tokens_equal"]
+                  and entry["byte_identical"]):
             report["ok"] = False
     report["handle_reads"] = sorted(reads)
     report["unread_declared"] = sorted(declared - reads)
+    _flag_undeclared_top_level(leaf_source, symbols, handle, report)
     return report
+
+
+_PREAMBLE_OK_ASSIGN_DEFAULT = frozenset({"log"})
+
+
+def _flag_undeclared_top_level(leaf_source: str, symbols: List[str], handle: str,
+                               report: Dict[str, Any],
+                               leaf_owned: Optional[Set[str]] = None) -> None:
+    """MANDATORY (audit 2026-08-30): a leaf must contain NOTHING at top level
+    beyond the verified symbol spans and a recognizable preamble — otherwise an
+    extra definition or an import-time side effect rides an ok=true proof.
+    Allowed outside the requested symbols: the module docstring, __future__ and
+    ordinary imports, the handle def itself, and simple assignments to
+    leaf-owned names (default: {'log'}; extend deliberately, never silently).
+    """
+    owned = set(leaf_owned or _PREAMBLE_OK_ASSIGN_DEFAULT) | {handle}
+    requested = set(symbols)
+    extras: List[str] = []
+    tree = ast.parse(leaf_source)
+    for idx, node in enumerate(tree.body):
+        if idx == 0 and isinstance(node, ast.Expr) and isinstance(
+                getattr(node, "value", None), ast.Constant) and isinstance(
+                node.value.value, str):
+            continue  # module docstring
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in requested or node.name in owned:
+                continue
+            extras.append(f"{type(node).__name__} {node.name!r} (line {node.lineno})")
+            continue
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = {t.id for t in targets if isinstance(t, ast.Name)}
+            if names and names <= (requested | owned):
+                continue
+            extras.append(f"assignment to {sorted(names) or '<complex target>'} "
+                          f"(line {node.lineno})")
+            continue
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Name) \
+                and node.test.id == "TYPE_CHECKING":
+            continue
+        extras.append(f"{type(node).__name__} (line {node.lineno})")
+    report["undeclared_top_level"] = extras
+    if extras:
+        report["ok"] = False
 
 
 # ---------------------------------------------------------------------------

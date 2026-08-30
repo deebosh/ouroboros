@@ -556,3 +556,48 @@ def test_cli_emit_and_check_roundtrip(tmp_path):
     leaf.write_text(corrupted, encoding="utf-8")
     check = subprocess.run(check_argv, capture_output=True, text=True)
     assert check.returncode == 2
+
+
+# ---------------------------------------------------------------------------
+# Mutation tests (audit 2026-08-30): the proof must FAIL on what tokens miss.
+# ---------------------------------------------------------------------------
+
+_MUT_UP = "def f(a, b):\n    return a  +  b + PARENT\n"
+_MUT_LEAF_OK = "def f(a, b):\n    return a  +  b + _h().PARENT\n"
+
+
+def test_mutation_whitespace_change_fails_byte_proof():
+    """Inter-token whitespace edits are invisible to the token proof; the
+    mandatory byte round trip must catch them."""
+    from scripts.v7next_transplant import verify_transplant
+    leaf_ws = "def f(a, b):\n    return a + b + _h().PARENT\n"  # collapsed spaces
+    rep = verify_transplant(_MUT_UP, leaf_ws, ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert "byte-identical" in (rep["symbols"]["f"]["detail"] or "")
+    rep_ok = verify_transplant(_MUT_UP, _MUT_LEAF_OK, ["f"], {"PARENT"}, "_h")
+    assert rep_ok["ok"] is True and rep_ok["symbols"]["f"]["byte_identical"] is True
+
+
+def test_mutation_extra_top_level_def_fails():
+    leaf = _MUT_LEAF_OK + "\n\ndef smuggled():\n    return 1\n"
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, leaf, ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("smuggled" in e for e in rep["undeclared_top_level"])
+
+
+def test_mutation_import_time_side_effect_fails():
+    leaf = "import os\n" + _MUT_LEAF_OK + "\nprint('boom')\n"
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, leaf, ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("Expr" in e or "line" in e for e in rep["undeclared_top_level"])
+
+
+def test_preamble_allowlist_still_passes():
+    leaf = ('"""doc"""\nfrom __future__ import annotations\nimport os\n'
+            "log = None\n\ndef _h():\n    return os\n\n" + _MUT_LEAF_OK)
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, leaf, ["f"], {"PARENT"}, "_h")
+    assert rep["undeclared_top_level"] == []
+    assert rep["ok"] is True
