@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from ouroboros.tools.core import _repo_read
+from ouroboros.tools.core_file_tools import _repo_read
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.workspace_preflight import _infer_tools_from_manifests
 

@@ -452,3 +452,98 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
 3. Seam repair: [split_pending] registry row carries domain IDs again
    (["D04"]) and [split_pending_leaves] carries the two hot-deferred leaves —
    the first seam commit wrote the leaf list into the wrong section.
+## From the D05 lane (base 0859b681, 2026-08-30)
+1. Shell split rows 416-464 RE-PROVEN against tip bytes and landed. shell_process
+   (11 spans, rows 416-426) and shell_effects (12 spans, rows 453-464): every
+   reference-leaf span ast=tokens=bytes=True against
+   `git show HEAD:ouroboros/tools/shell.py` (drift-probe first, exit 0) — the
+   reference leaves ARE tip bytes, adopted verbatim. shell_outputs: only 16 of
+   the row set remain in the tip monolith; 14 byte-identical, 2 re-emitted from
+   tip: `_register_process_outputs` (ref moved, tip==merge-base — the
+   reference's typed-cutover 3-tuple/artifact_registered plumbing is a PURE V7
+   DELTA, deliberately NOT ported, rides with the F2 typed-result organ) and
+   `_resolve_declared_output` (ref==merge-base, tip moved — PURE UPSTREAM DRIFT:
+   the lexical deliverables/casefold machinery; tip bytes are the leaf).
+2. Rows 429 (`_allowed_output_roots`), 439 (`_UNDECLARED_OUTPUTS_MARKER`), 445-451
+   (the six output/user-file regexes + `_OUTPUT_STAT_SLACK_SEC`) and 452
+   (`_mentioned_user_file_outputs_without_declaration`) — SUPERSEDED-BY-UPSTREAM
+   as shell_outputs rows: upstream c7315c57 ("Relax scoped browser, native-read,
+   and Deliverables false blocks") extracted those ten owners into its own NEW
+   leaf `ouroboros/tools/shell_audit.py` (D05-owned, no ledger rows), and the tip
+   facade already aliases/imports them from there. The carried ledger renames the
+   destination of those ten rows at F5; the facade identity contract
+   (tests/test_shell_extraction.py) covers them at their upstream owner.
+3. Core split rows 311-349 RE-PROVEN against tip bytes and landed
+   (core_file_tools 30 spans incl. row 311's tip alias form
+   `_SKILL_OWNER_STATE_FILENAMES = SKILL_OWNER_STATE_FILENAMES`; core_artifacts
+   9 spans): 29/39 byte-identical between the reference leaves and
+   `git show HEAD:ouroboros/tools/core.py`; 10 BYTE-FALSIFIED as copy sources,
+   ALL of the same class — tip==merge-base, reference moved (the typed-result
+   cutover producers `_repo_read/_repo_list/_data_read/_data_list/_read_file/
+   _list_files/_access_or_block/_send_photo/_send_video/_send_file`, i.e. the
+   rows whose own notes disclose `_publish_tool_result`, including row 332's
+   A.20 marker change). Tip bodies moved verbatim; the typed deltas ride with
+   the F2 typed-result organ (same class as D04 entry 2). Both emitted leaves
+   are proof-green (ast=tokens=bytes on every span, leaf_invariants=[], exit 0).
+4. FACADE CONVENTION DIVERGENCE (disclosed): the reference cut core.py over with
+   NO facade (rows 311-349 carry "-" in the re-export column; consumers rebound
+   by rows 360-371 and unrowed edits to vision/query_code/edit_ops/
+   delegate_output/shell_guards). This tree keeps a re-export facade on
+   tools/core.py instead (the §5.3-Δ2 item-12 partial-split idiom, matching the
+   shell facade): the tip consumer surface grew far beyond the reference's (6
+   production modules + 20+ test files import the moved names from tools.core
+   at this tip), and a no-facade cutover is a pure-hygiene consumer rebind that
+   can land as its own wave at F5 without re-proving spans. Identity is pinned
+   (`core.X is core_file_tools.X / core_artifacts.X`,
+   tests/test_core_extraction.py::test_core_facade_reexports_every_moved_identity);
+   the reference's `isdisjoint(vars(core))` clause is replaced by that pin.
+5. Rowed TEST bindings landed: rows 363-371 (test_send_file/photo/video ->
+   core_artifacts) and row 361 (test_filesystem_root_observability::_read_file ->
+   core_file_tools). Row 362 (tests/test_headless_cli.py::_repo_read): the D17
+   split moved that consumer into tests/test_headless_workspace_shell.py (D17
+   lane entry 9 reverse-mapped it to the upstream spelling); this lane completed
+   the row at its successor location (core_file_tools binding). Row 360
+   (browser.py::_readonly_subagent) NOT landed: the reference's browser delta
+   bundles a D01 rebinding (`loop_messages._append_or_merge_user_content`)
+   absent from this tree; the facade preserves the exact object meanwhile —
+   rides with the consumer-rebind wave.
+6. Cross-domain core rows already satisfied at tip (SUPERSEDED-BY-UPSTREAM
+   class, no action): the five tool_access rows (active_tool_profile,
+   build_resolved_resource_binding, decide_tool_access, normalize_root,
+   normalize_runtime_data_path — tip core.py imports them from
+   ouroboros.tool_access), read_text -> utils, row 353 active_repo_dir_for ->
+   tool_resolution (import alias, per D04 entry 7), _filter_out_project_store ->
+   project_facts (per D15 entry 1), and the two contracts/skill_payload_policy
+   rows (tip imports them as the `_policy_*` aliases). Registry rows 213/214
+   (python_interpreter) and 246/247 (artifacts) ride with the HOT-DEFERRED
+   registry_core leaf (D04 entry 3): tip registry.py still carries those import
+   bindings (:59, :83); the protected file was not touched by this lane.
+7. Unrowed reference deltas NOT replayed (candidate rows for the carried
+   ledger): (a) code_intelligence.py `collect_top_level_python_imports` (+92) —
+   its only consumer is the reference-only tests/test_top_level_import_graph.py
+   (domain-graph tooling; F5/quotient territory); (b) mcp_client.py ToolResult
+   cutover + `tool_name_collisions` field — F2 typed organ; (c) services.py
+   `_publish_tool_result` cutover coupled to the 3-tuple
+   `_register_process_outputs` — F2; (d) health.py module-debt band rendering —
+   types against reference-only ratchet metrics keys (`module_debt_1500_active`
+   etc.) that no producer on this tree emits, and the owner's Q11=B decision
+   picked the upstream size law — DIVERGENT-SUPERSEDED, re-derive only if the
+   debt-band UI returns; (e) vision/query_code/edit_ops/delegate_output/
+   shell_guards import rebinds — pending with the consumer-rebind wave (all
+   keep working through the facade).
+8. Oracle test adaptations mirrored in this tree's equivalents (§5.3-Δ2 item
+   10): load_settings monkeypatches retargeted to shell_process (its only
+   reader moved there) in tests/test_shell_run_shell.py and
+   tests/test_iteration2_fixes.py; module-object patch handles retargeted to
+   core_file_tools in tests/test_repo_read_limits.py (read_text),
+   tests/test_runtime_reliability_v655.py (_list_dir) and
+   tests/test_workspace_authority_binding.py (build_resolved_resource_binding).
+   Path-keyed mirror: tests/test_process_custody.py `_POPEN_ALLOWLIST` row
+   "ouroboros/tools/shell.py" -> "ouroboros/tools/shell_process.py" (the
+   facade's only Popen site moved with `_tracked_subprocess_run`; suite green).
+9. Zero-v7-delta re-proofs for the rest of the domain: media.py /
+   python_interpreter.py / code_search_rg.py byte-identical tip==ref==merge-base;
+   artifacts.py / recent_tasks.py / search.py / verify.py pure upstream drift
+   (ref==merge-base) — upstream bytes stand; shell_audit.py NEW upstream module
+   (no rows, see entry 2). tools/core.py band re-entry (2283 -> 1373) recorded
+   via the official regenerator's --band-rationale.

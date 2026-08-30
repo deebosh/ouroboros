@@ -84,7 +84,7 @@ def fake_subprocess(monkeypatch):
             _run_shell(...)
             assert calls[0]["cmd"] == [...]
     """
-    monkeypatch.setattr("ouroboros.tools.shell.load_settings", lambda: {})
+    monkeypatch.setattr("ouroboros.tools.shell_process.load_settings", lambda: {})
 
     def _install(*, returncode: int = 0, stdout: str = "", stderr: str = ""):
         calls: list[dict] = []
@@ -224,7 +224,7 @@ class TestShellArgContract:
         assert "exit_code=0" in result
 
     def test_posix_bracket_test_command_still_recovers_via_shlex(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("ouroboros.tools.shell.load_settings", lambda: {})
+        monkeypatch.setattr("ouroboros.tools.shell_process.load_settings", lambda: {})
 
         def fake_run(cmd, **kwargs):
             assert cmd == ["[", "-f", "file.txt", "]"]
@@ -277,7 +277,7 @@ def test_run_shell_timeout_uses_settings_timeout(tmp_path, monkeypatch):
     def fake_timeout(cmd, **kwargs):
         raise __import__("subprocess").TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
 
-    monkeypatch.setattr("ouroboros.tools.shell.load_settings", lambda: {"OUROBOROS_TOOL_TIMEOUT_SEC": 42})
+    monkeypatch.setattr("ouroboros.tools.shell_process.load_settings", lambda: {"OUROBOROS_TOOL_TIMEOUT_SEC": 42})
     monkeypatch.delenv("OUROBOROS_TOOL_TIMEOUT_SEC", raising=False)
     monkeypatch.setattr("ouroboros.tools.shell._tracked_subprocess_run", fake_timeout)
     result = _run_shell(_ctx(tmp_path), ["sleep", "999"])
@@ -290,7 +290,7 @@ def test_run_shell_timeout_uses_settings_timeout(tmp_path, monkeypatch):
 def test_run_shell_deadline_derived_timeout_is_used_when_no_explicit_setting(monkeypatch):
     from datetime import datetime, timezone
 
-    monkeypatch.setattr("ouroboros.tools.shell.load_settings", lambda: {"OUROBOROS_TOOL_TIMEOUT_SEC": 0})
+    monkeypatch.setattr("ouroboros.tools.shell_process.load_settings", lambda: {"OUROBOROS_TOOL_TIMEOUT_SEC": 0})
     monkeypatch.delenv("OUROBOROS_TOOL_TIMEOUT_SEC", raising=False)
     monkeypatch.setattr("ouroboros.deadline_utils.utc_now", lambda: datetime(2026, 6, 10, 0, 0, tzinfo=timezone.utc))
     ctx = SimpleNamespace(task_metadata={"deadline_at": "2026-06-10T00:20:00Z"})
@@ -301,7 +301,7 @@ def test_run_shell_deadline_derived_timeout_is_used_when_no_explicit_setting(mon
 def test_run_shell_deadline_caps_real_default_timeout(monkeypatch):
     from datetime import datetime, timezone
 
-    monkeypatch.setattr("ouroboros.tools.shell.load_settings", lambda: {"OUROBOROS_TOOL_TIMEOUT_SEC": 600})
+    monkeypatch.setattr("ouroboros.tools.shell_process.load_settings", lambda: {"OUROBOROS_TOOL_TIMEOUT_SEC": 600})
     monkeypatch.delenv("OUROBOROS_TOOL_TIMEOUT_SEC", raising=False)
     monkeypatch.setattr("ouroboros.deadline_utils.utc_now", lambda: datetime(2026, 6, 10, 0, 0, tzinfo=timezone.utc))
     ctx = SimpleNamespace(task_metadata={"deadline_at": "2026-06-10T00:10:00Z"})
@@ -310,7 +310,7 @@ def test_run_shell_deadline_caps_real_default_timeout(monkeypatch):
 
 
 def test_run_shell_explicit_timeout_wins_over_deadline(monkeypatch):
-    monkeypatch.setattr("ouroboros.tools.shell.load_settings", lambda: {"OUROBOROS_TOOL_TIMEOUT_SEC": 42})
+    monkeypatch.setattr("ouroboros.tools.shell_process.load_settings", lambda: {"OUROBOROS_TOOL_TIMEOUT_SEC": 42})
     monkeypatch.delenv("OUROBOROS_TOOL_TIMEOUT_SEC", raising=False)
     ctx = SimpleNamespace(task_metadata={"deadline_at": "2026-06-10T00:20:00Z"})
 

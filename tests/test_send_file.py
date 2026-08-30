@@ -2,7 +2,7 @@
 import base64
 import types
 
-from ouroboros.tools.core import _send_file, _detect_document_mime, _MAX_DOCUMENT_FILE_BYTES
+from ouroboros.tools.core_artifacts import _send_file, _detect_document_mime, _MAX_DOCUMENT_FILE_BYTES
 from ouroboros.gateway.files import download_url_for_local_file
 
 
