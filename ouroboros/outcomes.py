@@ -13,7 +13,7 @@ import json
 import logging
 import pathlib
 from hashlib import sha256
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from ouroboros import _outcome_receipts
 # Tool-call trace vocabulary + execution-axis classifier (leaf module). Re-exported
@@ -445,6 +445,56 @@ def _failure_block_for_work_uncommitted(files: List[str]) -> Dict[str, Any]:
         "reason_code": REASON_WORK_UNCOMMITTED,
         "files": list(files or []),
     }
+
+
+def _porcelain_relpath(line: str) -> str:
+    """Extract the repo-relative path from one ``git status --porcelain`` line.
+
+    Plain porcelain (without ``-z``) uses ``" -> "`` for renames / copies, so a
+    rename row reads ``"R  oldname -> newname"``; the post-target half is the
+    path the task actually owns. For every other row the path occupies columns
+    3 onward (``"XY path"``). Untracked rows are filtered upstream by
+    ``detect_work_uncommitted`` so this helper never sees them. Returns ``""``
+    for malformed input — the caller treats that as a no-match.
+    """
+    text = str(line or "").rstrip("\r")
+    if len(text) < 4:
+        return ""
+    body = text[3:].strip()
+    if not body:
+        return ""
+    if " -> " in body:
+        return body.split(" -> ", 1)[1].strip()
+    return body
+
+
+def filter_work_uncommitted_to_attributed(
+    files: List[str],
+    attributed_paths: Optional[Iterable[str]],
+) -> List[str]:
+    """Narrow a ``detect_work_uncommitted`` result to the per-task attributed set.
+
+    ``attributed_paths=None`` preserves the raw observation (every dirty tracked
+    file is reported). When the caller passes an iterable, only lines whose
+    repo-relative path appears in that iterable survive — the canonical "only
+    flag files this task's own mutation evidence attributes to it" contract.
+    Empty input + iterable yields an empty list, not a baseline-missing error;
+    the upstream caller decides whether absence is a probe-skip or a clean
+    degradation signal.
+    """
+    if attributed_paths is None:
+        return list(files or [])
+    allowed = {
+        str(item).strip()
+        for item in attributed_paths
+        if str(item or "").strip()
+    }
+    if not allowed:
+        return []
+    return [
+        line for line in (files or [])
+        if _porcelain_relpath(line) in allowed
+    ]
 
 
 def latest_agent_defined_verification(drive_root: Any, task_id: str) -> Optional[Dict[str, Any]]:
@@ -934,6 +984,7 @@ def derive_loop_outcome(
     llm_trace: Dict[str, Any],
     *,
     repo_dir: Optional[Any] = None,
+    attributed_paths: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """Return a typed LoopOutcome-compatible dict.
 
@@ -943,6 +994,15 @@ def derive_loop_outcome(
     ``REASON_WORK_UNCOMMITTED`` so dashboards and the boot startup-check can pick
     up a task that finalized with tracked-file changes uncommitted. ``repo_dir=None``
     preserves the historical behavior (the disk-touching check is opt-in).
+
+    ``attributed_paths`` narrows the work-uncommitted branch to the per-task
+    attributed set: when provided (even as an empty iterable), only porcelain
+    lines whose repo-relative path is in the iterable survive — the canonical
+    "only flag files this task's own mutation evidence attributes to it"
+    contract used in the shared-tree regime so concurrent tasks' dirty state
+    never bleeds into another task's verdict. ``attributed_paths=None`` keeps
+    the raw observation (the isolated-worktree regime, where the worktree
+    itself isolates the task from concurrent dirt).
     """
 
     usage_status = str(usage.get("execution_status") or usage.get("result_status") or "").strip()
@@ -1087,6 +1147,14 @@ def derive_loop_outcome(
         # the existing chain left execution OK with REASON_FINAL_MESSAGE — the
         # honest observation, not a verdict.
         work_uncommitted_files = detect_work_uncommitted(repo_dir)
+        if attributed_paths is not None:
+            # Shared-tree regime: a concurrent task's dirty state must not bleed
+            # into THIS task's verdict. Narrow to the per-task attributed set.
+            # An empty attributed set after filtering means concurrent dirt only —
+            # no degradation, no false-positive probe.
+            work_uncommitted_files = filter_work_uncommitted_to_attributed(
+                work_uncommitted_files, attributed_paths,
+            )
         if work_uncommitted_files:
             execution_status = EXECUTION_DEGRADED
             reason_code = REASON_WORK_UNCOMMITTED

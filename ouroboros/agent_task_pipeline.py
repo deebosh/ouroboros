@@ -588,6 +588,93 @@ def _attach_host_mutation_projection(
             return
 
 
+def _resolve_work_uncommitted_scope(
+    env: Any,
+    task: Dict[str, Any],
+    llm_trace: Dict[str, Any],
+) -> tuple[Any, Any]:
+    """Resolve the work-uncommitted probe's working tree and attributed-path filter.
+
+    Two regimes drive the activation contract for ``detect_work_uncommitted``:
+
+    - **Isolated worktree** — the task owns its own worktree (``task.repo_dir``
+      distinct from ``env.repo_dir``). Concurrent dirt cannot reach it, so the
+      raw probe is safe and the attributed-path filter is ``None``.
+    - **Shared tree** — host-bound tasks share ``env.repo_dir``. A naive
+      ``git status`` would attribute a concurrent task's dirty files to whichever
+      task finalized first. The contract here is "only flag files this task's
+      own mutation evidence attributes to it": we load the per-task attribution
+      via ``attributed_git_candidates`` and pass the resulting path set as the
+      filter. Concurrent dirt is ignored.
+
+    Returns ``(None, None)`` when the probe should be skipped entirely
+    (attribution blocked, no task-owned candidates, or no shared-tree root to
+    scan). Skipping is the honest response when attribution cannot establish a
+    clean task-owned set: an attribution gap must not silently widen the probe
+    back into a false-positive gate.
+    """
+    from ouroboros.mutation_attribution import attributed_git_candidates
+
+    shared_repo_dir = getattr(env, "repo_dir", None)
+    if shared_repo_dir is None:
+        return None, None
+
+    task_repo_dir_raw = task.get("repo_dir")
+    task_repo_dir: Optional[pathlib.Path]
+    if task_repo_dir_raw:
+        task_repo_dir = pathlib.Path(task_repo_dir_raw)
+    else:
+        task_repo_dir = None
+    try:
+        shared_root = pathlib.Path(shared_repo_dir).expanduser().resolve(strict=False)
+        task_root = (
+            task_repo_dir.expanduser().resolve(strict=False)
+            if task_repo_dir is not None
+            else None
+        )
+    except (OSError, ValueError, TypeError):
+        return None, None
+    if task_root is not None and task_root != shared_root:
+        # Isolated worktree regime: the worktree itself isolates the task.
+        return task_root, None
+
+    # Shared-tree regime: narrow the probe to the per-task attributed set.
+    drive_root = (
+        task.get("budget_drive_root")
+        or getattr(env, "drive_root", None)
+    )
+    if drive_root is None:
+        return None, None
+    root_task_id = str(
+        task.get("root_task_id") or task.get("id") or ""
+    ).strip()
+    if not root_task_id:
+        return None, None
+    try:
+        attribution = attributed_git_candidates(
+            pathlib.Path(drive_root), root_task_id, shared_root,
+        )
+    except Exception:
+        log.debug(
+            "work-uncommitted attribution lookup failed for %s", root_task_id,
+            exc_info=True,
+        )
+        return None, None
+    blockers = [str(b) for b in (attribution.get("blockers") or []) if str(b or "").strip()]
+    if blockers:
+        # Attribution could not establish a clean task-owned set (baseline
+        # missing, baseline stale, etc.). Skipping is the honest response.
+        return None, None
+    candidates = [
+        str(p).strip() for p in (attribution.get("candidates") or [])
+        if str(p or "").strip()
+    ]
+    if not candidates:
+        # No task-owned candidates; concurrent dirt is irrelevant to this task.
+        return None, None
+    return shared_root, candidates
+
+
 def _derive_host_bound_loop_outcome(
     env: Any,
     task: Dict[str, Any],
@@ -597,7 +684,14 @@ def _derive_host_bound_loop_outcome(
 ) -> Dict[str, Any]:
     """Derive once from the current durable mutation-evidence binding."""
     _attach_host_mutation_projection(env, task, llm_trace)
-    loop_outcome = apply_skill_publish_receipt_veto(derive_loop_outcome(text or "", usage, llm_trace), task, llm_trace)
+    repo_dir, attributed_paths = _resolve_work_uncommitted_scope(env, task, llm_trace)
+    loop_outcome = apply_skill_publish_receipt_veto(
+        derive_loop_outcome(
+            text or "", usage, llm_trace,
+            repo_dir=repo_dir, attributed_paths=attributed_paths,
+        ),
+        task, llm_trace,
+    )
     return _apply_terminal_custody_outcome(env, task, loop_outcome)
 
 
