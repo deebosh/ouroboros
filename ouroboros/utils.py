@@ -577,15 +577,64 @@ def estimate_tokens(text: str) -> int:
     return max(1, (len(str(text or "")) + 3) // 4)
 
 
-def run_cmd(cmd: List[str], cwd: Optional[pathlib.Path] = None) -> str:
+def run_cmd(
+    cmd: List[str],
+    cwd: Optional[pathlib.Path] = None,
+    *,
+    timeout: Optional[float] = None,
+    check: bool = True,
+) -> str:
+    """Run ``cmd`` and return its stripped stdout.
+
+    The legacy positional ``(cmd, cwd)`` signature is preserved so every
+    existing call site keeps working unchanged; ``timeout`` and ``check`` are
+    keyword-only so they cannot be silently passed positionally by accident.
+
+    ``timeout`` is forwarded to ``subprocess.run``; on expiry the exception
+    is converted to ``RuntimeError`` with the SAME ``"Command failed: "`` prefix
+    the non-zero-exit branch already produces, so callers and tests that match
+    on that text keep parsing. The timeout fact is appended in parentheses so
+    a consumer can distinguish a timeout from a regular non-zero exit. This
+    closes ``ibl-local-67f046589043`` (registry's ``_worktree_status_snapshot``
+    passing ``timeout=20`` and silently swallowing the resulting TypeError to
+    ``"<status-unavailable>"``).
+
+    ``check=False`` suppresses the non-zero-exit raise and returns whatever
+    stdout was captured, which lets callers probe a known-bad exit code
+    without exception handling.
+    """
     # Tool output is PARSED (git error signatures, porcelain text), so it must not
     # depend on the operator's locale: a Russian-locale git answers «метка … уже
     # существует» where the code and its tests match "already exists".
     env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
-    res = subprocess.run(
-        cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True, env=env,
-    )
-    if res.returncode != 0:
+    try:
+        res = subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # `text=True` makes exc.stdout/stderr Optional[str] on modern Python,
+        # but stay defensive in case a future caller drops text=True — bytes
+        # would otherwise blow up the f-string below.
+        if isinstance(exc.stdout, bytes):
+            stdout = exc.stdout.decode("utf-8", errors="replace")
+        else:
+            stdout = exc.stdout or ""
+        if isinstance(exc.stderr, bytes):
+            stderr = exc.stderr.decode("utf-8", errors="replace")
+        else:
+            stderr = exc.stderr or ""
+        raise RuntimeError(
+            f"Command failed: {' '.join(cmd)}\n"
+            f"\nSTDOUT:\n{stdout}\n"
+            f"\nSTDERR:\n{stderr}\n"
+            f"\n(subprocess.TimeoutExpired after {timeout}s)"
+        ) from exc
+    if check and res.returncode != 0:
         raise RuntimeError(
             f"Command failed: {' '.join(cmd)}\n\nSTDOUT:\n{res.stdout}\n\nSTDERR:\n{res.stderr}"
         )
