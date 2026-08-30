@@ -13,7 +13,7 @@ import logging
 import os
 import pathlib
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ouroboros.evolution_fingerprint import canonical_objective_fingerprint
 from ouroboros.outcomes import normalize_outcome_axes
@@ -750,6 +750,68 @@ def _cleanup_worktree_after_cycle(tx: Dict[str, Any], task_id: str) -> None:
             tx["cleanup_stash"] = stash_label
 
         if head != base_head:
+            # BUG ibl-local-391e0574e267 part A — refuse to reset over an
+            # unattributed commit. The cycle's only attributable SHA is
+            # tx['commit_sha'] (set at absorption, empty for no_op/abandoned).
+            # Any other SHA in base_head..HEAD belongs to a different task
+            # that landed on `ouroboros` mid-cycle and must survive cleanup.
+            own_commit_sha = str(tx.get("commit_sha") or "").strip()
+            rc_range, range_out, range_err = git_ops.git_capture(
+                ["git", "rev-list", base_head + "..HEAD"]
+            )
+            range_shas: List[str] = []
+            if rc_range == 0:
+                range_shas = [
+                    line.strip()
+                    for line in (range_out or "").splitlines()
+                    if line.strip()
+                ]
+            else:
+                # If rev-list itself failed, fall back to "preserve + skip
+                # reset" rather than risk nuking an unreadable range. The
+                # preserve branch below still gives HEAD a recovery point.
+                log.warning(
+                    "Evolution cycle %s cleanup: git rev-list %s..HEAD failed rc=%d err=%s; "
+                    "preserving HEAD and skipping reset",
+                    tx.get("transaction_id") or task_id, base_head[:12],
+                    rc_range, (range_err or "").strip(),
+                )
+                range_shas = []
+            foreign = [sha for sha in range_shas if sha != own_commit_sha]
+            if foreign:
+                # Bystander commits in the range — preserve HEAD (so it
+                # stays recoverable) but DO NOT hard-reset. A cycle whose
+                # own commits remain on HEAD is acceptable; nuking a
+                # bystander is not (P1 / BIBLE: no silent loss).
+                preserved, ref_name = git_ops.preserve_local_ref_branch(
+                    "HEAD", prefix="evolution-leftover"
+                )
+                if preserved:
+                    tx["cleanup_preserved_ref"] = ref_name
+                tx["cleanup_foreign_commits"] = foreign[:20]
+                tx["cleanup_status"] = "skipped_foreign_commits_in_range"
+                tx["recovery_hint"] = (
+                    f"refused reset: base_head..HEAD contains {len(foreign)} "
+                    f"foreign commit(s) not attributable to this cycle "
+                    f"(own_commit_sha={own_commit_sha[:12] or 'none'}); "
+                    f"first foreign={foreign[0][:12]}; "
+                    f"preserved HEAD at "
+                    f"{tx.get('cleanup_preserved_ref') or 'unpreserved'}"
+                    + (
+                        f"; dirty files already stashed in {tx['cleanup_stash']}"
+                        if tx.get("cleanup_stash") else ""
+                    )
+                )
+                log.warning(
+                    "Evolution cycle %s cleanup: %d foreign commit(s) in "
+                    "base_head..HEAD; skipping reset (own=%s preserved=%s)",
+                    tx.get("transaction_id") or task_id, len(foreign),
+                    own_commit_sha[:12] or "-",
+                    tx.get("cleanup_preserved_ref") or "-",
+                )
+                return
+            # Range contains ONLY this cycle's own commit (or none) — original
+            # behaviour: preserve + hard-reset to base_head.
             preserved, ref_name = git_ops.preserve_local_ref_branch("HEAD", prefix="evolution-leftover")
             if not preserved:
                 tx["cleanup_status"] = "skipped_preserve_failed"

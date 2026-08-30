@@ -705,10 +705,14 @@ def _make_git_repo(repo):
     return _git
 
 
-def test_no_op_cycle_resets_dirty_worktree_to_base_with_recovery_refs(tmp_path, monkeypatch):
-    """Block 5D2: a no_op cycle deterministically restores the worktree to the
-    transaction's base_head — dirty files stashed, ahead-HEAD preserved as a
-    local branch, both recorded on the transaction (P1: no silent loss)."""
+def test_no_op_cycle_stashes_dirty_but_does_not_reset_over_unattributed_commit(tmp_path, monkeypatch):
+    """Block 5D2, tightened by ibl-local-391e0574e267 part A: a no_op cycle stashes
+    its dirty files, but it must NOT ``git reset --hard`` over a commit in
+    ``base_head..HEAD`` that it cannot attribute to itself (``tx['commit_sha']``).
+    An unreviewed ahead-HEAD commit with no recorded ``commit_sha`` is treated as
+    a bystander (that is exactly how the 2026-08-28 data loss happened — a
+    separate task's ``bbae5ece`` was nuked). HEAD is preserved as a recovery
+    branch and left in place; the dirty file is still stashed (P1: no silent loss)."""
     import subprocess
 
     from supervisor import git_ops, queue
@@ -718,10 +722,11 @@ def test_no_op_cycle_resets_dirty_worktree_to_base_with_recovery_refs(tmp_path, 
     _git = _make_git_repo(repo)
     base_head = _git("rev-parse", "HEAD").stdout.strip()
 
-    # Simulate cycle leftovers: an unreviewed local commit + dirty/untracked files.
+    # Ahead-HEAD commit the cycle never recorded as its own + dirty/untracked files.
     (repo / "wip.txt").write_text("unreviewed\n", encoding="utf-8")
     _git("add", ".")
     _git("commit", "-m", "unreviewed leftover")
+    leftover_head = _git("rev-parse", "HEAD").stdout.strip()
     (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8")
 
     git_ops.init(repo, tmp_path, "")
@@ -734,7 +739,8 @@ def test_no_op_cycle_resets_dirty_worktree_to_base_with_recovery_refs(tmp_path, 
     supervisor_state.save_state(st)
     tx = queue.begin_evolution_transaction("task-noop", cycle=1, campaign=campaign)
     assert tx["base_head"]  # begin records the CURRENT head (after leftover commit)
-    # Rewrite base to the true cycle base for the scenario.
+    # Rewrite base to the true cycle base for the scenario; commit_sha stays empty
+    # (no_op cycle absorbed nothing).
     lifecycle.update_evolution_transaction("task-noop", base_head=base_head)
 
     recorded = lifecycle.update_evolution_campaign_after_task(
@@ -745,19 +751,20 @@ def test_no_op_cycle_resets_dirty_worktree_to_base_with_recovery_refs(tmp_path, 
 
     recorded_tx = recorded["transaction"]
     assert recorded_tx["cycle_outcome"] == "no_op"
-    assert recorded_tx["cleanup_status"] == "reset_to_base"
+    # NEW contract: refuse the reset — the ahead-HEAD commit is unattributed.
+    assert recorded_tx["cleanup_status"] == "skipped_foreign_commits_in_range"
+    assert leftover_head in recorded_tx.get("cleanup_foreign_commits", [])
     assert recorded_tx["cleanup_stash"].startswith("evolution-cycle-cleanup-")
     assert recorded_tx["cleanup_preserved_ref"].startswith("evolution-leftover-")
-    # Worktree is back at base and clean.
+    # HEAD is UNCHANGED (bystander commit preserved on the live branch).
     head_now = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True).stdout.strip()
-    status_now = subprocess.run(["git", "status", "--porcelain"], cwd=str(repo), capture_output=True, text=True).stdout.strip()
-    assert head_now == base_head
-    assert status_now == ""
-    # Recovery refs exist: preserved branch points at the leftover commit; stash kept the dirty file.
-    branches = subprocess.run(["git", "branch", "--list", "evolution-leftover-*"], cwd=str(repo), capture_output=True, text=True).stdout
-    assert "evolution-leftover-" in branches
+    assert head_now == leftover_head
+    # The dirty file was still stashed (no silent loss).
     stashes = subprocess.run(["git", "stash", "list"], cwd=str(repo), capture_output=True, text=True).stdout
     assert "evolution-cycle-cleanup-" in stashes
+    # Recovery branch exists.
+    branches = subprocess.run(["git", "branch", "--list", "evolution-leftover-*"], cwd=str(repo), capture_output=True, text=True).stdout
+    assert "evolution-leftover-" in branches
 
 
 def test_no_op_cleanup_skips_when_other_tasks_running_or_already_clean(tmp_path):
