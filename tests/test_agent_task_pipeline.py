@@ -1366,6 +1366,91 @@ def test_store_task_result_marks_unresolved_tool_failure_failed(tmp_path):
     assert payload["loop_outcome"]["failure"]["tool_errors"][0]["status"] == "artifact_output_error"
 
 
+def _work_uncommitted_loop_outcome(tmp_path):
+    """A real ``derive_loop_outcome`` result flagged REASON_WORK_UNCOMMITTED: an
+    otherwise-clean run against a repo with an uncommitted tracked change."""
+    import subprocess
+
+    from ouroboros.outcomes import REASON_WORK_UNCOMMITTED, derive_loop_outcome
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (("init", "-q"), ("config", "user.email", "t@t"), ("config", "user.name", "t")):
+        subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
+    (repo / "a.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "."], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=str(repo), check=True, capture_output=True)
+    (repo / "a.py").write_text("x = 2  # changed, never committed\n")
+
+    loop_outcome = derive_loop_outcome(
+        "I implemented the change to a.py; the tests pass.",
+        {"rounds": 3, "cost": 0.0},
+        {"tool_calls": [], "reasoning_notes": []},
+        repo_dir=repo,
+    )
+    assert loop_outcome["reason_code"] == REASON_WORK_UNCOMMITTED
+    return loop_outcome
+
+
+def test_store_task_result_fails_host_bound_task_with_uncommitted_diff(tmp_path):
+    """ibl-local-27745117e0e1 enforcement: a host-bound task that left its own
+    tracked changes uncommitted finalizes STATUS_FAILED, not STATUS_COMPLETED —
+    the uncommitted diff IS the failure. The axes still carry the typed reason
+    and the file list."""
+    from ouroboros.task_results import STATUS_FAILED
+
+    env = SimpleNamespace(drive_root=tmp_path)
+    loop_outcome = _work_uncommitted_loop_outcome(tmp_path)
+
+    pipeline._store_task_result(
+        env=env,
+        task={"id": "task-uncommitted", "type": "task", "text": "implement it"},
+        text="I implemented the change to a.py; the tests pass.",
+        usage={"rounds": 3, "cost": 0.0},
+        llm_trace={"tool_calls": [], "reasoning_notes": []},
+        review_evidence={},
+        loop_outcome=loop_outcome,
+    )
+
+    payload = json.loads((tmp_path / "task_results" / "task-uncommitted.json").read_text(encoding="utf-8"))
+    assert payload["status"] == STATUS_FAILED
+    assert payload["reason_code"] == "work_uncommitted"
+    assert payload["outcome_axes"]["execution"]["status"] == "degraded"
+    assert any(
+        "a.py" in line
+        for line in payload["loop_outcome"]["failure"].get("files", [])
+    )
+
+
+def test_store_task_result_does_not_fail_subagent_with_uncommitted_diff(tmp_path):
+    """A subagent's uncommitted worktree is the parent's concern, not a task
+    failure — the enforcement is scoped to host-bound (non-subagent) tasks."""
+    from ouroboros.task_results import STATUS_COMPLETED
+
+    env = SimpleNamespace(drive_root=tmp_path)
+    loop_outcome = _work_uncommitted_loop_outcome(tmp_path)
+
+    pipeline._store_task_result(
+        env=env,
+        task={
+            "id": "task-sub-uncommitted", "type": "task", "text": "implement it",
+            "delegation_role": "subagent",
+        },
+        text="Implemented; parent will absorb the patch.",
+        usage={"rounds": 3, "cost": 0.0},
+        llm_trace={"tool_calls": [], "reasoning_notes": []},
+        review_evidence={},
+        loop_outcome=loop_outcome,
+    )
+
+    payload = json.loads(
+        (tmp_path / "task_results" / "task-sub-uncommitted.json").read_text(encoding="utf-8")
+    )
+    assert payload["status"] == STATUS_COMPLETED
+    # The typed reason is still recorded — observation preserved, verdict withheld.
+    assert payload["reason_code"] == "work_uncommitted"
+
+
 def test_store_task_result_allows_recovered_tool_failure_success(tmp_path):
     from ouroboros.task_results import STATUS_COMPLETED
 

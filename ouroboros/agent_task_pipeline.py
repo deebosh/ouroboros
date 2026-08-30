@@ -24,6 +24,7 @@ from ouroboros.outcomes import (
     EXECUTION_FAILED,
     EXECUTION_INFRA_FAILED,
     EXECUTION_OK,
+    REASON_WORK_UNCOMMITTED,
     apply_receipt_absent_flag,
     artifact_bundle_from_result,
     build_verification_ledger,
@@ -797,7 +798,11 @@ def emit_task_results(
     if not _ephemeral:
         try:
             append_jsonl(drive_logs / "events.jsonl", {
-                "ts": utc_now_iso(), "type": "task_eval", "ok": execution_status not in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED},
+                "ts": utc_now_iso(), "type": "task_eval",
+                "ok": (
+                    execution_status not in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}
+                    and reason_code != REASON_WORK_UNCOMMITTED
+                ),
                 "task_id": task.get("id"), "task_type": task.get("type"),
                 "outcome_axes": outcome_axes,
                 "reason_code": reason_code,
@@ -1113,10 +1118,21 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             )
         execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
         reason_code = str(loop_outcome.get("reason_code") or "")
+        # ibl-local-27745117e0e1 enforcement: a host-bound (non-subagent) task that
+        # finalized with tracked-file changes it never committed has NOT delivered.
+        # derive_loop_outcome only stamps REASON_WORK_UNCOMMITTED for an otherwise-OK
+        # run whose OWN mutation-attributed paths are dirty (concurrent dirt is
+        # filtered / the probe is skipped on any attribution ambiguity), so promoting
+        # it to a hard failure here is safe — the uncommitted diff is the failure.
+        _is_subagent = str(task.get("delegation_role") or "").lower() == "subagent"
+        _work_uncommitted_failure = (
+            reason_code == REASON_WORK_UNCOMMITTED and not _is_subagent
+        )
         status = (
             STATUS_FAILED
             if str(existing.get("status") or "") == STATUS_FAILED
             or execution_status in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}
+            or _work_uncommitted_failure
             else STATUS_COMPLETED
         )
         task_contract = build_task_contract(task)
