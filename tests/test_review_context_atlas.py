@@ -328,7 +328,14 @@ def test_atlas_required_overflow_is_an_assembly_failure_not_a_smaller_pack(tmp_p
 def test_atlas_required_removed_by_shrink_wave_is_the_same_assembly_failure(tmp_path):
     """The twin branch: a required artifact that PASSED selection and was then
     dropped by the hard-budget shrink wave is the identical failure — one
-    branch fixed while its sibling degrades silently is the whole defect."""
+    branch fixed while its sibling degrades silently is the whole defect.
+
+    Note (ibl-1b372dd99e48): only a REQUIRED-IN-FULL artifact — a touched path
+    (anchor) or a canonical review doc — is an assembly failure when the shrink
+    wave drops it. A force-included path the diff did NOT touch degrades to a
+    coverage row instead (see
+    ``test_untouched_force_included_set_degrades_instead_of_blocking`` below), so
+    this test anchors the prompts to exercise the assembly-failure branch."""
     for idx in range(6):
         _write(tmp_path / "prompts" / f"p_{idx}.md", "prompt line\n" * 260)
 
@@ -336,6 +343,7 @@ def test_atlas_required_removed_by_shrink_wave_is_the_same_assembly_failure(tmp_
         ReviewContextAtlasRequest(
             repo_dir=tmp_path,
             tracked_paths=tuple(f"prompts/p_{idx}.md" for idx in range(6)),
+            anchors=tuple(f"prompts/p_{idx}.md" for idx in range(6)),
             fixed_prompt_tokens=100,
             target_total_tokens=4_000,
             hard_total_tokens=8_000,
@@ -349,6 +357,57 @@ def test_atlas_required_removed_by_shrink_wave_is_the_same_assembly_failure(tmp_
     )
     assert pack.status == "required_artifact_omitted"
     assert atlas_assembly_failed(pack)
+
+
+def test_untouched_force_included_set_degrades_instead_of_blocking(tmp_path):
+    """Regression for ibl-1b372dd99e48 / ibl-8c94b2ce5783.
+
+    BEFORE: a commit that co-exists with the repo's fixed force-include set
+    (``prompts/``, ``ouroboros/contracts/``, the protected-runtime + review-stack
+    paths) forced the atlas to assemble EVERY one of them in full. When their
+    aggregate exceeded the hard budget, the pack failed
+    ``required_artifact_omitted`` and scope review was blocked at $0 — even for a
+    one-line diff that touches none of them.
+
+    AFTER: a force-included path the diff does NOT touch is owed a coverage
+    manifest row, not a full snapshot. Under aggregate budget pressure it
+    degrades to ``manifest_only`` (disclosed), the assembly SUCCEEDS, and review
+    can proceed. The genuine assembly-failure signal still fires for a
+    required-in-full artifact or one individually larger than the budget (the
+    tests above and below)."""
+    # Ten force-included prompt files the diff never touches; each fits the hard
+    # budget alone, the set does not.
+    for idx in range(10):
+        _write(tmp_path / "prompts" / f"p_{idx}.md", "prompt line\n" * 650)
+    _write(tmp_path / "module.py", "def run():\n    return 42\n")
+
+    pack = compile_review_context_atlas(
+        ReviewContextAtlasRequest(
+            repo_dir=tmp_path,
+            tracked_paths=("module.py", *(f"prompts/p_{idx}.md" for idx in range(10))),
+            anchors=("module.py",),
+            fixed_prompt_tokens=100,
+            target_total_tokens=8_000,
+            hard_total_tokens=14_000,
+        )
+    )
+
+    # the assembly SUCCEEDS — the untouched force-include set no longer blocks
+    assert not atlas_assembly_failed(pack), pack.status
+    assert not pack.manifest["unassembled_required"]
+    coverage = _coverage(pack)
+    # the touched file still assembles in full
+    assert coverage["module.py"]["disposition"] == "full"
+    # no untouched prompt is a typed assembly failure; every one that did not
+    # make the full cut is a disclosed coverage row naming why
+    demoted = 0
+    for idx in range(10):
+        row = coverage[f"prompts/p_{idx}.md"]
+        assert row["disposition"] in {"full", "manifest_only"}, row
+        if row["disposition"] == "manifest_only":
+            assert "not in the diff" in row["reason"]
+            demoted += 1
+    assert demoted >= 1, "aggregate budget pressure must have demoted at least one untouched prompt"
 
 
 def test_atlas_mixed_failure_reports_both_causes_without_losing_disclosure(tmp_path):

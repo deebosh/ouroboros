@@ -252,6 +252,14 @@ class _FileFacts:
     reason: str = ""
     score: float = 0.0
     required: bool = False
+    # Owed IN FULL — a snapshot that does not fit is an assembly FAILURE, never a
+    # smaller pack. The narrower tier inside `required`: touched paths (anchors)
+    # and canonical review docs. A force-included path the diff does NOT touch is
+    # `required` for COVERAGE (a manifest row must name it) but NOT
+    # `required_in_full` — under budget pressure it demotes to `manifest_only`,
+    # because an unrelated small change is not owed its full snapshot.
+    # (ibl-1b372dd99e48 / ibl-8c94b2ce5783)
+    required_in_full: bool = False
     symbols: tuple[str, ...] = ()
     imports: tuple[str, ...] = ()
     js_imports: tuple[str, ...] = ()
@@ -356,19 +364,38 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
     )
 
     for facts in candidates:
-        limit = hard_context_tokens if facts.required else target_context_tokens
+        limit = hard_context_tokens if facts.required_in_full else target_context_tokens
         if used_tokens + facts.token_count <= limit:
             facts.disposition = "full"
             facts.reason = ", ".join(facts.reasons) or "selected"
             selected_paths.append(facts.rel_path)
             used_tokens += facts.token_count
             continue
-        if facts.required:
-            # BIBLE P3 scope floor: a REQUIRED artifact that does not fit is a
-            # failure to ASSEMBLE, not a smaller pack. The row records artifact +
-            # reason (disclosure, P1); the pack status refuses the review.
+        if facts.required_in_full:
+            # BIBLE P3 scope floor: a REQUIRED-IN-FULL artifact (touched path or
+            # canonical review doc) that does not fit is a failure to ASSEMBLE,
+            # not a smaller pack. The row records artifact + reason (disclosure,
+            # P1); the pack status refuses the review.
             facts.disposition = "budget_omitted"
             facts.reason = "required file exceeded the atlas hard budget"
+        elif facts.required and facts.token_count > hard_context_tokens:
+            # A force-included path the diff does NOT touch, individually larger
+            # than the whole hard budget: it could not be assembled at ANY diff
+            # size, so it stays a typed assembly failure — shrink or split the
+            # artifact, or widen the reviewer (ATLAS_MISSING_ARTIFACT_REMEDY).
+            facts.disposition = "budget_omitted"
+            facts.reason = "required file exceeded the atlas hard budget"
+        elif facts.required:
+            # A force-included path the diff does NOT touch that WOULD fit alone
+            # but loses to aggregate budget pressure (ibl-1b372dd99e48): owed a
+            # coverage manifest row, not a full snapshot for an unrelated
+            # change. Demote with a disclosed reason — the assembly succeeds and
+            # scope review can dispatch instead of failing closed at $0.
+            facts.disposition = "manifest_only"
+            facts.reason = (
+                "force-included path not in the diff: coverage row only, "
+                "full snapshot not owed for an unrelated change"
+            )
         else:
             facts.disposition = "manifest_only"
             facts.reason = "not selected within atlas target budget"
@@ -377,21 +404,40 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
     token_count = estimate_tokens(text)
 
     if token_count > hard_context_tokens:
-        # Shrink waves: non-required content first, then required content
-        # (largest first) — the atlas always converges to at worst a
-        # manifest-only pack instead of giving up with budget_exceeded. Dropping
-        # a REQUIRED artifact here is the same assembly failure as above, not a
-        # legal degradation: identical disposition, identical refusal.
+        # Shrink waves, cheapest tier first (ibl-1b372dd99e48): non-required
+        # content, then force-included paths the diff did NOT touch (a legal
+        # demotion — the manifest row proves the path was considered), then
+        # required-in-full content as the LAST resort. Dropping a
+        # required-in-full artifact here is the same assembly failure as the
+        # first-pass branch above: identical disposition, identical refusal.
         removable = [path for path in reversed(selected_paths) if not facts_by_path[path].required]
         removable += sorted(
-            (path for path in selected_paths if facts_by_path[path].required),
+            (
+                path
+                for path in selected_paths
+                if facts_by_path[path].required and not facts_by_path[path].required_in_full
+            ),
+            key=lambda path: -facts_by_path[path].token_count,
+        )
+        removable += sorted(
+            (path for path in selected_paths if facts_by_path[path].required_in_full),
             key=lambda path: -facts_by_path[path].token_count,
         )
         for path in removable:
             facts = facts_by_path[path]
-            if facts.required:
+            if facts.required_in_full:
                 facts.disposition = "budget_omitted"
                 facts.reason = "required file removed to keep atlas below hard budget"
+            elif facts.required:
+                # It was SELECTED (so it fits alone) but the pack still
+                # overflows: an untouched force-included path degrades to a
+                # coverage row rather than failing the assembly for an
+                # unrelated change (ibl-1b372dd99e48).
+                facts.disposition = "manifest_only"
+                facts.reason = (
+                    "force-included path not in the diff removed to keep atlas "
+                    "below hard budget: coverage row only"
+                )
             else:
                 facts.disposition = "manifest_only"
                 facts.reason = "removed to keep atlas below hard budget"
@@ -459,7 +505,15 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
 
 
 def _unassembled_required(facts_by_path: dict[str, _FileFacts]) -> list[_FileFacts]:
-    """Required artifacts the assembler could not fit — the assembly-failure SSOT."""
+    """Required artifacts the assembler could not fit — the assembly-failure SSOT.
+
+    A ``budget_omitted`` disposition is reached only by an artifact that could
+    not be assembled at ANY diff size: a required-in-full artifact (touched path
+    / canonical doc), or a force-included path individually larger than the hard
+    budget / per-file cap. A force-included path the diff did NOT touch that
+    merely lost to aggregate budget pressure degrades to ``manifest_only``
+    instead (ibl-1b372dd99e48) and is not an assembly failure.
+    """
     return [
         facts
         for facts in facts_by_path.values()
@@ -490,6 +544,16 @@ def _build_file_facts(
     is_anchor = rel in anchors
     is_canonical = rel in _CANONICAL_CONTEXT_DOCS
     facts.required = force_include or is_anchor or is_canonical
+    # Owed IN FULL vs. owed for COVERAGE only (ibl-1b372dd99e48). A touched path
+    # (anchor) and a canonical review doc are owed in full — the staged diff is
+    # not a substitute, and dropping them fails the assembly. A force-included
+    # path the diff does NOT touch is owed only a coverage manifest row: a
+    # small unrelated change does not need its full snapshot, so under budget
+    # pressure it demotes to `manifest_only` instead of refusing the review.
+    # Without this split, ANY commit that co-exists with the repo's fixed
+    # force-include set (prompts/, ouroboros/contracts/, the protected runtime
+    # + review-stack paths) overflows the atlas and is scope-blocked at $0.
+    facts.required_in_full = is_anchor or is_canonical
     # The classes owed IN FULL regardless of the change: for these the staged
     # diff is never a substitute for the artifact. An anchor is required
     # BECAUSE it is touched, and its complete change-evidence is the staged
@@ -573,7 +637,9 @@ def _build_file_facts(
     if facts.size_bytes > _MAX_FULL_REPO_FILE_BYTES:
         if facts.required:
             # BIBLE P3: a required artifact over the per-file cap cannot be
-            # assembled — a typed failure, never a silent coverage row.
+            # assembled at any diff size — a typed failure, never a silent
+            # coverage row. (This is individual-artifact oversize, distinct
+            # from losing to aggregate budget pressure in the selection loop.)
             facts.disposition = "budget_omitted"
             facts.reason = (
                 "required file exceeds the per-file atlas cap "
