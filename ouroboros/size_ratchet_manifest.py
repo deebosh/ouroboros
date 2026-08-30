@@ -129,6 +129,7 @@ BAND_PATHS = {
     "devtools/benchmarks/swe_bench_pro/e1v2/run_pro.py": None,
     "devtools/benchmarks/terminal_bench/harbor_installed_agent.py": None,
     "devtools/benchmarks/terminal_bench/run_tb.py": None,
+    "launcher.py": "Re-entered the band from the >1500 debt layer by extraction, not growth: the Windows webview runtime moved whole to ouroboros/launcher_windows_runtime.py (MIGRATION_v7 rows 3998-4000) and launcher.py re-exports the same objects.",
     "ouroboros/agent.py": "Subagent message identity now lives in a shared helper; keep agent.py below the giant-file threshold rather than re-expanding it.",
     "ouroboros/agent_startup_checks.py": "Shrank below 1500 by moving the envelope producer to the contracts SSOT; band re-entry is the reduction's artifact.",
     "ouroboros/artifacts.py": "Exact task-source persistence and repository-diff materialization now share the actor-readable artifact seam for acceptance evidence.",

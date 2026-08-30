@@ -197,3 +197,61 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
     projects_registry, project_dialogue, project_lease, project_naming,
     project_sources, tools/project_journal, workspace_admission,
     workspace_preflight, workspace_executor, workspace_patch_rules).
+## From the D18 lane (base d830cdba, 2026-08-30)
+13. MIGRATION rows 3998-4000 (`launcher.py::{_prepare_windows_webview_runtime,
+    _show_windows_message,_windows_dll_dir_handles}` ->
+    `ouroboros/launcher_windows_runtime.py`, "pending upstream transfer") —
+    RE-CONFIRMED pending and transplanted by this lane. Drift-probe: hardened
+    `--check` of the reference leaf against `git show d830cdba:launcher.py`
+    is green on all three spans (ast=tokens=bytes=True, leaf invariants [],
+    exit 0), so the reference leaf IS tip bytes; adopted verbatim. Facade =
+    tip monolith minus the three spans plus the reference's re-export block;
+    byte-diff against the reference facade is exactly upstream dc4c0204's
+    +10 delegated-restart hunk (replayed from tip bytes). launcher.py
+    1582 -> 1484 lines; band re-entry authorized via the official
+    regenerator's --band-rationale.
+14. MIGRATION row 917 (`ouroboros/packaged_cli.py::_save_settings`, semantic
+    id D03: route the packaged bootstrap saver through the shared persistence
+    prologue and serializer) — HOT-DEFERRED with the settings seam. At this
+    tip `prepare_settings_for_persist` ALREADY EXISTS in ouroboros/config.py
+    :1084 (upstream absorbed part of the seam with a different signature —
+    an added `authored_keys` kwarg), while `serialize_settings` and the
+    row's pin tests/test_settings_read_seam.py do not exist. A verbatim
+    replay would bind a half-absorbed seam; the delta must be re-derived
+    against the tip seam form when the D12 config/settings split lands.
+    packaged_cli.py itself: tip == merge-base (zero upstream drift), so the
+    module stays untouched by this lane.
+15. Reference `ouroboros/utils.py` +9/-1 delta (O_BINARY flag inside
+    `write_text_atomic`'s fsync path) — SUPERSEDED-BY-UPSTREAM as a class,
+    solved differently: upstream c15389f4 added `write_bytes_atomic`
+    (utils.py:276, fd opened with `getattr(os, "O_BINARY", 0)`) for
+    byte-canonical consumers and pinned `write_text_atomic` to "platform
+    newline semantics" in its docstring — a deliberate two-writer
+    decomposition. Replaying the reference's O_BINARY into
+    write_text_atomic would invert that upstream decision. No transplant;
+    cross-OS class registry should record ONE decision for this class
+    (upstream's).
+16. Reference `tests/test_launcher_server_reaper.py` +8/-3 delta (normpath'd
+    REPO/DATA/OURS literals + POSIX-only skipif on
+    test_candidate_enumeration_uses_one_unbranded_full_width_ps_read) —
+    SUPERSEDED-BY-UPSTREAM as the same cross-OS class: upstream 7de26338
+    normpaths the same three literals (also the python binary path, which
+    the reference did not) and, instead of skipping the enumeration test off
+    POSIX, monkeypatches `reaper.os` with a getuid stub so it runs on every
+    OS. Upstream form stands; nothing transplanted; the module itself is
+    byte-identical across tip/reference/base.
+17. Reference `tests/test_packaged_runtime_and_lifecycle.py` +7/-2 delta —
+    DEFERRED WITH ITS OWNERS, not D18's to land: the `_enforce_harness`
+    clock hunk patches `supervisor.events_budget/events_chat_delivery/
+    events_task_done` (D33 events-split leaves absent from this tree) and
+    `test_cancel_and_timeout_paths_share_one_salvage_helper` retargets to
+    `supervisor/cancel_custody.py` (HOT-FALSIFIED per D09 lane entry 7;
+    rides into F2). Tip bytes stand (upstream b3c9860e's -1 drift included).
+18. Reference `tests/test_packaging_sync.py` +17/-7 delta
+    (test_system_prompt_lists_bible_in_safety_critical_set strengthened to
+    set-equality of BOTH prompts' inventories against
+    `runtime_mode_policy.SAFETY_CRITICAL_PATHS`) — UNROWED in MIGRATION_v7;
+    left at tip bytes per the wave-1 rule (unrowed test deltas are not
+    resolved unilaterally); candidate row for the carried ledger at F5.
+    Disjoint upstream drift a23e12b1 (push_to_remote test retargeted to
+    `_git_network_bounded`) stands.
