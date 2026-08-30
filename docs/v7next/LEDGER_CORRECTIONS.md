@@ -20,3 +20,22 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
 4. MIGRATION row 166 (retirement of 4 CLAUDE_CODE markers, id "none") — needs an
    explicit ADOPTION disposition (umbrella under D02 or its own row): zero
    production emitters of those markers exist at this tip (claim re-proven).
+
+## From the D16 split pilot (base 5d3398c1, 2026-08-30)
+5. MIGRATION row 3911 (`usage_accounting.py::_legacy_snapshot` ->
+   `usage_legacy_import.py::_legacy_snapshot`, "verbatim extraction") —
+   BYTE-FALSIFIED as a copy source, transform still valid: upstream e9bf6f14
+   rewrote the settings-hash comment inside the span (two lines "... prove
+   non-mutation by hash, but never copy / their contents into the usage
+   archive." became one line "... never copy contents."). The tool's --check of
+   the reference leaf against tip bytes fails token-lockstep on exactly this
+   span (ast=True, tokens=False); re-emitting from tip bytes is proof-green on
+   the first round with the reference declared set {_legacy_snapshot, _locked,
+   _read_records_locked} unchanged. Copying the reference leaf verbatim would
+   have silently reverted an upstream comment edit.
+6. MIGRATION rows 3910-3914 status "pending upstream transfer" — RE-CONFIRMED
+   at this tip (contrast with the D15 project_facts case, entry 1 above):
+   upstream still carries the unsplit legacy import inside
+   ouroboros/usage_accounting.py (1600 lines, exactly at the hard cap;
+   IMPORT_REL at :60, the four defs at :1374-:1600). The extraction was
+   performed by this lane from tip bytes.

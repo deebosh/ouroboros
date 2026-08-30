@@ -890,7 +890,7 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
             "immune-system ROLLBACK: rewrites the exact bytes snapshotted before an agent shell "
             "command. It authors no value, and filtering a restore would corrupt it — an "
             "owner-authored default would be dropped instead of restored.",
-        ("ouroboros/usage_accounting.py", "_legacy_snapshot"):
+        ("ouroboros/usage_legacy_import.py", "_legacy_snapshot"):
             "reads/hashes the settings file for the usage archive; its writes target the archive.",
         ("ouroboros/tools/core.py", "_data_write"):
             "names SETTINGS_PATH only to REFUSE agent writes to it.",
