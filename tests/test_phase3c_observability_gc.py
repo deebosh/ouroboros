@@ -554,7 +554,7 @@ def test_startup_sweep_retries_only_pending_refs_then_prunes_without_manual_copy
     tmp_path, monkeypatch,
 ):
     import ouroboros.observability as observability
-    import server
+    import ouroboros.server_maintenance as server_maintenance
 
     task_id = "phase3c-startup-retry"
     parent, child = _child(tmp_path, task_id)
@@ -623,10 +623,11 @@ def test_startup_sweep_retries_only_pending_refs_then_prunes_without_manual_copy
         },
     )
     monkeypatch.setattr(observability, "promote_call_manifest_ref", real)
-    monkeypatch.setattr(server, "DATA_DIR", parent)
+    # The sweep reads its drive root from its owner module (v7 server split).
+    monkeypatch.setattr(server_maintenance, "DATA_DIR", parent)
     monkeypatch.setenv("OUROBOROS_GC_RETENTION_DAYS", "1")
 
-    server._startup_prune_sweeps()
+    server_maintenance._startup_prune_sweeps()
 
     settled = load_task_result(parent, task_id) or {}
     assert settled["child_ref_promotion"]["status"] == "complete"
@@ -703,14 +704,15 @@ def test_periodic_maintenance_invokes_pending_ref_promotion_sweep(
     tmp_path, monkeypatch,
 ):
     import ouroboros.observability as observability
-    import server
+    import ouroboros.server_maintenance as server_maintenance
     import supervisor.task_lifecycle as task_lifecycle
     import supervisor.terminal_delivery as terminal_delivery
 
     calls: list[pathlib.Path] = []
-    monkeypatch.setattr(server, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(server.time, "time", lambda: 10_000.0)
-    monkeypatch.setattr(server, "_LAST_CANCEL_INTENT_SWEEP", [0.0])
+    # The cadence state and drive root live in the maintenance owner (v7 server split).
+    monkeypatch.setattr(server_maintenance, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(server_maintenance.time, "time", lambda: 10_000.0)
+    monkeypatch.setattr(server_maintenance, "_LAST_CANCEL_INTENT_SWEEP", [0.0])
     monkeypatch.setattr(task_lifecycle, "sweep_cancel_intents", lambda: {})
     monkeypatch.setattr(terminal_delivery, "replay_pending_deliveries", lambda _root: None)
     monkeypatch.setattr(
@@ -720,6 +722,6 @@ def test_periodic_maintenance_invokes_pending_ref_promotion_sweep(
         raising=False,
     )
 
-    server._periodic_supervisor_maintenance([10_000.0], [10_000.0])
+    server_maintenance._periodic_supervisor_maintenance([10_000.0], [10_000.0])
 
     assert calls == [tmp_path]

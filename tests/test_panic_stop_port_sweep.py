@@ -195,11 +195,10 @@ def test_no_server_host_leaf_imports_the_composition_root():
     import server
 
     leaves = sorted((pathlib.Path(server.__file__).parent / "ouroboros").glob("server_*.py"))
-    # This tree carries 5 server-host leaves; the reference tree (v7 WIP
-    # 9f691656) counts >= 11 after its server split (D11). The floor guards
-    # against the glob silently matching nothing — the D11 lane raises it back
-    # when that split lands here.
-    assert len(leaves) >= 5
+    # 5 pre-split host leaves + the 6 D11 server-split leaves (liveness,
+    # maintenance, owner_routing, process, restart, routing_context). The floor
+    # guards against the glob silently matching nothing.
+    assert len(leaves) >= 11
     for leaf in leaves:
         for node in ast.walk(ast.parse(leaf.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):

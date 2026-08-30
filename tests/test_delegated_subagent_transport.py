@@ -4720,46 +4720,6 @@ def test_the_loops_own_release_point_reaches_the_delegated_reconciler(tmp_path, 
     assert released == [(str(canonical), "t-parent")], released
 
 
-def test_the_startup_sweep_reconciles_delegated_runs_too(monkeypatch):
-    """Nothing is running yet at supervisor startup, so every open delegated run is by
-    definition ownerless. The only server-side test covered the PERIODIC tick, so the
-    startup half could be deleted without a single failure — and it is the half that
-    catches the runs the generation that died was watching."""
-    import server
-    import ouroboros.delegate_custody as dc
-    import ouroboros.process_custody as pc
-
-    seen = {}
-    monkeypatch.setattr(pc, "reap_orphaned_processes", lambda root, **kw: [])
-    monkeypatch.setattr(dc, "reconcile_orphaned_runs",
-                        lambda root, **kw: seen.setdefault("live", kw.get("running_task_ids")) or [])
-    monkeypatch.setattr(server, "_installed_skill_names", lambda: None)
-    server._startup_custody_sweep()
-    assert seen["live"] == set(), "an empty live set is the point: nothing survived the restart"
-
-
-def test_both_custody_surfaces_see_the_same_live_task_set(monkeypatch):
-    """The periodic sweep must hand the delegated reconciler the SAME live task set the
-    process reaper gets. Two copies of "is the owner still running" is exactly how one
-    custody surface ends up reaping while its twin does not."""
-    import time
-
-    import server
-    import ouroboros.delegate_custody as dc
-    import ouroboros.process_custody as pc
-    import supervisor.queue as queue
-
-    seen = {}
-    monkeypatch.setattr(pc, "reap_orphaned_processes",
-                        lambda root, **kw: seen.__setitem__("processes", kw.get("running_task_ids")) or [])
-    monkeypatch.setattr(dc, "reconcile_orphaned_runs",
-                        lambda root, **kw: seen.__setitem__("delegated", kw.get("running_task_ids")) or [])
-    monkeypatch.setattr(server, "_installed_skill_names", lambda: None)
-    monkeypatch.setitem(queue.RUNNING, "t-live", {})
-    server._periodic_supervisor_maintenance([0.0], [time.time()])
-    assert seen["processes"] == seen["delegated"] == {"t-live"}, seen
-
-
 def test_a_breach_whose_cancel_was_never_verified_is_not_reported_as_cancelled(
     tmp_path, monkeypatch
 ):

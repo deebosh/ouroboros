@@ -428,7 +428,11 @@ def test_steering_and_project_mailbox_writers_pass_client_surface():
     # exercised via write_owner_message round-trip; these pins catch a dropped
     # kwarg at the two forwarding call sites).
     steering = (REPO / "supervisor" / "steering.py").read_text(encoding="utf-8")
-    server_src = (REPO / "server.py").read_text(encoding="utf-8")
+    # v7 split: the project-mailbox write moved to the owner-routing leaf while the
+    # log_chat forwarding stayed in server.py, so the pin reads BOTH owners as one
+    # surface — the point is that neither call site loses the kwarg.
+    server_src = ((REPO / "server.py").read_text(encoding="utf-8")
+                  + (REPO / "ouroboros" / "server_owner_routing.py").read_text(encoding="utf-8"))
     assert "client_surface=" in steering, "steer mailbox write dropped client_surface"
     # BOTH server call sites (project-mailbox write AND log_chat forwarding)
     # must carry the kwarg — a single-substring pin went false-green when one

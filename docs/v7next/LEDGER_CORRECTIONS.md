@@ -901,3 +901,110 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
 5. D13 census note: tip toml gives D13 eight owners vs oracle DOMAIN_MAP six —
    write_shape.py and deliverables_shell.py are new upstream surfaces
    post-freeze; not an oracle gap.
+## From the D11 lane (base a56bb76a, 2026-08-30)
+1. server.py split rows 1034-1078 + 3948-3949 (47 symbol rows): 43 landed into
+   the six reference leaves (process 5, routing_context 13, owner_routing 5,
+   liveness 4, maintenance 11, restart 5). Drift-probe FIRST per leaf: the
+   reference leaves are byte-true against tip except 10 spans byte-falsified
+   by upstream drift — _task_result_ground_truth (authority_source block),
+   _stage_mailbox_attachments / _route_project_chat_to_running_task /
+   _record_routing_receipt / _route_owner_message (attachment-report train),
+   _start_supervisor_liveness_watchdog (OB-03 monotonic clock + pid-keyed
+   toast), _periodic_supervisor_maintenance / _reconcile_delegated_runs
+   (child-ref promotion replay + terminal-reconciliation refresh),
+   _managed_update_pending_kwargs / _perform_supervisor_restart
+   (planned-handoff train). All 43 landed spans emitted from tip bytes by the
+   hardened transplant tool; --check green on every span (ast=tokens=bytes),
+   leaf_invariants=[], no oracle semantics replayed over drift.
+2. HOT-DEFERRED rows 1070/1072/1073/1074 (_pending_restart,
+   _handle_restart_in_supervisor, _check_pending_restart_drain,
+   _perform_supervisor_restart): the upstream delegation train re-decomposed
+   restart ownership — _perform_supervisor_restart now WRITES the new module
+   global _planned_delegate_restart_transaction_id that server.main() reads at
+   the re-exec point; a byte-preserving relocation would fork that state (a
+   leaf `global` write is invisible to the facade's from-import binding).
+   D09-class "second answer about ownership" -> the four rows stay in the
+   facade, the drain record stays beside its only two readers; the deferred
+   inventory is pinned as the F2 work order in
+   tests/test_server_extraction.py::_SERVER_OWNED.
+3. Rows 1080-1081 (server.py::lifespan, semantic delta D03 settings-seam
+   server half) HOT-DEFERRED: the reader-side halves of the same seam (rows
+   913-917) are hot-deferred by the D12/D17 lanes (upstream rewrote the read
+   path through post-cutoff settings_integrity); landing the boot half alone
+   would leave provider normalization neither persisted nor re-derived.
+   server.py keeps the tip guarded write and its old pin — exactly the state
+   the D17 lane's note 16 anticipated.
+4. Same-qualname ratchet delta (row 1033, semantic delta id D11) — LANDED.
+   ouroboros/review.py verified NOT in the AGENTS.md protected list. The
+   relocated_functions block replayed byte-identical from the oracle into the
+   tip-shaped validate_manifest_transition (tip keeps its adjacent= interval
+   form; the oracle-only MODULE_DEBT_1500 layer was NOT replayed — Q11=B keeps
+   the upstream size law). The pin renamed per the row, oracle bytes
+   (test_transition_rejects_function_swap_even_at_same_cardinality ->
+   test_transition_allows_a_same_qualname_relocation_but_not_a_swap). This
+   unblocks the D08 lane's row 2016 deferral (FUNCTION_DEBT relocation of
+   _handle_schedule_task).
+5. Rows 1192/1259 (theme split into tests/test_delegated_reconciliation.py):
+   landed as the D11 SLICE only — the two tests that bind the
+   server_maintenance owner. The in-place owner-retarget grew the shrink-only
+   byte-debt giant test_delegated_subagent_transport.py by +40 bytes and the
+   ratchet refused it; the re-home is the designed pressure valve (the giant
+   shrinks 320340 -> 318310, the pin gains its family). The rest of the
+   reference sibling (orphan-sweep predicate, absent-run closure, release
+   points, _delegated_transport_shared helpers) arrives with the delegation
+   organ's test split (F2). Row 1656 (TestStartupGCFailClosed): only the
+   DATA_DIR owner-retarget mirrored; that file split also stays with F2.
+6. Facade form: top from-import block (reference facade style), not an EOF
+   re-export block — forced by module-level reads of moved state (PORT_FILE =
+   DATA_DIR / ..., the logging bootstrap) before any def runs; base64 keeps a
+   noqa: F401 exactly as the reference facade does (its only user moved).
+   Facade audit green: every kept top-level span byte-identical to tip, no
+   facade-new symbols, every moved name re-exported by identity. server.py
+   3191 -> 1640 lines; it remains a GIANT_PATHS entry (>1600 upstream law) and
+   only shrank, so the regenerated manifest changes one number (the transport
+   giant's byte debt).
+7. Leaf conventions: emitted leaves carry `from __future__ import annotations`
+   (transplant-tool requirement; prior-lane convention) and tool span spacing.
+   Zero declared names and NO module handles — the reference design homes the
+   shared rebindable state in server_process (Events mutated in place, one
+   DATA_DIR, one logger), so all six are projection-only leaves.
+   Reverse-mapped preamble spots: server_liveness gains `import os` (drift:
+   os.getpid() in the toast key); server_restart's preamble/docstring describe
+   the landed five rows and name the deferral honestly.
+8. Test adaptations mirrored path-keyed to THIS tree (Δ2 p.10): transport
+   giant tests -> sm owner (see 5); test_delegated_run_isolation._server_gc ->
+   server_maintenance.DATA_DIR (reference form); test_phase3c_observability_gc
+   (two post-cutoff tests, no oracle counterpart) -> maintenance owner for
+   DATA_DIR/_LAST_CANCEL_INTENT_SWEEP/time; test_project_routing_v664 ->
+   server_routing_context patch, compressed to one line so the file stays at
+   1000 lines (below the 1001 band); test_client_surface -> owner_routing text
+   joined into the client_surface pin (reference form);
+   test_ws3_wedge_resilience (post-cutoff OB-03 tests) -> fake clock retargets
+   to server_liveness; test_panic_stop_port_sweep floor 5 -> 11 (the return
+   the D09 lane's note 12(a) anticipated). Deliberately NOT retargeted:
+   patches whose exercised readers stayed in the facade with the deferral
+   (test_server_shutdown, test_evolution_restart_claims,
+   test_restart_reconnect, test_promote_chat_flow, test_client_surface
+   _process_bridge_updates block). All touched test files lossless (the one
+   test rename is ledger row 1033; the two re-homed names moved whole).
+9. Pre-existing base red, NOT this lane's defect:
+   tests/test_smoke.py::test_size_ratchet_transition_against_explicit_base
+   fails at pristine a56bb76a (probed in a throwaway worktree: 1 failed + 4
+   passed) — parent 7d2dca49's manifest records
+   tests/test_devtools_benchmarks.py at 328116 bytes while its own tree holds
+   328195 (the +79-byte cherry-pick residue the seam commit message itself
+   describes). The (a56bb76a -> this commit) pair is consistent: 327935 ==
+   tree at the parent.
+10. Module census, 34 D11 owners (tip vs merge-base 8028f1df vs oracle
+   9f691656): 13 byte-identical in all three (client_surface,
+   gateway/__init__, gateway/files, gateway/logs, gateway/mcp,
+   gateway/onboarding_host, gateway/schedules, gateway/task_events,
+   gateway/task_hurry, gateway/ui_preferences, server_auth, server_entrypoint,
+   server_web); 17 pure upstream drift — tip bytes stand (gateway/_helpers,
+   claudexor_accounts, contracts, control, extensions, history, host_service,
+   marketplace, models, presence_settings, projects, router, skill_publish,
+   state, tasks, ws, server_runtime); 3 carry ONLY D03 settings-seam /
+   retired-knob (D04) oracle deltas -> HOT-DEFERRED with that seam
+   (gateway/owner_settings, gateway/onboarding, gateway/settings; D12/D17
+   precedent); server.py split per 1. Gateway ABI/alias retirements untouched
+   (F3 territory); web/ untouched.
