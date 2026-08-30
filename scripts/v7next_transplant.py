@@ -840,6 +840,20 @@ def verify_transplant(upstream_source: str, leaf_source: str, symbols: List[str]
     return report
 
 
+def _own_returns(fn: ast.FunctionDef) -> List[ast.Return]:
+    """Return statements of fn's OWN body, not of functions nested inside it."""
+    out: List[ast.Return] = []
+    stack: List[ast.AST] = list(fn.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.Return):
+            out.append(node)
+        stack.extend(ast.iter_child_nodes(node))
+    return out
+
+
 def _validate_leaf_invariants(leaf_source: str, symbols: List[str], declared: frozenset,
                               handle: str, reads: Set[str], report: Dict[str, Any],
                               leaf_owned: Optional[Set[str]]) -> None:
@@ -849,12 +863,15 @@ def _validate_leaf_invariants(leaf_source: str, symbols: List[str], declared: fr
     problems: List[str] = []
     tree = ast.parse(leaf_source)
     # (a) when the leaf reads anything through the handle (or declares names),
-    # the handle must be defined exactly once, as a canonical parameterless
-    # function whose body returns/points at a parent module (never `return None`).
-    # A projection-only leaf (zero handle reads, zero declared) may omit it.
+    # the handle must be defined exactly once, as a canonical SYNC parameterless
+    # function whose own body returns a module reference (a Name or dotted
+    # Attribute — generate_handle_def shape), never a constant, and never only
+    # from a nested function. A projection-only leaf (zero handle reads, zero
+    # declared) may omit it.
+    if any(isinstance(n, ast.AsyncFunctionDef) and n.name == handle for n in tree.body):
+        problems.append(f"handle {handle!r} must be a sync def, not async")
     handle_defs = [n for n in tree.body
-                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-                   and n.name == handle]
+                   if isinstance(n, ast.FunctionDef) and n.name == handle]
     handle_required = bool(reads or declared)
     if handle_required and len(handle_defs) != 1:
         problems.append(f"handle {handle!r} defined {len(handle_defs)} times, expected 1")
@@ -862,14 +879,16 @@ def _validate_leaf_invariants(leaf_source: str, symbols: List[str], declared: fr
         problems.append(f"handle {handle!r} defined {len(handle_defs)} times, expected at most 1")
     elif handle_defs:
         hd = handle_defs[0]
-        if hd.args.args or hd.args.kwonlyargs or hd.args.vararg or hd.args.kwarg:
+        a = hd.args
+        if a.args or a.posonlyargs or a.kwonlyargs or a.vararg or a.kwarg:
             problems.append(f"handle {handle!r} must take no parameters")
-        returns = [n for n in ast.walk(hd) if isinstance(n, ast.Return)]
-        if not returns or any(
-                isinstance(r.value, ast.Constant) and r.value.value is None
-                or r.value is None for r in returns):
-            problems.append(f"handle {handle!r} body must return the parent module, "
-                            "never None / bare return")
+        returns = _own_returns(hd)
+        ok_ret = lambda v: isinstance(v, (ast.Name, ast.Attribute))  # noqa: E731
+        if not returns or not all(r.value is not None and ok_ret(r.value) for r in returns):
+            problems.append(
+                f"handle {handle!r} body must directly return a module reference "
+                "(Name/Attribute), never a constant, bare return, or only via a "
+                "nested function")
     # (b) declared names and preamble-bound names must be DISJOINT (ambiguous
     # ownership: a name both imported locally and read through the handle).
     preamble_bound: Set[str] = set()

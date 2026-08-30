@@ -46,6 +46,24 @@ REQUIRED_DELTAS = (
 # compatibility retirements are release-gated too, not only the D-families.
 REQUIRED_ABI = tuple(f"ABI-{n}" for n in range(1, 11))
 REQUIRED_CPL = tuple(f"CPL-{n}" for n in range(1, 8))
+# F0 review round 2: the phase of every required row is itself part of the
+# owner-approved inventory — a required row silently rescheduled to another
+# phase (or parked post-release without an owner decision) must turn the
+# validator red. OWNER_DEFERRED lists the only ids the owner has explicitly
+# deferred out of v7.0 (ABI-8: Q5=A kept handler-ABI out of the bundle,
+# Q16=A retired the «7.1» label into post-release backlog).
+REQUIRED_PHASE = {
+    "D02": "F1", "D03": "F1", "D04": "F1", "D05": "F1", "D06": "F1",
+    "D07": "F2", "D08": "F2", "D09": "F1", "D11": "F1", "D13": "F1",
+    "D18": "F1", "D31": "F2", "D33": "F1", "D34": "F2", "D35": "F1",
+    "D36": "F2", "D37": "F2", "D38": "F1",
+    "ABI-1": "F3", "ABI-2": "F3", "ABI-3": "F3", "ABI-4": "F3",
+    "ABI-5": "F3", "ABI-6": "F3", "ABI-7": "F3", "ABI-8": "POST",
+    "ABI-9": "F3", "ABI-10": "F3",
+    "CPL-1": "F5", "CPL-2": "F5", "CPL-3": "F5", "CPL-4": "F5",
+    "CPL-5": "F5", "CPL-6": "F5", "CPL-7": "F5",
+}
+OWNER_DEFERRED = frozenset({"ABI-8"})
 KINDS = frozenset({"semantic-delta", "plan-item", "class-return"})
 DISPOSITIONS = frozenset({"retain", "re-prove", "superseded-by-upstream",
                           "pending-decision", "post-release"})
@@ -137,7 +155,9 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
             errors.append(f"{rid}: must be kind=plan-item, got {row['kind']!r}")
     # Row-specific coupling: post-release is a single coherent state, not three
     # independent knobs (prevents e.g. disposition=post-release with status=done
-    # quietly counting as shipped).
+    # quietly counting as shipped) — and it is an OWNER decision: only ids in
+    # OWNER_DEFERRED may carry it, so flipping a required row to post-release
+    # cannot silently bypass the release bar.
     for r in rows:
         post_bits = [r["disposition"] == "post-release", r["status"] == "deferred",
                      r["phase"] == "POST"]
@@ -146,6 +166,17 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
                 f"{r['id']}: post-release rows need disposition=post-release + "
                 f"status=deferred + phase=POST together, got "
                 f"{r['disposition']}/{r['status']}/{r['phase']}")
+        if all(post_bits) and r["id"] not in OWNER_DEFERRED:
+            errors.append(
+                f"{r['id']}: post-release requires an owner decision; only "
+                f"{sorted(OWNER_DEFERRED)} are owner-deferred")
+    # Phase pinning of the required inventory.
+    for rid, want in REQUIRED_PHASE.items():
+        row = by_id.get(rid)
+        if row is not None and row["phase"] != want:
+            errors.append(f"{rid}: phase {row['phase']!r} != pinned {want!r} "
+                          "(rescheduling a required row needs a new owner decision "
+                          "and an update to REQUIRED_PHASE)")
     if release:
         for r in rows:
             if r["disposition"] == "pending-decision":

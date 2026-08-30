@@ -622,7 +622,7 @@ def test_handle_returning_none_fails():
                                "def _h():\n    return None")
     rep = verify_transplant(_MUT_UP, bad, ["f"], {"PARENT"}, "_h")
     assert rep["ok"] is False
-    assert any("must return the parent module" in e for e in rep["leaf_invariants"])
+    assert any("module reference" in e for e in rep["leaf_invariants"])
 
 
 def test_declared_and_preamble_bound_overlap_fails():
@@ -651,5 +651,53 @@ def test_projection_only_leaf_without_handle_passes():
     leaf = ('"""doc"""\nfrom __future__ import annotations\n\n\n'
             "def g():\n    return 1\n")
     rep = verify_transplant(up, leaf, ["g"], set(), "_h")
+    assert rep["leaf_invariants"] == []
+    assert rep["ok"] is True
+
+
+def _leaf_with_handle(handle_src: str) -> str:
+    return ('"""doc"""\nfrom __future__ import annotations\n'
+            "from ouroboros import config as _parent\n\n\n"
+            + handle_src + "\n\n" + _MUT_FN)
+
+
+def test_async_handle_fails():
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, _leaf_with_handle(
+        "async def _h():\n    return _parent"), ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("sync def" in e for e in rep["leaf_invariants"])
+
+
+def test_posonly_param_handle_fails():
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, _leaf_with_handle(
+        "def _h(x, /):\n    return _parent"), ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("no parameters" in e for e in rep["leaf_invariants"])
+
+
+def test_constant_return_handle_fails():
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, _leaf_with_handle(
+        "def _h():\n    return 42"), ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("module reference" in e for e in rep["leaf_invariants"])
+
+
+def test_nested_only_return_handle_fails():
+    from scripts.v7next_transplant import verify_transplant
+    rep = verify_transplant(_MUT_UP, _leaf_with_handle(
+        "def _h():\n    def inner():\n        return _parent\n    pass"),
+        ["f"], {"PARENT"}, "_h")
+    assert rep["ok"] is False
+    assert any("module reference" in e for e in rep["leaf_invariants"])
+
+
+def test_dotted_attribute_return_handle_passes():
+    from scripts.v7next_transplant import verify_transplant
+    leaf = ('"""doc"""\nfrom __future__ import annotations\nimport ouroboros.config\n\n\n'
+            "def _h():\n    return ouroboros.config\n\n\n" + _MUT_FN)
+    rep = verify_transplant(_MUT_UP, leaf, ["f"], {"PARENT"}, "_h")
     assert rep["leaf_invariants"] == []
     assert rep["ok"] is True
