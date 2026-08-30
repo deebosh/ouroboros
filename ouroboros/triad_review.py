@@ -117,8 +117,16 @@ _LEADING_THINK_BLOCK_RE = re.compile(r"\A\s*<think\b[^>]*>.*?</think>\s*", re.DO
 
 
 def strip_leading_reasoning_block(text: str) -> str:
-    """Drop one leading, well-formed ``<think>…</think>`` reasoning block."""
-    return _LEADING_THINK_BLOCK_RE.sub("", str(text or ""), count=1)
+    """Drop one leading, well-formed ``<think>…</think>`` reasoning block.
+
+    Only strips when something survives: a response that is ENTIRELY one
+    ``<think>…</think>`` block (a mid-``max_tokens`` truncation, or a route that
+    wraps the whole verdict) keeps its original text so the downstream
+    bracket-scan can still recover an array from inside the block.
+    """
+    raw = str(text or "")
+    stripped = _LEADING_THINK_BLOCK_RE.sub("", raw, count=1)
+    return stripped if stripped.strip() else raw
 
 
 def extract_json_array(

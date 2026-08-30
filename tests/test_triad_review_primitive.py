@@ -51,6 +51,20 @@ def test_reasoning_wrapped_findings_are_still_extracted():
     assert parsed and parsed[0]["item"] == "code_quality" and parsed[0]["verdict"] == "FAIL"
 
 
+def test_array_inside_a_whole_response_think_block_is_still_recovered():
+    """A response that is ENTIRELY one <think>…</think> block (truncation, or a
+    route that wraps everything) must not be stripped to nothing — the
+    bracket-scan still recovers the array from inside the block."""
+    whole = (
+        '<think>\nReviewing… my verdict array is '
+        '[{"item": "security_issues", "verdict": "FAIL", "severity": "critical", "reason": "y"}]'
+        '\n</think>'
+    )
+    assert strip_leading_reasoning_block(whole) == whole  # nothing survives stripping → keep original
+    parsed = extract_json_array(whole, normalize=True)
+    assert parsed and parsed[0]["item"] == "security_issues" and parsed[0]["verdict"] == "FAIL"
+
+
 def test_reasoning_block_does_not_launder_a_refusal():
     """Stripping <think> must not turn a real refusal into a clean verdict:
     prose after the block is still a non-response."""
