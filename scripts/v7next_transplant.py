@@ -951,7 +951,16 @@ def _flag_undeclared_top_level(leaf_source: str, symbols: List[str], handle: str
             continue
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            names = {t.id for t in targets if isinstance(t, ast.Name)}
+            names: Set[str] = set()
+            for t in targets:
+                # Unfold tuple/list targets: `A, B = 500, 10` binds both names
+                # (D12 lane false positive — the gate saw a Tuple, not Names).
+                elts = t.elts if isinstance(t, (ast.Tuple, ast.List)) else [t]
+                for el in elts:
+                    if isinstance(el, ast.Starred):
+                        el = el.value
+                    if isinstance(el, ast.Name):
+                        names.add(el.id)
             if names and names <= (requested | owned):
                 continue
             extras.append(f"assignment to {sorted(names) or '<complex target>'} "

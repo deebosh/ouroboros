@@ -701,3 +701,24 @@ def test_dotted_attribute_return_handle_passes():
     rep = verify_transplant(_MUT_UP, leaf, ["f"], {"PARENT"}, "_h")
     assert rep["leaf_invariants"] == []
     assert rep["ok"] is True
+
+
+def test_tuple_target_assignment_of_requested_symbols_passes():
+    """`A, B = 500, 10` with both names requested is a legitimate moved span,
+    not an undeclared top-level extra (D12 lane false positive)."""
+    from scripts.v7next_transplant import verify_transplant
+    up = "A, B = 500, 10\n"
+    leaf = ('"""doc"""\nfrom __future__ import annotations\n\n\nA, B = 500, 10\n')
+    rep = verify_transplant(up, leaf, ["A", "B"], set(), "_h")
+    assert rep["undeclared_top_level"] == []
+    assert rep["ok"] is True
+
+
+def test_tuple_target_with_foreign_name_still_fails():
+    from scripts.v7next_transplant import verify_transplant
+    up = "A, B = 500, 10\n"
+    leaf = ('"""doc"""\nfrom __future__ import annotations\n\n\n'
+            "A, B = 500, 10\nX, Y = 1, 2\n")
+    rep = verify_transplant(up, leaf, ["A", "B"], set(), "_h")
+    assert rep["ok"] is False
+    assert any("X" in e for e in rep["undeclared_top_level"])
