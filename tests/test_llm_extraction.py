@@ -65,7 +65,7 @@ _MODULE_OWNERS = {
         "LocalContextTooLargeError _LOCAL_COMPACTION_MODES _compact_local_text "
         "_compact_markdown_sections _estimate_message_chars _split_markdown_sections"
     ),
-    llm_openai_compatible: "_FALSE_LIKE_ENV_VALUES",
+    llm_openai_compatible: "_FALSE_LIKE_ENV_VALUES _RESPONSE_METADATA_LABEL_MAX_CHARS _bounded_response_metadata_label",
     llm_pricing: "add_usage fetch_cloudru_pricing fetch_openrouter_pricing",
 }
 

@@ -218,17 +218,23 @@ def test_local_transport_makes_exactly_one_physical_attempt(monkeypatch):
     caller authorising it; the single retry policy that owns that decision is
     `loop_llm_call.call_llm_with_retry`, which counts the attempts it makes."""
     from ouroboros import llm as llm_mod
-    from ouroboros import llm_local as llm_local_mod
+    from ouroboros import llm_attempt as llm_attempt_mod
+    from ouroboros import llm_local as llm_local_mod  # noqa: F401 - the lane under test
 
     transient = RuntimeError("connection reset by peer")
     calls = {"n": 0}
     slept: list[float] = []
 
-    def _fake_execute(request, send, before):
+    # Count at the TRUE physical boundary (wave-3 conformance review): the
+    # real _execute_candidate runs, so an internal retry anywhere above
+    # execute_physical_attempt would be seen here as calls["n"] > 1.
+    def _fake_physical(request, send, before_dispatch=None):
         calls["n"] += 1
         raise transient
 
-    monkeypatch.setattr(llm_local_mod, "_execute_candidate", _fake_execute)
+    monkeypatch.setattr(llm_attempt_mod, "execute_physical_attempt", _fake_physical)
+    # The request builder needs an initialised client; the physical boundary
+    # above is what this pin counts, so a None request is fine.
     monkeypatch.setattr(llm_local_mod, "_attempt_request", lambda *a, **k: None)
     monkeypatch.setattr(time, "sleep", slept.append)
     client = llm_mod.LLMClient.__new__(llm_mod.LLMClient)
