@@ -296,6 +296,33 @@ def _scrub_inherited_subagent_selection(monkeypatch):
     monkeypatch.delenv("OUROBOROS_SUBAGENTS", raising=False)
 
 
+def restored_os_environ():
+    """Snapshot os.environ, yield, restore it IN PLACE (clear + update).
+
+    Restoring on the real os._Environ preserves the C-level putenv sync that
+    spawned subprocesses inherit from — swapping a plain dict in (the removed
+    monkeypatch idiom) severs it. Plain generator so the isolation contract is
+    directly testable without pytest plumbing.
+    """
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def _os_environ_isolation():
+    """Restore the EXACT pre-test os.environ after every test.
+
+    Tests exercise apply_settings_to_env(), owner-settings writers, and ad-hoc
+    os.environ mutation; under xdist a leaked variable poisons whichever tests
+    share the worker afterwards (order-dependent flakes). One structural
+    snapshot/restore closes the whole leak class instead of policing each call
+    site.
+    """
+    yield from restored_os_environ()
+
+
 @pytest.fixture(autouse=True)
 def _reset_runtime_mode_baseline_between_tests():
     """v5.1.2 iter-2 test isolation fix (Gemini finding F2-7):

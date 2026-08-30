@@ -352,7 +352,6 @@ def test_owner_endpoints_map_a_contended_lock_to_a_typed_refusal(monkeypatch, is
     guard cannot quietly go missing from four of them."""
     from ouroboros.gateway import settings as settings_mod
 
-    monkeypatch.setattr(os, "environ", dict(os.environ))
     monkeypatch.setattr(settings_mod, "_has_running_agent_tasks", lambda: False, raising=False)
     app = _owner_app(handler_name, route, isolated_settings)
 
@@ -369,7 +368,6 @@ def test_owner_endpoints_map_a_contended_lock_to_a_typed_refusal(monkeypatch, is
 def test_owner_endpoint_validation_refusals_say_saved_false(monkeypatch, isolated_settings,
                                                             route, handler_name, _payload):
     """The same field on the same endpoints' PRE-commit validation path."""
-    monkeypatch.setattr(os, "environ", dict(os.environ))
     app = _owner_app(handler_name, route, isolated_settings)
     resp = TestClient(app).post(route, json={"mode": "?", "enabled": "?", "floor": "?"})
 
