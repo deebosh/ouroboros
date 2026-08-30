@@ -497,7 +497,7 @@ def test_global_ttl_docstrings_name_every_consumer():
         if p.name not in definition_sites and call.search(p.read_text(encoding="utf-8"))
     )
     assert consumers == [
-        "ouroboros/llm.py",
+        "ouroboros/llm_attempt.py",
         "ouroboros/tools/review_helpers.py",
         "ouroboros/usage_accounting.py",
     ], consumers

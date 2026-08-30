@@ -6,7 +6,6 @@ GIANT_PATHS = (
     "devtools/benchmarks/osworld/run_cu_bridge_agent.py",
     "devtools/benchmarks/osworld/run_step_agent.py",
     "ouroboros/extension_loader.py",
-    "ouroboros/llm.py",
     "ouroboros/loop.py",
     "ouroboros/review_state.py",
     "ouroboros/tools/claude_advisory_review.py",

@@ -145,31 +145,23 @@ def test_settings_leaves_never_import_their_parent():
         ), module.__name__
 
 
-def test_provider_models_reads_the_shared_defaults_leaf():
-    """The shipped router profiles moved below ``provider_models``, which now
-    re-exports them from the settings-vocabulary leaf at import time — no lazy
-    config import is needed for the literals, and the historical identities
-    (``provider_models.OPENROUTER_DEFAULTS``) are the leaf's own objects.
-
-    NOTE (v7next D12 lane): the reference goes further — no ``ouroboros.config``
-    import anywhere in ``provider_models`` and a top-level ``ouroboros.model_slots``
-    import replacing the call-time fallback-chain import. Those clauses type
-    against the reference's D02 rework of ``provider_models`` and return with the
-    D02 lane; this tree keeps the upstream call-time imports, which resolve
-    through the config facade to the same leaf objects."""
+def test_provider_models_reads_the_shared_leaves_instead_of_importing_config():
+    """The former config <-> provider_models tangle: ``provider_models`` needed the
+    fallback chain and the shipped defaults, and could only reach them by importing
+    its own importer at call time. Both now live in leaves both sides import."""
     tree = ast.parse(pathlib.Path(provider_models.__file__).read_text(encoding="utf-8"))
+    assert not any(
+        isinstance(node, ast.ImportFrom) and node.module == "ouroboros.config"
+        for node in ast.walk(tree)
+    )
     top_level = {
         node.module
         for node in tree.body
         if isinstance(node, ast.ImportFrom) and node.module
     }
-    assert "ouroboros.settings_defaults" in top_level
-    # No module-level (import-time) config read: the remaining config imports in
-    # provider_models are call-time only, so the leaf split cannot deadlock boot.
-    assert not any(
-        isinstance(node, ast.ImportFrom) and node.module == "ouroboros.config"
-        for node in tree.body
-    )
+    assert {"ouroboros.model_slots", "ouroboros.settings_defaults"} <= top_level
+    assert provider_models.parse_fallback_chain is model_slots.parse_fallback_chain
+    assert provider_models.SETTINGS_DEFAULTS is settings_defaults.SETTINGS_DEFAULTS
     assert provider_models.OPENROUTER_DEFAULTS is settings_defaults.OPENROUTER_DEFAULTS
     assert (provider_models.OPENROUTER_REVIEW_DEFAULTS
             is settings_defaults.OPENROUTER_REVIEW_DEFAULTS)

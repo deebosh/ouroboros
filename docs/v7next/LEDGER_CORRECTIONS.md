@@ -547,3 +547,105 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    (ref==merge-base) — upstream bytes stand; shell_audit.py NEW upstream module
    (no rows, see entry 2). tools/core.py band re-entry (2283 -> 1373) recorded
    via the official regenerator's --band-rationale.
+## From the D02 lane (base 0859b681, 2026-08-30)
+1. llm.py split rows 1666-1793 + 4001-4003 (131 rows, ten leaves) RE-PROVEN
+   against tip bytes: 100 spans byte-identical between the reference leaves and
+   `git show HEAD:ouroboros/llm.py`; 28 spans BYTE-FALSIFIED as copy sources by
+   PURE UPSTREAM DRIFT (oracle==merge-base for every non-D09 one) and re-emitted
+   from tip bytes. The drift is the post-cutoff provider train: request-wire
+   custody (041e6e39, issue-229 phase 2b — request_wire_scoped decorators and
+   wire send/receipt hooks inside the send drivers and lanes), OpenRouter
+   attribution rework (9a20df6a — OPENROUTER_APP_HEADERS), anthropic native
+   custody (native_content_for_replay/retain_native_assistant_content),
+   timeout/custody hardening (802f1056, f702439f). Transplant-tool verify:
+   every module-level span ast=tokens=bytes=True, undeclared_top_level=[],
+   leaf_invariants=[], plus a member-level byte proof for all 10 mixins
+   (117 members byte-identical to the tip LLMClient members).
+2. Row 1674 (`_applied_payload_cache_ttl`) — the ledger's own documented
+   one-identifier requalification (LLMClient -> _PayloadCachePolicyMixin) kept
+   from the reference; the only non-tip-byte span in the split besides row 1784.
+3. Row 1784 (`_chat_local`, semantic id D09, the approved one-attempt delta) —
+   CARRIED, but BYTE-FALSIFIED as a verbatim copy source: upstream 802f1056
+   added the exception-owned capture custody clause INSIDE the retry loop the
+   delta deletes; replaying the reference span verbatim would have silently
+   reverted that upstream clause (the re-prove-trap class, D15 entry 3). The
+   delta was re-derived on tip bytes: the `for attempt in range(3)` loop and its
+   sleep/last_exc arms are gone (one physical attempt per call, transient
+   failures surface to call_llm_with_retry), the custody clause and the
+   warning/error identities are preserved. Pins: the reference's
+   test_local_transport_makes_exactly_one_physical_attempt carried into
+   tests/test_context_overflow_hint.py; the two sibling local-lane tests
+   re-pinned per the reference (attempt count 3 -> 1, monkeypatches renamed to
+   the owner leaf llm_local); upstream's post-cutoff
+   test_local_retry_does_not_inherit_unrelated_physical_capture re-pinned the
+   same way (its durable fact — exception-owned capture only, never the
+   ContextVar — is unchanged; its `calls == 3` pinned the deleted loop).
+4. D09 typed-policy-refusal subfamily (rows 1706, 1749, 1751, 1759, 1760 and
+   the reference-only llm_attempt symbols PROVIDER_POLICY_REFUSAL /
+   ProviderPolicyRefusal / _is_provider_policy_refusal) — HOT-DEFERRED with
+   evidence: zero occurrences of `provider_policy_refusal` anywhere at this tip
+   (no raiser, no classifier — loop_llm_call has no such code), and all five
+   consuming ladder bodies drifted upstream (802f1056/f702439f hardened them);
+   the refusal never surfaces without its D01-side classification, so carrying
+   only the ladder half would ship dead semantics onto reworked bytes. The five
+   bodies moved as TIP bytes; the reference pins
+   tests/test_llm_typed_policy_refusal.py and the two
+   `typed_policy_refusal` golden cases (fallback_ladder.json 17 -> 15) are NOT
+   carried — they return with the delta's own re-derivation.
+5. UNROWED tip symbols `_RESPONSE_METADATA_LABEL_MAX_CHARS` and
+   `_bounded_response_metadata_label` (post-cutoff, llm.py top level) moved to
+   ouroboros/llm_openai_compatible.py with their ONLY reader
+   (`_normalize_remote_response`, row 1788); the facade re-exports both, so the
+   tip import surface is unchanged. Candidate rows for the carried ledger at F5.
+6. provider_models rows 840-886/3238-3241 note-contract COMPLETED: the rows'
+   own notes say "provider_models now imports this leaf instead of lazily
+   importing config"; D12 landed the leaves and left the consumption to D02.
+   The two remaining call-time `from ouroboros.config import ...` reads
+   (parse_fallback_chain at resolve_credentialed_model, SETTINGS_DEFAULTS at
+   declared_model_settings) are now top-level leaf imports
+   (model_slots/settings_defaults; cycle-free, verified at import). The
+   reference pin test_provider_models_reads_the_shared_leaves_instead_of_
+   importing_config is restored under its ledger name, superseding the D12
+   lane's disclosed placeholder test_provider_models_reads_the_shared_defaults_
+   leaf (its identity clauses are kept as a superset). Upstream's own
+   provider_models evolution (ACTIVE/LEGACY_MODEL_SETTING_KEYS,
+   *_in_settings twins, CLAUDE_CODE_MODEL retirement) is tip truth and stands.
+7. ouroboros/llm_probe.py reference delta (+8/-6, tip==merge-base) ADOPTED
+   verbatim: the lazy executor import redirects from the llm.py facade to the
+   owner leaf llm_attempt (an llm_* leaf never imports its parent). Unrowed in
+   MIGRATION; required by the leaf rule the carried pin
+   tests/test_llm_extraction.py::test_llm_leaves_never_import_their_parent
+   enforces. Candidate row at F5.
+8. Provider-route goldens (tests/fixtures/llm_golden, 9 files) RE-BASELINED
+   from tip behaviour via the suite's own `--write` entry: every diff class maps
+   to a named upstream train — attribution headers (X-Title ->
+   X-OpenRouter-Title + new referer, 9a20df6a), the `request_wire` disclosure
+   block in usage (041e6e39), bounded `response_finish_reason` /
+   `response_provider` labels, effort/dialect-ladder evolution, anthropic
+   native-content retention. One suite adaptation: the per-process random
+   `usage.request_wire.attempt_id` is projected to a presence flag (exactly the
+   suite's existing ledger_attempt_ids treatment) — without it the recording is
+   nondeterministic across processes.
+9. Dead-patch class closed across tests: after the split,
+   `execute_physical_attempt(_async)` is read in llm_attempt,
+   `_execute_candidate`/`last_physical_attempt_capture` on the chat path in
+   llm_fallback, and the local lane's executor in llm_local. Reference
+   adaptations applied (test_capability_probe_accounting_v664,
+   test_prompt_cache_v664, test_retry_bypass_response_cache verbatim —
+   tip==base; test_effort_floor_v6732, test_usage_scope_transport_v664,
+   test_provider_key_test re-derived on tip bytes); the same rule applied to
+   two POST-CUTOFF upstream tests the reference never saw
+   (test_openai_chat_dispatch, test_issue229_synthesis — llm ->
+   llm_fallback, disclosed in-file); path-keyed mirror
+   test_review_prompt_caching::test_global_ttl_docstrings_name_every_consumer
+   re-pinned to `ouroboros/llm_attempt.py` (matches the reference's own bytes
+   for that clause). Patches of names the facade still OWNS or that are read
+   lazily through it (test_pricing fetch_openrouter_pricing, test_web_search
+   server tools, all LLMClient-method patches) verified live and untouched.
+10. Reference adaptations NOT carried (other domains' v7 spellings,
+   reverse-mapped to tip per §5.3-Δ item 2): tests/test_multimodal_chat.py and
+   tests/test_provider_failure_reporting.py retarget imports to
+   loop_messages/loop_round_limits (D01 leaves absent here — tip bytes stand;
+   tip already re-homed _provider_recovery_hint into loop_transport itself);
+   the same import line in tests/test_context_overflow_hint.py keeps the tip
+   spelling.

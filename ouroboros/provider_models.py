@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import os
 
-from ouroboros.settings_defaults import OPENROUTER_DEFAULTS, OPENROUTER_REVIEW_DEFAULTS  # noqa: F401
+from ouroboros.model_slots import parse_fallback_chain
+from ouroboros.settings_defaults import OPENROUTER_DEFAULTS, OPENROUTER_REVIEW_DEFAULTS, SETTINGS_DEFAULTS  # noqa: F401
 
 # MiniMax exposes the same OpenAI-compatible API on two regional hosts. Keep the
 # mapping centralized so transport, capability evidence, and settings diagnostics
@@ -193,9 +194,7 @@ def resolve_credentialed_model(default_model: str) -> str:
     # LIGHT/MAIN are single-model slots; FALLBACKS is a comma chain expanded via the
     # shared SSOT parser (which also honors the legacy singular OUROBOROS_MODEL_FALLBACK)
     # instead of testing the whole comma-string as one broken model id. Empty Light
-    # (default -> Main) simply contributes nothing here. Lazy import: config imports this
-    # module, so importing config at module load would be circular.
-    from ouroboros.config import parse_fallback_chain
+    # (default -> Main) simply contributes nothing here.
     candidates: list[str] = []
     light = str(os.environ.get("OUROBOROS_MODEL_LIGHT", "") or "").strip()
     if light:
@@ -222,9 +221,7 @@ def declared_model_settings(
     ``config.SETTINGS_DEFAULTS`` for it, so the default's provider is genuinely reachable and
     must be declared.  ``include_claude_sdk_defaults`` is a RETIRED no-op kept for caller
     compatibility: the Claude-SDK transport and its dedicated model slots are gone, so both
-    values declare the same set. Lazy config import (config imports this module)."""
-    from ouroboros.config import SETTINGS_DEFAULTS
-
+    values declare the same set."""
     declared: dict[str, str] = {}
     for key in MODEL_SETTING_KEYS:
         value = str((settings or {}).get(key) or "").strip()
