@@ -2660,6 +2660,7 @@ def _execute_panic_stop(consciousness, kill_workers_fn) -> None:
         data_dir=DATA_DIR,
         panic_exit_code=PANIC_EXIT_CODE,
         log=log,
+        bound_port=_actual_bound_port(),
     )
 
 APP_START = time.time()

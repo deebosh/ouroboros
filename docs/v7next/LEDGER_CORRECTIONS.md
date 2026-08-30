@@ -94,3 +94,56 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    tests/test_context.py (612 lines) rather than deciding their theme-home
    unilaterally; by the memory-file theme they are candidates for
    tests/test_context_memory.py at F5.
+## From the D09 lane (base f61ea3c2, 2026-08-30)
+7. MIGRATION rows 998-1013 (the 16-symbol task_lifecycle.py ->
+   cancel_custody.py settle-owner extraction) — HOT-FALSIFIED as a transplant
+   at this tip: upstream 65b5d19f ("Refactor cancellation ownership for size
+   ratchet") re-decomposed the same ownership differently (task_lifecycle
+   -408 lines into cancel_publication.py, owner_stop.py,
+   queue_transitions.py, task_reaper.py, new evolution_lifecycle.py, new
+   task_admission.py), then 3877e2ce/bea08137/21c59de2 reworked the
+   survivors. Of the 16 declared symbols, _intent_outcome_fields now lives
+   in cancel_publication.py:133 (task_lifecycle re-exports it at :26-35),
+   _durable_settled_status no longer exists, and the remaining bodies were
+   hardened by bea08137. Transplanting the reference cancel_custody.py would
+   create a second ownership answer -> F2 (cancel/delegation organ, re-split
+   from the upstream form).
+8. MIGRATION rows 834-839 (cancel_intents.py D08 corrupt-projection rule) —
+   PARTIALLY SUPERSEDED-BY-UPSTREAM: at this tip request_cancel and
+   claim_intent already read strict and raise CancelIntentProjectionCorrupt
+   (upstream custody train 34ca9b02/38196641/c8048f2c/bea08137 rewrote the
+   module 888 -> 1281 lines), while release_claim, settle_intent,
+   mark_intent_scope and mark_finalize_control_drained remain fail-open
+   (AST probe over tip bytes; the reference pin
+   test_cancel_intent_corruption_s6.py runs red on exactly those four).
+   D08 must be re-derived against the rewritten bytes in F2 — same class as
+   entry 3 (the re-prove trap).
+9. MIGRATION rows 2152-2180 (the S7b split of
+   tests/test_cancel_intents_phase_a.py) — falsified as a verbatim
+   transplant: the giant drifted upstream since the merge-base, and the
+   split's custody rows retarget monkeypatches to supervisor.cancel_custody,
+   which this tip does not have (row 2171's own note binds the split to the
+   extraction commit e3c107bd). Rides with entry 7 into F2.
+10. DOMAIN_MAP §D09 pin test_subagent_worktree_registry_s6.py —
+   cross-listed: the module it pins, ouroboros/subagent_worktrees.py, is a
+   D07 owner, and the strict-registry behaviour the pin asserts lives in the
+   reference's +104/-22 delta to that module (upstream never touched it:
+   tip == merge-base). The pin transfers with D07's module delta, not with
+   the D09 lane (11 of its tests are red without it).
+11. DOMAIN_MAP §D09 pin test_daemon_token_containment_s6.py — HOT-DEFERRED
+   with the delegation organ: its fixture's fresh delegate_start is refused
+   at this tip with reason "subagent_selection_required" ("A fresh delegated
+   start requires an explicit agent_session subagent_id. Only retry_of may
+   replay a selectorless immutable invocation.") — the upstream
+   delegation-by-construction train changed the entry contract the fixture
+   drives.
+12. Two reference pins byte-falsified by upstream drift, residual facts
+   intact, re-pinned to tip bytes by this lane: (a)
+   test_panic_stop_port_sweep.py — the panic's kill_workers call now carries
+   reconcile_delegate_custody=False (dc4c0204), and this tree has 5
+   ouroboros/server_*.py host leaves, not the reference's >= 11 (that floor
+   returns with the D11 server split); (b) test_owner_stop_fences_s6.py C5 —
+   _settle_descendants_hard now reuses the ordinary cascade's bounded
+   re-sweep loop (65b5d19f), so one live child yields two token-less sweep
+   calls instead of one; the pinned durable fact (the owner-stop sweep is
+   token-less) is unchanged.
