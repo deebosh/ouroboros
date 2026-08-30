@@ -189,9 +189,11 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
     return errors
 
 
-# Any-extension token, anchored so `not-scripts/x.py` is not misread as a
-# scripts/ reference (round 4: lookbehind rejects a preceding path character).
-_HOOK_PATH_RE = re.compile(r"(?<![\w./-])(?:tests|scripts|docs)/[\w./-]+\.\w+")
+# Any-extension token, anchored on BOTH sides: the lookbehind stops
+# `not-scripts/x.py` being misread as a scripts/ reference (round 4), the
+# lookahead stops `scripts/x.py-not-real` matching by its existing `.py`
+# prefix (round 5) — a partial token is prose, not a reference.
+_HOOK_PATH_RE = re.compile(r"(?<![\w./-])(?:tests|scripts|docs)/[\w./-]+\.\w+(?![\w-])")
 
 
 def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
@@ -213,7 +215,9 @@ def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
         top = p.split("/", 1)[0]
         candidate = (REPO_ROOT / p).resolve()
         top_root = (REPO_ROOT / top).resolve()
-        inside = candidate == top_root or str(candidate).startswith(str(top_root) + "/")
+        # pathlib containment, not string prefixing: portable across
+        # separators (round 5: the "/"-suffix check broke on Windows).
+        inside = candidate == top_root or top_root in candidate.parents
         if ".." in p.split("/") or not inside:
             errors.append(f"release: {row['id']} hook path escapes {top}/: {p}")
         elif not candidate.is_file():
