@@ -1649,6 +1649,73 @@ class TestGitWiring:
             for item in scope_adv
         )
 
+    def test_owner_policy_skip_finding_survives_aggregation_as_non_verdict(self):
+        """ibl-d63b1132d0e1: a deliberately-skipped scope panel (owner `low`
+        context mode) emits a typed NON-VERDICT finding — verdict in the
+        preserved set, severity ``policy``/``info``. Aggregation must carry it
+        through as-is, NOT flatten it to FAIL. Contrast with a genuine shortfall
+        below.
+        """
+        import types
+        import unittest.mock as mock
+        scope_mod = _get_module("ouroboros.tools.scope_review")
+        pr_mod = _get_module("ouroboros.tools.parallel_review")
+
+        # Exactly the shape scope_review._low_context_skip_result and the
+        # _all_skipped_low_context branch produce.
+        skipped = scope_mod.ScopeReviewResult(
+            blocked=False,
+            status="skipped_low_context_mode",
+            advisory_findings=[
+                {"verdict": "PASS", "severity": "advisory",
+                 "item": "scope_review_skipped_low_context_mode",
+                 "reason": "owner low context mode: scope not performed", "model": "m"},
+                {"verdict": "SKIPPED", "severity": "policy",
+                 "item": "scope_quorum_not_met",
+                 "reason": "no scope reviewer called (owner policy)", "model": "m"},
+            ],
+        )
+        ctx = types.SimpleNamespace(
+            repo_dir=None, _last_review_critical_findings=[], _review_advisory=[])
+        with mock.patch.object(pr_mod, "run_cmd", return_value=""):
+            blocked, combined_msg, _reason, _findings, scope_adv = pr_mod.aggregate_review_verdict(
+                None, skipped, "", [], ctx, "test commit", 0.0, ctx.repo_dir)
+
+        assert not blocked
+        by_item = {i["item"]: i for i in scope_adv if isinstance(i, dict)}
+        assert by_item["scope_review_skipped_low_context_mode"]["verdict"] == "PASS"
+        assert by_item["scope_quorum_not_met"]["verdict"] == "SKIPPED"
+        # The policy severity is carried forward so a downstream reader can tell
+        # a policy note from a real FAIL advisory without parsing the verdict.
+        assert by_item["scope_quorum_not_met"]["severity"] == "policy"
+
+    def test_genuine_scope_advisory_fail_still_aggregates_as_fail(self):
+        """The complement: an advisory finding with no explicit non-FAIL verdict
+        (a real scope-review shortfall) still aggregates to verdict='FAIL' — the
+        fix relaxes ONLY the owner-policy-coupled cases, fail-closed elsewhere.
+        """
+        import types
+        import unittest.mock as mock
+        scope_mod = _get_module("ouroboros.tools.scope_review")
+        pr_mod = _get_module("ouroboros.tools.parallel_review")
+
+        shortfall = scope_mod.ScopeReviewResult(
+            blocked=False,
+            advisory_findings=[
+                {"severity": "advisory", "item": "scope_quorum_not_met",
+                 "reason": "1 of 2 reviewers responded — genuine shortfall", "model": "m"},
+            ],
+        )
+        ctx = types.SimpleNamespace(
+            repo_dir=None, _last_review_critical_findings=[], _review_advisory=[])
+        with mock.patch.object(pr_mod, "run_cmd", return_value=""):
+            _blocked, _msg, _reason, _findings, scope_adv = pr_mod.aggregate_review_verdict(
+                None, shortfall, "", [], ctx, "test commit", 0.0, ctx.repo_dir)
+
+        item = next(i for i in scope_adv if isinstance(i, dict) and i["item"] == "scope_quorum_not_met")
+        assert item["verdict"] == "FAIL"
+        assert item["severity"] == "advisory"
+
     @pytest.mark.parametrize("crit_item", sorted(_get_module("ouroboros.tools.scope_review")._SCOPE_REQUIRED_ITEMS))
     def test_aggregation_does_not_block_on_advisory_scope_criticals(self, crit_item):
         """NW-2 guardrail (aggregation seam): a 58a52c4-class hardcode could be

@@ -67,6 +67,28 @@ def _format_scope_advisory_msg(scope_result) -> str:
                      "\n".join(f"  • {f['item']}: {f.get('reason', '')}"
                                 for f in scope_result.advisory_findings))
     return "---\n" + "\n".join(parts) if parts else ""
+
+# Verdicts an advisory scope finding may legitimately carry through aggregation.
+# Anything outside this set is a real failure row and defaults to FAIL so a
+# forgotten branch cannot silently PASS the commit gate.
+_PRESERVED_SCOPE_ADVISORY_VERDICTS = frozenset({"PASS", "INFO", "NEUTRAL", "SKIPPED"})
+
+
+def _scope_advisory_verdict(finding):
+    """Pass-through helper for an advisory scope finding's source verdict.
+
+    Used by ``aggregate_review_verdict`` and the ``scope_quorum_not_met``
+    emission so a typed NON-VERDICT finding from a deliberately-skipped panel
+    (low-context-mode, owner-policy coupled) does not get flattened to FAIL.
+    Real scope-review failures keep their source FAIL or the default."""
+    if not isinstance(finding, dict):
+        return "FAIL"
+    verdict = str(finding.get("verdict", "") or "").strip().upper()
+    if verdict in _PRESERVED_SCOPE_ADVISORY_VERDICTS:
+        return verdict
+    return "FAIL"
+
+
 def _scope_not_dispatched_result(slot):
     """Typed $0 placeholder for a prepared scope row the admission never dispatched."""
     return ScopeReviewResult(
@@ -245,13 +267,29 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
         _all_not_dispatched = bool(_scope_statuses) and all(
             s == "not_dispatched" for s in _scope_statuses
         )
+        # Owner-policy skip (BIBLE P3 low context mode): every configured row
+        # declined to call by deliberate policy, NOT because reviewers ran and
+        # failed. The downstream ``scope_quorum_not_met`` advisory is a typed
+        # policy note, never a real quorum failure — keeping it distinct from
+        # ``scope_not_dispatched_assembly_block`` lets a forensic read tell the
+        # two owner-policy-coupled states apart (BIBLE P1).
+        _all_skipped_low_context = bool(_scope_statuses) and all(
+            s == "skipped_low_context_mode" for s in _scope_statuses
+        )
         _scope_degraded: list = []
         if _session_advisory:
             _scope_degraded.append(
                 f"scope_session_advisory_only: {_session_advisory} retrieving row(s) "
                 "carried no authoritative verdict (window not sourced-proven)"
             )
-        if _single_scope_reviewer:
+        if _all_skipped_low_context:
+            _scope_degraded.append(
+                "scope_owner_policy_low_context_skip: no scope reviewer was called "
+                "(owner-selected `low` context mode declares whole-repository scope "
+                "review not performed; the triad's blocking staged-diff review is "
+                "unaffected in every mode)"
+            )
+        elif _single_scope_reviewer:
             _scope_degraded.append("single_reviewer_no_diversity")
         elif _all_not_dispatched:
             _scope_degraded.append(
@@ -306,7 +344,10 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
         # owner of that decision and would turn the owner-declared low-context skip
         # into a block — so the fix for a fail-open row belongs in the row, not here.
         partial_quorum_shortfall = (
-            not _single_scope_reviewer and 0 < _responded < _required and not blocked
+            not _single_scope_reviewer
+            and not _all_skipped_low_context
+            and 0 < _responded < _required
+            and not blocked
         )
         if partial_quorum_shortfall:
             from ouroboros.config import get_review_enforcement
@@ -322,11 +363,25 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
             _scope_degraded and not _single_scope_reviewer and not blocked
             and not _all_not_dispatched
         ):
-            advisory.append({
-                "verdict": "FAIL",
-                "severity": "advisory",
+            # An all-skipped-low-context panel is an owner-policy typed NON-VERDICT,
+            # not a real quorum failure: emit verdict='SKIPPED' so it cannot be
+            # mistaken for a genuine scope-review shortfall downstream. A genuine
+            # quorum shortfall (some responded < required) keeps verdict='FAIL'.
+            _qmeta = dict(_scope_quorum_manifest)
+            _qmeta["owner_policy_low_context_skip"] = bool(_all_skipped_low_context)
+            _qsource = {
+                "verdict": "SKIPPED" if _all_skipped_low_context else "FAIL",
+                "severity": "policy" if _all_skipped_low_context else "advisory",
                 "item": "scope_quorum_not_met",
                 "reason": _qmsg,
+                "scope_quorum_manifest": _qmeta,
+            }
+            advisory.append({
+                "verdict": _scope_advisory_verdict(_qsource),
+                "severity": _qsource["severity"],
+                "item": _qsource["item"],
+                "reason": _qsource["reason"],
+                "scope_quorum_manifest": _qmeta,
             })
         return ScopeReviewResult(
             blocked=blocked,
@@ -585,10 +640,17 @@ def aggregate_review_verdict(review_err, scope_result, triad_block_reason, triad
                 "tag": "scope",
                 "item": str(f.get("item", "") or ""),
                 "reason": str(f.get("reason", "") or ""),
-                "verdict": "FAIL",
+                "verdict": _scope_advisory_verdict(f),
             }
             if f.get("obligation_id"):
                 item["obligation_id"] = str(f.get("obligation_id"))
+            # Carry the typed NON-VERDICT source severity forward when it is one
+            # of the explicit non-FAIL signals (``info``/``policy``), so downstream
+            # consumers can distinguish a policy note from a real FAIL advisory
+            # without having to inspect the verdict string.
+            _src_severity = str(f.get("severity", "") or "").strip().lower()
+            if _src_severity in {"info", "policy"}:
+                item["severity"] = _src_severity
             _scope_advisory_items.append(item)
 
     if review_err:
