@@ -722,3 +722,36 @@ def test_tuple_target_with_foreign_name_still_fails():
     rep = verify_transplant(up, leaf, ["A", "B"], set(), "_h")
     assert rep["ok"] is False
     assert any("X" in e for e in rep["undeclared_top_level"])
+
+
+def test_nested_tuple_target_with_unrequested_names_fails_closed():
+    """`A, (X, Y) = ...` with only A requested now fails CLOSED at extraction
+    (the recursive unfold makes extract_spans see every bound name) — the
+    one-level unfold used to let X/Y ride silently (wave-2 conformance)."""
+    import pytest
+    from scripts.v7next_transplant import verify_transplant, TransplantError
+    up = "A, (X, Y) = 1, (2, 3)\n"
+    leaf = ('"""doc"""\nfrom __future__ import annotations\n\n\nA, (X, Y) = 1, (2, 3)\n')
+    with pytest.raises(TransplantError) as exc:
+        verify_transplant(up, leaf, ["A"], set(), "_h")
+    assert "X" in str(exc.value) and "Y" in str(exc.value)
+
+
+def test_attribute_target_is_complex_and_fails():
+    """`A, obj.attr = ...` mutates foreign state at import time — always an
+    undeclared extra even when A is requested."""
+    from scripts.v7next_transplant import verify_transplant
+    leaf = ('"""doc"""\nfrom __future__ import annotations\nimport os\n\n\n'
+            "A, os.environ_x = 1, 2\n")
+    rep = verify_transplant("A = 1\n", leaf, ["A"], set(), "_h")
+    assert rep["ok"] is False
+    assert any("complex target" in e for e in rep["undeclared_top_level"])
+
+
+def test_nested_tuple_all_requested_passes():
+    from scripts.v7next_transplant import verify_transplant
+    up = "A, (X, Y) = 1, (2, 3)\n"
+    leaf = ('"""doc"""\nfrom __future__ import annotations\n\n\nA, (X, Y) = 1, (2, 3)\n')
+    rep = verify_transplant(up, leaf, ["A", "X", "Y"], set(), "_h")
+    assert rep["undeclared_top_level"] == []
+    assert rep["ok"] is True

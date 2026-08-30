@@ -111,6 +111,26 @@ class TransplantResult:
 # extraction
 
 
+def _unfold_target(target: ast.expr) -> Tuple[List[str], bool]:
+    """All Names bound by an assignment target, at any nesting depth, plus a
+    flag for any non-Name leaf (attribute/subscript store — a target the
+    leaf-gate must treat as complex, wave-2 conformance review)."""
+    names: List[str] = []
+    complex_leaf = False
+    stack = [target]
+    while stack:
+        el = stack.pop()
+        if isinstance(el, ast.Starred):
+            stack.append(el.value)
+        elif isinstance(el, (ast.Tuple, ast.List)):
+            stack.extend(el.elts)
+        elif isinstance(el, ast.Name):
+            names.append(el.id)
+        else:
+            complex_leaf = True
+    return names, complex_leaf
+
+
 def _stmt_binding_names(node: ast.stmt) -> List[str]:
     """Names a top-level statement binds (defs, classes, plain/annotated assigns)."""
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -118,11 +138,7 @@ def _stmt_binding_names(node: ast.stmt) -> List[str]:
     if isinstance(node, ast.Assign):
         out: List[str] = []
         for target in node.targets:
-            for el in ([target] if not isinstance(target, (ast.Tuple, ast.List)) else target.elts):
-                if isinstance(el, ast.Starred):
-                    el = el.value
-                if isinstance(el, ast.Name):
-                    out.append(el.id)
+            out.extend(_unfold_target(target)[0])
         return out
     if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
         return [node.target.id]
@@ -951,19 +967,19 @@ def _flag_undeclared_top_level(leaf_source: str, symbols: List[str], handle: str
             continue
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            # Unfold to ANY depth: `A, B = ...`, `A, (X, Y) = ...`; a non-Name
+            # leaf (obj.attr, d[k]) marks the whole statement complex — it can
+            # never be a faithfully moved binding (wave-2 conformance review).
             names: Set[str] = set()
+            has_complex = False
             for t in targets:
-                # Unfold tuple/list targets: `A, B = 500, 10` binds both names
-                # (D12 lane false positive — the gate saw a Tuple, not Names).
-                elts = t.elts if isinstance(t, (ast.Tuple, ast.List)) else [t]
-                for el in elts:
-                    if isinstance(el, ast.Starred):
-                        el = el.value
-                    if isinstance(el, ast.Name):
-                        names.add(el.id)
-            if names and names <= (requested | owned):
+                got, complex_leaf = _unfold_target(t)
+                names.update(got)
+                has_complex = has_complex or complex_leaf
+            if not has_complex and names and names <= (requested | owned):
                 continue
-            extras.append(f"assignment to {sorted(names) or '<complex target>'} "
+            extras.append(f"assignment to {sorted(names) or '<complex target>'}"
+                          f"{' (complex target)' if has_complex else ''} "
                           f"(line {node.lineno})")
             continue
         if isinstance(node, ast.If) and isinstance(node.test, ast.Name) \

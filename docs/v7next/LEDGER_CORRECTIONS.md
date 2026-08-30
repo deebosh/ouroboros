@@ -439,3 +439,16 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    update_channels.py byte-identical across tip==ref==merge-base;
    settings_setup_contract.py / subscription_install_presets.py pure upstream
    drift (ref==merge-base, zero v7 delta) — upstream bytes stand.
+
+## From the integration seam (coordinator, base 0859b681, 2026-08-30)
+1. Superseding note to D04 entry "four landed leaves": the lane landed FIVE
+   registry leaves (tool_context, tool_catalog, tool_resolution,
+   registry_guards, registry_guard_process) — the list in that entry is the
+   authority, its count word is a typo (wave-2 conformance review item 6).
+2. Superseding note to D12 entry on the tuple-target gate: the verifier fix
+   landed in the wave-2 seam commit (unfold at any depth; non-Name leaves are
+   complex targets; probes in tests/test_v7next_transplant.py) — the "future
+   work / exits 2" claim in that entry is superseded.
+3. Seam repair: [split_pending] registry row carries domain IDs again
+   (["D04"]) and [split_pending_leaves] carries the two hot-deferred leaves —
+   the first seam commit wrote the leaf list into the wrong section.
