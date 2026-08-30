@@ -52,6 +52,14 @@ RELEASE_INVARIANT_PATHS = frozenset({
     "ouroboros/launcher_bootstrap.py",
     "ouroboros/repo_remotes.py",
     "supervisor/git_ops.py",
+    # The v7 G1 split moved the remote/managed-update/checkout-reset/rescue
+    # bodies out of the protected git_ops facade without moving any of the
+    # risk, so every inventory that protects the parent must cover the leaves
+    # (label parity — same rule as the D04 registry block above).
+    "supervisor/git_ops_remotes.py",
+    "supervisor/git_ops_rescue.py",
+    "supervisor/git_ops_reset.py",
+    "supervisor/git_ops_updates.py",
     "supervisor/update_merge.py",
     "supervisor/update_merge_policy.py",
 })

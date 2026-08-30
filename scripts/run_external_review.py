@@ -131,6 +131,13 @@ _RELEASE_MACHINERY_PATHS = frozenset({
     "ouroboros/tools/release_sync.py",
     "scripts/build_repo_bundle.py",
     "supervisor/git_ops.py",
+    # v7 G1 split leaves: release machinery that merely moved out of the
+    # git_ops facade keeps the release-sensitive label (parity, not blanket
+    # labelling — pinned by tests/test_git_ops_owner_facades.py).
+    "supervisor/git_ops_remotes.py",
+    "supervisor/git_ops_rescue.py",
+    "supervisor/git_ops_reset.py",
+    "supervisor/git_ops_updates.py",
 })
 
 _CONTRIBUTOR_CONTRACT = {

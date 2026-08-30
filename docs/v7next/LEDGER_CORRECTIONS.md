@@ -1008,3 +1008,150 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    (gateway/owner_settings, gateway/onboarding, gateway/settings; D12/D17
    precedent); server.py split per 1. Gateway ABI/alias retirements untouched
    (F3 territory); web/ untouched.
+## From the D10 lane (base a56bb76a, 2026-08-30)
+1. G1 split rows 3430-3457 (supervisor/git_ops.py -> 4 leaves, delta D35
+   module-handle) executed for 26 of 28 rows from tip bytes with the transplant
+   tool (ast=tokens=byte-roundtrip=True on every span, leaf_invariants=[],
+   unread_declared=[], exit 0 per leaf). Drift-probe (reference leaf --check
+   against `git show HEAD:supervisor/git_ops.py`, first step per leaf):
+   git_ops_rescue 8/8 spans byte-true; git_ops_remotes 3/4 (push_to_remote
+   BYTE-FALSIFIED by PURE UPSTREAM DRIFT — a23e12b1 routed the push through the
+   bounded network runner; tip bytes emitted); git_ops_updates and
+   git_ops_reset byte-true on every span except the two f-string rows below.
+2. Rows 3439 (prepare_managed_update) and 3449 (safe_restart) DEFERRED — both
+   spans stay facade DEFS: each reads the rebindable parent global BRANCH_DEV
+   (safe_restart also BRANCH_STABLE) inside f-strings, and the hardened
+   transplant gate fails closed on f-string reads of declared names ("the
+   token proof cannot cover f-string internals"). The reference leaves carry a
+   manual `_go().BRANCH_DEV` rewrite inside the f-strings, which this wave's
+   ast=tokens=bytes gate cannot re-prove (tokens_equal=False on exactly those
+   spans in the drift-probe). Their reads were dropped from the declared sets
+   (tool-verified unread otherwise); tests/test_git_ops_owner_facades.py pins
+   the two names as facade defs. Relocation returns if/when the tool grows
+   f-string token support (D12 lane already noted the same gate wants Tuple
+   support — same F5 tool-work theme).
+3. git_ops rows 1031-1032 (DRIVE_ROOT/REPO_DIR config-aware pre-init defaults,
+   semantic id D13) — HOT-DEFERRED: live semantic delta to a protected file
+   (tip still binds `pathlib.Path.home()/"Ouroboros"` at :26-27, upstream did
+   NOT absorb the hermetic-isolation fix). Not byte-preserving relocation, so
+   out of this lane's mandate; rides the protected-surface wave with
+   owner-visible handling (same class as the coordinator's safety.py row 1016
+   disposition). Its pin tests/test_git_ops_default_roots.py is NOT carried.
+4. update_merge split rows 3426-3429 (-> supervisor/update_merge_plan.py) —
+   HOT-DEFERRED WHOLE with the update engine (F2 organ): rows 3427-3429 carry
+   semantic id D34 (carrier engine insertion points, spans SSOT
+   release_sync.py) and the single verbatim row 3426 (`_git_run`) is
+   SOURCE-FALSIFIED — upstream's update-flow redesign DELETED _git_run from
+   tip update_merge.py and rewrote the three D34 bodies (+517-line drift vs
+   merge-base; post-cutoff supervisor/update_candidate.py exists at tip,
+   absent from oracle AND merge-base). A one-symbol update_merge_plan.py would
+   falsely anchor the F2 re-split (the D04 tool_result.py class). The oracle's
+   +84 release_sync.py D34 delta (span-descriptor SSOT) defers with it; pins
+   tests/test_update_merge_owner_facade.py / test_update_carriers.py /
+   test_carrier_rebase_helper.py NOT carried.
+5. tools/git.py split rows 374-415 executed for 41 of 42 rows from tip bytes
+   (five leaves, proof green per leaf, exit 0). Drift-probe against tip bytes:
+   git_plumbing 10/10 byte-true; git_evolution 3/5; git_repo_edit 2/4;
+   git_vcs_ops 7/10; git_review_cycle 7/12. Falsified spans, two classes:
+   (a) PURE UPSTREAM DRIFT (oracle==merge-base, tip moved):
+   _finalize_blocked_review, _review_cycle_infra_failure,
+   _check_evolution_commit_stage, _record_evolution_commit_receipt,
+   _repo_write, _str_replace_editor, _ff_pull (+ the drifted halves of
+   _run_reviewed_stage_cycle/_run_non_committing_review_cycle) — tip bytes
+   emitted; (b) PURE V7 DELTA (tip==merge-base, reference typed by the
+   git-control cutover a5e1cea3, oracle-only commit: _publish_git_error /
+   _publish_review_blocked plumbing and the typed returns in _git_status,
+   _git_diff, _stage_candidate_for_review and both stage cycles) — NOT
+   replayed, rides with the F2 typed-result organ (same class as D04 entry 2
+   / D05 entry 3). The reference-only plumbing symbols _publish_git_error and
+   _publish_review_blocked were NOT created.
+6. Row 392 (`_refuse_capped_attempt` -> git_review_cycle) — SOURCE-FALSIFIED:
+   upstream 386e9417 ("Max Review Cycles") DELETED the symbol and re-derived
+   the cap as the paid-cycle gate family (_free_cycle_gate,
+   _install_paid_dispatch_stamp, _advisory_and_tests_gate,
+   _repair_managed_merge_head, _finalize_pending_review,
+   _review_custody_pending, _subject_binding_mismatch_outcome,
+   _reconcile_and_clear_review_roster, _tests_preflight_block_message,
+   _managed_candidate_needs_proof, _managed_committing_phase_error,
+   _run_git_network_cmd — all unrowed post-cutoff facade symbols). The family
+   STAYS in the facade (F5 unrowed census); moved spans read it through the
+   call-time handle.
+7. STRUCTURAL DIVERGENCE from the reference, disclosed: the reference's
+   tools/git leaves bind cross-leaf/parent helpers with plain import-time
+   from-imports; this tree's leaves declare EVERY parent-scope name their
+   spans read and route it through the call-time `_git()` handle (the
+   D18/D33/D35 mechanism, sets pinned in tests/test_module_handle_extraction.py).
+   Reason, twice re-proven by red runs during the lane: the tip test surface
+   monkeypatches those names on the PARENT facade
+   (test_git_review_bypass_gate `_run_parallel_review`,
+   test_update_status_cache `ensure_official_update_remote`), and an
+   import-bound leaf copy makes every such patch silently dead — the
+   monolith's module-global patchability is part of the moved behaviour. The
+   only import-bound exceptions are the f-string reads the gate cannot
+   rewrite (_sanitize_git_error in three leaves; format_protected_paths and
+   utc_now_iso in one each), named in each leaf docstring; zero test patch
+   surface exists for them today. The oracle's leaf-retarget test adaptations
+   (rows 770/775 monkeypatch targets on git_review_cycle, test_commit_gate /
+   test_vcs_target_binding / test_runtime_mode_registry_gating leaf imports)
+   are therefore NOT mirrored — tip facade targets stay correct on this tree.
+8. Test-split rows 3150-3191 (tests/test_git_ops_recovery.py -> 3 siblings +
+   tests/_git_ops_recovery_shared.py) executed: 40/42 moved spans
+   byte-identical to the reference siblings;
+   test_official_fetch_timeout_kills_the_process_tree re-emitted from tip
+   bytes (upstream communicate(input=...) drift, same train as the
+   _run_git_process_bounded batch-stdin hunk); row 3179
+   (test_dependency_sync_is_panic_tracked_and_killed_on_timeout) carried WITH
+   the reference's hermetic root binding per its own row note (the tmp_path
+   DRIVE_ROOT monkeypatch that keeps the mocked pip timeout from appending to
+   the live supervisor log). Lossless: 48 == 48 test functions.
+9. Test-split rows 765-783 (tests/test_git_review_pipeline.py -> 4 siblings +
+   tests/_git_review_pipeline_shared.py) executed: 15/19 moved spans
+   byte-identical; re-emitted from tip: _get_registry_module (reference
+   imports the hot-deferred registry_core leaf — reverse-mapped to the tip
+   registry spelling), TestAdvisorySkipTests (post-cutoff upstream autouse
+   reviewer-slots fixture), TestBypassPathTestsRun / TestRouteSlotAwareBypassGate
+   (reference monkeypatch retargets, entry 7). The reference shared module's
+   unrowed `_get_git_review_cycle_module` accessor was NOT carried (nothing
+   on this tree reads it; facade targets stay live through the handle).
+   Lossless: 89 == 89 test callables. Path-keyed mirror: `_POPEN_ALLOWLIST`
+   in tests/test_process_custody.py += supervisor/git_ops_reset.py
+   (sync_runtime_dependencies moved with its waited+panic-tracked pip Popen —
+   mirrors the reference's own allowlist row).
+10. D13-remainder protective closure (coordinator LEDGER entry 4) landed by
+   this lane per the D04 additive precedent: RELEASE_INVARIANT_PATHS
+   (ouroboros/runtime_mode_policy.py, protected — strictly additive literal
+   entries + comment) and scripts/run_external_review.py::
+   _RELEASE_MACHINERY_PATHS += the four git_ops leaves; parity pinned by
+   tests/test_git_ops_owner_facades.py (protection + hot-code-parity clauses).
+   The reference's GIT_OPS_LEAF_MODULES/GIT_OPS_FAMILY_PATHS derived-set
+   re-cut of the protected file is NOT replayed (a structural rewrite beyond
+   additive closure — F5/owner decision); prompts-prose closure not touched
+   (same as D04 entry 11). HOT_CODE_PATHS needs NO git rows (parent unlabeled
+   at tip AND in the reference — parity, not blanket labelling).
+11. Suite adaptation, disclosed: tests/test_module_handle_extraction.py
+   `_module_bindings` gained Tuple-target unfolding (the git_ops facade binds
+   its bounded-network aliases as `A, B = x, y` at :302-303) — same class as
+   the D12 config-extraction Tuple fix. tests/test_git_extraction.py carried
+   with adaptations named in its docstring (tool_module_inventory clauses
+   dropped until that leaf lands; owner map minus the three reference-only /
+   retired names; size bounds re-based on tip: facade <=1800 — it retains the
+   paid-cycle gate family, the two deferred f-string spans and the catalog).
+12. Zero-v7-delta re-proofs for the rest of the domain: repo_remotes.py,
+   tools/git_rollback.py, version.py, update_recovery.py byte-identical
+   tip==ref==merge-base; tools/ci.py, tools/commit_gate.py, tools/git_pr.py,
+   tools/github.py, tools/review_revalidation.py, update_source.py pure
+   upstream drift (ref==merge-base, zero v7 delta) — upstream bytes stand.
+   update_candidate.py is a NEW post-cutoff upstream module (absent from
+   reference and merge-base; no rows) — upstream bytes stand.
+   update_merge_policy.py tri-divergence is fully owned by other lanes'
+   landed HOT_CODE closures vs the reference's fuller loop/tool rows (their
+   lanes) — no D10 action. size_ratchet_manifest.py regenerated with the
+   official generator (git_ops.py and both split test giants left
+   GIANT_PATHS; no new file enters any debt band).
+13. Base-inherited, NOT this lane's defect:
+   tests/test_smoke.py::test_size_ratchet_transition_against_explicit_base
+   fails at the CLEAN base a56bb76a under its default HEAD-parent base
+   (pre-proven in a detached worktree; BYTE_DEBT rows of four untouched files
+   vs the wave-4 seam's parent); with the explicit base
+   OURO_SIZE_RATCHET_BASE_REF=a56bb76a this lane's transition validates green
+   (1 passed). Integration seam owns the default-base repair.

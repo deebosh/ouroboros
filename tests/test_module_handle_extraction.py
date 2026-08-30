@@ -71,6 +71,95 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_reject_promoted_after_attachment_stage", "_relocate_promoted_attachments",
         "_stage_promoted_initial_attachments",
     })),
+    # D10 lane rows (oracle ouroboros_v7_wip @ 9f691656). git_ops leaves carry
+    # the reference's G1 `_go()` sets re-derived on tip bytes (safe_restart and
+    # prepare_managed_update stayed facade defs — the gate refuses f-string
+    # reads of rebindable globals — so their reads left the sets). The tools/
+    # git leaves declare EVERY parent-scope name their spans read at call time
+    # (the reference cut them with plain leaf imports, but the tip monolith's
+    # test surface monkeypatches those names on the parent — the module-global
+    # patchability contract survives only through `_git()`); the few f-string
+    # reads the gate cannot rewrite stay import-bound and are named in each
+    # leaf docstring.
+    "ouroboros/tools/git_evolution.py": ("ouroboros/tools/git.py", "_git", frozenset({
+        "_evolution_commit_authority", "_preserve_evolution_orphan",
+        "_record_commit_attempt", "run_cmd",
+    })),
+    "ouroboros/tools/git_plumbing.py": ("ouroboros/tools/git.py", "_git", frozenset({
+        "_BINARY_EXTENSIONS", "acquire_exclusive_file_lock", "format_protected_paths",
+        "get_runtime_mode", "run_cmd", "system_repo_dir_for", "unlink_lockfile",
+        "write_text",
+    })),
+    "ouroboros/tools/git_repo_edit.py": ("ouroboros/tools/git.py", "_git", frozenset({
+        "_CONTENT_OMITTED_PREFIX", "_authorized_managed_update_resolver",
+        "_binding_repo_rel", "_binding_targets_system_repo", "_check_shrink_guard",
+        "_current_runtime_mode", "_data_skill_path", "_invalidate_advisory",
+        "_str_match_replace", "build_resolved_resource_binding", "core_patch_notice",
+        "cross_skill_redirect_error", "decide_payload_short_form",
+        "is_protected_runtime_path", "is_skill_control_plane_path",
+        "mode_allows_protected_write", "normalize_repo_path",
+        "normalize_task_constraint", "protected_paths_in",
+        "protected_write_block_message", "resolve_payload_path", "safe_relpath",
+        "write_text",
+    })),
+    "ouroboros/tools/git_review_cycle.py": ("ouroboros/tools/git.py", "_git", frozenset({
+        "IDENTICAL_DIFF_BLOCK_REASON", "_DOC_ONLY_EXTENSIONS", "_acquire_git_lock",
+        "_advisory_and_tests_gate", "_aggregate_review_verdict",
+        "_authorized_managed_update_resolver", "_check_overlapping_review_attempt",
+        "_current_runtime_mode", "_ensure_gitignore", "_finalize_blocked_review",
+        "_finalize_pending_review", "_fingerprint_staged_diff", "_free_cycle_gate",
+        "_handle_revalidation_failure", "_install_paid_dispatch_stamp",
+        "_protected_paths_block_message", "_reconcile_and_clear_review_roster",
+        "_record_commit_attempt", "_release_git_lock",
+        "_review_binding_precondition_error", "_review_custody_pending",
+        "_review_cycle_infra_failure", "_run_parallel_review",
+        "_run_reviewed_stage_cycle", "_stage_candidate_for_review",
+        "_subject_binding_mismatch_outcome", "_unstage_binaries",
+        "classify_review_block", "handle_revalidation_failure",
+        "mode_allows_protected_write", "paths_from_name_status",
+        "protected_paths_in", "run_cmd", "safe_relpath",
+    })),
+    "ouroboros/tools/git_vcs_ops.py": ("ouroboros/tools/git.py", "_git", frozenset({
+        "_acquire_git_lock", "_binding_relative_path", "_ff_pull",
+        "_limit_git_output", "_release_git_lock", "_review_paths_from_porcelain_line",
+        "_run_git_network_cmd", "_vcs_binding", "_vcs_result",
+        "binding_targets_system_repo", "build_resolved_resource_binding",
+        "is_protected_runtime_path", "normalize_repo_path", "protected_paths_in",
+        "run_cmd", "safe_relpath",
+    })),
+    "supervisor/git_ops_remotes.py": ("supervisor/git_ops.py", "_go", frozenset({
+        "BRANCH_DEV", "REPO_DIR", "_configure_credential_helper",
+        "_git_network_bounded", "_has_remote", "configure_remote",
+        "ensure_official_update_remote", "git_capture",
+    })),
+    "supervisor/git_ops_rescue.py": ("supervisor/git_ops.py", "_go", frozenset({
+        "BRANCH_DEV", "DRIVE_ROOT", "REPO_DIR", "_atomic_write_bytes",
+        "_collect_repo_sync_state", "_copy_untracked_for_rescue",
+        "_create_rescue_snapshot", "_git_dir", "_link_rescue_to_evolution_transaction",
+        "_list_remotes", "_managed_remote_branch_for", "_managed_remote_name",
+        "_read_managed_repo_meta", "_run_git_process_bounded", "append_jsonl",
+        "atomic_write_text", "rescue_before_destructive_rollback",
+        "rescue_git_capture", "utc_now_iso",
+    })),
+    "supervisor/git_ops_reset.py": ("supervisor/git_ops.py", "_go", frozenset({
+        "BRANCH_DEV", "DRIVE_ROOT", "REPO_DIR", "_admission_gate_for_unsynced_tree",
+        "_clear_bootstrap_pin_marker", "_clear_update_intent",
+        "_collect_repo_sync_state", "_compute_ref_ahead_count",
+        "_create_rescue_snapshot", "_git_dir", "_guard_live_repo_destructive_git",
+        "_has_remote", "_maybe_repair_git_index", "_pin_to_bundle_sha_on_bootstrap",
+        "_preserve_branch_for_official_reset", "_read_managed_repo_meta",
+        "_read_update_intent", "_ref_points_at_ref", "_rescue_untracked_incomplete",
+        "_run_git_resilient", "_update_source", "append_jsonl", "git_capture",
+        "load_state", "preserve_local_ref_branch", "rescue_git_capture",
+        "save_state", "utc_now_iso",
+    })),
+    "supervisor/git_ops_updates.py": ("supervisor/git_ops.py", "_go", frozenset({
+        "OFFICIAL_UPDATE_REMOTE_URL", "_git_network_bounded", "_has_remote",
+        "_list_remotes", "_managed_remote_name", "_managed_update_target",
+        "_read_managed_repo_meta", "_resolve_managed_update_target",
+        "ensure_official_update_remote", "git_capture", "git_fetch_bounded",
+        "load_state", "managed_branch_defaults", "utc_now_iso",
+    })),
 }
 
 
@@ -84,7 +173,16 @@ def _module_bindings(tree: ast.Module) -> set[str]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.add(node.name)
         elif isinstance(node, ast.Assign):
-            bound.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            # Tuple targets unfold at any depth (the git_ops facade binds its
+            # bounded-network aliases as `A, B = x, y` — D10 lane adaptation,
+            # same class as the D12 config-extraction Tuple-target fix).
+            stack = list(node.targets)
+            while stack:
+                t = stack.pop()
+                if isinstance(t, ast.Name):
+                    bound.add(t.id)
+                elif isinstance(t, (ast.Tuple, ast.List)):
+                    stack.extend(t.elts)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             bound.add(node.target.id)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):

@@ -229,8 +229,23 @@ def test_loop_stable_symbols_match_the_v7_leaf_byte_for_byte():
 
 # ---------------------------------------------------------------------------
 # real case 3: supervisor/git_ops.py -> git_ops_remotes leaf (_go handle)
+#
+# The D10 lane landed the G1 split, so the LIVE git_ops.py is now the facade
+# (the three probe symbols are re-exports there, not spans). The corpus this
+# probe transplants is the pre-split monolith, pinned at the lane's base SHA —
+# the exact bytes the real extraction ran against.
 
-GO_UPSTREAM = _read(REPO / "supervisor" / "git_ops.py")
+_GO_BASE_SHA = "a56bb76a38ca92b39a659b4b6e63e07a76243a4f"
+try:
+    GO_UPSTREAM = subprocess.run(
+        ["git", "show", f"{_GO_BASE_SHA}:supervisor/git_ops.py"],
+        cwd=REPO, capture_output=True, text=True, check=True,
+    ).stdout
+except (subprocess.CalledProcessError, OSError):
+    GO_UPSTREAM = ""
+
+needs_go_corpus = pytest.mark.skipif(
+    not GO_UPSTREAM, reason="pre-split git_ops.py bytes not reachable via git show")
 
 # Ledger set minus BRANCH_DEV: only push_to_remote reads it, and that body
 # drifted upstream, so this fixture moves the three stable symbols.
@@ -260,6 +275,7 @@ log = logging.getLogger("supervisor.git_ops")
 GO_SYMBOLS = ["configure_remote", "configure_personal_remote", "_configure_credential_helper"]
 
 
+@needs_go_corpus
 def test_git_ops_declared_and_moved_symbols_prove():
     result = tp.transplant(GO_UPSTREAM, GO_SYMBOLS, GO_DECLARED, "_go",
                            parent_module="supervisor.git_ops", preamble=GO_PREAMBLE)
@@ -275,6 +291,7 @@ def test_git_ops_declared_and_moved_symbols_prove():
 
 
 @needs_ref
+@needs_go_corpus
 def test_git_ops_stable_symbols_match_the_v7_leaf_byte_for_byte():
     result = tp.transplant(GO_UPSTREAM, GO_SYMBOLS, GO_DECLARED, "_go",
                            parent_module="supervisor.git_ops", preamble=GO_PREAMBLE)

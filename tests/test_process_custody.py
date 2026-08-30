@@ -64,6 +64,9 @@ _POPEN_ALLOWLIST = {
     "ouroboros/tools/services.py",        # routed through spawn_supervised
     "supervisor/update_merge.py",        # bounded pre-restart import/compile smoke
     "supervisor/git_ops.py",             # shared bounded Git/dependency helpers (waited + panic-tracked)
+    # v7 G1 split: sync_runtime_dependencies (the waited + panic-tracked pip
+    # child) moved into the checkout/reset leaf with its custody unchanged.
+    "supervisor/git_ops_reset.py",
     "ouroboros/colab_bootstrap.py",      # bounded Colab clone/fetch helper
 }
 
