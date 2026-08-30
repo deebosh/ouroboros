@@ -301,7 +301,7 @@ class TestTouchedFilePack:
         # 80 KB of unique text — over the inline cap, well under 1 MB on disk.
         content = ("def line_for_test():\n    return 'payload'\n" * 2_400)[:80_000]
         (tmp_path / "huge_carrier.py").write_text(content, encoding="utf-8")
-        pack, omitted = mod.build_touched_file_pack(tmp_path, ["huge_carrier.py"])
+        pack, omitted = mod.build_touched_file_pack(tmp_path, ["huge_carrier.py"], inline_file_limit=inline_cap)
 
         # File is in omitted list — disclosure plumbing surfaces it.
         assert "huge_carrier.py" in omitted
@@ -337,7 +337,7 @@ class TestTouchedFilePack:
         # 100 KB file: actual count must appear verbatim in the note.
         content = "x" * 100_000
         (tmp_path / "carrier.lock").write_text(content, encoding="utf-8")
-        pack, omitted = mod.build_touched_file_pack(tmp_path, ["carrier.lock"])
+        pack, omitted = mod.build_touched_file_pack(tmp_path, ["carrier.lock"], inline_file_limit=inline_cap)
 
         assert "carrier.lock" in omitted
         assert "100,000 chars exceeds 60,000 char inline limit" in pack
@@ -366,7 +366,7 @@ class TestTouchedFilePack:
         )
 
         paths = ["uv.lock", "site_install_index.html", "api_types.js", "real_change.py"]
-        pack, omitted = mod.build_touched_file_pack(tmp_path, paths)
+        pack, omitted = mod.build_touched_file_pack(tmp_path, paths, inline_file_limit=inline_cap)
 
         # All three large files are in the omitted list with disclosed notes.
         assert "uv.lock" in omitted

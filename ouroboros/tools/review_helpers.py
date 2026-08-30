@@ -805,8 +805,16 @@ def build_touched_file_pack(
     represent_binary: bool = False,
     m0_tree: str = "",  # managed resolutions: binary rows carry the M0 baseline identity
     staged_tree: str = "",
+    inline_file_limit: int | None = None,
 ) -> tuple[str, list[str]]:
-    """Read changed files into a prompt code pack plus omission list."""
+    """Read changed files into a prompt code pack plus omission list.
+
+    ``inline_file_limit`` (opt-in, advisory only): when set, a single file whose
+    content exceeds it is omitted from the inline pack (disclosed via the
+    returned list) instead of inlined in full — the staged diff hunk still
+    carries the change. Scope/triad callers leave it ``None`` so their own
+    fit ladders keep ownership of degradation (ibl-local-2d41a76a0c44).
+    """
     if paths is None:
         paths = list_changed_paths_from_git_status(repo_dir)
 
@@ -879,18 +887,19 @@ def build_touched_file_pack(
             parts.append(f"### {rel}\n\n*(omitted — unreadable file: {read_exc})*\n")
             continue
 
-        # Advisory inline-budget cap: aggregate prompt must stay under
-        # _ADVISORY_PROMPT_MAX_CHARS = 1_600_000. A single large generated
-        # file (uv.lock ~733KB, vendor dumps, install pages, big fixtures)
-        # by itself can blow the budget when combined with governance docs
-        # + diff + checklist. Omit such files from the inline pack and
-        # disclose via the existing `omitted` plumbing; the staged diff
-        # hunk still carries the actual change.
-        if len(content) > _ADVISORY_INLINE_FILE_LIMIT:
+        # Advisory inline-budget cap (opt-in via inline_file_limit): the
+        # aggregate advisory prompt must stay under _ADVISORY_PROMPT_MAX_CHARS
+        # = 1_600_000. A single large generated file (uv.lock ~733KB, vendor
+        # dumps, install pages, big fixtures) can blow the budget beside the
+        # governance docs + diff + checklist. Omit such files from the inline
+        # pack and disclose via the existing `omitted` plumbing; the staged
+        # diff hunk still carries the actual change. Scope/triad callers pass
+        # no limit — their own fit ladders own degradation.
+        if inline_file_limit is not None and len(content) > inline_file_limit:
             omitted.append(rel)
             parts.append(
                 f"### {rel}\n\n"
-                f"*(omitted — {len(content):,} chars exceeds {_ADVISORY_INLINE_FILE_LIMIT:,} "
+                f"*(omitted — {len(content):,} chars exceeds {inline_file_limit:,} "
                 f"char inline limit; staged diff hunk covers the actual change)*\n"
             )
             continue
@@ -921,7 +930,11 @@ def build_advisory_changed_context(
         p for p in resolved_paths
         if p not in (exclude_paths or set())
     ]
-    touched_pack, omitted = build_touched_file_pack(repo_dir, filtered_paths if filtered_paths is not None else None)
+    touched_pack, omitted = build_touched_file_pack(
+        repo_dir,
+        filtered_paths if filtered_paths is not None else None,
+        inline_file_limit=_ADVISORY_INLINE_FILE_LIMIT,
+    )
     if not touched_pack.strip():
         touched_pack = "(no touched files)"
     return resolved_paths, touched_pack, omitted
