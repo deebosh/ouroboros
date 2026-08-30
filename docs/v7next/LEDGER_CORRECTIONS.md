@@ -878,3 +878,26 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    control.py HIDDEN_LEGACY_SCHEDULE_PARAMS, _context_task_depth,
    _materialize_child_attachment_manifest, maybe_emit_delegated_run_fanout,
    get_tools + the predecessor family that rode into control_routing.
+## From the integration seam (coordinator, D13 dispositions, 2026-08-30)
+1. safety.py row 1016 (retire module-level supervisor import + _record_safety_usage,
+   pin test_safety_module_has_no_import_time_dependency_on_the_supervisor) —
+   LIVE, NOT landed on tip (import at :25, call at :1010). HOT-DEFERRED:
+   protected file; rides the protected-surface wave (F2/F3) with owner-visible
+   handling.
+2. UNROWED live delta `_safety_drive_root` (fixes cwd-relative "../data" in
+   safety.py, tip site :899; oracle had no ledger row, prose-only in
+   DOMAIN_MAP). MUST gain a carried-ledger row before any replay; tip drift
+   collapsed two mb sites into one — replay needs re-derivation. Candidate
+   for the F5 carried-ledger mint. RISK: without this note the only useful
+   unrowed safety delta would be silently lost.
+3. shell_guards.py lazy-import rebind (tools.core → core_file_tools) —
+   confirmed pending with the D05 consumer-rebind wave (D05 ledger §4(e));
+   chain alive through the facade on tip.
+4. runtime_mode_policy oracle delta remainder: registry_core.py +
+   tool_result.py protection closure returns WITH those two hot-deferred
+   leaves (D04 ledger §11); GIT_OPS_FAMILY_PATHS / RELEASE_INVARIANT_PATHS
+   re-cut returns with the G1 git_ops split (D10 wave) — recording now would
+   protect nonexistent files.
+5. D13 census note: tip toml gives D13 eight owners vs oracle DOMAIN_MAP six —
+   write_shape.py and deliverables_shell.py are new upstream surfaces
+   post-freeze; not an oracle gap.

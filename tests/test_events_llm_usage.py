@@ -172,3 +172,14 @@ def test_task_metrics_are_persisted_and_forwarded_to_live_logs(tmp_path):
     assert written["duration_sec"] == 3.142
     assert pushed[0]["task_id"] == "task-99"
     assert pushed[0]["tool_errors"] == 1
+
+
+def test_llm_usage_serializer_carries_web_search_sources():
+    """The llm_usage serializer must persist web_search_sources (GAIA
+    campaign contract). Moved here from tests/test_devtools_benchmarks.py:
+    after the D08 split the serializer lives with its budget family, and
+    this suite owns the llm_usage event surface."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "supervisor" / "events_budget.py").read_text(encoding="utf-8")
+    assert "web_search_sources" in src

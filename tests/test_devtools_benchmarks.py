@@ -3567,11 +3567,6 @@ def test_gaia_audit_gold_verbatim_alone_is_weak_only(tmp_path):
     assert audit._distinctive_gold(gold)
 
 
-def test_gaia_events_serializer_carries_web_search_sources():
-    # v7next D08: the llm_usage serializer lives with its budget family
-    src = (REPO_ROOT / "supervisor" / "events_budget.py").read_text(encoding="utf-8")
-    assert "web_search_sources" in src
-
 
 def test_gaia_score_leakage_adjusted(tmp_path):
     from devtools.benchmarks.gaia import score_gaia
