@@ -694,6 +694,64 @@ def _restore_protected_runtime_paths(repo_dir: pathlib.Path, paths: list[str]) -
     return restored
 
 
+# Size-ratchet manifest path. Hardcoded as a module-local constant so this
+# helper does not depend on a top-level import of ouroboros.review (which
+# pulls a wider module graph: review_helpers, git_status_parse,
+# release_sync). The path matches SIZE_RATCHET_MANIFEST_PATH in
+# ouroboros/review.py:28; kept inline so shell.py's auto-restore branch
+# is self-contained.
+_SIZE_RATCHET_MANIFEST_PATH = "ouroboros/size_ratchet_manifest.py"
+
+
+def _maybe_preserve_size_ratchet_update(
+    repo_dir: pathlib.Path, dirty: list[str]
+) -> tuple[list[str], str]:
+    """Sanctioned size-ratchet manifest update path (ibl-local-29ee0d0e37bc).
+
+    The manifest sits on ``FROZEN_CONTRACT_PATHS`` and the shell auto-restore
+    reverts it after every shell command. But the OFFICIAL CI ``size_ratchet``
+    lane ALSO blocks on size-ratchet drift, so an agent that gets the
+    manifest right should be able to KEEP its edit instead of losing it to a
+    reverter — the manifest still has to pass ``commit_reviewed``'s own
+    review gates, but it must be allowed to survive the shell-restore step.
+
+    Returns:
+        ``([], note)`` — the dirty set is exactly the size-ratchet manifest
+            AND the in-tree manifest validates cleanly against HEAD's
+            committed authority. The caller suppresses the revert and emits
+            ``note`` so the agent sees the preservation.
+        ``(dirty, "")`` — any other case: another protected path is also
+            dirty, the manifest fails validation, the validator raised, or
+            the manifest isn't dirty at all. The caller reverts exactly as
+            before. A validator exception is treated as a validation failure
+            (fail-soft: the manifest gets reverted, the agent retries through
+            the normal reviewed path).
+    """
+    if dirty != [_SIZE_RATCHET_MANIFEST_PATH]:
+        return dirty, ""
+    try:
+        # Lazy import: ouroboros.review pulls a wider module graph
+        # (review_helpers, git_status_parse, release_sync). The cost is
+        # paid only when an agent has actually dirtied the manifest, which
+        # is the rare path.
+        from ouroboros.review import validate_size_ratchet
+
+        violations = validate_size_ratchet(repo_dir)
+    except Exception:
+        return dirty, ""
+    if violations:
+        return dirty, ""
+    note = (
+        "\n\nℹ️ SIZE_RATCHET_MANIFEST_UPDATE_PRESERVED: "
+        "'ouroboros/size_ratchet_manifest.py' was modified by a shell command, "
+        "but the in-tree change is a valid size-ratchet update against HEAD's "
+        "committed authority (no transition violations, exactness holds). "
+        "The change was PRESERVED instead of auto-reverted; it must still "
+        "pass commit_reviewed's own review gates to land."
+    )
+    return [], note
+
+
 _SHELL_BUILTINS = frozenset([
     "cd", "source", ".", "export", "alias", "eval",
     "set", "unset", "pushd", "popd", "read", "ulimit",
@@ -1258,14 +1316,25 @@ def _run_shell(
                 if pathlib.Path(repo_root).resolve(strict=False) == system_repo:
                     protected_dirty = _protected_runtime_dirty_paths(repo_root)
                     if protected_dirty:
-                        restored = _restore_protected_runtime_paths(repo_root, protected_dirty)
-                        if restored:
-                            protected_restore_note = (
-                                "\n\n⚠️ PROTECTED_PATH_AUTO_RESTORED: this command changed protected "
-                                "runtime file(s), which shell commands cannot modify (use edit_text "
-                                "through the normal review path instead); reverted: "
-                                + ", ".join(restored[:5])
-                            )
+                        # ibl-local-29ee0d0e37bc: sanctioned size-ratchet update path.
+                        # If the ONLY dirty protected path is the size-ratchet manifest,
+                        # validate the in-tree manifest against HEAD's committed
+                        # authority and preserve a clean update instead of reverting it.
+                        # Otherwise fall through to the existing revert-everything flow.
+                        protected_dirty, preserved_note = _maybe_preserve_size_ratchet_update(
+                            repo_root, protected_dirty
+                        )
+                        if preserved_note:
+                            protected_restore_note = preserved_note
+                        if protected_dirty:
+                            restored = _restore_protected_runtime_paths(repo_root, protected_dirty)
+                            if restored:
+                                protected_restore_note = (
+                                    "\n\n⚠️ PROTECTED_PATH_AUTO_RESTORED: this command changed protected "
+                                    "runtime file(s), which shell commands cannot modify (use edit_text "
+                                    "through the normal review path instead); reverted: "
+                                    + ", ".join(restored[:5])
+                                )
             except Exception:
                 log.debug("protected-runtime-path restore check failed", exc_info=True)
         undeclared_user_outputs = _mentioned_user_file_outputs_without_declaration(ctx, cmd, outputs, scratch_abs=scratch_abs, command_start_ts=_command_start_ts)
