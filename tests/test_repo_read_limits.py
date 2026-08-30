@@ -269,7 +269,11 @@ def test_consciousness_context_includes_architecture_md(tmp_path):
         "BackgroundConsciousness._build_context() must include a '## ARCHITECTURE.md' section. "
         "This is a core governance artifact — see docs/DEVELOPMENT.md."
     )
-    assert "This is the architecture doc." in context
+    # b728762c: consciousness forces ARCHITECTURE.md to the navigation map in
+    # both context modes (the BG loop reads full sections on demand via
+    # read_file); the full body is intentionally NOT inlined.
+    assert "navigation map" in context
+    assert "docs/ARCHITECTURE.md" in context
 
 
 def test_consciousness_context_architecture_before_knowledge_base(tmp_path):

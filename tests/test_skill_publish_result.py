@@ -626,7 +626,7 @@ def test_pipeline_uses_leaf_veto_and_stays_below_hard_module_ceiling(monkeypatch
     monkeypatch.setattr(
         pipeline,
         "derive_loop_outcome",
-        lambda *_args: _loop_outcome("pass"),
+        lambda *_args, **_kwargs: _loop_outcome("pass"),
     )
     outcome = pipeline._derive_host_bound_loop_outcome(
         SimpleNamespace(),
