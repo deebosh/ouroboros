@@ -189,15 +189,19 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
     return errors
 
 
-_HOOK_PATH_RE = re.compile(r"\b(?:tests|scripts|docs)/[\w./-]+\.(?:py|md|toml)\b")
+# Any-extension token, anchored so `not-scripts/x.py` is not misread as a
+# scripts/ reference (round 4: lookbehind rejects a preceding path character).
+_HOOK_PATH_RE = re.compile(r"(?<![\w./-])(?:tests|scripts|docs)/[\w./-]+\.\w+")
 
 
 def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
-    """Release-bar hook contract (F0 review rounds 1-3): a shipped row's
+    """Release-bar hook contract (F0 review rounds 1-4): a shipped row's
     verification hook must RESOLVE — prose alone cannot pass. At least one
-    repo-path reference must be present, and every referenced path must exist
-    in the tree. Outside --release hooks stay free prose (they name future
-    suites while the work is pending)."""
+    repo-path reference must be present, EVERY referenced token must exist
+    (any extension — a smuggled bogus reference next to a valid one is an
+    error, not ignored), and the path must stay inside its top directory
+    (`tests/../x` traversal is rejected). Outside --release hooks stay free
+    prose (they name future suites while the work is pending)."""
     hook = row["verification hook"]
     paths = _HOOK_PATH_RE.findall(hook.replace("\\|", "|"))
     errors: list[str] = []
@@ -206,7 +210,13 @@ def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
             f"release: {row['id']} hook has no resolvable repo-path reference "
             "(tests/, scripts/ or docs/ file) — prose-only hooks cannot ship")
     for p in paths:
-        if not (REPO_ROOT / p).is_file():
+        top = p.split("/", 1)[0]
+        candidate = (REPO_ROOT / p).resolve()
+        top_root = (REPO_ROOT / top).resolve()
+        inside = candidate == top_root or str(candidate).startswith(str(top_root) + "/")
+        if ".." in p.split("/") or not inside:
+            errors.append(f"release: {row['id']} hook path escapes {top}/: {p}")
+        elif not candidate.is_file():
             errors.append(f"release: {row['id']} hook references missing file {p}")
     return errors
 
