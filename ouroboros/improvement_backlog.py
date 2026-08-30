@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import pathlib
 import re
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ from ouroboros.utils import utc_now_iso
 
 BACKLOG_TOPIC = "improvement-backlog"
 BACKLOG_REL_PATH = f"memory/knowledge/{BACKLOG_TOPIC}.md"
+BACKLOG_ARCHIVE_REL_PATH = f"memory/knowledge/{BACKLOG_TOPIC}.archive.md"
 _BACKLOG_TITLE = "# Improvement Backlog"
 _BACKLOG_PREAMBLE = (
     "This topic stores concrete, evidence-backed improvement items discovered during task execution.\n"
@@ -20,10 +22,54 @@ _BACKLOG_PREAMBLE = (
     "Before implementation, run plan_task for non-trivial backlog items."
 )
 _DEFAULT_BACKLOG_TEXT = f"{_BACKLOG_TITLE}\n\n{_BACKLOG_PREAMBLE}\n"
+_ARCHIVE_HEADER = (
+    "# Improvement Backlog — Groom Archive\n\n"
+    "This file accumulates backlog items dropped by `groom_backlog` (the size-triggered LLM groom).\n"
+    "Items here are preserved FORENSICALLY so a cull is never a silent data loss "
+    "(BIBLE P1: no silent amputation).\n"
+    "Each entry carries `status: groom-culled` with a `closed_at` timestamp marking the groom that "
+    "removed it. Re-import via `merge_backlog_text` after manual review.\n"
+)
 
 
 def backlog_path(drive_root: Any) -> pathlib.Path:
     return pathlib.Path(drive_root) / BACKLOG_REL_PATH
+
+
+def archive_backlog_path(drive_root: Any) -> pathlib.Path:
+    return pathlib.Path(drive_root) / BACKLOG_ARCHIVE_REL_PATH
+
+
+def _append_groom_archive(archive_path: pathlib.Path, items: List[Dict[str, Any]]) -> None:
+    """Append culled items to the groom archive (BIBLE P1: no silent amputation).
+
+    Seeds a forensic header on first use; subsequent appends are strictly
+    append-only. Each archived row carries ``status: groom-culled`` and a
+    ``closed_at`` timestamp so a re-import via ``merge_backlog_text`` can
+    distinguish archive rows from live items. Raises on any filesystem/lock
+    failure so callers can fail closed (a cull with no archive is the bug).
+    """
+    if not items:
+        return
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    needs_header = not archive_path.exists() or archive_path.stat().st_size == 0
+    now = utc_now_iso()
+    archived_blocks: List[str] = []
+    for it in items:
+        row = {k: v for k, v in it.items() if k != "_raw"}
+        row["status"] = "groom-culled"
+        row["closed_at"] = now
+        archived_blocks.append(_serialize_item(row))
+    with _locked_text_file(archive_path, mode="a") as fh:
+        if needs_header:
+            fh.write(_ARCHIVE_HEADER)
+            fh.write("\n")
+        for block in archived_blocks:
+            fh.write("\n\n")
+            fh.write(block)
+        if archived_blocks:
+            fh.write("\n")
+        fh.flush()
 
 
 @contextmanager
@@ -470,7 +516,7 @@ def format_backlog_digest(drive_root: Any, *, limit: int = 5, max_chars: int = 2
     return text
 
 
-_GROOM_CAP = 30
+_GROOM_CAP = int(os.environ.get("OUROBOROS_BACKLOG_GROOM_CAP", "120"))
 
 _GROOM_PROMPT = """You are grooming Ouroboros's improvement backlog. Goals:
 - Merge near-duplicate items (keep the clearest summary + the higher priority; set the survivor's count to the summed count).
@@ -597,6 +643,22 @@ def groom_backlog(drive_root: Any, *, cap: int = _GROOM_CAP) -> int:
         })
     if not kept_fp or len(kept_fp) > cap or len(kept_fp) < max(1, min(len(fp_items), cap) // 2):
         return 0
+
+    # ARCHIVE BEFORE DROP (BIBLE P1: no silent amputation). Fingerprinted items
+    # the model is culling are written to the forensic archive FIRST; the live
+    # write only happens if the archive succeeded. Items already closed
+    # (status in done/wont_fix) carry their own closure trail and are NOT
+    # re-archived — archival is for items lost to a size-driven cull.
+    dropped: List[Dict[str, Any]] = [
+        it for it in fp_items
+        if str(it.get("fingerprint") or "") not in seen_fp
+        and str(it.get("status") or "open").lower() not in ("done", "wont_fix")
+    ]
+    if dropped:
+        try:
+            _append_groom_archive(archive_backlog_path(drive_root), dropped)
+        except Exception:
+            return 0  # FAIL CLOSED: a cull without an archive is the bug.
 
     final = kept_fp + nofp_items  # hand-added items always survive, unchanged
     with _locked_text_file(path, mode="r+") as fh:

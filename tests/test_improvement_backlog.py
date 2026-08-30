@@ -327,3 +327,80 @@ def test_recurrence_reopens_done_item(tmp_path):
     reopened = load_backlog_items(tmp_path)[0]
     assert reopened["status"] == "open"
     assert int(reopened["count"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# groom archive-before-drop (ibl-local-8e14e727409d)
+# ---------------------------------------------------------------------------
+
+
+def test_groom_backlog_archives_dropped_open_items(tmp_path, monkeypatch):
+    """A size-driven cull must ARCHIVE every dropped open fingerprinted item to
+    the groom archive, never silently discard it (BIBLE P1)."""
+    import json as _json
+
+    from ouroboros import improvement_backlog as ib
+
+    _seed_many(tmp_path, 40)
+    items = load_backlog_items(tmp_path)
+    keep = [
+        {"id": it["id"], "fingerprint": it["fingerprint"], "summary": it["summary"], "status": "open"}
+        for it in items[:20]
+    ]
+    dropped_ids = {it["id"] for it in items[20:]}
+    _patch_groom_llm(monkeypatch, _json.dumps(keep))
+
+    assert ib.groom_backlog(tmp_path, cap=30) == 20
+    live_ids = {it["id"] for it in load_backlog_items(tmp_path)}
+    assert live_ids.isdisjoint(dropped_ids)  # gone from live
+
+    archive_path = ib.archive_backlog_path(tmp_path)
+    assert archive_path.exists()
+    archive_text = archive_path.read_text(encoding="utf-8")
+    for did in dropped_ids:
+        assert f"### {did}\n" in archive_text, did
+    assert "status: groom-culled" in archive_text
+    assert "closed_at:" in archive_text
+
+
+def test_groom_backlog_fails_closed_when_archive_write_fails(tmp_path, monkeypatch):
+    """If the archive append raises, the live cull must NOT happen — a drop with
+    no archive is exactly the bug this guards."""
+    import json as _json
+
+    from ouroboros import improvement_backlog as ib
+
+    _seed_many(tmp_path, 40)
+    items = load_backlog_items(tmp_path)
+    before = len(items)
+    keep = [
+        {"id": it["id"], "fingerprint": it["fingerprint"], "summary": it["summary"], "status": "open"}
+        for it in items[:20]
+    ]
+    _patch_groom_llm(monkeypatch, _json.dumps(keep))
+
+    def _boom(*_a, **_k):
+        raise OSError("archive volume unavailable")
+
+    monkeypatch.setattr(ib, "_append_groom_archive", _boom)
+
+    assert ib.groom_backlog(tmp_path, cap=30) == 0  # fail closed
+    assert len(load_backlog_items(tmp_path)) == before  # live file untouched
+
+
+def test_groom_cap_default_is_raised_and_env_configurable(monkeypatch):
+    """The hard cap of 30 was far below the real distinct-item count; the default
+    is now 120 and overridable via OUROBOROS_BACKLOG_GROOM_CAP."""
+    import importlib
+
+    from ouroboros import improvement_backlog as ib
+
+    assert ib._GROOM_CAP == 120
+
+    monkeypatch.setenv("OUROBOROS_BACKLOG_GROOM_CAP", "250")
+    reloaded = importlib.reload(ib)
+    try:
+        assert reloaded._GROOM_CAP == 250
+    finally:
+        monkeypatch.delenv("OUROBOROS_BACKLOG_GROOM_CAP", raising=False)
+        importlib.reload(ib)
