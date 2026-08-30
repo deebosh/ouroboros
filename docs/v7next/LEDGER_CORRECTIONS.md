@@ -649,3 +649,103 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    tip already re-homed _provider_recovery_hint into loop_transport itself);
    the same import line in tests/test_context_overflow_hint.py keeps the tip
    spelling.
+
+## From the D14 lane (base 92238298, 2026-08-30)
+1. extension_loader.py split rows 2467-2519 (53 rows, six leaves) RE-PROVEN
+   against tip bytes: 49 spans byte-identical between the reference leaves and
+   `git show HEAD:ouroboros/extension_loader.py`; 4 spans BYTE-FALSIFIED as
+   copy sources by PURE UPSTREAM DRIFT (oracle==merge-base 8028f1df for every
+   one) and re-emitted from tip bytes: `_validate_child_ui_descriptor` and
+   `PluginAPIImpl` (widget-geometry promotion `_widget_geometry_from_render`),
+   `runtime_state_for_skill_name` / `runtime_state_for_loaded_skill` (durable
+   companion-health overlay `_apply_durable_extension_health`). Transplant-tool
+   verify per leaf: every span ast=tokens=bytes=True, undeclared_top_level=[],
+   leaf_invariants=[], exit 0 (80 spans across the ten leaves of this lane).
+2. UNROWED tip riders (candidate rows for the carried ledger):
+   `_widget_geometry_from_render` -> ouroboros/extension_surface_names.py
+   (readers live in two leaves — child_catalog and plugin_api — and it is the
+   theme sibling of rowed `_widget_span_from_render`, which those same leaves
+   already import); `_apply_durable_extension_health` ->
+   ouroboros/extension_liveness.py (its only readers are the two moved
+   runtime_state_* spans). The facade re-exports both; the carried identity
+   suite pins both owners.
+3. Row 2519-family `_ws_broadcaster`: moved to extension_plugin_api.py and
+   deliberately NOT aliased on the facade (rebindable module global — a
+   facade copy would freeze the value); RE-CONFIRMED as the reference
+   contract, pinned by tests/test_extension_loader_extraction.py::
+   test_the_broadcaster_slot_has_exactly_one_binding. server.py reaches it
+   only through re-exported `set_ws_broadcaster`.
+4. skill_review.py split rows (31 rows, four leaves): 25 executed from tip
+   bytes. SIX rows SUPERSEDED by upstream's own re-decomposition (386e9417
+   "Max Review Cycles" moved the accepted-rebuttal ledger and the wave-budget
+   refusal whole into ouroboros/skill_review_cycles.py before this lane):
+   `_accepted_rebuttals_path`, `_load_accepted_rebuttals`,
+   `_persist_rebuttal_flips`, `_fail_items_from_history_entry`,
+   `_record_accepted_rebuttal` (rebuttals-leaf rows) and
+   `_review_wave_budget_block` (prompt-leaf row). Upstream ownership stands;
+   the facade keeps the historical underscore aliases via tip's own cycles
+   import; the carried identity suite pins that alias identity. The rebuttals
+   leaf was emitted with its four remaining rows; the prompt leaf imports
+   `load_accepted_rebuttals` from skill_review_cycles (tip truth), not from
+   the rebuttals leaf as in the reference.
+5. skill_review drifted spans re-emitted from tip bytes (5): `_read_skill_text`
+   + `_build_skill_file_packs` (payload-snapshot digest gate,
+   expected_content_hash), `_build_review_prompt` +
+   `_run_skill_advisory_pre_review` (provider-neutral advisory critic rework
+   f8d87c69 — "Optional Advisory Pre-Review", run_advisory_critic, hasattr
+   no-op trap removed), `render_skill_review_block` (slot_id actor keys,
+   distinct-item count, sanitize_tool_result_for_log).
+6. Test rows tests/test_extension_loader.py (45, five siblings + shared):
+   tip file has ZERO upstream drift since merge-base; 43 moved bodies
+   byte-identical, 1 reference adaptation KEPT (dual supervisor patch in
+   test_server_pickup_spawns_stops_and_redrives_missing_companion — PluginAPI
+   owner reads the supervisor from its own leaf), 1 reference spelling
+   REVERSE-MAPPED to tip (worker_main lives in supervisor/workers.py at this
+   tip; the reference's supervisor/worker_process.py is the D08 split still
+   pending here). Lossless: 52 test names before == 52 after, zero dup names.
+7. Test rows tests/test_skill_review.py (65, five siblings + shared): 58
+   moved bodies byte-identical; 3 re-emitted from tip bytes (pure test drift:
+   advisory_model_credentials_missing label, provider-neutral advisory
+   heading, review-delivery capture in
+   test_review_skill_prompt_loads_core_governance_artifacts); 3 reference
+   adaptations KEPT (patch retargets to leaf owners in
+   test_review_skill_quorum_failure_on_one_responder and the two pack-budget
+   tests). Row `test_skill_advisory_private_guards_precede_availability`
+   SOURCE-FALSIFIED: upstream f8d87c69 deleted the test and replaced it with
+   `test_skill_advisory_pytest_guard_precedes_availability` +
+   `test_skill_advisory_missing_internal_symbol_is_loud_not_silent`; per the
+   wave-2 rule the successors stay in the remainder with tip bytes (theme
+   re-home is F5) and the reference copy of the deleted test was NOT carried.
+   Lossless: 74 test names before == 74 after, zero dup names.
+8. Identity suites carried: tests/test_extension_loader_extraction.py gains
+   the two rider rows of entry 2; tests/test_skill_review_extraction.py
+   adapted to tip — the reference's tool_module_inventory clauses dropped
+   (v7-only mechanism, module absent at this tip; F5 restores it with its
+   owner), a cycles-alias identity test added for the six superseded names,
+   the facade size bound relaxed 800 -> 900 (tip retains the cycles gate,
+   paid-fact stamping and _persist_reviewed_outcome the oracle-era monolith
+   did not have), and the three tip-retained lifecycle members added to the
+   patchable-seams pin.
+9. Dead-patch class closed: the remainder's
+   `patch("ouroboros.skill_review._run_skill_advisory_pre_review", ...)`
+   retargeted to the prompt owner (mirrors the reference remainder :314);
+   tests/test_extension_companion.py dual-patches get_global_supervisor on
+   extension_plugin_api + extension_loader (2 tests, mirrors the reference
+   adaptation; the single-module patch was proven dead by a red run). Every
+   other facade-level patch site of moved names was verified LIVE: all
+   production consumers of is_extension_live / runtime_state_for_* /
+   `_lock`+`_tools` (skill_loader:1414) do call-time facade imports.
+10. NOT carried, no ledger rows: the 8 post-cutoff D14 modules
+   (betterleaks_runtime, skill_payload_binding, skill_publish_github/result/
+   scanner/snapshot — secret-safe publishing train 8cc2ac69;
+   skill_review_cycles — 386e9417; skill_review_usage — f18da8c3) stand on
+   upstream bytes untouched. The reference's UNROWED `failure_kind` delta on
+   ouroboros/extension_process_runner.py (typed timeout classification,
+   consumed by the reference's tools/extension_dispatch.py:187) is NOT
+   replayed — typed-dispatch family, Ф3 territory; tip bytes stand. The
+   supervised-future leak (tip extension_plugin_api.py span of PluginAPIImpl)
+   is preserved as-is per the plan (Ф3-acceptance carries the direct
+   regression test). Pre-existing at base, untouched, for the record: 10
+   ast-identical duplicate test bodies between
+   tests/test_review_cycles_dispatch.py and
+   tests/test_review_cycles_skill_dispatch.py.

@@ -5,7 +5,6 @@ BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 GIANT_PATHS = (
     "devtools/benchmarks/osworld/run_cu_bridge_agent.py",
     "devtools/benchmarks/osworld/run_step_agent.py",
-    "ouroboros/extension_loader.py",
     "ouroboros/loop.py",
     "ouroboros/review_state.py",
     "ouroboros/tools/claude_advisory_review.py",
@@ -22,7 +21,6 @@ GIANT_PATHS = (
     "tests/test_delegated_subagent_transport.py",
     "tests/test_delivery_forced_finalization.py",
     "tests/test_devtools_benchmarks.py",
-    "tests/test_extension_loader.py",
     "tests/test_extensions_api.py",
     "tests/test_git_ops_recovery.py",
     "tests/test_git_review_pipeline.py",
@@ -38,7 +36,6 @@ GIANT_PATHS = (
     "tests/test_scope_review.py",
     "tests/test_skill_exec.py",
     "tests/test_skill_loader.py",
-    "tests/test_skill_review.py",
     "tests/test_task_status_flow.py",
     "tests/test_ui_smoke_playwright.py",
     "web/modules/chat.js",

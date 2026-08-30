@@ -10,6 +10,7 @@ from ouroboros.extension_companion import (
 )
 from ouroboros.extension_loader import PluginAPIImpl, _PluginAPIConfig
 import ouroboros.extension_loader as extension_loader
+import ouroboros.extension_plugin_api as extension_plugin_api
 from ouroboros import extension_health
 from ouroboros.skill_loader import SkillReviewState, find_skill, save_enabled, save_review_state
 
@@ -146,6 +147,9 @@ def test_plugin_api_companion_uses_staged_skill_root_as_cwd(tmp_path: pathlib.Pa
             captured["descriptor"] = descriptor
             return True
 
+    # The companion supervisor is read by PluginAPIImpl (its owner) at register
+    # time and by the loader's spawn/ensure paths; patch both readers.
+    monkeypatch.setattr(extension_plugin_api, "get_global_supervisor", lambda: FakeSupervisor())
     monkeypatch.setattr(extension_loader, "get_global_supervisor", lambda: FakeSupervisor())
     api = PluginAPIImpl(_PluginAPIConfig(
         skill_name="demo",
@@ -218,6 +222,9 @@ def test_spawn_out_of_process_companions_host_spawns_declared_name(tmp_path: pat
         def stop(self, *args, **kwargs):
             return None
 
+    # The companion supervisor is read by PluginAPIImpl (its owner) at register
+    # time and by the loader's spawn/ensure paths; patch both readers.
+    monkeypatch.setattr(extension_plugin_api, "get_global_supervisor", lambda: FakeSupervisor())
     monkeypatch.setattr(extension_loader, "get_global_supervisor", lambda: FakeSupervisor())
     try:
         extension_loader._spawn_out_of_process_companions(
