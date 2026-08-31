@@ -23,6 +23,7 @@ from ouroboros.task_results import (
 from ouroboros.task_status import load_effective_task_result, wait_for_effective_tasks
 from ouroboros.tools.registry import ToolContext
 from ouroboros.utils import truncate_review_artifact
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
 
 def _ctl():
@@ -135,7 +136,10 @@ def _get_task_result(
     status_drive_root = Path(str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
     data = load_effective_task_result(status_drive_root, task_id)
     if not data:
-        return f"Task {task_id}: unknown or not yet registered"
+        return _publish_tool_result(ctx, ToolResult(
+            status="unavailable", code="LEGACY_UNAVAILABLE",
+            text=f"Task {task_id}: unknown or not yet registered",
+        ))
     if bool(include_authority) or bool(include_work_order_source):
         from ouroboros.agent_startup_checks import task_result_authority_projection
 
@@ -366,7 +370,10 @@ def _wait_for_task(ctx: ToolContext, task_id: str, timeout_sec: int = 180) -> st
     try:
         tid = validate_task_id(task_id)
     except ValueError as exc:
-        return f"⚠️ TOOL_ARG_ERROR (wait_task): {exc}"
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text=f"⚠️ TOOL_ARG_ERROR (wait_task): {exc}",
+        ))
     try:
         timeout = max(0, min(int(timeout_sec), 3600))
     except (TypeError, ValueError):
@@ -529,21 +536,30 @@ def _wait_for_tasks(
     ``wait_short_circuited``); any id that turns real during the grace makes it
     an ordinary wait again, with the remaining window intact."""
     if not isinstance(task_ids, list) or not task_ids:
-        return "⚠️ TOOL_ARG_ERROR (wait_tasks): task_ids must be a non-empty list."
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ TOOL_ARG_ERROR (wait_tasks): task_ids must be a non-empty list.",
+        ))
     from ouroboros.config import MAX_ACTIVE_SUBAGENTS_HARD_CAP
     from ouroboros.cost_projection import cost_projection
 
     if len(task_ids) > MAX_ACTIVE_SUBAGENTS_HARD_CAP:
-        return (
-            "⚠️ TOOL_ARG_ERROR (wait_tasks): task_ids is capped at "
-            f"{MAX_ACTIVE_SUBAGENTS_HARD_CAP}."
-        )
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text=(
+                "⚠️ TOOL_ARG_ERROR (wait_tasks): task_ids is capped at "
+                f"{MAX_ACTIVE_SUBAGENTS_HARD_CAP}."
+            ),
+        ))
     normalized_ids: List[str] = []
     for item in task_ids:
         try:
             tid = validate_task_id(item)
         except ValueError as exc:
-            return f"⚠️ TOOL_ARG_ERROR (wait_tasks): {exc}"
+            return _publish_tool_result(ctx, ToolResult(
+                status="error", code="TOOL_ARG_ERROR",
+                text=f"⚠️ TOOL_ARG_ERROR (wait_tasks): {exc}",
+            ))
         if tid not in normalized_ids:
             normalized_ids.append(tid)
     try:
@@ -552,7 +568,10 @@ def _wait_for_tasks(
         timeout = 600
     normalized_mode = str(mode or "all_terminal").strip().lower()
     if normalized_mode not in {"all_terminal", "any_terminal"}:
-        return "⚠️ TOOL_ARG_ERROR (wait_tasks): mode must be all_terminal or any_terminal."
+        return _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ TOOL_ARG_ERROR (wait_tasks): mode must be all_terminal or any_terminal.",
+        ))
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     status_drive_root = Path(str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
     # Typed unknown-id detection (v6.91): flagged ids KEEP polling — "not YET

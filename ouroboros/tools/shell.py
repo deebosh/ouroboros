@@ -26,6 +26,7 @@ from ouroboros.runtime_mode_policy import (
 )
 from ouroboros.tools.commit_gate import _invalidate_advisory
 from ouroboros.shell_parse import is_absolute_path_text, recover_stringified_argv  # noqa: F401
+from ouroboros.tools.tool_result import _publish_process_result, _wrap_run_script_process_result
 from ouroboros.tools.registry import (
     ToolContext,
     ToolEntry,
@@ -305,6 +306,7 @@ def _run_shell(
         )
 
     cmd, autocorrect_note = _maybe_autocorrect_grep_backslash_pipe(cmd)
+    regex_autocorrected = bool(autocorrect_note)
 
     found_ops = _SHELL_OPERATORS.intersection(cmd)
     if found_ops:
@@ -398,12 +400,14 @@ def _run_shell(
             if getattr(res, "backend_trace", None):
                 executor_note = "\n\nEXECUTOR_TRACE:\n" + json.dumps(res.backend_trace, ensure_ascii=False, indent=2)
             if _is_search_no_match(res):
-                return autocorrect_note + (
+                text = autocorrect_note + (
                     f"{_describe_returncode(res.returncode, cwd=work_dir, binding=binding)} (no matches)\n"
                     f"{_format_process_output(res.stdout or '', '')}"
                     f"{executor_note}"
                 )
-            return autocorrect_note + f"⚠️ SHELL_EXIT_ERROR: command exited with {_describe_returncode(res.returncode, cwd=work_dir, binding=binding)}.\n\n{_format_process_output(res.stdout or '', res.stderr or '')}{executor_note}"
+                return _publish_process_result(ctx, "SHELL_NO_MATCH", text, exit_code=res.returncode, shell_regex_auto_corrected=regex_autocorrected)
+            text = autocorrect_note + f"⚠️ SHELL_EXIT_ERROR: command exited with {_describe_returncode(res.returncode, cwd=work_dir, binding=binding)}.\n\n{_format_process_output(res.stdout or '', res.stderr or '')}{executor_note}"
+            return _publish_process_result(ctx, "SHELL_EXIT_ERROR", text, exit_code=res.returncode, shell_regex_auto_corrected=regex_autocorrected)
         after_changed = _status_snapshot(repo_root)
         if after_changed != before_changed:
             # This resolved cwd may be outside the live-repo dispatcher snapshot.
@@ -423,7 +427,7 @@ def _run_shell(
         )
         if undeclared_user_outputs:
             # Declaration NUDGE, not a failure — see _UNDECLARED_OUTPUTS_MARKER.
-            return (
+            text = (
                 autocorrect_note
                 + f"{_UNDECLARED_OUTPUTS_MARKER}: command appears to write user_files outputs "
                 "without declaring outputs=[...]. Declare generated user-visible files so "
@@ -432,7 +436,8 @@ def _run_shell(
                 + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n"
                 + _format_process_output(res.stdout or "", res.stderr or "")
             )
-        artifact_note, artifact_failed = _register_process_outputs(
+            return _publish_process_result(ctx, "ARTIFACT_OUTPUT_UNDECLARED", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected)
+        artifact_note, artifact_failed, artifact_registered = _register_process_outputs(
             ctx,
             outputs,
             pathlib.Path(work_dir),
@@ -470,17 +475,19 @@ def _run_shell(
                 + ". It is excluded from the workspace patch, but delete it before finishing so it does not linger."
             )
         if artifact_failed:
-            return (
+            text = (
                 autocorrect_note
                 + "⚠️ ARTIFACT_OUTPUT_ERROR: command succeeded but declared output registration failed. "
                 + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n"
                 + f"{_format_process_output(res.stdout or '', res.stderr or '')}"
                 + artifact_note
             )
+            return _publish_process_result(ctx, "ARTIFACT_OUTPUT_ERROR", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected)
         executor_note = ""
         if getattr(res, "backend_trace", None):
             executor_note = "\n\nEXECUTOR_TRACE:\n" + json.dumps(res.backend_trace, ensure_ascii=False, indent=2)
-        return autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}"
+        text = autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}"
+        return _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected)
     except subprocess.TimeoutExpired:
         # Timeout-created scratch still needs its exclusion fingerprint.
         _record_scratch_fingerprints(ctx, scratch_abs)
@@ -633,12 +640,7 @@ def _run_script(
             + ", ".join(undeclared_user_outputs)
             + ". Re-run with outputs=[...] or write the canonical deliverable via root=artifact_store."
         )
-    if str(result).lstrip().startswith("⚠️"):
-        tail = f"\n{audit_note}" if audit_note else ""
-        return f"{result}{tail}\n# script_path={script_path}"
-    if audit_note:
-        return f"{audit_note}\n# script_path={script_path}"
-    return f"# script_path={script_path}\n{result}"
+    return _wrap_run_script_process_result(ctx, result, audit_note, script_path)
 
 
 def get_tools() -> List[ToolEntry]:

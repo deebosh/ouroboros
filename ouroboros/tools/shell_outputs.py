@@ -386,11 +386,11 @@ def _register_process_outputs(
     changed_paths: set[str] | None = None,
     before_outputs: Dict[str, tuple[bool, int, str]] | None = None,
     binding: ResolvedResourceBinding | None = None,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, bool]:
     """Copy declared command outputs into the task artifact store."""
 
     if not outputs:
-        return "", False
+        return "", False, False
     notes: list[str] = []
     failed = False
     registered = False  # at least one canonical artifact record was actually created
@@ -476,20 +476,16 @@ def _register_process_outputs(
             notes.append(f"skipped non-file output: {text}")
             failed = True
     if not notes:
-        return "", False
-    # Distinguish a CANONICAL artifact registration from a cosmetic-only note (e.g.
-    # an unchanged declared output): the downstream artifact_registered detector
-    # (outcomes.py / loop_tool_execution.py) keys on the exact "ARTIFACT_OUTPUTS"
-    # marker, so a cosmetic note must NOT borrow it — else an unchanged output reads
-    # as a real registration / false recovery signal. "ARTIFACT_OUTPUT_NOTE" does
-    # not contain the "ARTIFACT_OUTPUTS" substring, so it is correctly ignored.
+        return "", False, False
+    # Only canonical registration gets ARTIFACT_OUTPUTS; cosmetic unchanged-output
+    # notes use ARTIFACT_OUTPUT_NOTE and cannot forge artifact_registered recovery.
     if failed:
         prefix = "⚠️ ARTIFACT_OUTPUT_ERROR"
     elif registered:
         prefix = "ARTIFACT_OUTPUTS"
     else:
         prefix = "ARTIFACT_OUTPUT_NOTE"
-    return "\n\n" + prefix + ":\n" + "\n".join(f"- {note}" for note in notes), failed
+    return "\n\n" + prefix + ":\n" + "\n".join(f"- {note}" for note in notes), failed, registered
 
 
 _SENSITIVE_OUTPUT_NAMES = frozenset({".env", ".env.local", "credentials.json", "secrets.json", "token.json"})

@@ -19,6 +19,7 @@ from ouroboros.runtime_mode_policy import format_protected_paths
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tool_access import ResolvedResourceBinding
 from ouroboros.tools.git_plumbing import _sanitize_git_error
+from ouroboros.tools.git_plumbing import _publish_git_error
 
 
 def _git():
@@ -101,7 +102,10 @@ def _git_status(
             binding,
         )
     except Exception as e:
-        return f"⚠️ GIT_ERROR: {_sanitize_git_error(str(e))}"
+        return _publish_git_error(
+            ctx,
+            f"⚠️ GIT_ERROR: {_sanitize_git_error(str(e))}",
+        )
 
 
 def _git_diff(
@@ -135,7 +139,10 @@ def _git_diff(
             return _git()._vcs_result(protected_block, binding)
         return _git()._vcs_result(_git()._limit_git_output(_git().run_cmd(cmd, cwd=repo_dir), max_chars), binding)
     except Exception as e:
-        return f"⚠️ GIT_ERROR: {_sanitize_git_error(str(e))}"
+        return _publish_git_error(
+            ctx,
+            f"⚠️ GIT_ERROR: {_sanitize_git_error(str(e))}",
+        )
 
 
 def _ff_pull(repo_dir: pathlib.Path) -> str:

@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from typing import List
 
 from ouroboros.tools.registry import ToolContext
@@ -54,6 +56,22 @@ def _protected_paths_block_message(paths, *, runtime_mode: str, action: str) -> 
 
 def _sanitize_git_error(msg: str) -> str:
     return re.sub(r"(https?://)([^@\s]+@)", r"\1<redacted>@", msg)
+
+
+def _publish_git_error(ctx: ToolContext, text: str) -> str:
+    """Publish one structurally known Git terminal without changing public text."""
+    return _publish_tool_result(
+        ctx,
+        ToolResult(status="ok", code="GIT_ERROR", text=text),
+    )
+
+
+def _publish_review_blocked(ctx: ToolContext, text: str) -> str:
+    """Publish one reviewer-finding rejection without relabelling other blocks."""
+    return _publish_tool_result(
+        ctx,
+        ToolResult(status="ok", code="REVIEW_BLOCKED", text=text),
+    )
 
 
 _BINARY_EXTENSIONS = frozenset({

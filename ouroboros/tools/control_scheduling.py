@@ -57,6 +57,17 @@ from ouroboros.tools.control_subagent_spec import (
 )
 from ouroboros.tools.registry import ToolContext, active_repo_dir_for, system_repo_dir_for
 from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
+
+def _publish_scheduling_refusal(ctx: Any, status: str, code: str, text: str) -> str:
+    """Publish one scheduling refusal at the branch that composed it (D02).
+
+    The validator helpers stay pure functions with no invocation to publish
+    into; the single caller that turns a refusal into the result of a call
+    publishes it here, with the code the one adapter already assigns.
+    """
+    return _publish_tool_result(ctx, ToolResult(status=status, code=code, text=text))
 
 log = logging.getLogger(__name__)
 
@@ -308,6 +319,7 @@ def _build_acting_constraint(
     protected_paths_grant: bool,
     external_tool_grants: Any,
     parent_workspace_root: str,
+    ctx: Any = None,
 ):
     """Validate a mutative-subagent request; return its constraint dict, or an
     error string for the LLM (which can then fall back to a read-only subagent).
@@ -315,6 +327,11 @@ def _build_acting_constraint(
     The toggle/surface checks here give the caller immediate feedback. The
     supervisor is the authoritative gate and provisions the self_worktree
     (filling write_root/base_sha) before the child runs.
+
+    ``ctx`` is the invocation this refusal belongs to, so the denial is published
+    by the branch that made it rather than re-read from the bytes it printed. It
+    is optional because the selector is also called directly, outside a tool
+    invocation, where there is nothing to publish to.
     """
     from ouroboros.config import get_allow_mutative_subagents
     from ouroboros.contracts.task_constraint import VALID_WRITE_SURFACES
@@ -326,7 +343,9 @@ def _build_acting_constraint(
             f"{allowed} (or omit it for a read-only subagent)."
         )
     if not get_allow_mutative_subagents(write_surface):
-        return (
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="ACCESS_BLOCKED",
+            text=(
             "⚠️ MUTATIVE_SUBAGENTS_DISABLED: acting children with "
             f"write_surface={write_surface!r} are disabled here. "
             "OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS is the master gate: an explicit owner "
@@ -336,7 +355,8 @@ def _build_acting_constraint(
             "Ouroboros runtime) and keeps self_worktree (a checkout of the live body) "
             "off. Schedule a read-only subagent (omit write_surface), use an external "
             "surface, or have the owner enable the toggle."
-        )
+            ),
+        ))
     grants: List[str] = []
     if isinstance(external_tool_grants, (list, tuple)):
         grants = [str(g).strip() for g in external_tool_grants if str(g).strip()]
@@ -361,7 +381,7 @@ def _build_acting_constraint(
     }
 
 
-def _select_subagent_constraint(write_surface, write_root, protected_paths_grant, external_tool_grants, parent_workspace_root, caller_readonly=False):
+def _select_subagent_constraint(write_surface, write_root, protected_paths_grant, external_tool_grants, parent_workspace_root, caller_readonly=False, ctx=None):
     """Read-only default (no surface), a validated acting constraint, or an error string."""
     if not write_surface or str(write_surface).strip().lower() == "read_only":
         # `read_only` is the explicit, provider-safe alias for the omit-surface
@@ -370,17 +390,21 @@ def _select_subagent_constraint(write_surface, write_root, protected_paths_grant
         return {"mode": LOCAL_READONLY_SUBAGENT_MODE, "allow_enable": False, "allow_review": False}
     if caller_readonly:
         # A read-only subagent may delegate read-only children only — never spawn an acting one.
-        return (
+        return _publish_tool_result(ctx, ToolResult(
+            status="blocked", code="ACCESS_BLOCKED",
+            text=(
             "⚠️ MUTATIVE_SUBAGENTS_DISABLED: a read-only subagent cannot spawn a mutative (acting) "
             "child. Only the root agent, workspace tasks, or acting subagents may pass write_surface; "
             "schedule a read-only child instead."
-        )
+            ),
+        ))
     return _build_acting_constraint(
         write_surface=write_surface,
         write_root=write_root,
         protected_paths_grant=protected_paths_grant,
         external_tool_grants=external_tool_grants,
         parent_workspace_root=parent_workspace_root,
+        ctx=ctx,
     )
 
 
@@ -535,27 +559,26 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     allowed_params = schedule_subagent_param_names() | HIDDEN_LEGACY_SCHEDULE_PARAMS
     retired = sorted(str(key) for key in params if key in RETIRED_SCHEDULE_PARAMS)
     if retired:
-        return "⚠️ TOOL_ARG_ERROR (schedule_subagent): " + " ".join(
-            f"{name} was withdrawn: {LEGACY_SUBAGENT_FIELDS[RETIRED_SCHEDULE_PARAMS[name]]}. "
-            "Drop it — the owner's configured effort applies, exactly as it did when "
-            f"{name} was omitted." for name in retired)
+        return _publish_scheduling_refusal(
+            ctx, "error", "TOOL_ARG_ERROR", "⚠️ TOOL_ARG_ERROR (schedule_subagent): " + " ".join(
+                f"{name} was withdrawn: {LEGACY_SUBAGENT_FIELDS[RETIRED_SCHEDULE_PARAMS[name]]}. "
+                "Drop it — the owner's configured effort applies, exactly as it did when "
+                f"{name} was omitted." for name in retired))
     unsupported = sorted(str(key) for key in params if key not in allowed_params)
     if unsupported:
         bad = ", ".join(unsupported)
-        return (
-            "⚠️ TOOL_ARG_ERROR (schedule_subagent): unsupported argument(s): "
+        return _publish_scheduling_refusal(
+            ctx, "error", "TOOL_ARG_ERROR", "⚠️ TOOL_ARG_ERROR (schedule_subagent): unsupported argument(s): "
             f"{bad}. Use the strict schema: subagent_id, objective, expected_output, "
-            "optional role/context/constraints/memory_mode and (for "
-            "mutative children) write_surface/write_root/protected_paths_grant/"
-            "external_tool_grants."
-        )
+            "optional role/context/constraints/memory_mode and (for mutative children) "
+            "write_surface/write_root/protected_paths_grant/external_tool_grants.")
     internal = dict(internal or {})
     if set(internal) - _INTERNAL_SCHEDULE_OPTIONS:
         raise TypeError(f"_schedule_task: unknown internal scheduling option(s): "
                         f"{sorted(set(internal) - _INTERNAL_SCHEDULE_OPTIONS)}")
     fields, arg_error = _validated_schedule_fields(params)
     if arg_error:
-        return arg_error
+        return _publish_scheduling_refusal(ctx, "error", "TOOL_ARG_ERROR", arg_error)
     deadline_at = fields["deadline_at"]
     objective = fields["objective"]
     expected_output = fields["expected_output"]
@@ -652,18 +675,19 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     task_constraint = _select_subagent_constraint(
         requested_surface, effective_write_root, params.get("protected_paths_grant", False),
         params.get("external_tool_grants"), workspace_root,
-        caller_readonly=(caller_profile == "local_readonly_subagent"))
+        caller_readonly=(caller_profile == "local_readonly_subagent"), ctx=ctx)
     if isinstance(task_constraint, str):
         return task_constraint
     from ouroboros.tool_access import subagent_profile_satisfies
 
     required_caps, cap_error = normalize_required_capabilities(params.get("required_capabilities"))
     if cap_error:
-        return f"⚠️ TOOL_ARG_ERROR (schedule_subagent): {cap_error}"
+        return _publish_scheduling_refusal(ctx, "error", "TOOL_ARG_ERROR", f"⚠️ TOOL_ARG_ERROR (schedule_subagent): {cap_error}")
     selected_profile = profile_from_task_constraint(task_constraint)
     ok, missing_caps = subagent_profile_satisfies(selected_profile, required_caps)
     if not ok:
-        return _capability_mismatch_message(selected_profile, missing_caps)
+        # An argument error: both inputs and the remedy are THIS call's arguments.
+        return _publish_scheduling_refusal(ctx, "error", "TOOL_ARG_ERROR", _capability_mismatch_message(selected_profile, missing_caps))
     allowed_resources = normalize_allowed_resources(
         (parent_contract.get("allowed_resources") if isinstance(parent_contract, dict) else {})
         or metadata.get("allowed_resources")
@@ -689,7 +713,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     child_drive, _drive_err = _prepare_child_drive(
         tid, status_drive_root, memory_mode, parent_project_id)
     if _drive_err:
-        return _drive_err
+        return _publish_scheduling_refusal(ctx, "error", "TOOL_ERROR", _drive_err)
     child_attachment_manifest, attachment_error = _materialize_child_attachment_manifest(
         parent_contract, child_drive or status_drive_root, tid,
         owner_drive=Path(ctx.drive_root), owner_task_id=parent_task_id,
@@ -808,7 +832,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             pass
         if child_drive is not None:
             shutil.rmtree(child_drive, ignore_errors=True)
-        return f"⚠️ SUBTASK_STATUS_ERROR: failed to persist requested status for {tid}; subagent was not scheduled."
+        return _publish_scheduling_refusal(ctx, "error", "TOOL_ERROR", f"⚠️ SUBTASK_STATUS_ERROR: failed to persist requested status for {tid}; subagent was not scheduled.")
 
     emitted_modes: List[str] = [_emit_control_event(ctx, evt)]
     return _finalize_schedule_emission(ctx, {

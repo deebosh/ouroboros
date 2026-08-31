@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.git_plumbing import _sanitize_git_error
+from ouroboros.tools.git_plumbing import _publish_git_error, _publish_review_blocked
 
 # The parent's logger name is pinned so moved log records keep their %(name)s
 # in server.log/stdout — the same logger object the parent binds.
@@ -353,7 +354,10 @@ def _stage_candidate_for_review(
             ctx,
             commit_message,
             commit_start,
-            f"⚠️ GIT_ERROR (add): {_sanitize_git_error(str(exc))}",
+            _publish_git_error(
+                ctx,
+                f"⚠️ GIT_ERROR (add): {_sanitize_git_error(str(exc))}",
+            ),
         )
         return [], None, error
     if not paths and not _git()._authorized_managed_update_resolver(ctx):
@@ -367,7 +371,10 @@ def _stage_candidate_for_review(
             ctx,
             commit_message,
             commit_start,
-            f"⚠️ GIT_ERROR (status): {_sanitize_git_error(str(exc))}",
+            _publish_git_error(
+                ctx,
+                f"⚠️ GIT_ERROR (status): {_sanitize_git_error(str(exc))}",
+            ),
         )
         return [], None, error
     if not status.strip():
@@ -398,7 +405,10 @@ def _stage_candidate_for_review(
                 ctx,
                 commit_message,
                 commit_start,
+                _publish_git_error(
+                ctx,
                 f"⚠️ GIT_ERROR (staged-status): {_sanitize_git_error(str(exc))}",
+            ),
             )
             return [], None, error
         classification_paths = [
@@ -415,7 +425,10 @@ def _stage_candidate_for_review(
                 ctx,
                 commit_message,
                 commit_start,
+                _publish_git_error(
+                ctx,
                 f"⚠️ GIT_ERROR (staged-names): {_sanitize_git_error(str(exc))}",
+            ),
             )
             return [], None, error
         advisory_paths = [
@@ -700,19 +713,17 @@ def _run_reviewed_stage_cycle(
             scope_blocked=bool(scope_result is not None and getattr(scope_result, "blocked", False)),
             scope_raw_result=getattr(ctx, "_last_scope_raw_result", {}) or {},
         )
+        blocked_message = _git()._finalize_blocked_review(
+            ctx, commit_message, commit_start, combined_msg=combined_msg,
+            block_reason=block_reason, combined_findings=combined_findings,
+            pre_fingerprint=pre_fingerprint, post_fingerprint=post_fingerprint,
+            block_class=block_class,
+        )
+        if block_reason == "critical_findings":
+            blocked_message = _publish_review_blocked(ctx, blocked_message)
         return {
             "status": "blocked",
-            "message": _git()._finalize_blocked_review(
-                ctx,
-                commit_message,
-                commit_start,
-                combined_msg=combined_msg,
-                block_reason=block_reason,
-                combined_findings=combined_findings,
-                pre_fingerprint=pre_fingerprint,
-                post_fingerprint=post_fingerprint,
-                block_class=block_class,
-            ),
+            "message": blocked_message,
             "block_reason": block_reason,
             "pre_fingerprint": pre_fingerprint,
             "post_fingerprint": post_fingerprint,
@@ -784,7 +795,7 @@ def _run_non_committing_review_cycle(
                 block_details=f"Git lock: {exc}",
                 duration_sec=time.time() - commit_start,
             )
-        return {"status": "failed", "message": f"⚠️ GIT_ERROR (lock): {exc}"}
+        return {"status": "failed", "message": _publish_git_error(ctx, f"⚠️ GIT_ERROR (lock): {exc}")}
 
     unstage_warning = ""
     try:

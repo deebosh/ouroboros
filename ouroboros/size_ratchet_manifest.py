@@ -126,6 +126,7 @@ BAND_PATHS = {
     "ouroboros/loop_forced_finalization.py": "Forced-finalization rail of the v7 L-B loop split: one cohesive owner for the forced/orphan/absorption path, moved byte-preserving from loop.py (D01 lane).",
     "ouroboros/loop_tool_execution.py": None,
     "ouroboros/marketplace/ouroboroshub.py": "Entered the band from 373 lines: the hubflow sprint added the adopt transaction (eligibility prelude, CAS re-verification, move-aside + state-quintet snapshot, verified rollback with per-step error collection, retention finalize) beside the existing install/update flows (hubflow sprint, adopt-in-ouroboroshub owner decision D4).",
+    "ouroboros/mcp_client.py": "F3.1 typed-organ producer cutover (D05 entry 7b): the MCP transport keeps the SDK-owned error bit as a typed ToolResult and reports provider-slug collisions as evidence; grew into the band from 984 lines, shrink-only otherwise.",
     "ouroboros/observability.py": "Entered the band from 820 lines: child task copy-back now promotes only promised observability CAS manifests/blobs and task-owned source handles into canonical storage before headless GC, with typed unavailable gaps and retry metadata.",
     "ouroboros/platform_layer.py": "Shrank INTO the band: the retired Claude-SDK runtime probes (resolve_claude_runtime, ClaudeRuntimeState) were deleted with the transport (owner-approved Q4 retirement); no new content was added.",
     "ouroboros/preflight_runner.py": None,
