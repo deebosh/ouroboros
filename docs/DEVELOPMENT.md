@@ -1113,8 +1113,11 @@ terminal settlement and capability-delta facts, telemetry limitations, and
 full redacted agent-session transcripts. Missing, tampered, drifted,
 unprovable, or contradictory identity/terminal receipts make the packet
 `INCOMPLETE`. Non-identity capability deltas remain explicit degradation
-evidence and do not override the production actor-status/quorum result. A
-proposal changing this review substrate still requires a trusted-target rerun.
+evidence and do not override the production actor-status/quorum result. The
+lane always executes the target base's own review machinery — invoked from any
+other checkout it re-runs itself from a detached worktree of the base commit —
+so a proposal is never reviewed by its own copy of the review flow, whatever
+it touches; the substrate hand-list survives only as packet diagnostics.
 
 This evidence establishes readiness; it does not authorize commit, push, merge,
 or publication. Maintainers choose the landing parent and release version,

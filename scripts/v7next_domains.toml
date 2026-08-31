@@ -361,6 +361,8 @@ D20 = "Presence"
 "ouroboros/tools/browser.py" = "D05"
 "ouroboros/tools/ci.py" = "D10"
 "ouroboros/tools/claude_advisory_review.py" = "D06"
+"ouroboros/tools/preflight_review_prompt.py" = "D06"
+"ouroboros/tools/preflight_review_run.py" = "D06"
 "ouroboros/tools/commit_gate.py" = "D10"
 "ouroboros/tools/compact_context.py" = "D03"
 "ouroboros/tools/control.py" = "D08"
@@ -430,6 +432,7 @@ D20 = "Presence"
 "ouroboros/tools/review_subject.py" = "D06"
 "ouroboros/tools/review_synthesis.py" = "D06"
 "ouroboros/tools/scope_review.py" = "D06"
+"ouroboros/tools/scope_review_budget.py" = "D06"
 "ouroboros/tools/scope_review_pack.py" = "D06"
 "ouroboros/tools/scope_review_contract.py" = "D06"
 "ouroboros/tools/scope_review_session.py" = "D06"
@@ -616,9 +619,13 @@ proposed = [
 # (own domain included). A list longer than one element = the monolith spans domains.
 "ouroboros/loop_tool_execution.py" = ["D04"]
 "ouroboros/review_execution.py" = ["D06"]
-"ouroboros/tools/claude_advisory_review.py" = ["D06"]
 "ouroboros/tools/registry.py" = ["D04"]
-"ouroboros/tools/scope_review.py" = ["D06"]
+# F2.3b resolved rows (owner decision 5.1=A lane, 2026-08-31): the advisory
+# monolith split landed as preflight_review_prompt/preflight_review_run —
+# re-derived from tip native-episode bytes under the organ's public rename
+# (the reference leaf names review_advisory_prompt/review_advisory_run carried
+# the retired SDK transport); scope_review's budget leaf landed as the
+# reference-named scope_review_budget re-derived after PR #383.
 # F2.2 resolved rows (owner decisions 2026-08-31): the D08 event/queue/worker
 # families landed as reference-named leaves from tip bytes; the remaining
 # reference leaves were retired by the owner — supervisor/cancel_custody.py
@@ -631,6 +638,4 @@ proposed = [
 # the exact absent leaf modules per monolith (ledger owner paths)
 "ouroboros/loop_tool_execution.py" = ["ouroboros/tools/tool_result.py"]
 "ouroboros/review_execution.py" = ["ouroboros/review_session_verdict.py"]
-"ouroboros/tools/claude_advisory_review.py" = ["ouroboros/tools/review_advisory_prompt.py", "ouroboros/tools/review_advisory_run.py"]
 "ouroboros/tools/registry.py" = ["ouroboros/tools/registry_core.py", "ouroboros/tools/tool_result.py"]
-"ouroboros/tools/scope_review.py" = ["ouroboros/tools/scope_review_budget.py"]

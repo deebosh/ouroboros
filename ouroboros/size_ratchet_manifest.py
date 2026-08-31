@@ -5,7 +5,6 @@ BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 GIANT_PATHS = (
     "devtools/benchmarks/osworld/run_cu_bridge_agent.py",
     "devtools/benchmarks/osworld/run_step_agent.py",
-    "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/git.py",
     "ouroboros/tools/registry.py",
     "server.py",
@@ -145,6 +144,7 @@ BAND_PATHS = {
     "ouroboros/task_results.py": "Authority reads need an explicit strict mode so malformed child records cannot become a false zero count.",
     "ouroboros/task_status.py": None,
     "ouroboros/tools/browser.py": None,
+    "ouroboros/tools/claude_advisory_review.py": "F2.3b advisory re-derive: the 2279-line GIANT parent re-enters the band at 1434 after the preflight_review_prompt/preflight_review_run split (admission policy, native episode, size gates and the tool entries stay with the facade)",
     "ouroboros/tools/commit_gate.py": "Grew INTO the band by the review-wave fix binding the actor reference (delivery class) into the commit review contract fingerprint \u2014 same-module contract identity, splitting it would separate the fingerprint from its gate.",
     "ouroboros/tools/core.py": "D05 ledger split (rows 311-349): read/list and owner-chat delivery spans moved to core_file_tools/core_artifacts; facade re-enters the band from above (2283 -> 1373) and shrinks further when the residual catalog split lands",
     "ouroboros/tools/delegate.py": "D07 finisher DEL1 split brought the nanny-verb monolith DOWN from the 1600 hard cap into the band (1600->1263); terminal-evidence family extracted to tools/delegate_terminal_evidence.py, shrink-only direction",
@@ -175,6 +175,7 @@ BAND_PATHS = {
     "tests/test_cybergym_protocol.py": "CyberGym protocol suite arrived in one piece with the benchmark (drift heal); split when the next protocol family lands.",
     "tests/test_delegated_skill_payload.py": "Sol scope-review fix batch: P1 trust probes (forged index, symlinked git metadata), P2 golden-E2E review close and schema/docs pins joined the existing R1+gate-fix payload suite.",
     "tests/test_evolution_redesign.py": None,
+    "tests/test_external_review_script.py": "F2.3b D31 port: the reference trusted-base pin suite (probe-backed handoff/forwarding/in-place/dirty/e2e pins plus the new no-list-membership and wrapperless fail-closed pins) joins the existing contributor-lane suite",
     "tests/test_external_workspace_access.py": "Deliverables custody matrix covers nested roots, executor aliases, Presence ceilings, and direct shell target semantics.",
     "tests/test_loop_transport_wait.py": "Contract suite for the transport-wait episode: classification, custody, round-level wait, terminals, and the final-review regression pins live together as one coherent surface.",
     "tests/test_managed_review_subject.py": "Lane L-review contract suite: the managed resolution-delta subject (gate/advisory surfaces, M0 fallback), Q25-A admission, Q28-A yield outcomes and enforcement-honest advisory texts grew past 1000 across the adversarial fix round; one subject, one suite.",

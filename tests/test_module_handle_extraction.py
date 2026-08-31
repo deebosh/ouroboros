@@ -358,6 +358,31 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "load_checklist_section", "parse_git_name_status", "run_cmd",
         "staged_path_is_binary",
     })),
+    # F2.3b D06 lane rows (advisory re-derive on the native-episode form; the
+    # scope budget re-derive after PR #383). Same-leaf members that tests
+    # monkeypatch on the facades are declared too, so the patch points keep
+    # binding through the handle.
+    "ouroboros/tools/preflight_review_prompt.py": ("ouroboros/tools/claude_advisory_review.py", "_car", frozenset({
+        "CRITICAL_FINDING_CALIBRATION", "_build_blocking_history_section",
+        "_get_changed_file_list", "_get_staged_diff", "_mandatory_read_pointer",
+        "build_blocking_findings_json_section", "build_goal_section",
+        "build_scope_section", "build_skill_host_context", "load_checklist_section",
+        "load_governance_doc", "load_state", "make_repo_key",
+    })),
+    "ouroboros/tools/preflight_review_run.py": ("ouroboros/tools/claude_advisory_review.py", "_car", frozenset({
+        "SEVERITY_DRIVEN_ITEMS", "_advisory_native_model", "_advisory_review_diff",
+        "_build_advisory_prompt", "_format_advisory_error", "_get_changed_file_list",
+        "_get_runtime_diagnostics", "_llm_extract_advisory_items",
+        "_maybe_overflow_skip", "_predispatch_size_skip", "_run_advisory_delegated",
+        "_run_advisory_native", "_syntax_preflight_staged_py_files",
+        "advisory_gate_unavailability_reason", "build_advisory_changed_context",
+        "emit_review_event", "emit_review_usage", "empty_array_is_verified_clean",
+        "extract_json_array", "get_finalization_grace_sec",
+        "owner_deadline_exhausted_for_context",
+    })),
+    "ouroboros/tools/scope_review_budget.py": ("ouroboros/tools/scope_review.py", "_sr", frozenset({
+        "_effective_scope_input_limit", "_get_scope_model", "_scope_window",
+    })),
     "ouroboros/loop_round_limits.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_append_or_merge_user_content",
         "_append_or_merge_user_message", "_current_delivery_candidate",

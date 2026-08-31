@@ -1,15 +1,21 @@
-"""Structural contracts for the semantic-no-op scope review PACK extraction.
+"""Structural contracts for the semantic-no-op scope review extraction.
 
 ``scope_review`` keeps the run: dispatch, the typed result vocabulary, the
-budget arithmetic (the PR #383 form — its re-derivation into a budget owner is
-a separate, semantic lane), the pack-status and oversize translations, and the
-P3 authority decision. One owner sits below it for now — ``scope_review_pack``
-(assembling the reviewer's pack). Cross-references run through the parent's
-call-time handle, and the parent re-exports every moved identity.
+pack-status and oversize translations, and the P3 authority decision. Two
+owners sit below it — ``scope_review_pack`` (assembling the reviewer's pack)
+and ``scope_review_budget`` (the PR #383 token arithmetic, re-derived from tip
+bytes; the reference-era timeout constant stays retired to ``None``).
+Cross-references run through the parent's call-time handle, and the parent
+re-exports every moved identity.
 
 ``_load_canonical_context_docs`` stayed a facade def on purpose: it reads
 ``load_governance_doc`` inside an f-string (the byte gate refuses f-string
-reads of rebindable globals) and tests rebind that name on the parent.
+reads of rebindable globals) and tests rebind that name on the parent. The
+budget leaf's private owner aliases (``_SCOPE_MODEL_DEFAULT``,
+``_SCOPE_BUDGET_TOKEN_LIMIT``, ``_SCOPE_FAILCLOSED_WINDOW``,
+``_SCOPE_MODEL_CONTEXT_WINDOW``, ``_shared_window_scaled_reserves``,
+``_calibrated_input_token_limit``, ``_is_provider_oversize_error``) moved with
+their readers and stay import-frozen exactly as before the split.
 """
 
 from __future__ import annotations
@@ -19,15 +25,24 @@ import pathlib
 
 from ouroboros.tools import (
     scope_review,
+    scope_review_budget,
     scope_review_pack,
 )
 
 
 REPO = pathlib.Path(__file__).parents[1]
 
-_LEAVES = (scope_review_pack,)
+_LEAVES = (scope_review_pack, scope_review_budget)
 
 _MOVED_OWNERS = {
+    "_SCOPE_INPUT_TOKEN_LIMIT": scope_review_budget,
+    "_SCOPE_MAX_TOKENS": scope_review_budget,
+    "_SCOPE_OUTPUT_MARGIN_TOKENS": scope_review_budget,
+    "_SCOPE_REVIEW_SLOT_TIMEOUT_SEC": scope_review_budget,
+    "_effective_scope_input_limit": scope_review_budget,
+    "_get_scope_model": scope_review_budget,
+    "_provider_error_is_oversize": scope_review_budget,
+    "_window_scaled_reserves": scope_review_budget,
     "_CANONICAL_CONTEXT_DOCS": scope_review_pack,
     "_CURRENT_TOUCHED_CONTEXT_SKIP_PREFIXES": scope_review_pack,
     "_DELETED_INLINE_MAX_BYTES": scope_review_pack,
@@ -49,27 +64,21 @@ _MOVED_OWNERS = {
     "_should_skip_current_touched_context": scope_review_pack,
 }
 
-# The parent keeps these: the result type, dispatch, the budget arithmetic,
-# the pack-status/oversize translations, the P3 authority decision, the entry
-# point — and the one f-string-gated context-doc loader named above.
+# The parent keeps these: the result type, dispatch, the pack-status/oversize
+# translations, the P3 authority decision, the entry point — and the one
+# f-string-gated context-doc loader named above.
 _PARENT_OWNED = (
     "ScopeReviewResult",
-    "_SCOPE_INPUT_TOKEN_LIMIT",
-    "_SCOPE_MAX_TOKENS",
     "_SCOPE_REQUIRED_ITEMS",
     "_apply_scope_authority",
     "_call_scope_llm",
-    "_effective_scope_input_limit",
-    "_get_scope_model",
     "_handle_prompt_signals",
     "_load_canonical_context_docs",
     "_log_scope_result",
     "_low_context_skip_result",
-    "_provider_error_is_oversize",
     "_scope_oversize_result",
     "_scope_review_skipped_in_low_context",
     "_scope_sub_floor_finding",
-    "_window_scaled_reserves",
     "run_scope_review",
 )
 

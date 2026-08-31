@@ -1960,3 +1960,78 @@ reference-fact ↔ tip-fact ↔ result.
     partial-split work order to the completed shape; the five satisfied
     [split_pending]/[split_pending_leaves] rows left scripts/v7next_domains.toml
     with the two owner-retired leaves recorded in a comment.
+
+## From the F2.3b review-semantics lane (base dcf8dd4b, 2026-08-31)
+
+1. F5 leaf-name mint (advisory split): the reference leaves
+   `ouroboros/tools/review_advisory_prompt.py` / `review_advisory_run.py` are
+   NOT the landed names. The drift probe (`--check` of both reference leaves
+   against `git show dcf8dd4b:ouroboros/tools/claude_advisory_review.py`)
+   byte-falsified the organ's semantics: prompt leaf 4/5 rows byte-true with
+   `_build_advisory_prompt` falsified (governance_by_retrieval pointer form);
+   run leaf 10/18 byte-true with `_run_claude_advisory`,
+   `_run_advisory_delegated`, `_llm_extract_advisory_items`,
+   `advisory_review_route`, `advisory_slot_enabled`-adjacent route/gate
+   projections falsified (native episode + reviewer-slot SSOT replaced the
+   Claude-SDK transport). Landed as `preflight_review_prompt.py` /
+   `preflight_review_run.py` — the organ's public rename vocabulary (Q1) —
+   cut from tip bytes, tool proof green on every symbol.
+2. Advisory row dispositions against the 30 ledger rows (3852-3881):
+   23 transplanted-from-tip (5 prompt + 18 run); 3 SUPERSEDED —
+   `_release_metadata_preflight`, `_auto_sync_release_metadata_if_needed`,
+   `_syntax_preflight_staged_py_files` live with upstream's
+   `ouroboros/commit_admission.py` (Q3=A SSOT; the parent keeps the alias
+   monkeypatch seams, pinned by
+   test_review_owner_facades.test_the_deterministic_preflights_live_with_commit_admission);
+   4 RETIRED with the SDK transport — `_changed_paths` (upstream's
+   `review_helpers.parse_changed_paths_from_porcelain` class),
+   `advisory_route_requires_api_key`, `_advisory_session_deltas`,
+   `_advisory_sdk_budget` (no tip bodies exist; not replayed).
+3. Scope budget probe corrections (mandate: re-verify the matrix's
+   6-superseded/1-retired): the reference leaf probed 7/8 byte-true against
+   tip; ONE row falsified — `_SCOPE_REVIEW_SLOT_TIMEOUT_SEC` (reference `900`,
+   tip `None`: the adaptive-timeout contract retired the constant; tip byte
+   kept). The matrix called `_SCOPE_BUDGET_TOKEN_LIMIT` retired (#383) — the
+   probe shows the NAME alive on tip as a private alias of
+   `review_helpers.REVIEW_PROMPT_TOKEN_BUDGET` (the reference-era standalone
+   constant is what died); it moved with the other five owner aliases
+   (`_SCOPE_MODEL_DEFAULT`, `_SCOPE_FAILCLOSED_WINDOW`,
+   `_SCOPE_MODEL_CONTEXT_WINDOW`, `_shared_window_scaled_reserves`,
+   `_calibrated_input_token_limit`) plus `_is_provider_oversize_error` into
+   the budget leaf per the ledger's rebind disposition, parent re-exports —
+   import-frozen on both sides exactly as before the split, so no
+   patch-visibility change.
+4. D31 port (owner decision 5.1=A): `_run_on_trusted_base` re-derived from
+   the reference (scripts/run_external_review.py:539 @ 9f691656) onto the tip
+   script — the contributor lane now ALWAYS executes the target base's own
+   review machinery (self-re-run from a detached base worktree with pinned
+   base/head SHAs). `_REVIEW_SUBSTRATE_PATHS` demoted to EVIDENCE ONLY
+   (`review_substrate_changed` packet diagnostic), never a gate:
+   `_contributor_result` is exit-code-only (reference form), and
+   `finalize_contributor_outcome` dropped both the `snapshot` parameter and
+   the `trusted_base_rerun_required` downgrade (reference form; its one
+   script call site and two test call sites re-derived). The fail-closed
+   `INCOMPLETE_MAINTAINER_TRUSTED_BASE_RERUN_REQUIRED` vocabulary survives on
+   the ONE non-portable path — a target base whose tree carries no review
+   wrapper (new guard; the reference would have misfiled python's exit 2
+   there as "empty diff").
+5. D31 pin suite ported from the reference (probe script, handoff/forwarding/
+   in-place/dirty/e2e pins) with tip reverse-mapping: the seeded repo stubs
+   `ouroboros/openrouter_attribution.py::OPENROUTER_APP_HEADERS` (the tip
+   wrapper's module-level import) where the reference seeded
+   `runtime_mode_policy::GIT_OPS_FAMILY_PATHS` (its wrapper's import). NEW pin
+   beyond the reference: the always-runs-on-base parametrization includes
+   `ouroboros/review_native_episode.py` — a review-machinery module ABSENT
+   from the evidence hand-list — plus a fail-closed pin for the wrapperless
+   base. Disclosed test replacement: the old gate clause
+   (`test_contributor_outcome_fails_closed_on_receipt_or_trust_drift`'s
+   substrate-downgrade half) asserted the hand-list AS a gate — exactly the
+   semantics the owner retired — and is replaced by the reference's
+   receipt-drift-only pin plus `test_contributor_result_is_decided_by_the_exit_code_alone`.
+6. Path-keyed mirrors in the same commit: `_REVIEW_SUBSTRATE_PATHS` (evidence
+   list) and `review_context_atlas._REVIEW_STACK_PATHS` gained the three new
+   leaves beside their parents; domains.toml gained the three D06 leaf rows
+   and cleared both satisfied [split_pending]/[split_pending_leaves] entries
+   (review_execution's row left untouched — matrix A2 marks it superseded by
+   upstream's review_verdict_extraction, an integrator decision, and this
+   lane's mandate excludes review_execution).

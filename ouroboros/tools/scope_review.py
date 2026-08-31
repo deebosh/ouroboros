@@ -11,7 +11,6 @@ mode the reviewer is not called at all and a typed skip row is recorded instead.
 from __future__ import annotations
 
 import logging
-import os
 import pathlib
 from dataclasses import dataclass, field, replace
 from typing import Any, List, Optional
@@ -72,39 +71,31 @@ from ouroboros.utils import (
 
 log = logging.getLogger(__name__)
 _SCOPE_REQUIRED_ITEMS = SCOPE_REQUIRED_ITEMS  # compatibility export used by tests/review tooling
-# Shipped designated scope reviewer (v6.82.0). Window evidence checked 2026-07-29:
-# provider docs AND OpenRouter /models both state gpt-5.6-terra context_length
-# 1,050,000 — a documented MODEL property, so the >=1M BIBLE P3 floor holds on both
-# spellings; the sentinel grants only 1M, a real probe/owner-ack supersedes.
-from ouroboros.tools.scope_window import SCOPE_MODEL_DEFAULT as _SCOPE_MODEL_DEFAULT  # noqa: E402
-_SCOPE_MAX_TOKENS = 100_000  # 100K output tokens
-_SCOPE_REVIEW_SLOT_TIMEOUT_SEC = None
-from ouroboros.tools.review_helpers import REVIEW_PROMPT_TOKEN_BUDGET as _SCOPE_BUDGET_TOKEN_LIMIT
-# The shared prompt-size SSOT (920K) governs INPUT only; the reviewer also reserves
-# _SCOPE_MAX_TOKENS of OUTPUT inside the same 1M window, and provider tokenizers can
-# exceed estimate_tokens on atlas-heavy prompts — so gate assembled INPUT on a
-# conservative effective cap and retry once with a compact atlas before applying the
-# blocking/advisory scope authority. The 1M constitutional window, unevidenced-route
-# sub-floor, and default reviewer identity live in `tools/scope_window` (the SSOT).
-from ouroboros.tools.scope_window import (  # noqa: E402
-    SCOPE_FAILCLOSED_WINDOW as _SCOPE_FAILCLOSED_WINDOW,
-    SCOPE_MODEL_CONTEXT_WINDOW as _SCOPE_MODEL_CONTEXT_WINDOW,
-)
-_SCOPE_OUTPUT_MARGIN_TOKENS = 155_000
-_SCOPE_INPUT_TOKEN_LIMIT = min(
+from ouroboros.reviewer_window import ReviewerWindow  # noqa: E402
+# v7next F2.3b (D06): the budget math lives in its owner leaf; re-exported here
+# (NOT at EOF — ``run_scope_review``'s default argument reads
+# ``_SCOPE_INPUT_TOKEN_LIMIT`` at def time) so this facade stays the single
+# import surface for callers and tests. The private owner aliases
+# (_SCOPE_MODEL_DEFAULT, _SCOPE_BUDGET_TOKEN_LIMIT, _SCOPE_FAILCLOSED_WINDOW,
+# _SCOPE_MODEL_CONTEXT_WINDOW, _shared_window_scaled_reserves,
+# _calibrated_input_token_limit, _is_provider_oversize_error) moved with their
+# budget readers and keep their historical patch points on this module.
+from ouroboros.tools.scope_review_budget import (  # noqa: E402, F401 -- intentional public re-exports
     _SCOPE_BUDGET_TOKEN_LIMIT,
-    _SCOPE_MODEL_CONTEXT_WINDOW - _SCOPE_MAX_TOKENS - _SCOPE_OUTPUT_MARGIN_TOKENS,
-)
-# Tokenizer-density calibration (SSOT: review_helpers.calibrated_input_token_limit +
-# capability_evidence ``token_density``). Density is MEASURED per model, so the limit
-# is computed PER CALL (an import-time constant froze the pre-measurement value). The
-# calibration shrinks the PROMPT — never the reviewer or the >=1M floor (BIBLE P3).
-from ouroboros.reviewer_window import (
-    ReviewerWindow,
-    window_scaled_reserves as _shared_window_scaled_reserves,
-)
-from ouroboros.tools.review_helpers import (
-    calibrated_input_token_limit as _calibrated_input_token_limit,
+    _SCOPE_FAILCLOSED_WINDOW,
+    _SCOPE_INPUT_TOKEN_LIMIT,
+    _SCOPE_MAX_TOKENS,
+    _SCOPE_MODEL_CONTEXT_WINDOW,
+    _SCOPE_MODEL_DEFAULT,
+    _SCOPE_OUTPUT_MARGIN_TOKENS,
+    _SCOPE_REVIEW_SLOT_TIMEOUT_SEC,
+    _calibrated_input_token_limit,
+    _effective_scope_input_limit,
+    _get_scope_model,
+    _is_provider_oversize_error,
+    _provider_error_is_oversize,
+    _shared_window_scaled_reserves,
+    _window_scaled_reserves,
 )
 
 def _scope_review_skipped_in_low_context() -> bool:
@@ -187,42 +178,6 @@ def _scope_sub_floor_finding(
     }
 
 
-def _window_scaled_reserves(window: int) -> tuple:
-    """(output_reserve, tokenizer_margin) scaled to the reviewer window.
-
-    The absolute 1M-calibrated reserves (100K output + 155K margin) would
-    swallow a small window whole (gigachat 131K => input limit 0, bricking the
-    slot — Provider Independence). Sub-floor windows scale the reserves to the
-    window instead: a quarter for output (floored at 8K so the reviewer can
-    still produce the full checklist JSON) and an eighth for tokenizer margin.
-    >=1M windows keep the absolute reserves unchanged.
-    """
-    return _shared_window_scaled_reserves(
-        window,
-        output_reserve=_SCOPE_MAX_TOKENS,
-        tokenizer_margin=_SCOPE_OUTPUT_MARGIN_TOKENS,
-    )
-
-
-def _effective_scope_input_limit(*, scope_model: str = "") -> int:
-    """Scope input token cap for the configured reviewer, computed PER CALL.
-
-    Two axes: the model's MEASURED tokenizer density sizes the prompt for its real
-    tokenizer, and a KNOWN reviewer window (Capability Evidence, not a static table)
-    replaces the assumed 1M so a small-window reviewer gets a fit-sized pack instead
-    of a deterministic provider 400. Its blocking authority is checked separately and
-    stays fail-closed."""
-    model = scope_model or _get_scope_model()
-    window = _scope_window(model).sizing_window(_SCOPE_FAILCLOSED_WINDOW)
-    output_reserve, tokenizer_margin = _window_scaled_reserves(window)
-    return max(0, _calibrated_input_token_limit(
-        model,
-        context_window=window,
-        output_reserve=output_reserve,
-        tokenizer_margin=tokenizer_margin,
-        budget_cap=_SCOPE_BUDGET_TOKEN_LIMIT,
-    ))
-
 # Defense-in-depth cap for deleted-file HEAD content inlined into the prompt.
 # Stable-prefix boundary (chars) of the last assembled scope prompt: everything
 # before it (instructions + checklist + canonical docs) is byte-stable across commits
@@ -257,19 +212,6 @@ class ScopeReviewResult:
     late_result_pending: bool = False
     pending_invocation_id: str = ""
     delegated_run_id: str = ""
-
-def _get_scope_model() -> str:
-    """Return the configured scope review model (env → settings default)."""
-    try:
-        from ouroboros.config import get_scope_review_models
-
-        models = get_scope_review_models()
-        if models:
-            return models[0]
-    except Exception:
-        pass
-    return os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL", "").strip() or _SCOPE_MODEL_DEFAULT
-
 
 def _load_canonical_context_docs(repo_dir: pathlib.Path) -> str:
     parts: list[str] = []
@@ -446,34 +388,6 @@ def _call_scope_llm(
             "Retry the commit, or check API key and network connectivity."
         )
         return "", None, error_msg
-
-
-# Provider-oversize fault classification moved to triad_review (shared review
-# primitive); the alias keeps this module's historical name for its two readers.
-from ouroboros.triad_review import is_provider_oversize_error as _is_provider_oversize_error  # noqa: E402
-
-
-def _provider_error_is_oversize(usage: dict, prompt_tokens_est: int, scope_model: str) -> bool:
-    """Gateway-route oversize detection from ``usage['provider_error']``."""
-    pe = usage.get("provider_error") if isinstance(usage, dict) else None
-    if not isinstance(pe, dict):
-        return False
-    try:
-        code = int(pe.get("code") or 0)
-    except (TypeError, ValueError):
-        code = 0
-    if code != 400:  # never 429/5xx (already rerouted as transient), never non-400
-        return False
-    # Non-empty 400 messages must explicitly say oversize; only opaque gateway 400s can
-    # use size proximity, so auth/param/policy errors stay fail-closed.
-    message = str(pe.get("message") or "").strip()
-    if message:
-        return _is_provider_oversize_error(message)
-    try:
-        input_limit = int(_effective_scope_input_limit(scope_model=scope_model) or 0)
-    except Exception:
-        input_limit = 0
-    return input_limit > 0 and int(prompt_tokens_est or 0) >= int(0.8 * input_limit)
 
 
 def _scope_oversize_result(
