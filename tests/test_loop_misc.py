@@ -1726,6 +1726,79 @@ def test_a_tool_that_reports_its_own_failure_is_not_recorded_as_success():
     assert _extract_result_metadata("run_command", "⚠️ SHELL_EXIT_ERROR: 1", True)["status"] == "non_zero_exit"
 
 
+def test_shell_autocorrect_markers_classify_as_success_when_wrapped_call_exits_zero():
+    """``⚠️ SHELL_CMD_AUTO_WRAP`` (and the pre-existing ``⚠️ SHELL_CMD_AUTO_SPLIT``)
+    share the failure-prefix scan with success-path autocorrect markers. The
+    _is_tool_execution_failure helper MUST scan the post-first-newline remainder
+    for real failure prefixes (``⚠️ SHELL_EXIT_ERROR``, ``⚠️ ARTIFACT_OUTPUT_ERROR``,
+    etc.), so a successful exit_code=0 wrapped call is NOT recorded as a
+    failure AND the typed metadata is ``ok_autocorrected``.
+
+    Regression for the ibl-db9d3608e096 / v6.109.21 cross-module bug: the
+    pipe-autocorrect marker was classified ``shell_error`` (caught by the
+    bare ``⚠️ SHELL_`` branch in ``_is_tool_execution_failure``), inflating
+    the loop error counter on every successful pipeline wrap.
+    """
+    from ouroboros.loop_tool_execution import (
+        _extract_result_metadata,
+        _is_tool_execution_failure,
+    )
+
+    # The literal ``\\n`` at the end of each autocorrect note is what the
+    # upstream helpers emit — split("\n", 1)[1] is the part AFTER the first
+    # newline. None of those parts contain a failure prefix on success.
+    pipe_success = (
+        "⚠️ SHELL_CMD_AUTO_WRAP: a one-element cmd with a shell pipe was wrapped "
+        "as [\"sh\",\"-c\",<grep -rn foo . | head -20>] — subprocess does not interpret "
+        "\"|\". Pass [\"sh\",\"-c\",\"a | b\"] yourself, or split into sequential run_command "
+        "calls, to avoid this rewrite.\n"
+        "exit_code=0 (cwd=/opt/ouroboros)\n"
+        "STDOUT:\nmatch\n"
+    )
+    split_success = (
+        "⚠️ SHELL_CMD_AUTO_SPLIT: one-element cmd cannot encode a pipeline and `&&` "
+        "between single tokens is an argv-boundary mistake — split <git && status "
+        "&& --porcelain> into argv ['git', 'status', '--porcelain']. For a real "
+        "chain use separate run_command calls or [\"sh\",\"-c\",\"a && b\"].\n"
+        "exit_code=0 (cwd=/opt/ouroboros)\n"
+        "STDOUT:\n\n"
+    )
+    pipe_wrapped_but_script_failed = (
+        "⚠️ SHELL_CMD_AUTO_WRAP: a one-element cmd with a shell pipe was wrapped "
+        "as [\"sh\",\"-c\",<cat missing | head -3>] — subprocess does not interpret "
+        "\"|\". Pass [\"sh\",\"-c\",\"a | b\"] yourself, or split into sequential run_command "
+        "calls, to avoid this rewrite.\n"
+        "⚠️ SHELL_EXIT_ERROR: command exited with exit_code=1 (cwd=/opt/ouroboros)\n"
+        "STDERR:\ncat: missing: No such file or directory\n"
+    )
+
+    # Successful autocorrected runs are NOT tool execution failures —
+    # the ⚠️ is the rewrite disclosure, not an executor crash.
+    for label, result in (
+        ("SHELL_CMD_AUTO_WRAP @ exit_code=0", pipe_success),
+        ("SHELL_CMD_AUTO_SPLIT @ exit_code=0", split_success),
+    ):
+        assert _is_tool_execution_failure(True, result) is False, label
+        assert (
+            _extract_result_metadata("run_command", result, False)["status"]
+            == "ok_autocorrected"
+        ), label
+
+    # A wrapped pipeline whose wrapped SCRIPT failed is STILL a real
+    # failure — the autocorrect success path does NOT mask exit-code
+    # propagation (the loop's error counter must fire on a non-zero
+    # wrapped exit). Pre-existing behaviour for the SHELL_REGEX_AUTO_CORRECTED
+    # carve-out is to classify the failure case as ``shell_error`` (the
+    # ⚠️ SHELL_ catch-all picks it up because SHELL_EXIT_ERROR is no
+    # longer at the start), and the new markers follow the same
+    # convention for consistency.
+    assert _is_tool_execution_failure(True, pipe_wrapped_but_script_failed) is True
+    assert (
+        _extract_result_metadata("run_command", pipe_wrapped_but_script_failed, False)["status"]
+        == "shell_error"
+    )
+
+
 def test_auto_attach_skips_a_result_that_declared_failure(tmp_path, monkeypatch):
     """A screenshot payload saying ok:false must not have an image lifted out of it."""
     import json as _json

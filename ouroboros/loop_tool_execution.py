@@ -42,6 +42,22 @@ from ouroboros.utils import (
 
 log = logging.getLogger(__name__)
 
+# Carve-out for SUCCESS-path autocorrect markers: the ⚠️ SHELL_ prefix is in
+# ``_FAILURE_PREFIXES`` (downstream rejection classes), but autocorrected
+# runs that REACHED subprocess with exit_code=0 are successful — the
+# leading ⚠️ note is the operator-visible rewrite disclosure, not a
+# failure. We strip the first newline and check the REMAINDER for real
+# failure prefixes (``⚠️ ARTIFACT_OUTPUT_UNDECLARED``, ``⚠️
+# SHELL_EXIT_ERROR``, etc.) so a wrapped script that itself returned
+# non-zero still classifies correctly. Adding a new shell autocorrect
+# marker is one entry here + one ``ok_autocorrected`` branch in
+# ``_extract_result_metadata``.
+_AUTOCORRECT_PREFIXES = (
+    "⚠️ SHELL_REGEX_AUTO_CORRECTED",
+    "⚠️ SHELL_CMD_AUTO_SPLIT",
+    "⚠️ SHELL_CMD_AUTO_WRAP",
+)
+
 _FAILURE_PREFIXES = (
     "⚠️ TOOL_",
     "⚠️ SHELL_",
@@ -476,7 +492,7 @@ def _is_tool_execution_failure(tool_ok: bool, result: Any) -> bool:
     if _structured_tool_failure(result):
         return True
     text = str(result or "")
-    if text.startswith("⚠️ SHELL_REGEX_AUTO_CORRECTED"):
+    if any(text.startswith(p) for p in _AUTOCORRECT_PREFIXES):
         remainder = text.split("\n", 1)[1] if "\n" in text else ""
         if any(prefix in remainder for prefix in _FAILURE_PREFIXES):
             return True
@@ -504,7 +520,10 @@ def _extract_result_metadata(fn_name: str, result: Any, is_error: bool) -> Dict[
         status = "artifact_output_undeclared"
     elif text.startswith("⚠️ SHELL_REGEX_AUTO_CORRECTED") and "⚠️ ARTIFACT_OUTPUT_ERROR" in text:
         status = "artifact_output_error"
-    elif text.startswith("⚠️ SHELL_REGEX_AUTO_CORRECTED") and "⚠️ SHELL_EXIT_ERROR" not in text:
+    elif any(
+        text.startswith(p)
+        for p in ("⚠️ SHELL_REGEX_AUTO_CORRECTED", "⚠️ SHELL_CMD_AUTO_SPLIT", "⚠️ SHELL_CMD_AUTO_WRAP")
+    ) and "⚠️ SHELL_EXIT_ERROR" not in text:
         status = "ok_autocorrected"
     elif text.startswith("⚠️ SHELL_EXIT_ERROR"):
         status = "non_zero_exit"
