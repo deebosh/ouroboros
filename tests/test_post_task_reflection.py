@@ -121,9 +121,9 @@ def test_run_reflection_returns_entry_when_generated(tmp_path):
                 "content": (
                     "Reflection text.\n"
                     "BACKLOG_CANDIDATES_JSON: "
-                    "[{\"summary\":\"Reduce recurring task friction around REVIEW_BLOCKED\"," 
-                    "\"category\":\"process\"," 
-                    "\"source\":\"execution_reflection\"," 
+                    "[{\"summary\":\"Reduce recurring task friction around REVIEW_BLOCKED\","
+                    "\"category\":\"process\","
+                    "\"source\":\"execution_reflection\","
                     "\"evidence\":\"REVIEW_BLOCKED\"}]"
                 )
             }, {"cost": 0}

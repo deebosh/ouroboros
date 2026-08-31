@@ -284,5 +284,3 @@ def test_collect_repo_sync_state_uses_rescue_bounded_capture(monkeypatch):
     assert ["git", "status", "--porcelain"] in calls
     assert ["git", "remote"] in calls
     assert ["git", "log", "--oneline", "origin/ouroboros..HEAD"] in calls
-
-

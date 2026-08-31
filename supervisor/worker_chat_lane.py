@@ -76,7 +76,7 @@ def _handle_chat_direct_locked(
         except Exception:
             pass
         return
-        
+
     _run_chat_task(
         _pool()._get_chat_agent(), chat_id, text, image_data,
         task_constraint=task_constraint, task_metadata=task_metadata, ephemeral=False,
