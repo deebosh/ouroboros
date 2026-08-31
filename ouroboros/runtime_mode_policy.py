@@ -75,6 +75,12 @@ RELEASE_INVARIANT_PATHS = frozenset({
     # cover them (label parity — same rule as the G1 block above).
     "supervisor/update_merge_plan.py",
     "supervisor/update_carriers.py",
+    # Upstream's own redesign split the candidate/carrier primitives (stash
+    # restore, failed-update preservation, tests-evidence proof) out of the
+    # protected update_merge facade without listing the leaf — an upstream gap
+    # the F2.4 lane disclosed. Closed additively here (label parity — same
+    # rule as the two blocks above; additive-literal precedent D10/#419).
+    "supervisor/update_candidate.py",
 })
 
 PROTECTED_RUNTIME_PATH_PREFIXES = FROZEN_CONTRACT_PATH_PREFIXES

@@ -62,10 +62,10 @@ def test_update_engine_split_keeps_release_invariant_protection():
     moved the planner/materializer bodies (and added the span resolver the
     engine executes under the update lock) without moving any of the risk, so
     the protecting inventory must cover them too — the same closure the G1
-    git_ops split pinned. ``supervisor/update_candidate.py`` is deliberately
-    NOT asserted: upstream's own redesign split it out without listing it, and
-    upstream owns that protected-inventory decision (disclosed, not repaired
-    here)."""
+    git_ops split pinned. ``supervisor/update_candidate.py`` rides the same
+    parity pin: upstream's own redesign split it out without listing it (the
+    gap the F2.4 lane disclosed), closed additively in F3 (owner FYI,
+    additive-literal precedent D10/#419)."""
     from ouroboros.runtime_mode_policy import RELEASE_INVARIANT_PATHS, protected_path_category
 
     for path in (
@@ -73,6 +73,7 @@ def test_update_engine_split_keeps_release_invariant_protection():
         "supervisor/update_merge_policy.py",
         "supervisor/update_merge_plan.py",
         "supervisor/update_carriers.py",
+        "supervisor/update_candidate.py",
     ):
         assert path in RELEASE_INVARIANT_PATHS, path
         assert protected_path_category(path) == "release-invariant", path
