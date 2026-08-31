@@ -33,7 +33,7 @@ from ouroboros.memory import Memory
 from ouroboros.context import (
     build_runtime_section, build_memory_sections,
     build_recent_sections, build_health_invariants,
-    build_knowledge_sections, build_governance_sections, safe_read,
+    build_knowledge_sections, safe_read,
 )
 from ouroboros.context_budget import (
     BG_CONTEXT_MAX_CHARS,
