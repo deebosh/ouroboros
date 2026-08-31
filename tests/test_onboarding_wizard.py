@@ -140,6 +140,23 @@ def test_prepare_onboarding_settings_accepts_minimax_only_setup():
     assert prepared["OUROBOROS_MODEL_LIGHT"] == "minimax::MiniMax-M2.7"
 
 
+def test_prepare_onboarding_settings_accepts_deepseek_only_setup():
+    payload = _base_payload()
+    payload.update({
+        "DEEPSEEK_API_KEY": "sk-deepseek-key-1234567890",
+        "OUROBOROS_MODEL": "deepseek::deepseek-v4-pro",
+        "OUROBOROS_MODEL_LIGHT": "deepseek::deepseek-v4-flash",
+        "OUROBOROS_MODEL_FALLBACKS": "deepseek::deepseek-v4-flash",
+    })
+
+    prepared, error = prepare_onboarding_settings(payload, {})
+
+    assert error is None
+    assert prepared["DEEPSEEK_API_KEY"] == "sk-deepseek-key-1234567890"
+    assert prepared["OUROBOROS_MODEL"] == "deepseek::deepseek-v4-pro"
+    assert prepared["OUROBOROS_MODEL_LIGHT"] == "deepseek::deepseek-v4-flash"
+
+
 def test_prepare_onboarding_settings_rejects_unknown_minimax_region():
     payload = _base_payload()
     payload["MINIMAX_API_KEY"] = "minimax-key-1234567890"
@@ -622,6 +639,8 @@ def test_setup_contract_has_no_secret_values():
     assert "anthropic::claude-sonnet-5" in suggestions
     assert "minimax::MiniMax-M3" in suggestions
     assert "minimax::MiniMax-M2.7" in suggestions
+    assert "deepseek::deepseek-v4-pro" in suggestions
+    assert "deepseek::deepseek-v4-flash" in suggestions
     assert empty_bootstrap["initialState"]["totalBudget"] == 200.0
     assert empty_bootstrap["initialState"]["perTaskCostUsd"] == 50.0
     assert budget_fields["TOTAL_BUDGET"]["default"] == 200.0
@@ -633,6 +652,12 @@ def test_setup_contract_has_no_secret_values():
     assert initial["providerProfile"] == "minimax"
     assert initial["mainModel"] == "minimax::MiniMax-M3"
     assert initial["lightModel"] == "minimax::MiniMax-M2.7"
+
+    deepseek_bootstrap = build_setup_bootstrap({"DEEPSEEK_API_KEY": "ds-hidden-value"}, "web")
+    deepseek_initial = deepseek_bootstrap["initialState"]
+    assert deepseek_initial["providerProfile"] == "deepseek"
+    assert deepseek_initial["mainModel"] == "deepseek::deepseek-v4-pro"
+    assert deepseek_initial["lightModel"] == "deepseek::deepseek-v4-flash"
 
 
 # --- The served page must not hand back a stored credential -----------------

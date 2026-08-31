@@ -137,6 +137,7 @@ _AUTHORITATIVE_ENV_PREFIXES = (
     "OPENAI_",
     "ANTHROPIC_",
     "MINIMAX_",
+    "DEEPSEEK_",
     "CLOUDRU_",
     "GIGACHAT_",
     "CLAUDE_",

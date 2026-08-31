@@ -30,7 +30,7 @@ _DIRECT_PROVIDER_AUTO_DEFAULTS = {
     for provider, defaults in DIRECT_PROVIDER_DEFAULTS.items()
 }
 # Legacy values that should be auto-replaced with a provider's direct defaults.
-# Cloud.ru, GigaChat, and MiniMax intentionally have NO entry: such a provider-only user's
+# Cloud.ru, GigaChat, MiniMax, and DeepSeek intentionally have NO entry: such a provider-only user's
 # main/code/light slots match the shipped SETTINGS_DEFAULTS or the shared
 # _PRIOR_SHIPPED_SLOT_DEFAULTS below (google/gemini era) and migrate via the
 # `current in {"", default, *legacy}` check, and the review/scope slots are
@@ -92,7 +92,7 @@ for _legacy_defaults in _DIRECT_PROVIDER_LEGACY_DEFAULTS.values():
     for _slot in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_HEAVY", "OUROBOROS_MODEL_LIGHT"):
         _legacy_defaults[_slot].add(_LEGACY_GEMINI_31_FLASH_LITE)
 # Outgoing SHIPPED OpenRouter defaults (through v6.104), applied for EVERY
-# exclusive-direct provider (incl. cloudru/gigachat/minimax, which have no per-provider
+# exclusive-direct provider (incl. cloudru/gigachat/minimax/deepseek, which have no per-provider
 # legacy table): before each defaults refresh a stored copy of the shipped default matched the
 # `current in {"", default}` check because SETTINGS_DEFAULTS still carried it;
 # after the defaults refresh these stored copies are still "the old DEFAULT, not

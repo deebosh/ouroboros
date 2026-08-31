@@ -315,6 +315,24 @@ class TestWireProjection:
         # The canonical transcript is untouched.
         assert messages[1]["reasoning_content"] == "ds thoughts"
 
+    def test_openrouter_lane_strips_falsy_reasoning_residue_too(self, monkeypatch):
+        # The scrub is keyed on key PRESENCE: an empty-string echo (a legal
+        # kept value on the deepseek lane) and a legacy null must both stay
+        # off the OpenRouter wire, not just truthy thoughts.
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-x")
+        client = LLMClient()
+        target = client._resolve_remote_target("google/gemini-3.7-flash")
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "x", "reasoning_content": ""},
+            {"role": "assistant", "content": "y", "reasoning_content": None},
+        ]
+        kwargs = client._build_remote_kwargs(
+            target, messages, "high", 128, "auto", None, None,
+        )
+        sent = [m for m in kwargs["messages"] if m.get("role") == "assistant"]
+        assert all("reasoning_content" not in m for m in sent)
+
     def test_openai_compatible_vendor_form_vision_stays_sighted(self, monkeypatch):
         # The qualified identity (openai-compatible/<id>) can never match the
         # vision prefixes; the BARE vendor-form id legitimately does. The
@@ -361,18 +379,24 @@ class TestReviewWaveHardening:
         from ouroboros.provider_models import normalize_model_identity
 
         _DENSITY_MEMO.clear()
-        root = tmp_path / "deepseek"
-        ua._observe_token_density(
-            ua.AttemptRequest(
-                model="deepseek/deepseek-v4-pro",
-                provider="deepseek",
-                prompt_tokens_estimate=1_000_000,
-                drive_root=root,
-            ),
-            {"prompt_tokens": 1_500_000, "cached_tokens": 900_000},
-        )
-        measured = get_token_density(root, normalize_model_identity("deepseek/deepseek-v4-pro"))
-        assert abs(measured - 1.5) < 1e-6
+        try:
+            root = tmp_path / "deepseek"
+            ua._observe_token_density(
+                ua.AttemptRequest(
+                    model="deepseek/deepseek-v4-pro",
+                    provider="deepseek",
+                    prompt_tokens_estimate=1_000_000,
+                    drive_root=root,
+                ),
+                {"prompt_tokens": 1_500_000, "cached_tokens": 900_000},
+            )
+            measured = get_token_density(root, normalize_model_identity("deepseek/deepseek-v4-pro"))
+            assert abs(measured - 1.5) < 1e-6
+        finally:
+            # The memo is process-global and keyed WITHOUT drive_root: leaving
+            # this tmp_path measurement behind would poison a co-located test
+            # reading density for the same model id.
+            _DENSITY_MEMO.clear()
 
     def test_normalize_drops_non_string_reasoning_content(self):
         # A server-emitted null would live on the canonical assistant turn and

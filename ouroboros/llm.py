@@ -1193,7 +1193,7 @@ class LLMClient:
                 # enum (live-probed 2026-09-01: none|minimal|low|medium|high|
                 # xhigh|max; `ultra` is a 400 naming exactly those variants) and
                 # v4 thinks by default, so the effort lanes are carried (the
-                # _EFFORT_CARRYING_PROVIDERS set in _build_remote_kwargs)
+                # provider-id carriage predicate in _build_remote_kwargs)
                 # instead of silently dropped like the other generic compatible
                 # lanes. The ceiling is the server's own documented top tier.
                 "reasoning_effort_ceiling": "max",
@@ -3488,7 +3488,7 @@ class LLMClient:
                     _eb["cache"] = {"no-cache": True}
             return kwargs
 
-        if any(isinstance(m, dict) and m.get("reasoning_content") for m in messages):
+        if any(isinstance(m, dict) and "reasoning_content" in m for m in messages):
             # ``reasoning_content`` in canonical history is direct-DeepSeek
             # custody (the inbound normalizer pops it from every other lane's
             # responses, OpenRouter included). OR upstreams of other families
@@ -3496,7 +3496,9 @@ class LLMClient:
             # replay-artifact pin below (allow_fallbacks=False), silently
             # killing same-model failover for a mixed transcript. Dropping it
             # from the OR physical copy restores the exact pre-DeepSeek OR
-            # wire; the canonical transcript is untouched.
+            # wire; the canonical transcript is untouched. Keyed on key
+            # PRESENCE, not truthiness: an empty-string echo (a legal kept
+            # value) must not ride the OR wire either.
             messages = [
                 (
                     {k: v for k, v in m.items() if k != "reasoning_content"}

@@ -373,6 +373,7 @@ class OuroborosTerminalBenchAgent(BaseInstalledAgent):
             "GIGACHAT_BASE_URL",
             "GIGACHAT_VERIFY_SSL_CERTS",
             "GIGACHAT_PROFANITY_CHECK",
+            "MINIMAX_REGION",
             "OUROBOROS_MODEL",
             "OUROBOROS_MODEL_LIGHT",
             "OUROBOROS_SUBAGENTS",
@@ -705,6 +706,14 @@ PY
         elif env.get("ANTHROPIC_API_KEY"):
             provider_url = "https://api.anthropic.com/v1/models"
             provider_name = "anthropic"
+        elif env.get("MINIMAX_API_KEY"):
+            from ouroboros.provider_models import resolve_minimax_base_url
+            provider_url = resolve_minimax_base_url(str(env.get("MINIMAX_REGION") or "")).rstrip("/") + "/models"
+            provider_name = "minimax"
+        elif env.get("DEEPSEEK_API_KEY"):
+            from ouroboros.provider_models import DEEPSEEK_BASE_URL
+            provider_url = DEEPSEEK_BASE_URL.rstrip("/") + "/models"
+            provider_name = "deepseek"
         elif env.get("CLOUDRU_FOUNDATION_MODELS_API_KEY"):
             provider_url = (env.get("CLOUDRU_FOUNDATION_MODELS_BASE_URL") or "https://foundation-models.api.cloud.ru/v1").rstrip("/") + "/models"
             provider_name = "cloudru"

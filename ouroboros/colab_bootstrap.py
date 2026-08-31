@@ -76,9 +76,10 @@ def collect_colab_secrets() -> Dict[str, str]:
     """Collect runtime secrets without printing their values.
 
     The Telegram bot token is required (the bridge needs it). Any supported
-    provider key works — OpenRouter, OpenAI, or Anthropic are collected
-    optionally, and OpenRouter is prompted only if none is found, so an
-    OpenAI-only or Anthropic-only Colab user is not forced to enter OpenRouter.
+    provider key works — OpenRouter, OpenAI, Anthropic, MiniMax, DeepSeek and
+    Cloud.ru are collected optionally, and OpenRouter is prompted only if none
+    is found, so a single-direct-provider Colab user is not forced to enter
+    OpenRouter.
     The GitHub token is optional (it only enables personal self-modification
     persistence), so a quick prototype never blocks on a GitHub prompt.
     """
