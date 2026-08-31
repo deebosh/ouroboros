@@ -23,6 +23,7 @@ from ouroboros.llm_attempt import (
     _candidate_before_dispatch,
     _execute_candidate,
     _execute_candidate_async,
+    _is_provider_policy_refusal,
     _is_structured_context_overflow_body,
     _is_structured_context_overflow_exception,
     _physical_candidate,
@@ -52,7 +53,7 @@ class _RecoveryLadderMixin:
         exc: BaseException,
     ) -> Optional[Dict[str, Any]]:
         """Remove only an explicitly rejected cache control or affinity once."""
-        if _is_structured_context_overflow_exception(exc):
+        if _is_structured_context_overflow_exception(exc) or _is_provider_policy_refusal(exc):
             return None
         provider = str(target.get("provider") or "").strip().lower()
         extra_body = payload.get("extra_body")
@@ -137,7 +138,7 @@ class _RecoveryLadderMixin:
         exc: Exception,
     ) -> Optional[Dict[str, Any]]:
         """Strip replayed reasoning once for a non-overflow OpenRouter 400."""
-        if _is_structured_context_overflow_exception(exc):
+        if _is_structured_context_overflow_exception(exc) or _is_provider_policy_refusal(exc):
             return None
         if not target.get("supports_openrouter_extensions"):
             return None
@@ -404,6 +405,10 @@ class _RecoveryLadderMixin:
                         if retry_kwargs is None:
                             return current_response
                     else:
+                        if _is_provider_policy_refusal(current_failure):
+                            # A typed refusal is permanent by class (D09): no
+                            # rung may re-attempt the refused call.
+                            raise current_failure
                         retry_kwargs = plan_next_wire_retry(
                             current_candidate, error=current_failure,
                         )
@@ -463,7 +468,11 @@ class _RecoveryLadderMixin:
                 resp = _send(reroute_kwargs)
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_provider_policy_refusal(exc):
+                    # A refused call is not a provider answer to fall back FROM.
+                    self._pop_effort_clamp_disclosure()
+                    raise
                 return resp
             kwargs = reroute_kwargs
         # An encrypted-reasoning 400 delivered in the body (directly, or on the
@@ -476,7 +485,10 @@ class _RecoveryLadderMixin:
                 kwargs = strip_kwargs
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_provider_policy_refusal(exc):
+                    self._pop_effort_clamp_disclosure()
+                    raise
                 return resp
         return _recover_existing(kwargs, response=resp)
 
@@ -537,6 +549,10 @@ class _RecoveryLadderMixin:
                         if retry_kwargs is None:
                             return current_response
                     else:
+                        if _is_provider_policy_refusal(current_failure):
+                            # A typed refusal is permanent by class (D09): no
+                            # rung may re-attempt the refused call.
+                            raise current_failure
                         retry_kwargs = plan_next_wire_retry(
                             current_candidate, error=current_failure,
                         )
@@ -590,7 +606,11 @@ class _RecoveryLadderMixin:
                 resp = await _send(reroute_kwargs)
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_provider_policy_refusal(exc):
+                    # A refused call is not a provider answer to fall back FROM.
+                    self._pop_effort_clamp_disclosure()
+                    raise
                 return resp
             kwargs = reroute_kwargs
         # An encrypted-reasoning 400 delivered in the body (directly, or on the
@@ -603,6 +623,9 @@ class _RecoveryLadderMixin:
                 kwargs = strip_kwargs
             except UsageAccountingError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if _is_provider_policy_refusal(exc):
+                    self._pop_effort_clamp_disclosure()
+                    raise
                 return resp
         return await _recover_existing(kwargs, response=resp)

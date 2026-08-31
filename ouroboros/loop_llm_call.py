@@ -27,6 +27,7 @@ from ouroboros.deadline_utils import (
     transport_timeout_with_deadline,
 )
 from ouroboros.llm import LLMClient, LocalContextTooLargeError, add_usage
+from ouroboros.llm_attempt import PROVIDER_POLICY_REFUSAL, _is_provider_policy_refusal  # typed-refusal contract owner
 from ouroboros.observability import new_call_id, new_execution_id, persist_call
 from ouroboros.pricing import emit_llm_usage_event, estimate_cost_optional, infer_model_category
 from ouroboros.provider_models import provider_for_model
@@ -742,19 +743,17 @@ def classify_llm_exception(exc: Exception, safe_error: str = "") -> LlmErrorClas
     if str(getattr(exc, "code", "") or "") == SUBSCRIPTION_WINDOW_EXHAUSTED:
         reset_at = str(getattr(exc, "reset_at", "") or "")
         return LlmErrorClassification(
-            SUBSCRIPTION_WINDOW_EXHAUSTED,
-            True,
-            _exception_status_code(exc),
-            "",
-            seconds_until(reset_at),
-            reset_at,
+            SUBSCRIPTION_WINDOW_EXHAUSTED, True, _exception_status_code(exc),
+            "", seconds_until(reset_at), reset_at,
         )
     status_code = _exception_status_code(exc)
     provider_code = _exception_provider_code(exc, safe)
+    # Typed refusal (llm_attempt.ProviderPolicyRefusal): nothing upstream answered,
+    # permanent by class — structural, and it outranks every prose heuristic below.
+    if _is_provider_policy_refusal(exc):
+        return LlmErrorClassification(PROVIDER_POLICY_REFUSAL, False, status_code, provider_code or PROVIDER_POLICY_REFUSAL)
     provider_message = _exception_provider_message(exc, safe)
-    classification_text = "\n".join(
-        value for value in (safe, provider_message) if str(value or "").strip()
-    )
+    classification_text = "\n".join(v for v in (safe, provider_message) if str(v or "").strip())
     low = classification_text.lower()
     if provider_code.lower() in _STRUCTURED_CONTEXT_OVERFLOW_CODES:
         return LlmErrorClassification("context_overflow", False, status_code, provider_code)
