@@ -19,7 +19,7 @@ def _write_result(root, row: dict) -> None:
     result_dir = root / "task_results"
     result_dir.mkdir(exist_ok=True)
     (result_dir / f"{row['task_id']}.json").write_text(
-        json.dumps(row), encoding="utf-8",
+        json.dumps({"_schema_version": 1, **row}), encoding="utf-8",
     )
 
 

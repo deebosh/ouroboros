@@ -146,7 +146,7 @@ def test_cat_router_preview_promote_first_request_and_direct_harness_keep_full_a
     result_dir = tmp_path / "task_results"
     result_dir.mkdir()
     (result_dir / f"{predecessor_id}.json").write_text(
-        json.dumps(predecessor), encoding="utf-8",
+        json.dumps({"_schema_version": 1, **predecessor}), encoding="utf-8",
     )
     assert len(json.dumps(predecessor["plan_review_state"])) < 1_000
     assert len(json.dumps({
@@ -261,8 +261,8 @@ def test_main_promotion_selects_only_manifested_canonical_predecessor(tmp_path, 
     result_dir = tmp_path / "task_results"
     result_dir.mkdir()
     rows = [
-        {"task_id": "old-a", "status": "completed", "title": "First project"},
-        {"task_id": "old-b", "status": "completed", "title": "Chosen project"},
+        {"_schema_version": 1, "task_id": "old-a", "status": "completed", "title": "First project"},
+        {"_schema_version": 1, "task_id": "old-b", "status": "completed", "title": "Chosen project"},
     ]
     for row in rows:
         (result_dir / f"{row['task_id']}.json").write_text(

@@ -159,16 +159,27 @@ def test_deadline_no_longer_lifts_the_improvement_count_axis(monkeypatch):
 def test_deadline_aliases_left_no_source_remnants():
     """FUNCTIONAL remnants only: a resurrected alias needs the QUOTED string
     literal (a comparison, dict key or event type); prose comments disclosing
-    the removal legitimately keep the bare word."""
+    the removal legitimately keep the bare word.
+
+    One exemption: the ABI-2 quarantine classifier
+    (``ouroboros/task_result_schema.py``) is the removal's ENFORCEMENT arm —
+    it must spell the retired token to REFUSE a stored contract still
+    carrying it (reason ``retired_contract_until_deadline``, ledger f30
+    entry 4). That comparison sends rows to quarantine; it cannot make the
+    alias functional again."""
     functional = (
         '"until_deadline"', "'until_deadline'",
         '"stall_rounds_threshold"', "'stall_rounds_threshold'",
         "deprecated_task_pacing_alias",
     )
+    refusal_only = {"ouroboros/task_result_schema.py"}
     offenders = []
     for root in ("ouroboros", "supervisor", "web", "prompts"):
         for path in sorted((REPO / root).rglob("*.py")):
+            rel = str(path.relative_to(REPO))
+            if rel in refusal_only:
+                continue
             text = path.read_text(encoding="utf-8", errors="replace")
             if any(tok in text for tok in functional):
-                offenders.append(str(path.relative_to(REPO)))
+                offenders.append(rel)
     assert not offenders, f"removed pacing aliases respelled in: {offenders}"
