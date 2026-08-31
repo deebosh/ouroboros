@@ -2483,3 +2483,120 @@ every closure carries its pin.
    local degraded parent-tree check is green from this commit's parent on.
    DOMAIN_QUOTIENT_REPORT.md regenerated once more so its analyzed-inputs
    fingerprint matches the final runtime tree.
+
+## From the F3.1 conformance fix-round-2 (base aae647fb, 2026-08-31)
+
+Round-2 verdict (GPT-5.6 Sol): three findings NOT-CLOSED (ABI-9, ABI-2,
+ABI-3 + the dependent ADOPTION claims); Domains manifest, git hygiene,
+helper extraction and new-defects CLOSED with no action owed. Dispositions:
+
+1. ABI-9 (finding 1) — FIXED. The round-1 order (validate -> effects ->
+   swap) attached the bus subscription and started the supervised runner
+   BEFORE the registry swap; EventBus.publish() takes only the bus's own
+   lock, so a concurrent publish could invoke a handler of a
+   not-yet-published extension, and the round-1 pins never exercised the
+   window. `_publish_registrations` is now validate -> SWAP -> attach under
+   the SAME single registry-lock hold: the validated snapshot becomes the
+   authoritative bundle (digest minted, every attachable effect recorded on
+   the bundle) BEFORE any effect attaches, so a handler is visible to the
+   bus only for an already-published extension. A post-swap attach failure
+   is disclosed (log.warning) and raised into the callers' standard
+   dispose+unload path — load_extension/unload_extension reap everything the
+   bundle recorded (surfaces, sub_ids, futures, companion names, on_unload).
+   Pins (tests/test_extension_registration_atomicity.py): a REAL
+   barrier-sequenced race — a publish interleaved between validation and
+   attach never invokes the handler while the bundle is provably already
+   published at attach time; the supervised effect observes a published
+   bundle at its start; a post-swap attach failure ends with empty
+   registries, an empty bus and the extension's on_unload having run.
+   ARCHITECTURE rows (extension_loader, extension_plugin_api) and the
+   registry-state staging docstrings restated to the true order.
+2. ABI-2 (finding 2) — FIXED. `_raw_sorted_result_names()` no longer
+   silently drops a file whose bytes fail to parse: malformed candidates are
+   returned separately and `_tasks_list_payload` routes EVERY one through
+   the same admission reader — quarantine plus a contribution to the SINGLE
+   batched `task_results_quarantined` event of the scan — even when the
+   candidate would have sorted beyond the slice window (the sort had read
+   its bytes anyway). Torn-concurrent-write safety moved to where it truly
+   lives: the quarantine primitive re-checks under the row's own write lock
+   (kept_admissible), and a malformed name is never memoized. Disclosed
+   residual (documented in the payload docstring): a PARSEABLE inadmissible
+   row beyond the window is not classified by the sliced request — the next
+   full/filtered scan quarantines it. TEST-CONTRACT DISCLOSURE: the pre-fix
+   clause test_torn_result_file_is_skipped_then_recovered_without_
+   poisoning_memo pinned the silent drop as "torn-write tolerance" — a test
+   asserting the defect; replaced by
+   test_malformed_result_file_is_quarantined_not_silently_dropped and the
+   REAL slice-boundary pin
+   test_malformed_candidate_beyond_the_slice_window_is_still_quarantined
+   (rows > limit; one batch event spans both sides of the boundary).
+3. ABI-3 (finding 3) — FIXED as the projection-boundary semantics. The ABI
+   carries no alias: outbound surfaces (public_task_result, task detail,
+   history frames, the cancel path through queue) emit ONLY honest names;
+   stored legacy resolves deprecated-wins and NORMALIZES at projection and
+   at re-write. Landed: TASK_COST_META_FIELDS honest-only;
+   write_task_result merges over with_cost_aliases(existing) and normalizes
+   the merged row (a legacy mutator's edit still wins its pair, then is
+   stripped); public_task_result normalizes the top level + subagent
+   envelope + loop-outcome usage; history mapper converts via
+   carry_cost_meta at all three copy seams (task-summary replay,
+   progress-meta replay, terminal-truth annotate); task_lifecycle
+   stored/child cancel costs via carry_cost_meta; post_task_checkpoint
+   task_cost_finalized event via carry_cost_meta, with an explicit SCRUB set
+   that still pops the retired spellings (a stale legacy replica cannot
+   smuggle an amount past deprecated-wins at the write seam). Producers
+   whose data reaches the public projection are cut over and REMOVED from
+   the sweep allowlist: build_subagent_envelope/envelope_from_task (key and
+   kwarg now accounted_upper_bound_usd), the pipeline unavailable-patch, the
+   loop-outcome usage sub-dict. Fan-out pin upgraded per the round-2
+   mandate: (a) runtime projection-boundary pins
+   (TestProjectionBoundaryNormalization — stored legacy row -> outbound
+   payload deep-scanned for alias keys; rewrite normalization;
+   legacy-mutator honor-then-strip) catch generic passthrough no AST scan
+   can see; (b) the static sweep now also treats keyword args on ANY call
+   as emission-shaped, and its allowlist is PER-SITE (file, alias,
+   enclosing scope) — a new emission in an allowlisted file fails, any
+   stale row fails; (c) a dedicated pin bans allowlisting outcomes.py /
+   subagents.py / agent_task_pipeline.py. TEST-CONTRACT DISCLOSURE (the
+   round-2 mandate names these as OLD-ABI contract tests): converted to
+   honest-name assertions — tests/test_gateway_history.py (windowed anchor
+   cost, terminal cost truth, override precedence, nullable bounds,
+   task-summary flat-field passthrough), tests/test_tasks_list_slice.py
+   compact-row cost clause, tests/test_cost_projection.py meta-field
+   derivation + stored-legacy-tolerance clauses,
+   tests/test_task_summary.py snapshot fixture (its legacy key was stale —
+   the real _pre_synthesis_usage_snapshot emits the honest name),
+   tests/test_headless_task_artifacts.py mirror-cost merge and
+   finalized-accounting clauses, tests/test_task_result_monotonic.py
+   kept-cost clause. NOT changed: the JS read seam keeps pair tolerance
+   (web mirror switch stays deferred per the ABI-3 row), and the internal
+   non-gateway planes (ledger rows, review/evidence receipts, evolution
+   state, custody settlement events, reflection/consciousness records) keep
+   their own spellings under anchored per-site allowlist rows.
+4. ADOPTION claims (finding 4) — ABI-2/ABI-3/ABI-9 stay `done` LAWFULLY
+   after the fixes above; each row now names the fix-round-2 closure and the
+   new pins (scripts/v7next_adoption.py OK, 36 rows). The absolute ABI-9
+   claim in docs/ARCHITECTURE.md:291 is restated to the true order
+   (validate -> swap -> attach) including the post-swap-failure disclosure,
+   so the "refused registration publishes nothing" clause is now exactly
+   true (refusal = validation failure; a post-swap attach failure is a
+   published-then-disposed bundle, said in the same sentence).
+5. Findings 5-8 (domains manifest, git hygiene, helper extraction, new
+   defects) — CLOSED by the verdict itself; no action owed, nothing
+   changed there in this round.
+6. Module-size law (found by the fix-round-2's own gate run, not by the
+   review; the round-1 entry-7 precedent): the ABI-2 admission routing
+   pushed ouroboros/gateway/tasks.py past the 1600-line hard cap, and the
+   ABI-3 honest-name comment pushed outcomes.py::derive_loop_outcome past
+   300 lines. Resolved by extraction, no band exception, no debt entry:
+   the raw creation-ts sort scan + malformed-candidate admission moved to
+   the new ouroboros/gateway/task_list_scan.py (tasks.py 1615 -> 1563;
+   same objects imported back; ARCHITECTURE row added; module mapped to
+   D11 in scripts/v7next_domains.toml, DOMAIN_QUOTIENT_REPORT regenerated
+   by the official script — 488 mapped, drift none), and the loop-outcome
+   usage snapshot became module-level `_loop_usage_snapshot`
+   (derive_loop_outcome 304 -> ~292). Each extraction lands INSIDE the
+   commit whose growth caused it, so every first-parent tree of this
+   round satisfies its own manifest (no condemned intermediate commits —
+   the local unpushed round-2 series was arranged for this before any
+   push; the pushed tip aae647fb was not rewritten).
