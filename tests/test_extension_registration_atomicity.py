@@ -1,11 +1,15 @@
 """ABI-9 registration atomicity suite (v7next Ф3.1-B).
 
-The extension registration window is stage->validate->swap: nothing an
+The extension registration window is stage->validate->swap->attach: nothing an
 extension registers is visible in the process-wide registries until the whole
-``register()`` run validated and is published as one snapshot, and a refused or
-failed registration leaves ZERO residue — no surfaces, no bundle, no event-bus
+``register()`` run validated and is published as one snapshot, a refused
+registration leaves ZERO residue — no surfaces, no bundle, no event-bus
 subscriptions, no companion processes and (the direct regression below) no
-supervised asyncio task running outside any bundle's cancellation reach.
+supervised asyncio task running outside any bundle's cancellation reach — and
+the deferred side effects attach only AFTER the snapshot swap, so a handler is
+visible to the bus only for an already-published extension (the mid-publication
+race pin below) and a post-swap attach failure disposes through the standard
+unload path.
 """
 
 from __future__ import annotations
@@ -256,11 +260,11 @@ def test_out_of_process_catalog_publication_is_atomic(tmp_path):
 def test_conflict_refused_publication_has_zero_external_effects(
     tmp_path, monkeypatch, _background_loop
 ):
-    """Ф3.1 fix-round pin (validate -> effects -> swap): a conflict that arises
+    """Ф3.1 fix-round pin (validate -> swap -> attach): a conflict that arises
     AFTER staging but BEFORE publication refuses the publication WITHOUT any
     externally visible effect — the supervised factory never starts and the
-    event bus is never touched, because the definitive validation now runs
-    before any deferred side effect."""
+    event bus is never touched, because the definitive validation runs
+    before the swap and before any deferred side effect attaches."""
     skill_name = "conflprobe"
     factory_ran = threading.Event()
     bus_calls: list = []
@@ -340,6 +344,165 @@ def test_event_published_before_publication_never_invokes_the_handler(tmp_path):
     assert sub_id in bus.snapshot(), "publication must attach the pre-minted sub_id"
     bus.publish("skill.lifecycle", {"probe": "late"})
     assert [row.get("probe") for row in seen] == ["late"]
+
+
+def test_concurrent_publish_in_the_validate_to_attach_window_never_invokes_the_handler(
+    tmp_path, monkeypatch
+):
+    """Ф3.1 fix-round-2 pin (a REAL race, not a post-factum check): a
+    concurrent ``EventBus.publish()`` landing inside the publication critical
+    section — after the definitive validation, before the bus attach — must
+    not invoke the staged handler. The ordering that closes the window is
+    attach-strictly-AFTER-swap: at the moment the publication thread first
+    reaches for the bus, the bundle is already published (generation digest
+    minted) while the handler is still invisible to the bus, so the racing
+    publish (which takes only the bus's own lock and does NOT block on the
+    registry lock) sees no subscription at all."""
+    from ouroboros.event_bus import EventBus
+
+    skill_name = "racesub"
+    seen: list = []
+    during_window: dict = {}
+    in_window = threading.Event()
+    racing_publish_done = threading.Event()
+    real_bus = EventBus()
+
+    def hooked_get_bus():
+        # Called by _publish_registrations at the START of the attach phase
+        # (registry lock held). Record whether the swap already happened,
+        # then freeze this publication thread until the racing publisher
+        # has interleaved a publish into the window.
+        with extension_loader._lock:
+            bundle = extension_loader._extensions.get(skill_name)
+            during_window["published"] = bundle is not None and bool(
+                bundle.generation_digest
+            )
+        in_window.set()
+        assert racing_publish_done.wait(5.0), "racing publisher never ran"
+        during_window["handler_calls"] = len(seen)
+        return real_bus
+
+    monkeypatch.setattr(extension_plugin_api, "get_global_event_bus", hooked_get_bus)
+
+    api = extension_plugin_api.PluginAPIImpl(_PluginAPIConfig(
+        skill_name=skill_name,
+        permissions=["subscribe_event"],
+        env_allowlist=[],
+        state_dir=tmp_path,
+        settings_reader=lambda: {},
+        subscribe_events=["skill.lifecycle"],
+    ))
+    sub_id = api.subscribe_event("skill.lifecycle", lambda data: seen.append(dict(data)))
+
+    def racing_publisher():
+        if not in_window.wait(5.0):
+            racing_publish_done.set()
+            return
+        real_bus.publish("skill.lifecycle", {"probe": "mid-publication"})
+        racing_publish_done.set()
+
+    publisher = threading.Thread(target=racing_publisher, daemon=True)
+    publisher.start()
+    try:
+        api._publish_registrations()
+    finally:
+        publisher.join(timeout=5.0)
+
+    assert during_window["published"] is True, (
+        "the bus attach ran before the snapshot swap — the ABI-9 order is "
+        "validate -> swap -> attach"
+    )
+    assert during_window["handler_calls"] == 0 and seen == [], (
+        "a publish racing the publication window invoked a not-yet-attached "
+        "handler"
+    )
+    assert sub_id in real_bus.snapshot(), "publication must attach the pre-minted sub_id"
+    real_bus.publish("skill.lifecycle", {"probe": "post-publication"})
+    assert [row.get("probe") for row in seen] == ["post-publication"]
+
+
+def test_supervised_effect_starts_only_after_the_swap(tmp_path, monkeypatch):
+    """Ф3.1 fix-round-2 pin: the supervised-runner side effect attaches
+    strictly AFTER the registry swap — at the moment the runner would be
+    scheduled, the bundle is already published under a minted generation
+    digest."""
+    skill_name = "swapfirst"
+    observed: list = []
+
+    def probing_is_server_process() -> bool:
+        with extension_loader._lock:
+            bundle = extension_loader._extensions.get(skill_name)
+            observed.append(bundle is not None and bool(bundle.generation_digest))
+        return False  # probe only: never schedule a real runner
+
+    monkeypatch.setattr(
+        extension_plugin_api, "is_server_process", probing_is_server_process
+    )
+
+    api = extension_plugin_api.PluginAPIImpl(_PluginAPIConfig(
+        skill_name=skill_name,
+        permissions=["supervised_task"],
+        env_allowlist=[],
+        state_dir=tmp_path,
+        settings_reader=lambda: {},
+    ))
+    api.register_supervised_task("bg", lambda: None)
+    api._publish_registrations()
+    assert observed == [True], (
+        "the supervised effect started before the snapshot swap published "
+        "the bundle"
+    )
+
+
+def test_post_swap_attach_failure_disposes_through_the_standard_unload_path(
+    tmp_path, monkeypatch
+):
+    """Ф3.1 fix-round-2 pin: an effect that fails AFTER the swap (the snapshot
+    is already published) orphans nothing — the raise routes load_extension
+    into the standard dispose+unload path: the load reports the error, the
+    registries and the bus end empty, and the extension's own on_unload
+    callback ran (the disclosure that the published bundle was disposed, not
+    leaked)."""
+    from ouroboros.event_bus import get_global_event_bus
+
+    def exploding_start(self, spec):
+        raise RuntimeError("supervised runner refused post-swap")
+
+    monkeypatch.setattr(
+        extension_plugin_api.PluginAPIImpl, "_start_supervised_task", exploding_start
+    )
+    marker = tmp_path / "unload_ran.marker"
+    loaded, _repo, drive_root = _prepare_extension(
+        tmp_path,
+        "postswapfail",
+        plugin_body=(
+            "import pathlib\n"
+            f"MARKER = pathlib.Path({str(marker)!r})\n"
+            "def register(api):\n"
+            "    api.register_tool('t1', lambda **kw: 'ok', description='d', schema={})\n"
+            "    api.subscribe_event('skill.lifecycle', lambda data: None)\n"
+            "    api.register_supervised_task('bg', lambda: None)\n"
+            "    api.on_unload(lambda: MARKER.write_text('disposed', encoding='utf-8'))\n"
+        ),
+        permissions=["tool", "subscribe_event", "supervised_task"],
+        extra_frontmatter="subscribe_events: [skill.lifecycle]\n",
+    )
+    err = extension_loader.load_extension(
+        loaded, lambda: {}, drive_root=drive_root, _force_in_process=True
+    )
+    assert err is not None and "supervised runner refused post-swap" in err
+    snap = extension_loader.snapshot()
+    assert snap["extensions"] == []
+    assert snap["tools"] == []
+    with extension_loader._lock:
+        assert "postswapfail" not in extension_loader._extensions
+    listing = get_global_event_bus().snapshot()
+    assert all(sub.get("skill_name") != "postswapfail" for sub in listing.values()), (
+        "the post-swap failure left a live bus subscription behind"
+    )
+    assert marker.is_file() and marker.read_text(encoding="utf-8") == "disposed", (
+        "the standard unload path must run the published bundle's on_unload"
+    )
 
 
 def test_disposers_stay_out_of_the_plugin_api_surface():

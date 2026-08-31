@@ -87,12 +87,14 @@ class _StagedRegistrations:
 
     ``register()`` accumulates every surface and side-effect request here;
     nothing reaches the process-wide registries until the loader publishes the
-    whole snapshot atomically (validate -> effects -> swap). Every deferred
+    whole snapshot atomically (validate -> swap -> attach). Every deferred
     side effect — supervised runners, companion spawns, event-bus
-    subscriptions — starts only at publication, after the definitive
-    unload/conflict validation, so an aborted registration leaves zero
-    residue. The disposers list is loader-internal and never exposed through
-    the PluginAPI ABI.
+    subscriptions — attaches only at publication, after the definitive
+    unload/conflict validation AND after the snapshot swap (so a handler is
+    visible to the bus only for an already-published extension); an aborted
+    registration leaves zero residue, and a post-swap attach failure is
+    disposed through the standard unload path. The disposers list is
+    loader-internal and never exposed through the PluginAPI ABI.
     """
 
     tools: Dict[str, Any] = field(default_factory=dict)

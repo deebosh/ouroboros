@@ -711,20 +711,27 @@ class PluginAPIImpl:
     ) -> None:
         """Atomically publish the staged registration snapshot (ABI-9).
 
-        validate -> effects -> swap under ONE registry-lock hold: the
+        validate -> SWAP -> attach under ONE registry-lock hold: the
         definitive unload/conflict validation runs FIRST, so a refused
         publication has produced no externally visible effect at all — no
-        supervised runner, no companion process, no bus subscription. Only a
-        validated snapshot starts its deferred side effects, and the swap
-        into the process-wide registries follows in the same critical
-        section, stamped with a fresh generation digest; no concurrent
-        unload or conflicting publication can interleave between the
-        validation, the effects and the swap (both mutate only under this
-        lock). Any failure disposes every started side effect and publishes
-        NOTHING.
+        supervised runner, no companion process, no bus subscription. The
+        validated snapshot then swaps into the process-wide registries as
+        the authoritative bundle, stamped with a fresh generation digest,
+        and only AFTER the swap do the deferred side effects attach — the
+        event-bus subscriptions, the supervised runners, the companion
+        spawns — still inside the same critical section. A handler is
+        therefore visible to the bus only for an already-published
+        extension: a concurrent ``EventBus.publish()`` (which takes only
+        the bus's own lock) landing between the validation and the attach
+        cannot invoke a handler of a not-yet-published extension. Every
+        attachable effect is recorded on the published bundle at the swap
+        (futures as they are created), so a failure while attaching leaves
+        nothing orphaned: it is disclosed and raised into the caller's
+        STANDARD dispose+unload path (``unload_extension`` reaps the
+        bundle's surfaces, subscriptions, futures and companions). No
+        concurrent unload or conflicting publication can interleave
+        anywhere inside (both mutate only under this lock).
         """
-        started_disposers: list[Callable[[], Any]] = []
-        futures: list[Any] = []
         with _lock:
             try:
                 self._require_open_locked()
@@ -735,29 +742,9 @@ class PluginAPIImpl:
                         "publication refused"
                     )
             except Exception:
-                self._run_staged_disposers(started_disposers)
+                self._run_staged_disposers()
                 raise
-            try:
-                bus = get_global_event_bus()
-                for sub in self._staged.event_subscriptions:
-                    bus.subscribe(self._skill, sub.topic, sub.handler, sub_id=sub.sub_id)
-                    started_disposers.append(functools.partial(bus.unsubscribe, sub.sub_id))
-                for spec in self._staged.supervised_tasks:
-                    future = self._start_supervised_task(spec)
-                    if future is not None:
-                        futures.append(future)
-                        started_disposers.append(future.cancel)
-                for spawn in self._staged.companion_spawns:
-                    supervisor = get_global_supervisor()
-                    if supervisor is None:
-                        raise ExtensionRegistrationError("companion supervisor is not initialized")
-                    supervisor.start(spawn.descriptor)
-                    started_disposers.append(
-                        functools.partial(supervisor.stop, self._skill, spawn.name)
-                    )
-            except Exception:
-                self._run_staged_disposers(started_disposers)
-                raise
+            staged = self._staged
             bundle = _extensions.get(self._skill)
             if bundle is None:
                 bundle = _ExtensionRegistrations()
@@ -771,29 +758,57 @@ class PluginAPIImpl:
             bundle.plugin_api_generation = self._plugin_api_generation
             digest = uuid.uuid4().hex
             bundle.generation_digest = digest
-            for live, staged, bundle_keys, stamp in (
-                (_tools, self._staged.tools, bundle.tools, True),
-                (_routes, self._staged.routes, bundle.routes, True),
-                (_ws_handlers, self._staged.ws_handlers, bundle.ws_handlers, True),
-                (_ui_tabs, self._staged.ui_tabs, bundle.ui_tabs, False),
-                (_settings_sections, self._staged.settings_sections, bundle.settings_sections, False),
+            for live, staged_map, bundle_keys, stamp in (
+                (_tools, staged.tools, bundle.tools, True),
+                (_routes, staged.routes, bundle.routes, True),
+                (_ws_handlers, staged.ws_handlers, bundle.ws_handlers, True),
+                (_ui_tabs, staged.ui_tabs, bundle.ui_tabs, False),
+                (_settings_sections, staged.settings_sections, bundle.settings_sections, False),
             ):
-                for key, value in staged.items():
+                for key, value in staged_map.items():
                     if stamp:
                         value["extension_generation"] = digest
                         value["plugin_api_generation"] = self._plugin_api_generation
                     live[key] = value
                     bundle_keys.append(key)
-            bundle.unload_callbacks.extend(self._staged.unload_callbacks)
-            bundle.event_subscriptions.extend(sub.sub_id for sub in self._staged.event_subscriptions)
-            for name in self._staged.companion_names:
+            bundle.unload_callbacks.extend(staged.unload_callbacks)
+            # Recorded on the bundle BEFORE the attach below so a mid-attach
+            # failure's unload reaps every effect (unsubscribing a
+            # never-attached sub_id / stopping a never-spawned companion is a
+            # no-op) — nothing can end up outside the bundle's reach.
+            bundle.event_subscriptions.extend(sub.sub_id for sub in staged.event_subscriptions)
+            for name in staged.companion_names:
                 _record_companion_name(bundle, name)
-            bundle.supervised_futures.extend(futures)
             if self not in bundle.api_instances:
                 bundle.api_instances.append(self)
             _load_failures.pop(self._skill, None)
             self._registration_closed = True
             self._staged = _StagedRegistrations()
+            # ATTACH (post-swap, same lock hold): deferred side effects start
+            # only against the already-published bundle.
+            try:
+                bus = get_global_event_bus()
+                for sub in staged.event_subscriptions:
+                    bus.subscribe(self._skill, sub.topic, sub.handler, sub_id=sub.sub_id)
+                for spec in staged.supervised_tasks:
+                    future = self._start_supervised_task(spec)
+                    if future is not None:
+                        bundle.supervised_futures.append(future)
+                for spawn in staged.companion_spawns:
+                    supervisor = get_global_supervisor()
+                    if supervisor is None:
+                        raise ExtensionRegistrationError("companion supervisor is not initialized")
+                    supervisor.start(spawn.descriptor)
+            except Exception:
+                # Disclosure: the snapshot IS published; the raise routes the
+                # caller into the standard dispose+unload path, which reaps
+                # everything the bundle recorded above.
+                log.warning(
+                    "extension %s post-swap side effect failed; the published "
+                    "bundle is disposed through the standard unload path",
+                    self._skill, exc_info=True,
+                )
+                raise
 
     def _close_runtime_access(self) -> None:
         with _lock:

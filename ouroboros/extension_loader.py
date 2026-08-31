@@ -719,7 +719,8 @@ def load_extension(
                 api._disclose_model_capable_dispatch("register", "register")
             register(api)
             # ABI-9: nothing register() staged is visible yet; publish the
-            # whole snapshot atomically (deferred side effects start here).
+            # whole snapshot atomically (validate -> swap -> attach; deferred
+            # side effects attach only after the swap).
             api._publish_registrations(
                 content_hash=current_hash,
                 skill_dir=str(skill.skill_dir.resolve()),
@@ -732,8 +733,10 @@ def load_extension(
                     if tool_name in _tools:
                         _tools[tool_name]["skills_repo_path"] = str(skill.skill_dir.parent)
     except ExtensionRegistrationError as exc:
-        # Nothing was published; discard the staged snapshot and its side
-        # effects, then purge the imported package.
+        # A refused validation published nothing (abort discards the staged
+        # snapshot); a post-swap attach failure DID publish — either way
+        # unload_extension is the standard dispose path and reaps whatever
+        # the bundle recorded, then the imported package is purged.
         if api is not None:
             api._abort_registration()
         unload_extension(skill.name)
