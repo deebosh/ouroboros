@@ -2600,3 +2600,10 @@ helper extraction and new-defects CLOSED with no action owed. Dispositions:
    round satisfies its own manifest (no condemned intermediate commits —
    the local unpushed round-2 series was arranged for this before any
    push; the pushed tip aae647fb was not rewritten).
+7. Serial-battery addendum (found by this round's full CI-shape battery,
+   serial pass): tests/test_cancel_live_kill_path.py
+   ::test_e2e_child_finishing_before_the_kill_keeps_its_completed_result
+   asserted the OLD-ABI alias on the kept row and the task_done relay —
+   converted to the honest name (same class as the entry-3 disclosure
+   list; the child writer's legacy kwarg is honored deprecated-wins, then
+   stripped by the write seam).

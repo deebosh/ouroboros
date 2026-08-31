@@ -116,13 +116,17 @@ def test_e2e_child_finishing_before_the_kill_keeps_its_completed_result(qenv, mo
     assert stored["status"] == STATUS_COMPLETED
     assert stored["result"] == "the finished child answer"
     assert stored["final_answer"] == "the finished child answer"
-    assert stored["cost_usd"] == 0.42
+    # ABI-3 fix-round-2: persisted and relayed under the honest name only
+    # (the child writer above used the legacy kwarg — honored, then stripped).
+    assert stored["accounted_upper_bound_usd"] == 0.42
+    assert "cost_usd" not in stored
     # Completion wins WITHOUT a parent_decision overwrite of the kept result.
     assert "parent_decision" not in stored
     assert ci.active_intent(qenv.drive, task_id) is None
     (done,) = done_events
     assert done["status"] == STATUS_COMPLETED
-    assert done["cost_usd"] == 0.42
+    assert done["accounted_upper_bound_usd"] == 0.42
+    assert "cost_usd" not in done
 
 @pytest.mark.serial
 def test_kill_path_registers_the_owed_answer_before_the_intent_settles(qenv, monkeypatch):
