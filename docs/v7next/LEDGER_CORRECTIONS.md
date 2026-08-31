@@ -1155,3 +1155,153 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    vs the wave-4 seam's parent); with the explicit base
    OURO_SIZE_RATCHET_BASE_REF=a56bb76a this lane's transition validates green
    (1 passed). Integration seam owns the default-base repair.
+## From the D01 lane (base a56bb76a, 2026-08-30)
+1. loop.py L-B split rows 3265-3425 (161 rows, nine leaves) executed against tip
+   bytes: 150 spans landed with the transplant tool (drift-probe first per leaf;
+   final --check per leaf: ast=tokens=bytes=True on every span,
+   leaf_invariants=[], unread_declared=[], undeclared_top_level=[], exit 0).
+   Drift-probe of the reference leaves against `git show HEAD:ouroboros/loop.py`:
+   95/150 spans byte-identical, 55 BYTE-FALSIFIED as copy sources and re-emitted
+   from tip bytes. Falsification class verified against the merge base
+   (8028f1df): 52/55 pure upstream drift (oracle==merge-base, tip moved); the
+   other 3 (_drain_incoming_messages, _check_budget_limits — oracle line-wraps
+   around its own handle rewrites; _maybe_inject_finalization_nudges — oracle
+   comment-prose rewording) carry NO code delta. Zero live v7 semantic deltas in
+   the loop split; every span is tip truth.
+2. ELEVEN loop rows SUPERSEDED-BY-UPSTREAM (upstream re-homed the symbol into
+   its own leaf before this lane; tip ownership stands, no transplant):
+   3273 (_last_assistant_text -> loop_transport.last_assistant_text),
+   3312/3313 (_provider_failure_hint/_provider_recovery_hint ->
+   loop_transport public pair; matches D02 lane entry 10), 3314
+   (_task_deadline_epoch -> loop_transport.task_deadline_epoch), 3315/3316
+   (_mark_owner_stop_control_drained/_owner_stop_window_elapsed ->
+   supervisor/owner_stop.py, the 65b5d19f re-decomposition), 3340
+   (_DELEGATE_ACTIVITY_TOOLS -> nanny_pacing.DELEGATE_ACTIVITY_TOOLS with a
+   compat alias), 3341-3344 (the four _nanny_* helpers -> nanny_pacing.py
+   public names; loop.py imports underscore aliases). The carried ledger
+   renames those rows' destinations at F5.
+3. Declared-set deltas against the reference LEAVES table, all tip truth,
+   pinned in tests/test_module_handle_extraction.py: (a) same-leaf members tip
+   tests monkeypatch on ouroboros.loop now read through _loop() even inside
+   their own leaf (the reference instead re-pinned those tests to the leaf —
+   its L3 wave; this tree keeps tip tests unchanged):
+   _execute_task_acceptance_panel (acceptance_review);
+   _compute_subagent_handoff, _resolve_delivery_control (delivery);
+   _call_forced_model_once, _claimed_child_dispositions,
+   _drain_forced_owner_directives (forced_finalization);
+   _dispatch_round_model, _measure_round_main_fit, _run_main_reclaim
+   (model_call); _skill_finalization_message (nudges);
+   _mark_owner_stop_control_drained (round_limits; upstream re-homed the def
+   into supervisor/owner_stop.py while tests still rebind it on the loop —
+   proven by a red run of tests/test_owner_stop_s3.py before the declare).
+   (b) round_limits gained _provider_unavailable_result and
+   _append_or_merge_user_content as handle reads (tip drift); several oracle
+   declared names dropped as unread on tip bytes (_last_assistant_text,
+   _live_delivery_candidate in round_limits; _handle_forced_finalization in
+   delivery) — the tool's unread_declared gate is the authority.
+4. FACADE CONVENTION DIVERGENCE (disclosed, same class as D05 entry 4): the
+   reference's L3 package trimmed the loop.py re-export surface
+   (RETIRED_FROM_LOOP) after re-homing loop-private test imports to leaf
+   owners. This tree keeps the FULL re-export surface (all 150 moved names,
+   grouped per leaf at EOF) because the tip consumer set still addresses every
+   moved name at ouroboros.loop; the L3 trimming is a consumer-rebind wave for
+   F5, not part of the byte-preserving relocation.
+   tests/test_loop_owner_facades.py is carried ADAPTED: the identity and
+   hot-code-parity clauses survive over the full surface; the reference's
+   RETIRED_FROM_LOOP absence clauses and the surviving-reason invariant are NOT
+   carried (they pin the L3 state). HOT_CODE_PATHS closure mirrored for the
+   nine loop leaves (D04/D08 precedent).
+5. agent.py rows 3882-3897 -> agent_dispatch.py (D38 handle _agent, declared
+   {write_task_result}): rows 3884-3897 executed from tip bytes (drift-probe:
+   10/14 byte-identical, 4 pure upstream drift). Rows 3882-3883 SOURCE-
+   FALSIFIED: upstream v6.105.0 moved dispatch_executor_note /
+   executor_blocked_outcome into ouroboros/subagent_dispatch_notes.py; their
+   live rows are 3935-3936 and the pair moved from THERE (shared-leaf
+   convention: per-parent drift probes — the pair 0/2 byte-identical to the
+   reference, both re-emitted from tip sdn bytes; final --check against the two
+   parents concatenated, 16/16 green). subagent_dispatch_notes.py was touched
+   ONLY by removing the pair spans + the re-export import (D01 part);
+   its D07 rows 3937-3938 (SubagentExecutorResolution/SubagentLaneResolution
+   bindings and the module-retirement question) stay untouched for the D07
+   lane; the lost-reader imports keep the surface under noqa. agent_dispatch's
+   tip spans additionally read _persist_early_origin_stub_impl (upstream
+   re-homed the impl into agent_startup_checks.persist_early_origin_stub —
+   tip-truth import, the D38 write_task_result handle read is intact).
+6. agent_task_pipeline.py rows 3898-3909 -> post_task_synthesis.py: 11 rows
+   executed from tip bytes (8/11 byte-identical, 3 pure upstream drift:
+   _TASK_SUMMARY_PROMPT, _run_reflection, _run_task_summary). Row 3904
+   (_summary_row_cost_fields) SUPERSEDED-BY-UPSTREAM: the symbol lives in
+   ouroboros/synthesis_cost_text.py (public re-export list) — leaf imports it,
+   ownership stands. The reference leaf has no handle; this tree's leaf is
+   likewise projection-only (the auto-generated handle was stripped; zero
+   declared). tests/test_lc2_owner_facades.py extended with the
+   agent_dispatch/post_task_synthesis rows per the reference table, minus
+   _summary_row_cost_fields (upstream home), with the sdn-facade note.
+7. HOT-DEFERRED, typed-result/refusal class (tip bytes stand, nothing touched):
+   loop_tool_execution.py rows 157-164/826-828 (classifier cutover; confirms
+   D04 entry 6 from the D01 side — the shared monolith was not touched by
+   either lane); loop_llm_call.py reference delta (+PROVIDER_POLICY_REFUSAL
+   classification — imports llm_attempt symbols that do not exist at tip;
+   rides with the D09 typed-refusal subfamily per D02 entry 4);
+   _outcome_tool_errors.py reference delta (T1 status partitioning, D02
+   family; re-prove trap per D15 entry 3); task_finalization.py reference
+   delta (register-before-persist ordering — cancel/custody organ, 65b5d19f
+   class, F2).
+8. Test-split rows executed. tests/test_loop_misc.py (2037 lines, GIANT_PATHS)
+   -> 4 siblings from tip bytes: test_loop_acceptance_gate.py (rows 3495-3505;
+   6/11 spans byte-falsified by tip test drift, tip bytes moved;
+   test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason
+   carried in the REFERENCE-ADAPTED form — the split spread the writers over
+   loop.py + leaves and the reference's union-scan over loop_*.py is the
+   identity continuation of the pin; the tip span byte-differs only by those
+   two adaptation hunks), test_loop_image_attach.py (3506-3507),
+   test_loop_skill_finalization.py (3508-3511), test_run_llm_loop.py
+   (3512-3524; all byte-identical). UNROWED tip helper _seed_acceptance_root
+   rode with its only readers into test_loop_acceptance_gate.py (F5 census).
+   Rows 832-833 NOT executed: their destination suite pins the deferred typed
+   cutover (D04 entry 9 class); the two tests stay in the remainder on tip
+   bytes. Remainder 548 lines, left GIANT_PATHS; reader-less imports dropped.
+   Lossless: 45 == 45 test names.
+9. tests/test_agent_task_pipeline.py split rows: 22 of 34 rows
+   SUPERSEDED-BY-UPSTREAM — upstream already extracted
+   test_root_post_task_synthesis.py (3544-3556), test_post_task_reflection.py
+   (3557-3560) and test_store_task_result.py (3561-3565) to the ledger's exact
+   destinations. This lane executed the remaining two: test_task_summary.py
+   (3535-3543) and test_collect_review_evidence.py (3566-3568), tip bytes,
+   all byte-identical to the reference siblings. Lossless: 21 == 21.
+10. Rowed import rebinds landed (identity continuations; the facade keeps both
+   addresses live): 3915-3917/3932-3934 (test_v678_acceptance_state ->
+   loop_acceptance / loop_acceptance_review), 3920-3921/3925-3928
+   (test_loop_misc remainder -> nudges/round_limits/messages/acceptance), 3922
+   (test_v6502_capability), 3923-3924 (test_budget_limits), 3929
+   (test_nanny_finalization_nudge), 3930 (test_review_eligibility), 3931
+   (test_transcript_seal), and the D02-deferred function-local retargets in
+   tests/test_multimodal_chat.py (loop_messages; D02 entry 10 closure). Rows
+   3918-3919 SUPERSEDED: tip already binds the provider hints from
+   loop_transport (public names) — tip spelling stands.
+11. Zero-v7-delta re-proofs for the rest of the domain (tip==ref==merge-base:
+   _outcome_receipts.py, mutation_attribution.py; pure upstream drift,
+   ref==merge-base: agent_startup_checks.py, deadline_utils.py, outcomes.py,
+   owner_mailbox.py, post_task_checkpoint.py, synthesis_cost_text.py,
+   task_pacing.py; NEW upstream modules, no rows: loop_transport.py,
+   outcome_receipt_store.py) — upstream bytes stand. Ratchet: loop.py left
+   GIANT_PATHS/BYTE_DEBT by extraction; agent_task_pipeline.py and
+   loop_forced_finalization.py band entries recorded via the official
+   regenerator's --band-rationale.
+12. Post-battery closure per the D10 lane's lessons (superseding notes to
+   entries 5-6): (a) MAXIMAL declared sets — a precise AST audit of every
+   frozen leaf-preamble import against test patch surfaces (setattr on parent
+   aliases + string-form patch targets) found three more dead facade patches
+   and converted them to handle reads: agent_dispatch declared grew to
+   {envelope_from_task, write_task_result} (test_available_subagents_runtime
+   patches envelope_from_task on ouroboros.agent), and post_task_synthesis is
+   NO LONGER projection-only — it carries the _atp() handle with declared
+   {_is_root_post_task, load_task_result} (test_presence_post_task /
+   test_agent_task_pipeline patch them on the pipeline), diverging from the
+   reference's handle-less leaf, which froze _is_root_post_task by import.
+   Zero f-string reads of rebindable globals were hit in any D01 emit (the
+   tool's f-string gate never fired — no f-string HOT-DEFERRED spans in this
+   lane). (b) tests/test_v7next_transplant.py loop probes re-pinned to the
+   pre-split monolith bytes of the lane base (git show a56bb76a:ouroboros/
+   loop.py, the D10 recipe) with a self-contained fallback that inverse-
+   normalizes the landed loop_messages leaf — the suite is green either way.

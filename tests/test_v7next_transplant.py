@@ -180,8 +180,22 @@ def test_queue_drifted_symbols_need_a_recalculated_declared_set():
 
 # ---------------------------------------------------------------------------
 # real case 2: ouroboros/loop.py -> loop_messages leaf (_loop handle)
+#
+# The D01 lane landed the L-B split, so ouroboros/loop.py no longer carries
+# these defs. The probe keeps its real-case shape on the PRE-SPLIT monolith
+# bytes of the lane base (the D10 lane's recipe for probes pinned to live
+# monoliths); when the object is unreachable (e.g. a shallow clone without
+# that commit) it falls back to reconstructing the same bytes from the landed
+# leaf by inverse-normalizing the handle reads (`_loop().X` -> `X`) — the
+# exact inversion the tool's own proof performs.
 
-LOOP_UPSTREAM = _read(REPO / "ouroboros" / "loop.py")
+_D01_BASE = "a56bb76a38ca92b39a659b4b6e63e07a76243a4f"
+_pre_split = subprocess.run(
+    ["git", "-C", str(REPO), "show", f"{_D01_BASE}:ouroboros/loop.py"],
+    capture_output=True, text=True)
+LOOP_UPSTREAM = (
+    _pre_split.stdout if _pre_split.returncode == 0 and _pre_split.stdout
+    else _read(REPO / "ouroboros" / "loop_messages.py").replace("_loop().", ""))
 
 LOOP_PREAMBLE = '''"""Loop messages leaf (test preamble)."""
 

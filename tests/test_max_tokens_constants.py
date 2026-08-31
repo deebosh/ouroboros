@@ -81,7 +81,7 @@ def test_summary_and_background_token_budgets():
         "ouroboros/tools/review_synthesis.py": "max_tokens=16384",
         "ouroboros/consolidator.py": "max_tokens=16384",
         "ouroboros/reflection.py": "max_tokens=16384",
-        "ouroboros/agent_task_pipeline.py": "max_tokens=16384",
+        "ouroboros/post_task_synthesis.py": "max_tokens=16384",
         "ouroboros/tools/skill_publish.py": "max_tokens=8192",
         "ouroboros/consciousness.py": "max_tokens=65536",
     }
@@ -526,7 +526,7 @@ def test_summary_and_reflection_callers_use_bounded_evidence():
     """Summary and reflection prompt builders must call format_review_evidence_for_prompt with max_chars."""
     from pathlib import Path
 
-    for filename in ("ouroboros/agent_task_pipeline.py", "ouroboros/reflection.py"):
+    for filename in ("ouroboros/post_task_synthesis.py", "ouroboros/reflection.py"):
         src = Path(filename).read_text(encoding="utf-8")
         assert "format_review_evidence_for_prompt(" in src
         # Must pass max_chars argument (not rely on default 0)

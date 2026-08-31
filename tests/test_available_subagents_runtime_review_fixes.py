@@ -397,7 +397,9 @@ def test_delegate_start_recipes_match_the_fresh_start_schema():
         "docs/ARCHITECTURE.md",
         "docs/DEVELOPMENT.md",
         "docs/CHECKLISTS.md",
-        "ouroboros/subagent_dispatch_notes.py",
+        # v7 D01 split: the dispatch-note pair (and its delegate_start recipe
+        # strings) moved to the agent_dispatch leaf; sdn re-exports the pair.
+        "ouroboros/agent_dispatch.py",
         "ouroboros/tools/control.py",
         "ouroboros/tools/delegate.py",
         "ouroboros/tools/delegate_integration.py",

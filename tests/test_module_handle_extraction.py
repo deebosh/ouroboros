@@ -160,6 +160,106 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "ensure_official_update_remote", "git_capture", "git_fetch_bounded",
         "load_state", "managed_branch_defaults", "utc_now_iso",
     })),
+    # D01 lane rows (L-B loop split + D38 agent dispatch), declared sets
+    # re-derived on tip bytes by the transplant tool (reference table:
+    # ouroboros_v7_wip @ 9f691656; tip additions over the reference are the
+    # same-leaf members tip tests rebind on ouroboros.loop, and
+    # _mark_owner_stop_control_drained, which upstream re-homed into
+    # supervisor/owner_stop.py while tests still patch it on the loop).
+    "ouroboros/agent_dispatch.py": ("ouroboros/agent.py", "_agent", frozenset({
+        "envelope_from_task", "write_task_result",
+    })),
+    "ouroboros/post_task_synthesis.py": ("ouroboros/agent_task_pipeline.py", "_atp", frozenset({
+        "_is_root_post_task", "load_task_result",
+    })),
+    "ouroboros/loop_acceptance.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "_append_or_merge_user_message", "_end_task_acceptance_fence",
+        "_set_acceptance_decision", "_task_acceptance_eligible", "get_task_review_mode",
+    })),
+    "ouroboros/loop_acceptance_review.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "_append_or_merge_user_message", "_begin_task_acceptance_fence",
+        "_collect_acceptance_obligations", "_dispose_obligations_on_clean_pass",
+        "_end_task_acceptance_fence", "_execute_task_acceptance_panel",
+        "_extract_plain_text_from_content", "_format_obligations_clause",
+        "_latch_final_answer_marker", "_mark_root_acceptance_checkpoint",
+        "_open_acceptance_obligations", "_set_acceptance_decision",
+        "_supersede_task_acceptance_for_evidence_change",
+        "_supersede_task_acceptance_for_owner_followup", "_task_acceptance_eligible",
+        "_task_acceptance_owner_generation_changed", "_task_acceptance_subtree_snapshot",
+        "get_review_enforcement", "get_task_review_mode",
+    })),
+    "ouroboros/loop_budget.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "DeliveryCandidate", "_TREE_ACCOUNTING_MAX_STALE_SEC", "_arm_delivery_control",
+        "_compose_delivery_suffix", "_current_delivery_candidate",
+        "_delivery_evidence_state", "_emit_checkpoint_event", "_finalize_forced_services",
+        "_finalize_task_services", "_force_plan_disclosure", "_forced_fallback_result",
+        "_forced_final_answer", "_forced_swarm_router_result", "_live_delivery_candidate",
+        "_loop_tree_accounting", "_publish_delivery_candidate",
+        "_record_forced_finalization",
+    })),
+    "ouroboros/loop_delivery.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "DeliveryCandidate", "_LoopExitContext", "_append_or_merge_user_message",
+        "_arm_delivery_control", "_child_disposition_state", "_compose_delivery_suffix",
+        "_compute_subagent_handoff", "_delivery_evidence_state",
+        "_delivery_replace_required", "_direct_child_results", "_drain_incoming_messages",
+        "_enforce_swarm_actions", "_extract_plain_text_from_content",
+        "_finalize_task_services", "_force_plan_disclosure", "_forced_orphan_note",
+        "_handle_text_response", "_live_delivery_candidate", "_load_direct_child_results",
+        "_maybe_early_finalize", "_maybe_enforce_child_absorption_gate",
+        "_maybe_inject_finalization_nudges", "_merge_finalization_trace",
+        "_parse_delivery_control_object", "_project_child_result_dispositions",
+        "_publish_delivery_candidate", "_replace_delivery_candidate",
+        "_resolve_delivery_control", "_run_task_acceptance_review_once",
+        "_service_finalization_evidence", "_supersede_delivery_acceptance_binding",
+        "_supersede_task_acceptance_for_evidence_change",
+        "_supersede_task_acceptance_for_owner_followup",
+    })),
+    "ouroboros/loop_forced_finalization.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "DeliveryCandidate", "_LoopExitContext", "_append_or_merge_user_message",
+        "_call_forced_model_once", "_child_disposition_state",
+        "_claimed_child_dispositions", "_compose_delivery_suffix",
+        "_current_delivery_candidate", "_degrade_retained_delivery_candidate",
+        "_delivery_evidence_state", "_delivery_replace_required", "_direct_child_results",
+        "_drain_forced_owner_directives", "_drain_incoming_messages",
+        "_end_task_acceptance_fence", "_finalize_forced_services",
+        "_finalize_task_services", "_force_plan_decision", "_force_plan_disclosure",
+        "_force_plan_reminder", "_forced_delegation_note", "_forced_fallback_result",
+        "_forced_final_answer", "_forced_orphan_note", "_forced_swarm_router_result",
+        "_forced_unaccepted_binding", "_live_delivery_candidate",
+        "_load_direct_child_results", "_merge_finalization_trace",
+        "_parse_delivery_control_object", "_project_child_result_dispositions",
+        "_publish_delivery_candidate", "_record_forced_acceptance_bypass",
+        "_record_forced_finalization", "_replace_delivery_candidate",
+        "_run_task_acceptance_review_once", "_service_finalization_evidence",
+        "_set_acceptance_decision", "_supersede_task_acceptance_for_owner_followup",
+        "_swarm_handoff_attempt", "call_llm_with_retry",
+    })),
+    "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "_record_owner_directive",
+    })),
+    "ouroboros/loop_model_call.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "_RoundModelCallContext", "_account_compaction_usage", "_call_round_model",
+        "_context_overflow_retries", "_context_reclaim_materializations",
+        "_context_reclaim_passes", "_dispatch_round_model", "_emit_checkpoint_event",
+        "_measure_round_main_fit", "_rebind_context_fit_plan", "_run_main_reclaim",
+        "_server_web_allowed_by_task", "_task_deadline_epoch", "call_llm_with_retry",
+        "compact_tool_history_llm", "last_physical_attempt_capture", "seal_task_transcript",
+    })),
+    "ouroboros/loop_nudges.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "_TREE_ACCOUNTING_MAX_STALE_SEC", "_append_or_merge_user_message",
+        "_emit_checkpoint_event", "_extract_plain_text_from_content",
+        "_force_plan_decision", "_loop_tree_accounting", "_skill_finalization_message",
+        "get_review_enforcement",
+    })),
+    "ouroboros/loop_round_limits.py": ("ouroboros/loop.py", "_loop", frozenset({
+        "DeliveryCandidate", "_append_or_merge_user_content",
+        "_append_or_merge_user_message", "_current_delivery_candidate",
+        "_emit_checkpoint_event", "_finalize_forced_services", "_forced_fallback_result",
+        "_forced_final_answer", "_handle_forced_finalization",
+        "_mark_owner_stop_control_drained", "_owner_marked_content",
+        "_provider_unavailable_result", "_record_owner_directive", "_task_deadline_epoch",
+        "compact_tool_history_llm", "utc_now",
+    })),
 }
 
 

@@ -5,7 +5,6 @@ BASELINE_SOURCE_SHA = "77d6827b7a72a632899bb6cc64a7e759aabcfaa6"
 GIANT_PATHS = (
     "devtools/benchmarks/osworld/run_cu_bridge_agent.py",
     "devtools/benchmarks/osworld/run_step_agent.py",
-    "ouroboros/loop.py",
     "ouroboros/review_state.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/control.py",
@@ -21,7 +20,6 @@ GIANT_PATHS = (
     "tests/test_delivery_forced_finalization.py",
     "tests/test_devtools_benchmarks.py",
     "tests/test_extensions_api.py",
-    "tests/test_loop_misc.py",
     "tests/test_model_slot_role_model.py",
     "tests/test_osworld_cu_bridge.py",
     "tests/test_preflight_runner.py",
@@ -123,6 +121,7 @@ BAND_PATHS = {
     "launcher.py": "Re-entered the band from the >1500 debt layer by extraction, not growth: the Windows webview runtime moved whole to ouroboros/launcher_windows_runtime.py (MIGRATION_v7 rows 3998-4000) and launcher.py re-exports the same objects.",
     "ouroboros/agent.py": "Subagent message identity now lives in a shared helper; keep agent.py below the giant-file threshold rather than re-expanding it.",
     "ouroboros/agent_startup_checks.py": "Shrank below 1500 by moving the envelope producer to the contracts SSOT; band re-entry is the reduction's artifact.",
+    "ouroboros/agent_task_pipeline.py": "Shrank INTO the band from 1599 lines: the post-task synthesis family moved byte-preserving into ouroboros/post_task_synthesis.py (D01 lane); no new content was added.",
     "ouroboros/artifacts.py": "Exact task-source persistence and repository-diff materialization now share the actor-readable artifact seam for acceptance evidence.",
     "ouroboros/cancel_intents.py": "Entered the band from 929 lines: reciprocal timeout-retry lineage validation and physical-leaf/logical-root aliasing stay with the durable cancel-intent mutation authority so Stop-now hardens the same request across retry races.",
     "ouroboros/capability_evidence.py": "Grew INTO the band by the #284 fix: a fresh exact-model density witness may honestly undercut the cold floor \u2014 evidence logic belongs beside the witness store it reads.",
@@ -132,6 +131,7 @@ BAND_PATHS = {
     "ouroboros/gateway/control.py": "Entered the band from 966 lines: the update-flow redesign added the shared stash-first prologue (_stash_local_work_fenced/_unwind_stashed_update) and the review-wave affordability floor to the update apply orchestration (update-flow-redesign sprint, Q9/Q10 owner decisions).",
     "ouroboros/gateway/history.py": None,
     "ouroboros/gateway/settings.py": "Retiring persistent auto-Low removed the former giant debt; the remaining owner and reviewer settings endpoints stay centralized while tracked in the shrinking band.",
+    "ouroboros/loop_forced_finalization.py": "Forced-finalization rail of the v7 L-B loop split: one cohesive owner for the forced/orphan/absorption path, moved byte-preserving from loop.py (D01 lane).",
     "ouroboros/loop_tool_execution.py": None,
     "ouroboros/marketplace/ouroboroshub.py": "Entered the band from 373 lines: the hubflow sprint added the adopt transaction (eligibility prelude, CAS re-verification, move-aside + state-quintet snapshot, verified rollback with per-step error collection, retention finalize) beside the existing install/update flows (hubflow sprint, adopt-in-ouroboroshub owner decision D4).",
     "ouroboros/observability.py": "Entered the band from 820 lines: child task copy-back now promotes only promised observability CAS manifests/blobs and task-owned source handles into canonical storage before headless GC, with typed unavailable gaps and retry metadata.",
@@ -221,7 +221,6 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "ouroboros/loop.py": 312765,
     "tests/test_delegated_subagent_transport.py": 318310,
     "tests/test_devtools_benchmarks.py": 327935,
     "web/modules/chat.js": 224244,

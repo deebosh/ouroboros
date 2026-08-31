@@ -44,6 +44,17 @@ HOT_CODE_PATHS = frozenset({
     "supervisor/events_schedule_task.py",
     "supervisor/events_subagent_admission.py",
     "supervisor/events_worker_reports.py",
+    # v7 D01 split leaves: code that moved out of the hot loop monolith keeps
+    # the label (same parity rule as the D04 block above).
+    "ouroboros/loop_acceptance.py",
+    "ouroboros/loop_acceptance_review.py",
+    "ouroboros/loop_budget.py",
+    "ouroboros/loop_delivery.py",
+    "ouroboros/loop_forced_finalization.py",
+    "ouroboros/loop_messages.py",
+    "ouroboros/loop_model_call.py",
+    "ouroboros/loop_nudges.py",
+    "ouroboros/loop_round_limits.py",
 })
 
 

@@ -16,11 +16,29 @@ import importlib
 
 # leaf module -> (parent module, every member the leaf owns; the parent
 # re-exports each name).
-# v7next transplant note: the reference table (ouroboros_v7_wip @ 9f691656)
-# also carries the ouroboros.agent_dispatch and ouroboros.post_task_synthesis
-# rows; those extractions belong to other domains and land with their lanes —
-# only the D16 usage split exists on this integration branch so far.
+# v7next transplant note: the agent_dispatch and post_task_synthesis rows landed
+# with the D01 lane (reference table: ouroboros_v7_wip @ 9f691656). Two deltas
+# against the reference rows, both tip truth: dispatch_executor_note /
+# executor_blocked_outcome reach ouroboros.agent through the
+# subagent_dispatch_notes facade (upstream v6.105.0 home; one object either
+# way), and _summary_row_cost_fields is NOT a post_task_synthesis member —
+# upstream re-homed it into ouroboros/synthesis_cost_text.py before this split.
 LC2_LEAF_OWNERS: dict[str, tuple[str, str]] = {
+    "ouroboros.agent_dispatch": (
+        "ouroboros.agent",
+        "dispatch_executor_note executor_blocked_outcome _record_executor_resolution "
+        "_blocked_executor_terminal _persist_early_origin_stub _budget_exhausted_message "
+        "_budget_resume_policy _queued_budget_exhausted_message _physical_calls_after_budget_rail "
+        "_initial_effort_for resolve_dispatch_axes _DELEGATE_VERBS preflight_delegate_visibility "
+        "reset_nanny_economics_marks emit_dispatch_resolution capability_delta_prompt_block"
+    ),
+    "ouroboros.post_task_synthesis": (
+        "ouroboros.agent_task_pipeline",
+        "build_trace_summary _update_improvement_backlog _apply_reflection_memory_actions "
+        "_child_task_evidence _pre_synthesis_usage_snapshot _compact_review_projection "
+        "_TASK_SUMMARY_PROMPT _run_task_summary _run_chat_consolidation "
+        "_run_scratchpad_consolidation _run_reflection"
+    ),
     "ouroboros.usage_legacy_import": (
         "ouroboros.usage_accounting",
         "IMPORT_REL _legacy_snapshot ensure_legacy_imported _completed_import_watermark "

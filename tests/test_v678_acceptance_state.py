@@ -22,13 +22,15 @@ from types import SimpleNamespace
 import pytest
 
 import ouroboros.loop as loop_mod
-from ouroboros.loop import (
+from ouroboros.loop_acceptance import (
     ACCEPTANCE_DECISION_REASONS,
-    _apply_task_acceptance_result,
-    _record_acceptance_infra_failure,
     _set_acceptance_decision,
     _supersede_task_acceptance_for_evidence_change,
     _supersede_task_acceptance_for_owner_followup,
+)
+from ouroboros.loop_acceptance_review import (
+    _apply_task_acceptance_result,
+    _record_acceptance_infra_failure,
 )
 from ouroboros.outcomes import (
     ACCEPTANCE_ACCEPTED,
@@ -827,7 +829,10 @@ def test_merge_point_is_the_only_status_writer_outside_the_agent_stance_merge():
         if 'llm_trace["acceptance_decision"] =' in path.read_text(encoding="utf-8")
         or '["acceptance_decision"] = _dec' in path.read_text(encoding="utf-8")
     )
-    assert writers == ["loop.py", "loop_tool_execution.py"], writers
+    # The v7 L-B split moved `_set_acceptance_decision` (and with it the single
+    # host-status assignment) into the loop_acceptance leaf; the loop.py name is
+    # a facade re-export of the same object.
+    assert writers == ["loop_acceptance.py", "loop_tool_execution.py"], writers
     trace: dict = {}
     _set_acceptance_decision(trace, {"status": ACCEPTANCE_ACCEPTED, "reason": "clean_pass"})
     assert trace["acceptance_decision"]["status"] == ACCEPTANCE_ACCEPTED
