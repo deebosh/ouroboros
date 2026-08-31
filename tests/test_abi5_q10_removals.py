@@ -6,6 +6,10 @@ guard. One section per Q10 item:
 
 - OUROBOROS_SCOPE_REVIEW_FLOOR: key, owner endpoint, gateway contract, web
   client, shell/browser guards — removed; a stored value is stripped on load.
+- fail_tasks: the budget-drain batch terminalizer is removed; pausing before
+  dispatch (the E13 scenario) is the one live semantics for a budget-exhausted
+  queued task, and the pre-assignment pending drop is the one secondary settle
+  site left.
 """
 
 from __future__ import annotations
@@ -90,3 +94,26 @@ def test_scope_review_floor_left_no_source_remnants():
                 if rel not in allowed:
                     offenders.append(str(rel))
     assert not offenders, f"retired floor surface respelled in: {offenders}"
+
+
+# --- Q10 item 2: fail_tasks (budget-drain terminalizer) -----------------------
+
+def test_fail_tasks_is_gone_and_pause_scenario_supersedes_it():
+    import ouroboros.task_results as task_results
+
+    assert not hasattr(task_results, "fail_tasks")
+    # The E-suite records the supersession explicitly: E8 (budget-drain
+    # fail_tasks) retired deliberately, E13 (pause before dispatch) lives.
+    from tests.fixtures_e2e_cancellation import SCENARIOS
+
+    assert "E8" not in SCENARIOS
+    assert "E13" in SCENARIOS
+
+
+def test_fail_tasks_left_no_source_remnants():
+    offenders = []
+    for root in ("ouroboros", "supervisor", "web", "prompts"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            if "fail_tasks" in path.read_text(encoding="utf-8", errors="replace"):
+                offenders.append(str(path.relative_to(REPO)))
+    assert not offenders, f"removed fail_tasks respelled in: {offenders}"

@@ -32,18 +32,6 @@ from tests._cancel_intents_shared import qenv as _qenv
 qenv = _qenv
 
 
-def test_fail_tasks_honors_active_intent(tmp_path):
-    from ouroboros.task_results import fail_tasks
-
-    write_task_result(tmp_path, "b1", "scheduled")
-    ci.request_cancel(tmp_path, "b1", reason="owner cancel")
-    written = fail_tasks(
-        tmp_path, [{"id": "b1"}], reason_code="budget_exhausted", result="drained",
-    )
-    assert written == 1
-    assert load_task_result(tmp_path, "b1")["status"] == STATUS_CANCELLED
-    assert ci.active_intent(tmp_path, "b1") is None  # settled by the drain
-
 def test_drop_cancelled_pending_consults_the_intent_projection(qenv, monkeypatch):
     from supervisor import workers
 
@@ -758,23 +746,6 @@ def test_drop_cancelled_pending_defers_when_intent_vanishes_before_settle(
     assert replacement["state"] == ci.INTENT_REQUESTED
     assert replacement["reason"] == "new request"
     assert snapshots == ["cancellation_authority_indeterminate"]
-
-def test_fail_tasks_yields_to_a_live_claim_owner(tmp_path):
-    """AR2-2: the budget drain claims before settling; a live custody's claim
-    wins and the drain leaves the task entirely to that owner."""
-    from ouroboros.task_results import fail_tasks
-
-    write_task_result(tmp_path, "b2", "scheduled")
-    ci.request_cancel(tmp_path, "b2")
-    ci.claim_intent(tmp_path, "b2", owner="cancel_task_custody")
-
-    written = fail_tasks(
-        tmp_path, [{"id": "b2"}], reason_code="budget_exhausted", result="drained",
-    )
-
-    assert written == 0
-    assert load_task_result(tmp_path, "b2")["status"] == "scheduled"
-    assert ci.active_intent(tmp_path, "b2")["claim_owner"] == "cancel_task_custody"
 
 def test_snapshot_restore_consults_the_intent_projection_under_the_queue_lock(
     qenv, monkeypatch,

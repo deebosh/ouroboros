@@ -1674,11 +1674,11 @@ Before every commit, verify the following:
   (pid + generation) immediately before the durable terminal write — a claim
   lost across the kill/join window aborts the publication (deliberately ONE
   re-read at the one write that matters, not a renewable-lease subsystem —
-  rejected by owner scope); the secondary settle
-  sites (pre-assignment pending drop, budget-drain `fail_tasks` — whose intent
-  reads resolve at the CANONICAL supervisor root, never a child's
-  `budget_drive_root`) hold the SAME
-  claim/generation fence and yield to a live claim owner. A `scope=cascade`
+  rejected by owner scope); the one secondary settle
+  site (the pre-assignment pending drop; the budget-drain `fail_tasks` was
+  removed in the 7.0 ABI window, owner Q10=A — a budget-exhausted queued task
+  now pauses instead of terminalizing) holds the SAME
+  claim/generation fence and yields to a live claim owner. A `scope=cascade`
   intent is settled EXCLUSIVELY by the cascade's no-live postcondition: every
   other settle site is refused atomically against the CURRENT durable scope
   (a mid-flight widen beats a stale claim snapshot; the refused claimant's

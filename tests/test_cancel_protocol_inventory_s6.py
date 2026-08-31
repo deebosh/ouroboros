@@ -68,8 +68,6 @@ TERMINAL_WRITERS = {
     ('ouroboros/project_dialogue.py::_append_terminal_task_projection', 'status'): 'dynamic',
     ('ouroboros/project_dialogue.py::persist_continuation_narrative', 'requested_status'): 'dynamic',
     ('ouroboros/project_naming.py::spawn_proactive_namer._work', 'status'): 'dynamic',
-    ('ouroboros/task_results.py::fail_tasks', 'STATUS_CANCELLED'): 'terminal',
-    ('ouroboros/task_results.py::fail_tasks', 'STATUS_FAILED'): 'terminal',
     ('ouroboros/task_status.py::reconcile_orphaned_running_tasks', 'eff_status'): 'dynamic',
     ('ouroboros/tools/control_delegation.py::record_depth_limit_refusal', 'STATUS_FAILED'): 'terminal',
     ('supervisor/cancel_publication.py::_finalize_cancel_intent_on_miss', 'STATUS_CANCELLED'): 'terminal',
@@ -101,7 +99,6 @@ TERMINAL_WRITERS = {
 # C8 — the settle owners. Exactly one may pass allow_cascade_scope=True: the
 # cascade postcondition, which owes the tree's one summary before it settles.
 SETTLE_INTENT_CALLERS = {
-    'ouroboros/task_results.py::fail_tasks': False,
     'supervisor/task_lifecycle.py::_settle_intent': False,
     'supervisor/task_lifecycle.py::cancel_task_by_id': True,
     'supervisor/workers.py::_settle_cancelled_pending_row': False,
@@ -116,8 +113,6 @@ NO_DELIVERABLE_LANES = {
         'a cron dispatch refused at admission never had an owner answer',
     'supervisor/workers.py::_settle_cancelled_pending_row':
         'dropped before assignment; the salvage receipt belongs to custody',
-    'ouroboros/task_results.py::fail_tasks':
-        'budget drain before start',
     'supervisor/queue_snapshot.py::restore_pending_from_snapshot':
         'restore-time reconciliation of a task cancelled while the server was down',
     'supervisor/events_task_done.py::_finish_task_done_dispatch':
