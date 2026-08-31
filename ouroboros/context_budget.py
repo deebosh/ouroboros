@@ -274,7 +274,9 @@ def estimate_message_chars(messages: Any) -> int:
         else:
             total += len(str(content or ""))
         # Reasoning kept on canonical assistant turns is replayed verbatim on
-        # the reasoning-echo lane (DeepSeek), so it is real wire prompt; other
-        # lanes never carry the key, so their estimates are unchanged.
+        # the reasoning-echo lane (DeepSeek), so it is real wire prompt. A
+        # mixed transcript sent to a non-echo lane still carries the key here
+        # while the wire copy strips it — a conservative over-count, the safe
+        # direction for a compaction trigger.
         total += len(str(msg.get("reasoning_content") or ""))
     return total
