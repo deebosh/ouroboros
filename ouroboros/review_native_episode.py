@@ -348,6 +348,12 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         total_usage[_fact] = usage[_fact]
                 content = str(msg.get("content") or "") if isinstance(msg, dict) else ""
                 transcript_chars += len(content)
+                # The reasoning-echo lane (DeepSeek) keeps ``reasoning_content``
+                # on the canonical assistant message appended below and replays
+                # it verbatim on every later send — uncounted, the fail-closed
+                # bound would drift by the entire thinking tail.
+                if isinstance(msg, dict):
+                    transcript_chars += len(str(msg.get("reasoning_content") or ""))
                 # Tool-call objects (names + argument JSON) join `messages`
                 # below and ride every later send — the cumulative half of
                 # the previous under-count.
