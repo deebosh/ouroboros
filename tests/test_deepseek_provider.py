@@ -137,7 +137,8 @@ class TestWireProjection:
         assert target["base_url"] == DEEPSEEK_BASE_URL
         assert target["api_key"] == "sk-x"
         assert target["usage_model"] == "deepseek/deepseek-v4-flash"
-        assert target["carries_reasoning_effort"] is True
+        assert target["reasoning_effort_ceiling"] == "max"
+        assert target["requires_reasoning_echo"] is True
         assert target["supports_openrouter_extensions"] is False
 
     def test_effort_carried_with_max_tokens_carrier(self, monkeypatch):
@@ -158,13 +159,22 @@ class TestWireProjection:
         )
         assert kwargs["reasoning_effort"] == "max"
 
-    def test_openai_still_carries_effort_via_flag(self, monkeypatch):
+    def test_openai_effort_carriage_survives_minimal_stub_targets(self, monkeypatch):
+        # The carriage is keyed on the provider id, NOT a target capability
+        # field: the wire ladder's eligibility reads provider + payload effort,
+        # and a hand-built target (fixtures, probes) must not silently drop the
+        # effort (regression: test_issue229_synthesis stubs a minimal target).
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
         client = LLMClient()
-        target = client._resolve_remote_target("openai::gpt-5.6-terra")
-        assert target["carries_reasoning_effort"] is True
+        minimal_target = {
+            "provider": "openai", "resolved_model": "gpt-5.6-terra",
+            "usage_model": "openai/gpt-5.6-terra", "api_key": "k",
+            "base_url": "https://api.openai.com/v1", "default_headers": {},
+            "supports_openrouter_extensions": False,
+            "supports_generation_cost": False,
+        }
         kwargs = client._build_remote_kwargs(
-            target, [{"role": "user", "content": "hi"}], "high", 128, "auto", None, None,
+            minimal_target, [{"role": "user", "content": "hi"}], "high", 128, "auto", None, None,
         )
         assert kwargs["reasoning_effort"] == "high"
 
@@ -281,6 +291,46 @@ class TestWireProjection:
         )
         blocks = kwargs["messages"][0]["content"]
         assert not any(isinstance(b, dict) and b.get("type") == "image_url" for b in blocks)
+
+    def test_openrouter_lane_neither_leaks_nor_pins_on_deepseek_residue(self, monkeypatch):
+        # A mixed transcript (direct-DeepSeek turns replayed on an OpenRouter
+        # model without passing a switch seam) must NOT forward the
+        # deepseek-private reasoning_content to OpenRouter, and must NOT trip
+        # the replay-artifact allow_fallbacks=False pin off that residue.
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-x")
+        client = LLMClient()
+        target = client._resolve_remote_target("google/gemini-3.7-flash")
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "x", "reasoning_content": "ds thoughts"},
+            {"role": "user", "content": "again"},
+        ]
+        kwargs = client._build_remote_kwargs(
+            target, messages, "high", 128, "auto", None, None,
+        )
+        sent = [m for m in kwargs["messages"] if m.get("role") == "assistant"]
+        assert all("reasoning_content" not in m for m in sent)
+        provider_body = (kwargs.get("extra_body") or {}).get("provider") or {}
+        assert provider_body.get("allow_fallbacks") is not False
+        # The canonical transcript is untouched.
+        assert messages[1]["reasoning_content"] == "ds thoughts"
+
+    def test_openai_compatible_vendor_form_vision_stays_sighted(self, monkeypatch):
+        # The qualified identity (openai-compatible/<id>) can never match the
+        # vision prefixes; the BARE vendor-form id legitimately does. The
+        # either-identity judgment keeps that lane sighted.
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "k")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "http://localhost:1234/v1")
+        client = LLMClient()
+        target = client._resolve_remote_target("openai-compatible::qwen/qwen2.5-vl-7b")
+        image_msg = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]}]
+        kwargs = client._build_remote_kwargs(
+            target, image_msg, "high", 128, "auto", None, None,
+        )
+        blocks = kwargs["messages"][0]["content"]
+        assert any(isinstance(b, dict) and b.get("type") == "image_url" for b in blocks)
 
     def test_direct_openai_vision_judged_on_qualified_identity(self, monkeypatch):
         # Regression for the latent direct-lane class: the bare resolved id

@@ -389,9 +389,11 @@ may fall back to function with the same effort, and explicit `none` is a
 task-local last resort only after both cognition-preserving forms fail. Direct
 OpenAI sends `reasoning_effort` and `max_completion_tokens` provider-wide, and
 DeepSeek is the second effort-carrying route (`reasoning_effort` beside the
-compatible-lane `max_tokens` carrier, `ultra` clamped to its documented `max`
-ceiling); the flag is the target dict's `carries_reasoning_effort`, never a
-model-name prefix — prefixes are not admission authority.
+compatible-lane `max_tokens` carrier, `ultra` clamped to the resolver-declared
+`reasoning_effort_ceiling`). The carriage is keyed on the provider id — never a
+model-name prefix (prefixes are not admission authority), and never a target
+capability field, because the wire ladder's own eligibility reads provider +
+payload effort and a hand-built target must not silently drop the carriage.
 
 All learned request-shape adaptation goes through the one provider-neutral
 request-wire driver. Its identity is the exact provider/endpoint/API/model and

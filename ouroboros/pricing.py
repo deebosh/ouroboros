@@ -207,7 +207,7 @@ def infer_api_key_type(model: str, provider: Optional[str] = None) -> str:
     # slash-form ids stay router-style by design (direct routing uses minimax::,
     # already resolved by provider_for_model above). Classifying minimax/ as the
     # direct key would make safety.py demand MINIMAX_API_KEY on OpenRouter installs.
-    if normalized.startswith(("anthropic/", "google/", "openai/", "x-ai/", "qwen/", "minimax/")):
+    if normalized.startswith(("anthropic/", "google/", "openai/", "x-ai/", "qwen/", "minimax/", "deepseek/")):
         return "openrouter"
     if "claude" in normalized.lower():
         return "anthropic"

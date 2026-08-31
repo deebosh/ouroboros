@@ -1324,9 +1324,6 @@ class LLMClient:
                 "api_key": configured("OPENAI_API_KEY", ""),
                 "base_url": "https://api.openai.com/v1",
                 "default_headers": {},
-                # Effort-carrying route: the configured OUROBOROS_EFFORT_* lanes
-                # ride as `reasoning_effort` instead of being silently dropped.
-                "carries_reasoning_effort": True,
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
             }
@@ -1370,9 +1367,16 @@ class LLMClient:
                 # DeepSeek Chat Completions accepts the full reasoning-effort
                 # enum (live-probed 2026-09-01: none|minimal|low|medium|high|
                 # xhigh|max; `ultra` is a 400 naming exactly those variants) and
-                # v4 thinks by default, so the effort lanes are carried instead
-                # of silently dropped like the other generic compatible lanes.
-                "carries_reasoning_effort": True,
+                # v4 thinks by default, so the effort lanes are carried (the
+                # _EFFORT_CARRYING_PROVIDERS set in _build_remote_kwargs)
+                # instead of silently dropped like the other generic compatible
+                # lanes. The ceiling is the server's own documented top tier.
+                "reasoning_effort_ceiling": "max",
+                # DeepSeek's documented tool contract REQUIRES every previous
+                # assistant turn's reasoning_content back on tools-bearing
+                # requests (v4-pro enforces with a 400; "" satisfies the gate
+                # for foreign turns — live-probed 2026-09-01).
+                "requires_reasoning_echo": True,
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
             }
@@ -3557,13 +3561,20 @@ class LLMClient:
         # local/GigaChat lanes; the VLM tool lane already routes vision to a capable
         # slot. supports_vision() is a no-op for vision-capable models.
         from ouroboros.provider_models import supports_vision
-        # Judge vision on the QUALIFIED identity: direct lanes strip the
+        # Judge vision on EITHER identity: direct lanes strip the
         # ``provider::`` prefix from ``resolved_model``, so the bare id never
-        # matched the slash-form vision prefixes and every direct route was
-        # treated blind regardless of real capability. ``usage_model`` carries
-        # the qualified spelling on direct lanes and equals ``resolved_model``
-        # on OpenRouter, so the router lane is byte-identical.
-        if not supports_vision(str(target.get("usage_model") or resolved_model)):
+        # matched the slash-form vision prefixes and provider-namespaced direct
+        # routes (openai::/deepseek::/...) were treated blind regardless of
+        # real capability — ``usage_model`` carries their qualified spelling.
+        # The BARE id stays in the judgment too, because the openai-compatible
+        # lane's qualifier (``openai-compatible/<id>``) can never match while
+        # a vendor-form bare id (``qwen/qwen2.5-vl-…``) legitimately does —
+        # judging only the qualified name would flip that lane blind. On
+        # OpenRouter both spellings are the same string.
+        if not (
+            supports_vision(str(target.get("usage_model") or resolved_model))
+            or supports_vision(resolved_model)
+        ):
             messages = self._replace_image_blocks_with_placeholder(messages)
         # Official direct OpenAI Chat uses the current completion-token carrier:
         # provider-wide; model names are not capability authority across routes.
@@ -3580,16 +3591,16 @@ class LLMClient:
                     allow_message_cache_control=False,
                     flatten_tool_content_blocks=True,
                 ),
-                keep_reasoning_content=(provider == "deepseek"),
+                keep_reasoning_content=bool(target.get("requires_reasoning_echo")),
             )
-            if provider == "deepseek":
-                # DeepSeek's documented tool contract REQUIRES every assistant
-                # turn's ``reasoning_content`` to be passed back on requests that
-                # carry ``tools`` (v4-pro enforces it with a 400; probed
-                # 2026-09-01). Turns produced by another model have none — an
-                # explicit empty string satisfies the strict gate (probed) and is
-                # the honest value for a turn whose reasoning genuinely does not
-                # exist. Harmless without tools (the API ignores the field).
+            if target.get("requires_reasoning_echo"):
+                # A reasoning-echo route (DeepSeek) REQUIRES every assistant
+                # turn's ``reasoning_content`` back on requests that carry
+                # ``tools`` (v4-pro enforces it with a 400; probed 2026-09-01).
+                # Turns produced by another model have none — an explicit empty
+                # string satisfies the strict gate (probed) and is the honest
+                # value for a turn whose reasoning genuinely does not exist.
+                # Harmless without tools (the API ignores the field).
                 for _msg in clean_messages:
                     if isinstance(_msg, dict) and _msg.get("role") == "assistant":
                         _msg.setdefault("reasoning_content", "")
@@ -3608,16 +3619,25 @@ class LLMClient:
                     # stable governance prefix on the same cache bucket.
                     kwargs["prompt_cache_key"] = cache_identity
             requested_effort = normalize_reasoning_effort(reasoning_effort)
-            if target.get("carries_reasoning_effort"):
+            if direct_openai or provider == "deepseek":
                 # Effort-carrying routes (direct OpenAI, DeepSeek) honor the
                 # configured OUROBOROS_EFFORT_* lanes instead of silently
-                # dropping them (OpenRouter parity). Exact-route request-wire
+                # dropping them (OpenRouter parity). Keyed on the PROVIDER id,
+                # not a target capability field: the wire ladder's own
+                # eligibility predicates key on provider + payload effort, and
+                # a hand-built target (test fixtures, probes) must not be able
+                # to silently drop the carriage. Exact-route request-wire
                 # evidence, not legacy model-global rows, owns any
-                # provider-required adaptation after this build. DeepSeek's
-                # server enum tops out at ``max`` (the codex-only ``ultra``
-                # tier is a documented 400 there), so it clamps one step.
-                if provider == "deepseek" and requested_effort == "ultra":
-                    requested_effort = "max"
+                # provider-required adaptation after this build. A route whose
+                # server enum tops out below the full scale declares its
+                # ceiling on the resolver-built target (DeepSeek: ``max`` —
+                # the codex-only ``ultra`` tier is a documented 400 there);
+                # a missing ceiling simply sends the tier and lets the
+                # request-wire recovery adapt on the provider's own 400.
+                ceiling = str(target.get("reasoning_effort_ceiling") or "")
+                if ceiling:
+                    from ouroboros.config import clamp_effort_to
+                    requested_effort = clamp_effort_to(requested_effort, ceiling)
                 kwargs["reasoning_effort"] = requested_effort
             if temperature is not None:
                 kwargs["temperature"] = temperature
@@ -3635,6 +3655,22 @@ class LLMClient:
                     _eb["cache"] = {"no-cache": True}
             return kwargs
 
+        if any(isinstance(m, dict) and m.get("reasoning_content") for m in messages):
+            # ``reasoning_content`` in canonical history is direct-DeepSeek
+            # custody (the inbound normalizer pops it from every other lane's
+            # responses, OpenRouter included). OR upstreams of other families
+            # reject the echoed field, and leaving it here would also trip the
+            # replay-artifact pin below (allow_fallbacks=False), silently
+            # killing same-model failover for a mixed transcript. Dropping it
+            # from the OR physical copy restores the exact pre-DeepSeek OR
+            # wire; the canonical transcript is untouched.
+            messages = [
+                (
+                    {k: v for k, v in m.items() if k != "reasoning_content"}
+                    if isinstance(m, dict) else m
+                )
+                for m in messages
+            ]
         effort = normalize_reasoning_effort(reasoning_effort)
         raw_return_reasoning = os.environ.get("OUROBOROS_RETURN_REASONING")
         return_reasoning = (
