@@ -253,6 +253,95 @@ def test_out_of_process_catalog_publication_is_atomic(tmp_path):
     assert snap["extensions"] == []
 
 
+def test_conflict_refused_publication_has_zero_external_effects(
+    tmp_path, monkeypatch, _background_loop
+):
+    """Ф3.1 fix-round pin (validate -> effects -> swap): a conflict that arises
+    AFTER staging but BEFORE publication refuses the publication WITHOUT any
+    externally visible effect — the supervised factory never starts and the
+    event bus is never touched, because the definitive validation now runs
+    before any deferred side effect."""
+    skill_name = "conflprobe"
+    factory_ran = threading.Event()
+    bus_calls: list = []
+
+    class _Bus:
+        def subscribe(self, *args, **kwargs):
+            bus_calls.append(("subscribe", args, kwargs))
+            return "sub-should-never-exist"
+
+        def unsubscribe(self, sub_id):
+            bus_calls.append(("unsubscribe", sub_id))
+
+    bus = _Bus()
+    bus._loop = _background_loop
+    monkeypatch.setattr(extension_plugin_api, "get_global_event_bus", lambda: bus)
+    monkeypatch.setattr(extension_plugin_api, "is_server_process", lambda: True)
+
+    def _api() -> extension_plugin_api.PluginAPIImpl:
+        return extension_plugin_api.PluginAPIImpl(_PluginAPIConfig(
+            skill_name=skill_name,
+            permissions=["tool", "supervised_task", "subscribe_event"],
+            env_allowlist=[],
+            state_dir=tmp_path,
+            settings_reader=lambda: {},
+            subscribe_events=["skill.lifecycle"],
+        ))
+
+    loser = _api()
+    loser.register_tool("t1", lambda **kw: "ok", description="d", schema={})
+    loser.register_supervised_task("bg", lambda: factory_ran.set())
+    loser.subscribe_event("skill.lifecycle", lambda data: None)
+
+    winner = _api()
+    winner.register_tool("t1", lambda **kw: "ok", description="d", schema={})
+    winner._publish_registrations()  # the surface goes live between stage and publish
+
+    with pytest.raises(ExtensionRegistrationError, match="publication refused"):
+        loser._publish_registrations()
+
+    assert bus_calls == [], "a refused publication touched the event bus"
+    assert not factory_ran.wait(0.5), (
+        "supervised task factory ran although the conflicting publication was refused"
+    )
+    with extension_loader._lock:
+        bundle = extension_loader._extensions[skill_name]
+        assert bundle.supervised_futures == []
+        assert bundle.event_subscriptions == []
+
+
+def test_event_published_before_publication_never_invokes_the_handler(tmp_path):
+    """Ф3.1 fix-round pin (pre-publication invisibility, not eventual cleanup):
+    subscriptions are STAGED — an event published before the snapshot swap
+    must not invoke the handler and must not appear on the bus; the sub_id
+    returned by subscribe_event is the id the bus attaches at publication."""
+    from ouroboros.event_bus import get_global_event_bus
+
+    seen: list = []
+    api = extension_plugin_api.PluginAPIImpl(_PluginAPIConfig(
+        skill_name="stagesub",
+        permissions=["subscribe_event"],
+        env_allowlist=[],
+        state_dir=tmp_path,
+        settings_reader=lambda: {},
+        subscribe_events=["skill.lifecycle"],
+    ))
+    sub_id = api.subscribe_event("skill.lifecycle", lambda data: seen.append(dict(data)))
+    assert sub_id
+
+    bus = get_global_event_bus()
+    bus.publish("skill.lifecycle", {"probe": "early"})
+    assert seen == [], "an event published before publication invoked a staged handler"
+    assert all(
+        sub.get("skill_name") != "stagesub" for sub in bus.snapshot().values()
+    ), "a staged subscription was visible on the bus before publication"
+
+    api._publish_registrations()
+    assert sub_id in bus.snapshot(), "publication must attach the pre-minted sub_id"
+    bus.publish("skill.lifecycle", {"probe": "late"})
+    assert [row.get("probe") for row in seen] == ["late"]
+
+
 def test_disposers_stay_out_of_the_plugin_api_surface():
     """The disposers list is loader-internal (ABI-9): the PluginAPI contract
     must not grow a disposer/staging method an extension could call."""

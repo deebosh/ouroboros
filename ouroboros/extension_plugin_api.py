@@ -35,7 +35,7 @@ from ouroboros.contracts.plugin_api import (
     available_capabilities,
     capability_available,
 )
-from ouroboros.event_bus import get_global_event_bus
+from ouroboros.event_bus import VALID_TOPICS as VALID_EVENT_TOPICS, get_global_event_bus
 from ouroboros.extension_companion import CompanionDescriptor, get_global_supervisor, is_server_process
 from ouroboros.extension_isolated_deps import (
     _isolated_python_site_dirs,
@@ -46,6 +46,7 @@ from ouroboros.extension_registry_state import (
     _PluginAPIConfig,
     _ExtensionRegistrations,
     _StagedCompanionSpawn,
+    _StagedEventSubscription,
     _StagedRegistrations,
     _StagedSupervisedTask,
     _extensions,
@@ -583,24 +584,22 @@ class PluginAPIImpl:
             raise ExtensionRegistrationError(
                 f"skill {self._skill!r} cannot subscribe to undeclared topic {topic!r}"
             )
-        # The bus subscription is created eagerly (topic validation and the
-        # returned sub_id belong to the call), but it is recorded in the staged
-        # snapshot with a disposer: an aborted registration unsubscribes it, so
-        # only a published bundle ever owns a live subscription.
-        bus = get_global_event_bus()
-        sub_id = bus.subscribe(
-            self._skill,
-            topic,
-            self._wrap_runtime_handler(handler, opaque_surface=("event", topic)),
-        )
+        if topic not in VALID_EVENT_TOPICS:
+            raise ExtensionRegistrationError(
+                f"skill {self._skill!r} declared unsupported event topic {topic!r}"
+            )
+        # ABI-9: the bus subscription is STAGED, not created — topic validation
+        # and the returned sub_id belong to the call, the bus attach belongs to
+        # publication. An event published before the snapshot swap therefore
+        # never invokes the handler (pre-publication invisibility), and a
+        # refused registration leaves nothing on the bus to clean up.
+        sub_id = uuid.uuid4().hex
+        wrapped = self._wrap_runtime_handler(handler, opaque_surface=("event", topic))
         with _lock:
-            try:
-                self._require_open_locked()
-            except ExtensionRegistrationError:
-                bus.unsubscribe(sub_id)
-                raise
-            self._staged.event_subscriptions.append(sub_id)
-            self._staged.disposers.append(lambda: bus.unsubscribe(sub_id))
+            self._require_open_locked()
+            self._staged.event_subscriptions.append(
+                _StagedEventSubscription(sub_id=sub_id, topic=topic, handler=wrapped)
+            )
         return sub_id
 
     def send_ws_message(self, message_type: str, data: Dict[str, Any]) -> None:
@@ -712,33 +711,20 @@ class PluginAPIImpl:
     ) -> None:
         """Atomically publish the staged registration snapshot (ABI-9).
 
-        Deferred side effects (supervised runners, companion spawns) start
-        only here, after the registration window validated; the snapshot then
-        swaps into the process-wide registries under one lock hold, stamped
-        with a fresh generation digest. Any failure disposes every started
-        side effect and publishes NOTHING.
+        validate -> effects -> swap under ONE registry-lock hold: the
+        definitive unload/conflict validation runs FIRST, so a refused
+        publication has produced no externally visible effect at all — no
+        supervised runner, no companion process, no bus subscription. Only a
+        validated snapshot starts its deferred side effects, and the swap
+        into the process-wide registries follows in the same critical
+        section, stamped with a fresh generation digest; no concurrent
+        unload or conflicting publication can interleave between the
+        validation, the effects and the swap (both mutate only under this
+        lock). Any failure disposes every started side effect and publishes
+        NOTHING.
         """
-        with _lock:
-            self._require_open_locked()
         started_disposers: list[Callable[[], Any]] = []
         futures: list[Any] = []
-        try:
-            for spec in self._staged.supervised_tasks:
-                future = self._start_supervised_task(spec)
-                if future is not None:
-                    futures.append(future)
-                    started_disposers.append(future.cancel)
-            for spawn in self._staged.companion_spawns:
-                supervisor = get_global_supervisor()
-                if supervisor is None:
-                    raise ExtensionRegistrationError("companion supervisor is not initialized")
-                supervisor.start(spawn.descriptor)
-                started_disposers.append(
-                    functools.partial(supervisor.stop, self._skill, spawn.name)
-                )
-        except Exception:
-            self._run_staged_disposers(started_disposers)
-            raise
         with _lock:
             try:
                 self._require_open_locked()
@@ -747,6 +733,27 @@ class PluginAPIImpl:
                     raise ExtensionRegistrationError(
                         f"surfaces {sorted(conflicts)!r} were registered concurrently; "
                         "publication refused"
+                    )
+            except Exception:
+                self._run_staged_disposers(started_disposers)
+                raise
+            try:
+                bus = get_global_event_bus()
+                for sub in self._staged.event_subscriptions:
+                    bus.subscribe(self._skill, sub.topic, sub.handler, sub_id=sub.sub_id)
+                    started_disposers.append(functools.partial(bus.unsubscribe, sub.sub_id))
+                for spec in self._staged.supervised_tasks:
+                    future = self._start_supervised_task(spec)
+                    if future is not None:
+                        futures.append(future)
+                        started_disposers.append(future.cancel)
+                for spawn in self._staged.companion_spawns:
+                    supervisor = get_global_supervisor()
+                    if supervisor is None:
+                        raise ExtensionRegistrationError("companion supervisor is not initialized")
+                    supervisor.start(spawn.descriptor)
+                    started_disposers.append(
+                        functools.partial(supervisor.stop, self._skill, spawn.name)
                     )
             except Exception:
                 self._run_staged_disposers(started_disposers)
@@ -778,7 +785,7 @@ class PluginAPIImpl:
                     live[key] = value
                     bundle_keys.append(key)
             bundle.unload_callbacks.extend(self._staged.unload_callbacks)
-            bundle.event_subscriptions.extend(self._staged.event_subscriptions)
+            bundle.event_subscriptions.extend(sub.sub_id for sub in self._staged.event_subscriptions)
             for name in self._staged.companion_names:
                 _record_companion_name(bundle, name)
             bundle.supervised_futures.extend(futures)

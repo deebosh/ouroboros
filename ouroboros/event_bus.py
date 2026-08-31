@@ -38,18 +38,28 @@ class EventBus:
     def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
         self._loop = loop
 
-    def subscribe(self, skill_name: str, topic: str, handler: Callable[[Dict[str, Any]], Any]) -> str:
+    def subscribe(
+        self,
+        skill_name: str,
+        topic: str,
+        handler: Callable[[Dict[str, Any]], Any],
+        *,
+        sub_id: Optional[str] = None,
+    ) -> str:
+        """Attach one subscription; ``sub_id`` lets a staged registration
+        pre-mint the id it already returned to the caller (ABI-9: the bus
+        attach is deferred to publication, the id is not)."""
         if topic not in VALID_TOPICS:
             raise ValueError(f"unsupported event topic: {topic}")
-        sub_id = uuid.uuid4().hex
+        sid = str(sub_id) if sub_id else uuid.uuid4().hex
         with self._lock:
-            self._subscriptions[sub_id] = EventSubscription(
-                id=sub_id,
+            self._subscriptions[sid] = EventSubscription(
+                id=sid,
                 skill_name=str(skill_name or ""),
                 topic=topic,
                 handler=handler,
             )
-        return sub_id
+        return sid
 
     def unsubscribe(self, sub_id: str) -> None:
         with self._lock:

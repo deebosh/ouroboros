@@ -68,15 +68,31 @@ class _StagedCompanionSpawn:
 
 
 @dataclass
+class _StagedEventSubscription:
+    """A validated event subscription whose bus attach is deferred to publication.
+
+    ABI-9: ``subscribe_event`` validates the topic and mints the sub_id during
+    the registration window but the bus subscription is created only at
+    publication — an event published before the snapshot swap can never invoke
+    a staged handler (pre-publication invisibility, not eventual cleanup)."""
+
+    sub_id: str
+    topic: str
+    handler: Callable[[Dict[str, Any]], Any]
+
+
+@dataclass
 class _StagedRegistrations:
     """Private staging area for one PluginAPI registration window (ABI-9).
 
     ``register()`` accumulates every surface and side-effect request here;
     nothing reaches the process-wide registries until the loader publishes the
-    whole snapshot atomically (stage -> validate -> swap). Side effects that
-    must run during the window (event-bus subscriptions) record disposers so
-    an aborted registration leaves zero residue. The disposers list is
-    loader-internal and never exposed through the PluginAPI ABI.
+    whole snapshot atomically (validate -> effects -> swap). Every deferred
+    side effect — supervised runners, companion spawns, event-bus
+    subscriptions — starts only at publication, after the definitive
+    unload/conflict validation, so an aborted registration leaves zero
+    residue. The disposers list is loader-internal and never exposed through
+    the PluginAPI ABI.
     """
 
     tools: Dict[str, Any] = field(default_factory=dict)
@@ -85,7 +101,7 @@ class _StagedRegistrations:
     ui_tabs: Dict[str, Any] = field(default_factory=dict)
     settings_sections: Dict[str, Any] = field(default_factory=dict)
     unload_callbacks: List[Callable[[], Any]] = field(default_factory=list)
-    event_subscriptions: List[str] = field(default_factory=list)
+    event_subscriptions: List["_StagedEventSubscription"] = field(default_factory=list)
     companion_names: List[str] = field(default_factory=list)
     supervised_tasks: List[_StagedSupervisedTask] = field(default_factory=list)
     companion_spawns: List[_StagedCompanionSpawn] = field(default_factory=list)
