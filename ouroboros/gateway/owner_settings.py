@@ -1,8 +1,8 @@
 """The owner-scoped settings WRITE seam — one lock, one commit boundary.
 
 Every owner endpoint that persists SETTINGS goes through here: the generic
-``POST /api/settings``, the FIVE single-decision owner endpoints (runtime mode,
-auto-grant, context mode, scope-review floor, safety mode), and the atomic
+``POST /api/settings``, the FOUR single-decision owner endpoints (runtime mode,
+auto-grant, context mode, safety mode), and the atomic
 ``POST /api/onboarding/complete``. Membership is defined by calling
 ``_owner_write_settings``, not by wearing the decorator: the capability-evidence
 acknowledgement writes its own route-fingerprinted ledger and never touches

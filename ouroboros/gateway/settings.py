@@ -257,12 +257,6 @@ def _merge_settings_payload(current: Dict[str, Any], body: Dict[str, Any]) -> Di
             # One-window false provenance tombstone. Generic settings never authors
             # context intent; the dedicated owner endpoint writes the pair atomically.
             "OUROBOROS_CONTEXT_MODE_AUTO_LOW",
-            # CW1 (v6.34.0): the scope-review floor is owner-only and flows ONLY through
-            # its dedicated audited endpoint (api_owner_scope_review_floor). Since v6.80.0
-            # the value is enforcement-inert — BIBLE P3 scope-review applicability follows
-            # the owner context mode — but the frozen contract surface and the owner-only
-            # write path stay, so a generic settings write still cannot author it.
-            "OUROBOROS_SCOPE_REVIEW_FLOOR",
             # v6.54.3: LLM-safety-supervisor coverage (full/light/off) is likewise an
             # immune-system control — a generic settings write must not lower it. It
             # flows ONLY through the dedicated audited owner endpoint
@@ -734,62 +728,6 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
         {"context_mode": next_mode, "previous_context_mode": previous_mode},
     )
     return JSONResponse({"ok": True, "context_mode": next_mode})
-
-
-_SCOPE_REVIEW_FLOOR_DEPRECATION_NOTICE = (
-    "OUROBOROS_SCOPE_REVIEW_FLOOR is DEPRECATED since v6.80.0 and no longer affects "
-    "anything: your value is stored, but whether the BIBLE P3 blocking scope review runs "
-    "is decided solely by the owner-only context mode (max = blocking scope gate, low = "
-    "whole-repository scope review declaredly not performed). Use POST "
-    "/api/owner/context-mode to change that."
-)
-
-
-@owner_write_guard
-async def api_owner_scope_review_floor(request: Request) -> JSONResponse:
-    """Persist the owner-selected P3 scope-review floor (blocking_1m | advisory).
-
-    Owner-only + audited (CW1, v6.34.0): merge-skipped from the generic /api/settings
-    path, so ONLY this dedicated endpoint may author it.
-
-    DEPRECATED and ENFORCEMENT-INERT since v6.80.0: nothing in the runtime consults the
-    stored value — scope-review applicability comes solely from
-    ``config.get_owner_context_mode()``. The endpoint is kept because the gateway contract
-    surface is frozen and because an owner customization is never destroyed: the write is
-    accepted, stored, audited, and answered with an explicit deprecation notice naming the
-    control that actually decides."""
-    body = await _json_body_or_empty(request)
-    # Off the event loop, under the document lock (held inside): a slow
-    # generic save must not be able to freeze the loop THROUGH this
-    # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_scope_review_floor_sync, request, body)
-
-
-def _api_owner_scope_review_floor_sync(request: Request, body: Any) -> JSONResponse:
-    raw = str((body or {}).get("floor") or "").strip().lower()
-    if raw not in {"blocking_1m", "advisory"}:
-        return unsaved_error("'floor' must be one of: blocking_1m, advisory", 400)
-    with settings_document_mutation():
-        current = _owner_read_settings_raw()
-        previous = str(current.get("OUROBOROS_SCOPE_REVIEW_FLOOR") or "blocking_1m").strip().lower()
-        current["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
-        _owner_write_settings(current)
-        # Same-lock projection: see api_owner_auto_grant.
-        os.environ["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
-    _owner_audit(
-        request,
-        "scope_review_floor",
-        {
-            "scope_review_floor": raw,
-            "previous_scope_review_floor": previous,
-            "deprecated": True,
-        },
-    )
-    return JSONResponse({
-        "ok": True,
-        "scope_review_floor": raw,
-        "deprecation_notice": _SCOPE_REVIEW_FLOOR_DEPRECATION_NOTICE,
-    })
 
 
 @owner_write_guard

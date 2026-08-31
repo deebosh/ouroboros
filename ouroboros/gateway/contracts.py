@@ -703,14 +703,6 @@ class OwnerContextModeResponse(TypedDict):
     context_mode: str
 
 
-class OwnerScopeReviewFloorResponse(TypedDict):
-    ok: bool
-    scope_review_floor: str  # blocking_1m | advisory (v6.34.0, CW1)
-    # v6.80.0: the value is STORED but enforcement-inert — scope-review applicability
-    # follows the owner-only context mode. The notice says so on every write.
-    deprecation_notice: str
-
-
 class OwnerSafetyModeResponse(TypedDict):
     ok: bool
     safety_mode: str  # full | light | off (v6.54.3)
@@ -1309,7 +1301,6 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "POST /api/owner/runtime-mode",
     "POST /api/owner/auto-grant",
     "POST /api/owner/context-mode",
-    "POST /api/owner/scope-review-floor",
     "POST /api/owner/safety-mode",
     "POST /api/owner/capability-ack",
     "POST /api/owner/skills/{skill}/attest-review",
@@ -1472,7 +1463,6 @@ __all__ = [
     "OwnerRuntimeModeResponse",
     "OwnerAutoGrantResponse",
     "OwnerContextModeResponse",
-    "OwnerScopeReviewFloorResponse",
     "OwnerSafetyModeResponse",
     "OwnerSkillPresenceRuntimeRequest",
     "OwnerSkillPresenceRuntimeResponse",

@@ -228,10 +228,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Scope review: one or more reviewer slots; enforcement follows OUROBOROS_REVIEW_ENFORCEMENT.
     "OUROBOROS_SCOPE_REVIEW_MODELS": ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"]),
     "OUROBOROS_SCOPE_REVIEW_MODEL": OPENROUTER_REVIEW_DEFAULTS["scope"][0],
-    # DEPRECATED, enforcement-inert (v6.80.0): stored, owner-only (dedicated audited endpoint), but
-    # NOTHING consults it — whether the BIBLE P3 blocking scope review applies follows owner-only
-    # OUROBOROS_CONTEXT_MODE. Degraded opt-in key: removed.
-    "OUROBOROS_SCOPE_REVIEW_FLOOR": "blocking_1m",
     "OUROBOROS_TASK_REVIEW_MODE": "auto",
     # LLM safety-supervisor coverage (owner-only, like runtime/context mode):
     #   full  (shipped default; fail-closed fallbacks land here; a FRESH wizard authors
@@ -324,6 +320,11 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
+    # ABI 7.0 (owner Q10=A): the P3 scope-review floor key is REMOVED, not merely
+    # enforcement-inert. Deprecated + inert since v6.80.0 (applicability follows the
+    # owner-only OUROBOROS_CONTEXT_MODE); the whole surface — key, owner endpoint,
+    # guards, SAFETY clause — is retired in the 7.0 ABI window.
+    "OUROBOROS_SCOPE_REVIEW_FLOOR",
 )
 
 

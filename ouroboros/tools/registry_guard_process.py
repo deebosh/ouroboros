@@ -264,51 +264,6 @@ def _is_pure_read_inspection(text_lower: str) -> bool:
     return True
 
 
-def _detect_scope_review_floor_self_lowering(text_lower: str, *, writeish: bool = True) -> bool:
-    """Detect shell/script attempts to REACH the owner-controlled scope-review floor
-    (CW1, v6.34.0). ``OUROBOROS_SCOPE_REVIEW_FLOOR`` is deprecated and enforcement-inert
-    since v6.80.0 (scope-review applicability follows the owner context mode), but it is
-    still an owner-only stored setting behind its dedicated audited endpoint, so the agent
-    must not write it through any channel. Mirrors the context-mode guard.
-
-    POLARITY (v6.80.0): naming the owner endpoint or the floor key in a settings context
-    is blocked UNLESS the whole command line is demonstrably read-only inspection
-    (``_is_pure_read_inspection``). The earlier shape — block only on a listed HTTP write
-    marker — failed OPEN: ``python -c "httpx.request('POST', '.../api/owner/
-    scope-review-floor', ...)"`` names the endpoint, matches no marker, and mutated the
-    setting. No substring enumeration of "what a write looks like" is ever complete
-    (BIBLE P5), so the enumeration was inverted to "what a read looks like", where an
-    unrecognised entry is refused rather than admitted.
-
-    Pure source inspection stays allowed: ``grep OUROBOROS_SCOPE_REVIEW_FLOOR
-    data/settings.json`` and ``rg '/api/owner/scope-review-floor' ouroboros/gateway``
-    read and do not act. ``writeish`` is the shell guard's own already-computed
-    write-shape fact (redirects, writer commands, write-mode ``open()``); it disqualifies
-    the read exemption, and its default ``True`` keeps a caller that cannot supply the
-    fact fail-closed."""
-    import urllib.parse
-
-    decoded = urllib.parse.unquote(urllib.parse.unquote(text_lower)).lower()
-    text = f"{text_lower} {decoded}"
-    mentions_floor_key = "ouroboros_scope_review_floor" in text
-    mentions_owner_endpoint = "/api/owner/scope-review-floor" in text
-    mentions_floor_endpoint = "scope-review-floor" in text and "/api/owner" in text
-    mentions_floor_cli = "scope-review-floor" in text and (
-        "ouroboros settings" in text
-        or "ouroboros.cli" in text
-    )
-    mentions_save = "save_settings" in text or "settings.json" in text or "/api/settings" in text
-    reaches_floor = (
-        mentions_owner_endpoint
-        or mentions_floor_endpoint
-        or mentions_floor_cli
-        or (mentions_floor_key and mentions_save)
-    )
-    if not reaches_floor:
-        return False
-    return writeish or not _is_pure_read_inspection(text_lower)
-
-
 def _detect_safety_mode_self_lowering(text_lower: str, *, writeish: bool = True) -> bool:
     """Detect shell/script attempts to lower the owner-controlled LLM-safety coverage
     (v6.54.3). OUROBOROS_SAFETY_MODE gates the LLM safety supervisor layer; the agent

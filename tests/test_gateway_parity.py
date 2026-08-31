@@ -26,7 +26,6 @@ from ouroboros.gateway.contracts import (
     OwnerHurryProjection,
     OwnerSkillPresenceRuntimeRequest,
     OwnerSkillPresenceRuntimeResponse,
-    OwnerScopeReviewFloorResponse,
     DocumentOutbound,
     LogOutbound,
     PhotoOutbound,
@@ -224,7 +223,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     # never have to appear in the browser's typedef (ARCHITECTURE.md §11.3).
     for cls in (ChatInbound, ChatOutbound, PhotoOutbound, VideoOutbound,
                 ActiveDirectTurn, ActiveChatActivity, TypingOutbound,
-                StateResponse, OwnerScopeReviewFloorResponse, UpdateMergePlan,
+                StateResponse, UpdateMergePlan,
                 UpdatePreflightRequest, UpdatePreflightResponse, UpdateApplyRequest,
                 UpdateApplySuccessResponse, UpdateApplyErrorResponse,
                 UpdateStatusReadyOutbound, TaskCostBreakdown, TaskDetailResponse,
@@ -346,9 +345,6 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     assert re.search(r"@typedef \{Object\} UpdateApplyErrorResponse.*?@property \{string\} error\b", text, re.S)
     assert re.search(r"@property \{boolean\} context_mode_auto_low\b", text), (
         "StateResponse.context_mode_auto_low must remain a JSDoc boolean compatibility field"
-    )
-    assert re.search(r"@property \{string\} deprecation_notice\b", text), (
-        "OwnerScopeReviewFloorResponse.deprecation_notice must be declared for the browser"
     )
     assert re.search(r"@property \{boolean=\} force_plan\b", text), "ChatInbound missing force_plan"
     assert re.search(r"@property \{Object=\} client_surface\b", text), "ChatInbound missing client_surface"

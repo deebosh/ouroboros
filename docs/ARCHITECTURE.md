@@ -2496,8 +2496,9 @@ provider accounting can exceed the local estimator on atlas-heavy prompts. 920K
 input + 100K output exceeds 1M, which the provider rejects with a hard 400.
 Such a physical rejection is UNCONDITIONALLY fail-closed in `max` mode: there is
 no authoritative verdict, and since v6.80.0 no setting can turn it into a
-non-blocking `budget_exceeded` skip — `OUROBOROS_SCOPE_REVIEW_FLOOR` still exists as
-a stored owner setting but is enforcement-inert and consulted by nothing. The only
+non-blocking `budget_exceeded` skip — the once-deprecated `OUROBOROS_SCOPE_REVIEW_FLOOR`
+key was removed outright in the 7.0 ABI window (owner Q10=A; a stored value is
+stripped on load via `RETIRED_SETTING_KEYS`). The only
 owner control over scope review is the context mode: `low` means whole-repository
 scope review is declaredly not performed (typed `skipped_low_context_mode` row), and
 `max` means this fail-closed gate. So
@@ -2569,8 +2570,9 @@ that used to gate it never expired while the record did, so a healthy, connected
 install that stayed up past 24h re-read its own reviewer as EXPIRED on every later
 resolution and blocked EVERY commit for the rest of the process's life. A known sub-1M reviewer remains advisory-only: in `max` its result is
 preserved as evidence but cannot satisfy the gate, and the commit fails CLOSED —
-the deprecated `OUROBOROS_SCOPE_REVIEW_FLOOR` no longer converts that into a
-non-blocking `budget_exceeded` skip (the GigaChat-only / no-≥1M-reviewer case is answered by the
+no setting converts that into a
+non-blocking `budget_exceeded` skip (the retired `OUROBOROS_SCOPE_REVIEW_FLOOR` key
+was removed in the 7.0 ABI window; the GigaChat-only / no-≥1M-reviewer case is answered by the
 owner choosing `low`, where scope review is declaredly not performed and each
 skipped commit records the typed `skipped_low_context_mode` row, or — since the
 v6.87.6 P3 amendment, IMPLEMENTED in v6.89.0 — by an owner-declared RETRIEVING

@@ -322,14 +322,13 @@ def test_a_malformed_body_says_saved_false(monkeypatch, isolated_settings):
     assert resp.json()["saved"] is False, resp.text
 
 
-# The FIVE single-decision owner endpoints — membership is "calls
+# The FOUR single-decision owner endpoints — membership is "calls
 # `_owner_write_settings`", not "wears the decorator". Each entry is the route,
 # the handler name and a payload its own validation accepts.
 _OWNER_SETTINGS_WRITERS = [
     ("/api/owner/runtime-mode", "api_owner_runtime_mode", {"mode": "pro"}),
     ("/api/owner/auto-grant", "api_owner_auto_grant", {"enabled": False}),
     ("/api/owner/context-mode", "api_owner_context_mode", {"mode": "low"}),
-    ("/api/owner/scope-review-floor", "api_owner_scope_review_floor", {"floor": "advisory"}),
     ("/api/owner/safety-mode", "api_owner_safety_mode", {"mode": "light"}),
 ]
 
@@ -504,7 +503,6 @@ def test_settings_save_body_runs_off_the_event_loop():
         "_api_owner_runtime_mode_sync",
         "_api_owner_auto_grant_sync",
         "_api_owner_context_mode_sync",
-        "_api_owner_scope_review_floor_sync",
         "_api_owner_safety_mode_sync",
     }
     # The loop must NEVER hold the document lock: every async settings writer
@@ -512,7 +510,7 @@ def test_settings_save_body_runs_off_the_event_loop():
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name in {
             "api_owner_runtime_mode", "api_owner_auto_grant", "api_owner_context_mode",
-            "api_owner_scope_review_floor", "api_owner_safety_mode",
+            "api_owner_safety_mode",
         }:
             assert "asyncio.to_thread" in ast.unparse(node), (
                 f"{node.name} must run its locked body off the event loop"

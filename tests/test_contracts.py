@@ -1384,48 +1384,6 @@ def test_state_response_context_mode_auto_low_crosses_the_wire(tmp_path, monkeyp
     assert payload["context_mode"] == "max"
 
 
-def test_owner_scope_review_floor_deprecation_notice_crosses_the_wire(tmp_path, monkeypatch):
-    """The deprecated floor endpoint must SAY so on the wire, and match its frozen contract.
-
-    The write is still accepted and stored (an owner customization is never destroyed), but
-    enforcement now follows the owner-only context mode, so the response carries a notice naming
-    the control that actually decides. An empty or missing notice is a silent lie to the owner.
-    """
-    import json
-
-    from starlette.applications import Starlette
-    from starlette.routing import Route
-    from starlette.testclient import TestClient
-
-    from ouroboros import config as cfg
-    from ouroboros.gateway.contracts import OwnerScopeReviewFloorResponse
-    from ouroboros.gateway.settings import api_owner_scope_review_floor
-
-    settings_path = tmp_path / "settings.json"
-    settings_path.write_text(json.dumps({"TOTAL_BUDGET": "10"}), encoding="utf-8")
-    monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path)
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-
-    app = Starlette(routes=[
-        Route("/api/owner/scope-review-floor", endpoint=api_owner_scope_review_floor, methods=["POST"]),
-    ])
-    app.state.drive_root = tmp_path
-    response = TestClient(app).post("/api/owner/scope-review-floor", json={"floor": "advisory"})
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert set(payload) == set(OwnerScopeReviewFloorResponse.__annotations__), (
-        "the emitted scope-review-floor payload drifted from its frozen contract"
-    )
-    assert payload["ok"] is True
-    assert payload["scope_review_floor"] == "advisory"
-    notice = payload["deprecation_notice"]
-    assert isinstance(notice, str) and notice.strip(), "the notice must not cross the wire empty"
-    assert "context mode" in notice.lower(), "the notice must name the control that now decides"
-    # The owner's customization is stored even though it is enforcement-inert.
-    assert json.loads(settings_path.read_text(encoding="utf-8"))["OUROBOROS_SCOPE_REVIEW_FLOOR"] == "advisory"
-
-
 def test_login_job_browser_envelopes_keep_their_required_discriminators():
     """The recovery UI cannot classify a success without job or a problem
     without error; operation-specific metadata remains additive."""

@@ -169,7 +169,6 @@ from ouroboros.tools.registry_guard_process import (  # noqa: F401 — re-export
     _detect_owner_skill_attest_self_call,
     _detect_runtime_mode_elevation,
     _detect_safety_mode_self_lowering,
-    _detect_scope_review_floor_self_lowering,
     _format_light_repo_write_block,
     _git_ref_snapshot,
     _is_pure_read_inspection,
@@ -200,8 +199,10 @@ def _executor_backend_candidate_path(ctx: Any, candidate: str) -> pathlib.Path |
 def _owner_control_mention_blocks(text_lower: str, detected: bool, writeish: bool) -> bool:
     """Shared read-carve for the owner-control mention detectors.
 
-    The scope-floor guard adjudicated this contract at v6.80.0
-    (``_detect_scope_review_floor_self_lowering``): naming an owner key/endpoint
+    The scope-floor guard adjudicated this contract at v6.80.0 (that detector
+    itself was retired with its setting in the 7.0 ABI window, owner Q10=A;
+    the contract it established governs the whole surviving family):
+    naming an owner key/endpoint
     blocks UNLESS the whole command line is demonstrably read-only inspection —
     ``grep OUROBOROS_RUNTIME_MODE data/settings.json`` and
     ``rg /api/owner/safety-mode ouroboros/gateway`` read and do not act, and the
@@ -1769,8 +1770,6 @@ class ToolRegistry:
             return "⚠️ ELEVATION_BLOCKED: shell command pattern looks like an OUROBOROS_RUNTIME_MODE elevation attempt (mentions ``save_settings`` together with ``OUROBOROS_RUNTIME_MODE``, or invokes ``ouroboros.config.save_settings`` directly). Runtime mode is owner-controlled — change it by stopping the agent and editing settings.json directly, then restart."
         if _detect_context_mode_self_lowering(cmd_lower, writeish=writeish):
             return "⚠️ CONTEXT_MODE_SELF_LOWERING_BLOCKED: shell command pattern looks like an attempt to lower OUROBOROS_CONTEXT_MODE to low through settings.json or /api/owner/context-mode. Context mode is owner-controlled — ask the owner to change the Low/Max toggle or edit settings while the agent is stopped."
-        if _detect_scope_review_floor_self_lowering(cmd_lower, writeish=writeish):
-            return "⚠️ SCOPE_REVIEW_FLOOR_SELF_LOWERING_BLOCKED: shell command pattern reaches OUROBOROS_SCOPE_REVIEW_FLOOR through settings.json, /api/settings, or /api/owner/scope-review-floor from something other than a pure read. The floor is a deprecated, enforcement-inert owner setting (BIBLE P3 scope-review applicability follows the owner context mode) — it stays owner-only, and the agent must not write owner settings through any channel. Ask the owner to change it via the dedicated /api/owner/scope-review-floor endpoint, or stop the agent and edit settings.json directly. Pure source inspection (grep/rg/cat/jq/git grep) is allowed; an interpreter or HTTP client naming the endpoint is not, whatever verb it spells."
         if _detect_safety_mode_self_lowering(cmd_lower, writeish=writeish):
             return "⚠️ SAFETY_MODE_SELF_LOWERING_BLOCKED: shell command pattern looks like an attempt to change OUROBOROS_SAFETY_MODE (e.g. to ``light``/``off``) through settings.json, /api/settings, or /api/owner/safety-mode. LLM-safety coverage is owner-controlled (BIBLE P3) — the agent must not reduce its own supervision. Ask the owner to change it via the dedicated /api/owner/safety-mode endpoint, or stop the agent and edit settings.json directly."
         if _detect_owner_skill_attest_self_call(cmd_lower, writeish=writeish):

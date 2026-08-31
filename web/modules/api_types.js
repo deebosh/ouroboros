@@ -579,13 +579,6 @@
  */
 
 /**
- * @typedef {Object} OwnerScopeReviewFloorResponse
- * @property {boolean} ok
- * @property {string} scope_review_floor  // blocking_1m | advisory (v6.34.0, CW1)
- * @property {string} deprecation_notice  // v6.80.0: stored, but enforcement-inert
- */
-
-/**
  * @typedef {Object} OwnerSafetyModeResponse
  * @property {boolean} ok
  * @property {string} safety_mode  // full | light | off (v6.54.3)
