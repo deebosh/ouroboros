@@ -1305,3 +1305,136 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    pre-split monolith bytes of the lane base (git show a56bb76a:ouroboros/
    loop.py, the D10 recipe) with a self-contained fallback that inverse-
    normalizes the landed loop_messages leaf — the suite is green either way.
+
+## From the F2.1 D07-quiet lane (base 50377313, 2026-08-31)
+
+1. Scope executed (the QUIET D07 part, F1 conveyor): 7 module leaves landed
+   from tip bytes with the transplant tool (ast=tokens=byte-roundtrip=True on
+   every span, exit 0, leaf_invariants=[], undeclared_top_level=[]):
+   delegate_custody_reconcile (rows 3458-3466; D36 handle `_custody()`),
+   delegate_payload_patch (3477-3483; `_di()`), subagent_integration_delegated
+   (3484-3494; `_si()`), subagent_route_health (3939-3942; projection-only, no
+   handle), and the D07 half of the SHARED tools/control.py —
+   control_subagent_spec (2537-2542), control_scheduling (2543-2556),
+   control_task_results (2569-2579). Facades = tip parent − moved spans +
+   grouped EOF re-export block (noqa discipline for historical imports);
+   facade audit green (every kept def/assign span byte-identical to `git show
+   HEAD:<monolith>`, every moved name re-exported). Both 1600-hard-cap giants
+   this lane was allowed to touch shrank: delegate_custody.py 1600→1305,
+   control.py 2110→492 (control.py and the transport test giant LEAVE
+   GIANT_PATHS/BYTE_DEBT); delegate_integration.py 1540→868,
+   subagent_integration.py 1599→1027, subagents.py 1593→1370.
+2. Drift-probe results (reference leaf `--check` against tip bytes, first
+   step per leaf): delegate_custody_reconcile 2/9 spans byte-true (7
+   re-emitted from tip); delegate_payload_patch 6/7 (integrate_payload_patch
+   drifted); subagent_integration_delegated 10/11 (_integrate_delegated_patch
+   drifted); subagent_route_health 2/4 (route_health, _exhausted_window
+   drifted); control_subagent_spec 4/6 (schedule_subagent_properties,
+   _validated_schedule_fields drifted); control_scheduling 9/14 rowed spans
+   byte-true (5 drifted); control_task_results 7/11 (4 drifted). Every
+   "verbatim" ledger claim was re-proven by bytes; no oracle semantics were
+   replayed over tip drift (custody semantics: upstream is a strict superset
+   — only the split FORM was taken from the reference).
+3. Declared-set recalcs against the reference LEAVES table (tool
+   unread/unresolved gates are the authority; new rows in
+   tests/test_module_handle_extraction.py): `_custody()` dropped STARTED,
+   START_REQUESTED, _CUSTODY, _iter_rows, event_log_path (tip drift stopped
+   reading them) and gained retire_settled_registrations (upstream retirement
+   decoupling 3226cc0c/8fe5a071); REVIEW_ATTRIBUTION_KEYS became a leaf
+   preamble import (constant, never rebound in tests). `_di()`/`_si()` sets
+   byte-matched the reference. control_scheduling declares exactly
+   {load_settings} (tests rebind it on the facade); the reference control
+   leaves were handle-free, the tip drift introduced that one read class.
+4. Row 3467 (_capture_stranded_patch → delegate_custody_reconcile.py)
+   SUPERSEDED-BY-UPSTREAM: 81194970 re-homed it as the public
+   tools/delegate_integration.py::capture_stranded_patch and the body drifted
+   further there; ownership stands with upstream, the row's destination needs
+   an F5 rename (class: D01 lane entry 2).
+5. Unrowed post-cutoff control.py neighbours ride with their only readers
+   into control_scheduling: _context_task_depth (read only by
+   _schedule_task), _materialize_child_attachment_manifest (same),
+   maybe_emit_delegated_run_fanout (external reader tools/delegate.py:935
+   does a call-time facade import — the facade re-export is load-bearing),
+   HIDDEN_LEGACY_SCHEDULE_PARAMS. F2-matrix falsification: the matrix routed
+   HIDDEN_LEGACY_SCHEDULE_PARAMS with the row-2541 reader
+   (_validated_schedule_fields → control_subagent_spec); the tip readers are
+   _schedule_task:865 and the module-level handler-attribute stamp
+   `setattr(_schedule_task, "_hidden_legacy_params", …)`:1166 — probe beats
+   matrix, the set moved with control_scheduling. The setattr Expr is the one
+   facade statement RELOCATED below the re-export block (it reads two moved
+   names at import time; consumer tools/tool_resolution.py:337 reads the
+   attribute off the registered handler object, same object either way).
+6. Transport test giant (6187 lines, 177 ledger rows): re-cut from tip bytes
+   as the S7a theme split — 140 rowed tests moved to 10 destinations
+   (cancellation_settlement 5, executor_axis 32, reconciliation 6 APPENDED to
+   the file the D11 lane already created, result_delivery 12, run_accounting
+   17, run_containment 11, run_custody 13, run_profile 15, wait_timeline 10,
+   wait_window 19), 21 unrowed post-cutoff tests stayed in the remainder;
+   lossless proven: 163 unique test names before == after (161 giant + 2
+   pre-existing reconciliation), zero new duplicate names, every moved span
+   byte-identical to the giant's bytes. Helper placement followed the rows
+   (15 defs → tests/_delegated_transport_shared.py, private stubs → their
+   sibling suites) with two documented lane placements: _plain_ctx went to
+   the SHARED module instead of run_accounting (tip-only external consumer
+   tests/test_delegation_account_pin.py imports it beside the autouse
+   fixture; its import was re-pointed to the shared home), and the unrowed
+   post-cutoff _transport_snapshot went to shared (the autouse fixture reads
+   it). Four rows re-homing giant constants into runtime SSOTs
+   (ACTING_SUBAGENT_TOOL_NAMES, LOCAL_READONLY_SUBAGENT_TOOL_NAMES →
+   tool_capabilities; CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION → config;
+   MODEL_SETTING_KEYS → provider_models) are SATISFIED BY UPSTREAM (the tip
+   giant already imports them). 44 oracle-rowed test names are absent from
+   the tip giant (upstream renamed/re-homed/retired them; the upstream
+   test_delegated_run_isolation.py / test_delegated_skill_payload.py themes
+   were built upstream as its own files) — no rows executed for absent
+   names, F5 census item; tip bytes stand.
+7. Dead-patch class (D08 lane entry 9 recipe; oracle adaptations mirrored
+   into THIS tree's file names): tests/test_task_status_flow.py — 3
+   wait-grace sites re-pointed to control_task_results (mirror of oracle
+   test_task_status_wait_tools.py) and the queue-fallback test's
+   write_task_result patch alias re-pointed to control_scheduling (mirror of
+   oracle test_task_status_scheduling.py); tests/test_subagents_phase3.py —
+   prepare_task_drive patch alias → control_scheduling (mirror of oracle:94);
+   tests/test_external_workspace_access.py — system/active_repo_dir_for
+   patch alias → control_scheduling (mirror of oracle:86);
+   tests/test_cache_optimization.py — two wait aliases → control_task_results
+   (mirror of oracle:435/480). A sweep of every other moved/frozen name found
+   no further facade patches whose exercised path reads the leaf scope (the
+   join_ledger _emit_control_event patches stay live: that path re-imports
+   through the facade at call time; subagents.route_health and the custody
+   sweep patches stay live: their callers stayed in the facades / read
+   through `_custody()`).
+8. HOT-DEFERRED with evidence (owner forks — nothing emitted):
+   - Ф-2 (delegate_terminal name collision): rows 3468-3476 NOT emitted;
+     tools/delegate.py stays exactly at the 1600 hard cap (at, not above —
+     ratchet green). Probe evidence recorded: 7/9 reference spans byte-true,
+     _terminal_payload + _delivered_terminal_payload upstream-drifted; the
+     reference facade-identity rows for this family are also held back.
+   - Ф-1 (subagent_worktrees.py strict-registry, rows 1083-1092 + the
+     280-line pin suite): in-place semantic delta, not transplanted without
+     owner sanction; tip==merge-base for the module, so the delta stays
+     cleanly appliable.
+   - Ф-3 (subagent_dispatch_notes retirement): rows 3937-3938 verified
+     SATISFIED as identity on tip (sdn:17 imports the pair from
+     ouroboros.subagents under the D01-lane noqa marker); the 71-line facade
+     stays; retirement is an F5 consumer-rebind item (agent.py at its size
+     ceiling + 3 test files + 2 unrowed helpers).
+   - Six D02 rows (2548 _build_acting_constraint, 2549
+     _select_subagent_constraint, 2556 _schedule_task, 2571 _get_task_result,
+     2574 _wait_for_task, 2579 _wait_for_tasks) were cut in TIP form —
+     ouroboros/tools/tool_result.py does not exist on tip; the D02 delta
+     returns as a package with the typed-result organ (the plan's mandatory
+     "D02 loop" return).
+9. Hot-code label parity: the three control leaves joined HOT_CODE_PATHS
+   beside the D08 trio (control.py stays labeled); the delegate/subagents
+   families are unlabeled and their leaves keep parity — pinned in the
+   adapted tests/test_delegate_owner_facades.py (reference file minus the
+   deferred delegate_terminal group and the superseded stranded-patch row).
+10. Out-of-scope defect FOUND (not fixed here, D06/review-organ material,
+    D15 class): tests/test_review_cycles_dispatch.py and
+    tests/test_review_cycles_skill_dispatch.py carry 10 AST-identical
+    duplicate test functions (pre-existing at this lane's base).
+11. For the integration seam: scripts/v7next_domains.toml rows for the seven
+    new runtime leaves (D07) and the ten new/regrown test siblings follow the
+    established seam convention (lanes do not edit the map); quotient report
+    regeneration likewise.

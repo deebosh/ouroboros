@@ -7,7 +7,6 @@ GIANT_PATHS = (
     "devtools/benchmarks/osworld/run_step_agent.py",
     "ouroboros/review_state.py",
     "ouroboros/tools/claude_advisory_review.py",
-    "ouroboros/tools/control.py",
     "ouroboros/tools/git.py",
     "ouroboros/tools/registry.py",
     "server.py",
@@ -16,7 +15,6 @@ GIANT_PATHS = (
     "supervisor/workers.py",
     "tests/test_cancel_intents_phase_a.py",
     "tests/test_claudexor_owned_daemon.py",
-    "tests/test_delegated_subagent_transport.py",
     "tests/test_delivery_forced_finalization.py",
     "tests/test_devtools_benchmarks.py",
     "tests/test_extensions_api.py",
@@ -127,6 +125,7 @@ BAND_PATHS = {
     "ouroboros/capability_evidence.py": "Grew INTO the band by the #284 fix: a fresh exact-model density witness may honestly undercut the cold floor \u2014 evidence logic belongs beside the witness store it reads.",
     "ouroboros/consciousness.py": "Durable Background Consciousness observation inbox and bounded truthful replay",
     "ouroboros/context.py": "Entered the band from the 1501-1600 zone (1590 lines) by the v7 D03 extraction of the runtime-section fact builders into ouroboros/context_runtime_facts.py; shrink-only residue of the split, not new growth.",
+    "ouroboros/delegate_custody.py": "D07 DEL1 split brought the custody monolith DOWN from the 1600 hard cap into the band (1600->1305); reconcile family extracted to delegate_custody_reconcile.py, shrink-only direction",
     "ouroboros/extension_process_runner.py": None,
     "ouroboros/gateway/control.py": "Entered the band from 966 lines: the update-flow redesign added the shared stash-first prologue (_stash_local_work_fenced/_unwind_stashed_update) and the review-wave affordability floor to the update apply orchestration (update-flow-redesign sprint, Q9/Q10 owner decisions).",
     "ouroboros/gateway/history.py": None,
@@ -146,6 +145,7 @@ BAND_PATHS = {
     "ouroboros/safety.py": "Entered the band from 954 lines with the safety-supervisor rate-limit fix: ONE shared model-call helper now serves both the primary and repair safety calls (it already deletes the duplicated call block), recognising a provider rate limit in BOTH wire shapes, taking one bounded deadline-capped backoff plus one retry, then blocking that one call with the typed non-verdict SAFETY_UNAVAILABLE outcome plus a durable audit row (a short storm latch answers further checks in the window without provider calls); the bounded newest-first conversation budget is the second half.",
     "ouroboros/skill_review_runner.py": None,
     "ouroboros/subagent_runtime.py": "Configured-retry refusals mirrored typed (triad 2026-08-30) push the module just over 1000; no new subsystem, same seam.",
+    "ouroboros/subagents.py": "D07 split brought the dispatch monolith DOWN from 1593 into the band (->1370); route-health family extracted to subagent_route_health.py, shrink-only direction",
     "ouroboros/task_results.py": "Authority reads need an explicit strict mode so malformed child records cannot become a false zero count.",
     "ouroboros/task_status.py": None,
     "ouroboros/tools/browser.py": None,
@@ -155,6 +155,7 @@ BAND_PATHS = {
     "ouroboros/tools/review_context_atlas.py": "Grew INTO the band by the #284 pack-arithmetic fixes: measured render charged at admission, exact per-row costs, target capped at the hard rail, honest eviction diagnostics \u2014 all in the module that owns the arithmetic.",
     "ouroboros/tools/skill_exec.py": None,
     "ouroboros/tools/skill_publish.py": "Entered the band from 952 lines: publish now writes the OuroborosHub publication receipt at pr_opened through the shared locked-update seam and maps the receipt from the validated serialized form (hubflow sprint, receipt-as-only-stored-fact design).",
+    "ouroboros/tools/subagent_integration.py": "D07 DEL1 split brought the integration monolith DOWN from 1599 into the band (->1027); delegated-disposition family extracted to subagent_integration_delegated.py, shrink-only direction",
     "ouroboros/usage_accounting.py": "Entered the band from the 1501-1600 zone (1600 lines) by the v7 L-C2 extraction of the one-time legacy usage import into ouroboros/usage_legacy_import.py; shrink-only residue of the split, not new growth.",
     "ouroboros/utils.py": None,
     "ouroboros/workspace_executor.py": None,
@@ -221,7 +222,6 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "tests/test_delegated_subagent_transport.py": 318310,
     "tests/test_devtools_benchmarks.py": 327935,
     "web/modules/chat.js": 224244,
 }

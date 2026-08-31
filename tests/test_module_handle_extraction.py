@@ -160,6 +160,32 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "ensure_official_update_remote", "git_capture", "git_fetch_bounded",
         "load_state", "managed_branch_defaults", "utc_now_iso",
     })),
+    # D07 lane rows (oracle ouroboros_v7_wip @ 9f691656, DEL1 splits re-derived
+    # on tip bytes). The custody reconcile set dropped the reference names the
+    # tip drift stopped reading (STARTED, START_REQUESTED, _CUSTODY, _iter_rows,
+    # event_log_path) and gained retire_settled_registrations (the upstream
+    # retirement-decoupling train); control_scheduling declares only
+    # load_settings — tests rebind it on the control facade; the projection-only
+    # control_subagent_spec/control_task_results leaves carry no handle reads
+    # and stay off this table (D08 control-leaf precedent).
+    "ouroboros/delegate_custody_reconcile.py": ("ouroboros/delegate_custody.py", "_custody", frozenset({
+        "RECONCILED", "RunCustody", "START_FAILED", "TERMINAL_STATES", "_reconcile_one",
+        "cancel_and_verify", "close_absent_run", "daemon_says_absent", "emit",
+        "is_terminal", "open_runs", "output_disposition", "pending_invocations",
+        "record_containment_fault", "record_settled_unread", "record_started",
+        "replay", "retire_settled_registrations", "settle_run",
+    })),
+    "ouroboros/tools/delegate_payload_patch.py": ("ouroboros/tools/delegate_integration.py", "_di", frozenset({
+        "_rebind_payload_reference", "_resolved", "payload_content_hash",
+    })),
+    "ouroboros/tools/subagent_integration_delegated.py": ("ouroboros/tools/subagent_integration.py", "_si", frozenset({
+        "_baseline_drifted_paths", "_capture_at_disposition", "_locked_apply",
+        "_patch_touched_paths", "_sha256_file", "_stageable_paths",
+        "_target_is_system_repo", "_write_verdict", "get_runtime_mode",
+    })),
+    "ouroboros/tools/control_scheduling.py": ("ouroboros/tools/control.py", "_ctl", frozenset({
+        "load_settings",
+    })),
     # D01 lane rows (L-B loop split + D38 agent dispatch), declared sets
     # re-derived on tip bytes by the transplant tool (reference table:
     # ouroboros_v7_wip @ 9f691656; tip additions over the reference are the

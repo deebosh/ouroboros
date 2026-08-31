@@ -95,7 +95,7 @@ def test_workspace_task_uses_same_top_level_principal(tmp_path):
 def test_subagent_inherits_active_external_workspace_when_metadata_missing(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    import ouroboros.tools.control as control
+    import ouroboros.tools.control_scheduling as control
 
     system = tmp_path / "system"
     active = tmp_path / "app"

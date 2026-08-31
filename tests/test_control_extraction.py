@@ -1,10 +1,12 @@
 """Structural contracts for the semantic-no-op control tool extraction.
 
-v7next D08 lane: only the D08 half of the reference split is carried here —
-``control_events`` (the emission/confirmation seam), ``control_routing`` (the
-chat/project routing verbs) and ``control_runtime`` (runtime self-control).
-The D07 half (scheduling, subagent spec, task results) stays on the facade for
-the D07 lane; this suite pins the partial-split shape it inherits.
+v7next D08 lane carried the D08 half of the reference split — ``control_events``
+(the emission/confirmation seam), ``control_routing`` (the chat/project routing
+verbs) and ``control_runtime`` (runtime self-control); the D07 lane carried the
+rest — ``control_subagent_spec`` (the published schedule surface),
+``control_scheduling`` (scheduling one live subagent) and
+``control_task_results`` (absorbing a child). ``tools/control.py`` is now the
+thin catalog facade; this suite pins the completed split shape.
 """
 
 from __future__ import annotations
@@ -17,6 +19,9 @@ from ouroboros.tools import (
     control_events,
     control_routing,
     control_runtime,
+    control_scheduling,
+    control_subagent_spec,
+    control_task_results,
 )
 from supervisor.update_merge_policy import HOT_CODE_PATHS
 
@@ -26,6 +31,9 @@ _LEAVES = (
     control_events,
     control_routing,
     control_runtime,
+    control_scheduling,
+    control_subagent_spec,
+    control_task_results,
 )
 
 _MOVED_OWNERS = {
@@ -64,6 +72,47 @@ _MOVED_OWNERS = {
     "_toggle_evolution": control_runtime,
     "_update_identity": control_runtime,
     "_update_scratchpad": control_runtime,
+    # D07 half (oracle rows 2537-2556, 2569-2579 re-cut on tip bytes).
+    "VALID_SUBTASK_MEMORY_MODES": control_subagent_spec,
+    "schedule_subagent_properties": control_subagent_spec,
+    "schedule_subagent_param_names": control_subagent_spec,
+    "_INTERNAL_SCHEDULE_OPTIONS": control_subagent_spec,
+    "_validated_schedule_fields": control_subagent_spec,
+    "RETIRED_SCHEDULE_PARAMS": control_subagent_spec,
+    "_record_scheduled_subagent": control_scheduling,
+    "_emit_swarm_fanout": control_scheduling,
+    "_subagent_slot_note": control_scheduling,
+    "_capability_mismatch_message": control_scheduling,
+    "_finalize_schedule_emission": control_scheduling,
+    "_build_acting_constraint": control_scheduling,
+    "_select_subagent_constraint": control_scheduling,
+    "_populate_subagent_event_extras": control_scheduling,
+    "_prepare_child_drive": control_scheduling,
+    "_earliest_deadline_at": control_scheduling,
+    "_build_child_subagent_contract": control_scheduling,
+    "_resolve_executor_ref": control_scheduling,
+    "_inherited_workspace_from_active_repo": control_scheduling,
+    "_schedule_task": control_scheduling,
+    # unrowed post-cutoff upstream neighbours riding with their only readers:
+    # the depth probe and the attachment manifest with _schedule_task, the
+    # fanout emitter with its external reader (tools/delegate.py keeps
+    # importing it from the facade), the hidden-params set with the validator
+    # and the handler attribute stamp.
+    "_context_task_depth": control_scheduling,
+    "_materialize_child_attachment_manifest": control_scheduling,
+    "maybe_emit_delegated_run_fanout": control_scheduling,
+    "HIDDEN_LEGACY_SCHEDULE_PARAMS": control_scheduling,
+    "disclosable_capability_delta": control_task_results,
+    "_subtask_outcome_summary": control_task_results,
+    "_get_task_result": control_task_results,
+    "_wait_attention_poll": control_task_results,
+    "cache_horizon_note": control_task_results,
+    "_wait_for_task": control_task_results,
+    "_count_live_sibling_children": control_task_results,
+    "_UNMINTED_WAIT_GRACE_SEC": control_task_results,
+    "_unminted_wait_ids": control_task_results,
+    "_children_roster_projection": control_task_results,
+    "_wait_for_tasks": control_task_results,
 }
 
 
@@ -106,16 +155,16 @@ def test_control_catalog_handler_owners_point_at_the_carried_leaves():
         "toggle_evolution": (control_runtime, "_toggle_evolution"),
         "toggle_consciousness": (control_runtime, "_toggle_consciousness"),
         "switch_model": (control_runtime, "_switch_model"),
+        "schedule_subagent": (control_scheduling, "_schedule_task"),
+        "get_task_result": (control_task_results, "_get_task_result"),
+        "wait_task": (control_task_results, "_wait_for_task"),
+        "wait_tasks": (control_task_results, "_wait_for_tasks"),
     }
     for name, (module, attr) in owned.items():
         assert name in entries, name
         handler = entries[name].handler
         assert handler.__module__ == module.__name__, name
         assert handler is getattr(module, attr), name
-    # the D07 half is NOT split by this lane: its verbs stay facade-owned
-    for name in ("schedule_subagent", "get_task_result", "wait_task", "wait_tasks"):
-        if name in entries:
-            assert entries[name].handler.__module__ == "ouroboros.tools.control", name
 
 
 def test_control_facade_reexports_every_moved_identity():
