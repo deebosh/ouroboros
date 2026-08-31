@@ -53,7 +53,9 @@ REQUIRED_CPL = tuple(f"CPL-{n}" for n in range(1, 8))
 # deferred out of v7.0 (ABI-8: Q5=A kept handler-ABI out of the bundle,
 # Q16=A retired the «7.1» label into post-release backlog).
 REQUIRED_PHASE = {
-    "D02": "F1", "D03": "F1", "D04": "F1", "D05": "F1", "D06": "F1",
+    # D02 F1->F3: owner-ratified F3 layout (2026-08-31) — the typed organ is
+    # re-derived whole by the F3.1 lane A; seam commit updates row + pin together.
+    "D02": "F3", "D03": "F1", "D04": "F1", "D05": "F1", "D06": "F1",
     "D07": "F2", "D08": "F2", "D09": "F1", "D11": "F1", "D13": "F1",
     "D18": "F1", "D31": "F2", "D33": "F1", "D34": "F2", "D35": "F1",
     "D36": "F2", "D37": "F2", "D38": "F1",

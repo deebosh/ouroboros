@@ -2053,3 +2053,58 @@ reference-fact ↔ tip-fact ↔ result.
    for campaign pins: never assume those globals are empty; REPLACE the dict
    for the test's scope (monkeypatch.setattr), never append into the live
    one. Applied to test_both_custody_surfaces_see_the_same_live_task_set.
+
+## From the f30 lane (F3.0 opening train, base db944347, 2026-08-31)
+1. ABI-6 re-location on tip (the roast-session scratchpad that minted the P1
+   inventory did not survive; the surviving primary source is
+   V7NEXT_SYNTHESIS_DRAFT.md, which names items without addresses):
+   (a) `_call_llm_with_retry` alias re-located at ouroboros/loop.py:74 -
+   ZERO code readers on db944347 (every monkeypatch targets the public
+   name); removed. (e) `compute_cost_with_children` (task_status.py:1001) +
+   `format_handoff_message` (:1054) - zero production callers; the canonical
+   with-children rollup lives in agent_task_pipeline/post_task_synthesis
+   with cost_projection.py as projection SSOT; removed with their private
+   helper and tests. (zh) "CHECKLISTS:507" re-located: the line number
+   drifted on both b9f7597f and db944347; the actual finding (archive,
+   sol audit 30.08) is the env_allowlist checklist row claiming
+   TELEGRAM_BOT_TOKEN is in FORBIDDEN_SKILL_SETTINGS while
+   contracts/plugin_api.py:23 does not contain it - doc aligned to code
+   (10 keys), code deliberately unchanged.
+2. ABI-6 items NOT re-locatable on tip - recorded, NOT replaced by
+   invention (f3 plan instruction): "failure-detector compat wrapper" and
+   "3 underscore renames". Evidence of the sweep: compat/alias comment grep
+   across ouroboros/ (12 candidates read - none is a failure-detector
+   wrapper); AST scan for one-line delegating wrappers with
+   fail/retry/error/detect/classify names (single hit:
+   git_review_cycle._handle_revalidation_failure, which is the D18/D33
+   module-handle idiom, not a compat shim); targeted reads of
+   llm*/loop*/transport modules. Disposition: superseded-by-upstream inside
+   the ABI-6 row; a future lane finding the real item re-opens it with
+   bytes, not memory.
+3. ABI-5 execution corrections against the f3 plan text:
+   - The two ws5 "read exemption" tests are NOT floor tests but family
+     read-carve mechanism tests that used the floor detector as vehicle;
+     deleted only the detector's own test, RETARGETED the two mechanism
+     tests to the surviving `_detect_safety_mode_self_lowering` (same
+     composition through `_owner_control_mention_blocks`).
+   - `effective_max_improvement_passes(has_deadline=)` existed solely for
+     the until_deadline count-axis branch; the parameter was removed with
+     the alias (callers: task_results wrapper + wallet cap + rails line;
+     BudgetSnapshot.has_deadline and every TIME rail untouched).
+   - The wallet-authority test derives its uncapped lane from
+     OUROBOROS_REVIEW_MAX_CYCLES=unlimited now (the alias lane is gone);
+     v664's deprecation-noise test now pins that resolve_budget_profile
+     emits NO deprecation events at all.
+   - Bench adapters (programbench, swe_bench_pro) switch to
+     improvement_policy=fixed: behavior-identical because their explicit
+     max_improvement_passes=6 was always the binding count axis.
+   - Ratchet: tests/test_v664_acceptance_planning.py briefly crossed the
+     1001 band (1005 lines) after a test rewrite - shrunk back to 996
+     instead of minting a band rationale; BYTE_DEBT for
+     tests/test_devtools_benchmarks.py regenerated 327935->327888
+     (reduction) by the official generator.
+4. Disclosed consequence (rides ABI-2/Q8=B): a pre-7.0 stored root contract
+   whose normalized profile says until_deadline is judged malformed by the
+   acceptance-wallet authority (pre-existing unknown-policy behavior);
+   pre-7.0 task-result history is quarantined wholesale by ABI-2 in the
+   same release and the ABI-7 RC auditor names the migration.
