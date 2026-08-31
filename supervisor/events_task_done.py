@@ -90,7 +90,7 @@ def _authoritative_terminal_cost(
             subtree_final = bool(subtree.get("cost_final"))
             subtree_amount = honest_accounted_amount(subtree)
             projection.update({
-                "cost_usd_with_children": (
+                "accounted_upper_bound_usd_with_children": (
                     round(subtree_amount, 6) if subtree_amount is not None else None
                 ),
                 "cost_with_children_partial": not subtree_final,
@@ -108,7 +108,8 @@ def _authoritative_terminal_cost(
             projection.update({
                 "cost_accounting_status": "unavailable", "cost_final": False,
                 "cost_accounting_error": "ledger_unavailable",
-                "cost_usd": None, "cost_usd_with_children": None,
+                "accounted_upper_bound_usd": None,
+                "accounted_upper_bound_usd_with_children": None,
                 "cost_with_children_partial": True,
             })
     elif not is_root:
@@ -119,7 +120,7 @@ def _authoritative_terminal_cost(
         if not present:
             _, rollup = resolve_cost_pair(
                 evt, "accounted_upper_bound_usd_with_children", "cost_usd_with_children")
-        projection["cost_usd_with_children"] = rollup
+        projection["accounted_upper_bound_usd_with_children"] = rollup
         projection["cost_with_children_partial"] = bool(
             result.get("cost_with_children_partial", evt.get("cost_with_children_partial", True))
         )
@@ -128,11 +129,11 @@ def _authoritative_terminal_cost(
     if is_root and post_task_synthesis_is_open(post_status):
         projection["cost_final"] = False
         projection["cost_with_children_partial"] = True
-    # SSOT cost naming (C2/ABI-3): normalize onto the honest names at this
-    # outer seam — the branches above legitimately mutate the legacy internal
-    # spellings, and the seam resolves them (deprecated wins) and strips the
-    # retired alias keys from the output. This is deliberately the LAST
-    # statement: any cost mutation added after it would leak a retired key.
+    # SSOT cost naming (C2/ABI-3): every branch above writes the honest names
+    # directly (Ф3.1 fix-round: producers no longer touch the retired
+    # spellings), and this outer seam stays as the idempotent invariant guard
+    # — it re-normalizes amounts and would strip any retired key a future
+    # mutation leaked. This is deliberately the LAST statement.
     return with_cost_aliases(projection)
 
 

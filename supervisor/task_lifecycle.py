@@ -1129,7 +1129,8 @@ def _finish_captured_running(
         stored_cost = {
             key: stored[key] for key in TASK_COST_META_FIELDS if key in stored
         } or {"cost_accounting_status": "unavailable", "cost_final": False,
-              "cost_usd": None}
+              # ABI-3: honest name only — the retired alias is read-only.
+              "accounted_upper_bound_usd": None}
         owed_ok = _register_owed_terminal_delivery(
             q, task, task_id, stored, deliver=deliver,
             unreconciled_runs=unreconciled,
@@ -1176,7 +1177,8 @@ def _finish_captured_running(
                 for key in TASK_COST_META_FIELDS
                 if key in child_result
             } or {"cost_accounting_status": "unavailable", "cost_final": False,
-                  "cost_usd": None}
+                  # ABI-3: honest name only — the retired alias is read-only.
+                  "accounted_upper_bound_usd": None}
             kept_row = load_task_result(q.DRIVE_ROOT, task_id) or child_result
             # GR2-4: the kept answer is registered as OWED before the intent
             # settles — a crash between the two must not lose both the

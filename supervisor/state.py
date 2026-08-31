@@ -715,7 +715,7 @@ def reconstruct_task_cost(
     want = str(task_id or "")
     if not want:
         projection = {
-            "cost_accounting_status": "available", "cost_usd": 0.0,
+            "cost_accounting_status": "available", "accounted_upper_bound_usd": 0.0,
             "total_rounds": 0, "prompt_tokens": 0, "completion_tokens": 0,
             "cost_final": True, "reserved_usd": 0.0,
             "unresolved_upper_bound_usd": 0.0, "unknown_unmetered": 0,
@@ -731,7 +731,7 @@ def reconstruct_task_cost(
             bucket = usage_breakdown(authority_root, task_id=want)
             projection = {
                 "cost_accounting_status": "available",
-                "cost_usd": (
+                "accounted_upper_bound_usd": (
                     round(amount, 6)
                     if (amount := honest_accounted_amount(bucket)) is not None
                     else None
@@ -754,16 +754,17 @@ def reconstruct_task_cost(
             projection = {
                 "cost_accounting_status": "unavailable", "cost_final": False,
                 "cost_accounting_error": "ledger_unavailable",
-                "cost_usd": None, "total_rounds": None,
+                "accounted_upper_bound_usd": None, "total_rounds": None,
                 "prompt_tokens": None, "completion_tokens": None,
                 "reserved_usd": None, "unresolved_upper_bound_usd": None,
                 "unknown_unmetered": None, "non_final_rows": None,
                 "ledger_integrity_degraded": True,
             }
     if fields:
-        # SSOT cost naming (C2): the additive honest name rides beside the
-        # deprecated `cost_usd` alias with the same value on every field
-        # projection this authority hands out.
+        # SSOT cost naming (C2/ABI-3): the authority assembles the honest
+        # name directly (Ф3.1 fix-round — no producer touches the retired
+        # alias); the seam stays as the idempotent amount-normalization and
+        # would strip any retired key a future mutation leaked.
         from ouroboros.cost_projection import with_cost_aliases
 
         return with_cost_aliases(projection)
@@ -772,7 +773,7 @@ def reconstruct_task_cost(
 
         raise UsageAccountingError(f"task cost authority unavailable for {task_id}")
     return (
-        float(projection["cost_usd"]), int(projection["total_rounds"]),
+        float(projection["accounted_upper_bound_usd"]), int(projection["total_rounds"]),
         int(projection["prompt_tokens"]), int(projection["completion_tokens"]),
     )
 

@@ -177,6 +177,7 @@ def _child_task_evidence(env: Any, task: Dict[str, Any], limit: int = 6000) -> s
     if not task_id:
         return ""
     try:
+        from ouroboros.cost_projection import resolve_cost_pair
         from ouroboros.task_results import list_task_results
 
         rows = []
@@ -185,12 +186,16 @@ def _child_task_evidence(env: Any, task: Dict[str, Any], limit: int = 6000) -> s
                 continue
             if str(item.get("parent_task_id") or "") != task_id and str(item.get("root_task_id") or "") != task_id:
                 continue
+            # ABI-3: resolve the stored pair (legacy read tolerance, deprecated
+            # wins) but emit only the honest name into the evidence row.
+            _, child_cost = resolve_cost_pair(
+                item, "accounted_upper_bound_usd", "cost_usd")
             rows.append({
                 "task_id": item.get("task_id") or item.get("id"),
                 "status": item.get("status"),
                 "role": item.get("role"),
                 "outcome_axes": normalize_outcome_axes(item),
-                "cost_usd": item.get("cost_usd"),
+                "accounted_upper_bound_usd": child_cost,
                 "trace_summary": _truncate_with_notice(item.get("trace_summary", ""), 800),
                 "result": _truncate_with_notice(item.get("result", ""), 1600),
             })

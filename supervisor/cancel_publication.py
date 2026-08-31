@@ -154,7 +154,9 @@ def _reconstructed_cost_fields(q: Any, task_id: str, task: Dict[str, Any]) -> Di
     except Exception:
         log.warning("Cost reconstruction failed for cancelled %s", task_id, exc_info=True)
         return {"cost_accounting_status": "unavailable", "cost_final": False,
-                "cost_accounting_error": "ledger_unavailable", "cost_usd": None}
+                "cost_accounting_error": "ledger_unavailable",
+                # ABI-3: honest name only — the retired alias is read-only.
+                "accounted_upper_bound_usd": None}
 
 
 def _salvage_cancelled_output(

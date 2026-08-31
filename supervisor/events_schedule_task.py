@@ -361,7 +361,9 @@ def _reject_schedule_task(
                 status,
                 **write_fields,
                 result=detail,
-                cost_usd=0.0,
+                # ABI-3: a rejected schedule spent a confirmed zero — stamped
+                # under the honest name (the retired alias is read-only).
+                accounted_upper_bound_usd=0.0,
             )
         except Exception:
             log.warning("Failed to persist schedule rejection for %s", tid, exc_info=True)

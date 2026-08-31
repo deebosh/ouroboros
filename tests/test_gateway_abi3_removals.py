@@ -142,6 +142,139 @@ class TestUiPreferenceAliasRemoval:
         assert "project_hidden" not in prefs
 
 
+class TestAliasProducerFanOutSweep:
+    """Ф3.1 fix-round: fan-out-complete producer pin over the WHOLE runtime
+    tree (every ``ouroboros/**/*.py`` and ``supervisor/**/*.py``).
+
+    No production code emits a retired gateway alias key in an emission-shaped
+    AST position — a dict-literal key, a subscript assignment, or a keyword
+    argument on a ``write_task_result`` call (the durable ABI-3 store).
+    Legacy READS stay legal and are naturally invisible to this scan:
+    ``resolve_cost_pair``/``.get``/``in``/``.pop`` never author a key.
+
+    The allowlist names the ONLY surviving dict-key/subscript occurrences:
+    fields of INTERNAL non-gateway planes that merely share a spelling with
+    the retired ChatOutbound/task-result aliases (physical usage ledger rows,
+    llm/usage observability events, review/evidence receipts, subagent
+    envelope, evolution campaign state, custody settlement events, reflection
+    records). None of them is a task-result, chat-frame or gateway-response
+    producer, and the ``write_task_result`` kwarg check has NO allowlist at
+    all. A stale allowlist entry (nothing matches it any more) FAILS the test,
+    so the list can only shrink honestly.
+    """
+
+    RETIRED_ALIASES = frozenset({
+        "cost_usd", "cost_usd_with_children", "telegram_chat_id",
+        "project_last_viewed", "project_hidden",
+    })
+    # (posix path, alias) -> why this INTERNAL plane legitimately keeps the spelling.
+    INTERNAL_PLANE_ALLOWLIST = {
+        # physical usage ledger rows / legacy usage import (P7 monetary authority)
+        ("ouroboros/usage_accounting.py", "cost_usd"): "ledger settlement row schema",
+        ("ouroboros/usage_legacy_import.py", "cost_usd"): "legacy usage.json ledger import rows",
+        # usage/observability event streams (events.jsonl, live log frames)
+        ("ouroboros/loop_llm_call.py", "cost_usd"): "llm_round usage event rows",
+        ("ouroboros/outcomes.py", "cost_usd"): "nested usage sub-dict (usage-row schema)",
+        ("ouroboros/post_task_synthesis.py", "cost_usd"): "chat_block_consolidation event row",
+        ("ouroboros/consciousness.py", "cost_usd"): "consciousness thought receipt row",
+        ("supervisor/events_evolution_done.py", "cost_usd"): "supervisor.jsonl observability row",
+        # review/evidence receipt schemas (internal review plane)
+        ("ouroboros/triad_review.py", "cost_usd"): "triad review receipt",
+        ("ouroboros/skill_loader.py", "cost_usd"): "skill review outcome receipt",
+        ("ouroboros/tools/delegate_terminal_evidence.py", "cost_usd"): "delegate terminal evidence rows",
+        ("ouroboros/tools/preflight_review_run.py", "cost_usd"): "advisory preflight receipts",
+        ("ouroboros/tools/review_admission.py", "cost_usd"): "review admission receipt",
+        ("ouroboros/tools/review_helpers.py", "cost_usd"): "review usage receipt",
+        ("ouroboros/tools/scope_review.py", "cost_usd"): "scope review receipt",
+        # subagent envelope (nested schema, its own producer/reader pair)
+        ("ouroboros/subagents.py", "cost_usd"): "subagent envelope field",
+        ("ouroboros/agent_task_pipeline.py", "cost_usd"): "subagent envelope patch",
+        # evolution campaign/checkpoint plane
+        ("ouroboros/evolution_checkpoints.py", "cost_usd"): "evolution checkpoint records",
+        ("supervisor/evolution_lifecycle.py", "cost_usd"): "evolution campaign history rows",
+        # custody settlement events
+        ("ouroboros/delegate_custody.py", "cost_usd"): "custody SETTLED event row",
+        # reflection records
+        ("ouroboros/reflection.py", "cost_usd"): "task reflection record",
+    }
+
+    @staticmethod
+    def _emission_hits():
+        import ast
+        import pathlib
+
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        aliases = TestAliasProducerFanOutSweep.RETIRED_ALIASES
+        dict_hits: list = []
+        writer_kwarg_hits: list = []
+        for package in ("ouroboros", "supervisor"):
+            for path in sorted((repo_root / package).rglob("*.py")):
+                rel = path.relative_to(repo_root).as_posix()
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Dict):
+                        for key in node.keys:
+                            if isinstance(key, ast.Constant) and key.value in aliases:
+                                dict_hits.append((rel, key.value, key.lineno))
+                    elif isinstance(node, (ast.Assign, ast.AugAssign)):
+                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                        for target in targets:
+                            if (
+                                isinstance(target, ast.Subscript)
+                                and isinstance(target.slice, ast.Constant)
+                                and target.slice.value in aliases
+                            ):
+                                dict_hits.append((rel, target.slice.value, target.lineno))
+                    elif isinstance(node, ast.Call):
+                        func = node.func
+                        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                        if name != "write_task_result":
+                            continue
+                        for kw in node.keywords:
+                            if kw.arg in aliases:
+                                writer_kwarg_hits.append((rel, kw.arg, node.lineno))
+                        for arg in [kw.value for kw in node.keywords if kw.arg is None] + list(node.args):
+                            if isinstance(arg, ast.Dict):
+                                for key in arg.keys:
+                                    if isinstance(key, ast.Constant) and key.value in aliases:
+                                        writer_kwarg_hits.append((rel, key.value, node.lineno))
+        return dict_hits, writer_kwarg_hits
+
+    def test_no_task_result_writer_passes_a_retired_alias(self):
+        _, writer_kwarg_hits = self._emission_hits()
+        assert writer_kwarg_hits == [], (
+            "write_task_result call sites must stamp honest names only "
+            f"(ABI-3); offending sites: {writer_kwarg_hits!r}"
+        )
+
+    def test_every_alias_key_emission_is_an_allowlisted_internal_plane(self):
+        dict_hits, _ = self._emission_hits()
+        unexpected = [
+            hit for hit in dict_hits
+            if (hit[0], hit[1]) not in self.INTERNAL_PLANE_ALLOWLIST
+        ]
+        assert unexpected == [], (
+            "new emission-shaped occurrence of a retired gateway alias; either "
+            "cut the producer over to the honest name or (only for a genuinely "
+            f"internal non-gateway plane) extend the allowlist: {unexpected!r}"
+        )
+        matched = {(rel, alias) for rel, alias, _lineno in dict_hits}
+        stale = sorted(set(self.INTERNAL_PLANE_ALLOWLIST) - matched)
+        assert stale == [], (
+            f"stale allowlist rows (no emission matches them any more): {stale!r}"
+        )
+
+    def test_no_gateway_alias_survives_outside_the_cost_pair(self):
+        """The three non-cost aliases have zero emission-shaped occurrences at
+        all — no allowlist, no exceptions."""
+        dict_hits, _ = self._emission_hits()
+        non_cost = [
+            hit for hit in dict_hits
+            if hit[1] in {"telegram_chat_id", "project_last_viewed", "project_hidden"}
+        ]
+        assert non_cost == []
+
+
 class TestApiV1ShimRemoval:
     def test_module_is_gone(self):
         import importlib

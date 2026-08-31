@@ -225,7 +225,7 @@ def set_root_post_task_checkpoint(
                 subtree_final = bool(subtree.get("cost_final"))
                 subtree_amount = honest_accounted_amount(subtree)
                 cost_fields.update({
-                    "cost_usd_with_children": (
+                    "accounted_upper_bound_usd_with_children": (
                         round(subtree_amount, 6) if subtree_amount is not None else None
                     ),
                     "cost_with_children_partial": not subtree_final,
@@ -236,15 +236,15 @@ def set_root_post_task_checkpoint(
                 cost_fields.update({
                     "cost_accounting_status": "unavailable",
                     "cost_accounting_error": "ledger_unavailable",
-                    "cost_usd": None,
-                    "cost_usd_with_children": None,
+                    "accounted_upper_bound_usd": None,
+                    "accounted_upper_bound_usd_with_children": None,
                 })
-        # SSOT cost naming (C2/F12): re-converge the alias pairs as the LAST step,
-        # after every branch above has finished mutating the deprecated spellings
-        # (`reconstruct_task_cost` aliases at ITS seam, then the subtree refresh
-        # and the unavailable fallback edit `cost_usd[_with_children]` only) —
-        # otherwise this producer persists a DIVERGED pair: an honest name still
-        # carrying the pre-refresh amount beside a corrected alias.
+        # SSOT cost naming (C2/F12/ABI-3): every branch above writes the honest
+        # names directly onto the honest-named `reconstruct_task_cost` fields
+        # (Ф3.1 fix-round — producers no longer touch the retired spellings);
+        # the seam stays as the LAST step as the idempotent invariant guard —
+        # it re-normalizes amounts and would strip any retired key a future
+        # mutation leaked, so this producer can never persist a diverged pair.
         cost_fields = with_cost_aliases(cost_fields)
         checkpoint_patch = {"post_task_synthesis": effective_status}
         if stop_reason:

@@ -53,7 +53,9 @@ def record_scheduled_admission(
             STATUS_FAILED,
             result=detail,
             reason_code=block,
-            cost_usd=0.0,
+            # ABI-3: a never-dispatched refusal spent a confirmed zero — stamped
+            # under the honest name; the retired alias is read-tolerance only.
+            accounted_upper_bound_usd=0.0,
         )
     except Exception:
         q.log.warning(

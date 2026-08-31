@@ -346,7 +346,8 @@ def _emit_cancel_task_done(
                 ),
                 **(cost_fields or {
                     "cost_accounting_status": "unavailable", "cost_final": False,
-                    "cost_usd": None,
+                    # ABI-3: honest name only — the retired alias is read-only.
+                    "accounted_upper_bound_usd": None,
                 }),
                 "metadata": (task or {}).get("metadata") if isinstance((task or {}).get("metadata"), dict) else {},
         })

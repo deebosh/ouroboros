@@ -1543,7 +1543,8 @@ def _settle_cancelled_pending_row(
         cost_fields = {
             "cost_accounting_status": "unavailable",
             "cost_final": False,
-            "cost_usd": None,
+            # ABI-3: honest name only — nothing emits the retired alias.
+            "accounted_upper_bound_usd": None,
         }
     try:
         stored = write_task_result(
@@ -1852,7 +1853,8 @@ def _terminalize_invalid_pending_depth(task: Dict[str, Any], detail: str) -> boo
             cost_fields = {
                 "cost_accounting_status": "unavailable",
                 "cost_final": False,
-                "cost_usd": None,
+                # ABI-3: honest name only — nothing emits the retired alias.
+                "accounted_upper_bound_usd": None,
             }
         stored = write_task_result(
             result_root,
