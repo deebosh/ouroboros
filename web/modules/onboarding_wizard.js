@@ -58,7 +58,8 @@ import { installAltMenuSuppression } from './ui_helpers.js';
         modelsDirty: false,
         localSourceOpen: Boolean(INITIAL_STATE.localSource),
         moreProvidersOpen: Boolean(
-            INITIAL_STATE.cloudruKey || INITIAL_STATE.minimaxKey || INITIAL_STATE.compatibleBaseUrl || INITIAL_STATE.compatibleApiKey,
+            INITIAL_STATE.cloudruKey || INITIAL_STATE.minimaxKey || INITIAL_STATE.deepseekKey
+            || INITIAL_STATE.compatibleBaseUrl || INITIAL_STATE.compatibleApiKey,
         ),
         localStatusText: 'Status: Offline',
         localStatusTone: 'muted',
@@ -138,6 +139,7 @@ import { installAltMenuSuppression } from './ui_helpers.js';
                 ['OPENAI_API_KEY', 'openai'],
                 ['CLOUDRU_FOUNDATION_MODELS_API_KEY', 'cloudru'],
                 ['MINIMAX_API_KEY', 'minimax'],
+                ['DEEPSEEK_API_KEY', 'deepseek'],
                 ['ANTHROPIC_API_KEY', 'anthropic'],
             ].filter(([settingKey]) => configured[settingKey]);
             if (hasOpenrouter) return 'openrouter';
@@ -437,6 +439,7 @@ import { installAltMenuSuppression } from './ui_helpers.js';
         if (trim(state.openaiKey)) rows.splice(1, 0, ['OpenAI', 'configured']);
         if (trim(state.cloudruKey)) rows.splice(1, 0, ['Cloud.ru', 'configured']);
         if (trim(state.minimaxKey)) rows.splice(1, 0, ['MiniMax', 'configured']);
+        if (trim(state.deepseekKey)) rows.splice(1, 0, ['DeepSeek', 'configured']);
         if (trim(state.anthropicKey)) rows.splice(1, 0, ['Anthropic', 'configured']);
         if (hasLocalModel()) {
             rows.splice(
@@ -650,7 +653,7 @@ import { installAltMenuSuppression } from './ui_helpers.js';
                         note: slot.note,
                     })).join('')}
                 </div>
-            <div class="wizard-inline-note">Direct providers use explicit <code>provider::model</code> values, including <code>minimax::MiniMax-M3</code> and <code>minimax::MiniMax-M2.7</code>. OpenAI-compatible endpoints use <code>openai-compatible::your-model-name</code>. Plain slash-form model IDs stay router-style by design.</div>
+            <div class="wizard-inline-note">Direct providers use explicit <code>provider::model</code> values, including <code>minimax::MiniMax-M3</code>, <code>minimax::MiniMax-M2.7</code>, <code>deepseek::deepseek-v4-pro</code> and <code>deepseek::deepseek-v4-flash</code>. OpenAI-compatible endpoints use <code>openai-compatible::your-model-name</code>. Plain slash-form model IDs stay router-style by design.</div>
         `;
     }
 

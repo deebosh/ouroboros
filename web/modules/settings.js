@@ -323,6 +323,8 @@ const SETTINGS_FALLBACK_MODELS = [
     'anthropic::claude-opus-5',
     'anthropic::claude-opus-4-6',
     'deepseek/deepseek-v4-pro',
+    'deepseek::deepseek-v4-pro',
+    'deepseek::deepseek-v4-flash',
     'minimax::MiniMax-M3',
     'minimax::MiniMax-M2.7',
 ];
@@ -337,11 +339,12 @@ let settingsModelCatalogItems = SETTINGS_FALLBACK_MODELS.map((value) => ({ value
  * Exported for dependency-free node tests.
  */
 export function moreProvidersCredentialConfigured({
-    cloudruKey = '', minimaxKey = '', gigachatCredentials = '', gigachatUser = '', gigachatPassword = '',
+    cloudruKey = '', minimaxKey = '', deepseekKey = '', gigachatCredentials = '', gigachatUser = '', gigachatPassword = '',
 } = {}) {
     const has = (v) => Boolean(String(v ?? '').trim());
     return has(cloudruKey)
         || has(minimaxKey)
+        || has(deepseekKey)
         || has(gigachatCredentials)
         || (has(gigachatUser) && has(gigachatPassword));
 }
@@ -627,6 +630,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (moreProvidersCredentialConfigured({
             cloudruKey: value('s-cloudru-key'),
             minimaxKey: value('s-minimax-key'),
+            deepseekKey: value('s-deepseek-key'),
             gigachatCredentials: value('s-gigachat-credentials'),
             gigachatUser: value('s-gigachat-user'),
             gigachatPassword: value('s-gigachat-password'),
