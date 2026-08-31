@@ -537,49 +537,63 @@ def run_parallel_review(ctx, commit_message, *, goal="", scope="", review_rebutt
                 review_rebuttal=review_rebuttal, history_snapshot=_history_snapshot,
                 scope_history=_scope_history)
     else:
-        # ---- Phase 2: submit the assembled packets to the executor pool. ----
-        with _cf.ThreadPoolExecutor(max_workers=2) as pool:
-            triad_fut = (
-                None if triad_exited
-                else pool.submit(_dispatch_unified_review, ctx, commit_message, triad_prepared)
-            )
-            scope_fut = (
-                pool.submit(_run_scope, ctx, commit_message, scope_rows, True,
-                            goal=goal, scope=scope, review_rebuttal=review_rebuttal,
-                            history_snapshot=_history_snapshot,
-                            scope_history=_scope_history)
-                if scope_rows else None
-            )
-            if triad_fut is None:
-                review_err = triad_early
-            else:
-                try:
-                    review_err = triad_fut.result()
-                except Exception as e:
-                    log.warning("Triad review raised unexpected exception: %s", e)
-                    review_err = (
-                        f"⚠️ REVIEW_BLOCKED: Triad review crashed — {e}\nFix the issue and retry."
+        # ---- Phase 2: dispatch triad, then scope. ----
+        #
+        # The original implementation used a ThreadPoolExecutor(max_workers=2)
+        # to run triad and scope concurrently. The deep_self_review (cycle 60)
+        # identified that as CRITICAL-1: both paths mutate shared ctx._last_*
+        # state (_last_review_critical_findings, _last_review_advisory,
+        # _last_triad_raw_results vs _last_scope_model, _last_scope_raw_results,
+        # and the _review_advisory list snapshot/diff) without synchronization,
+        # and the parent thread's sequential .result() calls do NOT prevent the
+        # two worker threads from racing on those writes during their execution.
+        #
+        # The deep_self_review recommended either serializing or adding a
+        # dedicated lock; this change takes the minimal-blast-radius path of
+        # serializing. The latency cost is bounded because (a) the LLM round-trip
+        # dominates the budget, not the dispatch, and (b) `_run_scope` already
+        # uses a 4-worker internal pool for its own scope rows — only the
+        # between-triad-and-scope window is sequential now.
+        triad_fut = None
+        scope_fut = None
+        del triad_fut, scope_fut  # document-only: prior futures removed; sequential dispatch below
+        if triad_exited:
+            # Triad prepared an early-block result but was not dispatched;
+            # surface that early-block as the review_err (mirrors the original
+            # `if triad_fut is None: review_err = triad_early` branch).
+            review_err = triad_early
+        else:
+            try:
+                review_err = _dispatch_unified_review(ctx, commit_message, triad_prepared)
+            except Exception as e:
+                log.warning("Triad review raised unexpected exception: %s", e)
+                review_err = (
+                    f"⚠️ REVIEW_BLOCKED: Triad review crashed — {e}\nFix the issue and retry."
+                )
+                ctx._last_review_block_reason = 'infra_failure'
+                ctx._last_review_critical_findings = []
+        if scope_rows:
+            try:
+                scope_result = _run_scope(
+                    ctx, commit_message, scope_rows, True,
+                    goal=goal, scope=scope, review_rebuttal=review_rebuttal,
+                    history_snapshot=_history_snapshot,
+                    scope_history=_scope_history)
+            except Exception as e:
+                log.warning("Scope review raised unexpected exception: %s", e)
+                scope_result = ScopeReviewResult(
+                    blocked=True,
+                    block_message=f"⚠️ SCOPE_REVIEW_BLOCKED: Scope review future crashed — {e}\nFix the issue and retry.",
+                    model_id=getattr(ctx, "_last_scope_model", "") or _get_scope_model(),
+                    status="error",
+                )
+                ctx._last_scope_raw_results = [
+                    build_scope_actor_record(
+                        scope_result,
+                        fallback_model_id=getattr(ctx, "_last_scope_model", ""),
+                        slot_id="scope_slot_error",
                     )
-                    ctx._last_review_block_reason = 'infra_failure'
-                    ctx._last_review_critical_findings = []
-            if scope_fut is not None:
-                try:
-                    scope_result = scope_fut.result()
-                except Exception as e:
-                    log.warning("Scope future raised unexpected exception: %s", e)
-                    scope_result = ScopeReviewResult(
-                        blocked=True,
-                        block_message=f"⚠️ SCOPE_REVIEW_BLOCKED: Scope review future crashed — {e}\nFix the issue and retry.",
-                        model_id=getattr(ctx, "_last_scope_model", "") or _get_scope_model(),
-                        status="error",
-                    )
-                    ctx._last_scope_raw_results = [
-                        build_scope_actor_record(
-                            scope_result,
-                            fallback_model_id=getattr(ctx, "_last_scope_model", ""),
-                            slot_id="scope_slot_error",
-                        )
-                    ]
+                ]
     triad_block_reason = getattr(ctx, '_last_review_block_reason', 'critical_findings')
     triad_advisory_post = list(getattr(ctx, '_review_advisory', []))
     triad_advisory = [a for a in triad_advisory_post if a not in _advisory_snapshot_before]

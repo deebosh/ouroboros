@@ -290,6 +290,12 @@ class AdvisoryReviewState:
     last_stale_from_edit_ts: str = ""
     last_stale_reason: str = ""
     last_stale_repo_key: str = ""
+    # Task id of the caller that set the stale marker (review_evidence gates
+    # the displayed current_repo.stale_reason/stale_ts on a matching task_id
+    # so a parallel task on the same tree never reads another's stale marker;
+    # an empty string is the legacy/unattributed state that still matches
+    # any task id, keeping every pre-existing record effective).
+    last_stale_task_id: str = ""
 
     def latest(self) -> Optional[AdvisoryRunRecord]:
         return self.advisory_runs[-1] if self.advisory_runs else None
@@ -405,6 +411,7 @@ class AdvisoryReviewState:
             self.last_stale_from_edit_ts = ""
             self.last_stale_reason = ""
             self.last_stale_repo_key = ""
+            self.last_stale_task_id = ""
         self._sync_commit_readiness_debts(repo_key=run.repo_key or None)
 
     def mark_stale(self, snapshot_hash: str) -> None:
@@ -427,6 +434,7 @@ class AdvisoryReviewState:
         reason_ts: str = "",
         reason: str = "",
         stale_repo_key: str = "",
+        stale_task_id: str = "",
     ) -> int:
         """Invalidate advisory runs for a repo, falling back conservatively."""
         invalidatable = [
@@ -450,6 +458,7 @@ class AdvisoryReviewState:
             self.last_stale_from_edit_ts = reason_ts or _utc_now()
             self.last_stale_reason = reason
             self.last_stale_repo_key = stale_repo_key or repo_key
+            self.last_stale_task_id = stale_task_id
             self._sync_commit_readiness_debts(repo_key=stale_repo_key or repo_key or None)
         return len(target_runs)
 
@@ -993,6 +1002,7 @@ class AdvisoryReviewState:
             self.last_stale_from_edit_ts = ""
             self.last_stale_reason = ""
             self.last_stale_repo_key = ""
+            self.last_stale_task_id = ""
             for debt in _commit_readiness_debts_view(self):
                 self._hydrate_commit_readiness_debt(debt)
                 if debt.status in _OPEN_COMMIT_READINESS_DEBT_STATUSES:
@@ -1010,6 +1020,7 @@ class AdvisoryReviewState:
             self.last_stale_from_edit_ts = ""
             self.last_stale_reason = ""
             self.last_stale_repo_key = ""
+            self.last_stale_task_id = ""
         self._sync_commit_readiness_debts(repo_key=repo_key)
 
     def expire_stale_attempts(
@@ -1156,6 +1167,7 @@ def _load_state_unlocked(drive_root: pathlib.Path) -> AdvisoryReviewState:
         last_stale_from_edit_ts=str(data.get("last_stale_from_edit_ts", "")),
         last_stale_reason=str(data.get("last_stale_reason", "")),
         last_stale_repo_key=str(data.get("last_stale_repo_key", "")),
+        last_stale_task_id=str(data.get("last_stale_task_id", "")),
     )
 
     state.attempts.sort(key=_attempt_order_key)
@@ -1263,6 +1275,7 @@ def _save_state_unlocked(drive_root: pathlib.Path, state: AdvisoryReviewState) -
         "last_stale_from_edit_ts": state.last_stale_from_edit_ts,
         "last_stale_reason": state.last_stale_reason,
         "last_stale_repo_key": state.last_stale_repo_key,
+        "last_stale_task_id": state.last_stale_task_id,
         "saved_at": _utc_now(),
     }
     atomic_write_json(path, data)
@@ -1413,6 +1426,7 @@ def invalidate_advisory_after_mutation(
     mutation_root: pathlib.Path | None = None,
     changed_paths: Optional[List[str]] = None,
     source_tool: str = "",
+    mutating_task_id: str = "",
 ) -> None:
     """Invalidate advisory freshness after mutation; ambiguous repo scope stales all."""
     try:
@@ -1423,13 +1437,14 @@ def invalidate_advisory_after_mutation(
 
         def _mutate(state: AdvisoryReviewState) -> None:
             if not resolved_repo_keys or len(resolved_repo_keys) != 1:
-                state.mark_repo_stale(repo_key="", reason_ts=reason_ts, reason=reason, stale_repo_key="")
+                state.mark_repo_stale(repo_key="", reason_ts=reason_ts, reason=reason, stale_repo_key="", stale_task_id=mutating_task_id)
                 return
             state.mark_repo_stale(
                 repo_key=resolved_repo_keys[0],
                 reason_ts=reason_ts,
                 reason=reason,
                 stale_repo_key=resolved_repo_keys[0],
+                stale_task_id=mutating_task_id,
             )
 
         update_state(drive_root, _mutate)
