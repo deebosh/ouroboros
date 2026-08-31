@@ -553,12 +553,23 @@ class TestSingleElementShellMetachar:
         result = _run_shell(_ctx(tmp_path), ['find . -name "*.py" || echo none'])
         assert "SHELL_CMD_ERROR" in result
 
-    def test_run_shell_blocks_bare_pipe_in_sole_element(self, tmp_path):
-        """['echo hello | grep h'] — a bare pipe, not caught by the >=2 check
-        (which deliberately excludes bare | for the multi-arg case) or by
-        _SHELL_OPERATORS.intersection (| here is not its own array element)."""
+    def test_run_shell_auto_wraps_bare_pipe_in_sole_element(self, tmp_path, fake_subprocess):
+        """``['echo hello | grep h']`` — a whitespace-bracketed bare pipe
+        in the SOLE element. As of v6.110.x the pipe-autocorrect helper
+        upstream of ``_SHELL_OPERATORS.intersection`` intercepts this
+        shape (a pipe genuinely needs a shell, so unlike the &&
+        boundary-mistake which can be safely split into real argv,
+        this one wraps the raw string as ``["sh", "-c", <raw>]``).
+        Closes ``ibl-db9d3608e096``.
+
+        The other metachars (``&&``, ``||``, ``;``) keep their old
+        SHELL_CMD_ERROR rejection — only bare pipes get autocorrected.
+        """
+        calls = fake_subprocess(stdout="hello\n")
         result = _run_shell(_ctx(tmp_path), ["echo hello | grep h"])
-        assert "SHELL_CMD_ERROR" in result
+        assert "SHELL_CMD_AUTO_WRAP" in result
+        assert "SHELL_CMD_ERROR" not in result
+        assert calls[0]["cmd"] == ["sh", "-c", "echo hello | grep h"]
 
     def test_run_shell_blocks_semicolon_in_sole_element(self, tmp_path):
         """['echo a; echo b'] — semicolon-chained commands as one element."""
@@ -844,4 +855,108 @@ class TestAndChainSplit:
         out_cmd, note = _maybe_split_single_element_and_chain(cmd)
         assert out_cmd == cmd
         assert note == ""
+
+
+class TestSingleElementPipeline:
+    """``["grep -rn foo . | head -20"]`` is a one-element form of a real
+    shell pipeline. Unlike the && argv-boundary mistake (which can be
+    safely split into real argv), a pipe needs a shell — the autocorrect
+    wraps it as ``["sh", "-c", <raw>]`` instead of refusing the call.
+    Closes ``ibl-db9d3608e096``.
+
+    The autocorrect is intentionally narrow:
+      * a glued ``|`` (``grep "a|b"`` regex alternation) does NOT
+        match — only a whitespace-bracketed pipe does,
+      * ``||`` is excluded by the lookbehind/lookahead on ``|``,
+      * a leading shell interpreter (``["sh -c 'a | b'"]``,
+        ``["bash -c '...'"]`` etc.) is left for the existing
+        interpreter path so we do not duplicate the disclosure,
+      * multi-element cmd (already-correct multi-token argv or
+        existing standalone-operator argv) falls through to the
+        existing cascade untouched.
+    """
+
+    def test_run_shell_wraps_grep_pipe_to_head(self, tmp_path, fake_subprocess):
+        """Headline shape from the bug report: a single-element pipeline
+        reaches subprocess as ``[\"sh\", \"-c\", \"grep -rn foo . | head -20\"]``
+        with the disclosure note visible in the operator result.
+        """
+        calls = fake_subprocess(stdout="match\n")
+        result = _run_shell(
+            _ctx(tmp_path),
+            ["grep -rn foo . | head -20"],
+        )
+        assert "SHELL_CMD_AUTO_WRAP" in result
+        assert "SHELL_CMD_ERROR" not in result
+        assert calls[0]["cmd"] == ["sh", "-c", "grep -rn foo . | head -20"]
+
+    def test_run_shell_wraps_cat_pipe_to_wc(self, tmp_path, fake_subprocess):
+        """Second headline shape: ``cat a.txt | wc -l`` wraps the same way."""
+        calls = fake_subprocess(stdout="3\n")
+        result = _run_shell(_ctx(tmp_path), ["cat a.txt | wc -l"])
+        assert "SHELL_CMD_AUTO_WRAP" in result
+        assert "SHELL_CMD_ERROR" not in result
+        assert calls[0]["cmd"] == ["sh", "-c", "cat a.txt | wc -l"]
+
+    def test_does_not_wrap_glued_pipe_in_quotes(self):
+        """``grep 'a|b' file.txt`` has a glued pipe inside single quotes
+        with no whitespace around it — likely regex alternation, not a
+        shell pipeline. The autocorrect MUST return ``(cmd, "")``
+        untouched.
+        """
+        from ouroboros.tools.shell_and_chain import _maybe_wrap_single_element_pipeline
+        cmd = ["grep 'a|b' file.txt"]
+        out_cmd, note = _maybe_wrap_single_element_pipeline(cmd)
+        assert out_cmd == cmd
+        assert note == ""
+
+    def test_does_not_wrap_no_pipe(self):
+        """``ls -la`` carries no pipe at all; the helper MUST pass through
+        ``(cmd, \"\")`` so the existing cascade handles it normally.
+        """
+        from ouroboros.tools.shell_and_chain import _maybe_wrap_single_element_pipeline
+        cmd = ["ls -la"]
+        out_cmd, note = _maybe_wrap_single_element_pipeline(cmd)
+        assert out_cmd == cmd
+        assert note == ""
+
+    def test_does_not_wrap_leading_shell_interpreter(self):
+        """``[\"sh -c 'a | b'\"]`` is a one-string form of the legitimate
+        shell-script argv — wrapping it as ``[\"sh\",\"-c\",<raw>]`` would
+        still work, but the existing interpreter branch already handles
+        this shape and we MUST NOT duplicate the disclosure. Helper
+        returns ``(cmd, \"\")`` so the interpreter branch runs.
+        """
+        from ouroboros.tools.shell_and_chain import _maybe_wrap_single_element_pipeline
+        cmd = ["sh -c 'a | b'"]
+        out_cmd, note = _maybe_wrap_single_element_pipeline(cmd)
+        assert out_cmd == cmd
+        assert note == ""
+
+    def test_does_not_wrap_multi_element_and_chain_split_output(self):
+        """``[\"make\", \"&&\", \"test\"]`` and ``[\"a\", \"|\", \"b\"]`` are
+        multi-element argv that the existing standalone-operator check
+        (downstream of this helper) handles. The pipe helper sees
+        ``len(cmd) > 1`` and falls through immediately.
+        """
+        from ouroboros.tools.shell_and_chain import _maybe_wrap_single_element_pipeline
+        for cmd in (
+            ["make", "&&", "test"],
+            ["a", "|", "b"],
+        ):
+            out_cmd, note = _maybe_wrap_single_element_pipeline(cmd)
+            assert out_cmd == cmd, cmd
+            assert note == "", cmd
+
+    def test_run_shell_does_not_break_cd_foo_and_make(self, tmp_path):
+        """``[\"cd foo && make\"]`` has a segment with internal whitespace
+        (``cd foo``). The && chain split helper leaves it untouched
+        (segment-with-space guard) and the cascade downstream keeps
+        doing its job — pipe helper adds no regression on top of that.
+        """
+        result = _run_shell(_ctx(tmp_path), ["cd foo && make"])
+        # The existing SHELL_CMD_ERROR path fires (segment has space);
+        # what matters here is that the pipe helper did NOT wrap it.
+        assert "SHELL_CMD_ERROR" in result
+        assert "SHELL_CMD_AUTO_WRAP" not in result
 
