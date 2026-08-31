@@ -415,6 +415,8 @@ D20 = "Presence"
 "ouroboros/tools/query_code.py" = "D05"
 "ouroboros/tools/recent_tasks.py" = "D05"
 "ouroboros/tools/registry.py" = "D04"
+"ouroboros/tools/registry_core.py" = "D04"
+"ouroboros/tools/tool_result.py" = "D04"
 "ouroboros/tools/registry_guard_process.py" = "D04"
 "ouroboros/tools/registry_guards.py" = "D04"
 "ouroboros/tools/tool_catalog.py" = "D04"
@@ -619,8 +621,6 @@ proposed = [
 [split_pending]
 # monolith -> domains of its ledger-derived leaves still absent from this tree
 # (own domain included). A list longer than one element = the monolith spans domains.
-"ouroboros/loop_tool_execution.py" = ["D04"]
-"ouroboros/tools/registry.py" = ["D04"]
 # F2.3b resolved rows (owner decision 5.1=A lane, 2026-08-31): the advisory
 # monolith split landed as preflight_review_prompt/preflight_review_run —
 # re-derived from tip native-episode bytes under the organ's public rename
@@ -637,5 +637,3 @@ proposed = [
 
 [split_pending_leaves]
 # the exact absent leaf modules per monolith (ledger owner paths)
-"ouroboros/loop_tool_execution.py" = ["ouroboros/tools/tool_result.py"]
-"ouroboros/tools/registry.py" = ["ouroboros/tools/registry_core.py", "ouroboros/tools/tool_result.py"]
