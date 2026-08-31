@@ -89,7 +89,8 @@ class ExtensionStaleRecoveryError(ExtensionRegistrationError):
     Raised BEFORE any mutation when ``require_live_generation`` names a
     publication that is no longer live (the bundle vanished or was reloaded):
     the refusal has zero effects — no bundle is created, nothing is staged
-    into the registries, and nothing may be disposed by the caller.
+    into the registries, the companion auth token (``auth_token.json``) is
+    neither created nor rotated, and nothing may be disposed by the caller.
     """
 
 
@@ -123,8 +124,10 @@ def _reject_extension_child_side_effect(capability: str) -> None:
 def mint_skill_token(state_dir: pathlib.Path, skill_name: str, skill_dir: Optional[pathlib.Path]) -> str:
     """Read or rotate the per-skill Host Service token, bound to the content hash.
 
-    Shared by the in-process PluginAPI (``get_skill_token``) and the out-of-process
-    child env builder so a child/companion can authenticate to the Host Service.
+    Shared by the in-process PluginAPI (``get_skill_token``), the out-of-process
+    child env builder, and the post-fence companion-env materialization inside
+    ``_publish_registrations``. This WRITES ``auth_token.json`` when the token
+    is missing or hash-stale: a generation-fenced path calls it only post-fence.
     """
     token_path = pathlib.Path(state_dir) / AUTH_TOKEN_FILENAME
     payload = read_json_dict(token_path) or {}
@@ -555,8 +558,9 @@ class PluginAPIImpl:
             if key_text.upper() in FORBIDDEN_SKILL_SETTINGS or key_text.upper() in reserved_env:
                 continue
             base_env[key_text] = str(value)
-        token = self.get_skill_token()
-        base_env["HOST_SERVICE_TOKEN"] = token.use_in_request()
+        # HOST_SERVICE_TOKEN is NOT minted here: descriptor build stays pure;
+        # the token file create/rotate happens only at publication, after the
+        # generation fence admitted it (fix-round-5).
         from ouroboros.gateway.host_service import DEFAULT_HOST_SERVICE_HOST, host_service_port
         base_env["HOST_SERVICE_URL"] = f"http://{DEFAULT_HOST_SERVICE_HOST}:{host_service_port()}"
         if self._skill_dir is not None:
@@ -747,8 +751,10 @@ class PluginAPIImpl:
         ``require_live_generation`` and is admitted only while the bundle it
         observed is STILL the live publication — a vanished bundle or a
         different generation raises a typed ``ExtensionStaleRecoveryError``
-        before any mutation, and recovery never creates a bundle, so a
-        completed unload/reload cannot be resurrected. Every
+        before any mutation (the companion auth token included: it
+        materializes into the staged descriptors only in the post-swap attach
+        below, never during descriptor build), and recovery never creates a
+        bundle, so a completed unload/reload cannot be resurrected. Every
         attachable effect is recorded on the published bundle at the swap
         (futures as they are created), so a failure while attaching leaves
         nothing orphaned: it is disclosed and raised into the caller's
@@ -838,6 +844,17 @@ class PluginAPIImpl:
             # ATTACH (post-swap, same lock hold): deferred side effects start
             # only against the already-published bundle.
             try:
+                if staged.companion_spawns:
+                    # Fix-round-5: the companion auth token materializes only
+                    # HERE, after the generation fence admitted this
+                    # publication. A mint during descriptor build would let a
+                    # stale recovery rotate auth_token.json before its typed
+                    # refusal, de-authorizing the LIVE publication's
+                    # companions (their spawn env holds the previous token;
+                    # the Host Service rereads the file on every request).
+                    token = mint_skill_token(self._state_dir, self._skill, self._skill_dir)
+                    for spawn in staged.companion_spawns:
+                        spawn.descriptor.env["HOST_SERVICE_TOKEN"] = token
                 bus = get_global_event_bus()
                 for sub in staged.event_subscriptions:
                     bus.subscribe(self._skill, sub.topic, sub.handler, sub_id=sub.sub_id)

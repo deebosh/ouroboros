@@ -1,10 +1,15 @@
+import hmac
+import json
 import logging
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
 
 import pytest
+
+import ouroboros.gateway.host_service as host_service
 
 from ouroboros.contracts.plugin_api import ExtensionRegistrationError
 from ouroboros.extension_companion import (
@@ -268,12 +273,15 @@ def test_publish_out_of_process_registration_host_spawns_declared_name(tmp_path:
     init_server_process_pid()
     loaded, _repo_root, drive_root = _reviewed_companion_skill(tmp_path)
     fake = _patch_supervisor(monkeypatch)
+    # Production-shape per-skill state dir (fix-round-5): the same directory
+    # extension_loader resolves via skill_state_dir, where auth_token.json lives.
+    state_dir = extension_loader.skill_state_dir(drive_root, loaded.name)
     try:
         with pytest.raises(ExtensionRegistrationError, match="exactly one of"):
             extension_loader._publish_out_of_process_registration(
                 loaded,
                 catalog={"companions": ["daemon"]},
-                state_dir=drive_root / "state",
+                state_dir=state_dir,
                 settings_reader=lambda: {},
                 granted_keys=[],
                 dependency_site_dirs_enabled=False,
@@ -282,18 +290,21 @@ def test_publish_out_of_process_registration_host_spawns_declared_name(tmp_path:
             extension_loader._publish_out_of_process_registration(
                 loaded,
                 catalog={"companions": ["evil"]},
-                state_dir=drive_root / "state",
+                state_dir=state_dir,
                 settings_reader=lambda: {},
                 granted_keys=[],
                 dependency_site_dirs_enabled=False,
                 current_hash=loaded.content_hash,
             )
         assert fake.started == []
+        assert not (state_dir / host_service.AUTH_TOKEN_FILENAME).exists(), (
+            "a refused publication must not have minted a companion token"
+        )
 
         extension_loader._publish_out_of_process_registration(
             loaded,
             catalog={"companions": ["daemon"]},
-            state_dir=drive_root / "state",
+            state_dir=state_dir,
             settings_reader=lambda: {},
             granted_keys=[],
             dependency_site_dirs_enabled=False,
@@ -301,6 +312,12 @@ def test_publish_out_of_process_registration_host_spawns_declared_name(tmp_path:
         )
         assert len(fake.started) == 1
         assert fake.started[0].name == "daemon"
+        # Initial load legitimately mints the token — at publication, into the
+        # spawned descriptor's env.
+        token_payload = json.loads(
+            (state_dir / host_service.AUTH_TOKEN_FILENAME).read_text(encoding="utf-8")
+        )
+        assert fake.started[0].env["HOST_SERVICE_TOKEN"] == token_payload["token"]
     finally:
         extension_loader.unload_extension("compskill")
         init_server_process_pid()
@@ -313,16 +330,18 @@ def test_recovery_publication_requires_a_pre_existing_live_bundle(tmp_path: path
     which pinned the resurrection bug itself (a stale recovery re-created an
     empty companion-only bundle after disable/unload). The recovery form now
     REQUIRES a still-live bundle at the observed generation: with no live
-    bundle it refuses with zero effects and creates nothing."""
+    bundle it refuses with zero effects — filesystem included (fix-round-5:
+    no auth_token.json is minted) — and creates nothing."""
     init_server_process_pid()
     loaded, _repo_root, drive_root = _reviewed_companion_skill(tmp_path)
     fake = _patch_supervisor(monkeypatch)
+    state_dir = extension_loader.skill_state_dir(drive_root, loaded.name)
     try:
         with pytest.raises(ExtensionStaleRecoveryError):
             extension_loader._publish_out_of_process_registration(
                 loaded,
                 catalog={"companions": ["daemon"]},
-                state_dir=drive_root / "state",
+                state_dir=state_dir,
                 settings_reader=lambda: {},
                 granted_keys=[],
                 dependency_site_dirs_enabled=False,
@@ -332,6 +351,9 @@ def test_recovery_publication_requires_a_pre_existing_live_bundle(tmp_path: path
         with extension_loader._lock:
             assert "compskill" not in extension_loader._extensions
         assert "compskill" not in extension_loader.snapshot()["extensions"]
+        assert not (state_dir / host_service.AUTH_TOKEN_FILENAME).exists(), (
+            "stale recovery minted auth_token.json before its refusal"
+        )
     finally:
         extension_loader.unload_extension("compskill")
         init_server_process_pid()
@@ -354,6 +376,14 @@ def test_unload_completing_between_snapshot_and_publication_refuses_recovery(
             loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
         ) is None
         assert len(fake.started) == 1  # the initial publication's spawn
+        # Fix-round-5: the token file the initial publication minted must
+        # survive the stale refusal byte-for-byte (unload keeps it; only a
+        # post-fence publication may touch it).
+        token_path = (
+            extension_loader.skill_state_dir(drive_root, loaded.name)
+            / host_service.AUTH_TOKEN_FILENAME
+        )
+        token_bytes = token_path.read_bytes()
 
         real_state_dir = extension_loader.skill_state_dir
 
@@ -379,6 +409,9 @@ def test_unload_completing_between_snapshot_and_publication_refuses_recovery(
                 for entry in extension_loader._tools.values()
             )
         assert loaded.name not in extension_loader.snapshot()["extensions"]
+        assert token_path.read_bytes() == token_bytes, (
+            "stale recovery touched auth_token.json"
+        )
     finally:
         extension_loader.unload_extension(loaded.name)
         init_server_process_pid()
@@ -387,38 +420,151 @@ def test_unload_completing_between_snapshot_and_publication_refuses_recovery(
 def test_recovery_publication_refuses_on_generation_mismatch_without_effects(
     tmp_path: pathlib.Path, monkeypatch,
 ) -> None:
-    """Ф3.1 fix-round-4 pin (ABI-9б): a recovery publication naming a
-    generation that is NOT the live publication (the bundle was reloaded
-    since the snapshot) is refused with zero effects — the live bundle keeps
-    its generation and no companion is started."""
+    """Ф3.1 fix-round-4 pin (ABI-9б), rebuilt through the REAL recovery entry
+    in fix-round-5: an unload/reload that COMPLETES between recovery's
+    generation snapshot and its publication leaves a live bundle under a NEW
+    generation — the recovery publication naming the old generation is a
+    typed zero-effect refusal: the reloaded bundle keeps its generation, no
+    companion is started, and auth_token.json is byte-untouched."""
     init_server_process_pid()
-    loaded, _repo_root, drive_root = _reviewed_companion_skill(tmp_path)
+    loaded, repo_root, drive_root = _reviewed_companion_skill(tmp_path)
     fake = _patch_supervisor(monkeypatch)
     try:
         assert extension_loader.load_extension(
             loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
         ) is None
-        live_generation = extension_loader.extension_generation_digest(loaded.name)
-        assert live_generation
-        spawns_before = len(fake.started)
+        first_generation = extension_loader.extension_generation_digest(loaded.name)
+        assert first_generation
+        token_path = (
+            extension_loader.skill_state_dir(drive_root, loaded.name)
+            / host_service.AUTH_TOKEN_FILENAME
+        )
+        token_bytes = token_path.read_bytes()
 
-        with pytest.raises(ExtensionStaleRecoveryError):
-            extension_loader._publish_out_of_process_registration(
-                loaded,
-                catalog={"companions": ["daemon"]},
-                drive_root=drive_root,
-                state_dir=drive_root / "state",
-                settings_reader=lambda: {},
-                granted_keys=[],
-                dependency_site_dirs_enabled=False,
-                expected_generation="1" * 32,
-            )
-        assert extension_loader.extension_generation_digest(loaded.name) == live_generation
+        real_state_dir = extension_loader.skill_state_dir
+
+        def _reload_wins_the_race(drive_root_arg, skill_name_arg):
+            # Deterministic interleave: the unload/reload COMPLETES after
+            # recovery snapshotted the generation and before it publishes;
+            # the bundle EXISTS again, under a fresh generation. Restore the
+            # real resolver first — the reload itself resolves state dirs.
+            monkeypatch.setattr(extension_loader, "skill_state_dir", real_state_dir)
+            extension_loader.unload_extension(skill_name_arg)
+            assert extension_loader.load_extension(
+                loaded, lambda: {}, drive_root=drive_root_arg, skills=[loaded],
+            ) is None
+            return real_state_dir(drive_root_arg, skill_name_arg)
+
+        monkeypatch.setattr(extension_loader, "skill_state_dir", _reload_wins_the_race)
+        result = extension_loader.ensure_companions_running(
+            loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
+        )
+
+        assert result["action"] == "stale_recovery_refused"
+        assert result["started"] == []
+        second_generation = extension_loader.extension_generation_digest(loaded.name)
+        assert second_generation and second_generation != first_generation
         with extension_loader._lock:
             assert loaded.name in extension_loader._extensions
-        assert len(fake.started) == spawns_before
+        assert len(fake.started) == 2, (
+            "only the initial load and the in-window reload may spawn"
+        )
+        assert token_path.read_bytes() == token_bytes
     finally:
         extension_loader.unload_extension(loaded.name)
+        init_server_process_pid()
+
+
+def test_stale_recovery_does_not_break_live_publication_authorization(
+    tmp_path: pathlib.Path, monkeypatch,
+) -> None:
+    """Ф3.1 fix-round-5 pin (HIGH): a recovery holding a STALE payload snapshot
+    (an old skill root that still exists with the pre-update content) loses
+    the race to an unload/reload with CHANGED content; its typed refusal must
+    leave auth_token.json byte-untouched. Pre-fix, the recovery minted the
+    token DURING descriptor build — the stale root's content hash mismatched
+    the G2-bound token file, so the mint ROTATED it before the generation
+    fence refused the publication — and the live G2 companion, spawned with
+    the current token in its env while the Host Service rereads the file on
+    every request, was left permanently unauthorized."""
+    init_server_process_pid()
+    loaded_v1, repo_root, drive_root = _reviewed_companion_skill(tmp_path)
+    fake = _patch_supervisor(monkeypatch)
+    try:
+        assert extension_loader.load_extension(
+            loaded_v1, lambda: {}, drive_root=drive_root, skills=[loaded_v1],
+        ) is None
+        token_path = (
+            extension_loader.skill_state_dir(drive_root, loaded_v1.name)
+            / host_service.AUTH_TOKEN_FILENAME
+        )
+        # The update installs v2 under a NEW payload root; the G1 root
+        # (repo_root) survives on disk with the v1 content — the recovery's
+        # stale snapshot keeps pointing there.
+        repo_root_v2 = tmp_path / "skills_v2"
+        shutil.copytree(repo_root, repo_root_v2)
+        (repo_root_v2 / loaded_v1.name / "scripts" / "daemon.py").write_text(
+            "print('v2')\n", encoding="utf-8"
+        )
+        real_state_dir = extension_loader.skill_state_dir
+        g2_token_bytes: dict = {}
+
+        def _reload_v2_wins_the_race(drive_root_arg, skill_name_arg):
+            # Deterministic interleave: the unload + v2 reload COMPLETES after
+            # recovery snapshotted generation/payload and before it publishes;
+            # the G2 token is bound to the NEW root's content hash while the
+            # stale recovery still holds the v1 snapshot at the old root.
+            monkeypatch.setattr(extension_loader, "skill_state_dir", real_state_dir)
+            extension_loader.unload_extension(skill_name_arg)
+            loaded_v2 = find_skill(
+                drive_root, skill_name_arg, repo_path=str(repo_root_v2),
+            )
+            assert loaded_v2 is not None
+            assert loaded_v2.content_hash != loaded_v1.content_hash
+            save_review_state(
+                drive_root, skill_name_arg,
+                SkillReviewState(status="pass", content_hash=loaded_v2.content_hash),
+            )
+            loaded_v2 = find_skill(
+                drive_root, skill_name_arg, repo_path=str(repo_root_v2),
+            )
+            assert extension_loader.load_extension(
+                loaded_v2, lambda: {}, drive_root=drive_root_arg, skills=[loaded_v2],
+            ) is None
+            g2_token_bytes["value"] = token_path.read_bytes()
+            return real_state_dir(drive_root_arg, skill_name_arg)
+
+        monkeypatch.setattr(extension_loader, "skill_state_dir", _reload_v2_wins_the_race)
+        result = extension_loader.ensure_companions_running(
+            loaded_v1.name, drive_root, lambda: {}, repo_path=str(repo_root),
+            selected_skill=loaded_v1,  # the stale v1 snapshot the recovery holds
+        )
+
+        assert result["action"] == "stale_recovery_refused"
+        assert token_path.read_bytes() == g2_token_bytes["value"], (
+            "stale recovery rotated auth_token.json; the live publication's "
+            "companion is now permanently unauthorized"
+        )
+        # The live G2 companion's spawn-env token still matches the file the
+        # Host Service rereads per request...
+        g2_env_token = fake.started[-1].env["HOST_SERVICE_TOKEN"]
+        file_token = json.loads(token_path.read_text(encoding="utf-8"))["token"]
+        assert hmac.compare_digest(file_token, g2_env_token)
+        # ...and end-to-end host authorization for G2 still succeeds.
+        # (find_skill is patched only because HostServiceContext resolves the
+        # default skills repo path, not this test's temporary v2 root.)
+        monkeypatch.setattr(
+            host_service, "find_skill",
+            lambda data_dir, name: find_skill(
+                data_dir, name, repo_path=str(repo_root_v2),
+            ),
+        )
+        ctx = host_service.HostServiceContext(data_dir=drive_root)
+        authed_name, payload = ctx.authenticate_token_payload(g2_env_token)
+        assert authed_name == loaded_v1.name
+        assert payload["token"] == g2_env_token
+    finally:
+        extension_loader.unload_extension(loaded_v1.name)
         init_server_process_pid()
 
 
