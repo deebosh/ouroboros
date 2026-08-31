@@ -1,9 +1,11 @@
-"""Reviewer-slot SSOT (phase 6.1): structured parse, legacy migration, projection.
+"""Reviewer-slot SSOT (phase 6.1 / ABI 7.0): structured parse, default panel, projection.
 
-The one structured setting supersedes the comma-lists; the comma keys survive
-only as a runtime projection for the API-pinned surfaces (D15). Malformed
-configuration REFUSES typed — an unknown token must never silently pick a
-transport, in either direction.
+The one structured setting is the ONE configuration surface (ABI-10, owner
+5.4=A: the legacy comma-list migration read is REMOVED); without it the loader
+serves the shipped default panel over the derived env plane. The comma keys
+survive only as a runtime projection for the API-pinned surfaces (D15).
+Malformed configuration REFUSES typed — an unknown token must never silently
+pick a transport, in either direction.
 """
 import json
 
@@ -333,26 +335,42 @@ def test_scope_cap_is_the_parallel_review_pool_width():
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_comma_lists_read_as_api_slots(monkeypatch):
+def test_absent_structured_key_serves_the_default_panel(monkeypatch):
+    """ABI 7.0 (ABI-10): no structured key -> the shipped default panel over
+    the derived env plane (which a bench launcher's env override still feeds);
+    historical positional ids keep receipts lining up."""
     monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
     _clear_legacy(monkeypatch)
     monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m/one,m/two")
     monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_MODELS", "m/scope")
-    monkeypatch.setenv("OUROBOROS_EFFORT_REVIEW", "medium")
-    monkeypatch.setenv("OUROBOROS_EFFORT_SCOPE_REVIEW", "xhigh")
     config = load_reviewer_slot_config()
-    assert config.source == "legacy"
-    # Historical positional ids, so pre-migration receipts keep lining up.
+    assert config.source == "default"
+    # Row effort stays '' and resolves to the surface default at use time.
     assert [(r.slot_id, r.kind, r.target_id, r.effort) for r in config.triad] == [
-        ("slot_1", "api_chat", "m/one", "medium"),
-        ("slot_2", "api_chat", "m/two", "medium"),
+        ("slot_1", "api_chat", "m/one", ""),
+        ("slot_2", "api_chat", "m/two", ""),
     ]
-    assert [(r.slot_id, r.effort) for r in config.scope] == [("scope_slot_1", "xhigh")]
+    assert [(r.slot_id, r.target_id) for r in config.scope] == [
+        ("scope_slot_1", "m/scope")]
     assert config.advisory.enabled is True and config.advisory.kind == "api_chat"
     assert commit_triad_delivery()["legacy_skill_fingerprint"] is True
 
 
-def test_legacy_phase5_route_envs_are_honored(monkeypatch):
+def test_default_panel_efforts_resolve_to_the_surface_defaults(monkeypatch):
+    from ouroboros.reviewer_slot_config import row_effort
+
+    monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
+    _clear_legacy(monkeypatch)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m/one")
+    monkeypatch.setenv("OUROBOROS_EFFORT_REVIEW", "medium")
+    row = load_reviewer_slot_config().triad[0]
+    assert row_effort(row, "review") == "medium"
+
+
+def test_retired_phase5_route_envs_are_ignored(monkeypatch):
+    """ABI 7.0 (ABI-10): the phase-5 per-row/advisory route envs are RETIRED —
+    they no longer route any default-panel row into a session. Delegated
+    reviewer rows exist only through the structured setting."""
     monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
     _clear_legacy(monkeypatch)
     monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m/one,m/two")
@@ -361,23 +379,16 @@ def test_legacy_phase5_route_envs_are_honored(monkeypatch):
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "claude=claude-fable-5:high")
     monkeypatch.setenv("OUROBOROS_SUBAGENT_PROFILE", "legacy-profile")
     config = load_reviewer_slot_config()
-    session_row = config.triad[1]
-    assert session_row.kind == "agent_session"
-    # A legacy session row inherits the shared phase-5 route and account pin.
-    assert session_row.session_target == "claude=claude-fable-5"
-    assert session_row.profile_id == "legacy-profile"
-    assert config.advisory.kind == "agent_session"
-    assert config.advisory.target_id == "claude=claude-fable-5"
-    assert config.advisory.effort == "high"
-    assert config.advisory.profile_id == "legacy-profile"
+    assert all(row.kind == "api_chat" for row in config.triad)
+    assert all(row.session_target == "" and row.profile_id == "" for row in config.triad)
+    assert config.advisory.kind == "api_chat"
+    assert config.advisory.target_id == ""
     delivery = commit_triad_delivery()
-    assert delivery["legacy_skill_fingerprint"] is False
-    assert delivery["session_targets"][1] == "claude=claude-fable-5"
-    assert delivery["session_profiles"][1] == "legacy-profile"
-    assert delivery["efforts"][1] == "high"
+    assert delivery["legacy_skill_fingerprint"] is True
+    assert delivery["session_targets"] == ["", ""]
 
 
-def test_legacy_advisory_session_materializes_for_settings_round_trip(monkeypatch):
+def test_default_panel_round_trips_through_the_settings_endpoint(monkeypatch):
     import asyncio
 
     from starlette.requests import Request
@@ -387,96 +398,15 @@ def test_legacy_advisory_session_materializes_for_settings_round_trip(monkeypatc
     _clear_legacy(monkeypatch)
     monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m/one")
     monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_MODELS", "m/scope")
-    monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", "agent_session")
-    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "claude=claude-fable-5:high")
-    monkeypatch.setenv("OUROBOROS_SUBAGENT_PROFILE", "legacy-profile")
 
     request = Request({
         "type": "http", "method": "GET", "path": "/api/reviewer-slots",
         "headers": [], "query_string": b"",
     })
     body = json.loads(asyncio.run(api_reviewer_slots(request)).body)
-    assert body["source"] == "legacy"
-    assert body["advisory"]["route"] == {
-        "kind": "agent_session",
-        "target_id": "claude=claude-fable-5",
-        "profile_id": "legacy-profile",
-    }
-    assert body["advisory"]["effort"] == "high"
-
+    assert body["source"] == "default"
     migrated = json.dumps({key: body[key] for key in ("triad", "scope", "advisory")})
     assert reviewer_slot_save_check(migrated) == ""
-
-
-def test_legacy_compound_advisory_effort_round_trips_without_a_second_authority(
-    monkeypatch,
-):
-    monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
-    _clear_legacy(monkeypatch)
-    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m/one")
-    monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_MODELS", "m/scope")
-    monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", "agent_session")
-    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "cursor=gpt-5.6-sol-high")
-
-    config = load_reviewer_slot_config()
-    assert (config.advisory.target_id, config.advisory.effort) == (
-        "cursor=gpt-5.6-sol-high", "high",
-    )
-    migrated = json.dumps({
-        "triad": [
-            {"slot_id": row.slot_id,
-             "route": {"kind": row.kind, "target_id": row.target_id},
-             "effort": row.effort}
-            for row in config.triad
-        ],
-        "scope": [
-            {"slot_id": row.slot_id,
-             "route": {"kind": row.kind, "target_id": row.target_id},
-             "effort": row.effort}
-            for row in config.scope
-        ],
-        "advisory": {
-            "enabled": True,
-            "route": {"kind": config.advisory.kind,
-                      "target_id": config.advisory.target_id},
-            "effort": config.advisory.effort,
-        },
-    })
-    assert reviewer_slot_save_check(migrated) == ""
-
-
-def test_legacy_advisory_without_route_effort_preserves_engine_default(monkeypatch):
-    monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
-    _clear_legacy(monkeypatch)
-    monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", "agent_session")
-    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "claude=claude-fable-5")
-
-    advisory = load_reviewer_slot_config().advisory
-    assert (advisory.target_id, advisory.effort) == ("claude=claude-fable-5", "")
-
-
-@pytest.mark.parametrize("review_route", ["off", "=malformed"])
-def test_legacy_explicitly_unavailable_session_route_never_drifts(monkeypatch, review_route):
-    monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
-    _clear_legacy(monkeypatch)
-    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m/one")
-    monkeypatch.setenv("OUROBOROS_REVIEW_ROUTES", "agent_session")
-    monkeypatch.setenv("OUROBOROS_REVIEW_SESSION_ROUTE", review_route)
-    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "codex=gpt-5.6-sol")
-
-    delivery = commit_triad_delivery()
-    assert delivery["routes"][0].value == "agent_session"
-    assert delivery["session_targets"] == [""]
-    assert delivery["legacy_skill_fingerprint"] is False
-
-
-def test_legacy_bad_route_token_still_refuses(monkeypatch):
-    monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
-    _clear_legacy(monkeypatch)
-    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m/one")
-    monkeypatch.setenv("OUROBOROS_REVIEW_ROUTES", "carrier-pigeon")
-    with pytest.raises(ValueError, match="unknown review route"):
-        commit_triad_rows()
 
 
 # ---------------------------------------------------------------------------
@@ -502,11 +432,11 @@ def test_projection_all_delegated_triad_floors_to_defaults(monkeypatch):
     project_reviewer_slots_into_env()
     import os
 
-    from ouroboros.config import SETTINGS_DEFAULTS
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
 
     # The API-only task-acceptance surface falls back to shipped defaults,
     # never to zero reviewers or a stale comma key.
-    assert os.environ["OUROBOROS_REVIEW_MODELS"] == str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
+    assert os.environ["OUROBOROS_REVIEW_MODELS"] == ",".join(OPENROUTER_REVIEW_DEFAULTS["triad"])
 
 
 def test_projection_malformed_leaves_legacy_keys_and_floors(monkeypatch):
@@ -764,43 +694,6 @@ def test_effort_field_is_the_single_source_over_an_embedded_target_effort(monkey
         ReviewAssignment(request=request, slot=bare))._session_route().effort == ""
 
 
-def test_legacy_session_row_migrates_to_the_shared_harness_not_the_model(monkeypatch):
-    """Claim 3: a legacy phase-5 session row delivered via the SHARED session
-    route; its comma-list model was never a harness. The migration must map its
-    identity to that harness, not leave a model in the harness-shaped field."""
-    monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
-    _clear_legacy(monkeypatch)
-    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "openai/gpt-5.6-luna,anthropic/claude-sonnet-5")
-    monkeypatch.setenv("OUROBOROS_REVIEW_ROUTES", "api_chat,agent_session")
-    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "codex=gpt-5.6-sol:xhigh")
-    config = load_reviewer_slot_config()
-    api_row, session_row = config.triad
-    # The api row keeps its model as identity.
-    assert (api_row.kind, api_row.target_id) == ("api_chat", "openai/gpt-5.6-luna")
-    # The session row's identity is the shared HARNESS, effort in the field.
-    assert session_row.kind == "agent_session"
-    assert session_row.target_id == "codex=gpt-5.6-sol"
-    assert session_row.session_target == "codex=gpt-5.6-sol"
-    assert session_row.effort == "xhigh"
-    # The model name never leaks into the harness-shaped field.
-    assert "gpt-5.6-luna" not in session_row.target_id
-    assert "claude-sonnet-5" not in session_row.target_id
-
-
-def test_legacy_session_row_with_no_shared_route_is_empty_not_a_model(monkeypatch):
-    """A legacy session row with no shared route configured was undeliverable;
-    the migration keeps that honest (empty target) rather than a fake harness."""
-    monkeypatch.delenv(REVIEWER_SLOTS_ENV, raising=False)
-    _clear_legacy(monkeypatch)
-    monkeypatch.delenv("OUROBOROS_SUBAGENT_HARNESS", raising=False)
-    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "openai/gpt-5.6-luna")
-    monkeypatch.setenv("OUROBOROS_REVIEW_ROUTES", "agent_session")
-    session_row = load_reviewer_slot_config().triad[0]
-    assert session_row.kind == "agent_session"
-    assert session_row.target_id == ""
-    assert session_row.session_target == ""
-
-
 def test_all_delegated_commit_surface_discloses_the_api_fallback(monkeypatch):
     """When every triad row is delegated, API-only task acceptance falls back
     to default models and spends budget — disclosed, never silent, while all
@@ -809,13 +702,15 @@ def test_all_delegated_commit_surface_discloses_the_api_fallback(monkeypatch):
     The disclosure is NEUTRAL routing information, not advice: an
     all-subscription triad IS the ratified default (D-3), so the sentence must
     not tell the owner to keep an API row and undo it."""
-    from ouroboros.config import SETTINGS_DEFAULTS
     from ouroboros.reviewer_slot_config import (
         api_fallback_disclosure,
         parse_reviewer_slots,
         project_reviewer_slots_into_env,
         reviewer_slot_api_fallback_warning,
     )
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
+
+    _default_triad = list(OPENROUTER_REVIEW_DEFAULTS["triad"])
 
     payload = {
         "triad": [{"slot_id": "t1", "route": {"kind": "agent_session", "target_id": "codex"}}],
@@ -823,7 +718,7 @@ def test_all_delegated_commit_surface_discloses_the_api_fallback(monkeypatch):
         "advisory": {"enabled": True, "route": {"kind": "agent_session", "target_id": "codex"}},
     }
     disclosure = api_fallback_disclosure(parse_reviewer_slots(json.dumps(payload)))
-    assert disclosure["triad"] == str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"]).split(",")
+    assert disclosure["triad"] == _default_triad
     assert set(disclosure) == {"triad"}
 
     _set_structured(monkeypatch, payload)
@@ -833,7 +728,7 @@ def test_all_delegated_commit_surface_discloses_the_api_fallback(monkeypatch):
     # and which surfaces the API still serves with which models.
     assert "agent subscription" in warning
     assert "Task acceptance remains API-only" in warning
-    assert str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"]).split(",")[0] in warning
+    assert _default_triad[0] in warning
     # The retired advice: telling the owner to keep an API reviewer row
     # contradicts the ratified all-subscription default.
     assert "Keep at least one API" not in warning
@@ -842,7 +737,7 @@ def test_all_delegated_commit_surface_discloses_the_api_fallback(monkeypatch):
     # writes the durable record — disclose-and-continue, never a block.
     import os as _os
     project_reviewer_slots_into_env()
-    assert _os.environ["OUROBOROS_REVIEW_MODELS"] == str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
+    assert _os.environ["OUROBOROS_REVIEW_MODELS"] == ",".join(_default_triad)
     import pathlib
 
     from ouroboros.config import DATA_DIR

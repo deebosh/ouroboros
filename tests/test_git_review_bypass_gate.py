@@ -382,8 +382,14 @@ class TestRouteSlotAwareBypassGate:
 
         ctx = _make_staged_repo(tmp_path)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
-        monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", "agent_session")
+        # ABI-10: the delegated advisory is configured through the structured
+        # slots (the legacy route env is retired and ignored).
+        monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+            "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/x"}}],
+            "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai/y"}}],
+            "advisory": {"enabled": True,
+                         "route": {"kind": "agent_session", "target_id": "claude"}},
+        }))
         monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "claude")
         progress: list = []
         ctx.emit_progress_fn = progress.append
@@ -405,41 +411,6 @@ class TestRouteSlotAwareBypassGate:
         assert outcome.get("block_reason") != "tests_preflight_blocked"
         assert not any("Advisory bypassed" in str(line) for line in progress)
 
-    def test_unroutable_session_slot_is_bypassed_into_preflight(self, tmp_path, monkeypatch):
-        """Triad a4 follow-up to #123: an ENABLED agent_session advisory whose
-        delegated route resolves NOWHERE (no row target, no shared
-        review/subagent route) cannot run — ``run_delegated_review_session``
-        refuses that exact state with ``ReviewRouteUnavailable``. The gate must
-        treat it as a bypass and run the compensating preflight; otherwise a
-        fresh audited bypass record (e.g. an explicit skip) would reach
-        triad+scope with neither advisory nor tests. The key is present to
-        prove the decision is route-resolution-driven, not key-driven."""
-        from ouroboros.tools import git as git_mod
-
-        ctx = _make_staged_repo(tmp_path)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-sentinel")
-        monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
-        monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", "agent_session")
-        monkeypatch.delenv("OUROBOROS_REVIEW_SESSION_ROUTE", raising=False)
-        monkeypatch.delenv("OUROBOROS_SUBAGENT_HARNESS", raising=False)
-        called = {"preflight": 0, "parallel": 0}
-        self._stub_cycle(monkeypatch, git_mod, called,
-                         preflight_result="FAILED: 1 failed")
-
-        outcome = git_mod._run_reviewed_stage_cycle(
-            ctx,
-            commit_message="unroutable session slot",
-            commit_start=0.0,
-            skip_advisory_pre_review=False,
-        )
-
-        assert called["preflight"] == 1, (
-            "an unroutable delegated advisory is a bypass — the compensating "
-            "preflight must run"
-        )
-        assert called["parallel"] == 0
-        assert outcome["block_reason"] == "tests_preflight_blocked"
-
     def test_malformed_config_fails_closed_into_preflight(self, tmp_path, monkeypatch):
         """A malformed advisory route token must not escape as an exception:
         the gate fails CLOSED into the compensating preflight."""
@@ -447,8 +418,8 @@ class TestRouteSlotAwareBypassGate:
 
         ctx = _make_staged_repo(tmp_path)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-sentinel")
-        monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
-        monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", "cursor")  # unknown token
+        # ABI-10: malformed configuration arrives via the structured key.
+        monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", "{not-valid-json")
         called = {"preflight": 0, "parallel": 0}
         self._stub_cycle(monkeypatch, git_mod, called,
                          preflight_result="FAILED: 1 failed")

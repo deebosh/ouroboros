@@ -134,9 +134,11 @@ def _effective_helper_models(measured_model: str, light_model: str, *, disable_a
     (env override else the shipped config defaults) so the declared set matches
     reality. Returns ordered (model_id, role) pairs, deduped by model id.
     """
-    review_default = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
+
+    review_default = ",".join(OPENROUTER_REVIEW_DEFAULTS["triad"])
     websearch_default = str(SETTINGS_DEFAULTS["OUROBOROS_WEBSEARCH_MODEL"])
-    scope_default = str(SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODELS"])
+    scope_default = ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"])
     review = os.environ.get("OUROBOROS_REVIEW_MODELS", review_default) or review_default
     scope = (os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS")
              or os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL") or scope_default)

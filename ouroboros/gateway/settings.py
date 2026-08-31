@@ -544,8 +544,8 @@ def _candidate_scope_models(settings: Dict[str, Any]) -> list:
     api_chat scope rows are the routes the >=1M gate applies to. A retrieving
     (session) row is NOT a provider model id, so it is not a candidate here —
     its own >=200K floor and its own ack route are handled by
-    ``_candidate_scope_session_targets``. Otherwise the legacy comma keys, then
-    the live config."""
+    ``_candidate_scope_session_targets``. Otherwise the live derived config
+    (ABI 7.0/ABI-10: the comma settings keys are retired)."""
     from ouroboros.config import get_scope_review_models
 
     raw_structured = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
@@ -557,13 +557,7 @@ def _candidate_scope_models(settings: Dict[str, Any]) -> list:
                     if not r.is_session]
         except ValueError:
             return []  # refused at the API boundary already; never probe garbage
-    return [
-        m for m in str(
-            settings.get("OUROBOROS_SCOPE_REVIEW_MODELS")
-            or settings.get("OUROBOROS_SCOPE_REVIEW_MODEL")
-            or ""
-        ).replace(",", " ").split() if m
-    ] or list(get_scope_review_models() or [])
+    return list(get_scope_review_models() or [])
 
 
 def _candidate_scope_session_targets(settings: Dict[str, Any]) -> list:
@@ -599,7 +593,11 @@ def _candidate_triad_models(settings: Dict[str, Any]) -> list:
                     if not r.is_session]
         except ValueError:
             return []
-    return str(settings.get("OUROBOROS_REVIEW_MODELS") or "").replace(",", " ").split()
+    # ABI 7.0 (ABI-10): no comma settings key to read — without a structured
+    # value the candidate set is the live derived triad.
+    from ouroboros.config import get_review_models
+
+    return list(get_review_models() or [])
 
 
 def _review_capability_notices(settings: Dict[str, Any]) -> list:
@@ -817,8 +815,8 @@ async def api_acknowledge_capability(request: Request) -> JSONResponse:
 async def api_reviewer_slots(request: Request) -> JSONResponse:
     """GET /api/reviewer-slots — the effective slot rows plus «выполняется как».
 
-    One read for Agents → Review lanes: the parsed SSOT rows (structured or the
-    legacy migration view, labeled by ``source``), the real row limits, and
+    One read for Agents → Review lanes: the parsed SSOT rows (structured or
+    the shipped default panel, labeled by ``source``), the real row limits, and
     the D22 last-execution projection keyed by slot_id — what each saved row
     REALLY ran as last time (the UI face of capability_delta). A malformed
     structured value comes back as a typed ``config_error`` instead of a 500:

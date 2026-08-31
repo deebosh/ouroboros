@@ -15,7 +15,6 @@ import pytest
 from ouroboros.review_execution import (
     REVIEW_SESSION_ROUTE_ENV,
     SCOPE_REVIEW_ROUTES_ENV,
-    TRIAD_REVIEW_ROUTES_ENV,
 )
 from ouroboros.review_substrate import (
     scope_reviewer_slots,
@@ -689,12 +688,17 @@ def test_skill_review_legacy_session_dispatch_keeps_shared_profile_pin(
     from ouroboros.reviewer_slot_config import commit_triad_delivery
     from ouroboros.skill_review_passes import run_skill_review_passes
 
-    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
+    # ABI-10: the session row + its credential pin are configured through the
+    # structured slots (the phase-5 route envs are retired and ignored).
     monkeypatch.delenv(REVIEW_SESSION_ROUTE_ENV, raising=False)
-    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "legacy/display-model")
-    monkeypatch.setenv(TRIAD_REVIEW_ROUTES_ENV, "agent_session")
-    monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "fake-review=fake-small:high")
-    monkeypatch.setenv("OUROBOROS_SUBAGENT_PROFILE", "legacy-profile")
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+        "triad": [{"slot_id": "t1",
+                   "route": {"kind": "agent_session",
+                             "target_id": "fake-review=fake-small",
+                             "profile_id": "legacy-profile"},
+                   "effort": "high"}],
+        "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "m/scope"}}],
+    }))
     delivery = commit_triad_delivery()
     assert delivery["session_profiles"] == ["legacy-profile"]
     fake_route.detail = _terminal_detail(json.dumps({"findings": [

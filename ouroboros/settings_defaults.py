@@ -180,9 +180,11 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # and future explicit owner probes).
     "OUROBOROS_GENERATIVE_PROBE": "1",
     "OUROBOROS_GENERATIVE_PROBE_CHARS": "5000000",
-    # Pre-commit review: comma-separated provider-tagged model list
-    "OUROBOROS_REVIEW_MODELS": ",".join(OPENROUTER_REVIEW_DEFAULTS["triad"]),
-    "OUROBOROS_REVIEWER_SLOTS": "",  # structured slot SSOT (reviewer_slot_config.py); "" = legacy comma keys
+    # ABI 7.0 (ABI-10, owner 5.4=A): the structured slot value is the ONE
+    # reviewer configuration surface; "" = the shipped default panel. The
+    # legacy comma-list settings keys are RETIRED (see RETIRED_SETTING_KEYS);
+    # their env spellings survive only as the derived runtime projection.
+    "OUROBOROS_REVIEWER_SLOTS": "",
     "OUROBOROS_SUBAGENTS": "",  # configured task-actor SSOT; "" = bounded legacy/undecided read
     # INSTALL-TIME facts: the agent-preset generation this install received, and WHEN onboarding last completed
     # (recorded on EVERY completion). Endpoint-authored and disk-only — see ENDPOINT_AUTHORED_SETTINGS.
@@ -225,9 +227,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "MCP_ENABLED": False,
     "MCP_SERVERS": [],
     "MCP_TOOL_TIMEOUT_SEC": 60,
-    # Scope review: one or more reviewer slots; enforcement follows OUROBOROS_REVIEW_ENFORCEMENT.
-    "OUROBOROS_SCOPE_REVIEW_MODELS": ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"]),
-    "OUROBOROS_SCOPE_REVIEW_MODEL": OPENROUTER_REVIEW_DEFAULTS["scope"][0],
     "OUROBOROS_TASK_REVIEW_MODE": "auto",
     # LLM safety-supervisor coverage (owner-only, like runtime/context mode):
     #   full  (shipped default; fail-closed fallbacks land here; a FRESH wizard authors
@@ -325,6 +324,19 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # owner-only OUROBOROS_CONTEXT_MODE); the whole surface — key, owner endpoint,
     # guards, SAFETY clause — is retired in the 7.0 ABI window.
     "OUROBOROS_SCOPE_REVIEW_FLOOR",
+    # ABI 7.0 (ABI-10, owner 5.4=A): the reviewer comma-lists and the phase-5
+    # per-row/advisory route envs are retired as SETTINGS keys — the structured
+    # OUROBOROS_REVIEWER_SLOTS is the one configuration surface. An install
+    # that carried only comma keys gets the shipped default panel (the RC
+    # auditor names this migration explicitly). The ENV spellings of the two
+    # comma model lists live on as the derived runtime projection for the
+    # API-pinned surfaces, never as a settings surface.
+    "OUROBOROS_REVIEW_MODELS",
+    "OUROBOROS_SCOPE_REVIEW_MODELS",
+    "OUROBOROS_SCOPE_REVIEW_MODEL",
+    "OUROBOROS_REVIEW_ROUTES",
+    "OUROBOROS_SCOPE_REVIEW_ROUTES",
+    "OUROBOROS_ADVISORY_REVIEW_ROUTE",
 )
 
 

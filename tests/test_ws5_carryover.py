@@ -93,12 +93,10 @@ def test_read_exemption_is_option_aware_not_head_only():
     assert pure("/usr/bin/grep floor data/settings.json") is True
 
 
-def test_stored_singular_scope_pin_beats_the_plural_default(monkeypatch, tmp_path):
-    """The owner's stored singular pin must reach get_scope_review_models().
-
-    Before v6.80.0 SETTINGS_DEFAULTS supplied the PLURAL key, which wins over the
-    singular in get_scope_review_models(), so a stored single-model pin was silently
-    ignored. The promotion happens in migrate_legacy_slot_keys — BEFORE defaults."""
+def test_stored_singular_scope_pin_is_ghost_purged(monkeypatch, tmp_path):
+    """ABI 7.0 (ABI-10): both comma spellings are RETIRED settings keys — a
+    stored pin (singular or plural) is ghost-purged on load, never promoted.
+    (The pre-7.0 singular→plural promotion left with the migration read.)"""
     import json
 
     import ouroboros.config as cfg
@@ -110,16 +108,12 @@ def test_stored_singular_scope_pin_beats_the_plural_default(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path)
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.delenv("OUROBOROS_SCOPE_REVIEW_MODEL", raising=False)
+    monkeypatch.delenv("OUROBOROS_SCOPE_REVIEW_MODELS", raising=False)
 
     loaded = cfg.load_settings()
-    assert loaded["OUROBOROS_SCOPE_REVIEW_MODELS"] == "anthropic/claude-opus-4.8"
-
-    # An explicit plural is never overwritten by the singular.
-    settings_path.write_text(json.dumps({
-        "OUROBOROS_SCOPE_REVIEW_MODEL": "anthropic/claude-opus-4.8",
-        "OUROBOROS_SCOPE_REVIEW_MODELS": "openai/gpt-5.5",
-    }), encoding="utf-8")
-    assert cfg.load_settings()["OUROBOROS_SCOPE_REVIEW_MODELS"] == "openai/gpt-5.5"
+    assert "OUROBOROS_SCOPE_REVIEW_MODEL" not in loaded
+    assert "OUROBOROS_SCOPE_REVIEW_MODELS" not in loaded
 
 
 # --- CW3: an ephemeral decision turn is barred from durable mutators ---
@@ -401,8 +395,13 @@ def test_capability_evidence_is_route_aware_not_model_aware(monkeypatch, tmp_pat
     # ...and the save-time owner-facing notice describes the INCOMING candidate route,
     # taken from the submitted settings rather than from process env.
     monkeypatch.setattr(cfg, "get_scope_review_models", lambda: ["anthropic/claude-fable-5"])
+    # ABI-10: the incoming candidate route arrives via the structured key.
+    import json as _json
     notices = smod._review_capability_notices({
-        "OUROBOROS_SCOPE_REVIEW_MODELS": model,
+        "OUROBOROS_REVIEWER_SLOTS": _json.dumps({
+            "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": model}}],
+            "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": model}}],
+        }),
         "OPENAI_BASE_URL": "https://route-b.example/v1",
     })
     assert len(notices) == 1

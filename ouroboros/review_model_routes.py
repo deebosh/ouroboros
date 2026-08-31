@@ -1,9 +1,14 @@
-"""Ouroboros — the reviewer model lists a review lane actually runs.
+"""Ouroboros — the reviewer model lists the API-pinned review surfaces run.
 
-Triad and scope review each resolve a configured comma list into the models the
-lane will call, honouring a local-only Main route and rewriting the list when the
-install has exactly one direct provider credentialed. Also the reviewer-quorum
-rule shared by every review family.
+ABI 7.0 (ABI-10, owner 5.4=A): the comma-list SETTINGS keys are retired — the
+structured ``OUROBOROS_REVIEWER_SLOTS`` is the one configuration surface. The
+comma ENV keys survive only as the derived runtime projection
+(``reviewer_slot_config.project_reviewer_slots_into_env``) plus an operational
+env-override plane (bench launchers): these getters resolve that env plane —
+honouring a local-only Main route and rewriting the list when the install has
+exactly one direct provider credentialed — and fall back to the shipped
+``OPENROUTER_REVIEW_DEFAULTS``. Also the reviewer-quorum rule shared by every
+review family.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from ouroboros.provider_models import (
     local_only_review_route_env,
     migrate_model_value,
 )
-from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS, SETTINGS_DEFAULTS
 
 _DIRECT_PROVIDER_REVIEW_RUNS = 3
 
@@ -73,8 +78,8 @@ def adaptive_quorum(n_slots: int) -> int:
 
 
 def get_review_models() -> list[str]:
-    """Return the configured pre-commit review model list."""
-    default_str = SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"]
+    """Return the effective triad model list from the derived env plane."""
+    default_str = ",".join(OPENROUTER_REVIEW_DEFAULTS["triad"])
     models_str = os.environ.get("OUROBOROS_REVIEW_MODELS", default_str) or default_str
     models = _parse_model_list(models_str)
     models = [_main_model()] * max(1, len(models)) if local_only_review_route_env() else models
@@ -105,13 +110,13 @@ def get_review_enforcement() -> str:
 
 
 def get_scope_review_models() -> list[str]:
-    """Return configured scope reviewer slots, preserving duplicate model IDs."""
-    default_str = str(SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODELS"])
+    """Return effective scope reviewer models, preserving duplicate model IDs."""
+    default_str = ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"])
     raw = os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS", "") or ""
     if not raw.strip():
         raw = os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL", default_str) or default_str
     models = _parse_model_list(raw)
-    singular = str(os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL", SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODEL"]) or "").strip()
+    singular = str(os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL", OPENROUTER_REVIEW_DEFAULTS["scope"][0]) or "").strip()
     if not models and singular:
         models = [singular]
     if not models:
@@ -124,7 +129,7 @@ def get_scope_review_models() -> list[str]:
     provider_prefix = f"{provider}::"
     if migrated and all(model.startswith(provider_prefix) for model in migrated):
         return migrated
-    migrated_singular = migrate_model_value(provider, singular or SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODEL"])
+    migrated_singular = migrate_model_value(provider, singular or OPENROUTER_REVIEW_DEFAULTS["scope"][0])
     if migrated_singular.startswith(provider_prefix):
         return [migrated_singular]
     fallback = direct_provider_review_models_fallback(provider)

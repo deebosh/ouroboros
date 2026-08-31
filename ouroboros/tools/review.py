@@ -962,8 +962,9 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         current_files_section = f"(touched file pack unavailable: {e})"
 
     # Per-row identity/delivery/strength from the ONE reviewer-slot SSOT (6.1):
-    # structured rows when configured, the migrated comma-lists otherwise. A
-    # malformed configuration is an infra failure, never a silent api spend.
+    # structured rows when configured, the shipped default panel otherwise
+    # (ABI 7.0/ABI-10: the comma-list migration read is gone). A malformed
+    # configuration is an infra failure, never a silent api spend.
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.reviewer_slot_config import commit_triad_delivery
 

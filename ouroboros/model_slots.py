@@ -90,15 +90,12 @@ def migrate_legacy_slot_keys(settings: dict) -> dict:
 
     Preserves a stored value (never orphans an owner customization), then drops the legacy
     key. Shared SSOT for every settings entry point (load_settings AND the Colab builder).
-    Order matters: the singular scope-review pin is promoted HERE, before ``SETTINGS_DEFAULTS``
-    supplies the plural that WINS in get_scope_review_models."""
+    (ABI 7.0/ABI-10: the singular scope-review pin promotion is gone — both
+    comma spellings are retired settings keys, purged before this runs.)"""
     for _old, _new in _LEGACY_SLOT_RENAMES:
         if _new not in settings and _old in settings:
             settings[_new] = settings[_old]
         settings.pop(_old, None)
-    _pin = str(settings.get("OUROBOROS_SCOPE_REVIEW_MODEL") or "").strip()
-    if _pin and not str(settings.get("OUROBOROS_SCOPE_REVIEW_MODELS") or "").strip():
-        settings["OUROBOROS_SCOPE_REVIEW_MODELS"] = _pin
     return settings
 
 

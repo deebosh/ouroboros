@@ -190,7 +190,6 @@ BAND_PATHS = {
     "tests/test_review_agent_session_route.py": "D06 F2.3a re-entry by extraction: the session-route giant (3399) split into three sibling suites + shared fixtures; this remainder keeps the typed-verdict/route themes at 1218 with headroom",
     "tests/test_review_fidelity.py": None,
     "tests/test_review_verification_v6544.py": None,
-    "tests/test_reviewer_slot_config.py": "Existing suite grew by successor pins for the shared actor-row vocabulary (subagent_id round-trip, api_chat spelling); splitting the module would separate the contract from its historical pins.",
     "tests/test_safety_policy.py": None,
     "tests/test_skill_review_runner.py": "Skill lifecycle/review terminal-state regression coverage stays one focused suite below the 1500-line band cap.",
     "tests/test_swe_pro_e1v2.py": None,
@@ -222,6 +221,6 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "tests/test_devtools_benchmarks.py": 327888,
+    "tests/test_devtools_benchmarks.py": 327883,
     "web/modules/chat.js": 224244,
 }

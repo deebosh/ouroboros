@@ -99,11 +99,15 @@ def test_skill_advisory_keyless_delegated_route_is_not_skipped(tmp_path, monkeyp
 
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
-    monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", "agent_session")
-    # Availability of the delegated route means "a session route RESOLVES":
-    # give the shared route a real value so the key-independence under test
-    # is not conflated with the unroutable-slot bypass corner.
+    # ABI-10: the delegated advisory is configured through the structured
+    # slots (the legacy route env is retired and ignored).
+    import json as _json
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", _json.dumps({
+        "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/x"}}],
+        "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai/y"}}],
+        "advisory": {"enabled": True,
+                     "route": {"kind": "agent_session", "target_id": "claude"}},
+    }))
     monkeypatch.setenv("OUROBOROS_SUBAGENT_HARNESS", "claude")
 
     called = {"n": 0}
@@ -155,9 +159,9 @@ def test_skill_advisory_keyless_api_route_skips_and_malformed_route_skips(tmp_pa
     assert warning["status"] == "unavailable"
     assert warning["error"] == "advisory_model_credentials_missing"
 
-    # Malformed route token: unavailable → skip (fail-open), no exception.
+    # Malformed structured value: unavailable → skip (fail-open), no exception.
     malformed_value = "cursor-secret-payload"
-    monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", malformed_value)
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", "{" + malformed_value)
     assert skill_review._run_skill_advisory_pre_review(
         ctx, skill_name="weather", file_pack="pack"
     ) == {}
@@ -178,7 +182,16 @@ def test_skill_advisory_unroutable_session_warns_and_fails_open(tmp_path, monkey
     monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
     monkeypatch.delenv("OUROBOROS_REVIEW_SESSION_ROUTE", raising=False)
     monkeypatch.delenv("OUROBOROS_SUBAGENT_HARNESS", raising=False)
-    monkeypatch.setenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", "agent_session")
+    # ABI-10: the parser refuses an enabled session advisory without a concrete
+    # target, so the unroutable state is synthesized to keep the defensive
+    # fail-open branch covered.
+    from ouroboros import reviewer_slot_config as slot_cfg
+    from ouroboros.tools import preflight_review_run as pr
+
+    _unroutable = slot_cfg.AdvisorySlotConfig(
+        enabled=True, kind="agent_session", target_id="", effort="")
+    monkeypatch.setattr(pr, "advisory_slot_config", lambda: _unroutable, raising=False)
+    monkeypatch.setattr(slot_cfg, "advisory_slot_config", lambda: _unroutable)
     monkeypatch.setattr(
         advisory,
         "_run_claude_advisory",

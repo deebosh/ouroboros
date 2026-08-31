@@ -1767,12 +1767,12 @@ def test_terminal_bench_metadata_declares_all_assisting_models(monkeypatch):
     meta = module.leaderboard_metadata(
         agent_name="Ouroboros", org_name="Ouroboros",
         model="openai/gpt-5.5", light_model="google/gemini-3.5-flash")
-    from ouroboros.config import SETTINGS_DEFAULTS
-
     # Every shipped default is read from the config SSOT and must be visible.
-    for helper in SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"].split(","):
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
+
+    for helper in OPENROUTER_REVIEW_DEFAULTS["triad"]:
         assert helper in meta
-    assert SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODELS"] in meta
+    assert ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"]) in meta
     assert "commit_review_triad" in meta
     assert meta.count("model_name:") >= 3
 
