@@ -58,6 +58,11 @@ def test_evolution_campaign_pause_resume_preserves_history(tmp_path):
     assert resumed["id"] == first["id"]
     assert resumed["cycles_done"] == 1
     assert resumed["history"][0]["task_id"] == "task1"
+    # ABI-3 (fix-round-3): the history row producer stamps the honest cost
+    # name — this row reaches /api/state (the legacy kwarg above is the
+    # internal lifecycle API parameter, not a persisted key).
+    assert resumed["history"][0]["accounted_upper_bound_usd"] == 0.5
+    assert "cost_usd" not in resumed["history"][0]
 
 
 def test_evolution_auto_stop_pauses_campaign(tmp_path, monkeypatch):

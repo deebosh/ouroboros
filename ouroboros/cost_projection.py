@@ -144,6 +144,35 @@ def with_cost_aliases(fields: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     return out
 
 
+def normalize_task_result_cost_planes(fields: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """``with_cost_aliases`` over a task-result row AND its nested public cost planes.
+
+    ABI-3 (fix-round-3): the projection seam (``public_task_result``) and the
+    rewrite seam (``write_task_result``) share this ONE normalizer, so the
+    stored row and the outbound payload cannot diverge on WHICH planes are
+    normalized. The nested planes are the known public ones — the subagent
+    envelope (its own amount AND its ``usage`` snapshot, the actually
+    supported producer path) and the loop-outcome ``usage`` dict. Internal
+    evidence planes that merely share the spelling (review receipts, ledger
+    rows) are their own schemas and pass through untouched — the emission
+    sweep allowlist names them per-site, and the projection-boundary tests
+    deep-scan the public planes instead.
+    """
+    out = with_cost_aliases(fields)
+    envelope = out.get("subagent_envelope")
+    if isinstance(envelope, dict):
+        envelope = with_cost_aliases(envelope)
+        if isinstance(envelope.get("usage"), dict):
+            envelope["usage"] = with_cost_aliases(envelope["usage"])
+        out["subagent_envelope"] = envelope
+    loop_outcome = out.get("loop_outcome")
+    if isinstance(loop_outcome, dict) and isinstance(loop_outcome.get("usage"), dict):
+        out["loop_outcome"] = {
+            **loop_outcome, "usage": with_cost_aliases(loop_outcome["usage"]),
+        }
+    return out
+
+
 def carry_cost_meta(source: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     """The honest cost names plus every openness/integrity marker the source carries.
 
@@ -280,6 +309,7 @@ __all__ = [
     "honest_cost_pair_amount",
     "honest_accounted_amount",
     "live_root_cost_projection",
+    "normalize_task_result_cost_planes",
     "resolve_cost_pair",
     "with_cost_aliases",
 ]

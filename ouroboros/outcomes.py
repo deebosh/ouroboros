@@ -873,20 +873,15 @@ def public_task_result(result: Dict[str, Any], *, include_outcome_axes: bool = T
         return {}
     # ABI-3 projection boundary: the public contract carries NO retired cost
     # alias — a stored legacy row's pair resolves deprecated-wins and leaves
-    # under the honest names only, at the top level and on the two nested
-    # planes whose cost fields reach this payload (the subagent envelope and
-    # the loop-outcome usage snapshot). Internal planes that merely share the
-    # spelling inside evidence blobs (review receipts, ledger rows) are their
-    # own schemas and pass through untouched.
-    from ouroboros.cost_projection import with_cost_aliases
+    # under the honest names only, at the top level and on the nested public
+    # cost planes (the subagent envelope with its usage snapshot and the
+    # loop-outcome usage snapshot) — ONE shared normalizer with the
+    # write_task_result rewrite seam (fix-round-3). Internal planes that
+    # merely share the spelling inside evidence blobs (review receipts,
+    # ledger rows) are their own schemas and pass through untouched.
+    from ouroboros.cost_projection import normalize_task_result_cost_planes
 
-    public = with_cost_aliases(public)
-    envelope = public.get("subagent_envelope")
-    if isinstance(envelope, dict):
-        public["subagent_envelope"] = with_cost_aliases(envelope)
-    loop_outcome = public.get("loop_outcome")
-    if isinstance(loop_outcome, dict) and isinstance(loop_outcome.get("usage"), dict):
-        loop_outcome["usage"] = with_cost_aliases(loop_outcome["usage"])
+    public = normalize_task_result_cost_planes(public)
     plan_state = public.get("plan_review_state")
     if isinstance(plan_state, dict) and plan_state.get("schema_version") == 1:
         plan_state["legacy_v1_projection"] = legacy_plan_review_projection(plan_state)

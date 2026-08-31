@@ -9,7 +9,11 @@ import pathlib
 import re
 from typing import Any, Callable, Dict, List, Optional
 
-from ouroboros.cost_projection import COST_ALIAS_PAIRS, COST_OPENNESS_FIELDS, with_cost_aliases
+from ouroboros.cost_projection import (
+    COST_ALIAS_PAIRS,
+    COST_OPENNESS_FIELDS,
+    normalize_task_result_cost_planes,
+)
 from ouroboros.utils import read_json_dict, update_json_locked, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -836,9 +840,13 @@ def write_task_result(
         # nor outrank this write's fresh honest value at the final
         # normalization below; a legacy spelling arriving IN the write itself
         # (a legacy mutator's edit) still wins that final resolution and
-        # leaves under the honest name only.
-        return stamp_task_result_schema(with_cost_aliases({
-            **with_cost_aliases(existing),
+        # leaves under the honest name only. Fix-round-3: BOTH passes use the
+        # shared deep normalizer, so the nested public cost planes (the
+        # subagent envelope + its usage snapshot, the loop-outcome usage)
+        # are rewritten onto honest names too — whichever side of the merge
+        # the nested dict came from.
+        return stamp_task_result_schema(normalize_task_result_cost_planes({
+            **normalize_task_result_cost_planes(existing),
             **projected_fields,
             "task_id": task_id,
             "status": projected_status,

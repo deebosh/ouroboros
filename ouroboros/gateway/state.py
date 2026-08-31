@@ -24,6 +24,26 @@ def _state_attr(request: Request, name: str, default: Any = None) -> Any:
     return getattr(state, name, default) if state is not None else default
 
 
+def _evolution_state_public(evolution_state: Dict[str, Any]) -> Dict[str, Any]:
+    """ABI-3 projection boundary for ``/api/state`` (fix-round-3).
+
+    Campaign history rows are durable supervisor state: a row written by an
+    older release still carries the retired ``cost_usd`` spelling. Resolve the
+    pair deprecated-wins and emit the honest name only — copy-on-write, since
+    the snapshot dict aliases shared supervisor campaign state.
+    """
+    campaign = evolution_state.get("campaign") if isinstance(evolution_state, dict) else None
+    if not isinstance(campaign, dict) or not isinstance(campaign.get("history"), list):
+        return evolution_state
+    from ouroboros.cost_projection import with_cost_aliases
+
+    history = [
+        with_cost_aliases(row) if isinstance(row, dict) else row
+        for row in campaign["history"]
+    ]
+    return {**evolution_state, "campaign": {**campaign, "history": history}}
+
+
 async def api_health(_request: Request) -> JSONResponse:
     runtime_version = get_version()
     app_version = os.environ.get("OUROBOROS_APP_VERSION", "").strip() or runtime_version
@@ -102,7 +122,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
                 budget_projection = accounting
         except Exception:
             budget_projection = None
-    evolution_state = (
+    evolution_state = _evolution_state_public(
         get_evolution_status_snapshot(budget_projection=budget_projection)
         if budget_projection is not None
         else get_evolution_status_snapshot()

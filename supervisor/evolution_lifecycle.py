@@ -15,6 +15,7 @@ import pathlib
 import uuid
 from typing import Any, Dict, Optional
 
+from ouroboros.cost_projection import honest_cost_pair_amount
 from ouroboros.evolution_fingerprint import canonical_objective_fingerprint
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
@@ -1095,7 +1096,11 @@ def update_evolution_campaign_after_task(
             row = {
                 "task_id": str(task_id or ""),
                 "ts": utc_now_iso(),
-                "cost_usd": float(cost_usd) if cost_available else None,
+                # ABI-3 (fix-round-3): the honest cost name — this row reaches
+                # /api/state through the evolution snapshot. Stored legacy rows
+                # (cost_usd) keep resolving deprecated-wins at the readers and
+                # at the /api/state projection boundary.
+                "accounted_upper_bound_usd": float(cost_usd) if cost_available else None,
                 "cost_accounting_status": "available" if cost_available else "unavailable",
                 "outcome_axes": axes,
                 "rounds": int(rounds or 0),
@@ -1222,10 +1227,15 @@ def build_evolution_task_text(cycle: int) -> str:
             axes = normalize_outcome_axes(row)
             execution_status = str((axes.get("execution") or {}).get("status") or "unknown")
             objective_status = str((axes.get("objective") or {}).get("status") or "not_evaluated")
+            # ABI-3 read tolerance: a stored legacy row's spelling resolves
+            # deprecated-wins; new rows carry the honest name only.
+            _, row_amount = honest_cost_pair_amount(
+                row, "accounted_upper_bound_usd", "cost_usd",
+            )
             row_cost = (
-                f"${float(row.get('cost_usd')):.4f}"
+                f"${row_amount:.4f}"
                 if row.get("cost_accounting_status") != "unavailable"
-                and row.get("cost_usd") is not None else "unavailable"
+                and row_amount is not None else "unavailable"
             )
             parts.append(
                 f"- {row.get('task_id')}: execution={execution_status}, objective={objective_status}; "

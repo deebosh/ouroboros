@@ -157,69 +157,74 @@ class TestAliasProducerFanOutSweep:
     runtime pin (``TestProjectionBoundaryNormalization``) covers that shape
     by feeding stored legacy bytes through the outbound projections.
 
-    The allowlist is PER-SITE: ``(posix path, alias, enclosing scope)``. A
+    The allowlist is PER-SITE and COUNT-ANCHORED (fix-round-3):
+    ``(posix path, alias, enclosing scope) -> (reason, emission count)``. A
     new emission in an already-allowlisted FILE but a different function is
-    NOT allowlisted; a stale row (no emission matches it) FAILS the test, so
-    the list can only shrink honestly. Every surviving row is an INTERNAL
-    non-gateway plane that merely shares the spelling: physical usage-ledger
-    rows, llm/usage observability events, review/evidence receipt schemas,
-    evolution campaign state, custody settlement events,
-    reflection/consciousness records. ``outcomes.py`` (loop-outcome usage
-    snapshot) and the subagent envelope are deliberately GONE from this list
-    (fix-round-2): their data reaches the public task-result projection, so
-    their producers now stamp the honest name and stored legacy spellings
-    normalize at the projection boundary.
+    NOT allowlisted; a NEW emission inside an already-allowlisted FUNCTION
+    breaks its count anchor and fails; a stale row (no emission matches it)
+    FAILS the test — the list can only shrink honestly. Every surviving row
+    is an INTERNAL non-gateway plane that merely shares the spelling:
+    physical usage-ledger rows, llm/usage observability events (converted to
+    the honest name at the /api/logs projection boundary on replay),
+    review/evidence receipt schemas, evolution checkpoint records, custody
+    settlement events, reflection/consciousness records. ``outcomes.py``
+    (loop-outcome usage snapshot) and the subagent envelope are deliberately
+    GONE from this list (fix-round-2), and the evolution campaign HISTORY
+    row producer is gone since fix-round-3 (it reaches /api/state, so it
+    stamps the honest name and the state projection boundary normalizes
+    stored legacy rows).
     """
 
     RETIRED_ALIASES = frozenset({
         "cost_usd", "cost_usd_with_children", "telegram_chat_id",
         "project_last_viewed", "project_hidden",
     })
-    # (posix path, alias, enclosing scope) -> why this INTERNAL plane
-    # legitimately keeps the spelling at exactly this site.
+    # (posix path, alias, enclosing scope) -> (why this INTERNAL plane
+    # legitimately keeps the spelling, exact emission count at these sites).
     INTERNAL_PLANE_ALLOWLIST = {
         # physical usage ledger rows / legacy usage import (P7 monetary authority)
-        ("ouroboros/usage_accounting.py", "cost_usd", "record_unmetered_external_dispatch"): "ledger unmetered dispatch row",
-        ("ouroboros/usage_accounting.py", "cost_usd", "record_subscription_session"): "ledger subscription session row",
-        ("ouroboros/usage_accounting.py", "cost_usd", "terminalize_abandoned_attempt"): "ledger settlement transition",
-        ("ouroboros/usage_accounting.py", "cost_usd", "settle_attempt"): "ledger settlement transition",
-        ("ouroboros/usage_accounting.py", "cost_usd", "_terminalize_failed_attempt"): "ledger settlement transition",
-        ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt"): "ledger settlement call",
-        ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt_async"): "ledger settlement call",
-        ("ouroboros/usage_legacy_import.py", "cost_usd", "_ensure_legacy_imported_locked"): "legacy usage.json ledger import rows",
-        ("ouroboros/tools/search.py", "cost_usd", "_web_search"): "ledger settlement call (web search attempt)",
-        # usage/observability event streams (events.jsonl, live log frames)
-        ("ouroboros/loop_llm_call.py", "cost_usd", "call_llm_with_retry"): "llm_round usage event rows",
-        ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_chat_consolidation"): "chat_block_consolidation event row",
-        ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_reflection"): "reflection generation gate args",
-        ("ouroboros/consciousness.py", "cost_usd", "_think_scoped"): "consciousness thought receipt row",
-        ("supervisor/events_evolution_done.py", "cost_usd", "_handle_evolution_task_done"): "supervisor.jsonl observability row",
+        ("ouroboros/usage_accounting.py", "cost_usd", "record_unmetered_external_dispatch"): ("ledger unmetered dispatch row", 1),
+        ("ouroboros/usage_accounting.py", "cost_usd", "record_subscription_session"): ("ledger subscription session row", 1),
+        ("ouroboros/usage_accounting.py", "cost_usd", "terminalize_abandoned_attempt"): ("ledger settlement transition", 1),
+        ("ouroboros/usage_accounting.py", "cost_usd", "settle_attempt"): ("ledger settlement transition", 1),
+        ("ouroboros/usage_accounting.py", "cost_usd", "_terminalize_failed_attempt"): ("ledger settlement transition", 2),
+        ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt"): ("ledger settlement call", 1),
+        ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt_async"): ("ledger settlement call", 1),
+        ("ouroboros/usage_legacy_import.py", "cost_usd", "_ensure_legacy_imported_locked"): ("legacy usage.json ledger import rows", 2),
+        ("ouroboros/tools/search.py", "cost_usd", "_web_search"): ("ledger settlement call (web search attempt)", 1),
+        # usage/observability event streams (events.jsonl, live log frames;
+        # /api/logs replay converts to the honest name at the boundary)
+        ("ouroboros/loop_llm_call.py", "cost_usd", "call_llm_with_retry"): ("llm_round usage event rows", 2),
+        ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_chat_consolidation"): ("chat_block_consolidation event row", 1),
+        ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_reflection"): ("reflection generation gate args", 1),
+        ("ouroboros/consciousness.py", "cost_usd", "_think_scoped"): ("consciousness thought receipt row", 2),
+        ("supervisor/events_evolution_done.py", "cost_usd", "_handle_evolution_task_done"): ("internal lifecycle/checkpoint call kwargs + supervisor.jsonl observability row", 3),
         # review/evidence receipt schemas (internal review plane)
-        ("ouroboros/triad_review.py", "cost_usd", "to_dict"): "triad review receipt serialization",
-        ("ouroboros/triad_review.py", "cost_usd", "_actor_record"): "triad review actor record",
-        ("ouroboros/skill_loader.py", "cost_usd", "to_dict"): "skill review outcome receipt serialization",
-        ("ouroboros/skill_loader.py", "cost_usd", "load_review_state"): "skill review state load",
-        ("ouroboros/skill_review.py", "cost_usd", "_run_deterministic_preflight"): "skill review preflight receipt",
-        ("ouroboros/skill_review.py", "cost_usd", "_persist_reviewed_outcome"): "skill review outcome receipt",
-        ("ouroboros/skill_owner_attestation.py", "cost_usd", "run_owner_attestation"): "owner attestation review receipt",
-        ("ouroboros/tools/claude_advisory_review.py", "cost_usd", "_run_advisory_native"): "advisory review receipt",
-        ("ouroboros/tools/delegate_terminal_evidence.py", "cost_usd", "_reported_cost"): "delegate terminal evidence rows",
-        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_llm_extract_advisory_items"): "advisory preflight usage receipt",
-        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_run_advisory_delegated"): "advisory preflight receipt",
-        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_run_claude_advisory"): "advisory preflight receipt",
-        ("ouroboros/tools/review_admission.py", "cost_usd", "triad_not_dispatched_records"): "review admission receipt",
-        ("ouroboros/tools/review_helpers.py", "cost_usd", "build_scope_actor_record"): "review usage receipt",
-        ("ouroboros/tools/scope_review.py", "cost_usd", "_scope_oversize_result"): "scope review receipt",
-        ("ouroboros/tools/scope_review.py", "cost_usd", "run_scope_review"): "scope review receipt",
-        ("ouroboros/tools/parallel_review.py", "cost_usd", "_run_scope"): "scope review receipt",
-        # evolution campaign/checkpoint plane
-        ("ouroboros/evolution_checkpoints.py", "cost_usd", "build_solve_capability_digest"): "evolution capability digest",
-        ("ouroboros/evolution_checkpoints.py", "cost_usd", "append_evolution_checkpoint"): "evolution checkpoint records",
-        ("supervisor/evolution_lifecycle.py", "cost_usd", "update_evolution_campaign_after_task"): "evolution campaign history rows",
+        ("ouroboros/triad_review.py", "cost_usd", "to_dict"): ("triad review receipt serialization", 1),
+        ("ouroboros/triad_review.py", "cost_usd", "_actor_record"): ("triad review actor record", 1),
+        ("ouroboros/skill_loader.py", "cost_usd", "to_dict"): ("skill review outcome receipt serialization", 1),
+        ("ouroboros/skill_loader.py", "cost_usd", "load_review_state"): ("skill review state load", 1),
+        ("ouroboros/skill_review.py", "cost_usd", "_run_deterministic_preflight"): ("skill review preflight receipt", 1),
+        ("ouroboros/skill_review.py", "cost_usd", "_persist_reviewed_outcome"): ("skill review outcome receipt", 1),
+        ("ouroboros/skill_owner_attestation.py", "cost_usd", "run_owner_attestation"): ("owner attestation review receipt", 1),
+        ("ouroboros/tools/claude_advisory_review.py", "cost_usd", "_run_advisory_native"): ("advisory review receipt", 2),
+        ("ouroboros/tools/delegate_terminal_evidence.py", "cost_usd", "_reported_cost"): ("delegate terminal evidence rows", 4),
+        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_llm_extract_advisory_items"): ("advisory preflight usage receipt", 1),
+        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_run_advisory_delegated"): ("advisory preflight receipt", 2),
+        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_run_claude_advisory"): ("advisory preflight receipt", 4),
+        ("ouroboros/tools/review_admission.py", "cost_usd", "triad_not_dispatched_records"): ("review admission receipt", 1),
+        ("ouroboros/tools/review_helpers.py", "cost_usd", "build_scope_actor_record"): ("review usage receipt", 1),
+        ("ouroboros/tools/scope_review.py", "cost_usd", "_scope_oversize_result"): ("scope review receipt", 1),
+        ("ouroboros/tools/scope_review.py", "cost_usd", "run_scope_review"): ("scope review receipt", 6),
+        ("ouroboros/tools/parallel_review.py", "cost_usd", "_run_scope"): ("scope review receipt", 1),
+        # evolution checkpoint plane (durable state files, never a gateway payload;
+        # the campaign HISTORY row producer left this list in fix-round-3)
+        ("ouroboros/evolution_checkpoints.py", "cost_usd", "build_solve_capability_digest"): ("evolution capability digest", 1),
+        ("ouroboros/evolution_checkpoints.py", "cost_usd", "append_evolution_checkpoint"): ("evolution checkpoint records", 1),
         # custody settlement events
-        ("ouroboros/delegate_custody.py", "cost_usd", "settle_run"): "custody SETTLED event row",
+        ("ouroboros/delegate_custody.py", "cost_usd", "settle_run"): ("custody SETTLED event row", 1),
         # reflection records
-        ("ouroboros/reflection.py", "cost_usd", "generate_reflection"): "task reflection record",
+        ("ouroboros/reflection.py", "cost_usd", "generate_reflection"): ("task reflection record", 1),
     }
 
     @staticmethod
@@ -280,7 +285,12 @@ class TestAliasProducerFanOutSweep:
         )
 
     def test_every_alias_key_emission_is_an_allowlisted_internal_plane(self):
+        import collections
+
         dict_hits, _ = self._emission_hits()
+        counts = collections.Counter(
+            (rel, alias, scope) for rel, alias, scope, _lineno in dict_hits
+        )
         unexpected = [
             hit for hit in dict_hits
             if (hit[0], hit[1], hit[2]) not in self.INTERNAL_PLANE_ALLOWLIST
@@ -291,8 +301,18 @@ class TestAliasProducerFanOutSweep:
             "internal non-gateway plane) add a PER-SITE allowlist row: "
             f"{unexpected!r}"
         )
-        matched = {(rel, alias, scope) for rel, alias, scope, _lineno in dict_hits}
-        stale = sorted(set(self.INTERNAL_PLANE_ALLOWLIST) - matched)
+        drifted = {
+            site: {"actual": count, "anchored": self.INTERNAL_PLANE_ALLOWLIST[site][1]}
+            for site, count in sorted(counts.items())
+            if site in self.INTERNAL_PLANE_ALLOWLIST
+            and count != self.INTERNAL_PLANE_ALLOWLIST[site][1]
+        }
+        assert drifted == {}, (
+            "emission-count drift inside an allowlisted function — a NEW "
+            "emission in an already-allowlisted scope is NOT allowlisted "
+            f"(fix-round-3 anchor): {drifted!r}"
+        )
+        stale = sorted(set(self.INTERNAL_PLANE_ALLOWLIST) - set(counts))
         assert stale == [], (
             f"stale allowlist rows (no emission matches them any more): {stale!r}"
         )
@@ -366,7 +386,11 @@ class TestProjectionBoundaryNormalization:
         "subagent_envelope": {
             "task_id": "legacy-cost",
             "status": "completed",
-            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "rounds": 3},
+            # Fix-round-3: the alias sits on the ACTUALLY SUPPORTED producer
+            # path (build_subagent_envelope embeds the stored usage snapshot)
+            # — envelope.usage.cost_usd — beside the envelope-root spelling.
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "rounds": 3,
+                      "cost_usd": 0.125},
             "cost_usd": 0.25,
         },
         "loop_outcome": {
@@ -392,9 +416,11 @@ class TestProjectionBoundaryNormalization:
         assert out["accounted_upper_bound_usd_with_children"] == 2.75
         assert out["cost_final"] is True
         assert out["subagent_envelope"]["accounted_upper_bound_usd"] == 0.25
+        assert out["subagent_envelope"]["usage"]["accounted_upper_bound_usd"] == 0.125
         assert out["loop_outcome"]["usage"]["accounted_upper_bound_usd"] == 0.5
         # And the stored input was not mutated (projection, not conversion).
         assert self.LEGACY_ROW["cost_usd"] == 1.5
+        assert self.LEGACY_ROW["subagent_envelope"]["usage"]["cost_usd"] == 0.125
 
     def test_task_detail_and_list_row_emit_honest_names_only(self, tmp_path):
         import asyncio
@@ -414,6 +440,7 @@ class TestProjectionBoundaryNormalization:
         assert _retired_alias_paths_deep(detail) == []
         assert detail["accounted_upper_bound_usd"] == 1.5
         assert detail["subagent_envelope"]["accounted_upper_bound_usd"] == 0.25
+        assert detail["subagent_envelope"]["usage"]["accounted_upper_bound_usd"] == 0.125
         assert detail["loop_outcome"]["usage"]["accounted_upper_bound_usd"] == 0.5
 
         list_request = SimpleNamespace(
@@ -462,6 +489,82 @@ class TestProjectionBoundaryNormalization:
         stored = load_task_result(tmp_path, "legacy-mut")
         assert "cost_usd" not in stored
         assert stored["accounted_upper_bound_usd"] == 9.0
+
+    def test_rewrite_normalizes_the_nested_public_cost_planes(self, tmp_path):
+        """Fix-round-3: write_task_result's rewrite normalizes the KNOWN
+        nested public planes too — a stored legacy subagent envelope (root
+        and usage) and loop-outcome usage leave the next persisted row under
+        honest names only."""
+        from ouroboros.task_results import load_task_result, write_task_result
+
+        results = tmp_path / "task_results"
+        results.mkdir(parents=True, exist_ok=True)
+        (results / "legacy-deep.json").write_text(
+            json.dumps(self.LEGACY_ROW).replace("legacy-cost", "legacy-deep"),
+            encoding="utf-8",
+        )
+        write_task_result(tmp_path, "legacy-deep", "completed", result="rewritten")
+        stored = load_task_result(tmp_path, "legacy-deep")
+        assert _retired_alias_paths_deep(stored) == []
+        assert stored["subagent_envelope"]["accounted_upper_bound_usd"] == 0.25
+        assert stored["subagent_envelope"]["usage"]["accounted_upper_bound_usd"] == 0.125
+        assert stored["loop_outcome"]["usage"]["accounted_upper_bound_usd"] == 0.5
+
+    def test_envelope_builder_normalizes_the_stored_usage_snapshot(self):
+        """Fix-round-3: build_subagent_envelope normalizes the stored usage
+        snapshot BEFORE embedding it — the envelope's usage plane carries the
+        honest name only, and the legacy amount still resolves into the
+        envelope's own accounted_upper_bound_usd."""
+        from ouroboros.subagents import build_subagent_envelope
+
+        envelope = build_subagent_envelope(
+            task_id="child-1",
+            status="completed",
+            usage={"prompt_tokens": 1, "completion_tokens": 2, "cost_usd": 0.75},
+        )
+        assert _retired_alias_paths_deep(envelope) == []
+        assert envelope["usage"]["accounted_upper_bound_usd"] == 0.75
+        assert envelope["accounted_upper_bound_usd"] == 0.75
+
+
+class TestEvolutionHistoryPlane:
+    """Ф3.1 fix-round-3: the evolution campaign history row reaches the
+    public ``/api/state`` payload — its producer stamps the honest name
+    (``update_evolution_campaign_after_task``, sweep allowlist row removed)
+    and the state projection boundary resolves STORED legacy rows
+    deprecated-wins, emitting honest names only."""
+
+    def test_state_projection_normalizes_stored_legacy_history_rows(self):
+        from ouroboros.gateway.state import _evolution_state_public
+
+        snapshot = {
+            "enabled": True,
+            "campaign": {
+                "id": "c1",
+                "history": [
+                    {"task_id": "old", "cost_usd": 1.5,
+                     "cost_accounting_status": "available"},
+                    {"task_id": "new", "accounted_upper_bound_usd": 2.5,
+                     "cost_accounting_status": "available"},
+                ],
+            },
+        }
+        out = _evolution_state_public(snapshot)
+        assert _retired_alias_paths_deep(out) == []
+        rows = {row["task_id"]: row for row in out["campaign"]["history"]}
+        assert rows["old"]["accounted_upper_bound_usd"] == 1.5
+        assert rows["new"]["accounted_upper_bound_usd"] == 2.5
+        # Copy-on-write: the shared supervisor snapshot row is untouched.
+        assert snapshot["campaign"]["history"][0]["cost_usd"] == 1.5
+
+    def test_diverged_stored_pair_resolves_deprecated_wins(self):
+        from ouroboros.gateway.state import _evolution_state_public
+
+        out = _evolution_state_public({"campaign": {"history": [
+            {"task_id": "t", "cost_usd": 9.0, "accounted_upper_bound_usd": 1.0},
+        ]}})
+        assert out["campaign"]["history"][0]["accounted_upper_bound_usd"] == 9.0
+        assert "cost_usd" not in out["campaign"]["history"][0]
 
 
 class TestApiV1ShimRemoval:

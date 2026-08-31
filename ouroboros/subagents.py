@@ -33,6 +33,7 @@ from ouroboros.config import (
     get_heavy_model,
     get_light_model,
 )
+from ouroboros.cost_projection import with_cost_aliases
 
 log = logging.getLogger(__name__)
 
@@ -1101,14 +1102,18 @@ def build_subagent_envelope(
     execution_evidence: Dict[str, Any] | None = None,
     actual_substrate: str = "",
 ) -> Dict[str, Any]:
-    usage_data = dict(usage or {})
+    # ABI-3 (fix-round-3): a STORED legacy usage snapshot may carry the
+    # retired spelling — normalize BEFORE embedding, so the envelope's usage
+    # plane rides the honest name only (deprecated-wins resolution kept).
+    usage_data = with_cost_aliases(dict(usage or {}))
     cost_usd = accounted_upper_bound_usd
     if cost_usd is None:
         try:
             raw_cost = usage_data.get("cost")
             if raw_cost is None:
-                # Read tolerance for a legacy usage snapshot's spelling.
-                raw_cost = usage_data.get("cost_usd")
+                # Read tolerance for a legacy usage snapshot's amount — the
+                # stored spelling already resolved onto the honest name above.
+                raw_cost = usage_data.get("accounted_upper_bound_usd")
             cost_usd = float(raw_cost) if raw_cost is not None else None
         except (TypeError, ValueError):
             cost_usd = None
