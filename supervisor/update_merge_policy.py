@@ -49,6 +49,14 @@ HOT_CODE_PATHS = frozenset({
     "supervisor/events_schedule_task.py",
     "supervisor/events_subagent_admission.py",
     "supervisor/events_worker_reports.py",
+    # F2.2 cancel/custody organ leaves (same parity rule), plus the
+    # queue_transitions home of the owner-stop closure that moved out of the
+    # hot events monolith.
+    "supervisor/events_evolution_done.py",
+    "supervisor/events_task_done.py",
+    "supervisor/queue_snapshot.py",
+    "supervisor/queue_timeouts.py",
+    "supervisor/queue_transitions.py",
     # v7 D01 split leaves: code that moved out of the hot loop monolith keeps
     # the label (same parity rule as the D04 block above).
     "ouroboros/loop_acceptance.py",

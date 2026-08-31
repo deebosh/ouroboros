@@ -611,11 +611,14 @@ proposed = [
 "ouroboros/tools/delegate.py" = ["D07"]
 "ouroboros/tools/registry.py" = ["D04"]
 "ouroboros/tools/scope_review.py" = ["D06"]
-"supervisor/events.py" = ["D08"]
-"supervisor/queue.py" = ["D08"]
-"supervisor/task_lifecycle.py" = ["D09"]
 "supervisor/update_merge.py" = ["D10"]
-"supervisor/workers.py" = ["D08"]
+# F2.2 resolved rows (owner decisions 2026-08-31): the D08 event/queue/worker
+# families landed as reference-named leaves from tip bytes; the remaining
+# reference leaves were retired by the owner — supervisor/cancel_custody.py
+# (Q-a=A: the settle owner stays in task_lifecycle.py, upstream cut = floor)
+# and supervisor/queue_evolution.py (Q-b=A: upstream already forked the
+# evolution family into evolution_lifecycle.py; the two-symbol remainder
+# stays on the queue facade).
 
 [split_pending_leaves]
 # the exact absent leaf modules per monolith (ledger owner paths)
@@ -625,8 +628,4 @@ proposed = [
 "ouroboros/tools/delegate.py" = ["ouroboros/tools/delegate_terminal.py"]
 "ouroboros/tools/registry.py" = ["ouroboros/tools/registry_core.py", "ouroboros/tools/tool_result.py"]
 "ouroboros/tools/scope_review.py" = ["ouroboros/tools/scope_review_budget.py"]
-"supervisor/events.py" = ["supervisor/events_evolution_done.py", "supervisor/events_task_done.py"]
-"supervisor/queue.py" = ["supervisor/queue_evolution.py", "supervisor/queue_snapshot.py", "supervisor/queue_timeouts.py"]
-"supervisor/task_lifecycle.py" = ["supervisor/cancel_custody.py"]
 "supervisor/update_merge.py" = ["supervisor/update_merge_plan.py"]
-"supervisor/workers.py" = ["supervisor/worker_assignment.py", "supervisor/worker_health.py"]

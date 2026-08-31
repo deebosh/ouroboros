@@ -512,6 +512,10 @@ def test_chat_outbound_declares_progress_meta_keys_used_by_runtime():
     progress_keys: set[str] = set()
     for rel in (
         "supervisor/events.py",
+        # F2.2: the cancel/custody organ's literal progress_meta emitters moved
+        # into their family leaves with the module split.
+        "supervisor/events_runtime_controls.py",
+        "supervisor/events_task_done.py",
         "ouroboros/agent.py",
         "ouroboros/skill_lifecycle_queue.py",
     ):

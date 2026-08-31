@@ -1788,3 +1788,175 @@ reference-fact ↔ tip-fact ↔ result.
 10. review_records is a projection-only leaf (zero handle reads, zero
    declared) and stays off the LEAVES table per the D07/D08 precedent; the
    other ten leaves carry tool-derived exact declared sets there.
+## From the f22 lane (base 2878560e, 2026-08-31)
+1. Drift-probes (recipe §5.3-Δ2 step 9) of every oracle leaf against this
+   base's monolith bytes, before any emit. Byte-identical tip↔oracle:
+   _task_done_review_projection, _PROVIDER_DEATH_NOTIFIED,
+   _task_done_durable_fault, _handle_task_done, _handle_evolution_task_done,
+   _close_campaign_after_owner_stop, _kept_service_pids, parse_iso_to_ts,
+   all queue_timeouts symbols except _enforce_task_timeouts_locked,
+   _evolution_assignment_error, _cancel_unauthorized_evolution,
+   terminal_task_metadata, _emit_task_done_terminal, ensure_workers_healthy.
+   Byte-FALSIFIED as copy-source (upstream drift, re-emitted from tip bytes):
+   _authoritative_terminal_cost, _maybe_notify_provider_death,
+   _finish_task_done_dispatch, _resolve_lifecycle_fault, _handle_cancel_task,
+   persist_queue_snapshot, restore_pending_from_snapshot,
+   _enforce_task_timeouts_locked, assign_tasks,
+   _ensure_workers_healthy_locked. ALL families were emitted from tip bytes
+   regardless (proof: ast=tokens=True per symbol, leaf_invariants=[]).
+2. Q-a=A (owner, 2026-08-31): the sixteen settle-owner rows 998-1013
+   (task_lifecycle -> supervisor/cancel_custody.py) are SUPERSEDED — the
+   settle owner STAYS in task_lifecycle.py; the upstream custody cut
+   (65b5d19f/bea08137) is the authoritative floor and cancel_custody.py is
+   never created. tests/test_cancel_custody_extraction.py is NOT replayed
+   (its identity/size clauses are form-dependent on the extraction; matrix
+   §3.8). Row 1000 (_durable_settled_status) is doubly retired: upstream
+   removed the symbol (fail-soft equivalent lives as
+   cancel_intents.settled_status).
+3. Q-b=A: rows 2041-2044 (queue.py -> supervisor/queue_evolution.py) are
+   RESOLVED WITHOUT the reference leaf. Upstream itself moved
+   _deliver_pending_owner_report and enqueue_evolution_task_if_needed into
+   supervisor/evolution_lifecycle.py; get_evolution_status_snapshot and
+   queue_deep_self_review_task stay on the queue facade by owner decision
+   (do not fork the evolution-family ownership a second time).
+4. Q-c=A: row 970 EXECUTED — _close_campaign_after_owner_stop moved to
+   supervisor/queue_transitions.py (byte-identical span; the drift probe
+   proved tip==oracle here), events.py re-exports it, and
+   events_evolution_done reads it through the _events() handle (no bare
+   local name survives the split). queue_transitions.py entered the
+   1001-1500 band with a rationale and joined HOT_CODE_PATHS (parity: the
+   span moved out of the hot events monolith).
+5. Rows 971-979 (events_task_done + events_evolution_done), the cancel
+   ingress row (file row 994 / D08-ledger row 992), rows 2017-2028
+   (queue_snapshot + queue_timeouts) and rows 2061-2064/2077-2079
+   (worker_health + worker_assignment) EXECUTED as reference-named leaves
+   from tip bytes. Declared sets are MAXIMAL (wave-2 dead-patch lesson),
+   larger than the oracle's: every parent global the spans read at call time
+   routes through the handle, including same-leaf reads
+   (_PROVIDER_DEATH_NOTIFIED — tests rebind it on the facade), the
+   cross-family coop hooks (_checkpoint_coop_roots_on_root_done and
+   _maybe_checkpoint_coop_on_tree_quiescence: the GR4-3 probes patch them on
+   supervisor.events — a module-scope import here is the dead-patch class the
+   first emit reproduced and the re-emit fixed), `time` (the
+   enforce-harness in test_packaged_runtime_and_lifecycle rebinds
+   events.time), `_bound_project_chat_id` (the terminal-frame delivery tests
+   rebind it on supervisor.events — a MULTI-LINE setattr the first
+   single-line patch-surface grep missed; the closing sweep is an ast.walk
+   over every tests/*.py catching setattr in any form through module
+   aliases) and `BUDGET_ROOT_FENCES` in queue_snapshot (tests rebind it on
+   the queue facade while persist_queue_snapshot reads it at call time; the
+   pre-split span read queue's own re-export binding). Facade imports that
+   now serve ONLY leaf handle reads carry per-line noqa markers naming the
+   leaf.
+6. Delta-D08 RE-DERIVED on tip bytes (Q-d=A): mark_finalize_control_drained,
+   mark_intent_scope, release_claim and settle_intent now read the projection
+   strict (_load_intents(strict=True) + strict_existing_dict=True) and turn
+   the typed ValueError into CancelIntentProjectionCorrupt via the
+   _refuse_corrupt helper (oracle shape); the tip GR5-6 docstring that
+   RATIONALIZED fail-open ("non-minting mutators find no row in {}") is
+   deliberately rewritten — that was the semantic delta, not a drift.
+   Upstream's own strict sites (request_cancel, claim_intent, active_intents)
+   keep their tip bytes. Caller audit (every tip call site, what happens on
+   raise): (a) task_lifecycle._settle_intent/_release_intent_claim wrappers —
+   except Exception, log.debug: the intent stays OPEN/CLAIMED for the
+   watchdog; (b) task_lifecycle cancel_task_by_id cascade postcondition —
+   outer except, cascade intent stays open, watchdog re-runs the cascade;
+   (c) task_lifecycle record-cascade-scope site — except Exception with
+   log.warning + typed cascade_scope_record_failed forensic row (loud, second
+   line of defense); (d) ouroboros/task_results.fail_tasks budget drain —
+   both settle and release wrapped, log.debug, intent stays for the watchdog;
+   its claim path already maps a raise to claim_refused and skips the task;
+   (e) workers pending-drop lanes (_settle_cancelled_pending_row,
+   _release_pending_claim, terminalization retry) — except Exception ->
+   claim_unresolved -> the row is RETAINED in the terminalization-retry lane,
+   nothing silently dropped; (f) owner_stop._mark_owner_stop_control_drained
+   — outer except returns False: no drain stamp, the finalization episode
+   stays bounded by the unstamped request anchor (a corrupt projection can
+   not buy an unlimited final turn). No caller needed a code change; the pin
+   is tests/test_cancel_intent_corruption_s6.py (C1/C2), re-keyed to the tip
+   bool contract of release_claim (upstream fence-proof return; the oracle's
+   `is None` clauses would pin a retired signature).
+7. S7b split RE-DERIVED from tip bytes (rows 2152-2223): lossless — 107
+   test functions / 112 expanded items before == after, zero duplicate
+   names, all green. The oracle partition is honored row-by-row for every
+   surviving name; tip-new (bea08137-class) objects were placed by theme and
+   these MINTED rows are: retry-race custody family
+   (_patch_retry_input_handoff, _root_retry_task,
+   test_retry_cancel_before_admission_publishes_no_successor,
+   test_retry_admission_before_cancel_canonicalizes_and_stops_leaf,
+   test_retry_leaf_cannot_escape_a_logical_root_cascade_at_final_boundary,
+   test_cancel_suppressed_retry_task_done_waits_for_summary_obligation,
+   test_timeout_precheck_yields_retry_leaf_to_logical_root_cascade,
+   test_retry_boundary_refuses_missing_physical_leaf_authority,
+   test_terminal_retry_leaf_wins_even_when_predecessor_lineage_is_corrupt,
+   test_terminal_before_retry_boundary_creates_no_scheduled_ghost,
+   test_same_id_timeout_retry_cancels_exactly,
+   test_retry_leaf_completion_between_request_and_custody_wins,
+   test_graceful_single_retry_targets_leaf_and_stop_now_hardens_same_intent,
+   test_task_lifecycle_keeps_scheduled_admission_import_surface,
+   test_task_lifecycle_keeps_capture_miss_calling_convention)
+   -> tests/test_cancel_custody.py; dispatch-authority family
+   (test_assignment_blocks_when_cancel_intent_projection_is_unreadable,
+   test_assignment_retains_pending_when_claim_authority_raises,
+   test_timeout_reaper_does_not_clone_over_unreadable_cancel_authority,
+   test_snapshot_restore_blocks_when_cancel_intent_projection_is_unreadable,
+   test_cancel_authority_hold_never_releases_a_terminal_row_to_dispatch,
+   test_preserve_pending_shutdown_keeps_cancel_authority_hold_nonterminal,
+   test_drop_cancelled_pending_retains_custody_until_task_done_is_published,
+   test_drop_cancelled_pending_releases_a_failed_intent_claim,
+   test_drop_cancelled_pending_does_not_assume_settled_when_settle_helper_missing,
+   test_drop_cancelled_pending_defers_when_intent_vanishes_before_settle)
+   -> tests/test_cancel_queue_integration.py; durable-gate additions
+   (test_blank_status_task_done_over_a_running_row_is_a_durable_fault,
+   test_blank_status_task_done_over_a_settled_row_is_admitted,
+   test_copy_back_exception_never_synthesizes_a_completed_row)
+   -> tests/test_cancel_task_done_validation.py; projection-primitive
+   additions (retry-lineage mint family rows 82-238 of the monolith,
+   test_claim_intent_refuses_an_existing_corrupt_projection,
+   test_claim_intent_absent_projection_is_a_read_only_miss)
+   -> residual tests/test_cancel_intents_phase_a.py; and
+   _write_root_retry_pair joined tests/_cancel_intents_shared.py (read by
+   both the mint suite and the custody retry suite — a tip extension of the
+   shared set, rows 2152-2155 class). The monolith's section-banner comments
+   are not carried (the same inter-span-comment loss the D14 lane recorded
+   for the emitter). tests/test_cancel_cascade_v664.py's source-scan clause
+   retargeted to the owner leaf (events_task_done) and its now-unused facade
+   import dropped.
+8. Durable pins landed with tip re-keys: tests/test_e2e_cancellation_scenarios.py
+   + tests/fixtures_e2e_cancellation.py (E-suite; the driver extensions —
+   typed cancel_task with cascade/stop_policy, hurry_task, _api_status —
+   ported into devtools/benchmarks/common/server_runner.py, options-free
+   cancel keeps the legacy empty-body wire shape for the existing benchmark
+   callers); E8 is RETIRED and superseded by E13 (F6 disposition, owner
+   Q9=A/Q10=A: a budget-drained queued task PAUSES — durable scheduled
+   result with reason_code=budget_exhausted plus the typed
+   budget_scope_paused event — it is not failed); C5/R1 were already on tip
+   (D09 quiet edge); tests/test_cancel_protocol_inventory_s6.py (C7-C10)
+   re-keyed by symbol to the tip owners (settle-owner cluster in
+   task_lifecycle, miss lane in cancel_publication, admission in
+   task_admission, the F2.2 leaves) with the upstream retry/depth terminal
+   lanes ADDED to both the C7 manifest and the no-deliverable enumeration;
+   C9's task_finalization docstring (row 1093) corrected to the VERIFIED tip
+   call order (emit_task_results registers the owed row, then stores).
+9. Mock-lane execution proof (post-commit verification, then amended in):
+   the eight mock scenarios (E4-E7, E9-E12) ran GREEN against a real isolated
+   server on this exact tree — after ONE harness adaptation of the class the
+   suite's own docstring predicts: upstream delegation-by-construction makes
+   subagent selection explicit (`subagent_configuration_unsaved` /
+   `subagent_selection_required`), so isolated_settings() now pins a saved
+   one-row Available-subagents roster (api_model on the lane's own slug) and
+   the stub's spawn turn passes subagent_id="mock-scout". Scenario semantics
+   untouched; the same class the deferred
+   test_daemon_token_containment_s6.py note in the matrix recorded.
+10. tests/test_v7next_transplant.py queue probes re-pinned to the PRE-SPLIT
+   monolith bytes of this lane's base (git show 2878560e:supervisor/queue.py)
+   with the landed-leaf inverse-normalization fallback — the D01/D10 probe
+   recipe.
+11. Path-keyed mirrors updated in the same commit: HOT_CODE_PATHS gained the
+    four F2.2 leaves + queue_transitions; test_contracts' literal
+    progress_meta scan gained events_runtime_controls + events_task_done;
+    test_heartbeat_presentation's message-seam scan gained the two worker
+    leaves; tests/test_events_extraction.py flipped from the pinned
+    partial-split work order to the completed shape; the five satisfied
+    [split_pending]/[split_pending_leaves] rows left scripts/v7next_domains.toml
+    with the two owner-retired leaves recorded in a comment.

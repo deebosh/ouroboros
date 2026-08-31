@@ -1,10 +1,11 @@
 """Structural contracts for the semantic-no-op supervisor event-handler extraction.
 
-v7next D08 lane: this is the QUIET half of the reference split. The task-done,
-evolution-done and cancel handlers — the cancel/custody organ upstream re-owned
-in 65b5d19f — stay on the facade (HOT-DEFERRED to the F2 phase), and this suite
-pins that partial-split shape explicitly so a later lane inherits an exact
-inventory instead of a guess.
+v7next D08/F2.2: the full reference split. The quiet families landed with the
+D08 lane; the F2.2 cancel/custody lane moved the task-done and evolution-done
+families into their reference-named leaves, the cancel ingress into
+events_runtime_controls, and the owner-stop campaign closure beside
+stop_evolution_tasks in queue_transitions — all emitted from tip bytes.
+This suite pins the completed shape explicitly.
 """
 
 from __future__ import annotations
@@ -17,11 +18,14 @@ from supervisor import (
     events_budget,
     events_chat_delivery,
     events_coop_checkpoint,
+    events_evolution_done,
     events_project_routing,
     events_runtime_controls,
     events_schedule_task,
     events_subagent_admission,
+    events_task_done,
     events_worker_reports,
+    queue_transitions,
 )
 from supervisor.update_merge_policy import HOT_CODE_PATHS
 
@@ -36,6 +40,8 @@ _FAMILIES = (
     events_budget,
     events_worker_reports,
     events_runtime_controls,
+    events_task_done,
+    events_evolution_done,
 )
 
 _MOVED_OWNERS = {
@@ -105,28 +111,27 @@ _MOVED_OWNERS = {
     "_handle_promote_to_stable": events_runtime_controls,
     "_handle_toggle_consciousness": events_runtime_controls,
     "_handle_toggle_evolution": events_runtime_controls,
+    # F2.2 cancel/custody organ (moved from the facade, tip bytes):
+    "_handle_cancel_task": events_runtime_controls,
+    "_PROVIDER_DEATH_NOTIFIED": events_task_done,
+    "_authoritative_terminal_cost": events_task_done,
+    "_finish_task_done_dispatch": events_task_done,
+    "_handle_task_done": events_task_done,
+    "_maybe_notify_provider_death": events_task_done,
+    "_resolve_lifecycle_fault": events_task_done,
+    "_task_done_durable_fault": events_task_done,
+    "_task_done_review_projection": events_task_done,
+    "_handle_evolution_task_done": events_evolution_done,
+    # The owner-stop backstop is one honesty rule with stop_evolution_tasks
+    # and now lives beside it (reference row 970); the facade re-exports it.
+    "_close_campaign_after_owner_stop": queue_transitions,
 }
 
-# The dispatcher keeps the table, its loop and the module logger — plus the
-# HOT-DEFERRED cancel/custody organ (D09-class, upstream 65b5d19f re-owned it)
-# and the unrowed post-cutoff upstream helpers. This inventory is the F2 lane's
-# work order, pinned so a later edit cannot silently grow or shrink it.
+# The dispatcher keeps the table, its loop and the module logger, plus the
+# unrowed post-cutoff upstream helpers. The cancel/custody organ moved out
+# with the F2.2 lane; this inventory is pinned so a later edit cannot
+# silently grow or shrink the facade.
 _STAYED = ("EVENT_HANDLERS", "dispatch_event", "log")
-_DEFERRED = (
-    # _handle_schedule_task joined its family leaf in the F2 addendum once the
-    # same-qualname relocation rule (delta D11) landed in the transition
-    # validator; its FUNCTION_DEBT key moved with it.
-    "_authoritative_terminal_cost",
-    "_close_campaign_after_owner_stop",
-    "_finish_task_done_dispatch",
-    "_handle_cancel_task",
-    "_handle_evolution_task_done",
-    "_handle_task_done",
-    "_maybe_notify_provider_death",
-    "_resolve_lifecycle_fault",
-    "_task_done_durable_fault",
-    "_task_done_review_projection",
-)
 _UNROWED_UPSTREAM = (
     "_handle_main_llm_call_state",
     "_parent_delegation_budget",
@@ -153,13 +158,13 @@ def test_events_facade_reexports_every_moved_identity():
     for name, owner in _MOVED_OWNERS.items():
         assert hasattr(events, name), name
         assert getattr(events, name) is getattr(owner, name), name
-    owned = {name for module in _FAMILIES for name in vars(module)}
+    owned = {name for module in set(_MOVED_OWNERS.values()) for name in vars(module)}
     assert set(_MOVED_OWNERS) <= owned
 
 
 def test_dispatch_table_entries_resolve_to_their_owner_families():
-    """Every carried family serves its wire vocabulary; the deferred organ's
-    entries still resolve on the facade itself."""
+    """Every family serves its wire vocabulary; only the unrowed upstream
+    helper still resolves on the facade itself."""
     owners = {name: handler.__module__ for name, handler in events.EVENT_HANDLERS.items()}
     assert owners["send_message"] == "supervisor.events_chat_delivery"
     assert owners["typing_start"] == "supervisor.events_chat_delivery"
@@ -175,9 +180,9 @@ def test_dispatch_table_entries_resolve_to_their_owner_families():
     assert owners["schedule_task"] == "supervisor.events_schedule_task"
     assert owners["toggle_evolution"] == "supervisor.events_runtime_controls"
     assert owners["promote_to_stable"] == "supervisor.events_runtime_controls"
-    # deferred cancel/custody organ: still owned by the facade, by design
-    assert owners["task_done"] == "supervisor.events"
-    assert owners["cancel_task"] == "supervisor.events"
+    # F2.2: the cancel/custody organ handlers live in their family leaves
+    assert owners["task_done"] == "supervisor.events_task_done"
+    assert owners["cancel_task"] == "supervisor.events_runtime_controls"
     assert owners["main_llm_call_state"] == "supervisor.events"
 
 
@@ -190,7 +195,7 @@ def test_every_event_family_is_a_hot_code_path_like_its_dispatcher():
         assert rel in HOT_CODE_PATHS, rel
 
 
-def test_the_dispatcher_kept_only_the_table_the_loop_and_the_deferred_organ():
+def test_the_dispatcher_kept_only_the_table_the_loop_and_the_unrowed_helpers():
     tree = ast.parse(pathlib.Path(events.__file__).read_text(encoding="utf-8"))
     defined = []
     for node in tree.body:
@@ -198,4 +203,4 @@ def test_the_dispatcher_kept_only_the_table_the_loop_and_the_deferred_organ():
             defined.append(node.name)
         elif isinstance(node, ast.Assign):
             defined.extend(t.id for t in node.targets if isinstance(t, ast.Name))
-    assert sorted(defined) == sorted(_STAYED + _DEFERRED + _UNROWED_UPSTREAM)
+    assert sorted(defined) == sorted(_STAYED + _UNROWED_UPSTREAM)

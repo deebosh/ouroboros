@@ -84,8 +84,23 @@ def _recalculate(upstream: str, symbols, declared, handle: str, parent_module: s
 
 # ---------------------------------------------------------------------------
 # real case 1: supervisor/queue.py -> queue_snapshot leaf (_queue handle)
+#
+# The F2.2 lane landed the queue_snapshot/queue_timeouts split, so the LIVE
+# queue.py no longer carries these defs. The probe keeps its real-case shape on
+# the PRE-SPLIT monolith bytes of the lane base (the D10 recipe for probes
+# pinned to live monoliths); when the object is unreachable it falls back to
+# reconstructing the same bytes from the landed leaf by inverse-normalizing the
+# handle reads (`_queue().X` -> `X`) — the exact inversion the tool's own proof
+# performs.
 
-QUEUE_UPSTREAM = _read(REPO / "supervisor" / "queue.py")
+_QUEUE_BASE_SHA = "2878560ed298c4173e65068f16b6d09e672ba19f"
+_queue_pre_split = subprocess.run(
+    ["git", "-C", str(REPO), "show", f"{_QUEUE_BASE_SHA}:supervisor/queue.py"],
+    capture_output=True, text=True)
+QUEUE_UPSTREAM = (
+    _queue_pre_split.stdout
+    if _queue_pre_split.returncode == 0 and _queue_pre_split.stdout
+    else _read(REPO / "supervisor" / "queue_snapshot.py").replace("_queue().", ""))
 
 # The v7 ledger's declared set for supervisor/queue_snapshot.py (D18).
 QUEUE_LEDGER_DECLARED = frozenset({

@@ -189,7 +189,13 @@ def test_retired_planning_heartbeat_key_is_silent_and_dropped_on_load(
 
 def test_owner_visible_incidents_use_canonical_message_seam() -> None:
     repo = pathlib.Path(__file__).resolve().parents[1]
-    for relpath in ("server.py", "supervisor/workers.py"):
+    for relpath in (
+        "server.py",
+        "supervisor/workers.py",
+        # F2.2: spans moved out of workers.py keep the same seam invariant.
+        "supervisor/worker_assignment.py",
+        "supervisor/worker_health.py",
+    ):
         source = (repo / relpath).read_text(encoding="utf-8")
         assert "get_bridge().send_message(" not in source
         assert "bridge.send_message(" not in source
