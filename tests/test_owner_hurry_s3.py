@@ -741,6 +741,13 @@ def test_fresh_attempt_replays_exact_owner_text_until_terminal(
                 self.calls.append((name, args))
                 return "durable tool effect"
 
+            def execute_result(self, name, args):
+                # The loop reads the typed dispatch seam (D02); adapt the text
+                # exactly the way the real registry adapts a legacy handler.
+                from ouroboros.tools.tool_result import LegacyTextResultAdapter
+
+                return LegacyTextResultAdapter.from_text(name, self.execute(name, args))
+
         probe_tools = _ProbeTools()
         executor = StatefulToolExecutor()
         first_messages.append({"role": "assistant", "tool_calls": [tool_call]})

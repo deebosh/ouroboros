@@ -594,6 +594,13 @@ class _FakeTools:
         self.calls.append((name, args))
         return "executed"
 
+    def execute_result(self, name, args):
+        # The loop reads the typed dispatch seam (D02); this fake adapts its
+        # text exactly the way the real registry adapts a legacy handler.
+        from ouroboros.tools.tool_result import LegacyTextResultAdapter
+
+        return LegacyTextResultAdapter.from_text(name, self.execute(name, args))
+
 
 def test_main_custom_schema_error_continues_without_handler(tmp_path):
     message, receipts = _invalid_custom_exchange()

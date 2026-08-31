@@ -814,7 +814,7 @@ def closure_after_disposition(
     rationale → next paid delta cycle). DEGRADED → not closable by disposition
     (rerun the wave). Advisory enforcement never flips ``closed``: the caller
     may proceed with the wave open under loud disclosure — this function only
-    reports. Control-line invariants (``loop_tool_execution
+    reports. Control-line invariants (``tools.plan_render
     ._parse_plan_review_control``): GREEN ⇒ closed, REVISE_PLAN ⇒ not closed.
     """
     verdict = str(aggregate or "").strip().upper()

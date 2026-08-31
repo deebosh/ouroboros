@@ -1622,6 +1622,8 @@ from ouroboros.tools.git_plumbing import (  # noqa: E402,F401
     _current_runtime_mode,
     _ensure_gitignore,
     _protected_paths_block_message,
+    _publish_git_error,
+    _publish_review_blocked,
     _release_git_lock,
     _sanitize_git_error,
     _unstage_binaries,

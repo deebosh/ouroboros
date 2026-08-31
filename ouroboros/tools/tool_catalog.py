@@ -13,10 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from typing import TYPE_CHECKING, Any, Collection, Dict, Iterable, Mapping, Tuple
-
-if TYPE_CHECKING:  # annotation-only imports (inert at runtime)
-    from typing import Callable
+from typing import Any, Callable, Collection, Dict, Iterable, Mapping, Tuple
 
 
 def _registry():

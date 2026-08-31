@@ -18,6 +18,7 @@ import pathlib
 from dataclasses import replace
 from typing import Any, Callable, Dict, List, Optional
 
+import ouroboros.tools.extension_dispatch as extension_dispatch
 import ouroboros.tools.registry_guard_process as registry_guard_process
 import ouroboros.tools.registry_guards as registry_guards
 import ouroboros.tools.shell_guards as shell_guards
@@ -225,27 +226,22 @@ _LIGHT_START_SERVICE_RESULT = ToolResult(
 )
 
 
-def _extension_dispatch_candidate(ctx: Any, name: str) -> Any:
-    """Resolve one LIVE extension descriptor for dispatch, or ``None``.
+def _unknown_tool_result(entries: Dict[str, Any], name: str, extension_unavailable: bool) -> str | ToolResult:
+    """The unknown-name answer, typed EXTENSION_UNAVAILABLE for a dead extension.
 
-    The tip dispatch body, hoisted verbatim out of the dispatcher so the
-    dispatch function stays inside the function-size law; behavior unchanged.
+    A registered extension name whose payload is NOT live is a distinct fact
+    from an unknown name (the D02 liveness bit), so it carries a typed code
+    instead of a nameless text; a truly unknown name keeps the legacy text.
     """
-    try:
-        from ouroboros.extension_loader import parse_extension_surface_name as _ext_parse_name
-    except Exception:
-        return None
-    if not _ext_parse_name or not _ext_parse_name(name):
-        return None
-    try:
-        from ouroboros.extension_loader import get_tool as _ext_get_tool, is_extension_live as _ext_is_live
-        ext_tool = _ext_get_tool(name)
-        capability_root = pathlib.Path(((getattr(ctx, "task_metadata", {}) or {}).get("budget_drive_root") if isinstance(getattr(ctx, "task_metadata", {}), dict) else "") or getattr(ctx, "budget_drive_root", "") or getattr(ctx, "drive_root", "") or ".").resolve(strict=False)
-        if ext_tool and not _ext_is_live(str(ext_tool.get("skill") or ""), capability_root, repo_path=str(ext_tool.get("skills_repo_path") or "") or None):
-            ext_tool = None
-    except Exception:
-        ext_tool = None
-    return ext_tool
+    text = f"⚠️ Unknown tool: {name}. Available: {', '.join(sorted(n for n, e in entries.items() if not e.alias_for))}"
+    if extension_unavailable:
+        return ToolResult(
+            status="unavailable",
+            code="EXTENSION_UNAVAILABLE",
+            text=text,
+            meta={"dynamic_provider": True},
+        )
+    return text
 
 
 def _protected_write_block_result(*, path: str, runtime_mode: str, action: str) -> ToolResult:
@@ -962,30 +958,6 @@ class ToolRegistry:
                 return 63
         return 360
 
-    def _dispatch_extension_tool(self, name: str, ext_tool: Dict[str, Any], args: Optional[Dict[str, Any]]) -> str:
-        """Dispatch live extension tools through the registry's helper module."""
-        from ouroboros.tools.extension_dispatch import dispatch_extension_tool
-
-        return dispatch_extension_tool(self._ctx, name, ext_tool, args)
-
-    def _dispatch_mcp_tool(self, name: str, args: Dict[str, Any]) -> str:
-        """Run a provider-safe MCP tool after the normal safety supervisor."""
-        from ouroboros.safety import check_safety as _mcp_check_safety
-        is_safe, safety_msg = _mcp_check_safety(
-            name,
-            args,
-            messages=getattr(self._ctx, "messages", None),
-            ctx=self._ctx,
-        )
-        if not is_safe:
-            return safety_msg
-        try:
-            from ouroboros.mcp_client import call_mcp_tool as _mcp_call
-            result = _mcp_call(name, args or {})
-        except Exception as exc:
-            return f"⚠️ TOOL_ERROR ({name}): {exc}"
-        return f"{safety_msg}\n\n---\n{result}" if safety_msg else result
-
     def _invoke_builtin_handler(
         self,
         name: str,
@@ -1077,7 +1049,7 @@ class ToolRegistry:
         acting_protected_grant = acting_subagent and bool(getattr(task_constraint, "protected_paths_grant", False))
         acting_tool_grants = set(getattr(task_constraint, "external_tool_grants", ()) or ()) if acting_subagent else set()
         entry = self._entries.get(name)
-        ext_tool = _extension_dispatch_candidate(self._ctx, name) if entry is None else None
+        ext_tool, extension_unavailable = extension_dispatch._extension_dispatch_candidate(self._ctx, name) if entry is None else (None, False)
         _mcp_is_name = None
         if entry is None and ext_tool is None:
             try:
@@ -1198,11 +1170,11 @@ class ToolRegistry:
         except Exception:
             _runtime_mode = "advanced"
         if is_mcp:
-            return self._dispatch_mcp_tool(name, args)
+            return extension_dispatch._dispatch_mcp_tool_result(self._ctx, name, args)
         if entry is None:
             if ext_tool and callable(ext_tool.get("handler")):
-                return self._dispatch_extension_tool(name, ext_tool, args)
-            return f"⚠️ Unknown tool: {name}. Available: {', '.join(sorted(n for n, e in self._entries.items() if not e.alias_for))}"
+                return extension_dispatch._dispatch_extension_tool_result(self._ctx, name, ext_tool, args)
+            return _unknown_tool_result(self._entries, name, extension_unavailable)
         args, python_resolution, python_block = tool_resolution._resolve_python_predispatch(
             self, name, args, _runtime_mode, effective_constraint, resolved_binding,
         )

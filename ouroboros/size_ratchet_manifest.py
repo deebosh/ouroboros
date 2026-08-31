@@ -197,6 +197,7 @@ BAND_PATHS = {
     "tests/test_telegram_miniapp_lifecycle.py": None,
     "tests/test_terminal_durability_v664.py": "Entered the band from 974 lines: terminal durability coverage now pins retry-admission failure custody so an unpersisted terminal row cannot publish task_done or lose the retry marker.",
     "tests/test_timeout_policy.py": "Adaptive timeout and custody regression suite covers raw-deadline admission, explicit finalization reserve, transport bounds, and late-result reconciliation.",
+    "tests/test_tool_result.py": "F3.1 typed-organ pins carried with the D02 organ (D04 entry 9): the closed code table, the one legacy-text adapter, the publish/sidecar seam and the meta-boundary contracts pin one organ in one suite; sibling suites (meta_boundaries, t46, classification differential) already hold the spill-over families.",
     "tests/test_usage_accounting.py": None,
     "tests/test_v6730_origin_invariant.py": None,
     "tests/test_v678_receipt_reconciliation.py": None,
