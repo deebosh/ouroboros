@@ -10,10 +10,12 @@ identity — the parent binding IS the leaf's object — and the hot-code label
 parity for the leaves, the same way the queue and loop splits pin both for
 theirs.
 
-Two reference rows are deliberately absent: ``_capture_stranded_patch`` was
+One reference row is deliberately absent: ``_capture_stranded_patch`` was
 re-homed by upstream itself (public ``capture_stranded_patch`` in
-``tools/delegate_integration.py``), and the ``tools/delegate.py`` terminal
-leaf is hot-deferred on the delegate_terminal name-collision fork.
+``tools/delegate_integration.py``). The ``tools/delegate.py`` terminal leaf
+landed as ``delegate_terminal_evidence.py`` — the ledger's
+``tools/delegate_terminal.py`` name collided with upstream's own
+``ouroboros/delegate_terminal.py`` (owner fork F-2=A rename).
 """
 
 from __future__ import annotations
@@ -27,6 +29,13 @@ DELEGATE_LEAF_OWNERS: dict[str, dict[str, str]] = {
             "open_runs pending_invocations release_task_runs reconcile_task_runs "
             "reconcile_orphaned_runs _reconcile_each _recover_pending_invocation "
             "_retire_recovered_registration _reconcile_one"
+        ),
+    },
+    "ouroboros.tools.delegate": {
+        "ouroboros.tools.delegate_terminal_evidence": (
+            "_containment_breach _NESTED_HOME_NOTE _NO_BOUNDARY_NOTE _containment_evidence "
+            "_terminal_payload _access_evidence _record_containment _reported_cost "
+            "_delivered_terminal_payload"
         ),
     },
     "ouroboros.tools.delegate_integration": {

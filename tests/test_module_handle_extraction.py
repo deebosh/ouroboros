@@ -192,6 +192,19 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/tools/control_scheduling.py": ("ouroboros/tools/control.py", "_ctl", frozenset({
         "load_settings",
     })),
+    # D07 finisher row (oracle ouroboros_v7_wip @ 9f691656, ledger rows
+    # 3468-3476). The ledger's tools/delegate_terminal.py name collided with
+    # upstream's own ouroboros/delegate_terminal.py, so the leaf landed as
+    # delegate_terminal_evidence.py (owner fork F-2=A). The declared set is
+    # maximal on tip bytes: EVERY parent-scope name the moved spans read at
+    # call time goes through `_delegate()` (the reference cut this leaf with
+    # plain preamble imports and declared only _emit).
+    "ouroboros/tools/delegate_terminal_evidence.py": ("ouroboros/tools/delegate.py", "_delegate", frozenset({
+        "_Breach", "_PAYLOAD_ENVELOPE_HEADROOM", "_emit", "_home_isolation_breach",
+        "_preview_payload", "_resolve_full_primary_output", "_stage_full_output",
+        "_widened_access", "add_terminal_source_verification", "custody",
+        "home_nested_under_operator_home", "tool_result_limit",
+    })),
     # D01 lane rows (L-B loop split + D38 agent dispatch), declared sets
     # re-derived on tip bytes by the transplant tool (reference table:
     # ouroboros_v7_wip @ 9f691656; tip additions over the reference are the

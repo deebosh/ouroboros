@@ -1473,3 +1473,88 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    retargeted to the reading leaf module - same oracle retarget-to-owner
    shape as the _find_duplicate_task sites; the sentinel's teeth are
    restored (the leaf's import-bound name is the one the handler reads).
+
+## From the F2 D07-finisher lane (base 2878560e, 2026-08-31)
+
+1. Scope executed (the three D07 owner forks, decided 31.08 batch 5: 5.9A,
+   5.10A, 5.11A): the deferred terminal leaf of tools/delegate.py, the
+   subagent_worktrees.py strict-registry delta with its pin suite, and NO
+   sdn retirement (the facade stays).
+2. F5-RENAME record (owner fork F-2=A, ledger rows 3468-3476): the reference
+   leaf destination `ouroboros/tools/delegate_terminal.py` is renamed at
+   landing to `ouroboros/tools/delegate_terminal_evidence.py`. Rationale:
+   upstream already owns `ouroboros/delegate_terminal.py` ("terminal
+   reconciliation boundary", 189 lines) and the ledger name would put two
+   different delegate_terminal modules in neighbouring packages — a
+   permanent grep/reading trap. Same class as the D01/D03 F5 destination
+   renames. Rows 3468-3476 read onto the renamed file unchanged otherwise.
+3. Terminal leaf landed from tip bytes (rows 3468-3476, D36 handle
+   `_delegate()`): drift-probe first (reference leaf `--check` against
+   `git show HEAD:ouroboros/tools/delegate.py`): 7/9 spans byte-true,
+   _terminal_payload and _delivered_terminal_payload upstream-drifted —
+   matching the quiet lane's held-back probe evidence — so the leaf was
+   EMITTED from tip bytes, no oracle semantics replayed. Final proof:
+   ast=tokens=byte-roundtrip=True on all 9 symbols, leaf_invariants=[],
+   undeclared_top_level=[], unread_declared=[], exit 0 (re-run after the
+   manual TYPE_CHECKING preamble addition, the D07-quiet
+   reconcile-leaf precedent).
+4. Declared-set recalc, MAXIMAL form (D10 tools/git precedent, finisher
+   work-order): the reference cut this leaf with plain preamble imports and
+   declared only {_emit}; the landed leaf declares EVERY parent-scope name
+   the moved spans read at call time — 12 names: _Breach,
+   _PAYLOAD_ENVELOPE_HEADROOM, _emit, _home_isolation_breach,
+   _preview_payload, _resolve_full_primary_output, _stage_full_output,
+   _widened_access, add_terminal_source_verification, custody,
+   home_nested_under_operator_home, tool_result_limit — so patches on the
+   historical `ouroboros.tools.delegate` surface keep their teeth. Only
+   stdlib (json) and typing stay preamble imports; annotation-only names
+   (_Breach for its `-> Optional[_Breach]` use, _RunCustody, ToolContext,
+   DelegatedRunShape) ride an `if TYPE_CHECKING:` block, inert under future
+   annotations. New LEAVES row pinned in
+   tests/test_module_handle_extraction.py.
+5. Facade: tools/delegate.py = tip parent - the 9 moved spans (lines
+   225-576 of the HEAD file) + the grouped EOF re-export block + noqa
+   discipline: exactly four `# noqa: F401` markers on the import lines of
+   parent members now read only through `_delegate()` at call time
+   (_home_isolation_breach, _widened_access, home_nested_under_operator_home,
+   add_terminal_source_verification — the bindings are load-bearing for the
+   leaf and must survive ruff F). Every kept def/assign span proven
+   byte-identical to `git show HEAD:ouroboros/tools/delegate.py` (the diff
+   of the kept region is exactly those four marker lines); re-exports
+   proven same-object by import smoke. tools/delegate.py 1600 -> 1263: the
+   LAST 1600-hard-cap giant of the D07 organ leaves the cap and enters the
+   1001-1500 band with a rationale. The reference facade-identity rows for this family (held
+   back by the quiet lane) landed in tests/test_delegate_owner_facades.py
+   under the renamed leaf.
+6. Ф-1 strict-registry delta (rows 1083-1092, owner sanction 5.10A —
+   SANCTIONED SEMANTIC DELTA in an otherwise byte-preserving lane):
+   drift-probe first — tip blob of ouroboros/subagent_worktrees.py ==
+   merge-base 8028f1df blob (fd2db424, upstream never touched the module),
+   so the reference diff (+104/-22) applied clean; the landed module is
+   byte-identical to the reference module (blob ee694e4d on both sides).
+   Semantics: absent registry stays an ordinary empty registry; malformed
+   registry raises typed SubagentWorktreeRegistryCorrupt for every author/
+   destructor (provision_worktree, provision_execution_snapshot,
+   provision_payload_snapshot, find_execution_snapshot,
+   remove_execution_snapshot, prune_execution_snapshots, remove_worktree,
+   prune_orphans) instead of silently collapsing to empty; bytes are kept;
+   one durable subagent_worktree_registry_corrupt event; inspection reads
+   stay soft; registration moves INSIDE the cleanup scope on all three
+   provisioning branches. Pin suite
+   tests/test_subagent_worktree_registry_s6.py copied verbatim from the
+   oracle (281 lines, 11 tests, red without the delta per D09 entry 10):
+   imports only stdlib + the module itself, zero v7-only names to reverse-
+   map; its docstring's sibling reference
+   (test_delegated_skill_payload.py::test_registry_save_failure_leaves_no_orphan_snapshot_dir)
+   exists on tip; the oracle registered it in no conftest path-keyed table.
+   The one pre-existing tip test touching the registry
+   (tests/test_acting_subagents.py:1298) uses the soft read, whose
+   signature and behavior are unchanged.
+7. Ф-3 (sdn): no action, per owner 5.11A — the quiet lane's entry 8 stands
+   (rows 3937-3938 satisfied as identity; retirement stays an F5
+   consumer-rebind item).
+8. Ratchet (official regenerator): ouroboros/tools/delegate.py enters the
+   band by extraction (1600->1263, rationale recorded);
+   ouroboros/subagent_worktrees.py enters the band by the sanctioned delta
+   (1000->1082, rationale recorded). domains.toml untouched (coordinator
+   seam owns the map).
