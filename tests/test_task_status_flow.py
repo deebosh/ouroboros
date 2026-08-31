@@ -185,7 +185,7 @@ def test_natural_completion_wins_a_late_cancel(tmp_path, monkeypatch):
             "objective": {"status": "solved"},
             "review": {"status": "pass"},
         },
-        cost_usd=0.75,
+        accounted_upper_bound_usd=0.75,
     )
     event_queue = _FakeEventQueue()
     ctx = SimpleNamespace(
@@ -217,7 +217,7 @@ def test_natural_completion_wins_a_late_cancel(tmp_path, monkeypatch):
     assert queue_module.cancel_task_by_id("fast-child") is True
     stored = load_task_result(tmp_path, "fast-child")
     assert stored["status"] == STATUS_COMPLETED
-    assert stored["cost_usd"] == 0.75
+    assert stored["accounted_upper_bound_usd"] == 0.75
     assert stored["result"] == "finished in the cancellation race"
     assert stored["final_answer"] == "kept answer"
     assert stored["artifacts"] == [{"name": "kept.txt"}]
@@ -514,7 +514,7 @@ def test_get_task_result_returns_full_completed_output(tmp_path):
         "abc123",
         STATUS_COMPLETED,
         result=full_text,
-        cost_usd=1.23,
+        accounted_upper_bound_usd=1.23,
         trace_summary="trace",
     )
 
@@ -543,7 +543,7 @@ def test_get_task_result_carries_bounded_per_receipt_rows(tmp_path):
     from ouroboros.task_results import STATUS_COMPLETED, write_task_result
     from ouroboros.tools.control import _get_task_result
 
-    write_task_result(tmp_path, "abc123", STATUS_COMPLETED, result="done", cost_usd=0.1)
+    write_task_result(tmp_path, "abc123", STATUS_COMPLETED, result="done", accounted_upper_bound_usd=0.1)
     for idx in range(12):
         append_verification_receipt(tmp_path, "abc123", {
             "status": "pass" if idx else "fail",
@@ -574,7 +574,7 @@ def test_get_task_result_carries_bounded_per_receipt_rows(tmp_path):
 
     # A red that a LATER green for the same criterion reconciles is not carried:
     # the rule is the shared unreconciled-set SSOT, not "always float failures".
-    write_task_result(tmp_path, "closed", STATUS_COMPLETED, result="done", cost_usd=0.1)
+    write_task_result(tmp_path, "closed", STATUS_COMPLETED, result="done", accounted_upper_bound_usd=0.1)
     append_verification_receipt(tmp_path, "closed", {
         "status": "fail", "check": "pytest tests/a.py", "criterion_id": "claim_a",
     })
@@ -649,7 +649,7 @@ def test_child_finalization_publishes_receipts_to_canonical_root(tmp_path):
         tmp_path, tid, STATUS_SCHEDULED,
         drive_root=str(child_drive), child_drive_root=str(child_drive),
     )
-    write_task_result(child_drive, tid, STATUS_COMPLETED, result="child split done", cost_usd=0.2)
+    write_task_result(child_drive, tid, STATUS_COMPLETED, result="child split done", accounted_upper_bound_usd=0.2)
     append_verification_receipt(child_drive, tid, {
         "status": "fail", "check": "pytest tests/red.py", "criterion_id": "claim_red",
     })
@@ -992,7 +992,7 @@ def test_get_task_result_uses_child_terminal_over_stale_parent(tmp_path):
         "child123",
         STATUS_COMPLETED,
         result="child terminal handoff",
-        cost_usd=0.42,
+        accounted_upper_bound_usd=0.42,
         trace_summary="child trace",
     )
 
@@ -1017,7 +1017,7 @@ def test_wait_for_tasks_returns_compact_structural_batch(tmp_path):
         "parentdone",
         STATUS_COMPLETED,
         result="parent finished",
-        cost_usd=1.25,
+        accounted_upper_bound_usd=1.25,
         loop_outcome={"result_status": "succeeded", "compat_result_status": "succeeded"},
         verification_ledger={"entries": [{"kind": "objective_outcome"}]},
         trace_refs=[{"path": "logs/trace.jsonl"}],
@@ -1040,7 +1040,7 @@ def test_wait_for_tasks_returns_compact_structural_batch(tmp_path):
     assert parent["task_id"] == "parentdone"
     assert parent["status"] == STATUS_COMPLETED
     assert parent["result"] == "parent finished"
-    assert parent["cost_usd"] == 1.25
+    assert parent["accounted_upper_bound_usd"] == 1.25
     assert parent["outcome_axes"]["lifecycle"]["status"] == STATUS_COMPLETED
     # Forensics stay on disk — not inlined into the batch projection.
     assert "loop_outcome" not in parent
@@ -1056,7 +1056,7 @@ def test_wait_for_tasks_returns_compact_structural_batch(tmp_path):
     child = payload["tasks"]["childdone"]
     assert child["result"] == "child finished"
     assert child["trace_summary"] == "trace"
-    assert child["cost_usd"] is None  # absent accounting -> honest null, not $0
+    assert child["accounted_upper_bound_usd"] is None  # absent accounting -> honest null, not $0
     assert child["child_result_sha256"] == _child_result_sha256(
         load_effective_task_result(tmp_path, "childdone")
     )
@@ -1156,7 +1156,7 @@ def test_wait_for_tasks_any_terminal_early_return_projects_pending_child(tmp_pat
     from ouroboros.task_results import STATUS_COMPLETED, STATUS_SCHEDULED, write_task_result
     from ouroboros.tools.control import _wait_for_tasks
 
-    write_task_result(tmp_path, "fastchild", STATUS_COMPLETED, result="done first", cost_usd=0.10)
+    write_task_result(tmp_path, "fastchild", STATUS_COMPLETED, result="done first", accounted_upper_bound_usd=0.10)
     write_task_result(tmp_path, "slowchild", STATUS_SCHEDULED, result="")
 
     ctx = SimpleNamespace(drive_root=tmp_path)
@@ -1166,10 +1166,10 @@ def test_wait_for_tasks_any_terminal_early_return_projects_pending_child(tmp_pat
     assert payload["all_terminal"] is False
     assert payload["timed_out"] is False
     assert payload["tasks"]["fastchild"]["status"] == STATUS_COMPLETED
-    assert payload["tasks"]["fastchild"]["cost_usd"] == 0.10
+    assert payload["tasks"]["fastchild"]["accounted_upper_bound_usd"] == 0.10
     # The still-pending child gets the same compact shape with cost present.
     assert payload["tasks"]["slowchild"]["status"] == STATUS_SCHEDULED
-    assert "cost_usd" in payload["tasks"]["slowchild"]
+    assert "accounted_upper_bound_usd" in payload["tasks"]["slowchild"]
     assert "child_result_sha256" in payload["tasks"]["slowchild"]
 
 
@@ -1177,7 +1177,7 @@ def test_wait_for_tasks_cost_present_on_cancelled_and_failed(tmp_path):
     from ouroboros.task_results import STATUS_CANCELLED, STATUS_FAILED, write_task_result
     from ouroboros.tools.control import _wait_for_tasks
 
-    write_task_result(tmp_path, "cancelledchild", STATUS_CANCELLED, result="best-effort partial handoff", cost_usd=0.42)
+    write_task_result(tmp_path, "cancelledchild", STATUS_CANCELLED, result="best-effort partial handoff", accounted_upper_bound_usd=0.42)
     write_task_result(tmp_path, "failedchild", STATUS_FAILED, result="provider exploded")
 
     ctx = SimpleNamespace(drive_root=tmp_path)
@@ -1185,13 +1185,13 @@ def test_wait_for_tasks_cost_present_on_cancelled_and_failed(tmp_path):
 
     cancelled = payload["tasks"]["cancelledchild"]
     assert cancelled["status"] == STATUS_CANCELLED
-    assert cancelled["cost_usd"] == 0.42
+    assert cancelled["accounted_upper_bound_usd"] == 0.42
     assert cancelled["result"] == "best-effort partial handoff"
     failed = payload["tasks"]["failedchild"]
     assert failed["status"] == STATUS_FAILED
     # Absent accounting projects an honest null — never a confirmed-looking $0
     # (triad v6.71.2 r1; mirrors the ledger's unknown-cost discipline).
-    assert "cost_usd" in failed and failed["cost_usd"] is None
+    assert "accounted_upper_bound_usd" in failed and failed["accounted_upper_bound_usd"] is None
     assert "child_result_sha256" in failed
 
 
@@ -1213,7 +1213,7 @@ def test_wait_for_tasks_rejected_duplicate_carries_duplicate_of(tmp_path):
     dupe = payload["tasks"]["dupechild"]
     assert dupe["status"] == STATUS_REJECTED_DUPLICATE
     assert dupe["duplicate_of"] == "original123"
-    assert "cost_usd" in dupe
+    assert "accounted_upper_bound_usd" in dupe
 
 
 # --- v6.91 wait terminality: cancel_requested is a latch, not a settled record
@@ -1340,7 +1340,7 @@ def test_wait_for_tasks_flags_unknown_ids_and_attaches_children_roster(tmp_path)
         "realchild1",
         STATUS_COMPLETED,
         result="real child finished",
-        cost_usd=0.55,
+        accounted_upper_bound_usd=0.55,
         parent_task_id="waitparent1",
         root_task_id="waitparent1",
         delegation_role="subagent",
@@ -1368,9 +1368,9 @@ def test_wait_for_tasks_flags_unknown_ids_and_attaches_children_roster(tmp_path)
     # only — no result/trace envelope fields, absent accounting projects null.
     roster = payload["children_roster"]
     assert [row["task_id"] for row in roster] == ["realchild1"]
-    assert set(roster[0]) == {"task_id", "status", "cost_usd", "accounted_upper_bound_usd",
+    assert set(roster[0]) == {"task_id", "status", "accounted_upper_bound_usd", "accounted_upper_bound_usd",
                               "child_result_sha256", "outcome_axes"}
-    assert roster[0]["cost_usd"] == 0.55
+    assert roster[0]["accounted_upper_bound_usd"] == 0.55
     # C2: the additive honest name carries the SAME value as the alias.
     assert roster[0]["accounted_upper_bound_usd"] == 0.55
     # Nothing was capped away, and the projection SAYS so (BIBLE P1).
@@ -1407,7 +1407,7 @@ def test_children_roster_projection_discloses_the_capped_tail(tmp_path):
     assert len(roster) == 30  # the cap holds — the surface stays compact
     assert projected["children_roster_omitted"] == total - 30  # …and is disclosed
     assert all(
-        set(row) == {"task_id", "status", "cost_usd", "accounted_upper_bound_usd",
+        set(row) == {"task_id", "status", "accounted_upper_bound_usd", "accounted_upper_bound_usd",
                      "child_result_sha256", "outcome_axes"}
         for row in roster
     )

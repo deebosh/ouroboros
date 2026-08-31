@@ -324,10 +324,11 @@ def test_committed_single_model_profiles_use_one_canonical_actor(relative: str, 
 )
 def test_target_attached_profiles_override_foreign_runtime_defaults(relative, expected):
     payload = json.loads((REPO / relative).read_text(encoding="utf-8"))
-    triad_count = len([item for item in payload["OUROBOROS_REVIEW_MODELS"].split(",")
-                       if item.strip()])
-    scope_count = len([item for item in payload["OUROBOROS_SCOPE_REVIEW_MODELS"].split(",")
-                       if item.strip()])
+    # ABI 7.0 (ABI-10): the comma keys are retired — the structured slots value
+    # is the template's ONE reviewer configuration surface.
+    _slots = json.loads(payload[REVIEWER_SLOTS_ENV])
+    triad_count = len(_slots["triad"])
+    scope_count = len(_slots["scope"])
     assert payload[REVIEWER_SLOTS_ENV] == single_model_reviewer_slots_setting(
         expected,
         review_slots=triad_count,

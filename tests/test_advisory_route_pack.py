@@ -220,8 +220,13 @@ def test_api_prompt_keeps_inlining_governance_bodies(tmp_path):
 def test_delegated_route_dispatches_the_pointer_pack(tmp_path, monkeypatch):
     """_run_claude_advisory on the agent_session route hands the delegated
     session the compact pointer pack, never the inlined governance bodies."""
-    monkeypatch.setenv(advisory.ADVISORY_REVIEW_ROUTE_ENV, "agent_session")
-    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
+    # ABI-10: the delegated advisory is configured through the structured slots.
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+        "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/x"}}],
+        "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai/y"}}],
+        "advisory": {"enabled": True,
+                     "route": {"kind": "agent_session", "target_id": "claude"}},
+    }))
     ctx = _ctx(tmp_path)
     _write_governance_docs(ctx.repo_dir)
     captured = {}
@@ -273,8 +278,13 @@ def test_api_overflow_failure_becomes_typed_skip(tmp_path, monkeypatch, api_env)
 
 
 def test_delegated_overflow_failure_becomes_typed_skip(tmp_path, monkeypatch):
-    monkeypatch.setenv(advisory.ADVISORY_REVIEW_ROUTE_ENV, "agent_session")
-    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
+    # ABI-10: the delegated advisory is configured through the structured slots.
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+        "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/x"}}],
+        "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai/y"}}],
+        "advisory": {"enabled": True,
+                     "route": {"kind": "agent_session", "target_id": "claude"}},
+    }))
 
     def _failed(prompt, repo_dir, ctx_):
         return SimpleNamespace(

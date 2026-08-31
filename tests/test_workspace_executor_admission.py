@@ -120,7 +120,8 @@ def test_api_task_rejects_empty_executor_ref(tmp_path, monkeypatch):
     body = json.loads(response.body.decode("utf-8"))
 
     assert response.status_code == 400
-    assert "executor_ref must be a JSON object" in body["error"]
+    # ABI-3 ingress schema: the nested ExecutorRef contract fires first.
+    assert "executor_ref" in body["error"]
 
 
 def test_api_task_rejects_executor_ref_mapping_to_system_repo(tmp_path, monkeypatch):

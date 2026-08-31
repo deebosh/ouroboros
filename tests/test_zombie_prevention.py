@@ -34,7 +34,7 @@ def test_write_failure_result_creates_correct_json(tmp_path):
     assert data["task_id"] == "abc123"
     assert data["status"] == "failed"
     assert isinstance(data["result"], str) and len(data["result"]) > 0
-    assert data["cost_usd"] == 0
+    assert data["accounted_upper_bound_usd"] in (0, None)  # ABI-3: honest name; empty ledger stays honest
     assert data["total_rounds"] == 0
     assert "ts" in data
 
