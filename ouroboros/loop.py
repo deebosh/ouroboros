@@ -70,9 +70,6 @@ from ouroboros.loop_transport import (
 )
 from ouroboros.pricing import estimate_cost_optional  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 
-# Backward-compat alias for source-inspecting/monkeypatched tests.
-_call_llm_with_retry = call_llm_with_retry
-
 log = logging.getLogger(__name__)
 
 

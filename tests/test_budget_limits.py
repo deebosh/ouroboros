@@ -172,7 +172,7 @@ class TestGlobalBudgetGuard:
 # --- use_local propagation ---
 
 class TestUseLocalPropagation:
-    """Ensure use_local is passed to _call_llm_with_retry on global budget stop."""
+    """Ensure use_local is passed to call_llm_with_retry on global budget stop."""
 
     @patch("ouroboros.loop.call_llm_with_retry")
     def test_global_stop_passes_use_local(self, mock_retry, tmp_path):
