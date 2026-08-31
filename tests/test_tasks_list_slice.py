@@ -124,6 +124,42 @@ def test_deleted_result_file_drops_out_of_list_and_memo(tmp_path):
     assert [row["task_id"] for row in _get_tasks(data)["tasks"]] == ["keep"]
 
 
+def test_unfiltered_list_slice_is_admission_aware_with_one_batched_event(tmp_path):
+    """ABI-2 (Ф3.1 fix-round pin): the sliced fast path quarantines inadmissible
+    rows exactly like the list_task_results fail-soft scan — the row never
+    reaches the response, its bytes move under task_results/quarantine/, and
+    the whole scan reports ONE batched durable event (6.3=B), never one per
+    file."""
+    data = tmp_path / "data"
+    _write_raw(data, "good", status="completed", result="ok", ts="2026-01-01T01:00:00Z")
+    results = data / "task_results"
+    # Two inadmissible rows: unstamped pre-7.0 history and a future stamp.
+    (results / "old.json").write_text(
+        json.dumps({"task_id": "old", "status": "completed", "ts": "2026-01-01T02:00:00Z"}),
+        encoding="utf-8",
+    )
+    (results / "future.json").write_text(
+        json.dumps({"_schema_version": 99, "task_id": "future", "status": "completed"}),
+        encoding="utf-8",
+    )
+
+    payload = _get_tasks(data)  # unfiltered request = the sliced fast path
+
+    assert [row["task_id"] for row in payload["tasks"]] == ["good"]
+    quarantine = results / "quarantine"
+    assert sorted(p.name for p in quarantine.glob("*.json")) == ["future.json", "old.json"]
+    events_path = data / "logs" / "events.jsonl"
+    events = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    quarantine_events = [e for e in events if e.get("type") == "task_results_quarantined"]
+    assert len(quarantine_events) == 1  # one batched event for the whole scan
+    assert quarantine_events[0]["count"] == 2
+    assert quarantine_events[0]["reasons"] == {"unstamped_pre_7_0": 1, "future_schema": 1}
+
+
 def test_queue_only_returns_queue_without_scanning_task_results(tmp_path, monkeypatch):
     import ouroboros.gateway.tasks as gateway_tasks
 

@@ -54,6 +54,11 @@ from ouroboros.contracts.task_contract import (
 )
 from ouroboros.outcomes import public_task_result
 from ouroboros.artifacts import resolve_chat_media_path
+from ouroboros.task_result_schema import (
+    emit_quarantine_event,
+    quarantine_task_result,
+    task_result_schema_refusal,
+)
 from ouroboros.task_results import (
     STATUS_FAILED,
     STATUS_SCHEDULED,
@@ -428,7 +433,17 @@ async def api_tasks_create(request: Request) -> JSONResponse:
         task_id = validate_task_id(body.get("task_id") or uuid.uuid4().hex[:16])
     except ValueError as exc:
         return json_error(str(exc), 400)
-    if load_task_result(drive_root, task_id):
+    # ABI-2: identity collision is an AUTHORITY question, so the probe is the
+    # strict reader. The fail-soft default would QUARANTINE an inadmissible
+    # stored row as a side effect of this check and then report "no result",
+    # letting the endpoint reuse that row's task id; strict raises WITHOUT
+    # moving anything, and any stored row — admissible or not — keeps its
+    # identity occupied.
+    try:
+        existing_row = load_task_result(drive_root, task_id, strict=True)
+    except ValueError:
+        return json_error(f"task_id already exists: {task_id}", 409)
+    if existing_row:
         return json_error(f"task_id already exists: {task_id}", 409)
     if (drive_root / HEADLESS_TASKS_DIR / task_id).exists() or (drive_root / ARTIFACTS_DIR / task_id).exists():
         return json_error(f"task_id already has headless state: {task_id}", 409)
@@ -811,13 +826,31 @@ def _tasks_list_payload(
     if limit is not None:
         names = names[:limit]
     rows = []
+    quarantined: List[Dict[str, str]] = []
     for name in names:
-        raw = read_json_dict(results_dir / name)
-        if raw is None:
+        path = results_dir / name
+        raw = read_json_dict(path)
+        if raw is None and not path.is_file():
             continue  # vanished/torn between the scandir and this read
+        # ABI-2: the sliced fast path is admission-aware like every other
+        # reader — an inadmissible row is quarantined and never projected,
+        # with ONE batched durable event for the whole scan (6.3=B), the
+        # same semantics as the list_task_results fail-soft scan.
+        refusal = task_result_schema_refusal(raw)
+        if refusal:
+            outcome = quarantine_task_result(path, refusal)
+            if outcome == "kept_admissible":
+                raw = read_json_dict(path)
+                if raw is None or task_result_schema_refusal(raw):
+                    continue
+            else:
+                if outcome == "moved":
+                    quarantined.append({"task_id": path.stem, "reason": refusal})
+                continue
         rows.append(_compact_list_row(public_task_result(effective_task_result(
             drive_root, raw, materialize_artifacts=False, _events_index=events_index,
         ))))
+    emit_quarantine_event(drive_root, quarantined)
     # Re-sort the slice by effective ts: the child-drive merge may have replaced
     # ts, and the response order is the displayed order.
     rows.sort(key=lambda item: str(item.get("ts") or ""), reverse=True)

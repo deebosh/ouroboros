@@ -345,6 +345,54 @@ def test_task_api_rejects_unsafe_task_id_and_system_workspace(tmp_path, monkeypa
     assert typed.status_code == 400
 
 
+def test_task_api_identity_collision_check_is_strict_not_fail_soft(tmp_path, monkeypatch):
+    """ABI-2 (Ф3.1 fix-round pin): the task_id-already-exists probe is an
+    AUTHORITY read. An INADMISSIBLE stored row (here: unstamped pre-7.0
+    history) must still occupy its identity — the request is refused with 409
+    — and the probe must NOT quarantine the row as a side effect: the bytes
+    stay in task_results/, nothing moves under quarantine/."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subprocess.run(["git", "init"], cwd=workspace, check=True, capture_output=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    data = tmp_path / "data"
+    results = data / "task_results"
+    results.mkdir(parents=True)
+    legacy = results / "legacyid.json"
+    legacy.write_text(
+        json.dumps({"task_id": "legacyid", "status": "completed", "result": "pre-7.0"}),
+        encoding="utf-8",
+    )
+    original = legacy.read_bytes()
+    monkeypatch.setattr("supervisor.queue.enqueue_task", lambda task: task)
+    monkeypatch.setattr("supervisor.queue.persist_queue_snapshot", lambda reason="": True)
+
+    app = Starlette(routes=[Route("/api/tasks", endpoint=api_tasks_create, methods=["POST"])])
+    app.state.drive_root = data
+    app.state.repo_dir = repo
+    response = TestClient(app).post(
+        "/api/tasks",
+        json={"description": "x", "task_id": "legacyid", "workspace_root": str(workspace)},
+    )
+
+    assert response.status_code == 409
+    assert "already exists" in response.json()["error"]
+    # The identity probe never mutates storage: no quarantine, bytes unchanged.
+    assert legacy.read_bytes() == original
+    assert not (results / "quarantine").exists()
+    # An unreadable (torn/malformed) row occupies its identity the same way.
+    torn = results / "tornid.json"
+    torn.write_text("{ not json", encoding="utf-8")
+    torn_response = TestClient(app).post(
+        "/api/tasks",
+        json={"description": "x", "task_id": "tornid", "workspace_root": str(workspace)},
+    )
+    assert torn_response.status_code == 409
+    assert torn.read_text(encoding="utf-8") == "{ not json"
+    assert not (results / "quarantine").exists()
+
+
 def test_resolve_workspace_root_blocks_case_variant_control_plane(tmp_path):
     system_repo = tmp_path / "Ouroboros" / "repo"
     drive = tmp_path / "Ouroboros" / "data"
