@@ -1157,7 +1157,13 @@ class TestResponseGroundingGate:
 
         assert "response ungrounded" in result
         assert "0 distinct path references" in result
-        assert usage == {"cost": 0.42}, "usage preserved: review tokens were spent"
+        assert "corrective retry was attempted" in result, (
+            "refusal text notes that the corrective retry ran"
+        )
+        assert usage == {"cost": 0.84}, (
+            "usage = sum of both chat_observed calls (0.42 + 0.42) when the "
+            "corrective retry still falls short"
+        )
 
     def test_gate_b_fires_when_response_refs_paths_not_in_pack(self, tmp_repo, tmp_drive):
         """Response mentions fabricated paths that are NOT in the manifest."""
@@ -1193,7 +1199,8 @@ class TestResponseGroundingGate:
 
         assert "response ungrounded" in result
         assert "2 distinct path references" in result  # loop.py + review_helpers.py
-        assert usage == {"cost": 0.42}
+        assert "corrective retry was attempted" in result
+        assert usage == {"cost": 0.84}, "merged cost across two chat_observed calls"
 
     def test_gate_b_fires_when_only_one_path_ref_intersects(self, tmp_repo, tmp_drive):
         """5 path mentions but only 1 in pack: gate fires (count < 3)."""
@@ -1228,7 +1235,8 @@ class TestResponseGroundingGate:
 
         assert "response ungrounded" in result
         assert "1 distinct path references" in result
-        assert usage == {"cost": 0.42}
+        assert "corrective retry was attempted" in result
+        assert usage == {"cost": 0.84}, "merged cost across two chat_observed calls"
 
     def test_gate_b_passes_with_three_distinct_grounded_refs(self, tmp_repo, tmp_drive):
         """Response mentions 3 distinct pack paths → gate passes."""
@@ -1410,7 +1418,186 @@ class TestResponseGroundingGate:
             )
 
         assert "response ungrounded" in result
-        assert usage == {"cost": 0.99}, "usage preserved when Gate B rejects"
+        assert "corrective retry was attempted" in result
+        assert usage == {"cost": 1.98}, (
+            "usage = sum of both chat_observed calls (0.99 + 0.99) when the "
+            "corrective retry also fails Gate B"
+        )
+
+    def test_system_prompt_requires_min_path_refs(self):
+        """The system prompt explicitly states the Gate B citation requirement.
+
+        Closes ibl-8095de135be5: the prompt must announce the Gate B floor in
+        plain language so the model targets it on the FIRST generation rather
+        than relying on a corrective retry. Substring checks pin the three
+        required components: the numeric floor, the verbatim-citation rule,
+        and the rejection clause.
+        """
+        from ouroboros.deep_self_review import _SYSTEM_PROMPT, _DEEP_MIN_PATH_REFS
+
+        assert str(_DEEP_MIN_PATH_REFS) in _SYSTEM_PROMPT, (
+            "system prompt must surface the Gate B floor numerically"
+        )
+        prompt_lower = _SYSTEM_PROMPT.lower()
+        assert "verbatim" in prompt_lower, (
+            "system prompt must require VERBATIM path citations"
+        )
+        assert "distinct" in prompt_lower, (
+            "system prompt must require DISTINCT path citations"
+        )
+        assert "rejected" in prompt_lower or "rejection" in prompt_lower, (
+            "system prompt must warn that under-citation gets rejected"
+        )
+
+    def test_gate_b_retries_once_and_publishes_on_corrected_response(
+        self, tmp_repo, tmp_drive
+    ):
+        """First response grounds 1 path; corrective retry grounds 3 paths.
+
+        Verifies the rescue path (closes ibl-8095de135be5): chat_observed is
+        called TWICE, the second response is returned as the result (NOT a
+        refusal), and merged usage reflects both calls.
+        """
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                side_effect=[
+                    (
+                        {"content": "Reviewed ouroboros/loop.py briefly."},
+                        {"cost": 0.40},
+                    ),
+                    (
+                        {
+                            "content": (
+                                "Reviewed ouroboros/deep_self_review.py for the gates, "
+                                "ouroboros/loop.py for the task loop, and "
+                                "ouroboros/tools/review_helpers.py for the prompt pack. "
+                                "All look sound."
+                            )
+                        },
+                        {"cost": 0.60},
+                    ),
+                ],
+            ) as chat_patch,
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert chat_patch.call_count == 2, (
+            "corrective retry issued (second chat_observed call)"
+        )
+        assert "Reviewed ouroboros/deep_self_review.py" in result, (
+            "returned text is the REVISED retry response, not the first"
+        )
+        assert "response ungrounded" not in result, (
+            "no refusal published when the corrective retry meets the gate"
+        )
+        assert usage == {"cost": 1.00}, (
+            "merged cost = 0.40 + 0.60 across the two calls"
+        )
+
+    def test_gate_b_refuses_after_corrective_retry_still_short(
+        self, tmp_repo, tmp_drive
+    ):
+        """Both responses ground only 1 path → refusal notes the retry attempt.
+
+        Verifies the fail-closed path: chat_observed is called twice, the
+        refusal text mentions a corrective retry was attempted, and merged
+        usage reflects both calls (matches contract test (c) for ibl-8095de135be5).
+        """
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                side_effect=[
+                    (
+                        {"content": "Reviewed ouroboros/loop.py briefly."},
+                        {"cost": 0.55},
+                    ),
+                    (
+                        {"content": "Still only ouroboros/loop.py to mention."},
+                        {"cost": 0.65},
+                    ),
+                ],
+            ) as chat_patch,
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert chat_patch.call_count == 2
+        assert "response ungrounded" in result
+        assert "corrective retry was attempted" in result
+        assert "1 distinct path references" in result
+        assert usage == pytest.approx({"cost": 1.20}), "merged cost = 0.55 + 0.65"
+
+    def test_gate_b_does_not_retry_when_first_response_meets_floor(
+        self, tmp_repo, tmp_drive
+    ):
+        """First response already grounds 3 paths → no retry call issued.
+
+        Verifies the BOUNDED retry (contract test (d) for ibl-8095de135be5):
+        chat_observed is called ONCE, the first response is returned
+        directly, and usage reflects only that single call.
+        """
+        mock_llm = mock.Mock()
+
+        with (
+            mock.patch(
+                "ouroboros.deep_self_review.build_review_pack",
+                return_value=self._build_with_pack(),
+            ),
+            mock.patch(
+                "ouroboros.llm_observability.chat_observed",
+                return_value=(
+                    {
+                        "content": (
+                            "Reviewed ouroboros/deep_self_review.py, "
+                            "ouroboros/loop.py, and "
+                            "ouroboros/tools/review_helpers.py — all sound."
+                        )
+                    },
+                    {"cost": 0.42},
+                ),
+            ) as chat_patch,
+        ):
+            result, usage = run_deep_self_review(
+                repo_dir=tmp_repo,
+                drive_root=tmp_drive,
+                llm=mock_llm,
+                emit_progress=lambda x: None,
+                event_queue=None,
+                model="test-model",
+            )
+
+        assert chat_patch.call_count == 1, (
+            "no corrective retry when first response already meets the floor"
+        )
+        assert "Reviewed ouroboros" in result
+        assert "response ungrounded" not in result
+        assert usage == {"cost": 0.42}
 
 
 def test_deep_max_output_tokens_cap_prevents_100k_402_trap():

@@ -70,6 +70,17 @@ _DEEP_MIN_MEMORY_FILES = 3
 # cannot be presented as authoritative. URL-stripping pre-pass prevents a
 # fabricated URL from grounding via its leaf path component.
 _DEEP_MIN_PATH_REFS = 3
+# Gate B corrective retry budget (closes ibl-8095de135be5). When the first
+# response grounds fewer than _DEEP_MIN_PATH_REFS pack paths, the NON-CHUNKED
+# Gate B appends a corrective nudge (with the actual grounded count + ~8
+# verbatim pack paths the model can COPY) and re-issues the same chat_observed
+# call. Bounded to ONE retry so this stays a rescue, not a retry loop — the
+# expensive generation is no longer thrown away on a citation shortfall, but
+# we still fail-closed if the corrective retry also falls short. Folded usage
+# is the sum of both calls. Chunk (~813) and synthesis (~886) Gate B sites
+# are LEAVE-UNCHANGED this pass (scope creep risk; follow-ups to land in a
+# separate plan-review wave).
+_DEEP_GATE_B_RETRIES = 1
 _PACK_PATH_EXTS = ("py", "md", "js", "ts", "json", "yaml", "yml", "toml", "sh", "bash", "sql")
 _URL_RE = re.compile(r"https?://\S+")
 _PATH_REF_RE = re.compile(
@@ -135,7 +146,7 @@ _DEEP_MAX_CHUNKS = 8
 # the chunk budget MUST stay below the reviewer's real window.
 _DEEP_CHUNK_TOKEN_BUDGET = 200_000
 
-_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT = f"""\
 You are conducting a deep self-review of the Ouroboros project — a self-creating AI agent.
 
 Primary directive: The Constitution (BIBLE.md) is your absolute reference.
@@ -152,7 +163,11 @@ accounted for by hash, size, classification, and omission/manifest disposition.
 Cross-reference interactions between modules. Prioritize: CRITICAL > IMPORTANT > ADVISORY.
 
 Output: Structured report with prioritized findings, each citing the
-specific file, line/section, the problem, and the proposed fix."""
+specific file, line/section, the problem, and the proposed fix.
+
+Citation requirement: cite at least {_DEEP_MIN_PATH_REFS} distinct real file paths
+from the provided pack, quoted verbatim as they appear (e.g. ``ouroboros/loop.py``);
+a review citing fewer will be rejected unpublished."""
 
 
 def _dulwich_tracked_paths(repo_dir: pathlib.Path) -> tuple[list[str], list[str]]:
@@ -1004,6 +1019,11 @@ def run_deep_self_review(
             f"{stats['total_chars']:,} chars"
             + (f", {len(stats['skipped'])} skipped" if stats["skipped"] else "")
         )
+        emit_progress(
+            f"Gate B threshold: review must cite at least {_DEEP_MIN_PATH_REFS} "
+            f"distinct verbatim pack paths ({stats['file_count']} files available); "
+            f"a corrective retry is allowed if the first response falls short."
+        )
 
         # Gate full system+pack like scope review: reserve output headroom
         # inside the 1M window (min(SSOT, window − output − margin)) so a large
@@ -1113,7 +1133,101 @@ def run_deep_self_review(
         # N distinct paths that exist in the assembled pack, so hallucinated
         # prose cannot be presented as authoritative. URL-stripping pre-pass
         # prevents a fabricated URL from grounding via its leaf path component.
+        #
+        # Corrective retry (closes ibl-8095de135be5): when the first response
+        # grounds too few pack paths, append the response as an assistant turn
+        # + a user-turn nudge that states the grounded count and lists ~8
+        # verbatim pack paths the model can COPY into a revised review, then
+        # re-run the same chat_observed call. Bounded to _DEEP_GATE_B_RETRIES
+        # so this is a rescue, not a retry loop — fail-closed if the
+        # corrective retry also falls short. Folded usage = sum of both calls.
+        # Chunk (~813) and synthesis (~886) Gate B sites are unchanged this
+        # pass; they need a separate plan-review wave.
         grounded_refs = _ground_response_in_pack(text, stats.get("context_manifest"))
+        if len(grounded_refs) < _DEEP_MIN_PATH_REFS and _DEEP_GATE_B_RETRIES >= 1:
+            manifest_paths: List[str] = []
+            manifest = stats.get("context_manifest")
+            if isinstance(manifest, dict):
+                for section_name in ("selected", "omitted"):
+                    for row in manifest.get(section_name) or ():
+                        rel = None
+                        if isinstance(row, dict):
+                            rel = row.get("rel_path")
+                        else:
+                            rel = getattr(row, "rel_path", None)
+                        if rel:
+                            manifest_paths.append(rel)
+            # Memory whitelist paths are always valid verbatim examples even
+            # when the atlas is empty / oversized.
+            all_example_pool = sorted(set(manifest_paths) | set(_MEMORY_WHITELIST))
+            example_paths = all_example_pool[:8] if len(all_example_pool) >= 8 else all_example_pool
+            example_block = "\n".join(f"  - {p}" for p in example_paths) if example_paths else (
+                "  (no pack paths available; cite any verbatim file path from the pack text)"
+            )
+            nudge = (
+                f"Your prior response was grounded against the assembled pack but only "
+                f"{len(grounded_refs)} distinct pack path(s) were referenced "
+                f"(the Gate B floor is {_DEEP_MIN_PATH_REFS}).\n"
+                f"Please revise the review so it cites at least {_DEEP_MIN_PATH_REFS} "
+                f"distinct file paths VERBATIM as they appear in the pack, e.g.\n"
+                f"{example_block}\n"
+                f"Use the exact paths above (or other verbatim paths from the pack) and "
+                f"make sure each appears at least once in the revised review."
+            )
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "user", "content": nudge})
+
+            emit_progress(
+                f"Gate B shortfall ({len(grounded_refs)} < {_DEEP_MIN_PATH_REFS}); "
+                f"issuing one corrective retry with {len(example_paths)} example path(s)..."
+            )
+            retry_response, retry_usage = chat_observed(
+                llm,
+                drive_root=drive_root,
+                task_id="deep_self_review",
+                call_type="deep_self_review",
+                messages=messages,
+                model=model,
+                tools=None,
+                reasoning_effort=resolve_effort("deep_self_review"),
+                max_tokens=_DEEP_MAX_OUTPUT_TOKENS,
+                temperature=None,
+                no_proxy=True,
+            )
+            merged_usage: Dict[str, Any] = dict(usage or {})
+            if retry_usage:
+                for k, v in retry_usage.items():
+                    if isinstance(v, (int, float)) and isinstance(merged_usage.get(k), (int, float)):
+                        merged_usage[k] = merged_usage[k] + v
+                    elif k not in merged_usage:
+                        merged_usage[k] = v
+            retry_text = retry_response.get("content") or ""
+            if retry_text:
+                retry_grounded = _ground_response_in_pack(retry_text, stats.get("context_manifest"))
+                if len(retry_grounded) >= _DEEP_MIN_PATH_REFS:
+                    text = retry_text
+                    usage = merged_usage
+                    grounded_refs = retry_grounded
+                    emit_progress(
+                        f"Corrective retry grounded: {len(retry_grounded)} distinct "
+                        f"pack path(s) (>= {_DEEP_MIN_PATH_REFS})."
+                    )
+                else:
+                    return (
+                        f"❌ Deep self-review response ungrounded: "
+                        f"{len(retry_grounded)} distinct path references intersect the pack "
+                        f"(min {_DEEP_MIN_PATH_REFS}, after a corrective retry was attempted). "
+                        "Refusing to publish a review whose findings cannot be tied to pack artifacts.",
+                        merged_usage,
+                    )
+            else:
+                return (
+                    f"❌ Deep self-review response ungrounded: the corrective retry returned "
+                    f"an empty response (min {_DEEP_MIN_PATH_REFS}). "
+                    "Refusing to publish a review whose findings cannot be tied to pack artifacts.",
+                    merged_usage,
+                )
+
         if len(grounded_refs) < _DEEP_MIN_PATH_REFS:
             return (
                 f"❌ Deep self-review response ungrounded: "
