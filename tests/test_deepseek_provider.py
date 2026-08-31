@@ -445,3 +445,19 @@ class TestReviewWaveHardening:
         plain = [{"role": "assistant", "content": "ab"}]
         with_reasoning = [{"role": "assistant", "content": "ab", "reasoning_content": "cdef"}]
         assert estimate_message_chars(with_reasoning) == estimate_message_chars(plain) + 4
+
+    def test_remote_fit_estimator_counts_replayed_reasoning(self):
+        # The PRODUCTION remote-fit path: estimate_context_prompt_tokens
+        # serializes message dicts recursively, so the deepseek lane's kept
+        # reasoning_content must grow the estimate — this is the guarantee the
+        # fit machinery actually runs on for remote sends.
+        from ouroboros.context_fit import estimate_context_prompt_tokens
+
+        plain = [{"role": "assistant", "content": "ab"}]
+        with_reasoning = [
+            {"role": "assistant", "content": "ab", "reasoning_content": "r" * 4000},
+        ]
+        assert (
+            estimate_context_prompt_tokens(with_reasoning, provider="deepseek")
+            > estimate_context_prompt_tokens(plain, provider="deepseek") + 500
+        )

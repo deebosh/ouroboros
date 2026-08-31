@@ -420,7 +420,13 @@ def validate_setup_payload(data: dict, current_settings: dict) -> Tuple[dict, st
     keys: Dict[str, str] = {}
     for field in _PROVIDER_FIELDS:
         setting_key = field["settingKey"]
-        value = _string(data.get(setting_key))
+        raw_value = data.get(setting_key)
+        if raw_value is not None and not isinstance(raw_value, str):
+            # A JSON object/array/number here is a malformed API post, never a
+            # credential: str()-ing it would persist unusable garbage as a
+            # "successful" setup. Honest rejection over silent stringification.
+            return {}, f"{field['label']} must be a text value."
+        value = _string(raw_value)
         # An untouched credential field posts back the marker it was prefilled
         # with. It means "keep the stored secret" and NEVER "store this string":
         # resolving it to the stored value here — before the length check, the

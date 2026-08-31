@@ -140,6 +140,21 @@ def test_prepare_onboarding_settings_accepts_minimax_only_setup():
     assert prepared["OUROBOROS_MODEL_LIGHT"] == "minimax::MiniMax-M2.7"
 
 
+def test_prepare_onboarding_settings_rejects_non_string_credentials():
+    # A JSON object/array/number in a credential slot is a malformed API post:
+    # str()-ing it used to persist "{'nested': ...}" as a working key with no
+    # error. The validator now refuses with an honest message instead.
+    for bad in ({"nested": "abcdefghij"}, ["sk-x"], 123, True):
+        payload = _base_payload()
+        payload.update({
+            "DEEPSEEK_API_KEY": bad,
+            "OUROBOROS_MODEL": "deepseek::deepseek-v4-pro",
+        })
+        prepared, error = prepare_onboarding_settings(payload, {})
+        assert prepared == {}
+        assert error == "DeepSeek API Key must be a text value."
+
+
 def test_prepare_onboarding_settings_accepts_deepseek_only_setup():
     payload = _base_payload()
     payload.update({

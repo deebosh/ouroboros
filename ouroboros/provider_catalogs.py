@@ -1,10 +1,12 @@
 """Live provider pricing-catalog fetchers (OpenRouter + cloud.ru).
 
-Extracted verbatim from ``llm.py`` at the 200,000-byte module ratchet ceiling;
+Extracted whole from ``llm.py`` at the 200,000-byte module ratchet ceiling;
 ``llm.py`` re-exports both historical names so existing importers
-(``ouroboros.pricing``, tests) keep one surface. These are the only two routes
-with a machine-readable tariff catalog (DEVELOPMENT.md "Pricing and admission":
-no hand-maintained tables — every other provider stays nullable/unknown).
+(``ouroboros.pricing``, tests) keep one surface. The one deliberate change:
+the module logger is now ``ouroboros.provider_catalogs`` (was ``ouroboros.llm``).
+These are the only two routes with a machine-readable tariff catalog
+(DEVELOPMENT.md "Pricing and admission": no hand-maintained tables — every
+other provider stays nullable/unknown).
 """
 
 from __future__ import annotations
