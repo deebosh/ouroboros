@@ -2764,3 +2764,68 @@ race. Dispositions:
    needs nothing from the loader); the loader re-exports it, the extraction
    contract (_MOVED_OWNERS/_STAYED) and the ARCHITECTURE child-catalog row
    are updated, and the leaf never imports the loader (DAG preserved).
+
+## From the F3.1 conformance fix-round-5 (base c26c89a3, 2026-08-31)
+
+Round-5 verdict (GPT-5.6 Sol, read-only @ c26c89a3): NEEDS FIXES — ONE HIGH
+(the round-4 "zero effects" claim was false on the filesystem: recovery
+mutated authorization state BEFORE the generation fence) plus one MEDIUM on
+the strength of the round-4 test pins; verification points 2 and 5 CLOSED
+(generation-bound disposal; extraction/sizes). Dispositions:
+
+1. HIGH — stale recovery mutated `auth_token.json` before the generation
+   fence: FIXED by post-fence token materialization. The defect:
+   `register_companion_process` called `get_skill_token()` during descriptor
+   build (before publication), and `mint_skill_token` WRITES
+   `auth_token.json` whenever the stored token is missing or its bound
+   content hash mismatches the live recompute; the fence sits in
+   `_publish_registrations`, so a recovery that lost the race to an
+   unload/reload holding a stale payload snapshot (an old skill root still
+   on disk with the pre-update content) rotated the G2-bound token file and
+   only THEN raised `ExtensionStaleRecoveryError` — the live G2 companion,
+   spawned with the current token in its env while the Host Service rereads
+   the file on every request (`host_service.authenticate_token_payload`),
+   was left permanently unauthorized. The fix separates descriptor build
+   (pure computation — env carries no HOST_SERVICE_TOKEN) from token
+   materialization: `_publish_registrations` mints the token and injects it
+   into every staged companion descriptor's env only inside the post-swap
+   attach, AFTER `require_live_generation` admitted the publication, in the
+   same registry-lock hold (a mint failure there routes through the
+   standard dispose+unload path like any attach failure). The initial-load
+   path is unchanged in effect — the token is still legitimately minted at
+   its publication and the spawned descriptors reference it — and the
+   runtime `get_skill_token()` API still mints on demand for a live
+   extension. Pin (red pre-fix on both):
+   test_stale_recovery_does_not_break_live_publication_authorization (the
+   verdict's exact repro through the REAL entry — G1 loaded from an old
+   root, in-window unload+reload of v2 content from a new root, stale
+   refusal, byte-identical token, end-to-end
+   HostServiceContext.authenticate_token_payload success for the G2
+   spawn-env token) and the token-absence clause of
+   test_recovery_publication_requires_a_pre_existing_live_bundle (a
+   no-live-bundle refusal must not CREATE the token file).
+2. MEDIUM — round-4 pin strength: (а) the unload-window interleaving test
+   now also asserts `auth_token.json` is byte-untouched after the stale
+   refusal, and the direct-call fixtures were moved off `drive_root/state`
+   onto the production per-skill directory
+   (`skill_state_dir(drive_root, name)` — the directory the Host Service
+   actually scans); (б) the generation-mismatch test is rebuilt through the
+   REAL recovery entry: `ensure_companions_running` with a deterministic
+   in-window unload+reload (same payload), asserting the typed refusal, the
+   preserved NEW generation, no recovery spawn, and the untouched token
+   file — no directly supplied digest remains in that test; (в) the new
+   live-G2-authorization test above. DISCLOSED: the byte-equality clauses
+   in (а) and (б) are belt-and-suspenders rather than red-pre-fix pins —
+   with an unchanged payload the pre-fix mint was a read (hash match, no
+   rotation); the red-pre-fix coverage of the HIGH lives in the two pins
+   named in item 1.
+3. Docs — the ABI-9 row (ADOPTION_v7next.md), the ARCHITECTURE
+   extension_loader/extension_plugin_api rows, and the
+   `ExtensionStaleRecoveryError`/`mint_skill_token`/`_publish_registrations`
+   docstrings now state the post-fence materialization explicitly: the
+   round-4 "zero effects / before any mutation" wording is true only as of
+   this round, and the round-4 ledger section above stays as written
+   (append-only historical record).
+4. Size pins: extension_loader.py untouched (998); extension_plugin_api.py
+   998 after comment condensation (both within the <=1000 extraction pin,
+   600 <= plugin API respected).
