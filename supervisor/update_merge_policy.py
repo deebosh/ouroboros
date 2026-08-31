@@ -26,6 +26,9 @@ HOT_CODE_PATHS = frozenset({
     "ouroboros/tools/registry_guards.py",
     # F3.1 typed-organ leaves: the registry class body and the typed result
     # vocabulary keep the hot-code label at their new homes (same parity).
+    # extension_dispatch received the extension/MCP dispatch bodies that lived
+    # on the hot ToolRegistry class — the label follows the moved body.
+    "ouroboros/tools/extension_dispatch.py",
     "ouroboros/tools/registry_core.py",
     "ouroboros/tools/tool_catalog.py",
     "ouroboros/tools/tool_context.py",

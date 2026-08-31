@@ -2297,3 +2297,94 @@ reference-fact ↔ tip-fact ↔ result.
     preflight_review_run/claude_advisory_review prose/vocabulary - env-plane
     remnants, candidates for the F3.3 sweep extension; the JS-side typedef
     cleanup + GATEWAY_CONTRACT_VERSION carrier switch (web lane).
+## From the F3.1 lane A (typed organ, base 29e2b045, 2026-08-31)
+1. extension_dispatch.py typed dispatchers (D04 entry 5, rows 187/188) ADOPTED
+   WHOLE from the reference WITH BYTE PROOF: the tip file, the merge-base
+   (8028f1df) file and the v6.64.0 file are md5-identical (4e9ad3ba…), so
+   reference == tip + delta exactly (the same adoption class the lane used for
+   mcp_client.py). The ToolRegistry methods `_dispatch_extension_tool` /
+   `_dispatch_mcp_tool` and the hoisted `_extension_dispatch_candidate` retire
+   from registry_core; call sites read the module handle. The unknown-name
+   answer for a registered-but-not-live extension is typed
+   EXTENSION_UNAVAILABLE (the D02 liveness bit); the truly-unknown name keeps
+   the tip's alias-filtered legacy text (tip drift the oracle lacks). The
+   `failure_kind` delta on extension_process_runner (unrowed in MIGRATION,
+   named by D14 entry 10 as Ф3 territory) lands here: `ExtensionProcessError`
+   gains the kwarg, only the deadline kill raises `failure_kind="timeout"`.
+2. D09 typed-policy-refusal subfamily (D02 entry 4): the five ladder bodies
+   drifted upstream after the fork (`plan_next_wire_retry` state machine,
+   request-wire custody, effort-clamp discard rules), so the reference deltas
+   were RE-DERIVED onto the tip structure: the three planning rungs decline a
+   refusal; the retries twins raise it out of the bounded state machine before
+   any wire-retry planning and out of the reroute/strip body-error arms instead
+   of absorbing it into the first errored response, discarding the pending
+   effort-clamp note on each raise path (tip custody rule the reference
+   predates). classify_llm_exception branch inserted before the prose
+   heuristics, after the tip's provider_code read (the tip computes
+   provider_message/classification_text the oracle lacks — refusal outranks
+   them). tests/test_llm_typed_policy_refusal.py carried whole: 25 passed with
+   zero adaptation. Goldens: the two typed_policy_refusal cases returned to
+   fallback_ladder.json (15 -> 17) with `expected` RE-RECORDED from this
+   tree's live code via the suite's own --write entry; the write left all 15
+   existing cases untouched (append-only diff = no accidental drift), and both
+   recorded blocks carry the oracle-intended semantics (refusal raises; the
+   exception case spends exactly one physical send).
+3. Reference test adaptations, each disclosed in-file at the non-verbatim
+   spot (reverse-mapping rule §5.3-Δ item 2):
+   - registry facade: the reference pins an exact-32-name minimal facade; this
+     tree deliberately keeps the broad historical import surface, so the pin
+     is re-derived as an AST "the facade module DEFINES nothing but the
+     disclosed read-carve helper" plus owner-leaf homing/retirement asserts
+     (test_registry_core, test_registry_guard_process ×2).
+   - guard collaborator patch points follow this tree's `_registry()`
+     call-time-handle idiom (protected_artifact_shell_block_reason,
+     workspace_executor_state_write_block, build_resolved_resource_binding,
+     resolve_shell_cwd, shell_cwd_block_message, system/active_repo_dir_for,
+     light_shell_repo_mutation, runtime_data_guard_targets,
+     workspace_git_safety_violation, run_shell_git_block_reason, run_cmd for
+     git_vcs_ops); the reference's `shell_has_write_indicator` seam does not
+     exist here — the tip write-shape seam is `non_interpreter_write_shape`.
+   - the managed-update resolver pin re-targets the tip's TYPED
+     `authorized_assisted_task_strict` (adds the corrupt-marker A4-channel
+     clause the reference could not know).
+   - SCOPE_REVIEW_FLOOR rows (detector signature, denial text, code-contract
+     row, precede-safety parametrization) removed: the setting, guard and code
+     were retired by ABI-5 (owner Q10=A) in F3.0.
+   - detector-family signatures pin the tip's whole-family `writeish`
+     read-carve; three constant cardinalities follow upstream drift
+     (secret markers 17->18, denied read options 11->12, owner-state stems
+     12->14); `_workspace_shell_write_block` pins the upstream
+     `write_target_argvs` parameter.
+   - plan-review pins: the reference's sync-side `_record_raw_plan_request_attempt`
+     and the vacuous-note wrapper (`_reuse_or_disposition_plan_review`,
+     `_VACUOUS_*_NOTE`) do not exist on tip — the parametrized wrapper test is
+     re-derived over the tip's three projection paths (review mode, vacuous
+     disposition fall-through, `_apply_disposition`).
+   - `_parse_plan_review_control` readers (test_plan_spec, test_plan_review,
+     plan_spec docstring) re-point to its new home tools/plan_render.
+   - two loop fakes (test_openai_chat_dispatch._FakeTools,
+     test_owner_hurry_s3._ProbeTools) gain `execute_result` adapting their
+     text exactly as the registry adapts a legacy handler — the loop now reads
+     the typed seam.
+4. Reference DELTA re-applied, not replayed: the plan handler's pool hop wraps
+   `asyncio.run` in `contextvars.copy_context().run` so the sidecar
+   publication reaches the dispatching thread's slot; the reference's
+   surrounding `asyncio.wait_for` wrapper-timeout machinery is NOT reproduced —
+   the tip deliberately retired the nested wait (its comment explains the
+   cancel-then-block hazard), and replaying the span verbatim would have
+   reverted that decision (re-prove-trap class, D15 entry 3).
+5. Protection closure: registry_core.py + tool_result.py membership in
+   SAFETY_CRITICAL_PATHS/HOT_CODE_PATHS verified landed with the re-split
+   commit (parity pin green); extension_dispatch.py — already safety-critical —
+   JOINS HOT_CODE_PATHS here because the dispatch bodies moved onto it from
+   the hot ToolRegistry class (the same parity rule; oracle carries the same
+   membership), and the parity pin now lists it.
+6. Owner 6.1=A edge checked and NOT implicated: lane A changes no
+   admission/review/PASS semantics — the extension liveness refusal existed on
+   tip and is only retyped (EXTENSION_UNAVAILABLE), so the auto_review=false
+   contract (no PASS issued, nothing blocked) is untouched by the typed organ.
+7. Function-size law: the EXTENSION_UNAVAILABLE branch pushed
+   `_execute_legacy_text` to 303 lines; resolved by extracting the
+   module-level `_unknown_tool_result` helper (behavior identical), not by a
+   band exception. tests/test_tool_result.py enters the 1001-1500 band with a
+   rationale via the official regenerator.

@@ -122,6 +122,9 @@ def test_registry_split_leaves_keep_protected_label_parity():
 
     parent = "ouroboros/tools/registry.py"
     leaves = (
+        # extension_dispatch received the extension/MCP dispatch bodies that
+        # lived on the hot ToolRegistry class, so it holds both labels too.
+        "ouroboros/tools/extension_dispatch.py",
         "ouroboros/tools/registry_core.py",
         "ouroboros/tools/registry_guard_process.py",
         "ouroboros/tools/registry_guards.py",
