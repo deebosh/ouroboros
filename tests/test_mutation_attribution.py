@@ -803,6 +803,154 @@ def test_trashed_worktree_overflow_is_a_typed_blocker(tmp_path, monkeypatch):
     assert candidates["blockers"] == ["baseline_dirty_overflow"]
 
 
+def test_vcs_restore_reanchor_admits_cleared_pre_existing_paths(tmp_path):
+    """``vcs_restore`` plus ``reanchor_mutation_baseline_after_restore`` lets a
+    formerly pre-existing-dirty path become task-attributed again."""
+    from ouroboros.mutation_attribution import (
+        attributed_git_candidates,
+        capture_mutation_baseline,
+        reanchor_mutation_baseline_after_restore,
+    )
+    from ouroboros.task_results import STATUS_RUNNING, load_task_result, write_task_result
+
+    root = _repo(tmp_path)
+    data = tmp_path / "data"
+    write_task_result(data, "task-restore-a", STATUS_RUNNING)
+    # Both owner files must be tracked (committed at base) so a subsequent
+    # ``git checkout HEAD -- <path>`` can restore them to HEAD.
+    (root / "owner_a.txt").write_text("base A\n", encoding="utf-8")
+    (root / "owner_b.txt").write_text("base B\n", encoding="utf-8")
+    _git(root, "add", "owner_a.txt", "owner_b.txt")
+    _git(root, "commit", "-qm", "owner base")
+    (root / "owner_a.txt").write_text("owner A dirty\n", encoding="utf-8")
+    (root / "owner_b.txt").write_text("owner B dirty\n", encoding="utf-8")
+    capture_mutation_baseline(
+        data,
+        "task-restore-a",
+        [{"surface_type": "system_repo", "host_root": str(root)}],
+    )
+
+    # Simulate ``vcs_restore``: owner discards the pre-existing-dirty changes
+    # to ``owner_a.txt`` (path is now clean at HEAD again) but keeps
+    # ``owner_b.txt`` dirty — and the owner ALSO rewrites it AFTER the
+    # baseline was captured, so its baseline fingerprint now mismatches
+    # and the candidate scan must still trip ``preexisting_dirty_changed``
+    # for owner_b even after the re-anchor.
+    _git(root, "checkout", "HEAD", "--", "owner_a.txt")
+    (root / "owner_b.txt").write_text("owner B dirty (post-restore rewrite)\n", encoding="utf-8")
+    assert reanchor_mutation_baseline_after_restore(data, "task-restore-a", root) is True
+
+    # The new epoch's dirty_paths is the INTERSECTION of prior and current.
+    epochs = load_task_result(data, "task-restore-a")["mutation_evidence"]["baseline"]["epochs"]
+    assert epochs[-1]["reason"] == "post_vcs_restore"
+    new_row = next(
+        row for row in load_task_result(data, "task-restore-a")["mutation_evidence"]["baseline"]["surfaces"]
+        if row["surface_type"] == "system_repo"
+    )
+    assert new_row["git"]["dirty_paths"] == ["owner_b.txt"]
+
+    # ``owner_a.txt`` is now admissible; ``owner_b.txt`` is still excluded.
+    (root / "owner_a.txt").write_text("task edits the restored file\n", encoding="utf-8")
+    candidates = attributed_git_candidates(data, "task-restore-a", root)
+    assert candidates["candidates"] == ["owner_a.txt"]
+    assert candidates["excluded_preexisting_dirty"] == ["owner_b.txt"]
+    # Re-anchor refreshed owner_b's baseline fingerprint to the current state,
+    # so the re-anchored epoch admits the restore outcome without a false
+    # ``preexisting_dirty_changed`` blocker on the still-dirty owner file.
+    assert "preexisting_dirty_changed" not in candidates["blockers"]
+
+
+def test_vcs_restore_reanchor_no_baseline_returns_false(tmp_path):
+    """No baseline present: re-anchor must return ``False`` and not raise."""
+    from ouroboros.mutation_attribution import (
+        capture_mutation_baseline,
+        reanchor_mutation_baseline_after_restore,
+    )
+    from ouroboros.task_results import STATUS_RUNNING, write_task_result
+
+    root = _repo(tmp_path)
+    data = tmp_path / "data"
+    write_task_result(data, "task-restore-nobase", STATUS_RUNNING)
+    # No capture_mutation_baseline call → no mutation_evidence on disk.
+    (root / "dirty.txt").write_text("owner change\n", encoding="utf-8")
+
+    result = reanchor_mutation_baseline_after_restore(data, "task-restore-nobase", root)
+    assert result is False
+
+
+def test_vcs_restore_reanchor_no_op_when_nothing_changed(tmp_path):
+    """If the restore did NOT clean any pre-existing-dirty path, no epoch churn."""
+    from ouroboros.mutation_attribution import (
+        capture_mutation_baseline,
+        reanchor_mutation_baseline_after_restore,
+    )
+    from ouroboros.task_results import STATUS_RUNNING, load_task_result, write_task_result
+
+    root = _repo(tmp_path)
+    data = tmp_path / "data"
+    write_task_result(data, "task-restore-noop", STATUS_RUNNING)
+    (root / "dirty.txt").write_text("owner change\n", encoding="utf-8")
+    capture_mutation_baseline(
+        data,
+        "task-restore-noop",
+        [{"surface_type": "system_repo", "host_root": str(root)}],
+    )
+
+    baseline_id_before = load_task_result(data, "task-restore-noop")["mutation_evidence"]["baseline"]["baseline_hash"]
+
+    # Restore (or any other event) cleared NOTHING — both pre-existing-dirty
+    # paths are still dirty. The re-anchor must short-circuit and not churn
+    # the baseline epoch.
+    assert reanchor_mutation_baseline_after_restore(data, "task-restore-noop", root) is False
+    baseline_id_after = load_task_result(data, "task-restore-noop")["mutation_evidence"]["baseline"]["baseline_hash"]
+    assert baseline_id_before == baseline_id_after
+
+
+def test_vcs_restore_reanchor_does_not_sweep_tasks_own_leftover(tmp_path):
+    """The task's own uncommitted file stays task-attributable after re-anchor.
+
+    ``advance_mutation_baseline`` computes ``prior_dirty & current_dirty``. The
+    task's own NEW file is in ``current_dirty`` but NOT in ``prior_dirty`` so
+    the intersection leaves it out of the new ``dirty_paths`` — the file must
+    remain task-attributed, not swept into foreign pre-existing-dirt."""
+    from ouroboros.mutation_attribution import (
+        attributed_git_candidates,
+        capture_mutation_baseline,
+        reanchor_mutation_baseline_after_restore,
+    )
+    from ouroboros.task_results import STATUS_RUNNING, load_task_result, write_task_result
+
+    root = _repo(tmp_path)
+    data = tmp_path / "data"
+    write_task_result(data, "task-restore-own", STATUS_RUNNING)
+    (root / "dirty.txt").write_text("owner change\n", encoding="utf-8")
+    capture_mutation_baseline(
+        data,
+        "task-restore-own",
+        [{"surface_type": "system_repo", "host_root": str(root)}],
+    )
+
+    # Restore clears ``dirty.txt`` (back to baseline content) AND the task
+    # creates its own uncommitted new file ``mine.txt``.
+    _git(root, "checkout", "HEAD", "--", "dirty.txt")
+    (root / "mine.txt").write_text("task work in progress\n", encoding="utf-8")
+
+    assert reanchor_mutation_baseline_after_restore(data, "task-restore-own", root) is True
+    new_row = next(
+        row for row in load_task_result(data, "task-restore-own")["mutation_evidence"]["baseline"]["surfaces"]
+        if row["surface_type"] == "system_repo"
+    )
+    # Prior dirty was {dirty.txt}; current dirty is {mine.txt}; intersection is empty.
+    assert new_row["git"]["dirty_paths"] == []
+
+    # The task's own ``mine.txt`` must stay task-attributable (cleaned from
+    # pre-existing-dirt, listed as a candidate, no blocker).
+    candidates = attributed_git_candidates(data, "task-restore-own", root)
+    assert candidates["candidates"] == ["mine.txt"]
+    assert candidates["excluded_preexisting_dirty"] == []
+    assert candidates["blockers"] == []
+
+
 def test_acceptance_evidence_aggregates_capability_deltas(tmp_path):
     """W3 adjacent (f): the finalizer's evidence packet carries ONE typed
     host-attested aggregate of capability reductions — the task's own dispatch

@@ -829,6 +829,69 @@ def try_reanchor_stale_baseline(
     return True
 
 
+def reanchor_mutation_baseline_after_restore(
+    results_drive_root: Any,
+    task_id: str,
+    repo_root: Any,
+) -> bool:
+    """Heal the baseline after ``vcs_restore`` discards pre-existing dirty paths.
+
+    ``vcs_restore`` (``ouroboros/tools/git.py::_restore_to_head``) cleans the
+    working tree but does NOT tell the mutation-attribution baseline the tree
+    got cleaner. A subsequent ``edit_text`` on one of those formerly-dirty
+    paths then trips ``GIT_ATTRIBUTION_BLOCKED (preexisting_dirty_changed)``
+    because the baseline still lists the path as foreign pre-existing dirt.
+
+    The fix is structural: open a new baseline epoch whose pre-existing-dirty
+    set is the INTERSECTION of the original pre-existing set with what is
+    STILL dirty now (re-using ``advance_mutation_baseline``'s built-in
+    intersection). The task's own not-yet-committed leftovers are not
+    re-marked foreign because they are not in ``prior_dirty``. No-op + return
+    ``False`` when no baseline exists, when nothing actually got cleaner, or
+    when ``advance_mutation_baseline`` itself fails — callers MUST treat
+    ``False`` as "no observable effect", never as an error.
+    """
+    root = _canonical_root(repo_root)
+    try:
+        result = load_task_result(results_drive_root, str(task_id or "")) or {}
+    except Exception:
+        return False
+    evidence = result.get("mutation_evidence")
+    baseline = evidence.get("baseline") if isinstance(evidence, dict) else None
+    if not isinstance(baseline, dict):
+        return False
+    git_row = next(
+        (
+            row.get("git")
+            for row in baseline.get("surfaces") or []
+            if isinstance(row, dict)
+            and str(row.get("canonical_root") or "") == str(root)
+            and isinstance(row.get("git"), dict)
+        ),
+        None,
+    )
+    if not isinstance(git_row, dict):
+        return False
+    prior_dirty = {str(path) for path in git_row.get("dirty_paths") or [] if str(path)}
+    if not prior_dirty:
+        return False
+    try:
+        current_dirty = set(_git_status_paths(root))
+    except Exception:
+        return False
+    # Only re-anchor when the restore ACTUALLY reduced the dirty set; a clean
+    # post-restore tree is still a reduction (prior minus current = prior).
+    if not prior_dirty - current_dirty:
+        return False
+    try:
+        advance_mutation_baseline(
+            results_drive_root, task_id, root, reason="post_vcs_restore",
+        )
+    except Exception:
+        return False
+    return True
+
+
 def advance_mutation_baseline(
     results_drive_root: Any,
     task_id: str,
@@ -908,6 +971,7 @@ __all__ = [
     "capture_mutation_baseline",
     "load_mutation_evidence_projection",
     "mutation_evidence_projection",
+    "reanchor_mutation_baseline_after_restore",
     "record_terminal_mutation_candidates",
     "resolve_attributed_git_paths",
     "try_reanchor_stale_baseline",

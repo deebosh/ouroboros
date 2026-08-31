@@ -1554,7 +1554,7 @@ wheels = [
 
 [[package]]
 name = "ouroboros"
-version = "6.109.16"
+version = "6.109.17"
 source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },

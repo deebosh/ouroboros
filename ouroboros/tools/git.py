@@ -3224,8 +3224,66 @@ def _restore_to_head(ctx: ToolContext, confirm: bool = False,
             run_cmd(["git", "clean", "-fd"], cwd=repo_dir)
         except Exception:
             pass
+        # ``vcs_restore`` cleans the working tree but does NOT tell the
+        # mutation-attribution baseline the tree got cleaner. Re-anchor the
+        # baseline epoch so a subsequent ``edit_text`` on one of the
+        # formerly-dirty paths does not trip ``preexisting_dirty_changed``.
+        # Best-effort: a failure here MUST NOT fail vcs_restore itself.
+        progress_note = ""
+        if root == "system_repo":
+            try:
+                from ouroboros.mutation_attribution import (
+                    reanchor_mutation_baseline_after_restore,
+                )
+                metadata = getattr(ctx, "task_metadata", {}) or {}
+                metadata = metadata if isinstance(metadata, dict) else {}
+                results_root = (
+                    metadata.get("budget_drive_root")
+                    or getattr(ctx, "budget_drive_root", "")
+                    or ctx.drive_root
+                )
+                task_id = str(ctx.task_id or "").strip()
+                if results_root and task_id:
+                    prior_status = ""
+                    try:
+                        prior_status = run_cmd(
+                            ["git", "status", "--porcelain"],
+                            cwd=repo_dir,
+                        ).strip()
+                    except Exception:
+                        prior_status = ""
+                    prior_count = sum(
+                        1 for line in prior_status.splitlines() if line.strip()
+                    )
+                    reanchored = False
+                    try:
+                        reanchored = reanchor_mutation_baseline_after_restore(
+                            pathlib.Path(results_root), task_id, repo_dir,
+                        )
+                    except Exception:
+                        reanchored = False
+                    if reanchored:
+                        after_status = ""
+                        try:
+                            after_status = run_cmd(
+                                ["git", "status", "--porcelain"],
+                                cwd=repo_dir,
+                            ).strip()
+                        except Exception:
+                            after_status = ""
+                        after_count = sum(
+                            1 for line in after_status.splitlines() if line.strip()
+                        )
+                        cleared = max(0, prior_count - after_count)
+                        progress_note = (
+                            "\n\nmutation baseline re-anchored after vcs_restore: "
+                            f"{cleared} path(s) no longer pre-existing-dirty"
+                        )
+            except Exception:
+                progress_note = ""
         return _vcs_result(
-            "All uncommitted changes discarded. Working directory matches HEAD.",
+            "All uncommitted changes discarded. Working directory matches HEAD."
+            + progress_note,
             binding,
         )
 
