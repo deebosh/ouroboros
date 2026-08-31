@@ -5,9 +5,9 @@ Started as the D11 slice of the reference theme split of
 ``tests/test_delegated_reconciliation.py``): the two tests here bind the
 ``ouroboros.server_maintenance`` owner the server composition split created, and
 re-homing them is the byte-debt pressure valve — the giant shrinks, the pin
-gains its family. The rest of the reference theme split (orphan-sweep predicate,
-absent-run closure, release points) still lives in the giant and arrives with
-the delegation-organ test split (F2).
+gains its family. The F2.1 delegation split then brought the rest of the
+reference theme here (orphan-sweep predicate, absent-run closure, release
+points) — this file now owns the full reconciliation theme.
 """
 
 from __future__ import annotations

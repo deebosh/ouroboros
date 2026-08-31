@@ -11,7 +11,6 @@ GIANT_PATHS = (
     "ouroboros/tools/registry.py",
     "server.py",
     "skills/unix_computer_use/plugin.py",
-    "supervisor/events.py",
     "supervisor/workers.py",
     "tests/test_cancel_intents_phase_a.py",
     "tests/test_claudexor_owned_daemon.py",
@@ -37,7 +36,7 @@ GIANT_PATHS = (
 
 FUNCTION_DEBT = (
     ("ouroboros/agent_startup_checks.py", "verify_restart"),
-    ("supervisor/events.py", "_handle_schedule_task"),
+    ("supervisor/events_schedule_task.py", "_handle_schedule_task"),
 )
 
 BAND_BASELINE_PATHS = (
@@ -163,6 +162,7 @@ BAND_PATHS = {
     "skills/telegram/plugin.py": None,
     "skills/telegram/scripts/companion.py": None,
     "skills/telegram/scripts/sidecar.py": None,
+    "supervisor/events.py": "entered the band from above by extraction (F2 addendum: _handle_schedule_task moved to its events_schedule_task family leaf, 1947->1389); shrink-only",
     "supervisor/evolution_lifecycle.py": None,
     "supervisor/message_bus.py": "push_log gained the A2A frame suppression and explicit-addressing contract comments in the live log routing fix (fix/main-chat-leak sprint); the module sat at exactly 1000 lines before it",
     "supervisor/queue.py": "v7next D08 partial split: 1587->1265 after the schedules family moved to supervisor/queue_schedules.py; the residue keeps the deferred snapshot/timeouts/evolution rows (cancel/custody-entangled, F2)",

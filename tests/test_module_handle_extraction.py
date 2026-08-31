@@ -51,6 +51,12 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "supervisor/events_project_routing.py": ("supervisor/events.py", "_events", frozenset({
         "_routing_attachments",
     })),
+    # F2 addendum: the FUNCTION_DEBT carrier joined its family leaf once the
+    # same-qualname relocation rule landed (D11); its one call-time read is
+    # the shared delegation-budget helper still owned by the facade.
+    "supervisor/events_schedule_task.py": ("supervisor/events.py", "_events", frozenset({
+        "_parent_delegation_budget", "get_max_subagent_depth",
+    })),
     "supervisor/queue_schedules.py": ("supervisor/queue.py", "_queue", frozenset({
         "DRIVE_ROOT", "PENDING", "RUNNING", "SCHEDULED_TASKS_FILE", "_queue_lock",
         "enqueue_task", "load_state", "persist_queue_snapshot",

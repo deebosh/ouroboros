@@ -1438,3 +1438,25 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
     new runtime leaves (D07) and the ten new/regrown test siblings follow the
     established seam convention (lanes do not edit the map); quotient report
     regeneration likewise.
+
+## From the F2 addendum (coordinator, base 3c425206, 2026-08-31)
+1. MIGRATION row 2016 (_handle_schedule_task -> events_schedule_task.py) —
+   EXECUTED: the D08 deferral was unblocked by the D11 same-qualname
+   relocation rule. Proof: span emit via the tool (ast=tokens=bytes=True,
+   one handle read `_parent_delegation_budget`); whole-leaf verify with
+   leaf_owned = the leaf's prior residents (the emit-time top-level gate is
+   structurally blind to append-into-existing-leaf — assembly ran with that
+   gate bypassed and the hardened verify as the actual authority; a
+   `--leaf-owned` CLI flag is an F5 tool candidate). FUNCTION_DEBT key
+   relocated with the function; events.py 1947->1406 entered the 1001-1500
+   band by extraction with rationale. D08's work-order pins flipped as
+   designed (dispatch owners + facade census).
+2. Stale docstring of tests/test_delegated_reconciliation.py refreshed
+   (F2.1 conformance item 7): the file owns the full reconciliation theme.
+3. Addendum round 2 (battery findings): (a) tests patching
+   `events._find_duplicate_task` retargeted to the leaf module — the ORACLE's
+   own adaptation shape (its tests patch `schedule_module`), 25 sites across
+   three files; the declared-through-handle alternative is structurally
+   refused by the tool for leaf-resident names (ambiguous ownership, by
+   design). (b) `_build_scheduled_task_payload` restored as a noqa facade
+   import — tests import it from supervisor.events.

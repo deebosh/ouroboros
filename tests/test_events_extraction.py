@@ -113,11 +113,9 @@ _MOVED_OWNERS = {
 # work order, pinned so a later edit cannot silently grow or shrink it.
 _STAYED = ("EVENT_HANDLERS", "dispatch_event", "log")
 _DEFERRED = (
-    # _handle_schedule_task carries a >300-line FUNCTION_DEBT entry keyed by
-    # path+qualname; relocating it needs the reference's same-qualname
-    # relocation rule (delta D11) in the transition validator, which is ratchet
-    # machinery outside this lane's mandate. It stays with the debt key.
-    "_handle_schedule_task",
+    # _handle_schedule_task joined its family leaf in the F2 addendum once the
+    # same-qualname relocation rule (delta D11) landed in the transition
+    # validator; its FUNCTION_DEBT key moved with it.
     "_authoritative_terminal_cost",
     "_close_campaign_after_owner_stop",
     "_finish_task_done_dispatch",
@@ -171,9 +169,10 @@ def test_dispatch_table_entries_resolve_to_their_owner_families():
     assert owners["acceptance_fence"] == "supervisor.events_worker_reports"
     assert owners["promote_chat_to_task"] == "supervisor.events_project_routing"
     assert owners["ensure_project_scope"] == "supervisor.events_project_routing"
-    # _handle_schedule_task stays facade-owned (FUNCTION_DEBT key, see _DEFERRED)
-    assert owners["schedule_subagent"] == "supervisor.events"
-    assert owners["schedule_task"] == "supervisor.events"
+    # F2 addendum: _handle_schedule_task lives with its family (the D11
+    # same-qualname rule carried its FUNCTION_DEBT key along).
+    assert owners["schedule_subagent"] == "supervisor.events_schedule_task"
+    assert owners["schedule_task"] == "supervisor.events_schedule_task"
     assert owners["toggle_evolution"] == "supervisor.events_runtime_controls"
     assert owners["promote_to_stable"] == "supervisor.events_runtime_controls"
     # deferred cancel/custody organ: still owned by the facade, by design
