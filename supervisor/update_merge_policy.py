@@ -57,6 +57,8 @@ HOT_CODE_PATHS = frozenset({
     "supervisor/queue_snapshot.py",
     "supervisor/queue_timeouts.py",
     "supervisor/queue_transitions.py",
+    "supervisor/worker_assignment.py",
+    "supervisor/worker_health.py",
     # v7 D01 split leaves: code that moved out of the hot loop monolith keeps
     # the label (same parity rule as the D04 block above).
     "ouroboros/loop_acceptance.py",

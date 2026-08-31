@@ -204,3 +204,17 @@ def test_the_dispatcher_kept_only_the_table_the_loop_and_the_unrowed_helpers():
         elif isinstance(node, ast.Assign):
             defined.extend(t.id for t in node.targets if isinstance(t, ast.Name))
     assert sorted(defined) == sorted(_STAYED + _UNROWED_UPSTREAM)
+
+
+def test_f22_queue_and_worker_leaves_keep_the_hot_label():
+    """F2 conformance item 3: the cancel/custody organ moved hot bodies into
+    queue/worker leaves too - the family loop above cannot see those, so pin
+    them explicitly (removing any from HOT_CODE_PATHS must fail loudly)."""
+    for rel in (
+        "supervisor/queue_snapshot.py",
+        "supervisor/queue_timeouts.py",
+        "supervisor/queue_transitions.py",
+        "supervisor/worker_assignment.py",
+        "supervisor/worker_health.py",
+    ):
+        assert rel in HOT_CODE_PATHS, rel
