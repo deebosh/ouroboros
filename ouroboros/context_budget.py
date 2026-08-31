@@ -271,4 +271,8 @@ def estimate_message_chars(messages: Any) -> int:
                 total += len(str(block.get("text", "")))
         else:
             total += len(str(content or ""))
+        # Reasoning kept on canonical assistant turns is replayed verbatim on
+        # the reasoning-echo lane (DeepSeek), so it is real wire prompt; other
+        # lanes never carry the key, so their estimates are unchanged.
+        total += len(str(msg.get("reasoning_content") or ""))
     return total

@@ -347,3 +347,77 @@ class TestWireProjection:
         )
         blocks = kwargs["messages"][0]["content"]
         assert any(isinstance(b, dict) and b.get("type") == "image_url" for b in blocks)
+
+
+class TestReviewWaveHardening:
+    """Phase A review-wave fixes: witness eligibility, null reasoning, fit basis."""
+
+    def test_deepseek_usage_is_density_witness_eligible(self, tmp_path):
+        # DeepSeek's automatic cache makes nearly every warm call cache-bearing;
+        # excluding it from the cache-inclusive set starved the route of
+        # witnesses after the first cold call (probed: prompt_tokens = hit + miss).
+        from ouroboros import usage_accounting as ua
+        from ouroboros.capability_evidence import _DENSITY_MEMO, get_token_density
+        from ouroboros.provider_models import normalize_model_identity
+
+        _DENSITY_MEMO.clear()
+        root = tmp_path / "deepseek"
+        ua._observe_token_density(
+            ua.AttemptRequest(
+                model="deepseek/deepseek-v4-pro",
+                provider="deepseek",
+                prompt_tokens_estimate=1_000_000,
+                drive_root=root,
+            ),
+            {"prompt_tokens": 1_500_000, "cached_tokens": 900_000},
+        )
+        measured = get_token_density(root, normalize_model_identity("deepseek/deepseek-v4-pro"))
+        assert abs(measured - 1.5) < 1e-6
+
+    def test_normalize_drops_non_string_reasoning_content(self):
+        # A server-emitted null would live on the canonical assistant turn and
+        # replay as JSON null against a gate probed only for strings, with no
+        # message-level 400 recovery on the direct lane.
+        client = LLMClient(api_key="x")
+        resp = {
+            "id": "1",
+            "choices": [{"message": {
+                "role": "assistant", "content": "4",
+                "reasoning_content": None,
+            }}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        }
+        target = {
+            "provider": "deepseek",
+            "usage_model": "deepseek/deepseek-v4-flash",
+            "supports_openrouter_extensions": False,
+            "supports_generation_cost": False,
+        }
+        msg, _usage = client._normalize_remote_response(resp, target, skip_cost_fetch=True)
+        assert "reasoning_content" not in msg
+
+    def test_echo_fill_coerces_non_string_reasoning(self, monkeypatch):
+        # An imported/legacy transcript can already carry a null; setdefault
+        # cannot repair an existing key, so the fill must coerce by type.
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-x")
+        client = LLMClient()
+        target = client._resolve_remote_target("deepseek::deepseek-v4-pro")
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "x", "reasoning_content": None},
+        ]
+        kwargs = client._build_remote_kwargs(
+            target, messages, "high", 256, "auto", None,
+            [{"type": "function", "function": {"name": "t", "parameters": {"type": "object", "properties": {}}}}],
+        )
+        sent = [m for m in kwargs["messages"] if m.get("role") == "assistant"]
+        assert sent[0]["reasoning_content"] == ""
+
+    def test_estimate_message_chars_counts_replayed_reasoning(self):
+        # Replayed reasoning is real wire prompt on the echo lane: the planning
+        # basis must see it or fit drift grows with transcript length.
+        from ouroboros.context_budget import estimate_message_chars
+
+        plain = [{"role": "assistant", "content": "ab"}]
+        with_reasoning = [{"role": "assistant", "content": "ab", "reasoning_content": "cdef"}]
+        assert estimate_message_chars(with_reasoning) == estimate_message_chars(plain) + 4

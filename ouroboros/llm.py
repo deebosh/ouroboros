@@ -3425,10 +3425,14 @@ class LLMClient:
                 # Turns produced by another model have none — an explicit empty
                 # string satisfies the strict gate (probed) and is the honest
                 # value for a turn whose reasoning genuinely does not exist.
+                # A non-string (a server-emitted null surviving in an imported
+                # transcript) would replay as JSON null against a gate probed
+                # only for strings, so it is coerced the same way.
                 # Harmless without tools (the API ignores the field).
                 for _msg in clean_messages:
                     if isinstance(_msg, dict) and _msg.get("role") == "assistant":
-                        _msg.setdefault("reasoning_content", "")
+                        if not isinstance(_msg.get("reasoning_content"), str):
+                            _msg["reasoning_content"] = ""
             kwargs: Dict[str, Any] = {
                 "model": resolved_model,
                 "messages": clean_messages,
@@ -3462,7 +3466,11 @@ class LLMClient:
                 ceiling = str(target.get("reasoning_effort_ceiling") or "")
                 if ceiling:
                     from ouroboros.config import clamp_effort_to
-                    requested_effort = clamp_effort_to(requested_effort, ceiling)
+                    clamped = clamp_effort_to(requested_effort, ceiling)
+                    if clamped != requested_effort:
+                        log.debug("reasoning_effort %s clamped to route ceiling %s",
+                                  requested_effort, clamped)
+                    requested_effort = clamped
                 kwargs["reasoning_effort"] = requested_effort
             if temperature is not None:
                 kwargs["temperature"] = temperature
@@ -3704,6 +3712,12 @@ class LLMClient:
         # already gets. Cross-family sends strip it (sanitize_reasoning_on_model_switch
         # + the outbound scrubber), and the deepseek outbound build replays it.
         if str(target.get("provider") or "") != "deepseek":
+            msg.pop("reasoning_content", None)
+        elif not isinstance(msg.get("reasoning_content", ""), str):
+            # The SDK surfaces server extras verbatim (same hazard the
+            # refusal/annotations pops above guard): a null here would live on
+            # the canonical assistant turn forever and the direct lane has no
+            # message-level 400 recovery. Only strings enter the transcript.
             msg.pop("reasoning_content", None)
 
         if not usage.get("cached_tokens"):
