@@ -324,3 +324,29 @@ test('log events read the shared cost names and stop hiding a real $0', () => {
     });
     assert.ok(done.meta.includes('$0.0000'), JSON.stringify(done.meta));
 });
+
+test('llm round rows show money from BOTH the honest backfill name and the live frame', () => {
+    // Fix-round-3: /api/logs converts durable rows to the honest name, but the
+    // Logs renderer read only `cost_usd ?? cost` — the LLM-round cost column
+    // was empty after a page reload. The pair now resolves via the SSOT
+    // helper, with the live-frame `cost` spelling as the last fallback.
+    const backfill = summarizeLogEvent({
+        type: 'llm_round_finished', round: 2, model: 'm',
+        accounted_upper_bound_usd: 0.1234,
+    });
+    assert.ok(backfill.meta.includes('$0.1234'), JSON.stringify(backfill.meta));
+    const live = summarizeLogEvent({
+        type: 'llm_round_finished', round: 2, model: 'm', cost: 0.5,
+    });
+    assert.ok(live.meta.includes('$0.5000'), JSON.stringify(live.meta));
+    const usage = summarizeLogEvent({
+        type: 'llm_usage', model: 'm', accounted_upper_bound_usd: 0.25,
+    });
+    assert.ok(usage.meta.includes('$0.2500'), JSON.stringify(usage.meta));
+    // Diverged stored pair keeps the ONE precedence rule (deprecated wins).
+    const diverged = summarizeLogEvent({
+        type: 'llm_round_finished', round: 1, model: 'm',
+        cost_usd: 0.9, accounted_upper_bound_usd: 0.1,
+    });
+    assert.ok(diverged.meta.includes('$0.9000'), JSON.stringify(diverged.meta));
+});
