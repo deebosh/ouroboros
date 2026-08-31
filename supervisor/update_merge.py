@@ -42,6 +42,17 @@ from supervisor.update_merge_plan import (  # noqa: F401
 
 UPDATE_TX_MARKER_NAME = "ouroboros-update-tx.json"
 
+# ABI 7.0 / F14 N−1 transition shim: every tx write stamps the marker with the
+# shared ``_schema_version`` key. ``finalize_managed_update_on_boot`` is the
+# stable N−1→N entry point — an UNSTAMPED marker is the accepted pre-7.0 form
+# (a version-N updater must finalize the transaction its N−1 predecessor
+# recorded), a stamp ≤ ours is current, and an integer stamp ABOVE ours means
+# a NEWER release recorded the transaction: this version cannot interpret it,
+# so every strict reader fails closed (``"future"`` — never rolled back, left
+# for the owner). A rolled-back N−1 binary reads a stamped marker unchanged:
+# the stamp is one additive key its reader ignores.
+UPDATE_TX_SCHEMA_VERSION = 1
+
 
 def managed_update_constitution_present(ref: str = "HEAD") -> bool:
     """Whether *ref* keeps the non-empty regular BIBLE.md blob required by P4."""
@@ -68,9 +79,14 @@ def read_update_tx() -> Dict[str, Any]:
 
 
 def write_update_tx(payload: Dict[str, Any]) -> None:
+    from ouroboros.contracts.schema_versions import with_schema_version
     from ouroboros.utils import atomic_write_json
 
-    atomic_write_json(_update_tx_marker_path(), payload, trailing_newline=True)
+    atomic_write_json(
+        _update_tx_marker_path(),
+        with_schema_version(payload, UPDATE_TX_SCHEMA_VERSION),
+        trailing_newline=True,
+    )
 
 
 def clear_update_tx() -> bool:
@@ -197,9 +213,16 @@ def mark_update_tx_gate_blocked(reason: str, detail: str = "", *, cleanup_only: 
 
 def read_update_tx_strict() -> Tuple[str, Dict[str, Any]]:
     """Strict tx read for safety-critical gates (commit authorization, tx-active rejection):
-    return ``(status, tx)`` where status is ``"absent"`` / ``"valid"`` / ``"corrupt"``. A
-    marker that exists but is unreadable/invalid is ``corrupt`` — callers MUST fail closed
-    (block mutative update/commit ops) rather than treat it as ``absent``."""
+    return ``(status, tx)`` where status is ``"absent"`` / ``"valid"`` / ``"corrupt"`` /
+    ``"future"``. A marker that exists but is unreadable/invalid is ``corrupt`` — callers
+    MUST fail closed (block mutative update/commit ops) rather than treat it as ``absent``.
+
+    Schema admission (F14 N−1 shim): an UNSTAMPED marker is the accepted pre-7.0
+    form and reads ``valid`` — the boot finalizer must drive a transaction the
+    N−1 updater recorded. An integer stamp above ``UPDATE_TX_SCHEMA_VERSION`` is
+    ``future`` (recorded by a newer release; the raw tx is returned as evidence
+    but no caller may interpret or overwrite it); a non-integer stamp is
+    ``corrupt``."""
     import json
 
     path = _update_tx_marker_path()
@@ -211,12 +234,21 @@ def read_update_tx_strict() -> Tuple[str, Dict[str, Any]]:
         return "corrupt", {}
     if not isinstance(raw, dict) or not raw:
         return "corrupt", {}
+    from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
+
+    stamp = raw.get(SCHEMA_VERSION_KEY)
+    if stamp is not None:
+        if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 1:
+            return "corrupt", {}
+        if stamp > UPDATE_TX_SCHEMA_VERSION:
+            return "future", raw
     return "valid", raw
 
 
 def active_update_tx() -> Dict[str, Any]:
-    """Return the active tx dict if a (valid or corrupt) marker is present, else ``{}``. A
-    corrupt marker counts as ACTIVE (fail-closed) so a second apply cannot proceed over it."""
+    """Return the active tx dict if a (valid, corrupt or future) marker is present, else
+    ``{}``. A corrupt or future marker counts as ACTIVE (fail-closed) so a second apply
+    cannot proceed over it."""
     status, tx = read_update_tx_strict()
     if status == "absent":
         return {}
@@ -1117,7 +1149,10 @@ def finalize_managed_update_on_boot(supervisor_ready: bool = True) -> Dict[str, 
     strict-reads the tx, and dispatches by phase: ``pending_boot_smoke`` (committed +
     restarted) → health-check + boot-loop guard; an assisted phase → non-destructive
     merge-state recovery (resume / abandon-on-divergence / rollback-on-expiry). A CORRUPT
-    marker fails closed (left for the owner). Best-effort; never raises."""
+    marker fails closed (left for the owner); so does a FUTURE-schema marker recorded by
+    a newer release (F14: never rolled back by an older binary). This dispatch is the
+    stable N−1→N transition contract: an UNSTAMPED (pre-7.0) tx is driven exactly like a
+    stamped one. Best-effort; never raises."""
     lock_fh = None
     try:
         try:
@@ -1130,6 +1165,20 @@ def finalize_managed_update_on_boot(supervisor_ready: bool = True) -> Dict[str, 
         if status == "corrupt":
             _log_supervisor({"type": "managed_update_tx_corrupt_on_boot"})
             return {"finalized": False, "reason": "corrupt tx marker — left for owner"}
+        if status == "future":
+            # Recorded by a NEWER release (this process is the rollback
+            # target). This version cannot interpret the transaction; rolling
+            # it back could destroy work the newer form protects — leave the
+            # marker untouched for the owner.
+            from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
+
+            _log_supervisor({
+                "type": "managed_update_tx_future_schema_on_boot",
+                "schema_version": tx.get(SCHEMA_VERSION_KEY),
+                "phase": str(tx.get("phase") or ""),
+            })
+            return {"finalized": False,
+                    "reason": "update tx recorded by a newer version — left for owner"}
         phase = str(tx.get("phase") or "")
         if phase == "stashing_local_work":
             # Crash between the durable pre-stash marker and the merge apply:

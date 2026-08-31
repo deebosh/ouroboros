@@ -385,7 +385,10 @@ def update_tx_phase(base_tx: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str,
     ``UpdateTxCorrupt`` WITHOUT writing — replacing an unreadable marker with
     stale data would silently destroy the corruption evidence that
     ``read_update_tx_strict``'s fail-closed contract preserves for the owner.
-    Returns the tx dict actually written."""
+    A FUTURE-schema marker (recorded by a newer release; F14) raises the same
+    typed refusal — overwriting a transaction this version cannot interpret
+    would corrupt the newer updater's recovery state. Returns the tx dict
+    actually written."""
     from supervisor import update_merge as _um
 
     status, current = _um.read_update_tx_strict()
@@ -393,6 +396,11 @@ def update_tx_phase(base_tx: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str,
         raise UpdateTxCorrupt(
             "update tx marker exists but is unreadable/invalid — refusing to "
             "overwrite the corruption evidence with a stale snapshot"
+        )
+    if status == "future":
+        raise UpdateTxCorrupt(
+            "update tx marker was recorded by a newer Ouroboros — refusing to "
+            "overwrite a transaction this version cannot interpret"
         )
     merged = dict(current) if status == "valid" else dict(base_tx)
     merged.update(patch)

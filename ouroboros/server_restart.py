@@ -83,6 +83,8 @@ def _safe_restart_serialized(safe_restart_fn, *, reason: str, unsynced_policy: s
         status, tx = read_update_tx_strict()
         if status == "corrupt":
             return False, "Managed update state is unreadable; restart was deferred."
+        if status == "future":
+            return False, "Managed update state was recorded by a newer version; restart was deferred."
         if status == "absent" and not git_ops._clear_update_intent():
             return False, (
                 "An update intent marker with no update transaction could not be removed; "
