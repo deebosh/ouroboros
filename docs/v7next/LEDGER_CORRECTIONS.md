@@ -2221,3 +2221,79 @@ reference-fact ↔ tip-fact ↔ result.
    tasks_list_slice, headless_task_events, context_drive_state,
    gateway_history, host_service_api, plan_review_public_projection - plus
    the new F12 suite writes both forms deliberately).
+## From the f31d lane (F3.1 polosa D: ABI-3 -> ABI-10, base 29e2b045, 2026-08-31)
+
+1. ABI-3 F11 inventory frozen BEFORE the first removal in
+   docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md (the RC-auditor feeder). Key
+   falsification against the plan text: the plan named api_types.js as a
+   removal surface, but the lane constraint (web/ untouchable; chat.js at its
+   BYTE_DEBT ceiling) plus the JS evidence made it a NON-surface: no alias
+   has a functional JS reader (`resolveCostPair` falls back to the honest
+   name; telegram/prefs aliases are JSDoc-only), so NO alias was HOT-DEFERRED
+   - only the stale JSDoc typedef lines and the GATEWAY_CONTRACT_VERSION
+   carrier switch are deferred, and tests/test_gateway_parity.py excuses
+   exactly that frozen extra-set and nothing else.
+2. Cost-alias removal is CLASS-level at the SSOT seams (cost_projection.py
+   emitters strip the retired spellings; read tolerance + deprecated-wins
+   precedence for stored pairs kept verbatim). Consumer fixes rode along in
+   files outside the polosa-D list (disclosed cross-lane touches):
+   agent_task_pipeline.py, supervisor/events_task_done.py (polosa C
+   neighborhood - different hunks from C's ABI-2 seam at state.py:198/
+   task_results.py:665/723; task_results.py itself was NOT touched),
+   post_task_synthesis.py + synthesis_cost_text.py (pre-synthesis snapshot
+   and prompt renderer moved to the honest with_children name - the snapshot
+   feeds task_summary chat rows, i.e. gateway egress), tools/recent_tasks.py,
+   tools/control_task_results.py.
+3. Cross-lane invariant relied upon (for the coordinator's integration
+   check): the "stale stored cost_usd beside a fresh honest name after a
+   post-upgrade merge-write" class is consumed by polosa C's ABI-2 Q8=B
+   quarantine (pre-7.0 unstamped records never reach the merge path). Within
+   this lane's own tree the class is test-visible only via records written by
+   current code, which now write honest names.
+4. Ingress validation (Q7=A) is inbound-only by test-pinned design: history
+   replay is egress and gateway/history.py must never import validate_ingress
+   (pinned). PEP 563 falsified `__required_keys__` on Python 3.10 (string
+   annotations make every total-class key read required, ExecutorRef lost its
+   Required["type"]) - requiredness is re-derived from resolved hints +
+   per-class totality in gateway/schema.py.
+5. UpdateApplyRequest.strategy: the runtime silently defaulted a missing
+   strategy to auto_merge while the contract declares it REQUIRED; the
+   executable schema now enforces the contract as written (web client always
+   sends it; no test posted a bare body expecting the default).
+6. ABI-10 default panel deliberately resolves through
+   get_review_models()/get_scope_review_models() (derived env plane), NOT a
+   static list: preserves the identical review models for every config class
+   (shipped defaults, single-direct-provider adaptation, bench env overrides)
+   - "review models change nowhere". The SETTINGS-plane comma keys die
+   (RETIRED_SETTING_KEYS, ghost purge); a comma-only-settings install gets
+   the default panel exactly as ratified (5.4=A).
+7. server_runtime.apply_runtime_provider_defaults was a settings-plane WRITER
+   of the retired comma keys (direct-provider path INTRODUCED them; the
+   prior-scope-default migration would KeyError post-retirement): it now
+   normalizes only values it is fed and never introduces a retired key; the
+   read-time getters own the direct-provider review adaptation (pinned per
+   provider by new read-time tests). model_slots' singular->plural promotion
+   removed (dead after purge; both files outside the polosa-D list -
+   disclosed).
+8. Bench templates (continual_learning, gaia, swe_bench_pro x4) migrated to
+   structured OUROBOROS_REVIEWER_SLOTS with byte-identical model sets; the
+   comma keys were dropped from all bench settings JSONs. NOT touched:
+   operator_patches/*.patch (append-only artifacts) and the env-plane
+   forwarding lists (server_runner/manifests/cybergym_lifecycle) - the env
+   spellings remain the legitimate derived/operational plane.
+9. Removed-with-evidence test clauses (the "test pinning the bug" class):
+   test_gateway_parity's ChatOutbound cost_usd JSDoc pin; the legacy
+   migration tests of reviewer_slot_config (phase-5 route envs, session-row
+   migration, legacy advisory materialization) replaced by
+   retired-envs-are-ignored pins; test_git_review_bypass_gate's
+   "unroutable enabled session advisory" state is UNREACHABLE by construction
+   post-ABI-10 (the parser refuses an enabled session advisory without a
+   concrete target at save AND load) - the defensive fail-open branch stays
+   covered via a synthesized config in test_skill_advisory_pre_review.
+10. Residuals disclosed (NOT executed, outside the named scope): the
+    phase-5 env reads that survive in review_substrate.scope_reviewer_slots
+    (route_env_key plumbing for explicit-models callers) and the
+    OUROBOROS_ADVISORY_REVIEW_ROUTE mentions in
+    preflight_review_run/claude_advisory_review prose/vocabulary - env-plane
+    remnants, candidates for the F3.3 sweep extension; the JS-side typedef
+    cleanup + GATEWAY_CONTRACT_VERSION carrier switch (web lane).
