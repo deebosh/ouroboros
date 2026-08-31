@@ -61,7 +61,10 @@ def test_both_custody_surfaces_see_the_same_live_task_set(monkeypatch):
     monkeypatch.setattr(dc, "reconcile_orphaned_runs",
                         lambda root, **kw: seen.__setitem__("delegated", kw.get("running_task_ids")) or [])
     monkeypatch.setattr(sm, "_installed_skill_names", lambda: None)
-    monkeypatch.setitem(queue.RUNNING, "t-live", {})
+    # Replace RUNNING wholesale, never append: queue globals are rebound by
+    # init_queue_refs across the suite without restore (the upstream test
+    # convention), so assuming the dict is empty here is cross-test fragile.
+    monkeypatch.setattr(queue, "RUNNING", {"t-live": {}})
     sm._periodic_supervisor_maintenance([0.0], [time.time()])
     assert seen["processes"] == seen["delegated"] == {"t-live"}, seen
 

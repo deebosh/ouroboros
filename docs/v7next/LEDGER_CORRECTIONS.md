@@ -2042,3 +2042,14 @@ reference-fact ↔ tip-fact ↔ result.
    F2.3a lane): upstream performed the same extraction itself as
    review_verdict_extraction.py; the reference leaf name never materializes.
    The F2.3b lane left this disposition to the integrator - recorded here.
+2. SUPERSEDING note to the F2.3b lane's atlas claim: the two advisory leaves
+   entered _REVIEW_STACK_PATHS with the F2 close-out conformance fix, not
+   with the lane commit (the lane's ledger entry overstated); a membership
+   pin now accompanies them.
+3. Cross-test fragility class (found by loadscope redistribution after the
+   close-out fixes): supervisor.queue globals (PENDING/RUNNING/...) are
+   rebound by init_queue_refs across ~35 upstream test sites with no restore
+   - an upstream-wide convention, not to be mass-rewritten. READER-SIDE RULE
+   for campaign pins: never assume those globals are empty; REPLACE the dict
+   for the test's scope (monkeypatch.setattr), never append into the live
+   one. Applied to test_both_custody_surfaces_see_the_same_live_task_set.

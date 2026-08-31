@@ -116,3 +116,21 @@ def test_git_ops_family_constant_matches_the_tree_and_every_inventory():
                for p in (repo / "supervisor").glob("git_ops*.py")}
     assert on_disk == GIT_OPS_FAMILY_PATHS
     assert GIT_OPS_FAMILY_PATHS <= RELEASE_INVARIANT_PATHS
+
+
+def test_git_ops_family_is_absorbed_by_the_contributor_release_inventory():
+    """F2 close-out conformance (item 7a): the hermetic contributor script
+    hand-lists the family on purpose (it must stay stdlib-only), so THIS test
+    is the coupling - a leaf added to the derived family without the script's
+    inventory fails here."""
+    import importlib.util
+    import pathlib
+    from ouroboros.runtime_mode_policy import GIT_OPS_FAMILY_PATHS
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "rer_probe", repo / "scripts" / "run_external_review.py")
+    mod = importlib.util.module_from_spec(spec)
+    import sys
+    sys.modules["rer_probe"] = mod
+    spec.loader.exec_module(mod)
+    assert GIT_OPS_FAMILY_PATHS <= mod._RELEASE_MACHINERY_PATHS

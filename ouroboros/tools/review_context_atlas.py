@@ -56,7 +56,8 @@ _REVIEW_STACK_PATHS = frozenset({
     "ouroboros/size_ratchet_manifest.py",
     "ouroboros/tools/review.py",
     "ouroboros/tools/review_context_atlas.py",
-    "ouroboros/tools/scope_review.py", "ouroboros/tools/scope_review_pack.py", "ouroboros/tools/scope_review_budget.py",  # the scope reviewer's own pack assembly and fit arithmetic decide what the blocking scope gate sees
+    "ouroboros/tools/scope_review.py", "ouroboros/tools/scope_review_pack.py", "ouroboros/tools/scope_review_budget.py",
+    "ouroboros/tools/preflight_review_prompt.py", "ouroboros/tools/preflight_review_run.py",  # the advisory preflight's own prompt assembly and native-episode run decide what the advisory gate sees  # the scope reviewer's own pack assembly and fit arithmetic decide what the blocking scope gate sees
     "ouroboros/tools/parallel_review.py",
     "ouroboros/tools/review_helpers.py", "ouroboros/tools/review_prompt_text.py", "ouroboros/tools/review_file_pack.py",  # the shared reviewer vocabulary and the packs read from the working tree: what every reviewer is told, and what it is shown
     "ouroboros/tools/review_revalidation.py",

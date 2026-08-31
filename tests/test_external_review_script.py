@@ -490,13 +490,19 @@ def test_a_base_without_the_wrapper_fails_closed_not_in_place(tmp_path, monkeypa
     _git(repo, "add", "a.txt")
     _git(repo, "commit", "-m", "proposal")
 
-    exit_code = _run_on_trusted_base(SimpleNamespace(
-        base_ref="base", head_ref="HEAD", commit_message="",
-        goal="", scope="", output="", drive_root="",
-    ))
+    import io, contextlib
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        exit_code = _run_on_trusted_base(SimpleNamespace(
+            base_ref="base", head_ref="HEAD", commit_message="",
+            goal="", scope="", output="", drive_root="",
+        ))
 
     assert exit_code == 3
     assert not probe.exists()
+    # F2 close-out conformance (item 7b): the maintainer-facing marker itself
+    # is the contract - exit 3 alone could mean anything.
+    assert "INCOMPLETE_MAINTAINER_TRUSTED_BASE_RERUN_REQUIRED" in err.getvalue()
 
 
 def test_contributor_result_is_decided_by_the_exit_code_alone():
