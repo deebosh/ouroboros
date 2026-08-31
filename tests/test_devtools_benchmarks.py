@@ -898,10 +898,9 @@ def test_programbench_task_body_sets_executor_and_protected_policy(tmp_path):
     profile = body["metadata"]["budget_profile"]
     assert profile == {
         "cost_hard_stop_pct": 0,
-        "improvement_policy": "until_deadline",
+        "improvement_policy": "fixed",
         "max_improvement_passes": 6,
         "reserve_finalization_pct": 15,
-        "stall_rounds_threshold": 12,
     }
     # Advisory acceptance claims ride the body top-level (gateway-normalized);
     # the wording stays task-general (no benchmark-specific oracle taxonomy).

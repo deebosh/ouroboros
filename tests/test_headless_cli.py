@@ -283,13 +283,13 @@ def test_cli_run_task_metadata_json_merges_but_cannot_forge_service_keys(monkeyp
     monkeypatch.setattr(cli, "_watch_task", lambda *args, **kwargs: pytest.fail("detach should not watch"))
 
     payload = (
-        '{"budget_profile": {"improvement_policy": "until_deadline", "cost_hard_stop_pct": 0},'
+        '{"budget_profile": {"improvement_policy": "adaptive", "cost_hard_stop_pct": 0},'
         ' "delegation_role": "subagent", "source": "forged"}'
     )
     assert cli.main(["run", "--detach", "--task-metadata-json", payload, "hello"]) == 0
     metadata = captured["body"]["metadata"]
     assert metadata["budget_profile"] == {
-        "improvement_policy": "until_deadline",
+        "improvement_policy": "adaptive",
         "cost_hard_stop_pct": 0,
     }
     assert metadata["delegation_role"] == "root"

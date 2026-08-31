@@ -222,6 +222,6 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "tests/test_devtools_benchmarks.py": 327935,
+    "tests/test_devtools_benchmarks.py": 327888,
     "web/modules/chat.js": 224244,
 }

@@ -37,7 +37,7 @@ def test_required_blocking_binds_shared_cycle_cap_but_explicit_cap_always_wins(m
     ) == (True, "")
     monkeypatch.delenv("OUROBOROS_REVIEW_MAX_CYCLES", raising=False)
 
-    for policy in ("fixed", "adaptive", "until_deadline"):
+    for policy in ("fixed", "adaptive"):
         capped = normalize_budget_profile({
             "improvement_policy": policy,
             "max_improvement_passes": 6,
@@ -531,24 +531,20 @@ def test_acceptance_dispatch_rechecks_cancel_before_provider_send(tmp_path, monk
     assert projection["attempt_counts"] == {"released": 1} and projection["non_final_rows"] == 0
     assert projection["cost_final"] is True
 
-def test_normalized_stall_default_does_not_emit_deprecation_noise(tmp_path):
-    quiet = SimpleNamespace(
-        drive_root=tmp_path,
-        task_id="quiet",
-        task_contract={"budget_profile": normalize_budget_profile({})},
-    )
-    task_pacing.resolve_budget_profile(quiet)
-    events = tmp_path / "logs" / "events.jsonl"
-    assert not events.exists()
-
+def test_resolve_budget_profile_emits_no_deprecation_events(tmp_path):
+    """ABI 7.0 (Q10=A): the alias deprecation machinery is gone - a profile
+    carrying retired spellings resolves quietly, without the retired keys."""
     legacy = SimpleNamespace(
         drive_root=tmp_path,
         task_id="legacy",
-        task_contract={"budget_profile": normalize_budget_profile({"stall_rounds_threshold": 2})},
+        task_contract={"budget_profile": {
+            "improvement_policy": "until_deadline", "stall_rounds_threshold": 2,
+        }},
     )
-    task_pacing.resolve_budget_profile(legacy)
-    rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
-    assert rows[-1]["aliases"] == ["stall_rounds_threshold"]
+    resolved = task_pacing.resolve_budget_profile(legacy)
+    assert resolved["improvement_policy"] == "fixed"
+    assert "stall_rounds_threshold" not in resolved
+    assert not (tmp_path / "logs" / "events.jsonl").exists()
 
 
 def test_child_task_never_becomes_host_acceptance_authority():

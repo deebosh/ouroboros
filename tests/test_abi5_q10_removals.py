@@ -10,6 +10,10 @@ guard. One section per Q10 item:
   dispatch (the E13 scenario) is the one live semantics for a budget-exhausted
   queued task, and the pre-assignment pending drop is the one secondary settle
   site left.
+- until_deadline / stall_rounds_threshold: the legacy pacing aliases are
+  removed — an unknown policy normalizes to "fixed", the stall knob is not
+  part of the normalized profile shape, and the alias deprecation-event
+  machinery is gone.
 """
 
 from __future__ import annotations
@@ -117,3 +121,54 @@ def test_fail_tasks_left_no_source_remnants():
             if "fail_tasks" in path.read_text(encoding="utf-8", errors="replace"):
                 offenders.append(str(path.relative_to(REPO)))
     assert not offenders, f"removed fail_tasks respelled in: {offenders}"
+
+
+# --- Q10 item 3: until_deadline / stall_rounds_threshold aliases --------------
+
+def test_deadline_pacing_aliases_are_gone_from_the_contract_shape():
+    from ouroboros.contracts.task_contract import (
+        VALID_IMPROVEMENT_POLICIES,
+        normalize_budget_profile,
+    )
+
+    assert "until_deadline" not in VALID_IMPROVEMENT_POLICIES
+    gone = normalize_budget_profile({
+        "improvement_policy": "until_deadline",
+        "stall_rounds_threshold": 12,
+    })
+    assert gone["improvement_policy"] == "fixed"
+    assert "stall_rounds_threshold" not in gone
+    assert "stall_rounds_threshold" not in normalize_budget_profile(None)
+
+
+def test_deadline_no_longer_lifts_the_improvement_count_axis(monkeypatch):
+    """The alias's one behavior — a deadline turning the count cap off outside
+    Required+Blocking — is gone: the shared cycle cap binds regardless, and the
+    signature no longer even accepts a deadline fact."""
+    import inspect
+
+    from ouroboros.task_pacing import effective_max_improvement_passes
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")
+    profile = {"improvement_policy": "fixed", "max_improvement_passes": None}
+    assert effective_max_improvement_passes(profile) == 1
+    params = inspect.signature(effective_max_improvement_passes).parameters
+    assert "has_deadline" not in params
+
+
+def test_deadline_aliases_left_no_source_remnants():
+    """FUNCTIONAL remnants only: a resurrected alias needs the QUOTED string
+    literal (a comparison, dict key or event type); prose comments disclosing
+    the removal legitimately keep the bare word."""
+    functional = (
+        '"until_deadline"', "'until_deadline'",
+        '"stall_rounds_threshold"', "'stall_rounds_threshold'",
+        "deprecated_task_pacing_alias",
+    )
+    offenders = []
+    for root in ("ouroboros", "supervisor", "web", "prompts"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if any(tok in text for tok in functional):
+                offenders.append(str(path.relative_to(REPO)))
+    assert not offenders, f"removed pacing aliases respelled in: {offenders}"

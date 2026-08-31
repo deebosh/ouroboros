@@ -452,7 +452,7 @@ def test_required_blocking_unbounded_loop_collapses_to_zero_under_hurry(tmp_path
     # review-cycle cap is unlimited (D10/D20: the shared cap otherwise binds).
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "unlimited")
     assert task_pacing.effective_max_improvement_passes(
-        base_profile, has_deadline=False, required_blocking=True,
+        base_profile, required_blocking=True,
     ) is None
     effective = oh.effective_budget_profile(ctx, base_profile)
     assert effective["max_improvement_passes"] == 0

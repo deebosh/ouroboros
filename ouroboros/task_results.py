@@ -42,7 +42,7 @@ def review_binding_hash(
 
 
 def effective_task_acceptance_review_cycles(
-    profile: Dict[str, Any], *, has_deadline: bool = True,
+    profile: Dict[str, Any], *,
     required_blocking: bool = False,
 ) -> Optional[int]:
     """Project paid panels from the existing improvement-pass semantics."""
@@ -51,7 +51,6 @@ def effective_task_acceptance_review_cycles(
 
     passes = effective_max_improvement_passes(
         profile,
-        has_deadline=has_deadline,
         required_blocking=required_blocking,
     )
     return None if passes is None else max(1, int(passes) + 1)
@@ -108,7 +107,6 @@ def _root_task_acceptance_review_cap(
     )
     return effective_task_acceptance_review_cycles(
         profile,
-        has_deadline=deadline is not None,
         required_blocking=required_blocking,
     )
 

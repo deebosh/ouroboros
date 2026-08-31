@@ -96,11 +96,11 @@ def test_budget_profile_frozen_key_set():
     from ouroboros.contracts.task_contract import normalize_budget_profile
 
     profile = normalize_budget_profile(None)
+    # ABI 7.0 (Q10=A): stall_rounds_threshold left this shape deliberately.
     assert set(profile) == {
         "improvement_policy",
         "max_improvement_passes",
         "reserve_finalization_pct",
-        "stall_rounds_threshold",
         "cost_hard_stop_pct",
     }
     assert profile["cost_hard_stop_pct"] is None
