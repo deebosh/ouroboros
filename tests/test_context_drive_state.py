@@ -206,7 +206,7 @@ def test_settled_continuation_with_open_obligations_survives_age_retirement(tmp_
     task_results.mkdir(parents=True, exist_ok=True)
     for tid in ("unresolvedtask", "closedtask"):
         (task_results / f"{tid}.json").write_text(
-            _json.dumps({"id": tid, "status": "failed"}), encoding="utf-8")
+            _json.dumps({"_schema_version": 1, "id": tid, "status": "failed"}), encoding="utf-8")
 
     state = AdvisoryReviewState(open_obligations=[
         ObligationItem(

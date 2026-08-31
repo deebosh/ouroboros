@@ -36,7 +36,7 @@ def _write_raw(data, task_id, **fields):
     results = data / "task_results"
     results.mkdir(parents=True, exist_ok=True)
     (results / f"{task_id}.json").write_text(
-        json.dumps({"task_id": task_id, **fields}), encoding="utf-8"
+        json.dumps({"_schema_version": 1, "task_id": task_id, **fields}), encoding="utf-8"
     )
 
 

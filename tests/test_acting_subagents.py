@@ -383,6 +383,7 @@ def _make_child_patch(target_repo: pathlib.Path, drive: pathlib.Path, child_id: 
     tr = task_result_path(drive, child_id)
     tr.parent.mkdir(parents=True, exist_ok=True)
     result = {
+        "_schema_version": 1,
         "id": child_id,
         "task_id": child_id,
         "parent_task_id": parent_task_id,
@@ -422,6 +423,7 @@ def _make_child_delete_patch(target_repo: pathlib.Path, drive: pathlib.Path, chi
     tr = task_result_path(drive, child_id)
     tr.parent.mkdir(parents=True, exist_ok=True)
     result = {
+        "_schema_version": 1,
         "id": child_id,
         "task_id": child_id,
         "parent_task_id": parent_task_id,

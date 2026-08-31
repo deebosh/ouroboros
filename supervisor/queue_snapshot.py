@@ -14,6 +14,7 @@ import pathlib
 import time
 from typing import Optional
 
+from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
 from ouroboros.utils import utc_now_iso
 from supervisor.task_admission import (
     restore_terminalization_retry,
@@ -40,6 +41,11 @@ def _queue():
 
 
 log = logging.getLogger(__name__)
+
+# ABI 7.0 (Q8=B): the durable queue snapshot names its schema on every write.
+# Stamp-on-write ONLY — the restore path does not require the stamp (no
+# compat branching), so an N−1 snapshot restores unchanged.
+QUEUE_SNAPSHOT_SCHEMA_VERSION = 1
 
 
 def _kept_service_pids() -> "set[int]":
@@ -148,6 +154,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
             "soft_sent": bool(meta.get("soft_sent")), "task": task,
         })
     payload = {
+        SCHEMA_VERSION_KEY: QUEUE_SNAPSHOT_SCHEMA_VERSION,
         "ts": utc_now_iso(),
         "reason": reason,
         "pending_count": len(pending_items), "running_count": len(running_items),

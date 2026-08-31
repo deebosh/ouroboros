@@ -40,7 +40,8 @@ def test_task_event_replay_uses_existing_logs_and_result(tmp_path):
     result_dir = data / "task_results"
     result_dir.mkdir()
     (result_dir / f"{task_id}.json").write_text(
-        json.dumps({"task_id": task_id, "status": "completed", "result": "done", "ts": "2026-01-01T00:00:01Z"}),
+        json.dumps({"_schema_version": 1, "task_id": task_id, "status": "completed",
+                    "result": "done", "ts": "2026-01-01T00:00:01Z"}),
         encoding="utf-8",
     )
 
@@ -256,7 +257,8 @@ def test_task_sse_emits_final_result_after_cursor_saw_scheduled_result(tmp_path)
     (data / "task_results").mkdir(parents=True)
     task_id = "abc123"
     (data / "task_results" / f"{task_id}.json").write_text(
-        json.dumps({"task_id": task_id, "status": "completed", "result": "done", "ts": "2026-01-01T00:00:01Z"}),
+        json.dumps({"_schema_version": 1, "task_id": task_id, "status": "completed",
+                    "result": "done", "ts": "2026-01-01T00:00:01Z"}),
         encoding="utf-8",
     )
     app = Starlette(routes=[Route("/api/tasks/{task_id}/events", endpoint=api_task_events, methods=["GET"])])

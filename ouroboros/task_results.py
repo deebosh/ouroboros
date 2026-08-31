@@ -23,6 +23,17 @@ STATUS_FAILED = "failed"
 STATUS_INTERRUPTED = "interrupted"
 STATUS_CANCELLED = "cancelled"
 
+# ABI 7.0 (Q8=B) schema admission lives in ouroboros/task_result_schema.py
+# (module-size split); re-exported: every caller and test reaches the stamp,
+# the classifier and the quarantine through this module (F401 intended).
+from ouroboros.task_result_schema import (  # noqa: F401
+    QUARANTINED_SCHEMA_REASON, TASK_RESULT_QUARANTINE_DIR, TASK_RESULT_SCHEMA_VERSION,
+    emit_quarantine_event as _emit_quarantine_event,
+    quarantine_task_result as _quarantine_task_result,
+    require_writable_task_result_schema, stamp_task_result_schema,
+    task_result_schema_refusal,
+)
+
 
 def review_binding_hash(
     *, candidate_hash: str, evidence_revision: str, fence_hash: str,
@@ -386,6 +397,7 @@ def _update_task_acceptance_review_state(
     def _merge(existing: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not allow_create and not existing:
             raise ValueError("TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN: root result is absent")
+        require_writable_task_result_schema(existing, path)
         if existing and str(existing.get("task_id") or "") != str(root_task_id):
             raise ValueError("TASK_ACCEPTANCE_REVIEW_STATE_INVALID: root identity mismatch")
         stored_root_id = str(existing.get("root_task_id") or "")
@@ -407,14 +419,14 @@ def _update_task_acceptance_review_state(
             candidate, root_task_id,
         )
         now = utc_now_iso()
-        return {
+        return stamp_task_result_schema({
             **existing,
             TASK_ACCEPTANCE_REVIEW_STATE_KEY: updated,
             "task_id": str(root_task_id),
             "status": str(existing.get("status") or STATUS_RUNNING),
             "ts": str(existing.get("ts") or now),
             "updated_at": now,
-        }
+        })
 
     try:
         updated = update_json_locked(
@@ -668,6 +680,12 @@ def load_task_result(
     Observational callers retain the historical fail-soft default.  Admission
     callers pass ``strict=True`` so an existing unreadable row cannot be
     reinterpreted as an unused task identity.
+
+    Schema admission (ABI 7.0, Q8=B): an inadmissible stored row — see
+    ``task_result_schema_refusal`` — is QUARANTINED by the fail-soft path
+    (moved under ``task_results/quarantine/``, one batched durable event) and
+    the read reports no result; the strict path raises WITHOUT moving, so an
+    authority probe never mutates storage.
     """
     try:
         tid = validate_task_id(task_id)
@@ -677,9 +695,26 @@ def load_task_result(
             raise
         return None
     data = read_json_dict(path)
-    if strict and path.exists() and (
-        not data
-        or str(data.get("task_id") or "") != tid
+    if data is None and not path.is_file():
+        return None  # plainly absent — nothing stored, nothing to admit
+    refusal = task_result_schema_refusal(data)
+    if refusal:
+        if strict:
+            if refusal == "malformed":
+                # Pre-ABI-2 strict contract for unreadable rows, kept stable.
+                raise ValueError(f"task result authority is unreadable or invalid: {path}")
+            raise ValueError(
+                f"task result schema is inadmissible ({QUARANTINED_SCHEMA_REASON}: {refusal}): {path}"
+            )
+        outcome = _quarantine_task_result(path, refusal)
+        if outcome == "kept_admissible":
+            data = read_json_dict(path)
+            return data if not task_result_schema_refusal(data) else None
+        if outcome == "moved":
+            _emit_quarantine_event(drive_root, [{"task_id": tid, "reason": refusal}])
+        return None
+    if strict and (
+        str(data.get("task_id") or "") != tid
         or not isinstance(data.get("status"), str)
         or not str(data.get("status") or "").strip()
     ):
@@ -698,23 +733,47 @@ def list_task_results(
     Most observational callers remain tolerant of a malformed historical row.
     Authority reducers such as direct-child admission pass ``strict=True`` so
     an unreadable row cannot be silently reinterpreted as an absent child.
+
+    Schema admission (ABI 7.0, Q8=B): the fail-soft scan QUARANTINES every
+    inadmissible row it meets and reports the whole sweep as ONE durable
+    event; the strict scan raises WITHOUT moving anything. Rows already under
+    ``task_results/quarantine/`` are outside this scan (non-recursive glob).
     """
     wanted = {str(item) for item in list(statuses or []) if str(item).strip()}
     results: List[Dict[str, Any]] = []
+    quarantined: List[Dict[str, str]] = []
     for path in sorted(task_results_dir(drive_root, create=False).glob("*.json")):
         data = read_json_dict(path)
+        if data is None and not path.is_file():
+            continue  # vanished mid-scan — nothing to admit or quarantine
+        refusal = task_result_schema_refusal(data)
+        if refusal:
+            if strict:
+                if refusal == "malformed":
+                    # Pre-ABI-2 strict contract for unreadable rows, kept stable.
+                    raise ValueError(f"task result is unreadable or invalid: {path}")
+                raise ValueError(
+                    f"task result schema is inadmissible ({QUARANTINED_SCHEMA_REASON}: {refusal}): {path}"
+                )
+            outcome = _quarantine_task_result(path, refusal)
+            if outcome == "kept_admissible":
+                data = read_json_dict(path)
+                if task_result_schema_refusal(data):
+                    continue
+            else:
+                if outcome == "moved":
+                    quarantined.append({"task_id": path.stem, "reason": refusal})
+                continue
         if strict and (
-            not data
-            or str(data.get("task_id") or "") != path.stem
+            str(data.get("task_id") or "") != path.stem
             or not isinstance(data.get("status"), str)
             or not str(data.get("status") or "").strip()
         ):
             raise ValueError(f"task result is unreadable or invalid: {path}")
-        if data is None:
-            continue
         if wanted and str(data.get("status") or "") not in wanted:
             continue
         results.append(data)
+    _emit_quarantine_event(drive_root, quarantined)
     return results
 
 
@@ -756,6 +815,9 @@ def write_task_result(
             raise ValueError(
                 f"task result authority is unreadable or invalid: {path}"
             )
+        # ABI 7.0: every write stamps the row; a row another schema version
+        # owns (a rollback survivor) is never silently downgraded.
+        require_writable_task_result_schema(existing, path)
         projected_fields = _field_projector(existing, {**fields, "status": status}) if _field_projector else dict(fields)
         projected_status = str(projected_fields.pop("status", status))
         # Monotonic lifecycle: no stale mirror may overwrite a terminal outcome.
@@ -767,14 +829,14 @@ def write_task_result(
                       existing.get("status"), projected_status, task_id)
             return None
         now = utc_now_iso()
-        return {
+        return stamp_task_result_schema({
             **existing,
             **projected_fields,
             "task_id": task_id,
             "status": projected_status,
             "ts": explicit_ts or str(existing.get("ts") or now),
             "updated_at": now,
-        }
+        })
 
     # Never fall back to an unlocked read/merge/write. Every task-result write is
     # lifecycle authority; accepting stale state here makes the winner of a
@@ -1192,19 +1254,20 @@ def _update_plan_review_state(
     path = task_result_path(results_drive_root, task_id)
 
     def _merge(existing: Dict[str, Any]) -> Dict[str, Any]:
+        require_writable_task_result_schema(existing, path)
         state = _validated_plan_review_state(existing.get(PLAN_REVIEW_STATE_KEY))
         state.pop("legacy_v1_projection", None)  # derived on load, never persisted
         updated_state = _validated_plan_review_state(_fit_plan_review_state(mutator(state)))
         updated_state.pop("legacy_v1_projection", None)
         now = utc_now_iso()
-        return {
+        return stamp_task_result_schema({
             **existing,
             PLAN_REVIEW_STATE_KEY: updated_state,
             "task_id": task_id,
             "status": str(existing.get("status") or STATUS_RUNNING),
             "ts": str(existing.get("ts") or now),
             "updated_at": now,
-        }
+        })
 
     try:
         updated = update_json_locked(path, _merge, strict_existing_dict=True)

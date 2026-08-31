@@ -11,10 +11,17 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from ouroboros.config import DATA_DIR
+from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
+
+# ABI 7.0 (Q8=B): the durable ``state.json`` snapshot names its schema on
+# every write. Stamp-on-write ONLY — readers do not require the stamp (no
+# compat branching), so a pre-7.0 file and a post-rollback stamped file both
+# load unchanged.
+STATE_SCHEMA_VERSION = 1
 
 
 DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
@@ -169,6 +176,7 @@ def _load_state_unlocked() -> Dict[str, Any]:
 def _save_state_unlocked(st: Dict[str, Any]) -> None:
     """Save state; caller must hold STATE_LOCK."""
     st = ensure_state_defaults(st)
+    st[SCHEMA_VERSION_KEY] = STATE_SCHEMA_VERSION
     payload = json.dumps(st, ensure_ascii=False, indent=2)
     atomic_write_text(STATE_PATH, payload)
     atomic_write_text(STATE_LAST_GOOD_PATH, payload)

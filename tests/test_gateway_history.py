@@ -426,6 +426,7 @@ def test_history_annotation_after_quota_resolves_in_window_card(tmp_path):
     results.mkdir()
     (results / "windowed.json").write_text(
         json.dumps({
+            "_schema_version": 1,
             "task_id": "windowed",
             "status": "completed",
             "cost_usd": 0.42,
@@ -641,6 +642,7 @@ def test_chat_history_attaches_terminal_cost_truth_from_task_result(tmp_path):
     results.mkdir()
     (results / "cost-terminal.json").write_text(
         json.dumps({
+            "_schema_version": 1,
             "task_id": "cost-terminal",
             "status": "completed",
             "cost_usd": 1.5,
@@ -692,6 +694,7 @@ def test_chat_history_terminal_cost_truth_overrides_row_embedded_snapshot(tmp_pa
     results.mkdir()
     (results / "cost-override.json").write_text(
         json.dumps({
+            "_schema_version": 1,
             "task_id": "cost-override",
             "status": "completed",
             "cost_usd": 0.9,
