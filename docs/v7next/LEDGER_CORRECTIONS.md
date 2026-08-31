@@ -2607,3 +2607,98 @@ helper extraction and new-defects CLOSED with no action owed. Dispositions:
    converted to the honest name (same class as the entry-3 disclosure
    list; the child writer's legacy kwarg is honored deprecated-wins, then
    stripped by the write seam).
+
+## From the F3.1 conformance fix-round-3 (base f8e579de, 2026-08-31)
+
+Round-3 verdict (GPT-5.6 Sol, read-only @ f8e579de): ABI-9 and ABI-3
+NOT-CLOSED on the enumerated tails, ADOPTION/ARCHITECTURE claims dependent on
+them, one NEW UI defect; ABI-2, ratchet extractions and manifest CLOSED with
+no action owed. Dispositions:
+
+1. ABI-9 (finding 1) — FIXED as the disclosed STAGED PROTOCOL, not a false
+   "one atomic publication" absolute. (a) The OOP load published surfaces
+   and companions as TWO transactions (extension_loader
+   _register_out_of_process_surfaces + _spawn_out_of_process_companions),
+   with the second re-minting bundle.generation_digest without re-stamping
+   published descriptors. Both are replaced by ONE staged publication:
+   _stage_out_of_process_surfaces validates catalog descriptors through the
+   same _stage_surface_locked seam the in-process register() window uses,
+   and _publish_out_of_process_registration stages surfaces AND companion
+   spawns on one PluginAPI snapshot — one validate -> SWAP -> attach
+   transaction. The one structurally LATER publication that remains —
+   server-side companion recovery (reconcile_server_companions) onto a live
+   bundle — mints a fresh digest and _publish_registrations RE-STAMPS every
+   already-published descriptor the bundle owns in the same lock hold, so
+   per-surface provenance never diverges from bundle.generation_digest.
+   (b) The recovery failure path was a silent _abort_registration leaving
+   the extension half-alive; ANY failure of the shared seam now routes
+   through the standard dispose+unload path (unload_extension). (c) Unload
+   visibility: _unload_extension_locked popped the bundle and surfaces
+   BEFORE the bus unsubscribe and runtime-API close; the order is now
+   outside-in — subscription ids + the _unloading latch snapshot in ONE
+   registry-lock hold (no publication can interleave), bus unsubscribe,
+   runtime-API close, THEN bundle/surface removal, future cancel, companion
+   stop, module purge. RESIDUAL BY DESIGN (pinned + disclosed in
+   EventBus.publish's docstring): the bus COPIES subscribers under its own
+   lock before invoking handlers, so a publisher that copied a handler
+   before the unsubscribe may still invoke it after surfaces are gone; the
+   supported guarantee is "a publish STARTED after unsubscribe never
+   delivers", and the closed runtime API + _unloading latch make the late
+   call a host no-op. Pins: test_out_of_process_surfaces_and_companions_
+   publish_as_one_transaction, test_companion_recovery_failure_unloads_
+   instead_of_silent_abort, test_late_publication_restamps_already_
+   published_descriptors, test_unload_closes_bus_and_runtime_visibility_
+   before_surfaces_leave, test_publish_started_after_unload_never_delivers.
+   TEST-CONTRACT DISCLOSURE: test_spawn_out_of_process_companions_host_
+   spawns_declared_name renamed to test_publish_out_of_process_registration_
+   host_spawns_declared_name (the unified seam it exercises); the two
+   catalog-revalidation suites and the loader-extraction _STAYED list now
+   name the unified surface (_publish_out_of_process_registration /
+   _stage_out_of_process_surfaces).
+2. ABI-3 (finding 3) — FIXED in depth. (a) build_subagent_envelope
+   normalizes the stored usage snapshot BEFORE embedding (deprecated-wins
+   kept; the amount fallback reads the resolved honest name). (b+c) ONE
+   shared normalizer cost_projection.normalize_task_result_cost_planes (top
+   level + subagent envelope + envelope.usage + loop_outcome.usage) serves
+   BOTH public_task_result and write_task_result (both merge passes) — the
+   sanctioned known-paths + deep-test-scan variant of the round-3 mandate:
+   internal evidence planes (review receipts, ledger rows) stay their own
+   schemas per the round-2 disposition, named per-site in the sweep
+   allowlist. (d) Evolution history: the update_evolution_campaign_after_
+   task row now stamps accounted_upper_bound_usd (allowlist row REMOVED);
+   the one internal reader (Recent Campaign Cycles prompt block) resolves
+   the pair deprecated-wins; gateway/state._evolution_state_public converts
+   stored legacy rows at the /api/state projection boundary (copy-on-write
+   over the shared snapshot). (e) The deep-scan fixture now places the
+   legacy alias on the ACTUALLY SUPPORTED producer path
+   subagent_envelope.usage.cost_usd beside the envelope-root spelling, with
+   resolved-amount assertions on the public projection, the task-detail
+   endpoint and a new rewrite pin. (f) The sweep allowlist is COUNT-
+   ANCHORED per site — (file, alias, scope) -> (reason, exact count); a new
+   emission inside an allowlisted function breaks the anchor and fails.
+   (g) Own AST sweep re-run: 55 emission-shaped sites dispositioned — 1
+   honest cutover (the evolution history row), 3 sites under the
+   events_evolution_done anchor re-classified honestly (2 internal
+   lifecycle/checkpoint call kwargs + 1 supervisor.jsonl observability row,
+   converted at the /api/logs boundary on replay), remaining 51 = internal
+   planes kept per-site with exact counts.
+3. New defect (finding 6) — FIXED. /api/logs emits the honest name but
+   web/modules/log_events.js read only `cost_usd ?? cost`, so the LLM-round
+   money column was empty after a reload. All three read sites now resolve
+   through the existing SSOT JS helper accountedUpperBound() (the
+   resolve_cost_pair mirror, deprecated-wins) with the live-frame `cost`
+   spelling last — deliberately the shared precedence rule rather than a
+   hand-ordered honest-first list, so a diverged stored pair tells the same
+   story on every surface. Pinned in web/tests/cost_presentation.test.js
+   (backfill name, live frame, diverged pair). chat.js (BYTE_DEBT ceiling)
+   untouched; log_events.js stays in its band.
+4. ADOPTION/ARCHITECTURE (finding 4) — restated to the post-fix truth:
+   ABI-9 row + docs/ARCHITECTURE.md extension_loader/extension_plugin_api
+   rows describe the staged protocol (single OOP transaction, recovery
+   restamp + unload-on-failure, outside-in unload visibility, EventBus copy
+   residual); ABI-3 row + the cost_projection ARCHITECTURE row describe the
+   shared nested-plane normalizer and the boundary conversions
+   (/api/logs, /api/state evolution history) with the internal-plane
+   residual named. scripts/v7next_adoption.py OK (36 rows).
+5. Findings 2 and 5 (ABI-2, ratchet extractions/manifest) — CLOSED by the
+   verdict itself; nothing changed there in this round.
