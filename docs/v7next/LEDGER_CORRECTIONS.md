@@ -2160,3 +2160,64 @@ reference-fact ↔ tip-fact ↔ result.
    plugin_api: "2.0" (matching real bundled seeds); the field-less refusal
    itself is pinned in tests/test_plugin_api_admission.py::
    test_native_seed_trust_is_closed_to_fieldless_extensions.
+## From the f31c lane (F3.1-C schema/updater, base 29e2b045, 2026-08-31)
+1. ABI-2 reader seam widened beyond the plan's single address: the plan named
+   `load_task_result` (:665) as THE reader, but the sibling
+   `list_task_results` feeds UI/recent (gateway/tasks.py:796) from the same
+   rows - quarantine is implemented at BOTH, batched per scan. Direct
+   observational globs (server_routing_context.py:207, gateway/tasks.py:803)
+   are deliberately untouched: after the first swept read they see nothing,
+   and touching them would be compat machinery Q8=B forbids. The quarantine
+   subdirectory is invisible to every `*.json` glob (non-recursive).
+2. Plan section 7 item (3) "ONE durable event / chat notice per batch" is
+   superseded by the batch-6 answer 6.3=B: visibility is the durable events
+   log ONLY - one `task_results_quarantined` row per read/scan batch, no UI
+   counter, no chat notice (pinned by a no-chat-jsonl test). The move itself
+   is the dedupe: a row can appear in exactly one batch ever.
+3. Writer-inventory correction against "writers stamp": five writer sites
+   exist on tip, four stamp (write_task_result, the acceptance-state and
+   plan-review merge-writers in task_results.py, the owner_hurry projection
+   writer). The cancel-receipt amend-writer
+   (supervisor/terminal_delivery.py:1284) deliberately does NOT stamp: it
+   never creates a row, its dict-copy merge preserves whatever stamp the row
+   carries (so no downgrade path exists), and the module sits exactly at the
+   1500-line band edge - a stamp there is correctness-redundant. Disclosed
+   residual: a pre-7.0 row whose ONLY post-upgrade write is a cancel receipt
+   stays unstamped and is later quarantined with its receipt - consistent
+   with wholesale pre-7.0 quarantine (f30 entry 4).
+4. Module-size: the ABI-2 machinery lives in a new leaf
+   `ouroboros/task_result_schema.py` (task_results.py re-exports; callers
+   and tests import through the facade). Inlining it drove task_results.py
+   to 1592/1600 against the hard cap; after the split the ratchet manifest
+   is byte-identical to the base (task_results.py 1465, band entry kept).
+5. Disclosed interaction: `restore_pending_from_snapshot` probes each
+   snapshot-pending task's result with `load_task_result(strict=True)`
+   (queue_snapshot.py:305). A pre-7.0 unstamped row now raises there, so the
+   task is terminalized through the existing result-authority custody path
+   instead of being revived - the N-1-snapshot restore of pre-7.0 tasks
+   degrades fail-closed, consistent with Q8=B wholesale quarantine.
+6. Strict-path contract stability: for MALFORMED rows the pre-ABI-2 strict
+   messages are kept byte-stable ("task result authority is unreadable or
+   invalid" / "task result is unreadable or invalid" - test_review_cycles
+   pins the former); schema refusals raise the new typed message with
+   reason=quarantined_schema. Strict reads never mutate storage: an
+   authority probe is not allowed to be the mover.
+7. ABI-7a: `read_update_tx_strict` grew the fourth status `"future"`
+   (integer stamp above ours; raw tx returned as evidence). Full strict
+   caller sweep on the base: update_merge internal consumers fail closed via
+   existing `!= "valid"` branches; `update_tx_phase` raises the typed
+   refusal without writing; `_safe_restart_serialized` defers the restart;
+   git_ops_reset.py:326 keeps `tx_matches` false and clears the orphan
+   intent (fail-closed). A NON-integer stamp reads `corrupt` (evidence kept
+   on disk, `{}` returned) - only a genuine newer-release stamp is `future`.
+   An unstamped marker stays `valid`: that IS the N-1 transition contract.
+8. F2.4 boot-finalize family untouched byte-wise except the dispatch
+   docstrings and the future branch in `finalize_managed_update_on_boot`;
+   the carrier-conflict crash floor (F2.4 ledger entry 4) keeps its existing
+   pins - the shim suite adds the N-1 byte-form fixtures for every phase
+   seam plus the marker upgrade-on-first-rewrite assertion.
+9. Fixture sweep: 9 test files hand-writing task-result rows as
+   current-version writers now stamp them (acting_subagents, presence_tools,
+   tasks_list_slice, headless_task_events, context_drive_state,
+   gateway_history, host_service_api, plan_review_public_projection - plus
+   the new F12 suite writes both forms deliberately).
