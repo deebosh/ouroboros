@@ -135,7 +135,11 @@ class TestBackgroundContext(unittest.TestCase):
                 event_queue=None,
                 owner_chat_id_fn=lambda: None,
             )
-        text = bc._build_context()
+        # The backlog digest is a non-P1 section that low mode deliberately
+        # skips (b728762c drop-priority degradation); assert it in a mode that
+        # includes it.
+        with patch("ouroboros.consciousness.get_context_mode", return_value="max"):
+            text = bc._build_context()
         self.assertIn("## Improvement Backlog", text)
         self.assertIn("Reduce recurring task friction around REVIEW_BLOCKED", text)
 

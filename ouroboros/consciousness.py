@@ -10,7 +10,7 @@ import pathlib
 import queue
 import threading
 import traceback
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from ouroboros.tools.registry import ToolRegistry
@@ -863,7 +863,6 @@ class BackgroundConsciousness:
         keep_parts: List[str] = []
         keep_sections: List[Any] = []
         for p, s in zip(parts, sections):
-            label, chars, priority = s[0], s[1], s[2]
             keep_parts.append(p)
             keep_sections.append(s)
         # Iteratively drop the LARGEST non-P1 section until under budget, or

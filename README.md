@@ -12,7 +12,7 @@
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://ouroboros-agent.ai/install/#linux)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)][download-windows-x64]
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.109.12](https://img.shields.io/badge/version-6.109.12-green.svg)](VERSION)
+[![Version 6.109.13](https://img.shields.io/badge/version-6.109.13-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
@@ -64,13 +64,13 @@ The desktop packages already contain an optional CLI installer. On macOS, after 
 
 </details>
 
-[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.12/Ouroboros-6.109.12.dmg
-[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.12/Ouroboros-6.109.12-windows-x64.zip
-[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.12/ouroboros_6.109.12_amd64.deb
-[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.12/ouroboros-6.109.12-1.x86_64.rpm
-[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.12/ouroboros-6.109.12-1.red80.x86_64.rpm
-[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.12/Ouroboros-6.109.12-linux-x86_64.AppImage
-[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.12/Ouroboros-6.109.12-linux-x86_64.tar.gz
+[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.13/Ouroboros-6.109.13.dmg
+[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.13/Ouroboros-6.109.13-windows-x64.zip
+[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.13/ouroboros_6.109.13_amd64.deb
+[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.13/ouroboros-6.109.13-1.x86_64.rpm
+[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.13/ouroboros-6.109.13-1.red80.x86_64.rpm
+[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.13/Ouroboros-6.109.13-linux-x86_64.AppImage
+[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.13/Ouroboros-6.109.13-linux-x86_64.tar.gz
 
 Ouroboros bundles [Claudexor](https://github.com/razzant/claudexor) as its local execution layer for delegated coding and hosted-agent review. Ouroboros owns the task, memory, review, and final integration, while Claudexor runs the selected connected coding harness and returns durable execution evidence. [Explore Claudexor](https://claudexor.ai/).
 
@@ -449,7 +449,8 @@ and the reason.
 
 | Version | Date | Description |
 |---------|------|-------------|
-| 6.109.12 | 2026-08-31 | chore: remove unused F401 import build_governance_sections from consciousness.py |
+| 6.109.13 | 2026-08-31 | chore(consciousness): clear b728762c rot — add missing `Tuple` import (F821), drop dead `label/chars/priority` unpack (F841), fix low-mode backlog-digest test. |
+| 6.109.13 | 2026-08-31 | chore: remove unused F401 import build_governance_sections from consciousness.py |
 | 6.109.11 | 2026-08-31 | fix(commit-gate): inline advisory on freshness gap (ibl-b1f10cece0eb); fix(shell): autocorrect single-element `&&`-chain argv (ibl-21e0a036155d cluster); fix(loop): don't latch a terminal delivery candidate while the task's own edits are uncommitted (ibl-d29bc3cc9d67); test(deadline_utils): unit coverage. |
 | 6.109.11 | 2026-08-31 | fix(identity): post-write verify guard in `_update_identity` catches silent byte corruption and surfaces a loud `IDENTITY_WRITE_CORRUPTED` result (closes ibl-local-f3628ac3c9a0). |
 | 6.109.9 | 2026-08-31 | fix(identity): post-write verify guard in `_update_identity` — re-read + sha256 compare after `write_text`; loud non-OK return + `verify_failed` journal entry on byte mismatch; closes ibl-local-f3628ac3c9a0 |
