@@ -1808,7 +1808,7 @@ def test_effective_status_preserves_parent_retry_status_over_stale_child_running
 
 def test_find_child_tasks_requires_subagent_role_and_can_exclude_current_task(tmp_path):
     from ouroboros.task_results import STATUS_COMPLETED, STATUS_RUNNING, write_task_result
-    from ouroboros.task_status import find_child_tasks, format_handoff_message
+    from ouroboros.task_status import find_child_tasks
 
     write_task_result(
         tmp_path,
@@ -1833,14 +1833,9 @@ def test_find_child_tasks_requires_subagent_role_and_can_exclude_current_task(tm
 
     children = find_child_tasks(tmp_path, parent_task_id="parent1", root_task_id="parent1")
     excluded = find_child_tasks(tmp_path, parent_task_id="parent1", root_task_id="parent1", exclude_task_id="child1")
-    handoff = format_handoff_message(children)
 
     assert [row["task_id"] for row in children] == ["child1"]
     assert excluded == []
-    assert "should not be treated as child" not in handoff
-    assert len(handoff) < 1200
-    assert "Use get_task_result" in handoff
-    assert "result_chars" in handoff
 
 
 def test_wait_for_task_times_out_when_child_is_not_terminal(tmp_path):

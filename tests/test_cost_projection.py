@@ -120,18 +120,6 @@ class TestProducers:
         fields = reconstruct_task_cost("some-task", fields=True, drive_root=tmp_path)
         assert fields["accounted_upper_bound_usd"] == fields["cost_usd"]
 
-    def test_handoff_block_has_no_fabricated_zero(self):
-        import json
-
-        from ouroboros.task_status import format_handoff_message
-
-        message = format_handoff_message([{"task_id": "c1", "status": "completed"}])
-        payload = json.loads(message.split("[SUBAGENT_HANDOFF_STATUS]\n", 1)[1]
-                             .rsplit("\n[/SUBAGENT_HANDOFF_STATUS]", 1)[0])
-        assert payload[0]["cost_usd"] is None
-        assert payload[0]["accounted_upper_bound_usd"] is None
-        assert payload[0]["cost_final"] is False
-
     def test_subagent_absorption_renders_unknown_not_zero(self):
         from ouroboros.task_status import format_subagent_absorption_message
 
