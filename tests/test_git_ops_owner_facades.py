@@ -98,3 +98,21 @@ def test_git_ops_leaves_keep_hot_code_label_parity():
     parent_is_hot = "supervisor/git_ops.py" in HOT_CODE_PATHS
     for leaf in GIT_OPS_LEAF_OWNERS:
         assert (f"supervisor/{leaf}.py" in HOT_CODE_PATHS) == parent_is_hot, leaf
+
+
+def test_git_ops_family_constant_matches_the_tree_and_every_inventory():
+    """Batch-5 item 15: the derived family constant is the rot-killer - every
+    supervisor/git_ops*.py that EXISTS must be in the constant, and the
+    constant must be fully absorbed by each protection inventory that covers
+    the parent (a future leaf added to the tree but not the family, or a
+    family member dropped from an inventory, fails here loudly)."""
+    import pathlib
+    from ouroboros.runtime_mode_policy import (
+        GIT_OPS_FAMILY_PATHS,
+        RELEASE_INVARIANT_PATHS,
+    )
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    on_disk = {p.relative_to(repo).as_posix()
+               for p in (repo / "supervisor").glob("git_ops*.py")}
+    assert on_disk == GIT_OPS_FAMILY_PATHS
+    assert GIT_OPS_FAMILY_PATHS <= RELEASE_INVARIANT_PATHS
