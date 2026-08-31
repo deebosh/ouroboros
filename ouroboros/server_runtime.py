@@ -269,6 +269,7 @@ def _exclusive_direct_remote_provider(settings: dict) -> str:
     has_official_openai = bool(_setting_text(settings, "OPENAI_API_KEY"))
     has_anthropic = bool(_setting_text(settings, "ANTHROPIC_API_KEY"))
     has_minimax = bool(_setting_text(settings, "MINIMAX_API_KEY"))
+    has_deepseek = bool(_setting_text(settings, "DEEPSEEK_API_KEY"))
     has_legacy_openai_base = bool(_setting_text(settings, "OPENAI_BASE_URL"))
     has_compatible = bool(_setting_text(settings, "OPENAI_COMPATIBLE_BASE_URL"))
     has_cloudru = bool(_setting_text(settings, "CLOUDRU_FOUNDATION_MODELS_API_KEY"))
@@ -288,6 +289,7 @@ def _exclusive_direct_remote_provider(settings: dict) -> str:
             ("minimax", has_minimax),
             ("cloudru", has_cloudru),
             ("gigachat", has_gigachat),
+            ("deepseek", has_deepseek),
         ) if present
     ]
     return direct[0] if len(direct) == 1 else ""
@@ -392,6 +394,7 @@ def has_remote_provider(settings: dict) -> bool:
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
             "MINIMAX_API_KEY",
+            "DEEPSEEK_API_KEY",
             "OPENAI_COMPATIBLE_BASE_URL",
             "CLOUDRU_FOUNDATION_MODELS_API_KEY",
             "GIGACHAT_CREDENTIALS",

@@ -24,7 +24,7 @@ from ouroboros.anthropic_native_custody import (
     scrub_native_custody,
 )
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
-from ouroboros.provider_models import OPENROUTER_DEFAULTS, PROVIDER_PREFIXES, normalize_anthropic_model_id, normalize_model_identity, resolve_minimax_base_url
+from ouroboros.provider_models import DEEPSEEK_BASE_URL, OPENROUTER_DEFAULTS, PROVIDER_PREFIXES, normalize_anthropic_model_id, normalize_model_identity, resolve_minimax_base_url
 from ouroboros.request_wire_recovery import (
     finalize_wire_response,
     note_provider_metadata_drop_fields,
@@ -1297,6 +1297,8 @@ class LLMClient:
             return f"gigachat/{resolved_model}"
         if provider == "minimax":
             return f"minimax/{resolved_model}"
+        if provider == "deepseek":
+            return f"deepseek/{resolved_model}"
         return f"openai-compatible/{resolved_model}"
 
     def _resolve_remote_target(
@@ -1322,6 +1324,9 @@ class LLMClient:
                 "api_key": configured("OPENAI_API_KEY", ""),
                 "base_url": "https://api.openai.com/v1",
                 "default_headers": {},
+                # Effort-carrying route: the configured OUROBOROS_EFFORT_* lanes
+                # ride as `reasoning_effort` instead of being silently dropped.
+                "carries_reasoning_effort": True,
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
             }
@@ -1348,6 +1353,26 @@ class LLMClient:
                 "api_key": configured("MINIMAX_API_KEY", ""),
                 "base_url": resolve_minimax_base_url(configured("MINIMAX_REGION", "")),
                 "default_headers": {},
+                "supports_openrouter_extensions": False,
+                "supports_generation_cost": False,
+            }
+
+        if provider == "deepseek":
+            return {
+                "provider": provider,
+                "resolved_model": resolved_model,
+                "usage_model": usage_model,
+                "api_key": configured("DEEPSEEK_API_KEY", ""),
+                # One official endpoint; no owner-configurable base URL
+                # (proxy/mirror setups belong to the openai-compatible slot).
+                "base_url": DEEPSEEK_BASE_URL,
+                "default_headers": {},
+                # DeepSeek Chat Completions accepts the full reasoning-effort
+                # enum (live-probed 2026-09-01: none|minimal|low|medium|high|
+                # xhigh|max; `ultra` is a 400 naming exactly those variants) and
+                # v4 thinks by default, so the effort lanes are carried instead
+                # of silently dropped like the other generic compatible lanes.
+                "carries_reasoning_effort": True,
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
             }
@@ -1603,7 +1628,12 @@ class LLMClient:
     _REASONING_CONTENT_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
 
     @classmethod
-    def _strip_openrouter_roundtrip_metadata(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _strip_openrouter_roundtrip_metadata(
+        cls,
+        messages: List[Dict[str, Any]],
+        *,
+        keep_reasoning_content: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Strip provider-private reasoning round-trip artifacts that a DIFFERENT
         upstream family rejects: assistant-level ``reasoning``/``reasoning_details``/
         ``reasoning_content``/``response_id`` keys AND ``thinking``/``reasoning``
@@ -1615,14 +1645,19 @@ class LLMClient:
         OpenRouter/Anthropic ``reasoning``/``reasoning_details`` shapes. Strict
         OpenAI-compatible servers (vLLM/SGLang) reject an echoed ``reasoning_content``
         with HTTP 400 ``Extra inputs are not permitted``, so it must be scrubbed on
-        the cloudru / openai-compatible / local lanes too."""
+        the cloudru / openai-compatible / local lanes too. DeepSeek is the third
+        class — a server that REQUIRES its own echo (tool-bearing requests 400
+        without the previous turns' ``reasoning_content``) — so its lane passes
+        ``keep_reasoning_content=True`` to retain that one field while every
+        other round-trip artifact is still stripped."""
         cleaned = scrub_native_custody(messages)
         for msg in cleaned:
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
                 continue
             msg.pop("reasoning", None)
             msg.pop("reasoning_details", None)
-            msg.pop("reasoning_content", None)
+            if not keep_reasoning_content:
+                msg.pop("reasoning_content", None)
             msg.pop("response_id", None)
             content = msg.get("content")
             if isinstance(content, list):
@@ -3522,7 +3557,13 @@ class LLMClient:
         # local/GigaChat lanes; the VLM tool lane already routes vision to a capable
         # slot. supports_vision() is a no-op for vision-capable models.
         from ouroboros.provider_models import supports_vision
-        if not supports_vision(resolved_model):
+        # Judge vision on the QUALIFIED identity: direct lanes strip the
+        # ``provider::`` prefix from ``resolved_model``, so the bare id never
+        # matched the slash-form vision prefixes and every direct route was
+        # treated blind regardless of real capability. ``usage_model`` carries
+        # the qualified spelling on direct lanes and equals ``resolved_model``
+        # on OpenRouter, so the router lane is byte-identical.
+        if not supports_vision(str(target.get("usage_model") or resolved_model)):
             messages = self._replace_image_blocks_with_placeholder(messages)
         # Official direct OpenAI Chat uses the current completion-token carrier:
         # provider-wide; model names are not capability authority across routes.
@@ -3538,8 +3579,20 @@ class LLMClient:
                     messages,
                     allow_message_cache_control=False,
                     flatten_tool_content_blocks=True,
-                )
+                ),
+                keep_reasoning_content=(provider == "deepseek"),
             )
+            if provider == "deepseek":
+                # DeepSeek's documented tool contract REQUIRES every assistant
+                # turn's ``reasoning_content`` to be passed back on requests that
+                # carry ``tools`` (v4-pro enforces it with a 400; probed
+                # 2026-09-01). Turns produced by another model have none — an
+                # explicit empty string satisfies the strict gate (probed) and is
+                # the honest value for a turn whose reasoning genuinely does not
+                # exist. Harmless without tools (the API ignores the field).
+                for _msg in clean_messages:
+                    if isinstance(_msg, dict) and _msg.get("role") == "assistant":
+                        _msg.setdefault("reasoning_content", "")
             kwargs: Dict[str, Any] = {
                 "model": resolved_model,
                 "messages": clean_messages,
@@ -3555,11 +3608,16 @@ class LLMClient:
                     # stable governance prefix on the same cache bucket.
                     kwargs["prompt_cache_key"] = cache_identity
             requested_effort = normalize_reasoning_effort(reasoning_effort)
-            if direct_openai:
-                # Direct-OpenAI route honors the configured OUROBOROS_EFFORT_*
-                # lanes instead of silently dropping them (OpenRouter parity).
-                # Exact-route request-wire evidence, not legacy model-global
-                # rows, owns any provider-required adaptation after this build.
+            if target.get("carries_reasoning_effort"):
+                # Effort-carrying routes (direct OpenAI, DeepSeek) honor the
+                # configured OUROBOROS_EFFORT_* lanes instead of silently
+                # dropping them (OpenRouter parity). Exact-route request-wire
+                # evidence, not legacy model-global rows, owns any
+                # provider-required adaptation after this build. DeepSeek's
+                # server enum tops out at ``max`` (the codex-only ``ultra``
+                # tier is a documented 400 there), so it clamps one step.
+                if provider == "deepseek" and requested_effort == "ultra":
+                    requested_effort = "max"
                 kwargs["reasoning_effort"] = requested_effort
             if temperature is not None:
                 kwargs["temperature"] = temperature
@@ -3778,12 +3836,27 @@ class LLMClient:
         # their OWN echoed ``reasoning_content`` with a 400 ``Extra inputs are not
         # permitted`` on the very next same-model turn. Drop it here so it never enters
         # the canonical transcript; the outbound scrubber is the second layer.
-        msg.pop("reasoning_content", None)
+        # DeepSeek is the inverse class: its documented tool contract REQUIRES the
+        # previous turns' ``reasoning_content`` back on every tools-bearing request
+        # (v4-pro enforces with a 400), so that lane KEEPS the field on the canonical
+        # assistant message — the same-family-continuity treatment ``reasoning_details``
+        # already gets. Cross-family sends strip it (sanitize_reasoning_on_model_switch
+        # + the outbound scrubber), and the deepseek outbound build replays it.
+        if str(target.get("provider") or "") != "deepseek":
+            msg.pop("reasoning_content", None)
 
         if not usage.get("cached_tokens"):
             prompt_details = usage.get("prompt_tokens_details") or {}
             if isinstance(prompt_details, dict) and prompt_details.get("cached_tokens"):
                 usage["cached_tokens"] = int(prompt_details["cached_tokens"])
+        if not usage.get("cached_tokens") and usage.get("prompt_cache_hit_tokens"):
+            # DeepSeek mirrors its automatic-cache split as top-level
+            # prompt_cache_hit/miss_tokens beside the details block; the
+            # details block wins when present, this is the fallback.
+            try:
+                usage["cached_tokens"] = int(usage["prompt_cache_hit_tokens"])
+            except (TypeError, ValueError):
+                pass
         # LM Studio MLX exposes prefix-cache hits only in stderr/logs, not
         # OpenAI-compatible usage; cached_tokens=0 is therefore expected.
 

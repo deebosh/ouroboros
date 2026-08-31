@@ -23,6 +23,15 @@ def resolve_minimax_base_url(region: str = "") -> str:
     return MINIMAX_REGION_ENDPOINTS.get(selected, MINIMAX_REGION_ENDPOINTS[MINIMAX_DEFAULT_REGION])
 
 
+# DeepSeek serves one official OpenAI-compatible endpoint (no regions, no
+# owner-configurable base URL — a proxy/mirror setup belongs to the generic
+# openai-compatible slot). Kept as a module constant so transport and the
+# provider test resolve the same host; the reviewer-window/base-url fingerprint
+# maps deliberately have NO deepseek branch (both default to "" consistently —
+# the fingerprint is already unique per provider+model).
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+
+
 # Direct-provider prefix → canonical provider name. Un-prefixed models route
 # through OpenRouter. Order matters only for readability; prefixes are disjoint.
 PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
@@ -31,6 +40,7 @@ PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
     ("minimax::", "minimax"),
     ("cloudru::", "cloudru"),
     ("gigachat::", "gigachat"),
+    ("deepseek::", "deepseek"),
     ("openai-compatible::", "openai-compatible"),
     ("openrouter::", "openrouter"),
 )
@@ -41,6 +51,7 @@ PROVIDER_ENV_KEYS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "minimax": "MINIMAX_API_KEY",
     "cloudru": "CLOUDRU_FOUNDATION_MODELS_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
@@ -66,6 +77,7 @@ PROVIDER_CREDENTIAL_GROUPS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_API_KEY",),
     "minimax": ("MINIMAX_API_KEY", "MINIMAX_REGION"),
     "cloudru": ("CLOUDRU_FOUNDATION_MODELS_API_KEY", "CLOUDRU_FOUNDATION_MODELS_BASE_URL"),
+    "deepseek": ("DEEPSEEK_API_KEY",),
     "gigachat": (
         "GIGACHAT_CREDENTIALS", "GIGACHAT_PASSWORD", "GIGACHAT_USER",
         "GIGACHAT_BASE_URL", "GIGACHAT_SCOPE", "GIGACHAT_VERIFY_SSL_CERTS",
@@ -171,7 +183,7 @@ def local_only_review_route_env() -> bool:
         provider_has_credentials(provider)
         for provider in (
             "openrouter", "openai", "anthropic", "minimax", "cloudru", "gigachat",
-            "openai-compatible",
+            "deepseek", "openai-compatible",
         )
     )
 
@@ -375,6 +387,24 @@ MINIMAX_DIRECT_DEFAULTS = {
     # the Cloud.ru/GigaChat clear-instead-of-fill path; owners can opt in manually.
 }
 
+DEEPSEEK_DIRECT_DEFAULTS = {
+    "main": "deepseek::deepseek-v4-pro",
+    "heavy": "",
+    "light": "deepseek::deepseek-v4-flash",
+    "fallback": "deepseek::deepseek-v4-flash",
+    # DeepSeek documents a FIRM 1M context on every v4 model (api-docs
+    # 2026-08: "1M context, 384K max output" with no guaranteed-minimum
+    # caveat), so the slot follows the OpenAI/Anthropic fill pattern rather
+    # than the MiniMax clear-instead-of-fill path (whose guaranteed floor was
+    # 512K). The route's /models endpoint publishes NO window metadata, so the
+    # ≥1M authority for blocking deep/scope review in Max mode still requires
+    # the owner capability acknowledgement — until then the gate fails closed
+    # loudly rather than silently degrading (see ARCHITECTURE §7).
+    "deep_self_review": "deepseek::deepseek-v4-pro",
+    # No vision default: deepseek-v4-flash-vision-exp is experimental; it is
+    # recognized by supports_vision() for explicit owner selection only.
+}
+
 ANTHROPIC_DIRECT_DEFAULTS = {
     "main": "anthropic::claude-opus-5",
     "heavy": "",
@@ -392,6 +422,7 @@ DIRECT_PROVIDER_DEFAULTS = {
     "cloudru": CLOUDRU_DIRECT_DEFAULTS,
     "gigachat": GIGACHAT_DIRECT_DEFAULTS,
     "minimax": MINIMAX_DIRECT_DEFAULTS,
+    "deepseek": DEEPSEEK_DIRECT_DEFAULTS,
 }
 
 # Review panels are declared as provider ROLE sequences, then compiled against
@@ -406,6 +437,9 @@ DIRECT_PROVIDER_REVIEW_ROLES = {
     "cloudru": ("main", "main", "main"),
     "gigachat": ("main", "main", "main"),
     "minimax": ("main", "light", "light"),
+    # Strongest-main ×3 policy (same as OpenAI/Anthropic): an exclusive
+    # DeepSeek install reviews with three independent thinking v4-pro calls.
+    "deepseek": ("main", "main", "main"),
 }
 
 DIRECT_PROVIDER_SCOPE_DEFAULTS = {
@@ -450,6 +484,12 @@ def migrate_model_value(provider: str, value: str) -> str:
         if text.startswith("minimax/"):
             return f"minimax::{text[len('minimax/'):]}"
         return text
+    if provider == "deepseek":
+        if text.startswith("deepseek::"):
+            return text
+        if text.startswith("deepseek/"):
+            return f"deepseek::{text[len('deepseek/'):]}"
+        return text
     return text
 
 
@@ -487,6 +527,11 @@ _VISION_MODEL_PREFIXES: tuple[str, ...] = (
     "qwen/qwen-vl", "qwen/qwen2.5-vl", "qwen/qwen3-vl",
     "mistralai/pixtral", "meta-llama/llama-4", "meta-llama/llama-3.2-90b-vision",
     "openai/gpt-5.5",
+    # Narrow on purpose: only the dedicated vision variant. Plain deepseek
+    # chat/v4 ids stay non-vision (pinned by tests), and this slash-form
+    # normalized id also names a real OpenRouter vendor namespace — the
+    # OpenRouter /models overlay may refine exact ids either way.
+    "deepseek/deepseek-v4-flash-vision",
 )
 
 # Runtime overlay: model_id → bool, fed from OpenRouter /models
@@ -537,6 +582,8 @@ def normalize_model_identity(model: str) -> str:
         return f"gigachat/{text[len('gigachat::'):]}"
     if text.startswith("minimax::"):
         return f"minimax/{text[len('minimax::'):]}"
+    if text.startswith("deepseek::"):
+        return f"deepseek/{text[len('deepseek::'):]}"
     if text.startswith("anthropic::"):
         return f"anthropic/{normalize_anthropic_model_id(text[len('anthropic::'):])}"
     if text.startswith("anthropic/"):

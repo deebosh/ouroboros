@@ -79,6 +79,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "ANTHROPIC_API_KEY": "",
     "MINIMAX_API_KEY": "",
     "MINIMAX_REGION": "",
+    "DEEPSEEK_API_KEY": "",
     "OUROBOROS_NETWORK_PASSWORD": "",
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
@@ -530,6 +531,7 @@ def _exclusive_direct_remote_provider_env() -> str:
     has_openai = bool(str(os.environ.get("OPENAI_API_KEY", "") or "").strip())
     has_anthropic = bool(str(os.environ.get("ANTHROPIC_API_KEY", "") or "").strip())
     has_minimax = bool(str(os.environ.get("MINIMAX_API_KEY", "") or "").strip())
+    has_deepseek = bool(str(os.environ.get("DEEPSEEK_API_KEY", "") or "").strip())
     has_legacy_base = bool(str(os.environ.get("OPENAI_BASE_URL", "") or "").strip())
     has_compatible = bool(str(os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "") or "").strip())
     has_cloudru = bool(str(os.environ.get("CLOUDRU_FOUNDATION_MODELS_API_KEY", "") or "").strip())
@@ -545,7 +547,7 @@ def _exclusive_direct_remote_provider_env() -> str:
         return ""
     direct = [name for name, present in (
         ("openai", has_openai), ("anthropic", has_anthropic), ("minimax", has_minimax),
-        ("cloudru", has_cloudru), ("gigachat", has_gigachat),
+        ("cloudru", has_cloudru), ("gigachat", has_gigachat), ("deepseek", has_deepseek),
     ) if present]
     return direct[0] if len(direct) == 1 else ""
 
@@ -599,7 +601,7 @@ def resolve_prompt_cache_ttl() -> str:
 
 def direct_provider_review_models_fallback(provider: str) -> list[str]:
     """Return the exact review-models list a direct-provider fallback emits."""
-    if provider not in ("openai", "anthropic", "minimax", "cloudru", "gigachat"):
+    if provider not in ("openai", "anthropic", "minimax", "cloudru", "gigachat", "deepseek"):
         return []
     main_model = str(
         os.environ.get("OUROBOROS_MODEL", SETTINGS_DEFAULTS["OUROBOROS_MODEL"]) or ""
