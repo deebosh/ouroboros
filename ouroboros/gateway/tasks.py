@@ -409,6 +409,22 @@ def _complete_api_task_admission(
     })
 
 
+def _task_identity_occupied(drive_root: pathlib.Path, task_id: str) -> bool:
+    """Whether a stored task-result row already owns *task_id*.
+
+    ABI-2: identity collision is an AUTHORITY question, so the probe is the
+    strict reader. The fail-soft default would QUARANTINE an inadmissible
+    stored row as a side effect of this check and then report "no result",
+    letting the endpoint reuse that row's task id; strict raises WITHOUT
+    moving anything, and any stored row — admissible or not — keeps its
+    identity occupied.
+    """
+    try:
+        return load_task_result(drive_root, task_id, strict=True) is not None
+    except ValueError:
+        return True
+
+
 async def api_tasks_create(request: Request) -> JSONResponse:
     """POST /api/tasks — enqueue a managed headless task."""
 
@@ -433,17 +449,7 @@ async def api_tasks_create(request: Request) -> JSONResponse:
         task_id = validate_task_id(body.get("task_id") or uuid.uuid4().hex[:16])
     except ValueError as exc:
         return json_error(str(exc), 400)
-    # ABI-2: identity collision is an AUTHORITY question, so the probe is the
-    # strict reader. The fail-soft default would QUARANTINE an inadmissible
-    # stored row as a side effect of this check and then report "no result",
-    # letting the endpoint reuse that row's task id; strict raises WITHOUT
-    # moving anything, and any stored row — admissible or not — keeps its
-    # identity occupied.
-    try:
-        existing_row = load_task_result(drive_root, task_id, strict=True)
-    except ValueError:
-        return json_error(f"task_id already exists: {task_id}", 409)
-    if existing_row:
+    if _task_identity_occupied(drive_root, task_id):
         return json_error(f"task_id already exists: {task_id}", 409)
     if (drive_root / HEADLESS_TASKS_DIR / task_id).exists() or (drive_root / ARTIFACTS_DIR / task_id).exists():
         return json_error(f"task_id already has headless state: {task_id}", 409)
