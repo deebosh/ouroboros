@@ -1479,9 +1479,11 @@ def make_chat_history_endpoint(data_dir: pathlib.Path):
         # Separate per-type quotas so a burst of progress/telemetry can never evict
         # the user's real conversation from a single combined tail. Defaults are
         # the module-level window constants — the web client's default request
-        # sends no quota params. (`limit` is still accepted for backward-compat
-        # but no longer governs the slice.)
-        n_human = _int_param("n_human", _DEFAULT_N_HUMAN, _MAX_N_HUMAN)
+        # sends no quota params. The legacy `limit` parameter (shipped CLIs sent
+        # it while the server ignored it) is honored as the n_human default, so
+        # an old client that asks for N human rows finally gets N, within cap;
+        # an explicit n_human still wins.
+        n_human = _int_param("n_human", _int_param("limit", _DEFAULT_N_HUMAN, _MAX_N_HUMAN), _MAX_N_HUMAN)
         n_progress = _int_param("n_progress", _DEFAULT_N_PROGRESS, _MAX_N_PROGRESS)
         # Multi-project thread filter (v6.32.0): each chat fetches its own
         # history. Default 1 = main chat (legacy rows without chat_id are main).
