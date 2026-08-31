@@ -407,3 +407,44 @@ class TestGrepRegexHint:
         fake_subprocess()
         result = _run_shell(_ctx(tmp_path), argv)
         assert "SHELL_REGEX_HINT" not in result, reason
+
+
+# ---------------------------------------------------------------------------
+# run_script input bounds
+# ---------------------------------------------------------------------------
+
+
+def test_run_script_refuses_oversized_script_and_args():
+    """The handler enforces the schema's size caps itself (the registry does not
+    enforce JSON-schema maxLength), refusing BEFORE binding/exec so an oversized
+    subject can never reach the safety prompt or the filesystem."""
+    from types import SimpleNamespace
+
+    from ouroboros.tools import shell
+
+    ctx = SimpleNamespace(_active_python_resolution=None)
+
+    big_script = "x" * (shell.RUN_SCRIPT_MAX_SCRIPT_CHARS + 1)
+    msg = shell._run_script(ctx, script=big_script)
+    assert msg.startswith("⚠️ TOOL_ARG_ERROR (run_script): script is ")
+    assert "write_file" in msg
+
+    big_arg = "y" * (shell.RUN_SCRIPT_MAX_ARG_CHARS + 1)
+    msg = shell._run_script(ctx, script="print('ok')", args=[big_arg])
+    assert msg.startswith("⚠️ TOOL_ARG_ERROR (run_script): args[0] is ")
+
+    many_args = ["x"] * (shell.RUN_SCRIPT_MAX_ARGS_COUNT + 1)
+    msg = shell._run_script(ctx, script="print('ok')", args=many_args)
+    assert msg.startswith("⚠️ TOOL_ARG_ERROR (run_script): 101 args, above the ")
+
+
+def test_run_script_schema_advertises_the_size_caps():
+    """The schema and the handler share one constant, so the advertised cap and
+    the enforced cap cannot drift apart."""
+    from ouroboros.tools import shell
+    from ouroboros.tools.shell import get_tools
+
+    props = {e.name: e for e in get_tools()}["run_script"].schema["parameters"]["properties"]
+    assert props["script"]["maxLength"] == shell.RUN_SCRIPT_MAX_SCRIPT_CHARS
+    assert props["args"]["items"]["maxLength"] == shell.RUN_SCRIPT_MAX_ARG_CHARS
+    assert props["args"]["maxItems"] == shell.RUN_SCRIPT_MAX_ARGS_COUNT

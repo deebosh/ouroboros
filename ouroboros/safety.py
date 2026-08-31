@@ -424,6 +424,15 @@ def _redact_secrets_in_text(text: str) -> str:
 _SAFETY_CONTEXT_CHAR_BUDGET = 4000
 _SAFETY_OMISSION_MARKER = "[… {n} older messages omitted]"
 
+# Character budget for the serialized SUBJECT (the proposed call's own arguments).
+# The subject is embedded VERBATIM — truncating it would hide the tail from the
+# reviewer, so an over-budget subject is REFUSED fail-closed instead: one oversized
+# run_script/run_command payload otherwise inflates this prompt past provider
+# limits, and the conversation budget above cannot help because the subject rides
+# outside it. The refusal is a typed policy denial with a working alternative
+# (stage the payload with write_file), never a truncated half-reviewed call.
+_SAFETY_SUBJECT_CHAR_BUDGET = 250_000
+
 
 def _format_messages_for_safety(messages: List[Dict[str, Any]]) -> str:
     """Format compact safety context, redacting before truncation.
@@ -466,16 +475,34 @@ def _format_messages_for_safety(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(kept)
 
 
+def _render_subject_json(arguments: Dict[str, Any]) -> str:
+    """Serialize the redacted call arguments exactly as the check prompt embeds them.
+
+    ``ensure_ascii=False`` keeps serialized length ≈ input length: the default
+    \\uXXXX escaping inflates non-ASCII text 6×, which would make the subject
+    budget below (and the run_script schema cap sized against it) a false
+    promise for e.g. Cyrillic scripts. The prompt goes to an LLM; UTF-8 is fine.
+    """
+    safe_args = _redact_secrets_in_arguments(arguments or {})
+    try:
+        rendered = json.dumps(safe_args, indent=2, default=repr, ensure_ascii=False)
+    except Exception:
+        rendered = repr(safe_args)
+    # A lone surrogate (a validly PARSED \ud800 escape in tool args) survives
+    # json.dumps but is unencodable UTF-8 and would explode the provider send
+    # downstream; the prompt is a rendering, so substitute rather than crash.
+    return rendered.encode("utf-8", "replace").decode("utf-8")
+
+
 def _build_check_prompt(
     tool_name: str,
     arguments: Dict[str, Any],
     messages: Optional[List[Dict[str, Any]]] = None,
+    *,
+    args_json: Optional[str] = None,
 ) -> str:
-    safe_args = _redact_secrets_in_arguments(arguments or {})
-    try:
-        args_json = json.dumps(safe_args, indent=2, default=repr)
-    except Exception:
-        args_json = repr(safe_args)
+    if args_json is None:
+        args_json = _render_subject_json(arguments)
     runtime_mode = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced") or "advanced"
     prompt = (
         "Proposed tool call:\n"
@@ -857,6 +884,36 @@ def _safety_unavailable_blocked(
     )
 
 
+def _subject_too_large_blocked(
+    ctx: Optional[Any], tool_name: str, subject_chars: int,
+) -> Tuple[bool, str]:
+    """Over-budget subject: BLOCK this one call with a typed policy denial.
+
+    Truncating the subject instead would weaken the check — anything past the cut
+    would run unreviewed — and `full` mode's owner contract is that an unchecked
+    guarded call never executes. The `_BLOCKED` first-line marker classifies as a
+    policy denial downstream (never `safety_violation`), and the message carries
+    the working alternative (P5: the instruction lives with the fact). Disclosed
+    twice: the result the agent reads, and the durable event an owner can find."""
+    log.error(
+        "Safety subject for %s is %d chars (budget %d); refusing the unreviewable call",
+        tool_name, subject_chars, _SAFETY_SUBJECT_CHAR_BUDGET,
+    )
+    _emit_durable_safety_event(ctx, {
+        "type": "safety_subject_too_large", "tool": tool_name,
+        "subject_chars": int(subject_chars),
+        "budget_chars": _SAFETY_SUBJECT_CHAR_BUDGET,
+    })
+    return False, (
+        "⚠️ SAFETY_SUBJECT_TOO_LARGE_BLOCKED: this call's arguments serialize to "
+        f"{subject_chars:,} characters, above the {_SAFETY_SUBJECT_CHAR_BUDGET:,}-character "
+        "budget the Safety Supervisor can review in one prompt. The call was NOT executed "
+        "and the subject was NOT truncated (a partially reviewed call must never run). "
+        "Reshape it: stage large content with write_file and run the staged file, or split "
+        "the payload into smaller calls."
+    )
+
+
 def _safety_model_call(
     *, client: Any, ctx: Optional[Any], tool_name: str, light_model: str,
     use_local: bool, call_type: str, user_prompt: str, on_usage: Any,
@@ -956,7 +1013,10 @@ def _run_llm_check(
             f"({_skip_reason.rstrip('.')}). {_UNCHECKED_WARNING_SUFFIX}"
         )
 
-    prompt = _build_check_prompt(tool_name, arguments, messages)
+    args_json = _render_subject_json(arguments)
+    if len(args_json) > _SAFETY_SUBJECT_CHAR_BUDGET:
+        return _subject_too_large_blocked(ctx, tool_name, len(args_json))
+    prompt = _build_check_prompt(tool_name, arguments, messages, args_json=args_json)
     client = LLMClient()
     light_model = get_light_model()
     log.info(f"Running safety check on {tool_name} using {light_model} (local={_use_local_light})")
