@@ -2702,3 +2702,65 @@ no action owed. Dispositions:
    residual named. scripts/v7next_adoption.py OK (36 rows).
 5. Findings 2 and 5 (ABI-2, ratchet extractions/manifest) — CLOSED by the
    verdict itself; nothing changed there in this round.
+
+## From the F3.1 conformance fix-round-4 (base 163c2765, 2026-08-31)
+
+Round-4 verdict (GPT-5.6 Sol, read-only @ 163c2765): ONE blocker — the ABI-9
+companion-recovery lifecycle TOCTOU (finding 1); ABI-3 and Logs UI CLOSED with
+no action owed; ADOPTION/ARCHITECTURE NOT-CLOSED only as a dependent of the
+race. Dispositions:
+
+1. ABI-9 recovery TOCTOU — FIXED as a GENERATION-BOUND protocol. The race:
+   ensure_companions_running snapshotted liveness/bundle, then published
+   WITHOUT the lifecycle lock (production re-invokes it from
+   extension_reconcile_queue after locked reconciliation returns); a
+   concurrent unload could complete in the window, after which the stale
+   recovery re-created an empty bundle inside _publish_registrations
+   (bundle-if-None branch) and started its companion — resurrecting a
+   companion-only bundle after disable/unload. The fix, per the pinned
+   protocol: (a) the recovery snapshot carries the observed
+   bundle.generation_digest (read in the same registry-lock hold as the
+   companion names); (b) the recovery publication runs UNDER the lifecycle
+   lock and _publish_registrations(require_live_generation=...) re-validates
+   under the registry lock that the observed publication is STILL live — a
+   vanished or reloaded bundle raises the typed ExtensionStaleRecoveryError
+   BEFORE any mutation (zero effects; ensure_companions_running surfaces it
+   as the typed action "stale_recovery_refused"), and the recovery form of
+   _publish_out_of_process_registration structurally REQUIRES a pre-existing
+   live bundle (exactly-one-of form gate: current_hash XOR
+   expected_generation), so recovery can never create a bundle; (c) the
+   failure-disposal is generation-bound: unload_extension gained
+   expected_generation and no-ops WITH DISCLOSURE (warning log) when the
+   live generation is not the one this recovery observed or itself swapped
+   in (_published_generation), so a failed recovery can never unload a newer
+   publication. Pins: test_unload_completing_between_snapshot_and_
+   publication_refuses_recovery (deterministic same-thread barrier — the
+   unload completes between the snapshot and the publication), test_
+   recovery_publication_refuses_on_generation_mismatch_without_effects,
+   test_generation_bound_disposal_skips_a_newer_publication, plus the two
+   recovery-form atomicity tests updated to the generation-bound call form.
+   TEST-CONTRACT DISCLOSURE (test-that-pinned-the-bug): the clause of
+   test_publish_out_of_process_registration_host_spawns_declared_name that
+   asserted the recovery-form helper accepts NO pre-existing live bundle and
+   spawns anyway pinned the resurrection defect itself; it is REPLACED by
+   test_recovery_publication_requires_a_pre_existing_live_bundle (opposite
+   pin: typed refusal, zero effects, nothing created), and the surviving
+   host-spawn/trust-boundary clauses now use the initial-load form.
+2. LOW — the stale reference to a nonexistent reconcile_server_companions in
+   _publish_out_of_process_registration's docstring is gone; the docstring
+   names the real recovery caller (ensure_companions_running) and the
+   generation-bound contract. (The same stale name inside the round-3 ledger
+   section above is historical record and stays as written.)
+3. ADOPTION/ARCHITECTURE — restated to the post-fix truth: the ABI-9 row and
+   the ARCHITECTURE extension_loader/extension_plugin_api rows now describe
+   recovery as generation-bound onto the still-live observed publication
+   (typed zero-effect refusal otherwise; generation-bound disposal), not as
+   an unconditional "re-publishes onto the already live bundle".
+4. RATCHET-DRIVEN MOVE (disclosed): extension_loader.py sits at the pinned
+   <=1000-line extraction bound with 2 lines of headroom, so the fix is
+   funded by moving _stage_out_of_process_surfaces whole into
+   extension_child_catalog.py — its natural owner (it composes ONLY the
+   child-catalog validators + registry maps + the PluginAPI staging seam and
+   needs nothing from the loader); the loader re-exports it, the extraction
+   contract (_MOVED_OWNERS/_STAYED) and the ARCHITECTURE child-catalog row
+   are updated, and the leaf never imports the loader (DAG preserved).
