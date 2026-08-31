@@ -1,0 +1,264 @@
+"""ABI-9 registration atomicity suite (v7next Ф3.1-B).
+
+The extension registration window is stage->validate->swap: nothing an
+extension registers is visible in the process-wide registries until the whole
+``register()`` run validated and is published as one snapshot, and a refused or
+failed registration leaves ZERO residue — no surfaces, no bundle, no event-bus
+subscriptions, no companion processes and (the direct regression below) no
+supervised asyncio task running outside any bundle's cancellation reach.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import threading
+import time
+
+import pytest
+
+from ouroboros import extension_loader, extension_plugin_api
+from ouroboros.contracts.plugin_api import ExtensionRegistrationError
+from ouroboros.extension_registry_state import _PluginAPIConfig
+
+from tests._extension_loader_shared import (
+    _prepare_extension,
+)
+from tests._extension_loader_shared import (  # noqa: F401  (autouse fixture applies on import)
+    _clear_loader_state,
+)
+
+
+@pytest.fixture()
+def _background_loop():
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    # run_forever needs a beat to actually start before is_running() is True.
+    for _ in range(100):
+        if loop.is_running():
+            break
+        time.sleep(0.01)
+    yield loop
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=2.0)
+    loop.close()
+
+
+def test_supervised_future_never_leaks_when_unload_wins_the_registration_race(
+    tmp_path, monkeypatch, _background_loop
+):
+    """DIRECT regression for the supervised-future leak (plan-pinned).
+
+    Interleaving: ``register_supervised_task`` passes its permission gate, then
+    a concurrent unload marks the skill unloading BEFORE the supervised runner
+    would be scheduled. The registration must be refused AND the factory must
+    never start: on the pre-fix code the future was created before the
+    registration lock re-check, so the refusal leaked a running, uncancellable
+    supervised task that no bundle (and therefore no unload) could ever reach.
+    """
+    skill_name = "leakprobe"
+    factory_ran = threading.Event()
+
+    class _Bus:
+        pass
+
+    bus = _Bus()
+    bus._loop = _background_loop
+
+    def _server_process_and_concurrent_unload() -> bool:
+        # Deterministically land the racing unload inside the window between
+        # the permission gate and the supervised-runner scheduling.
+        with extension_loader._lock:
+            extension_loader._unloading.add(skill_name)
+        return True
+
+    monkeypatch.setattr(extension_plugin_api, "get_global_event_bus", lambda: bus)
+    monkeypatch.setattr(
+        extension_plugin_api, "is_server_process", _server_process_and_concurrent_unload
+    )
+
+    api = extension_plugin_api.PluginAPIImpl(_PluginAPIConfig(
+        skill_name=skill_name,
+        permissions=["supervised_task"],
+        env_allowlist=[],
+        state_dir=tmp_path,
+        settings_reader=lambda: {},
+    ))
+    try:
+        refused_at_registration = False
+        try:
+            api.register_supervised_task("bg", lambda: factory_ran.set())
+        except ExtensionRegistrationError:
+            refused_at_registration = True
+        # Whatever point the implementation consults the seam at, the unload
+        # is now in flight; a deferred (staged) registration must refuse at
+        # publication instead — and in EVERY case the factory never starts.
+        with extension_loader._lock:
+            extension_loader._unloading.add(skill_name)
+        if not refused_at_registration:
+            publish = getattr(api, "_publish_registrations", None)
+            assert callable(publish), (
+                "registration neither refused nor deferred to an atomic publication"
+            )
+            with pytest.raises(ExtensionRegistrationError, match="unload has started"):
+                publish()
+    finally:
+        with extension_loader._lock:
+            extension_loader._unloading.discard(skill_name)
+
+    # The refusal must not have scheduled the runner: give the loop time to
+    # betray a leaked future, then require the factory never started and no
+    # bundle exists that could be holding (or failing to hold) it.
+    assert not factory_ran.wait(0.5), (
+        "supervised task factory ran although registration was refused — "
+        "the future leaked outside every bundle's cancellation reach"
+    )
+    with extension_loader._lock:
+        assert skill_name not in extension_loader._extensions
+
+
+def test_failed_registration_publishes_nothing(tmp_path):
+    """A register() that fails mid-way must leave zero global residue."""
+    loaded, _repo, drive_root = _prepare_extension(
+        tmp_path,
+        "atomfail",
+        plugin_body=(
+            "def register(api):\n"
+            "    api.register_tool('good', lambda **kw: 'ok', description='d', schema={})\n"
+            "    api.register_ws_handler('evt', lambda **kw: None)\n"
+            "    raise ValueError('boom after two staged surfaces')\n"
+        ),
+        permissions=["tool", "ws_handler"],
+    )
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+    assert err is not None and "boom" in err
+    snap = extension_loader.snapshot()
+    assert snap["extensions"] == []
+    assert snap["tools"] == []
+    assert snap["ws_handlers"] == []
+    with extension_loader._lock:
+        assert "atomfail" not in extension_loader._extensions
+
+
+def test_registration_error_disposes_live_event_subscription(tmp_path):
+    """An event-bus subscription made during an aborted register() is disposed."""
+    from ouroboros.event_bus import get_global_event_bus
+
+    loaded, _repo, drive_root = _prepare_extension(
+        tmp_path,
+        "atomsub",
+        plugin_body=(
+            "def register(api):\n"
+            "    api.subscribe_event('skill.lifecycle', lambda data: None)\n"
+            "    api.register_tool('x' * 99, lambda **kw: 'ok', description='d', schema={})\n"
+        ),
+        permissions=["tool", "subscribe_event"],
+        extra_frontmatter="subscribe_events: [skill.lifecycle]\n",
+    )
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+    assert err is not None
+    listing = get_global_event_bus().snapshot()
+    assert all(sub.get("skill_name") != "atomsub" for sub in listing.values()), (
+        "aborted registration left a live event-bus subscription behind"
+    )
+
+
+def test_surfaces_are_invisible_until_registration_completes(tmp_path):
+    """No partial publication: mid-register() the registries show nothing."""
+    loaded, _repo, drive_root = _prepare_extension(
+        tmp_path,
+        "atomvis",
+        plugin_body=(
+            "import ouroboros.extension_loader as el\n"
+            "from ouroboros.extension_surface_names import extension_surface_name\n"
+            "seen = {}\n"
+            "def register(api):\n"
+            "    api.register_tool('t1', lambda **kw: 'ok', description='d', schema={})\n"
+            "    seen['mid_register'] = el.get_tool(extension_surface_name('atomvis', 't1'))\n"
+        ),
+        permissions=["tool"],
+    )
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root, _force_in_process=True)
+    assert err is None, err
+    from ouroboros.extension_import_staging import _module_key
+    from ouroboros.extension_surface_names import extension_surface_name
+
+    module = sys.modules[_module_key("atomvis")]
+    assert module.seen["mid_register"] is None, (
+        "a staged tool was globally visible before the registration snapshot swap"
+    )
+    published = extension_loader.get_tool(extension_surface_name("atomvis", "t1"))
+    assert published is not None
+
+
+def test_publication_carries_a_fresh_generation_digest(tmp_path):
+    """Every publication mints a generation digest, stamped into dispatch
+    surfaces (tools/routes/ws) so physical-call provenance can name the exact
+    published generation; a reload mints a NEW generation."""
+    loaded, _repo, drive_root = _prepare_extension(
+        tmp_path,
+        "atomgen",
+        plugin_body=(
+            "def register(api):\n"
+            "    api.register_tool('t1', lambda **kw: 'ok', description='d', schema={})\n"
+        ),
+        permissions=["tool"],
+    )
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root, _force_in_process=True)
+    assert err is None, err
+    from ouroboros.extension_surface_names import extension_surface_name
+
+    with extension_loader._lock:
+        first_digest = extension_loader._extensions["atomgen"].generation_digest
+    assert first_digest
+    entry = extension_loader.get_tool(extension_surface_name("atomgen", "t1"))
+    assert entry is not None and entry.get("extension_generation") == first_digest
+
+    extension_loader.unload_extension("atomgen")
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root, _force_in_process=True)
+    assert err is None, err
+    with extension_loader._lock:
+        second_digest = extension_loader._extensions["atomgen"].generation_digest
+    assert second_digest and second_digest != first_digest
+
+
+def test_out_of_process_catalog_publication_is_atomic(tmp_path):
+    """The child-catalog install path is the same stage->validate->swap: a
+    catalog with a conflicting surface publishes NOTHING, not a prefix."""
+    loaded, _repo, drive_root = _prepare_extension(
+        tmp_path,
+        "atomoop",
+        plugin_body="def register(api):\n    pass\n",
+        permissions=["tool", "ws_handler"],
+    )
+    from ouroboros.extension_surface_names import extension_surface_name
+
+    good_tool = extension_surface_name("atomoop", "t1")
+    catalog = {
+        "tools": [
+            {"name": good_tool, "description": "d", "schema": {}, "timeout_sec": 5},
+        ],
+        "ws_handlers": [
+            {"type": "not-namespaced-for-this-skill"},
+        ],
+    }
+    with pytest.raises(ExtensionRegistrationError):
+        extension_loader._register_out_of_process_surfaces(
+            loaded, current_hash=loaded.content_hash, catalog=catalog,
+        )
+    snap = extension_loader.snapshot()
+    assert snap["tools"] == []
+    assert snap["ws_handlers"] == []
+    assert snap["extensions"] == []
+
+
+def test_disposers_stay_out_of_the_plugin_api_surface():
+    """The disposers list is loader-internal (ABI-9): the PluginAPI contract
+    must not grow a disposer/staging method an extension could call."""
+    from ouroboros.contracts.plugin_api import PluginAPI
+
+    public = {m for m in dir(PluginAPI) if not m.startswith("_")}
+    assert not any("disposer" in name or "staged" in name or "publish" in name for name in public)
+    impl_public = {m for m in dir(extension_plugin_api.PluginAPIImpl) if not m.startswith("_")}
+    assert not any("disposer" in name or "staged" in name or "publish" in name for name in impl_public)

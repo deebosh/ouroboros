@@ -33,6 +33,63 @@ class _ExtensionRegistrations:
     content_hash: Optional[str] = None
     skill_dir: Optional[str] = None
     import_root: Optional[str] = None
+    # ABI-9: minted at each atomic publication; stamped into the dispatch
+    # surfaces (tools/routes/ws) so physical-call provenance can name the
+    # exact published generation it dispatched against.
+    generation_digest: str = ""
+    # ABI-1: the PluginAPI generation this bundle was negotiated under
+    # (manifest ``plugin_api`` field, or the legacy generation for
+    # grandfathered field-less payloads).
+    plugin_api_generation: str = ""
+
+
+@dataclass
+class _StagedSupervisedTask:
+    """A supervised-task request captured during the registration window.
+
+    The asyncio runner is deliberately NOT created here: it starts only at
+    publication, after the whole registration validated (ABI-9) — a refused
+    registration therefore can never leak a running task outside a bundle.
+    """
+
+    name: str
+    factory: Callable[[], Any]
+    restart_policy: str = "on_failure"
+    max_restarts: int = 5
+    backoff_seconds: float = 2.0
+
+
+@dataclass
+class _StagedCompanionSpawn:
+    """A validated companion descriptor whose spawn is deferred to publication."""
+
+    name: str
+    descriptor: Any
+
+
+@dataclass
+class _StagedRegistrations:
+    """Private staging area for one PluginAPI registration window (ABI-9).
+
+    ``register()`` accumulates every surface and side-effect request here;
+    nothing reaches the process-wide registries until the loader publishes the
+    whole snapshot atomically (stage -> validate -> swap). Side effects that
+    must run during the window (event-bus subscriptions) record disposers so
+    an aborted registration leaves zero residue. The disposers list is
+    loader-internal and never exposed through the PluginAPI ABI.
+    """
+
+    tools: Dict[str, Any] = field(default_factory=dict)
+    routes: Dict[str, Any] = field(default_factory=dict)
+    ws_handlers: Dict[str, Any] = field(default_factory=dict)
+    ui_tabs: Dict[str, Any] = field(default_factory=dict)
+    settings_sections: Dict[str, Any] = field(default_factory=dict)
+    unload_callbacks: List[Callable[[], Any]] = field(default_factory=list)
+    event_subscriptions: List[str] = field(default_factory=list)
+    companion_names: List[str] = field(default_factory=list)
+    supervised_tasks: List[_StagedSupervisedTask] = field(default_factory=list)
+    companion_spawns: List[_StagedCompanionSpawn] = field(default_factory=list)
+    disposers: List[Callable[[], Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -56,6 +113,9 @@ class _PluginAPIConfig:
     skill_dir: pathlib.Path | None = None
     runtime_skill_dir: pathlib.Path | None = None
     dependency_site_dirs_enabled: bool = False
+    # ABI-1: negotiated PluginAPI generation served to this extension
+    # ("" -> the loader's negotiation default for grandfathered payloads).
+    plugin_api_generation: str = ""
 
 
 # Lock-guarded registries; per-surface maps keep unload proportional to one extension.
@@ -80,6 +140,17 @@ def _lifecycle_lock_for(skill_name: str) -> threading.RLock:
             lock = threading.RLock()
             _lifecycle_locks[skill_name] = lock
         return lock
+
+
+def extension_generation_digest(skill_name: str) -> str:
+    """Return the generation digest of the skill's live publication, or ``""``.
+
+    Dispatch-side provenance reads this (or the per-surface stamp) to name the
+    exact published registration generation a physical call ran against.
+    """
+    with _lock:
+        bundle = _extensions.get(str(skill_name or ""))
+        return str(bundle.generation_digest or "") if bundle is not None else ""
 
 
 def _record_companion_name(bundle: _ExtensionRegistrations, name: str) -> None:

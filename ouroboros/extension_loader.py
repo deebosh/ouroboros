@@ -102,6 +102,7 @@ from ouroboros.extension_registry_state import (
     _ui_tabs,
     _unloading,
     _ws_handlers,
+    extension_generation_digest,  # noqa: F401 — ABI-9 dispatch-provenance API
 )
 from ouroboros.extension_surface_names import (
     _EXTENSION_NAME_PREFIX,  # noqa: F401
@@ -148,9 +149,72 @@ def _register_out_of_process_surfaces(
     current_hash: str,
     catalog: Dict[str, Any],
 ) -> None:
-    """Install proxy surface descriptors returned by a child catalog run."""
+    """Install proxy surface descriptors returned by a child catalog run.
+
+    ABI-9: the catalog is staged and validated in full first; the swap into
+    the process-wide registries happens only when every descriptor validated,
+    so a bad catalog publishes NOTHING rather than a prefix.
+    """
+    import uuid as _uuid
+
+    def _proxy(item: Dict[str, Any]) -> Dict[str, Any]:
+        item["handler"] = _out_of_process_handler_proxy
+        item["skill"] = skill.name
+        item["out_of_process"] = True
+        item["skills_repo_path"] = str(skill.skill_dir.parent)
+        return item
 
     with _lock:
+        staged: Dict[str, Dict[str, Any]] = {
+            "tools": {}, "routes": {}, "ws_handlers": {},
+            "ui_tabs": {}, "settings_sections": {},
+        }
+        for raw in catalog.get("tools") or []:
+            item = _validate_child_tool_descriptor(skill.name, dict(raw or {}))
+            name = str(item.get("name") or "")
+            if not name:
+                continue
+            if name in _tools or name in staged["tools"]:
+                raise ExtensionRegistrationError(f"tool {name!r} already registered")
+            staged["tools"][name] = _proxy(item)
+
+        for raw in catalog.get("routes") or []:
+            item = _validate_child_route_descriptor(skill.name, dict(raw or {}))
+            path = str(item.get("path") or "")
+            if not path:
+                continue
+            if path in _routes or path in staged["routes"]:
+                raise ExtensionRegistrationError(f"route {path!r} already registered")
+            staged["routes"][path] = _proxy(item)
+
+        for raw in catalog.get("ws_handlers") or []:
+            item = _validate_child_ws_descriptor(skill.name, dict(raw or {}))
+            msg_type = str(item.get("type") or "")
+            if not msg_type:
+                continue
+            if msg_type in _ws_handlers or msg_type in staged["ws_handlers"]:
+                raise ExtensionRegistrationError(f"ws handler {msg_type!r} already registered")
+            staged["ws_handlers"][msg_type] = _proxy(item)
+
+        for raw in catalog.get("ui_tabs") or []:
+            item = _validate_child_ui_descriptor(skill.name, dict(raw or {}))
+            key = str(item.pop("key", "") or "")
+            if not key:
+                continue
+            if key in _ui_tabs or key in staged["ui_tabs"]:
+                raise ExtensionRegistrationError(f"ui tab {key!r} already registered")
+            staged["ui_tabs"][key] = item
+
+        for raw in catalog.get("settings_sections") or []:
+            item = _validate_child_settings_descriptor(skill.name, dict(raw or {}))
+            key = str(item.pop("key", "") or "")
+            if not key:
+                continue
+            if key in _settings_sections or key in staged["settings_sections"]:
+                raise ExtensionRegistrationError(f"settings section {key!r} already registered")
+            staged["settings_sections"][key] = item
+
+        # Swap: every descriptor validated; publish the whole snapshot.
         bundle = _extensions.get(skill.name)
         if bundle is None:
             bundle = _ExtensionRegistrations()
@@ -158,69 +222,21 @@ def _register_out_of_process_surfaces(
         bundle.content_hash = current_hash
         bundle.skill_dir = str(skill.skill_dir.resolve())
         bundle.import_root = None
+        digest = _uuid.uuid4().hex
+        bundle.generation_digest = digest
         _load_failures.pop(skill.name, None)
-
-        for raw in catalog.get("tools") or []:
-            item = _validate_child_tool_descriptor(skill.name, dict(raw or {}))
-            name = str(item.get("name") or "")
-            if not name:
-                continue
-            if name in _tools:
-                raise ExtensionRegistrationError(f"tool {name!r} already registered")
-            item["handler"] = _out_of_process_handler_proxy
-            item["skill"] = skill.name
-            item["out_of_process"] = True
-            item["skills_repo_path"] = str(skill.skill_dir.parent)
-            _tools[name] = item
-            bundle.tools.append(name)
-
-        for raw in catalog.get("routes") or []:
-            item = _validate_child_route_descriptor(skill.name, dict(raw or {}))
-            path = str(item.get("path") or "")
-            if not path:
-                continue
-            if path in _routes:
-                raise ExtensionRegistrationError(f"route {path!r} already registered")
-            item["handler"] = _out_of_process_handler_proxy
-            item["skill"] = skill.name
-            item["out_of_process"] = True
-            item["skills_repo_path"] = str(skill.skill_dir.parent)
-            _routes[path] = item
-            bundle.routes.append(path)
-
-        for raw in catalog.get("ws_handlers") or []:
-            item = _validate_child_ws_descriptor(skill.name, dict(raw or {}))
-            msg_type = str(item.get("type") or "")
-            if not msg_type:
-                continue
-            if msg_type in _ws_handlers:
-                raise ExtensionRegistrationError(f"ws handler {msg_type!r} already registered")
-            item["handler"] = _out_of_process_handler_proxy
-            item["skill"] = skill.name
-            item["out_of_process"] = True
-            item["skills_repo_path"] = str(skill.skill_dir.parent)
-            _ws_handlers[msg_type] = item
-            bundle.ws_handlers.append(msg_type)
-
-        for raw in catalog.get("ui_tabs") or []:
-            item = _validate_child_ui_descriptor(skill.name, dict(raw or {}))
-            key = str(item.pop("key", "") or "")
-            if not key:
-                continue
-            if key in _ui_tabs:
-                raise ExtensionRegistrationError(f"ui tab {key!r} already registered")
-            _ui_tabs[key] = item
-            bundle.ui_tabs.append(key)
-
-        for raw in catalog.get("settings_sections") or []:
-            item = _validate_child_settings_descriptor(skill.name, dict(raw or {}))
-            key = str(item.pop("key", "") or "")
-            if not key:
-                continue
-            if key in _settings_sections:
-                raise ExtensionRegistrationError(f"settings section {key!r} already registered")
-            _settings_sections[key] = item
-            bundle.settings_sections.append(key)
+        for kind, live, bundle_keys, stamp in (
+            ("tools", _tools, bundle.tools, True),
+            ("routes", _routes, bundle.routes, True),
+            ("ws_handlers", _ws_handlers, bundle.ws_handlers, True),
+            ("ui_tabs", _ui_tabs, bundle.ui_tabs, False),
+            ("settings_sections", _settings_sections, bundle.settings_sections, False),
+        ):
+            for key, value in staged[kind].items():
+                if stamp:
+                    value["extension_generation"] = digest
+                live[key] = value
+                bundle_keys.append(key)
 
 
 def _spawn_out_of_process_companions(
@@ -263,12 +279,19 @@ def _spawn_out_of_process_companions(
         runtime_skill_dir=skill.skill_dir,
         dependency_site_dirs_enabled=dependency_site_dirs_enabled,
     ))
-    for name in names:
-        if name not in declared:
-            raise ExtensionRegistrationError(
-                f"out-of-process companion {name!r} escaped manifest.companion_processes"
-            )
-        api.register_companion_process(name)
+    try:
+        for name in names:
+            if name not in declared:
+                raise ExtensionRegistrationError(
+                    f"out-of-process companion {name!r} escaped manifest.companion_processes"
+                )
+            api.register_companion_process(name)
+        # ABI-9: companion spawns are deferred side effects; publish the staged
+        # snapshot (merging into the live bundle) to actually start them.
+        api._publish_registrations()
+    except Exception:
+        api._abort_registration()
+        raise
 
 
 def _run_unload_callback(skill_name: str, callback: Callable[[], Any], timeout_sec: float = 2.0) -> None:
@@ -650,6 +673,7 @@ def load_extension(
             return f"skill {skill.name!r} out-of-process catalog failure: {type(exc).__name__}: {exc}"
     staged_import_root: Optional[pathlib.Path] = None
     module_key = _module_key(skill.name)
+    api: Optional[PluginAPIImpl] = None
     try:
         importlib.invalidate_caches()
         staged_import_root, entry_path = _stage_extension_import_tree(
@@ -691,31 +715,32 @@ def load_extension(
                 runtime_skill_dir=(staged_import_root / "skill") if staged_import_root is not None else None,
                 dependency_site_dirs_enabled=bool(auto_specs),
             ))
-            with _lock:
-                bundle = _extensions.get(skill.name)
-                if bundle is None:
-                    bundle = _ExtensionRegistrations()
-                    _extensions[skill.name] = bundle
-                bundle.content_hash = current_hash
-                bundle.skill_dir = str(skill.skill_dir.resolve())
-                bundle.import_root = str(staged_import_root) if staged_import_root is not None else None
-                bundle.api_instances.append(api)
-                _extension_modules[skill.name] = module
-                _load_failures.pop(skill.name, None)
             if current_execution_mode() is ExecutionMode.IN_PROCESS:
                 api._disclose_model_capable_dispatch("register", "register")
             register(api)
-            api._close_registration()
+            # ABI-9: nothing register() staged is visible yet; publish the
+            # whole snapshot atomically (deferred side effects start here).
+            api._publish_registrations(
+                content_hash=current_hash,
+                skill_dir=str(skill.skill_dir.resolve()),
+                import_root=str(staged_import_root) if staged_import_root is not None else None,
+            )
             with _lock:
+                _extension_modules[skill.name] = module
                 bundle = _extensions.get(skill.name)
                 for tool_name in list(bundle.tools if bundle else []):
                     if tool_name in _tools:
                         _tools[tool_name]["skills_repo_path"] = str(skill.skill_dir.parent)
     except ExtensionRegistrationError as exc:
-        # Registration may be partial; always tear it down.
+        # Nothing was published; discard the staged snapshot and its side
+        # effects, then purge the imported package.
+        if api is not None:
+            api._abort_registration()
         unload_extension(skill.name)
         return f"skill {skill.name!r} registration error: {exc}"
     except Exception as exc:
+        if api is not None:
+            api._abort_registration()
         unload_extension(skill.name)
         log.exception("extension %s failed to load", skill.name)
         return f"skill {skill.name!r} load failure: {type(exc).__name__}: {exc}"

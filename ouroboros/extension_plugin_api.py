@@ -43,7 +43,11 @@ from ouroboros.extension_isolated_deps import (
 from ouroboros.extension_registry_state import (
     _PluginAPIConfig,
     _ExtensionRegistrations,
+    _StagedCompanionSpawn,
+    _StagedRegistrations,
+    _StagedSupervisedTask,
     _extensions,
+    _load_failures,
     _lock,
     _record_companion_name,
     _routes,
@@ -175,6 +179,10 @@ class PluginAPIImpl:
         self._registration_closed = False
         self._runtime_closing = False
         self._runtime_closed = False
+        self._plugin_api_generation = str(getattr(config, "plugin_api_generation", "") or "")
+        # ABI-9 staging area: register() accumulates surfaces and side-effect
+        # requests here; the loader publishes them as one atomic snapshot.
+        self._staged = _StagedRegistrations()
         self._api_lock = threading.RLock()
         # Core settings are exposed only when a content-hash-bound owner grant
         # was already verified; otherwise the denylist silently drops them.
@@ -270,19 +278,19 @@ class PluginAPIImpl:
 
         return _wrapped
 
-    def _register_surface_locked(
+    def _stage_surface_locked(
         self,
-        registry: Dict[str, Any],
+        live_registry: Dict[str, Any],
+        staged_registry: Dict[str, Any],
         key: str,
         value: Dict[str, Any],
-        bundle_attr: str,
         label: str,
     ) -> None:
+        """Stage one validated surface; publication swaps the whole snapshot."""
         self._require_open_locked()
-        if key in registry:
+        if key in live_registry or key in staged_registry:
             raise ExtensionRegistrationError(f"{label} {key!r} already registered")
-        registry[key] = value
-        getattr(_extensions.setdefault(self._skill, _ExtensionRegistrations()), bundle_attr).append(key)
+        staged_registry[key] = value
 
     # --- registration ---
 
@@ -305,7 +313,7 @@ class PluginAPIImpl:
         from ouroboros.extension_process_runner import _handler_wants_ctx
         wants_ctx = _handler_wants_ctx(handler)
         with _lock:
-            self._register_surface_locked(_tools, full, {
+            self._stage_surface_locked(_tools, self._staged.tools, full, {
                 "name": full,
                 "handler": self._wrap_runtime_handler(handler),
                 "wants_ctx": wants_ctx,
@@ -315,7 +323,7 @@ class PluginAPIImpl:
                 "skill": self._skill,
                 **({"_model_credential_probe": self._model_credential_available}
                    if current_execution_mode() is ExecutionMode.IN_PROCESS else {}),
-            }, "tools", "tool")
+            }, "tool")
 
     def register_route(
         self,
@@ -344,14 +352,14 @@ class PluginAPIImpl:
             )
         mount = f"/api/extensions/{self._skill}/{rel}"
         with _lock:
-            self._register_surface_locked(_routes, mount, {
+            self._stage_surface_locked(_routes, self._staged.routes, mount, {
                 "path": mount,
                 "handler": self._wrap_runtime_handler(handler),
                 "methods": norm_methods,
                 "skill": self._skill,
                 **({"_model_credential_probe": self._model_credential_available}
                    if current_execution_mode() is ExecutionMode.IN_PROCESS else {}),
-            }, "routes", "route")
+            }, "route")
 
     def register_ws_handler(
         self,
@@ -362,13 +370,13 @@ class PluginAPIImpl:
         short = _assert_ws_message_type(message_type)
         full = extension_surface_name(self._skill, short)
         with _lock:
-            self._register_surface_locked(_ws_handlers, full, {
+            self._stage_surface_locked(_ws_handlers, self._staged.ws_handlers, full, {
                 "type": full,
                 "handler": self._wrap_runtime_handler(handler),
                 "skill": self._skill,
                 **({"_model_credential_probe": self._model_credential_available}
                    if current_execution_mode() is ExecutionMode.IN_PROCESS else {}),
-            }, "ws_handlers", "ws handler")
+            }, "ws handler")
 
     def register_ui_tab(
         self,
@@ -384,7 +392,7 @@ class PluginAPIImpl:
         validated_render = _validate_ui_render({} if render is None else render)
         span = _widget_span_from_render(validated_render)
         with _lock:
-            self._register_surface_locked(_ui_tabs, key, {
+            self._stage_surface_locked(_ui_tabs, self._staged.ui_tabs, key, {
                 "skill": self._skill,
                 "tab_id": clean_tab,
                 "title": str(title or clean_tab),
@@ -395,7 +403,7 @@ class PluginAPIImpl:
                 "grid_span": span,
                 **_widget_geometry_from_render(validated_render),
                 "ui_host_pending": True,
-            }, "ui_tabs", "ui tab")
+            }, "ui tab")
 
     def register_settings_section(
         self,
@@ -413,12 +421,12 @@ class PluginAPIImpl:
         # the same recursive component validator as every other UI surface.
         validated = _validate_settings_schema(schema)
         with _lock:
-            self._register_surface_locked(_settings_sections, key, {
+            self._stage_surface_locked(_settings_sections, self._staged.settings_sections, key, {
                 "skill": self._skill,
                 "section_id": clean_id,
                 "title": str(title or clean_id),
                 "render": validated,
-            }, "settings_sections", "settings section")
+            }, "settings section")
 
     def register_supervised_task(
         self,
@@ -429,41 +437,57 @@ class PluginAPIImpl:
         max_restarts: int = 5,
         backoff_seconds: float = 2.0,
     ) -> None:
-        """Declare a server-owned supervised task; workers only record it."""
+        """Declare a server-owned supervised task; workers only record it.
+
+        ABI-9: the asyncio runner is NOT created here. The request is staged
+        and the runner starts only at publication, after the whole
+        registration validated — a refused registration can therefore never
+        leak a running task outside a bundle's cancellation reach.
+        """
         _reject_extension_child_side_effect("register_supervised_task")
         self._require("supervised_task")
         clean_name = _assert_tool_name(name)
-        future = None
-        if is_server_process():
-            loop = getattr(get_global_event_bus(), "_loop", None)
-            if loop is not None and loop.is_running():
-                import asyncio
-
-                async def _runner() -> None:
-                    restarts = 0
-                    while True:
-                        try:
-                            self._disclose_model_capable_dispatch("supervised_task", clean_name)
-                            result = factory()
-                            if inspect.isawaitable(result):
-                                await result
-                            return
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception:
-                            restarts += 1
-                            if restart_policy != "on_failure" or restarts > max_restarts:
-                                log.warning("supervised task %s/%s stopped after failure", self._skill, clean_name, exc_info=True)
-                                return
-                            await asyncio.sleep(max(0.1, float(backoff_seconds)))
-
-                future = asyncio.run_coroutine_threadsafe(_runner(), loop)
         with _lock:
             self._require_open_locked()
-            bundle = _extensions.setdefault(self._skill, _ExtensionRegistrations())
-            _record_companion_name(bundle, f"task:{clean_name}")
-            if future is not None:
-                bundle.supervised_futures.append(future)
+            marker = f"task:{clean_name}"
+            if marker not in self._staged.companion_names:
+                self._staged.companion_names.append(marker)
+            self._staged.supervised_tasks.append(_StagedSupervisedTask(
+                name=clean_name,
+                factory=factory,
+                restart_policy=str(restart_policy or "on_failure"),
+                max_restarts=int(max_restarts),
+                backoff_seconds=float(backoff_seconds),
+            ))
+
+    def _start_supervised_task(self, spec: _StagedSupervisedTask) -> Optional[Any]:
+        """Start one published supervised runner; returns the future or None."""
+        if not is_server_process():
+            return None
+        loop = getattr(get_global_event_bus(), "_loop", None)
+        if loop is None or not loop.is_running():
+            return None
+        import asyncio
+
+        async def _runner() -> None:
+            restarts = 0
+            while True:
+                try:
+                    self._disclose_model_capable_dispatch("supervised_task", spec.name)
+                    result = spec.factory()
+                    if inspect.isawaitable(result):
+                        await result
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    restarts += 1
+                    if spec.restart_policy != "on_failure" or restarts > spec.max_restarts:
+                        log.warning("supervised task %s/%s stopped after failure", self._skill, spec.name, exc_info=True)
+                        return
+                    await asyncio.sleep(max(0.1, float(spec.backoff_seconds)))
+
+        return asyncio.run_coroutine_threadsafe(_runner(), loop)
 
     def register_companion_process(
         self,
@@ -483,8 +507,7 @@ class PluginAPIImpl:
             # supervisor), reusing the in-process descriptor build below.
             with _lock:
                 self._require_open_locked()
-                bundle = _extensions.setdefault(self._skill, _ExtensionRegistrations())
-                _record_companion_name(bundle, clean_name)
+                self._stage_companion_name_locked(clean_name)
             return
         expected_cmd = [str(part) for part in (spec.get("command") or []) if str(part)]
         expected_runtime = str(spec.get("runtime") or "").strip()
@@ -495,8 +518,8 @@ class PluginAPIImpl:
             cmd = [sys.executable, *cmd[1:]]
         if not is_server_process():
             with _lock:
-                bundle = _extensions.setdefault(self._skill, _ExtensionRegistrations())
-                _record_companion_name(bundle, f"worker-skip:{clean_name}")
+                self._require_open_locked()
+                self._stage_companion_name_locked(f"worker-skip:{clean_name}")
             return
         supervisor = get_global_supervisor()
         if supervisor is None:
@@ -535,10 +558,18 @@ class PluginAPIImpl:
             restart_policy=str(spec.get("restart_policy") or "on_failure"),
             max_restarts=max(0, int(spec.get("max_restarts") or 5)),
         )
-        supervisor.start(descriptor)
+        # ABI-9: the spawn is deferred to publication; a refused/aborted
+        # registration must never leave a running companion process behind.
         with _lock:
-            bundle = _extensions.setdefault(self._skill, _ExtensionRegistrations())
-            _record_companion_name(bundle, clean_name)
+            self._require_open_locked()
+            self._stage_companion_name_locked(clean_name)
+            self._staged.companion_spawns.append(
+                _StagedCompanionSpawn(name=clean_name, descriptor=descriptor)
+            )
+
+    def _stage_companion_name_locked(self, name: str) -> None:
+        if name not in self._staged.companion_names:
+            self._staged.companion_names.append(name)
 
     def subscribe_event(self, topic: str, handler: Callable[[Dict[str, Any]], Any]) -> str:
         _reject_extension_child_side_effect("subscribe_event")
@@ -548,13 +579,24 @@ class PluginAPIImpl:
             raise ExtensionRegistrationError(
                 f"skill {self._skill!r} cannot subscribe to undeclared topic {topic!r}"
             )
-        sub_id = get_global_event_bus().subscribe(
+        # The bus subscription is created eagerly (topic validation and the
+        # returned sub_id belong to the call), but it is recorded in the staged
+        # snapshot with a disposer: an aborted registration unsubscribes it, so
+        # only a published bundle ever owns a live subscription.
+        bus = get_global_event_bus()
+        sub_id = bus.subscribe(
             self._skill,
             topic,
             self._wrap_runtime_handler(handler, opaque_surface=("event", topic)),
         )
         with _lock:
-            _extensions.setdefault(self._skill, _ExtensionRegistrations()).event_subscriptions.append(sub_id)
+            try:
+                self._require_open_locked()
+            except ExtensionRegistrationError:
+                bus.unsubscribe(sub_id)
+                raise
+            self._staged.event_subscriptions.append(sub_id)
+            self._staged.disposers.append(lambda: bus.unsubscribe(sub_id))
         return sub_id
 
     def send_ws_message(self, message_type: str, data: Dict[str, Any]) -> None:
@@ -619,13 +661,128 @@ class PluginAPIImpl:
             # Wrap so an out-of-process isolated-dep extension's cleanup runs with its
             # isolated deps on sys.path at child teardown (true OOP on_unload parity);
             # in-process no-dep extensions get the callback unchanged.
-            _extensions.setdefault(self._skill, _ExtensionRegistrations()).unload_callbacks.append(
+            self._staged.unload_callbacks.append(
                 self._wrap_runtime_handler(callback, opaque_surface=("unload", "on_unload"))
             )
 
     def _close_registration(self) -> None:
         with _lock:
             self._registration_closed = True
+
+    # --- ABI-9 atomic publication (stage -> validate -> swap) ---
+
+    def _run_staged_disposers(self, extra: Sequence[Callable[[], Any]] = ()) -> None:
+        for dispose in [*reversed(list(extra)), *reversed(self._staged.disposers)]:
+            try:
+                dispose()
+            except Exception:
+                log.warning("extension %s staged-registration disposer failed", self._skill, exc_info=True)
+        self._staged = _StagedRegistrations()
+
+    def _abort_registration(self) -> None:
+        """Discard the staged snapshot and undo its live side effects."""
+        self._close_registration()
+        self._run_staged_disposers()
+
+    def _staged_surface_conflicts_locked(self) -> list[str]:
+        return [
+            key
+            for live, staged in (
+                (_tools, self._staged.tools),
+                (_routes, self._staged.routes),
+                (_ws_handlers, self._staged.ws_handlers),
+                (_ui_tabs, self._staged.ui_tabs),
+                (_settings_sections, self._staged.settings_sections),
+            )
+            for key in staged
+            if key in live
+        ]
+
+    def _publish_registrations(
+        self,
+        *,
+        content_hash: Optional[str] = None,
+        skill_dir: Optional[str] = None,
+        import_root: Optional[str] = None,
+        module: Any = None,
+    ) -> None:
+        """Atomically publish the staged registration snapshot (ABI-9).
+
+        Deferred side effects (supervised runners, companion spawns) start
+        only here, after the registration window validated; the snapshot then
+        swaps into the process-wide registries under one lock hold, stamped
+        with a fresh generation digest. Any failure disposes every started
+        side effect and publishes NOTHING.
+        """
+        with _lock:
+            self._require_open_locked()
+        started_disposers: list[Callable[[], Any]] = []
+        futures: list[Any] = []
+        try:
+            for spec in self._staged.supervised_tasks:
+                future = self._start_supervised_task(spec)
+                if future is not None:
+                    futures.append(future)
+                    started_disposers.append(future.cancel)
+            for spawn in self._staged.companion_spawns:
+                supervisor = get_global_supervisor()
+                if supervisor is None:
+                    raise ExtensionRegistrationError("companion supervisor is not initialized")
+                supervisor.start(spawn.descriptor)
+                started_disposers.append(
+                    functools.partial(supervisor.stop, self._skill, spawn.name)
+                )
+        except Exception:
+            self._run_staged_disposers(started_disposers)
+            raise
+        with _lock:
+            try:
+                self._require_open_locked()
+                conflicts = self._staged_surface_conflicts_locked()
+                if conflicts:
+                    raise ExtensionRegistrationError(
+                        f"surfaces {sorted(conflicts)!r} were registered concurrently; "
+                        "publication refused"
+                    )
+            except Exception:
+                self._run_staged_disposers(started_disposers)
+                raise
+            bundle = _extensions.get(self._skill)
+            if bundle is None:
+                bundle = _ExtensionRegistrations()
+                _extensions[self._skill] = bundle
+            if content_hash is not None:
+                bundle.content_hash = content_hash
+            if skill_dir is not None:
+                bundle.skill_dir = skill_dir
+            if import_root is not None or content_hash is not None:
+                bundle.import_root = import_root
+            bundle.plugin_api_generation = self._plugin_api_generation
+            digest = uuid.uuid4().hex
+            bundle.generation_digest = digest
+            for live, staged, bundle_keys, stamp in (
+                (_tools, self._staged.tools, bundle.tools, True),
+                (_routes, self._staged.routes, bundle.routes, True),
+                (_ws_handlers, self._staged.ws_handlers, bundle.ws_handlers, True),
+                (_ui_tabs, self._staged.ui_tabs, bundle.ui_tabs, False),
+                (_settings_sections, self._staged.settings_sections, bundle.settings_sections, False),
+            ):
+                for key, value in staged.items():
+                    if stamp:
+                        value["extension_generation"] = digest
+                        value["plugin_api_generation"] = self._plugin_api_generation
+                    live[key] = value
+                    bundle_keys.append(key)
+            bundle.unload_callbacks.extend(self._staged.unload_callbacks)
+            bundle.event_subscriptions.extend(self._staged.event_subscriptions)
+            for name in self._staged.companion_names:
+                _record_companion_name(bundle, name)
+            bundle.supervised_futures.extend(futures)
+            if self not in bundle.api_instances:
+                bundle.api_instances.append(self)
+            _load_failures.pop(self._skill, None)
+            self._registration_closed = True
+            self._staged = _StagedRegistrations()
 
     def _close_runtime_access(self) -> None:
         with _lock:

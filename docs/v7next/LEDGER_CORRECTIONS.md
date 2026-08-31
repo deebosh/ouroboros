@@ -2108,3 +2108,25 @@ reference-fact ↔ tip-fact ↔ result.
    acceptance-wallet authority (pre-existing unknown-policy behavior);
    pre-7.0 task-result history is quarantined wholesale by ABI-2 in the
    same release and the ABI-7 RC auditor names the migration.
+
+## From the f31b lane (extensions, base 29e2b045, 2026-08-31)
+
+1. Plan line-ref drift, re-verified on base bytes: the supervised-future
+   leak pinned as "extension_plugin_api.py:459-466" lives at :460-466 on
+   29e2b045 (future minted at :460, the second `_require_open_locked`
+   re-check at :461-462). The leak itself is REAL and was reproduced red
+   by the direct regression test
+   (tests/test_extension_registration_atomicity.py::
+   test_supervised_future_never_leaks_when_unload_wins_the_registration_race)
+   before the ABI-9 fix: the factory ran despite the refusal.
+2. ABI-9 semantic tightening, disclosed: `on_unload` callbacks registered
+   during a FAILED registration are no longer executed on abort (on the
+   base they ran via unload_extension because the bundle pre-existed the
+   register() call). Staged side effects (event-bus subscriptions,
+   supervised runners, companion spawns) are disposed/never-started
+   instead; on_unload fires only for a published extension. No test on
+   the base pinned the old failed-register callback behavior.
+3. FORBIDDEN_EXTENSION_SETTINGS reader refs from the f3 plan
+   ("extension_plugin_api.py:513/:664") re-located on base bytes to
+   :513 (companion env filter) and :664 (get_settings protected set) —
+   both verified before the ABI-1 alias collapse.

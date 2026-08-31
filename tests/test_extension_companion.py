@@ -147,6 +147,9 @@ def test_plugin_api_companion_uses_staged_skill_root_as_cwd(tmp_path: pathlib.Pa
             captured["descriptor"] = descriptor
             return True
 
+        def stop(self, skill_name, name):
+            return True
+
     # The companion supervisor is read by PluginAPIImpl (its owner) at register
     # time and by the loader's spawn/ensure paths; patch both readers.
     monkeypatch.setattr(extension_plugin_api, "get_global_supervisor", lambda: FakeSupervisor())
@@ -168,6 +171,8 @@ def test_plugin_api_companion_uses_staged_skill_root_as_cwd(tmp_path: pathlib.Pa
     ))
 
     api.register_companion_process("daemon")
+    # ABI-9: the spawn is a deferred side effect; publication starts it.
+    api._publish_registrations()
 
     descriptor = captured["descriptor"]
     assert descriptor.cwd == staged_skill

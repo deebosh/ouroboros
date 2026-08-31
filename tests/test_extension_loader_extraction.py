@@ -43,6 +43,7 @@ _MOVED_OWNERS = {
     "_ui_tabs": extension_registry_state,
     "_unloading": extension_registry_state,
     "_ws_handlers": extension_registry_state,
+    "extension_generation_digest": extension_registry_state,
     "_EXTENSION_NAME_PREFIX": extension_surface_names,
     "_EXTENSION_NAME_RE": extension_surface_names,
     "_EXTENSION_SHORT_MAX": extension_surface_names,
