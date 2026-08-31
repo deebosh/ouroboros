@@ -49,6 +49,7 @@ from ouroboros.tools.shell_grep_argv import (  # noqa: F401 - moved to its own m
     _is_search_no_match,
     _maybe_autocorrect_grep_backslash_pipe,
 )
+from ouroboros.tools.shell_and_chain import _maybe_split_single_element_and_chain
 from ouroboros.tools.shell_output_fingerprint import (  # noqa: F401 - moved to its own module; compatibility re-export
     _OUTPUT_DIR_MAX_BYTES,
     _OUTPUT_DIR_MAX_FILES,
@@ -1211,6 +1212,9 @@ def _run_shell(
     cmd = [str(x) for x in cmd]
 
     cmd, autocorrect_note = _maybe_autocorrect_grep_backslash_pipe(cmd)
+    cmd, and_chain_note = _maybe_split_single_element_and_chain(cmd)
+    if and_chain_note:
+        autocorrect_note = (autocorrect_note + and_chain_note) if autocorrect_note else and_chain_note
     err = _validate_shell_argv(cmd)
     if err:
         return err

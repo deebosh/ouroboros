@@ -430,22 +430,26 @@ class TestEmbeddedShellPipeline:
     # ------------------------------------------------------------------
     # The NEW check: production failure shape (v6.93.2 fix).
     # ------------------------------------------------------------------
-    def test_run_shell_blocks_stuffed_pipeline_in_element_zero(self, tmp_path):
-        """The exact shape that hit task 0b7e545d / 352130d1 / 7847c2aa / 91d68bd0.
+    def test_run_shell_autocorrects_stuffed_pipeline_in_element_zero(self, tmp_path, fake_subprocess):
+        """The original shape that hit task 0b7e545d / 352130d1 / 7847c2aa / 91d68bd0.
 
-        As of v6.101.0 this len(cmd)==1 case is now caught EARLIER by the
-        broader single-element metacharacter check (TestSingleElementShellMetachar),
-        which fires on 1+ operators rather than this check's 2+ threshold — so
-        the message text changed from naming "cmd[0]" to "single-element cmd".
-        Still SHELL_CMD_ERROR with the same sh -c remediation; this test stays
-        as a regression guard that the case is caught by *some* cascade step.
+        As of v6.110.x this len(cmd)==1 &&-of-single-tokens case is now
+        AUTOCORRECTED (split into real argv) instead of rejected — the
+        same argv-boundary mistake the SHELL_CMD_AUTO_SPLIT hint fixes.
+        The case is still caught by *some* cascade step (the autocorrect
+        cascade) and reaches subprocess with a sane argv; this test stays
+        as a regression guard that the autocorrect cascade handles it
+        rather than letting it through to subprocess as a single ENOENT
+        literal. The explicit SHELL_CMD_ERROR assertion is retired.
         """
+        calls = fake_subprocess(stdout="")
         result = _run_shell(
             _ctx(tmp_path),
             ["curl && -s && https://api.example.com/x"],
         )
-        assert "SHELL_CMD_ERROR" in result
-        assert '"sh"' in result
+        assert "SHELL_CMD_AUTO_SPLIT" in result
+        assert "SHELL_CMD_ERROR" not in result
+        assert calls[0]["cmd"] == ["curl", "-s", "https://api.example.com/x"]
 
     def test_run_shell_blocks_stuffed_pipeline_in_middle_element(self, tmp_path):
         """Stuffed pipeline inside element index 2 (two operators) names the index."""
@@ -759,3 +763,85 @@ def test_run_shell_bash_c_heredoc_runs_end_to_end(tmp_path, fake_subprocess):
     assert any("hello via heredoc" in str(item) for item in argv_seen), (
         f"Heredoc script body did not reach subprocess; argv was {argv_seen!r}"
     )
+
+
+class TestAndChainSplit:
+    """``["git && status && --porcelain"]`` is an argv-boundary mistake, not
+    a real ``&&`` chain. The autocorrect splits the sole element into real
+    argv tokens so the call reaches ``subprocess`` correctly. Closes the
+    class behind ``ibl-21e0a036155d / ibl-51106385d9f1 / ibl-571ce5f8eec6 /
+    ibl-78f783d0ac6a``.
+
+    The autocorrect is intentionally narrow: any segment with internal
+    whitespace (``cd foo && make``) or any other shell metacharacter
+    (``echo $HOME && ls``) falls through to the existing ``SHELL_CMD_ERROR``
+    path — these tests pin that boundary.
+    """
+
+    def test_run_shell_splits_git_status_porcelain_argv(self, tmp_path, fake_subprocess):
+        """The headline shape: 3 single-token segments chained with &&.
+
+        Subprocess receives real argv ``["git","status","--porcelain"]``
+        (not a single ENOENT literal), and the disclosure note is in the
+        operator-visible result.
+        """
+        calls = fake_subprocess(stdout="")
+        result = _run_shell(_ctx(tmp_path), ["git && status && --porcelain"])
+        assert "SHELL_CMD_AUTO_SPLIT" in result
+        assert "SHELL_CMD_ERROR" not in result
+        assert calls[0]["cmd"] == ["git", "status", "--porcelain"]
+
+    def test_run_shell_splits_python_m_pytest_argv(self, tmp_path, fake_subprocess):
+        """Same shape, different verbs. Uses ``-m`` rather than ``-c``
+        because ``print(1)`` would trip the parentheses metachar guard —
+        the autocorrect MUST refuse shapes with other metachars and the
+        test case itself must avoid them, otherwise we're testing the
+        wrong invariant.
+        """
+        calls = fake_subprocess(stdout="")
+        result = _run_shell(_ctx(tmp_path), ["python3 && -m && pytest"])
+        assert "SHELL_CMD_AUTO_SPLIT" in result
+        assert "SHELL_CMD_ERROR" not in result
+        assert calls[0]["cmd"] == ["python3", "-m", "pytest"]
+
+    def test_does_not_split_segment_with_internal_space(self):
+        """``cd foo && make`` has segment ``cd foo`` (internal whitespace);
+        the autocorrect MUST return ``(cmd, "")`` and let the existing
+        SHELL_CMD_ERROR path handle it. Otherwise we'd silently split a
+        legitimate single-token-with-arg call.
+        """
+        from ouroboros.tools.shell_and_chain import _maybe_split_single_element_and_chain
+        cmd = ["cd foo && make"]
+        out_cmd, note = _maybe_split_single_element_and_chain(cmd)
+        assert out_cmd == cmd
+        assert note == ""
+
+    def test_does_not_split_segment_with_multiple_args(self):
+        """``grep -rn foo && bar`` has segment ``grep -rn foo`` (multiple
+        whitespace-separated tokens); same fall-through guarantee."""
+        from ouroboros.tools.shell_and_chain import _maybe_split_single_element_and_chain
+        cmd = ["grep -rn foo && bar"]
+        out_cmd, note = _maybe_split_single_element_and_chain(cmd)
+        assert out_cmd == cmd
+        assert note == ""
+
+    def test_does_not_split_when_other_metachar_present(self):
+        """``echo $HOME && ls`` — ``$`` is a shell metachar outside the
+        ``&&`` rewrite scope. Fall through unchanged so SHELL_CMD_ERROR
+        can fire."""
+        from ouroboros.tools.shell_and_chain import _maybe_split_single_element_and_chain
+        cmd = ["echo $HOME && ls"]
+        out_cmd, note = _maybe_split_single_element_and_chain(cmd)
+        assert out_cmd == cmd
+        assert note == ""
+
+    def test_multi_element_cmd_is_passthrough(self):
+        """Already-correct multi-element argv is untouched and emits no
+        note. This is the load-bearing contract: the autocorrect MUST
+        never fire for cmd that is already valid."""
+        from ouroboros.tools.shell_and_chain import _maybe_split_single_element_and_chain
+        cmd = ["git", "status"]
+        out_cmd, note = _maybe_split_single_element_and_chain(cmd)
+        assert out_cmd == cmd
+        assert note == ""
+
