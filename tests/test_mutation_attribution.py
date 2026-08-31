@@ -951,6 +951,59 @@ def test_vcs_restore_reanchor_does_not_sweep_tasks_own_leftover(tmp_path):
     assert candidates["blockers"] == []
 
 
+def test_vcs_restore_reanchor_under_owning_root_via_lineage(tmp_path):
+    """A subagent's ``vcs_restore(root='system_repo')`` must re-anchor the
+    OWNING ROOT task's baseline, not the (empty) child row. Mirrors the
+    lineage resolution in ``_task_attributed_commit_paths``.
+    """
+    from ouroboros.mutation_attribution import (
+        attributed_git_candidates,
+        attribution_task_id,
+        capture_mutation_baseline,
+        reanchor_mutation_baseline_after_restore,
+    )
+    from ouroboros.task_results import STATUS_RUNNING, load_task_result, write_task_result
+
+    root = _repo(tmp_path)
+    data = tmp_path / "data"
+    write_task_result(data, "task-root", STATUS_RUNNING)
+    write_task_result(
+        data, "task-child", STATUS_RUNNING,
+        parent_task_id="task-root", root_task_id="task-root",
+        delegation_role="subagent",
+    )
+    (root / "owner_a.txt").write_text("base A\n", encoding="utf-8")
+    (root / "owner_b.txt").write_text("base B\n", encoding="utf-8")
+    _git(root, "add", "owner_a.txt", "owner_b.txt")
+    _git(root, "commit", "-qm", "owner base")
+    (root / "owner_a.txt").write_text("owner A dirty\n", encoding="utf-8")
+    capture_mutation_baseline(
+        data, "task-root",
+        [{"surface_type": "system_repo", "host_root": str(root)}],
+    )
+
+    # Subagent invokes vcs_restore with ctx.task_id == "task-child". The
+    # lineage lookup must walk up to the owning root task.
+    _git(root, "checkout", "HEAD", "--", "owner_a.txt")
+
+    # Without lineage: a direct call under the child id returns False
+    # (no baseline for that child).
+    assert reanchor_mutation_baseline_after_restore(data, "task-child", root) is False
+
+    # With lineage: the same call under the root id succeeds.
+    resolved = attribution_task_id(data, ("task-root", "task-child"))
+    assert resolved == "task-root"
+    assert reanchor_mutation_baseline_after_restore(data, resolved, root) is True
+
+    baseline = load_task_result(data, "task-root")["mutation_evidence"]["baseline"]
+    epochs = baseline["epochs"]
+    assert epochs[-1]["reason"] == "post_vcs_restore"
+    surfaces = next(
+        row for row in baseline["surfaces"] if row["surface_type"] == "system_repo"
+    )
+    assert surfaces["git"]["dirty_paths"] == []
+
+
 def test_acceptance_evidence_aggregates_capability_deltas(tmp_path):
     """W3 adjacent (f): the finalizer's evidence packet carries ONE typed
     host-attested aggregate of capability reductions — the task's own dispatch

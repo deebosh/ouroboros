@@ -3206,6 +3206,12 @@ def _restore_to_head(ctx: ToolContext, confirm: bool = False,
         safe_paths = [os.path.normpath(p.strip().lstrip("./")) for p in paths if p.strip()]
         if not safe_paths:
             return _vcs_result("⚠️ RESTORE_ERROR: No valid paths provided.", binding)
+        # Capture porcelain status BEFORE the checkout/clean so the re-anchor's
+        # cosmetic ``cleared`` count can report the real number of paths the
+        # restore cleaned (after-clean status would always be a subset of the
+        # before-clean status, but the helper recomputes it from epoch evidence
+        # as a sanity check).
+        prior_status = _git_status_porcelain(repo_dir)
         try:
             run_cmd(["git", "checkout", "HEAD", "--"] + safe_paths, cwd=repo_dir)
         except Exception as e:
@@ -3214,8 +3220,15 @@ def _restore_to_head(ctx: ToolContext, confirm: bool = False,
             run_cmd(["git", "clean", "-fd", "--"] + safe_paths, cwd=repo_dir)
         except Exception:
             pass
-        return _vcs_result(f"Restored {len(safe_paths)} path(s) to HEAD.", binding)
+        progress_note = _maybe_reanchor_after_restore(
+            ctx, repo_dir, root=root, prior_status=prior_status,
+        )
+        return _vcs_result(
+            f"Restored {len(safe_paths)} path(s) to HEAD." + progress_note,
+            binding,
+        )
     else:
+        prior_status = _git_status_porcelain(repo_dir)
         try:
             run_cmd(["git", "checkout", "HEAD", "--", "."], cwd=repo_dir)
         except Exception as e:
@@ -3229,63 +3242,90 @@ def _restore_to_head(ctx: ToolContext, confirm: bool = False,
         # baseline epoch so a subsequent ``edit_text`` on one of the
         # formerly-dirty paths does not trip ``preexisting_dirty_changed``.
         # Best-effort: a failure here MUST NOT fail vcs_restore itself.
-        progress_note = ""
-        if root == "system_repo":
-            try:
-                from ouroboros.mutation_attribution import (
-                    reanchor_mutation_baseline_after_restore,
-                )
-                metadata = getattr(ctx, "task_metadata", {}) or {}
-                metadata = metadata if isinstance(metadata, dict) else {}
-                results_root = (
-                    metadata.get("budget_drive_root")
-                    or getattr(ctx, "budget_drive_root", "")
-                    or ctx.drive_root
-                )
-                task_id = str(ctx.task_id or "").strip()
-                if results_root and task_id:
-                    prior_status = ""
-                    try:
-                        prior_status = run_cmd(
-                            ["git", "status", "--porcelain"],
-                            cwd=repo_dir,
-                        ).strip()
-                    except Exception:
-                        prior_status = ""
-                    prior_count = sum(
-                        1 for line in prior_status.splitlines() if line.strip()
-                    )
-                    reanchored = False
-                    try:
-                        reanchored = reanchor_mutation_baseline_after_restore(
-                            pathlib.Path(results_root), task_id, repo_dir,
-                        )
-                    except Exception:
-                        reanchored = False
-                    if reanchored:
-                        after_status = ""
-                        try:
-                            after_status = run_cmd(
-                                ["git", "status", "--porcelain"],
-                                cwd=repo_dir,
-                            ).strip()
-                        except Exception:
-                            after_status = ""
-                        after_count = sum(
-                            1 for line in after_status.splitlines() if line.strip()
-                        )
-                        cleared = max(0, prior_count - after_count)
-                        progress_note = (
-                            "\n\nmutation baseline re-anchored after vcs_restore: "
-                            f"{cleared} path(s) no longer pre-existing-dirty"
-                        )
-            except Exception:
-                progress_note = ""
+        progress_note = _maybe_reanchor_after_restore(
+            ctx, repo_dir, root=root, prior_status=prior_status,
+        )
         return _vcs_result(
             "All uncommitted changes discarded. Working directory matches HEAD."
             + progress_note,
             binding,
         )
+
+
+def _git_status_porcelain(repo_dir: pathlib.Path) -> str:
+    """Bounded ``git status --porcelain`` read used by ``_restore_to_head``."""
+    try:
+        return run_cmd(["git", "status", "--porcelain"], cwd=repo_dir).strip()
+    except Exception:
+        return ""
+
+
+def _maybe_reanchor_after_restore(
+    ctx: ToolContext,
+    repo_dir: pathlib.Path,
+    *,
+    root: str,
+    prior_status: str,
+) -> str:
+    """Re-anchor the mutation baseline epoch after a successful ``vcs_restore``.
+
+    Best-effort: a failure here MUST NOT fail the vcs_restore itself. Returns a
+    human-readable progress note (empty when nothing happened). Mirrors the
+    lineage resolution in ``_task_attributed_commit_paths`` so a subagent-
+    invoked ``vcs_restore(root='system_repo')`` re-anchors under the owning
+    ROOT task's evidence row, not the (empty) child row.
+    """
+    if root != "system_repo":
+        return ""
+    try:
+        from ouroboros.mutation_attribution import (
+            reanchor_mutation_baseline_after_restore,
+        )
+    except Exception:
+        return ""
+    try:
+        metadata = getattr(ctx, "task_metadata", {}) or {}
+        metadata = metadata if isinstance(metadata, dict) else {}
+        results_root = (
+            metadata.get("budget_drive_root")
+            or getattr(ctx, "budget_drive_root", "")
+            or ctx.drive_root
+        )
+        if not results_root:
+            return ""
+        from ouroboros.mutation_attribution import attribution_task_id
+        task_id = str(ctx.task_id or "").strip()
+        if not task_id:
+            return ""
+        root_task_id = str(metadata.get("root_task_id") or "").strip() or task_id
+        evidence_task_id = attribution_task_id(
+            pathlib.Path(results_root), (root_task_id, task_id),
+        )
+        if not evidence_task_id:
+            return ""
+        prior_count = sum(
+            1 for line in prior_status.splitlines() if line.strip()
+        )
+        reanchored = False
+        try:
+            reanchored = reanchor_mutation_baseline_after_restore(
+                pathlib.Path(results_root), evidence_task_id, repo_dir,
+            )
+        except Exception:
+            reanchored = False
+        if not reanchored:
+            return ""
+        after_status = _git_status_porcelain(repo_dir)
+        after_count = sum(
+            1 for line in after_status.splitlines() if line.strip()
+        )
+        cleared = max(0, prior_count - after_count)
+        return (
+            "\n\nmutation baseline re-anchored after vcs_restore: "
+            f"{cleared} path(s) no longer pre-existing-dirty"
+        )
+    except Exception:
+        return ""
 
 
 def _revert_commit(
