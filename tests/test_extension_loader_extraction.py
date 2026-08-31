@@ -88,8 +88,8 @@ _MOVED_OWNERS = {
 # out-of-process child, companion spawning, reconcile, load, unload, reload and
 # the read-only snapshots the host and the tool registry consume.
 _STAYED = (
-    "__all__", "_register_out_of_process_surfaces", "_request_server_reconcile_if_worker",
-    "_run_unload_callback", "_spawn_out_of_process_companions", "_unload_extension_locked",
+    "__all__", "_publish_out_of_process_registration", "_request_server_reconcile_if_worker",
+    "_run_unload_callback", "_stage_out_of_process_surfaces", "_unload_extension_locked",
     "ensure_companions_running", "get_tool", "list_companion_names", "list_routes",
     "list_ws_handlers", "load_extension", "log", "reconcile_extension", "reload_all",
     "snapshot", "unload_extension",

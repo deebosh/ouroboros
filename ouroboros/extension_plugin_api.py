@@ -723,7 +723,11 @@ class PluginAPIImpl:
         therefore visible to the bus only for an already-published
         extension: a concurrent ``EventBus.publish()`` (which takes only
         the bus's own lock) landing between the validation and the attach
-        cannot invoke a handler of a not-yet-published extension. Every
+        cannot invoke a handler of a not-yet-published extension. A bundle
+        may publish MORE than once (the OOP companion recovery path): a
+        later publication mints a fresh digest and RE-STAMPS every
+        already-published descriptor the bundle owns, so per-surface
+        provenance never diverges from the bundle digest. Every
         attachable effect is recorded on the published bundle at the swap
         (futures as they are created), so a failure while attaching leaves
         nothing orphaned: it is disclosed and raised into the caller's
@@ -765,6 +769,19 @@ class PluginAPIImpl:
                 (_ui_tabs, staged.ui_tabs, bundle.ui_tabs, False),
                 (_settings_sections, staged.settings_sections, bundle.settings_sections, False),
             ):
+                if stamp:
+                    # Staged-protocol restamp (ABI-9): a bundle may publish
+                    # MORE than once (the server-side companion recovery path
+                    # re-publishes onto live surfaces). Each publication mints
+                    # ONE digest, so every ALREADY-published descriptor this
+                    # bundle owns is re-stamped in the same lock hold — the
+                    # per-surface provenance stamp and
+                    # ``bundle.generation_digest`` can never diverge.
+                    for key in bundle_keys:
+                        published = live.get(key)
+                        if isinstance(published, dict):
+                            published["extension_generation"] = digest
+                            published["plugin_api_generation"] = self._plugin_api_generation
                 for key, value in staged_map.items():
                     if stamp:
                         value["extension_generation"] = digest

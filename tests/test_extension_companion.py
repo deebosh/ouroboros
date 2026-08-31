@@ -181,7 +181,7 @@ def test_plugin_api_companion_uses_staged_skill_root_as_cwd(tmp_path: pathlib.Pa
     assert descriptor.env["HOST_SERVICE_TOKEN"] != "evil"
 
 
-def test_spawn_out_of_process_companions_host_spawns_declared_name(tmp_path: pathlib.Path, monkeypatch) -> None:
+def test_publish_out_of_process_registration_host_spawns_declared_name(tmp_path: pathlib.Path, monkeypatch) -> None:
     """Out-of-process catalog -> host spawns the manifest-declared companion; an
     undeclared cataloged name is rejected at the host trust boundary."""
     import pytest
@@ -232,7 +232,7 @@ def test_spawn_out_of_process_companions_host_spawns_declared_name(tmp_path: pat
     monkeypatch.setattr(extension_plugin_api, "get_global_supervisor", lambda: FakeSupervisor())
     monkeypatch.setattr(extension_loader, "get_global_supervisor", lambda: FakeSupervisor())
     try:
-        extension_loader._spawn_out_of_process_companions(
+        extension_loader._publish_out_of_process_registration(
             loaded,
             catalog={"companions": ["daemon"]},
             state_dir=drive_root / "state",
@@ -244,7 +244,7 @@ def test_spawn_out_of_process_companions_host_spawns_declared_name(tmp_path: pat
         assert captured[0].name == "daemon"
 
         with pytest.raises(ExtensionRegistrationError):
-            extension_loader._spawn_out_of_process_companions(
+            extension_loader._publish_out_of_process_registration(
                 loaded,
                 catalog={"companions": ["evil"]},
                 state_dir=drive_root / "state",

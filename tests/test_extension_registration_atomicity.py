@@ -227,6 +227,19 @@ def test_publication_carries_a_fresh_generation_digest(tmp_path):
     assert second_digest and second_digest != first_digest
 
 
+def _publish_oop(loaded, drive_root, catalog, *, current_hash=None):
+    return extension_loader._publish_out_of_process_registration(
+        loaded,
+        catalog=catalog,
+        drive_root=drive_root,
+        state_dir=drive_root / "state",
+        settings_reader=lambda: {},
+        granted_keys=[],
+        dependency_site_dirs_enabled=False,
+        current_hash=current_hash,
+    )
+
+
 def test_out_of_process_catalog_publication_is_atomic(tmp_path):
     """The child-catalog install path is the same stage->validate->swap: a
     catalog with a conflicting surface publishes NOTHING, not a prefix."""
@@ -248,13 +261,242 @@ def test_out_of_process_catalog_publication_is_atomic(tmp_path):
         ],
     }
     with pytest.raises(ExtensionRegistrationError):
-        extension_loader._register_out_of_process_surfaces(
-            loaded, current_hash=loaded.content_hash, catalog=catalog,
-        )
+        _publish_oop(loaded, drive_root, catalog, current_hash=loaded.content_hash)
     snap = extension_loader.snapshot()
     assert snap["tools"] == []
     assert snap["ws_handlers"] == []
     assert snap["extensions"] == []
+
+
+_COMPANION_FRONTMATTER = (
+    "companion_processes:\n"
+    "  - name: daemon\n"
+    "    runtime: python3\n"
+    "    command: [\"python3\", \"scripts/daemon.py\"]\n"
+)
+
+
+def _oop_companion_extension(tmp_path, name):
+    return _prepare_extension(
+        tmp_path,
+        name,
+        plugin_body="def register(api):\n    pass\n",
+        permissions=["tool", "companion_process"],
+        extra_frontmatter=_COMPANION_FRONTMATTER,
+    )
+
+
+def test_out_of_process_surfaces_and_companions_publish_as_one_transaction(
+    tmp_path, monkeypatch
+):
+    """Ф3.1 fix-round-3 pin (ABI-9а): the OOP load path is ONE publication —
+    surfaces and companion spawns stage on the same snapshot, so a companion
+    that fails to start post-swap leaves NO published surface behind (before
+    the fix, surfaces were published in a first transaction and the companion
+    failure left a partially published extension for the caller to reap)."""
+    from ouroboros.extension_surface_names import extension_surface_name
+
+    loaded, _repo, drive_root = _oop_companion_extension(tmp_path, "oneshot")
+
+    class ExplodingSupervisor:
+        def start(self, descriptor):
+            raise RuntimeError("companion refused post-swap")
+
+        def stop(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        extension_plugin_api, "get_global_supervisor", lambda: ExplodingSupervisor()
+    )
+    monkeypatch.setattr(
+        extension_loader, "get_global_supervisor", lambda: ExplodingSupervisor()
+    )
+    monkeypatch.setattr(extension_plugin_api, "is_server_process", lambda: True)
+
+    catalog = {
+        "tools": [{
+            "name": extension_surface_name("oneshot", "t1"),
+            "description": "d", "schema": {}, "timeout_sec": 5,
+        }],
+        "companions": ["daemon"],
+    }
+    with pytest.raises(RuntimeError, match="companion refused post-swap"):
+        _publish_oop(loaded, drive_root, catalog, current_hash=loaded.content_hash)
+    snap = extension_loader.snapshot()
+    assert snap["tools"] == []
+    assert snap["extensions"] == []
+    with extension_loader._lock:
+        assert "oneshot" not in extension_loader._extensions
+
+
+def test_companion_recovery_failure_unloads_instead_of_silent_abort(
+    tmp_path, monkeypatch
+):
+    """Ф3.1 fix-round-3 pin (ABI-9б): the server-side companion RECOVERY
+    publication routes a failure into the standard dispose+unload path — the
+    extension does not stay half-alive with published surfaces and a
+    companion it could not start."""
+    from ouroboros.extension_surface_names import extension_surface_name
+
+    loaded, _repo, drive_root = _oop_companion_extension(tmp_path, "recofail")
+    tool_name = extension_surface_name("recofail", "t1")
+    _publish_oop(
+        loaded, drive_root,
+        {"tools": [{"name": tool_name, "description": "d", "schema": {}, "timeout_sec": 5}]},
+        current_hash=loaded.content_hash,
+    )
+    assert extension_loader.get_tool(tool_name) is not None
+
+    class ExplodingSupervisor:
+        def start(self, descriptor):
+            raise RuntimeError("recovery spawn refused")
+
+        def stop(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        extension_plugin_api, "get_global_supervisor", lambda: ExplodingSupervisor()
+    )
+    monkeypatch.setattr(
+        extension_loader, "get_global_supervisor", lambda: ExplodingSupervisor()
+    )
+    monkeypatch.setattr(extension_plugin_api, "is_server_process", lambda: True)
+
+    with pytest.raises(RuntimeError, match="recovery spawn refused"):
+        _publish_oop(loaded, drive_root, {"companions": ["daemon"]})
+    assert extension_loader.get_tool(tool_name) is None, (
+        "a failed recovery publication must unload the extension, not leave "
+        "its surfaces half-alive"
+    )
+    with extension_loader._lock:
+        assert "recofail" not in extension_loader._extensions
+
+
+def test_late_publication_restamps_already_published_descriptors(
+    tmp_path, monkeypatch
+):
+    """Ф3.1 fix-round-3 pin (staged protocol): a bundle publishing MORE than
+    once (companion recovery onto live surfaces) mints ONE digest per
+    publication and re-stamps every already-published descriptor — the
+    per-surface provenance stamp never diverges from
+    ``bundle.generation_digest``."""
+    from ouroboros.extension_surface_names import extension_surface_name
+
+    loaded, _repo, drive_root = _oop_companion_extension(tmp_path, "restamp")
+    tool_name = extension_surface_name("restamp", "t1")
+    _publish_oop(
+        loaded, drive_root,
+        {"tools": [{"name": tool_name, "description": "d", "schema": {}, "timeout_sec": 5}]},
+        current_hash=loaded.content_hash,
+    )
+    with extension_loader._lock:
+        first_digest = extension_loader._extensions["restamp"].generation_digest
+    assert extension_loader.get_tool(tool_name)["extension_generation"] == first_digest
+
+    class OkSupervisor:
+        def start(self, descriptor):
+            return True
+
+        def stop(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        extension_plugin_api, "get_global_supervisor", lambda: OkSupervisor()
+    )
+    monkeypatch.setattr(
+        extension_loader, "get_global_supervisor", lambda: OkSupervisor()
+    )
+    monkeypatch.setattr(extension_plugin_api, "is_server_process", lambda: True)
+
+    _publish_oop(loaded, drive_root, {"companions": ["daemon"]})
+    with extension_loader._lock:
+        second_digest = extension_loader._extensions["restamp"].generation_digest
+    assert second_digest and second_digest != first_digest
+    assert extension_loader.get_tool(tool_name)["extension_generation"] == second_digest, (
+        "the late publication left an already-published descriptor on the "
+        "previous generation digest"
+    )
+
+
+def test_unload_closes_bus_and_runtime_visibility_before_surfaces_leave(tmp_path, monkeypatch):
+    """Ф3.1 fix-round-3 pin (ABI-9в): unload closes the extension's INPUTS
+    first — at the moment of the bus unsubscribe the bundle and its surfaces
+    are still published; only then do they leave the registries."""
+    from ouroboros.event_bus import EventBus
+
+    skill_name = "unloadvis"
+    real_bus = EventBus()
+    monkeypatch.setattr(extension_plugin_api, "get_global_event_bus", lambda: real_bus)
+
+    api = extension_plugin_api.PluginAPIImpl(_PluginAPIConfig(
+        skill_name=skill_name,
+        permissions=["tool", "subscribe_event"],
+        env_allowlist=[],
+        state_dir=tmp_path,
+        settings_reader=lambda: {},
+        subscribe_events=["skill.lifecycle"],
+    ))
+    api.register_tool("t1", lambda **kw: "ok", description="d", schema={})
+    api.subscribe_event("skill.lifecycle", lambda data: None)
+    api._publish_registrations()
+    with extension_loader._lock:
+        tool_key = list(extension_loader._extensions[skill_name].tools)[0]
+
+    observed = {}
+
+    class ProbeBus:
+        def unsubscribe(self, sub_id):
+            with extension_loader._lock:
+                observed["tool_still_published"] = tool_key in extension_loader._tools
+                observed["bundle_still_published"] = (
+                    skill_name in extension_loader._extensions
+                )
+            real_bus.unsubscribe(sub_id)
+
+    monkeypatch.setattr(extension_loader, "get_global_event_bus", lambda: ProbeBus())
+    extension_loader.unload_extension(skill_name)
+
+    assert observed == {
+        "tool_still_published": True, "bundle_still_published": True,
+    }, "the unsubscribe must run BEFORE the bundle/surfaces leave the registries"
+    with extension_loader._lock:
+        assert skill_name not in extension_loader._extensions
+        assert tool_key not in extension_loader._tools
+    assert real_bus.snapshot() == {}
+
+
+def test_publish_started_after_unload_never_delivers(tmp_path, monkeypatch):
+    """Ф3.1 fix-round-3 pin (the residual's supported half): after unload's
+    unsubscribe, a NEW ``EventBus.publish`` finds no subscription and never
+    invokes the handler. (The unsupported half — a publish that COPIED the
+    handler before the unsubscribe — is the disclosed copy-semantics residual
+    in ``EventBus.publish``.)"""
+    from ouroboros.event_bus import EventBus
+
+    skill_name = "unloadflow"
+    real_bus = EventBus()
+    monkeypatch.setattr(extension_plugin_api, "get_global_event_bus", lambda: real_bus)
+    monkeypatch.setattr(extension_loader, "get_global_event_bus", lambda: real_bus)
+
+    seen: list = []
+    api = extension_plugin_api.PluginAPIImpl(_PluginAPIConfig(
+        skill_name=skill_name,
+        permissions=["subscribe_event"],
+        env_allowlist=[],
+        state_dir=tmp_path,
+        settings_reader=lambda: {},
+        subscribe_events=["skill.lifecycle"],
+    ))
+    api.subscribe_event("skill.lifecycle", lambda data: seen.append(dict(data)))
+    api._publish_registrations()
+    real_bus.publish("skill.lifecycle", {"probe": "before-unload"})
+    assert [row.get("probe") for row in seen] == ["before-unload"]
+
+    extension_loader.unload_extension(skill_name)
+    real_bus.publish("skill.lifecycle", {"probe": "after-unload"})
+    assert [row.get("probe") for row in seen] == ["before-unload"], (
+        "a publish STARTED after the unload's unsubscribe must not deliver"
+    )
 
 
 def test_conflict_refused_publication_has_zero_external_effects(

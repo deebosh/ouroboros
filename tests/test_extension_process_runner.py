@@ -669,7 +669,7 @@ def test_isolated_dependency_extension_rejects_unproxied_side_effect_surface(tmp
     ],
 )
 def test_out_of_process_catalog_revalidates_parent_namespace(tmp_path, catalog):
-    loaded, _repo_root, _drive_root = _prepare_extension(
+    loaded, _repo_root, drive_root = _prepare_extension(
         tmp_path,
         "catalog_guard",
         "def register(api):\n    pass\n",
@@ -678,10 +678,15 @@ def test_out_of_process_catalog_revalidates_parent_namespace(tmp_path, catalog):
     )
 
     with pytest.raises(ExtensionRegistrationError, match="escaped extension namespace"):
-        extension_loader._register_out_of_process_surfaces(
+        extension_loader._publish_out_of_process_registration(
             loaded,
-            current_hash=loaded.content_hash,
             catalog=catalog,
+            drive_root=drive_root,
+            state_dir=drive_root / "state",
+            settings_reader=lambda: {},
+            granted_keys=[],
+            dependency_site_dirs_enabled=False,
+            current_hash=loaded.content_hash,
         )
 
 
@@ -696,7 +701,7 @@ def test_out_of_process_catalog_revalidates_parent_namespace(tmp_path, catalog):
     ],
 )
 def test_out_of_process_catalog_revalidates_descriptor_shape(tmp_path, catalog):
-    loaded, _repo_root, _drive_root = _prepare_extension(
+    loaded, _repo_root, drive_root = _prepare_extension(
         tmp_path,
         "catalog_guard_shape",
         "def register(api):\n    pass\n",
@@ -705,10 +710,15 @@ def test_out_of_process_catalog_revalidates_descriptor_shape(tmp_path, catalog):
     )
 
     with pytest.raises(ExtensionRegistrationError):
-        extension_loader._register_out_of_process_surfaces(
+        extension_loader._publish_out_of_process_registration(
             loaded,
-            current_hash=loaded.content_hash,
             catalog=catalog(loaded),
+            drive_root=drive_root,
+            state_dir=drive_root / "state",
+            settings_reader=lambda: {},
+            granted_keys=[],
+            dependency_site_dirs_enabled=False,
+            current_hash=loaded.content_hash,
         )
 
 

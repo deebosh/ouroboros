@@ -87,7 +87,7 @@ from ouroboros.extension_plugin_api import (
 )
 from ouroboros.extension_registry_state import (
     _ExtensionLoadFailure,
-    _ExtensionRegistrations,
+    _ExtensionRegistrations,  # noqa: F401 — facade re-export (extraction contract)
     _PluginAPIConfig,
     _extension_modules,
     _extensions,
@@ -143,20 +143,19 @@ def _request_server_reconcile_if_worker(
         log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
 
 
-def _register_out_of_process_surfaces(
+def _stage_out_of_process_surfaces(
+    api: PluginAPIImpl,
     skill: LoadedSkill,
-    *,
-    current_hash: str,
     catalog: Dict[str, Any],
-    plugin_api_generation: str = "",
 ) -> None:
-    """Install proxy surface descriptors returned by a child catalog run.
+    """Validate child-catalog descriptors and stage them on *api*'s snapshot.
 
-    ABI-9: the catalog is staged and validated in full first; the swap into
-    the process-wide registries happens only when every descriptor validated,
-    so a bad catalog publishes NOTHING rather than a prefix.
+    ABI-9: nothing is installed here — every descriptor is validated and
+    staged through the same ``_stage_surface_locked`` seam the in-process
+    ``register()`` window uses, so the whole out-of-process registration
+    (surfaces AND companions) publishes as ONE validate -> swap -> attach
+    transaction; a bad catalog publishes NOTHING rather than a prefix.
     """
-    import uuid as _uuid
 
     def _proxy(item: Dict[str, Any]) -> Dict[str, Any]:
         item["handler"] = _out_of_process_handler_proxy
@@ -173,8 +172,8 @@ def _register_out_of_process_surfaces(
         ("settings_sections", _validate_child_settings_descriptor, None, False, _settings_sections, "settings section"),
     )
     with _lock:
-        staged: Dict[str, Dict[str, Any]] = {kind: {} for kind, *_ in kinds}
         for kind, validate, key_field, proxied, live, label in kinds:
+            staged = getattr(api._staged, kind)
             for raw in catalog.get(kind) or []:
                 item = validate(skill.name, dict(raw or {}))
                 key = (
@@ -183,40 +182,12 @@ def _register_out_of_process_surfaces(
                 )
                 if not key:
                     continue
-                if key in live or key in staged[kind]:
-                    raise ExtensionRegistrationError(f"{label} {key!r} already registered")
-                staged[kind][key] = _proxy(item) if proxied else item
-
-        # Swap: every descriptor validated; publish the whole snapshot.
-        bundle = _extensions.get(skill.name)
-        if bundle is None:
-            bundle = _ExtensionRegistrations()
-            _extensions[skill.name] = bundle
-        bundle.content_hash = current_hash
-        bundle.skill_dir = str(skill.skill_dir.resolve())
-        bundle.import_root = None
-        digest = _uuid.uuid4().hex
-        bundle.generation_digest = digest
-        if plugin_api_generation:
-            bundle.plugin_api_generation = plugin_api_generation
-        _load_failures.pop(skill.name, None)
-        for kind, live, bundle_keys, stamp in (
-            ("tools", _tools, bundle.tools, True),
-            ("routes", _routes, bundle.routes, True),
-            ("ws_handlers", _ws_handlers, bundle.ws_handlers, True),
-            ("ui_tabs", _ui_tabs, bundle.ui_tabs, False),
-            ("settings_sections", _settings_sections, bundle.settings_sections, False),
-        ):
-            for key, value in staged[kind].items():
-                if stamp:
-                    value["extension_generation"] = digest
-                    if plugin_api_generation:
-                        value["plugin_api_generation"] = plugin_api_generation
-                live[key] = value
-                bundle_keys.append(key)
+                api._stage_surface_locked(
+                    live, staged, key, _proxy(item) if proxied else item, label,
+                )
 
 
-def _spawn_out_of_process_companions(
+def _publish_out_of_process_registration(
     skill: LoadedSkill,
     *,
     catalog: Dict[str, Any],
@@ -225,18 +196,31 @@ def _spawn_out_of_process_companions(
     settings_reader: Callable[[], Dict[str, Any]],
     granted_keys: Sequence[str],
     dependency_site_dirs_enabled: bool,
+    current_hash: str | None = None,
+    plugin_api_generation: str = "",
 ) -> None:
-    """Host-spawn companions an isolated-dep extension declared during catalog.
+    """Publish an out-of-process extension's catalog as ONE staged snapshot.
 
-    Reuses the in-process ``register_companion_process`` path (the host is the
-    server process, so it owns the supervisor) instead of duplicating descriptor
-    construction. Cataloged names are re-validated against the reviewed manifest at
-    the host trust boundary before any process is started.
+    ABI-9 (staged protocol): the initial load (``current_hash`` given) stages
+    the child catalog's proxy surfaces AND its declared companion spawns on
+    one snapshot and publishes them in a single validate -> SWAP -> attach
+    transaction — no partially published extension exists between two
+    transactions. The server-side companion recovery path
+    (``reconcile_server_companions``) is the one structurally LATER
+    publication: it re-publishes onto the already live bundle, and
+    ``_publish_registrations`` mints a fresh generation digest while
+    re-stamping every already-published descriptor, so per-surface provenance
+    never diverges from ``bundle.generation_digest``. ANY failure — a refused
+    validation (published nothing) or a post-swap attach failure (published,
+    must not stay half-alive) — routes through the standard dispose+unload
+    path: the extension ends unloaded, never partially live.
+
+    Cataloged companion names are re-validated against the reviewed manifest
+    at the host trust boundary before any process is started; the host is the
+    server process, so it owns the supervisor and reuses the in-process
+    ``register_companion_process`` descriptor build.
     """
-
     names = [str(n).strip() for n in (catalog.get("companions") or []) if str(n).strip()]
-    if not names:
-        return
     declared = {
         str(item.get("name") or "").strip()
         for item in (skill.manifest.companion_processes or [])
@@ -262,20 +246,29 @@ def _spawn_out_of_process_companions(
         skill_dir=skill.skill_dir,
         runtime_skill_dir=skill.skill_dir,
         dependency_site_dirs_enabled=dependency_site_dirs_enabled,
-        plugin_api_generation=negotiation.generation,
+        plugin_api_generation=plugin_api_generation or negotiation.generation,
     ))
     try:
+        _stage_out_of_process_surfaces(api, skill, catalog)
         for name in names:
             if name not in declared:
                 raise ExtensionRegistrationError(
                     f"out-of-process companion {name!r} escaped manifest.companion_processes"
                 )
             api.register_companion_process(name)
-        # ABI-9: companion spawns are deferred side effects; publish the staged
-        # snapshot (merging into the live bundle) to actually start them.
-        api._publish_registrations()
+        api._publish_registrations(
+            content_hash=current_hash,
+            skill_dir=str(skill.skill_dir.resolve()) if current_hash is not None else None,
+            import_root=None,
+        )
     except Exception:
+        # ABI-9 (fix-round-3): a refused validation published nothing (abort
+        # discards the staged snapshot); a post-swap attach failure DID
+        # publish. Both route through the standard dispose+unload path — on
+        # the recovery path this unloads the live extension rather than
+        # leaving it half-alive with a companion it could not start.
         api._abort_registration()
+        unload_extension(skill.name)
         raise
 
 
@@ -518,7 +511,9 @@ def ensure_companions_running(
         }
 
     state_dir = skill_state_dir(drive_root, skill.name)
-    _spawn_out_of_process_companions(
+    # Recovery re-publication (staged protocol): a companion that cannot start
+    # UNLOADS the extension via the shared seam — never half-alive.
+    _publish_out_of_process_registration(
         skill,
         catalog={"companions": missing},
         drive_root=drive_root,
@@ -650,13 +645,9 @@ def load_extension(
                     repo_dir=pathlib.Path(__file__).resolve().parents[1],
                     skills_repo_path=skill.skill_dir.parent,
                 )
-                _register_out_of_process_surfaces(
-                    skill,
-                    current_hash=current_hash,
-                    catalog=catalog,
-                    plugin_api_generation=negotiation.generation,
-                )
-                _spawn_out_of_process_companions(
+                # ABI-9: surfaces AND companions publish as ONE staged
+                # snapshot; the seam routes any failure to dispose+unload.
+                _publish_out_of_process_registration(
                     skill,
                     catalog=catalog,
                     drive_root=pathlib.Path(drive_root),
@@ -664,6 +655,8 @@ def load_extension(
                     settings_reader=settings_reader,
                     granted_keys=granted_core,
                     dependency_site_dirs_enabled=bool(auto_specs),
+                    current_hash=current_hash,
+                    plugin_api_generation=negotiation.generation,
                 )
                 return None
         except Exception as exc:
@@ -761,48 +754,65 @@ def unload_extension(skill_name: str) -> None:
 
 
 def _unload_extension_locked(skill_name: str) -> None:
-    """Remove one extension's surfaces and purge its package from sys.modules."""
+    """Remove one extension's surfaces and purge its package from sys.modules.
+
+    ABI-9 unload visibility (fix-round-3): the extension loses its INPUTS
+    first — the event-bus unsubscribe and the runtime-API close happen BEFORE
+    the bundle and its surfaces leave the registries, so a publish STARTED
+    after the unsubscribe can never deliver into an extension whose surfaces
+    are already gone. Residual by design (EventBus copy semantics, see
+    ``EventBus.publish``): a publisher that copied the handler under the bus
+    lock BEFORE the unsubscribe may still invoke it afterwards; the
+    ``_unloading`` latch — set in the same registry-lock hold that snapshots
+    the subscription ids, so no new publication can interleave — and the
+    closed runtime API make such a late call a no-op against the host.
+    """
     with _lock:
-        bundle = _extensions.pop(skill_name, None)
-        _extension_modules.pop(skill_name, None)
-        import_root = pathlib.Path(bundle.import_root) if bundle and bundle.import_root else None
-        callbacks = list(bundle.unload_callbacks) if bundle else []
-        api_instances = list(bundle.api_instances) if bundle else []
+        bundle = _extensions.get(skill_name)
         event_subscriptions = list(bundle.event_subscriptions) if bundle else []
-        companion_names = list(bundle.companion_names) if bundle else []
-        supervised_futures = list(bundle.supervised_futures) if bundle else []
+        api_instances = list(bundle.api_instances) if bundle else []
         if bundle:
             _unloading.add(skill_name)
-        if bundle:
-            for key in bundle.tools:
-                _tools.pop(key, None)
-            for key in bundle.routes:
-                _routes.pop(key, None)
-            for key in bundle.ws_handlers:
-                _ws_handlers.pop(key, None)
-            for key in bundle.ui_tabs:
-                _ui_tabs.pop(key, None)
-            for key in bundle.settings_sections:
-                _settings_sections.pop(key, None)
-    bus = get_global_event_bus()
-    for sub_id in event_subscriptions:
-        bus.unsubscribe(sub_id)
-    for future in supervised_futures:
-        try:
-            future.cancel()
-        except Exception:
-            log.debug("Failed to cancel supervised task for %s", skill_name, exc_info=True)
-    supervisor = get_global_supervisor()
-    if supervisor is not None:
-        for raw_name in companion_names:
-            name = str(raw_name or "")
-            if name and not name.startswith(("task:", "worker-skip:")):
-                supervisor.stop(skill_name, name)
-    for api in api_instances:
-        close = getattr(api, "_close_runtime_access", None)
-        if callable(close):
-            close()
     try:
+        # 1) Close visibility: after this, a NEW publish finds no subscription
+        #    and every runtime API call answers as closed.
+        bus = get_global_event_bus()
+        for sub_id in event_subscriptions:
+            bus.unsubscribe(sub_id)
+        for api in api_instances:
+            close = getattr(api, "_close_runtime_access", None)
+            if callable(close):
+                close()
+        # 2) Only now remove the bundle and its published surfaces.
+        with _lock:
+            bundle = _extensions.pop(skill_name, None)
+            _extension_modules.pop(skill_name, None)
+            import_root = pathlib.Path(bundle.import_root) if bundle and bundle.import_root else None
+            callbacks = list(bundle.unload_callbacks) if bundle else []
+            companion_names = list(bundle.companion_names) if bundle else []
+            supervised_futures = list(bundle.supervised_futures) if bundle else []
+            if bundle:
+                for key in bundle.tools:
+                    _tools.pop(key, None)
+                for key in bundle.routes:
+                    _routes.pop(key, None)
+                for key in bundle.ws_handlers:
+                    _ws_handlers.pop(key, None)
+                for key in bundle.ui_tabs:
+                    _ui_tabs.pop(key, None)
+                for key in bundle.settings_sections:
+                    _settings_sections.pop(key, None)
+        for future in supervised_futures:
+            try:
+                future.cancel()
+            except Exception:
+                log.debug("Failed to cancel supervised task for %s", skill_name, exc_info=True)
+        supervisor = get_global_supervisor()
+        if supervisor is not None:
+            for raw_name in companion_names:
+                name = str(raw_name or "")
+                if name and not name.startswith(("task:", "worker-skip:")):
+                    supervisor.stop(skill_name, name)
         for callback in callbacks:
             _run_unload_callback(skill_name, callback)
         prefix = _module_key(skill_name)

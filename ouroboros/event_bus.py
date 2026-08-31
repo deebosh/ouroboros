@@ -72,6 +72,17 @@ class EventBus:
                     self._subscriptions.pop(sub_id, None)
 
     def publish(self, topic: str, data: Dict[str, Any]) -> None:
+        """Invoke every live subscription of *topic* with a copy of *data*.
+
+        Copy semantics (ABI-9 unload residual, by design): the subscriber
+        list is COPIED under the bus lock and the handlers run with NO lock
+        held, so ``unsubscribe`` guarantees only that a publish STARTING
+        after it returns will not deliver; a publish that already copied the
+        handler may still invoke it after the unsubscribe. The extension
+        unload path therefore unsubscribes (and closes the runtime API)
+        BEFORE removing surfaces, and a late in-flight delivery is a no-op
+        against the host.
+        """
         if topic not in VALID_TOPICS:
             raise ValueError(f"unsupported event topic: {topic}")
         with self._lock:
