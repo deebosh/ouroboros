@@ -1,63 +1,33 @@
 """Multi-model review and unified pre-commit review gate."""
 
-import os
 import json
-import asyncio
 import logging
 import pathlib
 from typing import Any, List, Optional
 
-from ouroboros.llm import LLMClient
+from ouroboros.llm import LLMClient  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 from ouroboros.utils import (
     run_cmd,
     append_jsonl,
     estimate_tokens,  # noqa: F401 — patchable seam: fit_triad_prompt resolves it through THIS namespace
-    truncate_review_artifact,
+    truncate_review_artifact,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     utc_now_iso,
 )
 from ouroboros import config as _cfg
-from ouroboros.review_substrate import SLOT_ID_PREFIX, TYPED_FAILURE_FACT_KEYS, slot_id_for_row
+from ouroboros.review_substrate import SLOT_ID_PREFIX, TYPED_FAILURE_FACT_KEYS, slot_id_for_row  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 from ouroboros.tools.registry import ToolEntry, ToolContext
 from ouroboros.triad_review import (
     REVIEW_JSON_ARRAY_CONTRACT,
     extract_json_array,
     parse_model_review_results,
-    review_query_error_payload as _review_query_error_payload,
+    review_query_error_payload as _review_query_error_payload,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 )
 from ouroboros.tools.review_response import (
-    parse_model_response as _parse_model_response,
-    review_operation_fields as _review_operation_fields,
+    parse_model_response as _parse_model_response,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
+    review_operation_fields as _review_operation_fields,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
 )
 
 log = logging.getLogger(__name__)
-
-MAX_MODELS = 10
-CONCURRENCY_LIMIT = 5
-
-_CONSTITUTIONAL_PREAMBLE = """\
-## CONSTITUTIONAL CONTEXT — TOP PRIORITY
-
-You are reviewing code for Ouroboros, a self-creating AI agent. The following
-is its Constitution (BIBLE.md). **All recommendations you make MUST comply
-with these principles.** If a potential improvement would violate any
-principle, do NOT recommend it — flag the conflict instead.
-
-Key principles to watch for:
-- **P5 (LLM-First):** All decisions through the LLM. No hardcoded logic
-  for behavior selection. If behavior can be described in a prompt, it goes
-  in a prompt, not in code.
-- **P7 (Minimalism):** Complexity is the enemy. Every line justifies its existence.
-- **P0 (Agency):** Ouroboros is not a tool but a becoming personality.
-- **P1 (Continuity):** BIBLE.md and identity.md are protected.
-- **P2 (Meta-over-Patch):** Fix the class, not the instance.
-- **P3 (Immune Integrity):** Review surfaces, plan review, and durable memory cannot be weakened.
-
-If you are unsure whether a recommendation complies with the Constitution,
-err on the side of NOT recommending it and explain the tension.
-
----
-
-"""
 
 
 # The window/limit names below stay importable and MONKEYPATCHABLE on this
@@ -72,7 +42,7 @@ from ouroboros.tools.review_helpers import (
     build_touched_file_pack,
     build_goal_section,
     build_scope_section,
-    review_drive_root,
+    review_drive_root,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     build_rebuttal_section,
     CRITICAL_FINDING_CALIBRATION,
     REPO_ANTI_PATTERN_LOCK_GUARD,
@@ -80,7 +50,7 @@ from ouroboros.tools.review_helpers import (
     build_self_verification_template,
     build_review_history_section as _build_review_history_section,
     calibrated_input_token_limit,  # noqa: F401 — patchable seam (see note above)
-    emit_review_usage,
+    emit_review_usage,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
     format_name_status_for_preflight,
     format_review_history_entry as _format_review_entry,
     REVIEW_PROMPT_TOKEN_BUDGET,  # noqa: F401 — patchable seam (see note above)
@@ -334,270 +304,6 @@ def _handle_task_acceptance_review(
         payload_dict["agent_decision"] = agent_decision
     payload = json.dumps(payload_dict, ensure_ascii=False, indent=2, default=str)
     return f"{capsule}\n\n<full_review>\n{payload}\n</full_review>" if capsule else payload
-
-
-def _handle_multi_model_review(ctx: ToolContext, content: str = "",
-                                prompt: str = "", models: list = None,
-                                stable_prefix_len: int = 0,
-                                routes: list = None,
-                                session_task: str = "",
-                                session_root: str = "",
-                                row_plan: dict = None,
-                                surface: str = "multi_model_review",
-                                session_policy: dict = None,
-                                usage_attribution: dict = None,
-                                retry_key: str = "") -> str:
-    if models is None:
-        models = []
-    try:
-        try:
-            asyncio.get_running_loop()
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                result = pool.submit(
-                    asyncio.run,
-                    _multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
-                                              routes, session_task, session_root, row_plan,
-                                              surface, session_policy, usage_attribution,
-                                              retry_key),
-                ).result()
-        except RuntimeError:
-            result = asyncio.run(_multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
-                                                           routes, session_task, session_root, row_plan,
-                                                           surface, session_policy, usage_attribution,
-                                                           retry_key))
-        return json.dumps(result, ensure_ascii=False)
-    except Exception as e:
-        log.error("Multi-model review failed: %s", e, exc_info=True)
-        return json.dumps({"error": f"Review failed: {e}"}, ensure_ascii=False)
-
-
-def _review_output_budget() -> int:
-    """Reviewer response reservation. The operator may lower it to fit a full
-    input pack plus output in context; floor 8192 preserves a useful verdict and
-    the knob can never raise the 65536 default."""
-    try:
-        raw = int(os.environ.get("OUROBOROS_REVIEW_MAX_TOKENS", "") or 65536)
-    except (TypeError, ValueError):
-        raw = 65536
-    return max(8192, min(raw, 65536))
-
-
-async def _query_model(
-    llm_client: LLMClient,
-    model: str,
-    messages: list,
-    semaphore,
-    ctx: Optional[ToolContext] = None,
-    slot_id: str = SLOT_ID_PREFIX,
-    route: Any = None,
-    session_task: str = "",
-    session_root: str = "",
-    effort: str = "",
-    session_target: str = "",
-    session_profile: str = "",
-    surface: str = "multi_model_review", session_policy: dict = None, usage_attribution: dict = None,
-    retry_key: str = "", subagent_id: str = "",
-):
-    async with semaphore:
-        slot = None
-        try:
-            from ouroboros.review_execution import ReviewRouteKind
-            from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request
-            slot_route = route if route is not None else ReviewRouteKind.API_CHAT
-            delegated = slot_route is ReviewRouteKind.AGENT_SESSION
-            # RETRIEVES class (session row OR configured-subagent api row): the
-            # compact session task replaces the assembled pack for both.
-            retrieves = delegated or (
-                bool(subagent_id) and slot_route is ReviewRouteKind.API_CHAT
-            )
-            _out_budget = _review_output_budget()
-            request = ReviewRequest(
-                surface=surface,
-                goal="Run independent multi-model review over the supplied evidence.",
-                # 5.2: a retrieving slot never receives the assembled api pack.
-                messages=[] if retrieves else messages,
-                task_id=str(getattr(ctx, "task_id", "") or "multi_model_review") if ctx is not None else "multi_model_review",
-                call_type="multi_model_review",
-                max_tokens=_out_budget,
-                temperature=0.2,
-                no_proxy=True,
-                session_task=session_task if retrieves else "",
-                session_root=session_root if retrieves else "",
-                policy=(session_policy or {"output_contract": REVIEW_JSON_ARRAY_CONTRACT}) if retrieves else {},
-                usage_attribution=usage_attribution or {},
-                task_attempt=getattr(ctx, "task_attempt", None) if ctx is not None else None,
-                retry_key=str(retry_key or ""),
-                reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
-            )
-            slot = ReviewSlot(
-                slot_id=slot_id,
-                model=model,
-                effort=effort or _cfg.resolve_effort("review"),
-                max_tokens=_out_budget,
-                temperature=0.2,
-                role_hint="multi-model review",
-                use_local=_cfg.review_model_uses_local(model),
-                route=slot_route,
-                session_target=session_target if delegated else "",
-                session_profile=session_profile if delegated else "",
-                subagent_id=str(subagent_id or ""),
-            )
-            loop = asyncio.get_running_loop()
-            run_result = await loop.run_in_executor(
-                None,
-                lambda: run_review_request(
-                    request,
-                    slots=[slot],
-                    drive_root=review_drive_root(ctx),
-                    llm=llm_client,
-                    usage_ctx=ctx,
-                ),
-            )
-            actor = (run_result.actors or [{}])[0]
-            # Carry the substrate's real row id instead of re-deriving position.
-            ran_as = str(actor.get("slot_id") or slot_id)
-            typed = {key: actor.get(key) for key in TYPED_FAILURE_FACT_KEYS if actor.get(key) not in (None, "")}
-            if actor.get("status") not in {"ok", "empty"}:
-                return model, {
-                    "error": f"Error: {actor.get('error') or actor.get('status') or 'review failed'}",
-                    "usage": actor.get("usage") or {},
-                    "slot_id": ran_as,
-                    **_review_operation_fields(actor),
-                    "prompt_ref": actor.get("prompt_ref") or {},
-                    "response_ref": actor.get("response_ref") or {},
-                    **typed,
-                }, None
-            payload = {
-                "choices": [{"message": {"content": actor.get("raw_text") or ""}}],
-                "usage": actor.get("usage") or {},
-                "slot_id": ran_as,
-                **_review_operation_fields(actor),
-                "prompt_ref": actor.get("prompt_ref") or {},
-                "response_ref": actor.get("response_ref") or {},
-            }
-            return model, payload, None
-        except Exception as e:
-            # Preserve full review errors; helper adds an omission note if needed.
-            error_msg = truncate_review_artifact(str(e), limit=4000)
-            error = f"Error: {error_msg}"
-            return model, _review_query_error_payload(ctx=ctx, model=model, messages=messages, slot_id=slot_id, error=error, slot=slot), None
-
-
-async def _multi_model_review_async(content: str, prompt: str,
-                                     models: list, ctx: ToolContext,
-                                     stable_prefix_len: int = 0,
-                                     routes: list = None,
-                                     session_task: str = "",
-                                     session_root: str = "",
-                                     row_plan: dict = None,
-                                     surface: str = "multi_model_review",
-                                     session_policy: dict = None,
-                                     usage_attribution: dict = None,
-                                     retry_key: str = ""):
-    from ouroboros.review_execution import ReviewRouteKind
-
-    row_routes = list(routes or []) + [ReviewRouteKind.API_CHAT] * max(0, len(models) - len(routes or []))
-    # Per-row strength/target/identity vectors (6.1). Absent tails keep the
-    # historical behavior: global effort, shared session route, positional ids.
-    def _row_vector(key, filler):
-        rows = list((row_plan or {}).get(key) or [])
-        return rows + [filler(idx) for idx in range(len(rows), len(models))]
-
-    row_efforts = _row_vector("efforts", lambda idx: "")
-    row_targets = _row_vector("session_targets", lambda idx: "")
-    row_profiles = _row_vector("session_profiles", lambda idx: "")
-    row_ids = _row_vector("slot_ids", lambda idx: slot_id_for_row(idx + 1))
-    row_actors = _row_vector("subagent_ids", lambda idx: "")
-    # Pack assembly follows the RETRIEVES class, not the route name: an
-    # api-route row bound to a configured subagent retrieves with its own
-    # tools and must never trigger (or be counted into) the assembled pack.
-    any_api_rows = any(
-        route is ReviewRouteKind.API_CHAT and not row_actors[idx]
-        for idx, route in enumerate(row_routes[:len(models)])
-    )
-    if not content:
-        return {"error": "content is required"}
-    if not prompt and any_api_rows:
-        return {"error": "prompt is required"}
-    if not models:
-        return {"error": "models list is required"}
-    if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
-        return {"error": "models must be a list of strings"}
-    if len(models) > MAX_MODELS:
-        return {"error": f"Too many models ({len(models)}). Maximum is {MAX_MODELS}."}
-
-    bible_text = load_governance_doc(_REPO_ROOT, "BIBLE.md", on_missing="explicit")
-    if bible_text:
-        stable_head = (
-            _CONSTITUTIONAL_PREAMBLE
-            + "### BIBLE.md (Full Text)\n\n" + bible_text
-            + "\n\n---\n\n## REVIEW INSTRUCTIONS\n\n"
-        )
-    else:
-        log.warning("Proceeding without BIBLE.md — constitutional compliance cannot be guaranteed")
-        stable_head = (
-            _CONSTITUTIONAL_PREAMBLE
-            + "(BIBLE.md could not be loaded)\n\n## REVIEW INSTRUCTIONS\n\n"
-        )
-
-    # System content is split at the caller-declared stable/dynamic boundary so
-    # the byte-stable prefix (constitutional preamble + BIBLE + the prompt's own
-    # stable governance head) carries a provider cache marker; per-round evidence
-    # stays in the unmarked tail. Callers that pass no boundary still get the
-    # preamble+BIBLE prefix cached. Built ONLY when an api row will send it —
-    # a panel of session rows never assembles the api pack (5.2).
-    if any_api_rows:
-        from ouroboros.tools.review_helpers import cached_prompt_blocks
-
-        boundary = max(0, min(int(stable_prefix_len or 0), len(prompt)))
-        messages = [
-            {
-                "role": "system",
-                "content": cached_prompt_blocks(stable_head + prompt[:boundary], prompt[boundary:]),
-            },
-            {"role": "user", "content": content},
-        ]
-    else:
-        messages = []
-
-    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-    llm_client = LLMClient()
-    tasks = [
-        _query_model(llm_client, m, messages, semaphore, ctx, slot_id=row_ids[idx],
-                     route=row_routes[idx], session_task=session_task, session_root=session_root,
-                     effort=row_efforts[idx], session_target=row_targets[idx],
-                     session_profile=row_profiles[idx], surface=surface,
-                     session_policy=session_policy, usage_attribution=usage_attribution,
-                     retry_key=retry_key, subagent_id=row_actors[idx])
-        for idx, m in enumerate(models)
-    ]
-    results = await asyncio.gather(*tasks)
-
-    review_results = []
-    for model, result, headers_dict in results:
-        review_result = _parse_model_response(model, result, headers_dict)
-        emit_review_usage(
-            ctx,
-            model=review_result.get("model", ""),
-            provider=review_result.get("provider", "openrouter"),
-            usage={
-                "prompt_tokens": review_result.get("tokens_in", 0),
-                "completion_tokens": review_result.get("tokens_out", 0),
-                "cached_tokens": review_result.get("cached_tokens", 0),
-                "cache_write_tokens": review_result.get("cache_write_tokens", 0),
-                "prompt_cache_ttl": review_result.get("prompt_cache_ttl", ""),
-                "cost": review_result.get("cost_estimate"),
-            },
-            source="review",
-        )
-        review_results.append(review_result)
-
-    return {
-        "model_count": len(models),
-        "constitutional_context": bool(bible_text),
-        "results": review_results,
-    }
 
 
 # Unified pre-commit review gate.
@@ -1548,3 +1254,16 @@ def _run_unified_review(ctx: ToolContext, commit_message: str,
     if exited:
         return early_result
     return _dispatch_unified_review(ctx, commit_message, prepared)
+
+
+# v7next F2.3a (D06): moved spans live in their owner leaves; re-exported
+# here so this facade stays the single import surface for callers and tests.
+from ouroboros.tools.review_multi_model import (  # noqa: E402, F401 -- intentional public re-exports
+    CONCURRENCY_LIMIT,
+    MAX_MODELS,
+    _CONSTITUTIONAL_PREAMBLE,
+    _handle_multi_model_review,
+    _multi_model_review_async,
+    _query_model,
+    _review_output_budget,
+)

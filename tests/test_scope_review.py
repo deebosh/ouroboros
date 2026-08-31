@@ -553,7 +553,8 @@ class TestRunScopeReviewFailClosed:
             calls.append(bool(kwargs.get("compact")))
             return "COMPACT ATLAS"
 
-        monkeypatch.setattr(mod, "_gather_scope_packs", fake_gather)
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
+        monkeypatch.setattr(scope_pack, "_gather_scope_packs", fake_gather)
 
         prompt, omitted = mod._build_scope_prompt(tmp_path, "test commit")
 
@@ -590,7 +591,8 @@ class TestRunScopeReviewFailClosed:
             calls.append(compact)
             raise mod._ScopeAtlasNotAssembled({"estimated_total_tokens": 900_001})
 
-        monkeypatch.setattr(mod, "_gather_scope_packs", fake_gather)
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
+        monkeypatch.setattr(scope_pack, "_gather_scope_packs", fake_gather)
         monkeypatch.setattr(mod, "estimate_tokens", lambda _text: 800_000)
 
         prompt, status = mod._build_scope_prompt(tmp_path, "test commit")
@@ -632,7 +634,8 @@ class TestRunScopeReviewFailClosed:
 
         monkeypatch.setattr(mod, "capture_staged_diff", fake_capture)
         monkeypatch.setattr(mod, "_effective_scope_input_limit", lambda **_kw: 100_000)
-        monkeypatch.setattr(mod, "_gather_scope_packs", lambda *_a, **_k: "COMPACT ATLAS")
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
+        monkeypatch.setattr(scope_pack, "_gather_scope_packs", lambda *_a, **_k: "COMPACT ATLAS")
 
         prompt, status = mod._build_scope_prompt(tmp_path, "test commit")
 
@@ -755,7 +758,8 @@ class TestRunScopeReviewFailClosed:
         subprocess.run(["git", "add", "."], cwd=str(tmp_path), capture_output=True)
 
         mod = _get_module("ouroboros.tools.scope_review")
-        monkeypatch.setattr(mod, "_gather_scope_packs", lambda *_a, **_k: "TINY ATLAS")
+        scope_pack = _get_module("ouroboros.tools.scope_review_pack")
+        monkeypatch.setattr(scope_pack, "_gather_scope_packs", lambda *_a, **_k: "TINY ATLAS")
         monkeypatch.setattr(
             mod, "_effective_scope_input_limit", lambda **_kw: 30_000
         )

@@ -296,6 +296,68 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_force_plan_decision", "_loop_tree_accounting", "_skill_finalization_message",
         "get_review_enforcement",
     })),
+    # F2.3a D06 lane rows (oracle ouroboros_v7_wip @ 9f691656, re-cut on tip
+    # bytes). Declared sets are the tool-derived exact read sets; the
+    # projection-only review_records leaf carries no handle reads and stays
+    # off this table (D07/D08 precedent). The state custody leaf is a NEW
+    # owner (post-cutoff upstream growth, decision 5.3=B one-cut).
+    "ouroboros/review_evidence_sections.py": ("ouroboros/review_evidence.py", "_ev", frozenset({
+        "truncate_review_artifact", "truncate_within_limit",
+    })),
+    "ouroboros/review_projection.py": ("ouroboros/review_substrate.py", "_sub", frozenset({
+        "DIALOGUE_STATUS_VALUES", "HARDNESS_ADVISORY_VISIBLE", "HARDNESS_HARD_GATE",
+        "MAX_PROJECTED_ACTOR_FINDINGS", "OUTCOME_TIER_BEST_EFFORT", "OUTCOME_TIER_BLOCKED",
+        "OUTCOME_TIER_SOLVED", "disclosed_list_projection", "panel_reason",
+        "projected_finding_row", "provider_for_model", "redact_projection",
+        "review_binding_hash", "review_executions_from_actor_usage",
+    })),
+    "ouroboros/review_state_custody.py": ("ouroboros/review_state.py", "_rs", frozenset({
+        "_truncate_review_artifact", "_utc_now", "update_state",
+    })),
+    "ouroboros/review_state_model.py": ("ouroboros/review_state.py", "_rs", frozenset({
+        "CommitReadinessDebtItem", "ObligationItem", "_DEFAULT_TOOL_NAME",
+        "_LEGACY_CURRENT_REPO_KEY", "_MAX_ATTEMPT_HISTORY", "_MAX_COMMIT_READINESS_DEBTS",
+        "_MAX_RUN_HISTORY", "_OPEN_COMMIT_READINESS_DEBT_STATUSES", "_allocate_prefixed_id",
+        "_attempt_has_active_review_custody", "_attempt_history_evictable",
+        "_attempt_identity_tuple", "_attempt_review_roster_rows",
+        "_commit_readiness_debts_view", "_dedupe_strings", "_filter_lifecycle_records",
+        "_filter_repo_scope", "_looks_like_public_obligation_id",
+        "_make_obligation_fingerprint", "_max_iso_ts", "_merge_attempt", "_min_iso_ts",
+        "_normalize_obligation_item_key", "_parse_iso_ts", "_review_roster_row_is_pending",
+        "_strip_attempt_heavy_payload", "_utc_now",
+    })),
+    "ouroboros/review_state_records.py": ("ouroboros/review_state.py", "_rs", frozenset({
+        "_strip_attempt_heavy_payload", "_truncate_review_reason",
+    })),
+    "ouroboros/review_verdict.py": ("ouroboros/review_substrate.py", "_sub", frozenset({
+        "truncate_review_artifact",
+    })),
+    "ouroboros/tools/review_file_pack.py": ("ouroboros/tools/review_helpers.py", "_rh", frozenset({
+        "logger", "redact_prompt_secrets",
+    })),
+    "ouroboros/tools/review_multi_model.py": ("ouroboros/tools/review.py", "_rev", frozenset({
+        "LLMClient", "REVIEW_JSON_ARRAY_CONTRACT", "TYPED_FAILURE_FACT_KEYS", "_REPO_ROOT",
+        "_cfg", "_parse_model_response", "_review_operation_fields",
+        "_review_query_error_payload", "emit_review_usage", "load_governance_doc",
+        "review_drive_root", "slot_id_for_row", "truncate_review_artifact",
+    })),
+    "ouroboros/tools/review_prompt_text.py": ("ouroboros/tools/review_helpers.py", "_rh", frozenset({
+        "sanitize_tool_result_for_log",
+    })),
+    "ouroboros/tools/scope_review_pack.py": ("ouroboros/tools/scope_review.py", "_sr", frozenset({
+        "BINARY_EXTENSIONS", "CRITICAL_FINDING_CALIBRATION", "ReviewContextAtlasRequest",
+        "StagedDiffUnavailable", "_SCOPE_FAILCLOSED_WINDOW", "_SCOPE_MODEL_CONTEXT_WINDOW",
+        "_SENSITIVE_EXTENSIONS", "_SENSITIVE_NAMES", "_TouchedContextStatus",
+        "_compute_touched_status", "_effective_scope_input_limit", "_get_scope_model",
+        "_load_canonical_context_docs", "_scope_window", "_shared_build_rebuttal_section",
+        "_shared_review_history_section", "atlas_assembly_failed",
+        "atlas_assembly_failure_reason", "atlas_hard_budget_overflowed",
+        "atlas_required_beyond_diff", "atlas_unassembled_required", "build_goal_section",
+        "build_scope_review_prompt", "build_scope_section", "build_touched_file_pack",
+        "capture_staged_diff", "compile_review_context_atlas", "estimate_tokens",
+        "load_checklist_section", "parse_git_name_status", "run_cmd",
+        "staged_path_is_binary",
+    })),
     "ouroboros/loop_round_limits.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_append_or_merge_user_content",
         "_append_or_merge_user_message", "_current_delivery_candidate",

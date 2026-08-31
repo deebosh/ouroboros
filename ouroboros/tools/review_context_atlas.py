@@ -56,9 +56,9 @@ _REVIEW_STACK_PATHS = frozenset({
     "ouroboros/size_ratchet_manifest.py",
     "ouroboros/tools/review.py",
     "ouroboros/tools/review_context_atlas.py",
-    "ouroboros/tools/scope_review.py",
+    "ouroboros/tools/scope_review.py", "ouroboros/tools/scope_review_pack.py",  # the scope reviewer's own pack assembly decides what the blocking scope gate sees
     "ouroboros/tools/parallel_review.py",
-    "ouroboros/tools/review_helpers.py",
+    "ouroboros/tools/review_helpers.py", "ouroboros/tools/review_prompt_text.py", "ouroboros/tools/review_file_pack.py",  # the shared reviewer vocabulary and the packs read from the working tree: what every reviewer is told, and what it is shown
     "ouroboros/tools/review_revalidation.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/plan_review.py",
@@ -69,8 +69,8 @@ _REVIEW_STACK_PATHS = frozenset({
     "ouroboros/review_execution.py",
     "ouroboros/tools/plan_review_runtime.py",
     "ouroboros/triad_review.py",
-    "ouroboros/review_state.py",
-    "ouroboros/review_evidence.py",
+    "ouroboros/review_state.py", "ouroboros/review_state_records.py", "ouroboros/review_state_model.py", "ouroboros/review_state_custody.py",  # the review ledger's record rules, its in-memory transitions and the pending-invocation custody: obligation and attempt lifecycle decide what the gates see
+    "ouroboros/review_evidence.py", "ouroboros/review_evidence_sections.py",
     "ouroboros/deep_self_review.py",
 })
 

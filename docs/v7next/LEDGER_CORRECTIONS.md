@@ -1703,3 +1703,88 @@ reference-fact ↔ tip-fact ↔ result.
    an in-file duplicate def test_ripgrep_download_script_verifies_checksum
    in tests/test_build_scripts.py (the later def shadows the earlier —
    D15-class latent, review-organ/F5 material).
+## From the F2.3a review-mechanics lane (base 2878560e, 2026-08-31)
+1. FALSIFIED row: `tests/test_review_substrate_v2.py::_render_prompt ->
+   review_substrate` (repoint to the "canonical substrate owner"). Upstream
+   moved `_render_prompt`/`_render_prompt_parts` into review_execution
+   (substrate back-imports them as compat re-exports), so the row's target is
+   stale. Executed as re-derive: the split's prompts suite
+   (tests/test_review_substrate_prompts.py) imports `_render_prompt` from
+   ouroboros.review_execution.
+2. ROW CORRECTION: `ouroboros/tools/scope_review.py::_load_canonical_context_docs
+   -> scope_review_pack.py` was NOT executed as written — the symbol stays a
+   facade def. Its body reads `load_governance_doc` inside an f-string (the
+   byte gate refuses f-string reads of rebindable globals) and tests rebind
+   that name on the parent (test_review_convergence_rule.py:122 et al.), so a
+   leaf copy would go dead-patch. Same class as the D10 lane's
+   safe_restart/prepare_managed_update facade retention. The pack leaf reads
+   it through the `_sr()` handle; 19/20 pack rows moved.
+3. NEW-OWNER leaf (owner decision 5.3=B, one-cut): ouroboros/review_state_custody.py
+   carries nine post-cutoff upstream symbols no MIGRATION row names —
+   unrowed F5 candidates, recorded here as adoption rows:
+   review_state.py::{_ACTIVE_REVIEW_OPERATION_STATES, _attempt_review_roster_rows,
+   _review_roster_row_is_pending, _attempt_has_active_review_custody,
+   checkpoint_pending_review_invocation, _attempt_history_evictable,
+   _STRIPPED_DETAILS_LIMIT, _STRIPPED_MESSAGE_LIMIT, _strip_attempt_heavy_payload}
+   -> review_state_custody.py::<same name> (adaptive-timeout/custody train;
+   tool-proof ast=tokens=bytes on every span). The four authority-shape
+   deserialization symbols of the same train (_malformed_roster_row,
+   _ATTEMPT_AUTHORITY_STRING_FIELDS, _ATTEMPT_AUTHORITY_BOOL_FIELDS,
+   _validate_attempt_authority_shape) stay with the parent STORE by design.
+4. SUPERSEDED rows honored (upstream home wins, Q4=A; leaves/tests do not
+   replay them): review_evidence.py::{_ACCEPT_DELTA_CHILD_CAP,
+   _accept_capability_deltas} -> delegate_evidence (facade reads
+   acceptance_capability_deltas back at call time);
+   tools/review.py::_parse_model_response -> tools/review_response.py
+   (facade re-import is the single alias, pinned by
+   test_review_owner_facades.py). RETIRED rows honored:
+   tools/review.py::{DEFAULT_REVIEW_MODEL_TIMEOUT_SEC, _review_model_timeout_sec}
+   died with the adaptive-timeout contract and are not restored.
+5. Import-bound exceptions (f-string/import-time gate; named in each leaf
+   docstring): review_multi_model: SLOT_ID_PREFIX (default argument);
+   review_file_pack: format_prompt_code_block (f-string; unpatched in tests);
+   scope_review_pack: format_review_history_entry,
+   _HISTORY_VERIFICATION_ONLY_RULE, _ANTI_THRASHING_RULE_VERDICT,
+   _CONVERGENCE_RULE_TEXT (f-strings; owner review_prompt_text);
+   review_evidence_sections: DEFAULT_TOOL_RESULT_LIMIT (default argument);
+   review_state_model: _STATE_SCHEMA_VERSION, _DEFAULT_ADVISORY_TOOL_NAME,
+   _REVIEW_ATTEMPT_TTL_SEC, _REVIEW_ATTEMPT_GRACE_SEC (class-level defaults),
+   _stable_digest (f-strings) — owner review_state_records;
+   review_records/review_verdict: ReviewRouteKind / OUTCOME_TIER_* (class-level
+   and module-level constants). None of these names is monkeypatched on the
+   parents anywhere in tests/ (verified by grep before binding).
+6. TEST DELETION disclosure (owner decision 5.2=A): ten AST-identical test
+   functions plus seven byte-identical orphan helpers were deleted from
+   tests/test_review_cycles_dispatch.py; the owner of those tests is
+   tests/test_review_cycles_skill_dispatch.py (D14 family — they exercise
+   skill_review_* modules only). Verified byte-level: ast.dump-identical in
+   both files before deletion, zero shared-but-different defs. −510 lines of
+   double-executed runtime; the dispatch file remains the D06 commit-gate
+   paid-accounting suite.
+7. Session-route split: three reference-authored tests absent from the tip
+   giant were NOT replayed (skipped, F5 material):
+   test_unhealthy_route_refuses_typed_never_falls_back,
+   test_route_status_refusal_carries_its_typed_code,
+   test_retry_of_a_pinned_session_health_checks_the_stored_account. Thirteen
+   tip-only (post-cutoff) tests were placed with the sibling that owns their
+   helpers (2 -> scope_wiring, 1 -> poller, 2 -> delivery, 8 stay in the
+   remainder with FakeGateway/_run_session_directly imported from the shared
+   module). Lossless: 102 == 102 test names across the five files, zero
+   duplicate names.
+8. Substrate split lossless: 71 == 71 test names across six files — the
+   reference's five plus tests/test_review_substrate_custody.py, a NEW
+   sibling created by this lane for the eighteen post-cutoff upstream tests
+   (the adaptive-timeout/custody train theme, 907 lines of tip bytes); the
+   remainder would otherwise have stayed a >1600 giant. Both re-derived
+   extraction suites drop the reference's tool_module_inventory clauses
+   (that module exists only on the reference).
+9. Path-keyed mirrors (D10 additive-closure precedent):
+   review_context_atlas._REVIEW_STACK_PATHS += the eight state/evidence/
+   helpers/scope leaves (oracle placements) + the new custody leaf;
+   scripts/run_external_review.py::_REVIEW_SUBSTRATE_PATHS += all eleven
+   leaves beside their parents. The hand-list's structural rot (28/48 D06
+   modules absent before this lane) is the Р1/D31 fork — Ф2.3b territory,
+   not repaired here beyond the additive closure for our own leaves.
+10. review_records is a projection-only leaf (zero handle reads, zero
+   declared) and stays off the LEAVES table per the D07/D08 precedent; the
+   other ten leaves carry tool-derived exact declared sets there.
