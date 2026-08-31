@@ -347,7 +347,16 @@ def test_no_leaf_reads_a_parent_owned_name_directly(leaf: str) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             parent_defs.add(node.name)
         elif isinstance(node, ast.Assign):
-            parent_defs.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            # Same recursive unfold as _module_bindings (wave-5 conformance:
+            # the shallow variant here let git_ops' tuple-bound aliases
+            # escape the direct-read guard).
+            stack = list(node.targets)
+            while stack:
+                t = stack.pop()
+                if isinstance(t, ast.Name):
+                    parent_defs.add(t.id)
+                elif isinstance(t, (ast.Tuple, ast.List)):
+                    stack.extend(t.elts)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             parent_defs.add(node.target.id)
     own = _module_bindings(leaf_tree)
