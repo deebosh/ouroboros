@@ -2035,3 +2035,10 @@ reference-fact ↔ tip-fact ↔ result.
    (review_execution's row left untouched — matrix A2 marks it superseded by
    upstream's review_verdict_extraction, an integrator decision, and this
    lane's mandate excludes review_execution).
+
+## From the integration seam (coordinator, F2 close-out, 2026-08-31)
+1. split_pending row `review_execution.py -> review_session_verdict.py`
+   retired as SUPERSEDED-BY-UPSTREAM (matrix D06 verdict A2, confirmed by the
+   F2.3a lane): upstream performed the same extraction itself as
+   review_verdict_extraction.py; the reference leaf name never materializes.
+   The F2.3b lane left this disposition to the integrator - recorded here.

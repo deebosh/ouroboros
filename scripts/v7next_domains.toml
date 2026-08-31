@@ -618,7 +618,6 @@ proposed = [
 # monolith -> domains of its ledger-derived leaves still absent from this tree
 # (own domain included). A list longer than one element = the monolith spans domains.
 "ouroboros/loop_tool_execution.py" = ["D04"]
-"ouroboros/review_execution.py" = ["D06"]
 "ouroboros/tools/registry.py" = ["D04"]
 # F2.3b resolved rows (owner decision 5.1=A lane, 2026-08-31): the advisory
 # monolith split landed as preflight_review_prompt/preflight_review_run —
@@ -637,5 +636,4 @@ proposed = [
 [split_pending_leaves]
 # the exact absent leaf modules per monolith (ledger owner paths)
 "ouroboros/loop_tool_execution.py" = ["ouroboros/tools/tool_result.py"]
-"ouroboros/review_execution.py" = ["ouroboros/review_session_verdict.py"]
 "ouroboros/tools/registry.py" = ["ouroboros/tools/registry_core.py", "ouroboros/tools/tool_result.py"]
