@@ -1756,6 +1756,50 @@ def _check_shrink_guard(
     return None
 
 
+def _misrelativized_runtime_path_reason(rel_path: str) -> str:
+    """Return a non-empty reason string when a RELATIVE write path unmistakably
+    spells an absolute runtime/home path written without the leading slash.
+
+    Guards _repo_write against the misrelativized-runtime-path failure mode
+    (closes ibl-bypass-pending-restart-verify-wrong-root): a relative
+    ``root/Ouroboros/data/state/x.json`` was previously joined against the
+    repo base, producing ``/opt/ouroboros/root/Ouroboros/...`` — a valid
+    in-repo path that no boundary guard fires on, but never the absolute
+    runtime path the caller meant. Returns ``""`` for absolute paths (the
+    existing boundary guard already handles those) and for legitimate
+    in-repo relative paths.
+    """
+    if not rel_path or rel_path.startswith("/"):
+        return ""
+    segments = rel_path.split("/")
+    # Case-insensitive match on the leading-segment vocabulary the spec calls
+    # out — see P1 continuity of misread paths and the test cases below.
+    absolute_root_words = {"root", "home", "opt", "srv", "var", "etc", "usr", "tmp"}
+    if segments and segments[0].lower() in absolute_root_words and len(segments) >= 2:
+        return "looks like an absolute path written without the leading '/'"
+    # The two-segment prefix "Ouroboros/data" / "ouroboros/data" is the
+    # canonical runtime-drive layout. A bare "Ouroboros/..." (our own repo
+    # subtree, e.g. "ouroboros/tools/git.py") MUST NOT trip — only the
+    # exact two-segment prefix and the absolute-root-word first segments
+    # above qualify.
+    if (
+        len(segments) >= 2
+        and segments[0].lower() == "ouroboros"
+        and segments[1] == "data"
+    ):
+        return (
+            "looks like a runtime drive path; use root=\"runtime_data\" "
+            "with a drive-relative path"
+        )
+    # A leading ".ouroboros" segment is the runtime-drive hint (state dirs).
+    if segments and segments[0].lower() == ".ouroboros":
+        return (
+            "looks like a runtime drive path; use root=\"runtime_data\" "
+            "with a drive-relative path"
+        )
+    return ""
+
+
 def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
                 files: Optional[List[Dict[str, str]]] = None,
                 force: bool = False,
@@ -1781,6 +1825,25 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
 
     if not write_list:
         return "⚠️ WRITE_ERROR: nothing to write."
+
+    # Misrelativized-runtime-path guard (closes
+    # ibl-bypass-pending-restart-verify-wrong-root): a relative write whose
+    # leading segments unmistakably spell an absolute runtime/home path
+    # would silently join against the repo base (e.g.
+    # "root/Ouroboros/data/state/x.json" -> /opt/ouroboros/root/Ouroboros/...)
+    # and land in the wrong tree. The canonical reader never sees it.
+    # Catch the obvious shapes BEFORE the binding/resolve step so the
+    # caller sees a typed refusal. Absolute paths (leading "/") are already
+    # handled by the existing boundary guard and are NOT this guard's job.
+    for e in write_list:
+        reason = _misrelativized_runtime_path_reason(e["path"])
+        if reason:
+            return (
+                f"⚠️ WRITE_FILE_BLOCKED: '{e['path']}' {reason}. "
+                "If you meant the Ouroboros runtime data dir, use "
+                "write_file(root=\"runtime_data\", path=\"<drive-relative path>\"). "
+                "For a deliberate repo write, pass an in-repo relative path."
+            )
 
     try:
         if _resolved_binding is None:

@@ -405,6 +405,108 @@ def test_repo_write_new_file_has_no_diff_section(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# write_file rails: misrelativized absolute-runtime path guard
+# (closes ibl-bypass-pending-restart-verify-wrong-root)
+# ---------------------------------------------------------------------------
+
+def test_misrelativized_runtime_path_reason_matches_absolute_root_word():
+    """A leading absolute-root word followed by >=2 segments unmistakably
+    spells a runtime/home path written without the leading slash."""
+    from ouroboros.tools.git import _misrelativized_runtime_path_reason
+
+    assert _misrelativized_runtime_path_reason("root/Ouroboros/data/state/x.json")
+    assert "looks like an absolute path" in _misrelativized_runtime_path_reason(
+        "root/Ouroboros/data/state/x.json"
+    )
+    assert _misrelativized_runtime_path_reason("home/user/.config/x")
+    assert _misrelativized_runtime_path_reason("opt/ouroboros/repo.py")
+    assert _misrelativized_runtime_path_reason("tmp/scratch.py")
+    assert _misrelativized_runtime_path_reason("srv/data/x.json")
+    # Case-insensitive on the leading segment.
+    assert _misrelativized_runtime_path_reason("ROOT/foo/bar")
+    assert _misrelativized_runtime_path_reason("Home/foo/bar")
+
+
+def test_misrelativized_runtime_path_reason_matches_ouroboros_data_prefix():
+    """The exact two-segment prefix "Ouroboros/data" / "ouroboros/data" is
+    the canonical runtime-drive layout and must trip."""
+    from ouroboros.tools.git import _misrelativized_runtime_path_reason
+
+    assert _misrelativized_runtime_path_reason("Ouroboros/data/state/x.json")
+    assert _misrelativized_runtime_path_reason("ouroboros/data/state/x.json")
+    reason = _misrelativized_runtime_path_reason("Ouroboros/data/state/x.json")
+    assert "root=\"runtime_data\"" in reason
+
+
+def test_misrelativized_runtime_path_reason_matches_dot_ouroboros_prefix():
+    """A leading ".ouroboros" segment is the runtime-drive hint (state dirs)."""
+    from ouroboros.tools.git import _misrelativized_runtime_path_reason
+
+    assert _misrelativized_runtime_path_reason(".ouroboros/tmp/x")
+    assert _misrelativized_runtime_path_reason(".ouroboros/state/skills/x.json")
+    reason = _misrelativized_runtime_path_reason(".ouroboros/tmp/x")
+    assert "root=\"runtime_data\"" in reason
+
+
+def test_misrelativized_runtime_path_reason_does_not_trip_in_repo_subtree():
+    """Bare in-repo relative paths must NOT trip — the guard is for
+    misrelativized runtime paths, not legitimate repo writes."""
+    from ouroboros.tools.git import _misrelativized_runtime_path_reason
+
+    assert _misrelativized_runtime_path_reason("ouroboros/tools/git.py") == ""
+    assert _misrelativized_runtime_path_reason("tests/test_x.py") == ""
+    assert _misrelativized_runtime_path_reason("docs/ARCHITECTURE.md") == ""
+    # Empty and single-segment absolute-root words should not trip either.
+    assert _misrelativized_runtime_path_reason("") == ""
+    assert _misrelativized_runtime_path_reason("root") == ""
+    assert _misrelativized_runtime_path_reason("home") == ""
+
+
+def test_misrelativized_runtime_path_reason_skips_absolute_paths():
+    """Absolute paths (leading "/") are the boundary guard's job, not this
+    helper's. The helper must return "" so it does not double-block."""
+    from ouroboros.tools.git import _misrelativized_runtime_path_reason
+
+    assert _misrelativized_runtime_path_reason("/root/Ouroboros/data/x") == ""
+    assert _misrelativized_runtime_path_reason("/home/user/.config/x") == ""
+    assert _misrelativized_runtime_path_reason("/tmp/scratch.py") == ""
+
+
+def test_repo_write_blocks_misrelativized_runtime_path(tmp_path):
+    """End-to-end: a relative write whose path spells an absolute runtime
+    path must be refused by _repo_write BEFORE any disk write. The
+    canonical /opt/ouroboros/root/... file must NOT exist."""
+    from ouroboros.tools.git import _repo_write
+
+    ctx, ws = _ws_ctx(tmp_path)
+    repo_root = ws.parent  # the parent of the workspace is the repo root
+    # Use a path that would otherwise silently land at <repo>/root/Ouroboros/...
+    out = _repo_write(
+        ctx, path="root/Ouroboros/data/state/x.json",
+        content="{}", display_root="system_repo",
+    )
+    assert "WRITE_FILE_BLOCKED" in out
+    assert "looks like an absolute path" in out or "runtime_data" in out
+    # No disk write should have happened under the repo root.
+    assert not (repo_root / "root").exists()
+    assert not (repo_root / "root" / "Ouroboros").exists()
+
+
+def test_repo_write_normal_in_repo_path_still_succeeds(tmp_path):
+    """Sanity: a normal _repo_write to an in-repo relative path still works
+    after the guard is added (it must NOT trip on legitimate repo writes)."""
+    from ouroboros.tools.git import _repo_write
+
+    ctx, ws = _ws_ctx(tmp_path)
+    out = _repo_write(ctx, path="tests/test_scratch_xyz.py", content="# ok\n")
+    assert out.startswith("✅")
+    assert (ws / "tests" / "test_scratch_xyz.py").exists()
+    assert (ws / "tests" / "test_scratch_xyz.py").read_text() == "# ok\n"
+    # Clean up the scratch file so the workspace returns to its seeded state.
+    (ws / "tests" / "test_scratch_xyz.py").unlink()
+
+
+# ---------------------------------------------------------------------------
 # governance rails: envelopes, advisory staleness (P3), force disclosure
 # ---------------------------------------------------------------------------
 
