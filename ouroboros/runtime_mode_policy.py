@@ -62,6 +62,13 @@ RELEASE_INVARIANT_PATHS = frozenset({
     "supervisor/git_ops_updates.py",
     "supervisor/update_merge.py",
     "supervisor/update_merge_policy.py",
+    # The F2.4 update-engine re-split moved the planner/materializer bodies —
+    # the carrier engine's three insertion points — out of the protected
+    # update_merge facade, and the D34 span resolver rewrites worktree files
+    # under the update lock; every inventory that protects the parent must
+    # cover them (label parity — same rule as the G1 block above).
+    "supervisor/update_merge_plan.py",
+    "supervisor/update_carriers.py",
 })
 
 PROTECTED_RUNTIME_PATH_PREFIXES = FROZEN_CONTRACT_PATH_PREFIXES

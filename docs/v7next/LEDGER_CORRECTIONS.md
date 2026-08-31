@@ -1558,3 +1558,148 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    ouroboros/subagent_worktrees.py enters the band by the sanctioned delta
    (1000->1082, rationale recorded). domains.toml untouched (coordinator
    seam owns the map).
+## From the F2.4 update-engine lane (base 2878560e, 2026-08-31)
+D34 return + 1A re-split, per owner answers Ф-1=A / Ф-2=A / Ф-3=A
+(= plan rows 5.12-5.14A). Every re-derived body below is justified as
+reference-fact ↔ tip-fact ↔ result.
+1. Span-SSOT re-cut (ouroboros/tools/release_sync.py, merged ATOP the tip
+   file, not a replacement). Reference: 8 descriptors (v7_wip
+   release_sync.py:65-148). Tip inventory is WIDER: sync_release_metadata
+   writes the two public install pages (tip :423-434) and the README
+   direct-download reference block (:100-113); version_carrier_desyncs /
+   update_candidate.py:697-698 check them. Result: 25 descriptors = the 8
+   reference spans + readme_download_refs (the contiguous
+   `[download-<id>]:` block) + 8 anchors per install page, derived from
+   RELEASE_ASSET_TEMPLATES (a new installer automatically gets a span);
+   macos-arm64 appears twice per page and is disambiguated by the
+   quick-start step's literal "Click " prefix (lookaround pair) — a page
+   restructure degrades to malformed/duplicate-anchor, never a guess.
+   Latent-trap fix proven by span inspection: proof ids carry `x86_64`, so
+   a `[a-z0-9-]` class matched the tip block ONCE but covered only its
+   first 3 lines (wrong-coverage, silent partial substitution) — the class
+   is `[a-z0-9_-]`, and the live-tree pin asserts full-block coverage
+   indirectly through exactly-once anchoring of every descriptor.
+2. supervisor/update_carriers.py returned WHOLE (no upstream analog); two
+   bodies re-derived against the redesign train's bounded-plumbing rule
+   (4795a810/c404c056 class): _run_git and the merge-file runner now start
+   the child in its own process group and kill the WHOLE TREE on a 300s
+   timeout (constant mirrors update_candidate._GIT_RUN_TIMEOUT_SEC) —
+   insertion point 3 runs while the update lock is held. Byte-exact capture
+   (text=False semantics) preserved from the reference. Deliberately NOT
+   routed through git_ops._run_git_process_bounded: that helper imports
+   ouroboros.tools.shell at call time (tool-registry package init), which
+   would break the standalone operator rebase helper; the
+   _active_subprocesses shutdown-tracking nicety is therefore not carried
+   (short-lived waited children — disclosed residual). Docstring
+   re-derived: insertion host is the re-cut update_merge_plan.py; the
+   resolver never runs `git merge` (explicit index stages + `git
+   merge-file`), so it is rerere-neutral by construction, in line with the
+   train's _MERGE_NEUTRAL_FLAGS discipline; M0 note per Ф-2=A.
+3. Three insertion points re-derived against the REWRITTEN tip bodies
+   (reference bodies were pre-redesign; matrix rows MIGRATION:3427-3429):
+   (a) point 1 (row 3428): reference update_merge_plan.py:334-344 ↔ tip
+   plan_managed_update_merge (stash-first; snapshot via
+   worktree_snapshot_tree instead of the temp-index) → resolution after
+   the merge/inventory consistency check, BEFORE classify_conflicts; the
+   single body serves both the preview plan and the authoritative
+   build=True replan (control.py replans on the clean tree through the
+   same function). `carrier_resolved_paths` restored to the ff-clean,
+   base-conflict and main returns (reference shape).
+   (b) point 2 (row 3427): reference :88-97 ↔ tip _build_clean_merge_commit
+   (fast_forwardable early return, Q8 projection before write-tree) →
+   resolution inside the rc_bm==1 branch BEFORE write-tree; the tip's
+   `if base_conflicts: return` inverted to the reference's
+   no-inventory-error + resolve + `if remaining: return` shape; the Q8
+   projection now runs AFTER span resolution, so its postcondition also
+   verifies the just-resolved carriers.
+   (c) point 3 (row 3429): reference :454-469 ↔ tip materializer
+   (rerere-off flags, mandatory Q8 projection, CAS re-parent, M0 pin) →
+   resolution after MERGE_HEAD validation and BEFORE the projection and
+   the M0 pin (Ф-2=A: span policy is part of the mechanical baseline;
+   reviewers diff an M0 already free of carrier markers); the tip 3-tuple
+   return (ok, message, m0_tree) preserved.
+   Handle idiom: the reference `_um()` handle is retained ONLY for
+   managed_update_constitution_present (monkeypatched on the parent facade
+   — test_update_merge_assisted.py:973); update_candidate members are read
+   through the `_uc` module object (test_update_hardening.py:99/125
+   patches update_candidate.worktree_snapshot_tree) — the D10-lane entry-7
+   patch-surface rule. The row-3426 verbatim `_git_run` relocation stays
+   SUPERSEDED (upstream re-homed it to update_candidate; the leaf reads
+   `_uc._git_run`).
+4. Boot-recovery backfill window NOT extended (upstream recovery semantics
+   = floor): _recover_assisted_on_boot's M0 backfill re-runs only the Q8
+   projection; a carrier still conflicted through that crash window
+   degrades to the assisted lane (fail-safe, never fail-wrong). Disclosed
+   in the wiring pin's docstring; keeps the "3 resolver calls in the leaf,
+   0 in the parent" invariant intact.
+5. 1A re-split executed per Ф-3=A from the two-module tip form:
+   update_merge.py 1593 → 1193 (tx/lock/rollback/boot-recovery facade,
+   re-exports both leaves), new supervisor/update_merge_plan.py (490 =
+   three tip bodies + the documented deltas). The reference leaf is the
+   THEME (same three owners), not bytes. Ratchet: update_merge.py entered
+   the 1001-1500 band by extraction with a rationale via the official
+   generator; `-m size_ratchet` = 5 passed.
+6. update_merge_policy.py coordination (matrix row "согласовать"):
+   carrier_guidance's hand-list VERSION_CARRIER_PATHS (6 paths, already
+   narrower than the tip's own carrier inventory) replaced by a call-time
+   read of the span SSOT (CARRIER_SPAN_PATHS); prose re-derived — spans
+   resolved mechanically never reach the resolver's list (verified:
+   control.py:820 refreshes tx.conflict_paths from live_unmerged_paths
+   after materialization), so the guidance now describes exactly the
+   DEGRADED remainder and what degradation means.
+7. Protection closure (the G1/D10 additive-literal precedent, coordinator
+   LEDGER entry 4 class): RELEASE_INVARIANT_PATHS +=
+   supervisor/update_merge_plan.py, supervisor/update_carriers.py —
+   the split moved planner/materializer bodies out of a release-invariant
+   file and the resolver rewrites worktree files under the update lock;
+   parity pinned in tests/test_update_merge_owner_facade.py. DISCLOSED
+   upstream inventory gap, NOT repaired (Q4=A, upstream owns protected
+   surfaces): supervisor/update_candidate.py carries bodies upstream's own
+   redesign moved out of the same protected parent, yet is absent from
+   RELEASE_INVARIANT_PATHS — owner/Ф3 material.
+8. Tests: test_update_carriers.py ported with re-derivations (leaf import
+   path unchanged; materializer test unpacks the tip 3-tuple and pins that
+   M0 names the official VERSION blob; corpus README fixture extended with
+   the FULL 7-id download-refs block — the Q8 postcondition checks every
+   RELEASE_ASSET_TEMPLATES member once a README opts into the projection,
+   and the new span must anchor; SSOT pin re-cut to 25; an explicit
+   "conflicted carrier never routes to assisted" strategy pin added per
+   the work order). test_carrier_rebase_helper.py + the operator helper
+   returned (helper docstring's carrier list re-cut).
+   test_update_merge_owner_facade.py re-derived: owners = update_merge_plan
+   (3 bodies) + update_candidate (the redesign's own boundary, identity
+   now pinned); hot-code and release-invariant parity clauses.
+   _POPEN_ALLOWLIST (tests/test_process_custody.py) +=
+   supervisor/update_carriers.py (path-keyed mirror, D10 git_ops_reset row
+   class).
+9. NAME COLLISION tests/test_update_merge_plan.py resolved as SUPERSEDED,
+   not transplanted: the oracle file's 13 test functions are
+   name-set-identical to the tip file and the tip bodies are the
+   upstream-evolved forms of the same assertions (stash status tuple
+   "ok"/sha, failed-update-<target12> forensics naming) — zero unique
+   oracle content; a rename-transplant would mint 13 AST-near-duplicates
+   (the D15 class the wave mandate bans). Tip bytes stand.
+10. Upstream test re-derived (falsified-by-D34 fixture, the "test pinning
+   the gap" class): test_update_merge_assisted.py::
+   test_materialize_projects_version_to_target_and_pins_m0 used a clean
+   1.5.0-vs-2.0.0 VERSION token conflict, which the D34 planner now
+   resolves (plan turns clean — the scenario could no longer reach the
+   materializer's projection). The local token becomes a malformed anchor
+   ("not-a-version"), so the span resolver degrades honestly and the Q8
+   projection clause the test pins stays reachable; docstring says why.
+11. Ф3 joints named, untouched (report-only): the future N−1 shim surface
+   (finalize_managed_update_on_boot / _recover_assisted_on_boot /
+   _recover_replace_on_boot / _finalize_pending_boot_smoke /
+   apply_managed_merge_update / rollback_managed_update) stays WHOLE in
+   the parent — the re-split does not dissect ABI-7/F14 material; the RC
+   auditor's evidence surface (record_managed_tests_evidence /
+   managed_tests_evidence_covers) untouched in update_candidate;
+   git_ops.py:1031-1032 (D13) untouched — protected wave; Ф-4 derived
+   FAMILY_PATHS not executed (coordinator's tail item — the additive
+   entries in item 7 keep that door open).
+12. Pre-existing at base, NOT this lane's defects (dup-scan receipts):
+   10 AST-identical test pairs across test_review_cycles_dispatch.py /
+   test_review_cycles_skill_dispatch.py (already named by the Ф2-plan) and
+   an in-file duplicate def test_ripgrep_download_script_verifies_checksum
+   in tests/test_build_scripts.py (the later def shadows the earlier —
+   D15-class latent, review-organ/F5 material).

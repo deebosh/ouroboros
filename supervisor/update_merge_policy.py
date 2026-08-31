@@ -111,24 +111,29 @@ def rescue_pointer_note(tx: Dict[str, Any]) -> str:
     )
 
 
-VERSION_CARRIER_PATHS = frozenset({
-    "VERSION", "pyproject.toml", "README.md", "docs/ARCHITECTURE.md",
-    "web/package.json", "web/modules/api_types.js",
-})
-
-
 def carrier_guidance(conflicts: List[str]) -> str:
     """Version-carrier guidance for the resolver (owner decisions Q8/Q24): the landed
-    update carries the TARGET's version; prose and history stay the fork's own."""
-    if not any(_norm(path) in VERSION_CARRIER_PATHS for path in conflicts):
+    update carries the TARGET's version; prose and history stay the fork's own.
+
+    The carrier inventory is the span SSOT (``release_sync.CARRIER_SPAN_PATHS``,
+    imported at call time — presentation only, no policy). Conflicts confined to
+    declared spans are resolved mechanically before the resolver task is built
+    (supervisor/update_carriers.py), so a carrier still in *conflicts* DEGRADED
+    to manual resolution and the guidance names what that means."""
+    from ouroboros.tools.release_sync import CARRIER_SPAN_PATHS
+
+    if not any(_norm(path) in CARRIER_SPAN_PATHS for path in conflicts):
         return ""
     return (
         " Version carriers: the update lands under the official target's version — VERSION is "
-        "already projected and every NON-conflicted carrier token (pyproject.toml, "
+        "already projected, every NON-conflicted carrier token (pyproject.toml, "
         "web/package.json, the README badge, the docs/ARCHITECTURE.md header, install pages) is "
-        "already synced mechanically. In carriers you resolve yourself, make version tokens match "
-        "VERSION exactly. In the README Version History table keep BOTH sides' rows (never delete "
-        "this fork's local history rows); resolve prose conflicts on their merits."
+        "already synced mechanically, and carrier conflicts confined to declared version spans "
+        "were already resolved to the target's side. A carrier still in your list degraded to "
+        "manual resolution (a broken or duplicate span anchor, or a conflict outside the spans): "
+        "make its version tokens match VERSION exactly. In the README Version History table keep "
+        "BOTH sides' rows (never delete this fork's local history rows); resolve prose conflicts "
+        "on their merits."
     )
 
 

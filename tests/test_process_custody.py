@@ -67,6 +67,10 @@ _POPEN_ALLOWLIST = {
     # v7 G1 split: sync_runtime_dependencies (the waited + panic-tracked pip
     # child) moved into the checkout/reset leaf with its custody unchanged.
     "supervisor/git_ops_reset.py",
+    # D34 carrier engine: short-lived bounded git plumbing (waited, own process
+    # group, whole-tree kill on timeout); kept self-contained so the standalone
+    # operator rebase helper can import the module without the runtime stack.
+    "supervisor/update_carriers.py",
     "ouroboros/colab_bootstrap.py",      # bounded Colab clone/fetch helper
 }
 

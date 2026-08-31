@@ -170,6 +170,7 @@ BAND_PATHS = {
     "supervisor/queue.py": "v7next D08 partial split: 1587->1265 after the schedules family moved to supervisor/queue_schedules.py; the residue keeps the deferred snapshot/timeouts/evolution rows (cancel/custody-entangled, F2)",
     "supervisor/task_reaper.py": "Entered the band from 907 lines: timeout-retry admission now serializes queue publication, reciprocal result lineage, cancellation-wins handoff, and failed-terminal-write custody in the existing off-loop reaper owner.",
     "supervisor/terminal_delivery.py": None,
+    "supervisor/update_merge.py": "Entered the band from above (1593 lines) by extraction: the F2.4 update-engine re-split moved the planner, the clean-plan commit builder and the live materializer \u2014 the carrier engine's three insertion points \u2014 into supervisor/update_merge_plan.py (D34 return, owner answers 5.12-5.14=A); shrink-only.",
     "tests/test_acting_subagents.py": None,
     "tests/test_advisory_observability.py": None,
     "tests/test_build_scripts.py": None,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 _MAX_MAJOR = 2
 _MAX_MINOR = 5
@@ -95,6 +95,132 @@ def release_asset_download_url(
         f"https://github.com/{repository}/releases/download/v{normalized_version}/"
         f"{release_asset_name(proof_id, normalized_version)}"
     )
+
+
+class VersionCarrierSpan(NamedTuple):
+    """One version-carrying span in one release-carrier file.
+
+    ``pattern`` must match EXACTLY ONCE in a well-formed copy of ``path``:
+    zero matches is a malformed anchor, more than one is a duplicate anchor.
+    """
+
+    carrier_id: str
+    path: str
+    pattern: "re.Pattern[str]"
+
+
+def _install_page_spans(tag: str, path: str) -> Tuple[VersionCarrierSpan, ...]:
+    """Carrier spans for one public install page: every anchor tag owned by
+    the release projection (``data-release-download``), derived from
+    ``RELEASE_ASSET_TEMPLATES`` so a new installer automatically gets a span.
+
+    ``macos-arm64`` appears twice by design (the platform button and the
+    quick-start step); the pair disambiguates on the step's literal ``Click ``
+    prefix. A page restructure that breaks either anchor degrades the file to
+    the ordinary assisted path (malformed/duplicate anchor) — never a guess."""
+    spans: List[VersionCarrierSpan] = []
+    for proof_id in RELEASE_ASSET_TEMPLATES:
+        if proof_id == "macos-arm64":
+            spans.append(VersionCarrierSpan(
+                f"{tag}_download_{proof_id}_button", path,
+                re.compile(r'(?<!Click )<a data-release-download="macos-arm64"[^>]*>'),
+            ))
+            spans.append(VersionCarrierSpan(
+                f"{tag}_download_{proof_id}_step", path,
+                re.compile(r'(?<=Click )<a data-release-download="macos-arm64"[^>]*>'),
+            ))
+        else:
+            spans.append(VersionCarrierSpan(
+                f"{tag}_download_{proof_id}", path,
+                re.compile(rf'<a data-release-download="{re.escape(proof_id)}"[^>]*>'),
+            ))
+    return tuple(spans)
+
+
+# Version-carrier span descriptors — the SSOT the carrier-aware update engine
+# reads (owner-ratified: spec §1.9-10, batch №8 answer 6=A; mandatory v7next
+# return, owner answers 5.12-5.14=A). The managed-update resolver
+# (supervisor/update_carriers.py) and the tactical-rebase helper
+# (scripts/carrier_rebase_helper.py) resolve merge conflicts INSIDE these spans
+# by span substitution; a malformed or duplicate anchor degrades the file to
+# the ordinary assisted-conflict path (never a crash, never silent adoption),
+# and a conflict OUTSIDE a span keeps the file an ordinary conflict. The span
+# set is cut from THIS tree's carrier inventory — everything
+# ``sync_release_metadata`` writes and ``version_carrier_desyncs`` checks: the
+# classic carriers, README's badge + Version History + direct-download
+# reference block, uv.lock's editable root package, and the release-projection
+# anchors of the two public install pages.
+VERSION_CARRIER_SPANS: Tuple[VersionCarrierSpan, ...] = (
+    VersionCarrierSpan(
+        "version_file", "VERSION",
+        re.compile(r'\A\d+\.\d+\.\d+' + _PRE_SUFFIX + r'\n?\Z', re.IGNORECASE),
+    ),
+    VersionCarrierSpan(
+        "pyproject_version", "pyproject.toml",
+        re.compile(r'^version\s*=\s*"[^"\n]*"', re.MULTILINE),
+    ),
+    VersionCarrierSpan(
+        "web_package_version", "web/package.json",
+        re.compile(r'^\s*"version"\s*:\s*"[^"\n]*"', re.MULTILINE),
+    ),
+    VersionCarrierSpan(
+        "gateway_contract_version", "web/modules/api_types.js",
+        re.compile(r"GATEWAY_CONTRACT_VERSION\s*=\s*'[^'\n]*'"),
+    ),
+    VersionCarrierSpan("readme_badge", "README.md", _README_BADGE_RE),
+    VersionCarrierSpan(
+        "readme_history", "README.md",
+        re.compile(
+            r'(?:^\|\s*\d+\.\d+\.\d+' + _PRE_SUFFIX + r'\s*\|.*(?:\n|\Z))+',
+            re.MULTILINE | re.IGNORECASE,
+        ),
+    ),
+    # The contiguous named-reference block the direct-download projection
+    # rewrites ([download-<proof_id>]: <url>) — a release-owned span like the
+    # badge, so a version-bump conflict there resolves by span policy.
+    VersionCarrierSpan(
+        "readme_download_refs", "README.md",
+        re.compile(r'(?:^\[download-[a-z0-9_-]+\]:[^\n]*(?:\n|\Z))+', re.MULTILINE),
+    ),
+    VersionCarrierSpan("architecture_header", "docs/ARCHITECTURE.md", _ARCH_HEADER_RE),
+    # uv.lock mirrors the editable root package version (ARCHITECTURE "Version
+    # carriers"); the descriptor rides the same structural regex sync_version
+    # already writes through, so a managed-update or tactical-rebase conflict in
+    # this section resolves by span policy instead of falling to assisted.
+    VersionCarrierSpan("uv_lock_root_package", "uv.lock", _UV_LOCK_ROOT_RE),
+) + _install_page_spans(
+    "site_install", "site/install/index.html"
+) + _install_page_spans(
+    "docs_install", "docs/install/index.html"
+)
+
+CARRIER_SPAN_PATHS = frozenset(span.path for span in VERSION_CARRIER_SPANS)
+
+
+def carrier_spans_for(path: str) -> Tuple[VersionCarrierSpan, ...]:
+    """Return every declared carrier span for a repo-relative path ('' -> none)."""
+    normalized = str(path or "").replace("\\", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    return tuple(span for span in VERSION_CARRIER_SPANS if span.path == normalized)
+
+
+def locate_carrier_span(
+    text: str, span: VersionCarrierSpan
+) -> Tuple[str, Optional[Tuple[int, int]]]:
+    """Locate one carrier span in *text*.
+
+    Returns ``("ok", (start, end))`` for exactly one match,
+    ``("malformed_anchor", None)`` for zero and ``("duplicate_anchor", None)``
+    for several — the two degradation reasons the update engine surfaces.
+    """
+    matches = span.pattern.finditer(str(text or ""))
+    first = next(matches, None)
+    if first is None:
+        return "malformed_anchor", None
+    if next(matches, None) is not None:
+        return "duplicate_anchor", None
+    return "ok", (first.start(), first.end())
 
 
 def _sync_readme_download_urls(text: str, version: str) -> str:
