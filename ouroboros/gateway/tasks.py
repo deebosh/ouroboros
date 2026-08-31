@@ -6,7 +6,6 @@ import asyncio
 import functools
 import json
 import logging
-import os
 import pathlib
 import shutil
 import time
@@ -742,14 +741,13 @@ _LIST_ROW_OMITTED_FIELDS = frozenset({
     "subagent_envelope",
 })
 
-# Process-wide {(results_dir, filename) -> raw ts} memo for the unfiltered list
-# path. The raw `ts` is CREATION-STABLE (write_task_result sets it on the first
-# write; later updates touch only updated_at), so entries never need
-# invalidation — only deletions are dropped and new names decoded. Keyed by the
-# directory too, so multiple drive roots (tests, child drives) never collide.
-# Concurrency note: worst case a race re-reads a file and stores the identical
-# creation-stable value; no lock needed.
-_RAW_TS_MEMO: Dict[tuple, str] = {}
+# The raw creation-ts sort scan and the ABI-2 malformed-candidate admission
+# live in ouroboros/gateway/task_list_scan.py (module-size split); imported
+# here so this module keeps the endpoint wiring surface.
+from ouroboros.gateway.task_list_scan import (  # noqa: E402
+    _quarantine_malformed_candidates,
+    _raw_sorted_result_names,
+)
 
 
 def _compact_list_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -759,37 +757,6 @@ def _compact_list_row(row: Dict[str, Any]) -> Dict[str, Any]:
     workspace fields, the TASK_COST_META_FIELDS, outcome_axes — all preserved
     because the projection is subtractive, never a whitelist)."""
     return {key: value for key, value in row.items() if key not in _LIST_ROW_OMITTED_FIELDS}
-
-
-def _raw_sorted_result_names(results_dir: pathlib.Path) -> List[str]:
-    """Result filenames sorted newest-first by RAW creation ts (memoized).
-
-    A row whose file lacks `ts` sorts as minus-infinity (oldest), tie-broken by
-    filename for determinism. A file that fails to parse (torn concurrent
-    write) is excluded from THIS request and left out of the memo, so the next
-    request re-reads it — a torn write can never poison the memo."""
-    try:
-        with os.scandir(results_dir) as entries:
-            names = [entry.name for entry in entries if entry.name.endswith(".json")]
-    except OSError:
-        return []
-    dir_key = str(results_dir)
-    present = set(names)
-    for key in [k for k in list(_RAW_TS_MEMO) if k[0] == dir_key and k[1] not in present]:
-        _RAW_TS_MEMO.pop(key, None)
-    decorated: List[tuple] = []
-    for name in names:
-        key = (dir_key, name)
-        raw_ts = _RAW_TS_MEMO.get(key)
-        if raw_ts is None:
-            data = read_json_dict(results_dir / name)
-            if data is None:
-                continue
-            raw_ts = str(data.get("ts") or "")
-            _RAW_TS_MEMO[key] = raw_ts
-        decorated.append((raw_ts, name))
-    decorated.sort(reverse=True)  # "" (no ts) sorts after every real timestamp
-    return [name for _ts, name in decorated]
 
 
 def _tasks_list_payload(
@@ -807,7 +774,17 @@ def _tasks_list_payload(
     ts, so an old task freshly completed through its child can fall outside the
     slice until its raw file is rewritten. Status-filtered requests keep the
     full projection path — filtering needs every row's effective status (the
-    child-drive promotion contract pinned by test_headless_cli)."""
+    child-drive promotion contract pinned by test_headless_cli).
+
+    Admission at the slice boundary (ABI-2): a MALFORMED candidate discovered
+    by the sort scan reaches the admission reader even when it lies beyond
+    the slice window (the scan had to read its bytes anyway), so it is
+    quarantined and counted in the same ONE batched scan event. Disclosed
+    residual: a PARSEABLE but inadmissible row (unstamped/future stamp)
+    beyond the window is not classified by this sliced request — its raw ts
+    is all the sort reads — and is quarantined by the next scan that
+    actually reaches it (a filtered request, ``limit=0``, or any
+    list_task_results caller)."""
     if queue_only:
         return {"tasks": [], "queue": _queue_snapshot(drive_root)}
     # One shared events-tail parse for every stale-running orphan check in this
@@ -828,7 +805,7 @@ def _tasks_list_payload(
             rows = rows[:limit]
         return {"tasks": rows, "queue": _queue_snapshot(drive_root)}
     results_dir = task_results_dir(drive_root, create=False)
-    names = _raw_sorted_result_names(results_dir)
+    names, malformed_names = _raw_sorted_result_names(results_dir)
     if limit is not None:
         names = names[:limit]
     rows = []
@@ -856,6 +833,10 @@ def _tasks_list_payload(
         rows.append(_compact_list_row(public_task_result(effective_task_result(
             drive_root, raw, materialize_artifacts=False, _events_index=events_index,
         ))))
+    # ABI-2: a candidate whose bytes failed to parse is NOT silently dropped —
+    # it reaches the same admission reader (quarantine + the batched event)
+    # even beyond the slice window (see task_list_scan).
+    quarantined.extend(_quarantine_malformed_candidates(results_dir, malformed_names))
     emit_quarantine_event(drive_root, quarantined)
     # Re-sort the slice by effective ts: the child-drive merge may have replaced
     # ts, and the response order is the displayed order.
