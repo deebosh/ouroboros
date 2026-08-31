@@ -48,7 +48,7 @@ def test_write_failure_result_does_not_overwrite_existing(tmp_path):
     try:
         results_dir = tmp_path / "task_results"
         results_dir.mkdir(parents=True, exist_ok=True)
-        existing = {"task_id": "xyz789", "status": "completed", "result": "Success!"}
+        existing = {"_schema_version": 1, "task_id": "xyz789", "status": "completed", "result": "Success!"}
         (results_dir / "xyz789.json").write_text(
             json.dumps(existing, ensure_ascii=False), encoding="utf-8"
         )
