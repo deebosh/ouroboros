@@ -75,7 +75,7 @@ def test_task_api_enqueue_workspace_creates_child_drive(tmp_path, monkeypatch):
             },
             "deadline_at": "2026-06-04T12:00:00Z",
             "service_teardown": "keep",
-            "context_requires_self_body_docs": "false",
+            "context_requires_self_body_docs": False,
             "metadata": {
                 "root_task_id": "forged-root",
                 "parent_task_id": "forged-parent",
@@ -580,10 +580,13 @@ def test_task_api_rejects_negative_depth_before_reservation_or_queue(tmp_path, m
     app.state.repo_dir = repo
     client = TestClient(app)
 
+    # ABI-3 ingress schema: non-integer depth shapes are refused at the
+    # derived-schema gate (typed, never coerced); a well-typed negative still
+    # gets the bespoke non-negativity message.
     cases = ((-1, "depth must be a non-negative integer"),
-             (-0.5, "depth must be a non-negative integer"),
-             ("-1", "depth must be a non-negative integer"),
-             ("not-a-depth", "chat_id and depth must be integers"))
+             (-0.5, "invalid request body: depth must be a JSON integer"),
+             ("-1", "invalid request body: depth must be a JSON integer"),
+             ("not-a-depth", "invalid request body: depth must be a JSON integer"))
     for index, (raw_depth, expected_error) in enumerate(cases):
         task_id = f"api-invalid-depth-{index}"
         response = client.post(

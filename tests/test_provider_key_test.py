@@ -87,7 +87,7 @@ def _bypass_accounting(monkeypatch):
         ([], "JSON object"),
         ({}, "provider_id is required"),
         ({"provider_id": "openrouterr"}, "unknown provider id"),
-        ({"provider_id": "openrouter", "overrides": []}, "overrides must be an object"),
+        ({"provider_id": "openrouter", "overrides": []}, "overrides must be a JSON object"),
         ({"provider_id": "openrouter", "overrides": {"NOT_ALLOWED": "x"}}, "unsupported override"),
         ({"provider_id": "openrouter", "overrides": {"OPENROUTER_API_KEY": 7}}, "must be strings"),
     ],

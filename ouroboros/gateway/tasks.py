@@ -18,6 +18,8 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 
 from ouroboros.gateway._helpers import coerce_int, json_error, json_exception, request_drive_root, request_json_or, request_repo_dir, stage_initial_task_attachments
+from ouroboros.gateway.contracts import TaskCreateRequest
+from ouroboros.gateway.schema import validate_ingress
 from ouroboros.depth_evidence import parse_task_depth
 # Re-exported SSE surface (split out by the 1600-line module gate): route
 # wiring, the CLI, and long-standing monkeypatch pins address these names on
@@ -408,6 +410,10 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     body = await request_json_or(request, {})
     if not isinstance(body, dict):
         return json_error("request body must be a JSON object", 400)
+    # Executable gateway ABI (ABI-3, Q7=A): derived-schema ingress gate.
+    schema_errors = validate_ingress(body, TaskCreateRequest)
+    if schema_errors:
+        return json_error(f"invalid request body: {schema_errors[0]}", 400, schema_errors=schema_errors[:8])
     description = str(body.get("description") or "").strip()
     if not description:
         return json_error("description is required", 400)

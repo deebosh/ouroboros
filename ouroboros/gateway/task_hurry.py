@@ -116,6 +116,20 @@ async def api_task_hurry(request: Request) -> JSONResponse:
             "hurry accepts only {\"request_id\"} — it carries no text",
             400, task_id=task_id, reason_code="unexpected_fields",
         )
+    # Executable gateway ABI (ABI-3, Q7=A): schema gate after the bespoke
+    # required/closed-world checks (their typed reason codes stay first) — it
+    # adds the declared-type enforcement (a non-string request_id is refused,
+    # never coerced).
+    from ouroboros.gateway.contracts import TaskHurryRequest
+    from ouroboros.gateway.schema import validate_ingress
+
+    schema_errors = validate_ingress(body, TaskHurryRequest)
+    if schema_errors:
+        return json_error(
+            f"invalid request body: {schema_errors[0]}", 400,
+            task_id=task_id, reason_code="invalid_request_body",
+            schema_errors=schema_errors[:8],
+        )
     drive_root = request_drive_root(request)
     try:
         task, refusal, attempt = _admit_hurry_locked(task_id)

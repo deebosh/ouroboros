@@ -318,6 +318,27 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             if await _dispatch_extension_message(websocket, msg, msg_type):
                 continue
 
+            # Executable gateway ABI (ABI-3, Q7=A): inbound chat/command frames
+            # are validated against the derived contract schema at THIS ingress
+            # seam only — egress and history replay are never validated.
+            if msg_type in ("chat", "command"):
+                from ouroboros.gateway.contracts import ChatInbound, CommandInbound
+                from ouroboros.gateway.schema import validate_ingress
+
+                schema_errors = validate_ingress(
+                    msg, ChatInbound if msg_type == "chat" else CommandInbound)
+                if schema_errors:
+                    await websocket.send_text(json.dumps({
+                        "type": "log",
+                        "data": {
+                            "level": "warning",
+                            "message": ("ingress schema rejected a "
+                                        f"{msg_type} message: "
+                                        + "; ".join(schema_errors[:5])),
+                        },
+                    }))
+                    continue
+
             payload = msg.get("content", "") if msg_type == "chat" else msg.get("cmd", "")
             if msg_type in ("chat", "command") and payload:
                 try:

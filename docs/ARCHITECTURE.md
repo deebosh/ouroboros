@@ -353,6 +353,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── claudexor_daemon.py  ← (D30) The Ouroboros-OWNED claudexord: data-plane config dir (`data/claudexor` as `CLAUDEXOR_CONFIG_DIR` — the override IS the complete relocatable root; the operator's `~/.claudexor` is never read or imported), supervision after the local-model template (`process_custody.spawn_supervised`, session scope, custody-reaped by fingerprint), ATTACH-IF-ALIVE (a live daemon on our home is attached, never duplicated), OWN-ONLY-IF-SELF-STARTED (`stop` terminates only a self-spawned process; a foreign daemon is never killed here). Provisioning is an OWNER ACTION (Connect or an actual delegated/reviewer start) — never a boot-time/status-read side effect. `ensure_owned_gateway` is the one explicit install/probe/spawn seam above the pure transport gateway: it stages the reviewed target in the foreground, preserves an already-live authenticated older daemon without hot swap, and selects the exact target on the next spawn. `OUROBOROS_CLAUDEXOR_BIN` remains an explicit operator override; a pinned managed-runtime failure never silently launches an arbitrary PATH binary. STALE LIFECYCLE: liveness is an AUTHENTICATED handshake (the per-home bearer token is the identity proof — only OUR daemon can accept it); a dead daemon whose home carries our ownership marker (`ouroboros-owned.json`, written at provision, naming our data plane) is restarted under the same supervision and RECONCILED by fresh discovery + authenticated handshake against the rewritten descriptor; a live responder that refuses the token is a FOREIGN daemon on a recycled port — typed `foreign_daemon` disclosure, never killed, never blocking the restart of our own dead daemon; a home whose marker names ANOTHER data plane is refused typed (`foreign_daemon_home`) before any spawn — restart there would be adoption. ADMISSION vs REACHABILITY: a 3.4+ daemon serves the authenticated handshake BEFORE its admission gate (the body carries `servingMode`) while every product route answers 503 `daemon_recovery_only` (retryable) until journal recovery completes, so the spawn-wait predicate stays REACHABLE and only records the explicit mode (absent/unknown = normal, pre-3.4 byte-identical); the single bounded admission wait lives in `ensure_owned_gateway`, OUTSIDE the manager lock and uniform for spawn and attach — handshake re-polled ~150 ms under a ~5 s wall-clock deadline (`admission_wait_sec` lets a caller opt down to zero), expiry raising the same typed `daemon_recovery_only` the 503 produces (D28: bounded wait then typed refusal), the recovering daemon never killed and its self-started handle retained; the provisioning rotation patch is DEFERRED past a recovery-only window (sent into it, the patch is 503'd and silently lost) and completed by the first caller that observes normal admission
       ├── gateway/             ← Gateway Boundary v1: all browser-facing HTTP/WS route ownership and frontend contract SSOT
       │   ├── contracts.py     ← PRO-frozen HTTP/WS envelope and endpoint index (active contract owner; the `contracts/api_v1.py` compatibility re-export was removed in ABI 7.0)
+      │   ├── schema.py        ← Executable gateway ABI (ABI-3, Q7=A): JSON Schema DERIVED from the contracts TypedDicts (never hand-written), `validate_ingress` on the inbound seams only (WS chat/command + the typed HTTP request bodies; unknown keys pass — open evolution; declared keys type-checked, required keys enforced; egress and history replay are never validated), and `GATEWAY_ABI_VERSION` — the ABI version carrier decoupled from the product version
       │   ├── router.py        ← Starlette route collector for /api/* and /ws
       │   ├── ws.py            ← WebSocket connection manager, extension WS dispatch, browser broadcast helpers
       │   ├── state.py         ← /api/health and /api/state handlers
@@ -559,7 +560,18 @@ and CLI clients. `gateway/contracts.py` owns the active envelopes and endpoint
 index; `gateway/router.py` owns route collection; `gateway/files.py` and
 `gateway/host_service.py` keep their separately mounted trust boundaries.
 The `contracts/api_v1.py` compatibility re-export was removed in ABI 7.0
-(ABI-3/ABI-6д): importers use `ouroboros.gateway.contracts` directly. Domain handlers
+(ABI-3/ABI-6д): importers use `ouroboros.gateway.contracts` directly.
+`gateway/schema.py` makes the contract EXECUTABLE (ABI-3, owner Q7=A): JSON
+Schema derived from the TypedDicts and validated on ingress — inbound WS
+chat/command frames and the typed HTTP request bodies (`TaskCreateRequest`,
+`TaskHurryRequest`, `UpdateApplyRequest`, `ProjectCreateRequest`,
+`ProviderTestRequest`). Unknown keys pass (additive evolution); declared keys
+are type-checked and required keys enforced; egress frames and history REPLAY
+are deliberately never validated, so stored legacy rows keep replaying.
+`GATEWAY_ABI_VERSION` (currently "7.0") carries the wire-ABI version
+separately from the product version and moves only on a wire break; the
+browser mirror's `GATEWAY_CONTRACT_VERSION` switch to it is deferred with the
+rest of the web-mirror cleanup. Domain handlers
 translate transport into calls on existing runtime owners and must not acquire a
 second copy of queue, review, settings, or lifecycle policy.
 `gateway/owner_settings.py` is the one owner-scoped settings WRITE seam shared by

@@ -330,6 +330,18 @@ async def api_projects_create(request: Request) -> JSONResponse:
         body = await request.json()
         if not isinstance(body, dict):
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        # Executable gateway ABI (ABI-3, Q7=A): type-check the declared
+        # ProjectCreateRequest fields (all optional) before bespoke parsing.
+        from ouroboros.gateway.contracts import ProjectCreateRequest
+        from ouroboros.gateway.schema import validate_ingress
+
+        schema_errors = validate_ingress(body, ProjectCreateRequest)
+        if schema_errors:
+            return JSONResponse(
+                {"error": f"invalid request body: {schema_errors[0]}",
+                 "schema_errors": schema_errors[:8]},
+                status_code=400,
+            )
         name = str(body.get("name") or "").strip()
         if len(name) > PROJECT_NAME_MAX:
             return JSONResponse(
