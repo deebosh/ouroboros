@@ -5060,6 +5060,16 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     gap: 12px;
 }
 
+/* Confirm/input/alert dialogs must stay usable over EVERY overlay — the
+   reconnect shade sits at 1000 (the Panic confirm is the canonical case: it
+   must be clickable while the socket is down). Content modals
+   (:where(.marketplace-modal-backdrop), 90) deliberately stay under the
+   shade — their actions need a live connection anyway. Overlay scale:
+   modals 90 · toasts/menus 120 · reconnect 1000 · dialogs 1100. */
+.confirm-dialog-backdrop {
+    z-index: 1100;
+}
+
 .confirm-dialog {
     max-width: 520px;
 }
