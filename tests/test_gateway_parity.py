@@ -241,6 +241,17 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
                 ClaudexorStatusReads, ClaudexorStatusResponse):
         expected = set(get_type_hints(cls, include_extras=True))
         actual = _js_typedef_fields(text, cls.__name__)
+        # ABI 7.0 (ABI-3): these aliases were removed from the Python contract;
+        # their stale JSDoc lines are HOT-DEFERRED with the rest of the web/
+        # mirror (docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md). Only the exact
+        # frozen set is excused — anything else is real drift. Delete this
+        # subtraction when the web lane lands the typedef cleanup.
+        _abi3_deferred_js_extras = {
+            "ChatOutbound": {"cost_usd", "cost_usd_with_children", "telegram_chat_id"},
+            "PhotoOutbound": {"telegram_chat_id"},
+            "VideoOutbound": {"telegram_chat_id"},
+        }.get(cls.__name__, set())
+        actual = actual - _abi3_deferred_js_extras
         assert actual == expected, f"{cls.__name__} JSDoc fields drifted: missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
     # Field-set parity alone would accept an optional marker on the two
     # discriminators. Pin the browser mirror's requiredness as well as names.
@@ -367,7 +378,9 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         "artifact_status",
     ):
         assert re.search(rf"@property \{{string=\}} {field}\b", text), f"ChatOutbound missing {field}"
-    assert re.search(r"@property \{\?number=\} cost_usd\b", text), "ChatOutbound cost_usd must be nullable"
+    assert re.search(r"@property \{\?number=\} accounted_upper_bound_usd\b", text), (
+        "ChatOutbound accounted_upper_bound_usd must be nullable"
+    )
     assert re.search(r"@property \{number=\} chat_id\b", text), "ChatOutbound missing chat_id"
     # Main-thread fan-out stamp: every card/bubble-MINTING outbound frame family
     # declares the same additive-optional boolean in both mirrors (message_annotation
@@ -408,14 +421,16 @@ def test_gateway_money_contracts_keep_unavailable_distinct_from_zero():
 
     chat_hints = get_type_hints(ChatOutbound, include_extras=True)
     for field in (
-        "cost_usd",
-        "cost_usd_with_children",
+        "accounted_upper_bound_usd",
+        "accounted_upper_bound_usd_with_children",
         "reserved_usd",
         "unresolved_upper_bound_usd",
         "unknown_unmetered",
     ):
         assert _contains_none(chat_hints[field]), f"ChatOutbound.{field} must admit ledger-unavailable null"
     assert {"cost_accounting_status", "cost_final", "cost_with_children_partial"} <= set(chat_hints)
+    # ABI 7.0 (ABI-3): the retired aliases never come back to the contract.
+    assert {"cost_usd", "cost_usd_with_children", "telegram_chat_id"}.isdisjoint(chat_hints)
 
 
 def test_skill_lifecycle_queue_contract_matches_runtime_shape():

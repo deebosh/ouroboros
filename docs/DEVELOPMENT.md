@@ -1726,8 +1726,9 @@ Before every commit, verify the following:
   copy-back, so neither a canonical zero-run fact nor a child-local ordinary check
   can hide or erase the other and an older PASS cannot reconcile a newer FAIL.
   `wait_tasks` stays batch-compact:
-  `task_id, status, cost_usd (+ its honest alias accounted_upper_bound_usd and
-  cost_final — C2), child_result_sha256, outcome_axes, result,
+  `task_id, status, accounted_upper_bound_usd (the honest name — C2; the
+  retired cost_usd spelling is no longer emitted, ABI-3) plus cost_final,
+  child_result_sha256, outcome_axes, result,
   trace_summary, capability_delta when disclosable, duplicate_of`; it points to
   the hash-addressed full result rather than re-inlining trace/ledger forensics.
   Unknown ids are probed across result, queue, and tree-ledger authorities and

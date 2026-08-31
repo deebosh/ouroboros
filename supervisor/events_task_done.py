@@ -112,7 +112,13 @@ def _authoritative_terminal_cost(
                 "cost_with_children_partial": True,
             })
     elif not is_root:
-        rollup = result.get("cost_usd_with_children", evt.get("cost_usd_with_children"))
+        from ouroboros.cost_projection import resolve_cost_pair
+
+        present, rollup = resolve_cost_pair(
+            result, "accounted_upper_bound_usd_with_children", "cost_usd_with_children")
+        if not present:
+            _, rollup = resolve_cost_pair(
+                evt, "accounted_upper_bound_usd_with_children", "cost_usd_with_children")
         projection["cost_usd_with_children"] = rollup
         projection["cost_with_children_partial"] = bool(
             result.get("cost_with_children_partial", evt.get("cost_with_children_partial", True))
@@ -122,11 +128,11 @@ def _authoritative_terminal_cost(
     if is_root and post_task_synthesis_is_open(post_status):
         projection["cost_final"] = False
         projection["cost_with_children_partial"] = True
-    # SSOT cost naming (C2): re-converge the additive/deprecated alias pairs at
-    # this outer seam — the branches above legitimately mutate the deprecated
-    # names, and the honest names must leave carrying the same values. This is
-    # deliberately the LAST statement: any cost mutation added after it would
-    # persist a diverged pair.
+    # SSOT cost naming (C2/ABI-3): normalize onto the honest names at this
+    # outer seam — the branches above legitimately mutate the legacy internal
+    # spellings, and the seam resolves them (deprecated wins) and strips the
+    # retired alias keys from the output. This is deliberately the LAST
+    # statement: any cost mutation added after it would leak a retired key.
     return with_cost_aliases(projection)
 
 
@@ -250,10 +256,11 @@ def _finish_task_done_dispatch(
             trace_text = str(effective_result.get("trace_summary") or "")
             constraint = effective_result.get("task_constraint")
             constraint = constraint if isinstance(constraint, dict) else {}
-            # The `cost_usd: None` seed keeps the frame's long-standing shape
-            # (both alias spellings always present, null when unknown) even for a
-            # terminal event that carried no cost field at all.
-            _cost_meta = carry_cost_meta({"cost_usd": None, **task_done_event})
+            # The seed keeps the frame's long-standing shape (the honest name
+            # always present, null when unknown) even for a terminal event that
+            # carried no cost field at all.
+            _cost_meta = carry_cost_meta(
+                {"accounted_upper_bound_usd": None, **task_done_event})
             progress_meta = {
                 "subagent_event": subagent_event,
                 "subagent_task_id": str(task_id or ""),
@@ -263,16 +270,13 @@ def _finish_task_done_dispatch(
                 "subagent_role": str(task.get("role") or ""),
                 "write_surface": str(constraint.get("surface") or ""),
                 "status": status,
-                # C2/C12: both alias spellings plus EVERY openness/integrity
-                # marker accounting recorded. The VALUES come from the cost SSOT
-                # (`_cost_meta` above) so a marker added there arrives here too;
-                # the KEYS stay literal because a ChatOutbound frame's key set
-                # must be statically checkable (tests/test_contracts.py) — and
-                # `tests/test_cost_projection.py` fails if this literal ever
-                # stops covering the SSOT. The hand-picked list this replaces
-                # dropped `reserved_usd`, `unresolved_upper_bound_usd` and the
-                # ledger integrity marker, leaving an unexplained "not final".
-                "cost_usd": _cost_meta.get("cost_usd"),
+                # C2/C12 (ABI-3): the honest cost names plus EVERY openness/
+                # integrity marker accounting recorded. The VALUES come from the
+                # cost SSOT (`_cost_meta` above) so a marker added there arrives
+                # here too; the KEYS stay literal because a ChatOutbound frame's
+                # key set must be statically checkable (tests/test_contracts.py)
+                # — and `tests/test_cost_projection.py` fails if this literal
+                # ever stops covering the SSOT.
                 "accounted_upper_bound_usd": _cost_meta.get("accounted_upper_bound_usd"),
                 "cost_with_children_partial": _cost_meta.get("cost_with_children_partial"),
                 "unknown_unmetered": _cost_meta.get("unknown_unmetered"),
@@ -531,7 +535,7 @@ def _resolve_lifecycle_fault(
             ctx, evt=evt, task_id=task_id, task=task_row,
             task_done_event=task_done_event,
             outcome_axes=task_done_event.get("outcome_axes") or {},
-            cost=task_done_event.get("cost_usd"),
+            cost=task_done_event.get("accounted_upper_bound_usd"),
             rounds=task_done_event.get("total_rounds"),
         )
     # GR4-3: the cooperative-checkpoint hooks fire for the synthetic terminal
@@ -771,7 +775,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         final_task_result if isinstance(final_task_result, dict) else {}, evt,
         pathlib.Path(ctx.DRIVE_ROOT),
     )
-    eff_cost = terminal_cost.get("cost_usd")
+    eff_cost = terminal_cost.get("accounted_upper_bound_usd")
     eff_rounds = terminal_cost.get("total_rounds")
     task_done_event = {
         "ts": evt.get("ts", utc_now_iso()),

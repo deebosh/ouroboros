@@ -507,7 +507,6 @@ def _children_roster_projection(
         roster.append({
             "task_id": str(row.get("task_id") or row.get("id") or ""),
             "status": row.get("status"),
-            "cost_usd": _cost["cost_usd"],
             "accounted_upper_bound_usd": _cost["accounted_upper_bound_usd"],
             "child_result_sha256": _child_result_sha256(row),
             "outcome_axes": normalize_outcome_axes(row),
@@ -637,14 +636,13 @@ def _wait_for_tasks(
             if not isinstance(data, dict):
                 public_tasks[str(tid)] = data
                 continue
-            # SSOT cost projection (C2): honest null (never a confirmed-looking $0),
-            # the additive honest name beside the deprecated alias, and finality
+            # SSOT cost projection (C2/ABI-3): honest null (never a
+            # confirmed-looking $0), the honest name only, and finality
             # only when the child's own record claims it.
             _cost = cost_projection(data)
             projected: Dict[str, Any] = {
                 "task_id": str(data.get("task_id") or data.get("id") or tid),
                 "status": data.get("status"),
-                "cost_usd": _cost["cost_usd"],
                 "accounted_upper_bound_usd": _cost["accounted_upper_bound_usd"],
                 "cost_final": _cost["cost_final"],
                 "child_result_sha256": _child_result_sha256(data),

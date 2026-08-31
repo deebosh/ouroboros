@@ -224,7 +224,7 @@ def _admission_rejection_response(
         admission=admission,
         artifact_status=ARTIFACT_STATUS_FAILED if workspace_root else "",
         result=detail,
-        cost_usd=0.0,
+        accounted_upper_bound_usd=0.0,
     )
     if child_drive is not None:
         from ouroboros.headless import remove_subagent_task_drive

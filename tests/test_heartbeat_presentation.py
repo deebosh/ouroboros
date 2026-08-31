@@ -62,7 +62,6 @@ def test_root_heartbeat_carries_one_live_subtree_projection(tmp_path, monkeypatc
     _handle_task_heartbeat({"task_id": "root-hb", "phase": "running"}, ctx)
 
     frame = pushed[0]
-    assert frame["cost_usd_with_children"] == 76.82
     assert frame["accounted_upper_bound_usd_with_children"] == 76.82
     assert frame["cost_final"] is False
     assert frame["cost_with_children_partial"] is True
@@ -84,7 +83,7 @@ def test_child_heartbeat_does_not_read_or_publish_live_cost(tmp_path, monkeypatc
     _handle_task_heartbeat({"task_id": "child-hb", "phase": "running"}, ctx)
 
     assert "cost_accounting_status" not in pushed[0]
-    assert "cost_usd_with_children" not in pushed[0]
+    assert "accounted_upper_bound_usd_with_children" not in pushed[0]
 
 
 def test_root_heartbeat_keeps_ledger_failure_honest(tmp_path, monkeypatch):
@@ -101,7 +100,6 @@ def test_root_heartbeat_keeps_ledger_failure_honest(tmp_path, monkeypatch):
 
     frame = pushed[0]
     assert frame["cost_accounting_status"] == "unavailable"
-    assert frame["cost_usd_with_children"] is None
     assert frame["accounted_upper_bound_usd_with_children"] is None
     assert frame["cost_final"] is False
 
@@ -121,7 +119,7 @@ def test_root_heartbeat_omits_empty_or_legacy_only_cost(tmp_path, monkeypatch):
     _handle_task_heartbeat({"task_id": "root-empty", "phase": "running"}, ctx)
 
     assert "cost_accounting_status" not in pushed[0]
-    assert "cost_usd_with_children" not in pushed[0]
+    assert "accounted_upper_bound_usd_with_children" not in pushed[0]
 
 
 def test_root_heartbeat_keeps_unknown_zero_cost_nullable_and_measured_zero_numeric(
@@ -142,7 +140,6 @@ def test_root_heartbeat_keeps_unknown_zero_cost_nullable_and_measured_zero_numer
     _handle_task_heartbeat({"task_id": "root-unknown", "phase": "running"}, ctx)
     unknown = pushed[0]
     assert unknown["cost_accounting_status"] == "available"
-    assert unknown["cost_usd_with_children"] is None
     assert unknown["accounted_upper_bound_usd_with_children"] is None
     assert unknown["unknown_unmetered"] == 1
 
@@ -151,7 +148,7 @@ def test_root_heartbeat_keeps_unknown_zero_cost_nullable_and_measured_zero_numer
         "id": "root-free", "type": "task", "root_task_id": "root-free",
     })
     _handle_task_heartbeat({"task_id": "root-free", "phase": "running"}, ctx)
-    assert pushed[0]["cost_usd_with_children"] == 0.0
+    assert pushed[0]["accounted_upper_bound_usd_with_children"] == 0.0
 
 
 def test_retired_timeout_defaults_are_quiet_but_custom_value_is_loud(tmp_path, monkeypatch) -> None:

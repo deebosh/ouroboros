@@ -378,7 +378,6 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
             "sender_session_id": "",
             "client_message_id": cmid,
             "task_id": "",
-            "telegram_chat_id": 0,
             "origin_projected": True,
         })
         if len(synthesized) >= _ORIGIN_SYNTH_CAP:
@@ -398,7 +397,7 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
                     "is_progress": False, "system_type": "origin_omission",
                     "markdown": False, "source": "", "sender_label": "",
                     "sender_session_id": "", "client_message_id": "",
-                    "task_id": "", "telegram_chat_id": 0,
+                    "task_id": "",
                 })
             break
     return synthesized
@@ -846,7 +845,10 @@ def _collect_chat_rows(
                 "sender_session_id": str(entry.get("sender_session_id", "")),
                 "client_message_id": str(entry.get("client_message_id", "")),
                 "task_id": str(entry.get("task_id", "")),
-                "telegram_chat_id": int(entry.get("telegram_chat_id") or 0),
+                # ABI-3: the deprecated ``telegram_chat_id`` twin is no longer
+                # re-emitted; legacy chat.jsonl rows carrying it stay readable
+                # (the key is simply ignored), and ``transport`` is the
+                # provenance surface.
             }
             if rec["system_type"] in {"project_started", "project_completion_summary"}:
                 for key in ("project_id", "project_name", "target_label", "status"):

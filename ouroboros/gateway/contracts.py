@@ -165,17 +165,16 @@ class ChatOutbound(TypedDict):
     cancelable: NotRequired[bool]
     # Monetary projections are nullable when the physical-attempt ledger cannot
     # be read.  ``None`` is deliberately distinct from a confirmed $0 result.
-    cost_usd: NotRequired[Optional[float]]
-    # C2 (owner 10=B): the additive HONEST names — accounted upper bounds, not
-    # settled receipts. Same values as the deprecated cost_usd[_with_children]
-    # aliases (ouroboros/cost_projection.py is the one author); the aliases stay
-    # outbound because their removal is a separate approved ABI break.
+    # C2 (owner 10=B) named these the HONEST names — accounted upper bounds,
+    # not settled receipts; ABI 7.0 (ABI-3) removed the deprecated
+    # ``cost_usd[_with_children]`` wire aliases, so these are the only outbound
+    # spellings (ouroboros/cost_projection.py is the one author). Stored legacy
+    # records keep both spellings readable via ``resolve_cost_pair``.
     accounted_upper_bound_usd: NotRequired[Optional[float]]
     accounted_upper_bound_usd_with_children: NotRequired[Optional[float]]
     cost_accounting_status: NotRequired[Literal["available", "unavailable"]]
     cost_accounting_error: NotRequired[str]
     cost_final: NotRequired[bool]
-    cost_usd_with_children: NotRequired[Optional[float]]
     cost_with_children_partial: NotRequired[bool]
     reserved_usd: NotRequired[Optional[float]]
     unresolved_upper_bound_usd: NotRequired[Optional[float]]
@@ -206,8 +205,6 @@ class ChatOutbound(TypedDict):
     sender_session_id: NotRequired[str]
     client_message_id: NotRequired[str]
     transport: NotRequired[TransportMetadata]
-    # Deprecated compatibility field: runtime emits ``transport`` instead.
-    telegram_chat_id: NotRequired[int]
     # UI-only system annotation emitted by skill-repair visible commands.
     system_type: NotRequired[str]
     # Event-time human presentation; raw task/project ids remain machine keys.
@@ -240,8 +237,6 @@ class PhotoOutbound(TypedDict):
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
     project_thread: NotRequired[bool]
-    # Deprecated compatibility field: runtime emits ``transport`` instead.
-    telegram_chat_id: NotRequired[int]
 
 
 class VideoOutbound(TypedDict):
@@ -263,8 +258,6 @@ class VideoOutbound(TypedDict):
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
     project_thread: NotRequired[bool]
-    # Deprecated compatibility field: runtime emits ``transport`` instead.
-    telegram_chat_id: NotRequired[int]
 
 
 class DocumentOutbound(TypedDict):
@@ -291,8 +284,6 @@ class DocumentOutbound(TypedDict):
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
     project_thread: NotRequired[bool]
-    # Deprecated compatibility field: runtime emits ``transport`` instead.
-    telegram_chat_id: NotRequired[int]
 
 
 class TypingOutbound(TypedDict):
@@ -749,8 +740,6 @@ class UiPreferencesResponse(TypedDict):
     sidebar_width: int  # px; 0 = CSS default (resizable side sections, v6.33.0)
     project_panel_width: int  # px; 0 = CSS default
     project_seen_revision: dict[str, int]  # monotonic paint ACK per active Project
-    project_last_viewed: dict[str, str]  # deprecated one-minor accepted no-op
-    project_hidden: dict[str, bool]  # deprecated one-minor accepted no-op
 
 
 class GitLogResponse(TypedDict):

@@ -8,7 +8,9 @@ rely on once external packages start consuming them:
 - Every ``ToolEntry`` produced by the real registry matches
   ``ToolEntryProtocol``.
 - The WS/HTTP envelopes emitted by ``server.py`` and
-  ``supervisor.message_bus`` still carry the keys declared in ``api_v1``.
+  ``supervisor.message_bus`` still carry the keys declared in
+  ``ouroboros.gateway.contracts`` (the ``contracts.api_v1`` shim was removed
+  in ABI 7.0).
 - ``SkillManifest`` parses the unified SKILL.md / skill.json format
   tolerantly without raising on missing optional fields.
 
@@ -290,28 +292,36 @@ def test_every_registered_tool_matches_protocol():
 
 
 # ---------------------------------------------------------------------------
-# api_v1 envelopes <-> real broadcasters
+# gateway.contracts envelopes <-> real broadcasters
 # ---------------------------------------------------------------------------
 
 
-def test_api_v1_declares_core_ws_message_types():
-    """api_v1 must declare the core chat/media/status WS envelopes."""
-    from ouroboros.contracts import api_v1
+def test_api_v1_shim_removed_and_gateway_declares_core_ws_message_types():
+    """ABI 7.0 (ABI-3/ABI-6д): ``ouroboros.contracts.api_v1`` is REMOVED —
+    ``ouroboros.gateway.contracts`` is the one SSOT importers must use."""
+    import importlib
+
+    import pytest
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("ouroboros.contracts.api_v1")
+
+    from ouroboros.gateway import contracts as gateway_contracts
 
     for name in ("ChatInbound", "ChatOutbound", "PhotoOutbound", "VideoOutbound", "TypingOutbound", "LogOutbound"):
-        assert hasattr(api_v1, name), f"api_v1 missing {name}"
+        assert hasattr(gateway_contracts, name), f"gateway.contracts missing {name}"
 
 
-def test_api_v1_declares_task_named_outbound():
+def test_gateway_declares_task_named_outbound():
     """v6.40: the proactive card-naming broadcast is a frozen WS message envelope, in
     WS_MESSAGE_TYPES, with a JSDoc mirror in the frontend contract surface (ABI extension
     contract per ARCHITECTURE)."""
     import pathlib
 
-    from ouroboros.contracts import api_v1
     from ouroboros.gateway.contracts import WS_MESSAGE_TYPES
+    from ouroboros.gateway import contracts as api_v1
 
-    assert hasattr(api_v1, "TaskNamedOutbound"), "api_v1 missing TaskNamedOutbound"
+    assert hasattr(api_v1, "TaskNamedOutbound"), "gateway.contracts missing TaskNamedOutbound"
     assert set(api_v1.TaskNamedOutbound.__annotations__) >= {"type", "task_id", "suggested_name"}
     assert "task_named" in WS_MESSAGE_TYPES
     api_types = pathlib.Path(__file__).resolve().parents[1] / "web" / "modules" / "api_types.js"
@@ -452,7 +462,7 @@ def _assert_envelope_parity(
         leaked = keys - declared_keys
         assert not leaked, (
             f"{envelope_name} envelope in {source_path.name} uses keys not "
-            f"declared in api_v1: {leaked}"
+            f"declared in gateway.contracts: {leaked}"
         )
         missing_required = required_keys - keys
         assert not missing_required, (

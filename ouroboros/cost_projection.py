@@ -3,9 +3,11 @@
 ``accounted_upper_bound_usd`` is the honest NAME for what ``cost_usd`` always was:
 the settled + reserved + unresolved upper bound from the physical attempt ledger,
 not a settled receipt. The semantics do not change (owner 10=B); the name does.
-``cost_usd`` stays outbound as a DEPRECATED alias carrying the same value — it is
-part of the frozen wire contract, and its removal would be a separate, explicitly
-approved ABI break. The same pairing covers ``cost_usd_with_children``.
+ABI 7.0 (ABI-3, the approved ABI break): the deprecated ``cost_usd`` /
+``cost_usd_with_children`` aliases are no longer EMITTED anywhere — the write
+seams strip them — while the READ side keeps resolving both spellings so every
+stored legacy record (task results, chat.jsonl rows, event snapshots) stays
+readable, with the historical deprecated-wins precedence for diverged pairs.
 
 Null is null: a missing or unknown cost projects ``None`` on BOTH names and must
 never render as ``$0.00``, and finality is never fabricated — ``cost_final`` is
@@ -25,7 +27,8 @@ from typing import Any, Dict, Mapping, Optional
 
 log = logging.getLogger(__name__)
 
-# (additive honest name, deprecated alias) — same value on both, forever.
+# (honest name, retired legacy spelling). Since ABI 7.0 the legacy spelling is
+# READ-ONLY tolerance for stored records — emitters never write it again.
 COST_ALIAS_PAIRS = (
     ("accounted_upper_bound_usd", "cost_usd"),
     ("accounted_upper_bound_usd_with_children", "cost_usd_with_children"),
@@ -121,32 +124,35 @@ def honest_cost_pair_amount(
 
 
 def with_cost_aliases(fields: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    """A COPY of ``fields`` with each additive/deprecated cost name mirrored.
+    """A COPY of ``fields`` normalized onto the honest cost names (ABI 7.0).
 
     Write-side seam: a producer that already assembled the full cost-meta dict
     (``reconstruct_task_cost``, the terminal frame builder) passes through here
-    so both spellings leave with the same value — and it must be the LAST step
-    after any cost mutation, or a later edit to one spelling persists a diverged
-    pair. A name that is absent on both sides STAYS absent — aliasing never
-    invents a field, and an explicit None mirrors as None. Precedence is
-    :func:`resolve_cost_pair` (deprecated wins), which makes this idempotent.
+    — and it must be the LAST step after any cost mutation. A legacy spelling
+    present on the input still WINS resolution (:func:`resolve_cost_pair`,
+    deprecated wins — a legacy mutator's edit is honored) but is STRIPPED from
+    the output: since ABI-3 nothing emits or persists the retired alias keys.
+    A pair absent on both sides STAYS absent — normalization never invents a
+    field, and an explicit None stays None. Idempotent.
     """
     out = dict(fields or {})
     for new, old in COST_ALIAS_PAIRS:
         present, value = honest_cost_pair_amount(out, new, old)
+        out.pop(old, None)
         if present:
             out[new] = value
-            out[old] = value
     return out
 
 
 def carry_cost_meta(source: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Both alias pairs plus every openness/integrity marker the source carries.
+    """The honest cost names plus every openness/integrity marker the source carries.
 
     For a producer assembling a NEW frame out of an existing payload: it copies
     what accounting actually said instead of re-listing field names by hand.
-    Absent stays absent; unknown extra keys are the caller's business (this
-    returns only accounting fields, so a caller merging it never loses its own).
+    A legacy alias spelling on the SOURCE still resolves (deprecated wins) but
+    only the honest name is emitted (ABI 7.0). Absent stays absent; unknown
+    extra keys are the caller's business (this returns only accounting fields,
+    so a caller merging it never loses its own).
     """
     src = source if isinstance(source, Mapping) else {}
     out: Dict[str, Any] = {}
@@ -154,7 +160,6 @@ def carry_cost_meta(source: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
         present, value = honest_cost_pair_amount(src, new, old)
         if present:
             out[new] = value
-            out[old] = value
     for key in COST_OPENNESS_FIELDS:
         if key in src:
             out[key] = src[key]
@@ -203,7 +208,7 @@ def live_root_cost_projection(
         accounted = honest_accounted_amount(usage)
         projection = {
             "cost_accounting_status": "available",
-            "cost_usd_with_children": (
+            "accounted_upper_bound_usd_with_children": (
                 round(accounted, 6) if accounted is not None else None
             ),
             "reserved_usd": reserved,
@@ -217,7 +222,7 @@ def live_root_cost_projection(
         projection = {
             "cost_accounting_status": "unavailable",
             "cost_accounting_error": "ledger_unavailable",
-            "cost_usd_with_children": None,
+            "accounted_upper_bound_usd_with_children": None,
         }
     projection.update(cost_final=False, cost_with_children_partial=True)
     return with_cost_aliases(projection)
@@ -226,24 +231,23 @@ def live_root_cost_projection(
 def cost_projection(source: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     """Read-side projection of a task-result-like mapping into the SSOT shape.
 
-    Emits ``accounted_upper_bound_usd`` + the ``cost_usd`` alias (same value,
-    None when unknown), ``cost_known`` (whether ANY amount is accounted),
+    Emits ``accounted_upper_bound_usd`` (None when unknown; a stored legacy
+    ``cost_usd`` spelling still resolves, deprecated wins — ABI 7.0 read
+    tolerance), ``cost_known`` (whether ANY amount is accounted),
     ``cost_final`` (source-claimed finality about a KNOWN amount, never
-    fabricated), the with-children pair when the source carries it, and every
-    openness flag the source has.
+    fabricated), the with-children name when the source carries the pair, and
+    every openness flag the source has.
     """
     src = source if isinstance(source, Mapping) else {}
     _, amount = honest_cost_pair_amount(src, *COST_ALIAS_PAIRS[0])
     out: Dict[str, Any] = {
         "accounted_upper_bound_usd": amount,
-        "cost_usd": amount,
         "cost_known": amount is not None,
         "cost_final": bool(src.get("cost_final")) and amount is not None,
     }
     present, with_children = honest_cost_pair_amount(src, *COST_ALIAS_PAIRS[1])
     if present:
         out["accounted_upper_bound_usd_with_children"] = with_children
-        out["cost_usd_with_children"] = with_children
     for key in COST_OPENNESS_FIELDS:
         if key in src and key not in out:
             out[key] = src[key]

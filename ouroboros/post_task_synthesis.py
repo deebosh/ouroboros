@@ -232,7 +232,7 @@ def _pre_synthesis_usage_snapshot(
         logical_root_id = str(task.get("root_task_id") or task_id)
         subtree = usage_breakdown(budget_root, root_task_id=logical_root_id)
         snapshot.update({
-            "cost_usd_with_children": round(float(subtree["accounted_usd"]), 6),
+            "accounted_upper_bound_usd_with_children": round(float(subtree["accounted_usd"]), 6),
             "reserved_usd": round(float(subtree["reserved_usd"]), 6),
             "unresolved_upper_bound_usd": round(
                 float(subtree["unresolved_upper_bound_usd"]), 6
@@ -250,7 +250,7 @@ def _pre_synthesis_usage_snapshot(
             exc_info=True,
         )
         snapshot.update({
-            "cost_usd_with_children": None,
+            "accounted_upper_bound_usd_with_children": None,
             "reserved_usd": None,
             "unresolved_upper_bound_usd": None,
             "unknown_unmetered": None,

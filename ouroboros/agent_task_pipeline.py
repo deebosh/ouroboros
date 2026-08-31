@@ -11,7 +11,7 @@ import time
 from dataclasses import replace
 from typing import Any, Callable, Dict, List
 
-from ouroboros.cost_projection import cost_projection
+from ouroboros.cost_projection import cost_projection, resolve_cost_pair
 from ouroboros.task_results import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -460,14 +460,13 @@ def emit_task_results(
         task_cost_fields = {
             "cost_accounting_status": "unavailable", "cost_final": False,
             "cost_accounting_error": "ledger_unavailable",
-            "cost_usd": None, "total_rounds": None,
+            "accounted_upper_bound_usd": None, "total_rounds": None,
             "prompt_tokens": None, "completion_tokens": None,
             "reserved_usd": None, "unresolved_upper_bound_usd": None,
             "unknown_unmetered": None,
         }
-    # SSOT cost naming (C2): both spellings on every terminal frame this
-    # pipeline emits (the reconstruct path already aliases; the unavailable
-    # fallback above must not ship without the honest name).
+    # SSOT cost naming (C2/ABI-3): the honest names on every terminal frame
+    # this pipeline emits; the seam also strips any legacy alias spelling.
     from ouroboros.cost_projection import with_cost_aliases
 
     task_cost_fields = with_cost_aliases(task_cost_fields)
@@ -578,7 +577,9 @@ def emit_task_results(
         **task_cost_fields,
         # v6.57.0 (P6b): recursive cost incl. children (from the stored rollup) so the
         # parent card / Logs can show the true subtree cost, not just this task's own.
-        "cost_usd_with_children": stored_result.get("cost_usd_with_children"),
+        # ABI-3: honest name only; a legacy stored spelling still resolves.
+        "accounted_upper_bound_usd_with_children": resolve_cost_pair(
+            stored_result, "accounted_upper_bound_usd_with_children", "cost_usd_with_children")[1],
         "cost_with_children_partial": bool(stored_result.get("cost_with_children_partial")),
         **({"resource_limit": dict(usage.get("resource_limit") or {})}
            if isinstance(usage.get("resource_limit"), dict) else {}),
@@ -769,7 +770,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         cost_fields = with_cost_aliases(cost_fields or {
             "cost_accounting_status": "unavailable", "cost_final": False,
             "cost_accounting_error": "ledger_projection_missing",
-            "cost_usd": None, "total_rounds": None,
+            "accounted_upper_bound_usd": None, "total_rounds": None,
             "prompt_tokens": None, "completion_tokens": None,
             "reserved_usd": None, "unresolved_upper_bound_usd": None,
             "unknown_unmetered": None,
@@ -839,7 +840,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         swarm_efficiency = _build_swarm_efficiency(env, task)
         subagent_envelope = task.get("subagent_envelope") if isinstance(task.get("subagent_envelope"), dict) else {}
         if str(task.get("delegation_role") or "").lower() == "subagent":
-            subagent_envelope = envelope_from_task(task, status=status, usage=usage, cost_usd=cost_fields.get("cost_usd"))
+            subagent_envelope = envelope_from_task(task, status=status, usage=usage, cost_usd=cost_fields.get("accounted_upper_bound_usd"))
             if cost_fields.get("cost_accounting_status") != "available":
                 subagent_envelope.update({
                     "cost_usd": None,
@@ -850,7 +851,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         # monetary authority; the supervisor replaces the root projection with the
         # exact subtree total at terminal handling. Do not independently walk task
         # results here: that was a second accounting engine and could double-count.
-        _own_cost = cost_fields.get("cost_usd")
+        _own_cost = cost_fields.get("accounted_upper_bound_usd")
         _cost_with_children = _own_cost
         _cost_partial = True
         root_phase_checkpoint: Dict[str, Any] = {}
@@ -885,7 +886,6 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             # Compatibility mirror consumed by the gateway and task_done event.
             # ``outcome_axes.review`` remains the canonical structured axis.
             review_status=dict(outcome_axes.get("review") or {}),
-            cost_usd_with_children=_cost_with_children,
             accounted_upper_bound_usd_with_children=_cost_with_children,
             cost_with_children_partial=_cost_partial,
             task_contract=task_contract,

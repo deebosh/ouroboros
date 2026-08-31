@@ -59,7 +59,7 @@ def test_root_checkpoint_reconciles_exact_subtree_and_late_namer_cost(tmp_path):
     }
     pipeline.write_task_result(
         tmp_path, "root-cost", pipeline.STATUS_COMPLETED,
-        root_task_id="root-cost", cost_usd=99.0, cost_final=True,
+        root_task_id="root-cost", accounted_upper_bound_usd=99.0, cost_final=True,
         root_phase_checkpoint={"post_task_synthesis": "running"},
     )
 
@@ -76,8 +76,8 @@ def test_root_checkpoint_reconciles_exact_subtree_and_late_namer_cost(tmp_path):
     settle("abnormal-child", 2.0)
     pipeline._set_root_post_task_checkpoint(env, task, "completed")
     stored = pipeline.load_task_result(tmp_path, "root-cost")
-    assert stored["cost_usd"] == 1.0
-    assert stored["cost_usd_with_children"] == 3.0
+    assert stored["accounted_upper_bound_usd"] == 1.0
+    assert stored["accounted_upper_bound_usd_with_children"] == 3.0
     assert stored["cost_final"] is True
     assert stored["cost_with_children_partial"] is False
 
@@ -85,8 +85,8 @@ def test_root_checkpoint_reconciles_exact_subtree_and_late_namer_cost(tmp_path):
     pipeline._set_root_post_task_checkpoint(env, task, "refresh")
     stored = pipeline.load_task_result(tmp_path, "root-cost")
     assert stored["root_phase_checkpoint"]["post_task_synthesis"] == "completed"
-    assert stored["cost_usd"] == 1.25
-    assert stored["cost_usd_with_children"] == 3.25
+    assert stored["accounted_upper_bound_usd"] == 1.25
+    assert stored["accounted_upper_bound_usd_with_children"] == 3.25
 
 
 def test_retry_root_checkpoint_preserves_logical_subtree_cost(tmp_path):
@@ -137,8 +137,8 @@ def test_retry_root_checkpoint_preserves_logical_subtree_cost(tmp_path):
 
     stored = pipeline.load_task_result(tmp_path, "retry-2")
     assert stored["root_task_id"] == "logical-root"
-    assert stored["cost_usd"] == 0.75
-    assert stored["cost_usd_with_children"] == 2.0
+    assert stored["accounted_upper_bound_usd"] == 0.75
+    assert stored["accounted_upper_bound_usd_with_children"] == 2.0
     assert stored["cost_final"] is True
 
 
@@ -150,7 +150,7 @@ def test_startup_recovery_reuses_pending_root_result_checkpoint(tmp_path, monkey
         root_task_id="recover-root",
         objective="finish recovery",
         total_rounds=3,
-        cost_usd=0.25,
+        accounted_upper_bound_usd=0.25,
         root_phase_checkpoint={
             "phase": "task_acceptance",
             "status": "pass",
@@ -298,7 +298,7 @@ def test_root_synthesis_uses_one_shared_nonfinal_subtree_cost_snapshot(tmp_path,
     ]
     assert len(snapshots) == 2 and snapshots[0] is snapshots[1]
     snapshot = snapshots[0]
-    assert snapshot["cost_usd_with_children"] == 4.75
+    assert snapshot["accounted_upper_bound_usd_with_children"] == 4.75
     assert snapshot["reserved_usd"] == 1.5
     assert snapshot["unresolved_upper_bound_usd"] == 0.75
     assert snapshot["unknown_unmetered"] == 2
@@ -378,7 +378,7 @@ def test_pre_synthesis_cost_failure_is_unavailable_not_zero(tmp_path, monkeypatc
         {"rounds": 2, "cost": 1.0},
     )
 
-    assert snapshot["cost_usd_with_children"] is None
+    assert snapshot["accounted_upper_bound_usd_with_children"] is None
     assert snapshot["reserved_usd"] is None
     assert snapshot["unresolved_upper_bound_usd"] is None
     assert snapshot["unknown_unmetered"] is None
@@ -455,7 +455,7 @@ def test_shared_cost_snapshot_reaches_summary_and_reflection_prompts(tmp_path, m
     snapshot = {
         "rounds": 8,
         "cost": 1.25,
-        "cost_usd_with_children": 4.75,
+        "accounted_upper_bound_usd_with_children": 4.75,
         "reserved_usd": 1.5,
         "unresolved_upper_bound_usd": 0.75,
         "unknown_unmetered": 2,
@@ -477,7 +477,7 @@ def test_shared_cost_snapshot_reaches_summary_and_reflection_prompts(tmp_path, m
     )
     snapshot_text = pipeline._synthesis_usage_snapshot_text(snapshot)
     expected_fragments = (
-        '"cost_usd_with_children": 4.75',
+        '"accounted_upper_bound_usd_with_children": 4.75',
         '"reserved_usd": 1.5',
         '"unresolved_upper_bound_usd": 0.75',
         '"unknown_unmetered": 2',
@@ -504,7 +504,7 @@ def test_unavailable_cost_snapshot_is_null_not_zero_in_both_prompts(tmp_path, mo
     snapshot = {
         "rounds": 8,
         "cost": 1.25,
-        "cost_usd_with_children": None,
+        "accounted_upper_bound_usd_with_children": None,
         "reserved_usd": None,
         "unresolved_upper_bound_usd": None,
         "unknown_unmetered": None,
@@ -520,7 +520,7 @@ def test_unavailable_cost_snapshot_is_null_not_zero_in_both_prompts(tmp_path, mo
     )
     snapshot_text = pipeline._synthesis_usage_snapshot_text(snapshot)
     null_fields = (
-        "cost_usd_with_children",
+        "accounted_upper_bound_usd_with_children",
         "reserved_usd",
         "unresolved_upper_bound_usd",
         "unknown_unmetered",
@@ -552,6 +552,6 @@ def test_child_legacy_usage_does_not_claim_a_subtree_snapshot(tmp_path, monkeypa
 
     for prompt in prompts:
         assert "Shared pre-synthesis cost snapshot" not in prompt
-        assert "cost_usd_with_children" not in prompt
+        assert "accounted_upper_bound_usd_with_children" not in prompt
         assert "cost_snapshot_at" not in prompt
     assert "Cost: $1.25" in prompts[0]
