@@ -57,6 +57,7 @@ _MOVED_OWNERS = {
     "extension_surface_name": extension_surface_names,
     "parse_extension_surface_name": extension_surface_names,
     "_out_of_process_handler_proxy": extension_child_catalog,
+    "_stage_out_of_process_surfaces": extension_child_catalog,
     "_validate_child_catalog_namespace": extension_child_catalog,
     "_validate_child_route_descriptor": extension_child_catalog,
     "_validate_child_settings_descriptor": extension_child_catalog,
@@ -86,10 +87,12 @@ _MOVED_OWNERS = {
 
 # The loader keeps the lifecycle it is named for: catalog installation for an
 # out-of-process child, companion spawning, reconcile, load, unload, reload and
-# the read-only snapshots the host and the tool registry consume.
+# the read-only snapshots the host and the tool registry consume. (Fix-round-4:
+# ``_stage_out_of_process_surfaces`` moved to the child-catalog leaf it
+# composes; the loader re-exports it.)
 _STAYED = (
     "__all__", "_publish_out_of_process_registration", "_request_server_reconcile_if_worker",
-    "_run_unload_callback", "_stage_out_of_process_surfaces", "_unload_extension_locked",
+    "_run_unload_callback", "_unload_extension_locked",
     "ensure_companions_running", "get_tool", "list_companion_names", "list_routes",
     "list_ws_handlers", "load_extension", "log", "reconcile_extension", "reload_all",
     "snapshot", "unload_extension",

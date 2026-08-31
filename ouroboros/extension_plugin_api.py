@@ -82,6 +82,17 @@ from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
 
+
+class ExtensionStaleRecoveryError(ExtensionRegistrationError):
+    """Typed refusal of a generation-bound recovery publication (ABI-9).
+
+    Raised BEFORE any mutation when ``require_live_generation`` names a
+    publication that is no longer live (the bundle vanished or was reloaded):
+    the refusal has zero effects — no bundle is created, nothing is staged
+    into the registries, and nothing may be disposed by the caller.
+    """
+
+
 def current_execution_mode() -> ExecutionMode:
     """Execution context of the running PluginAPI, derived from the child env flag."""
     if os.environ.get("OUROBOROS_EXTENSION_PROCESS_CHILD") == "1":
@@ -188,6 +199,9 @@ class PluginAPIImpl:
         # ABI-9 staging area: register() accumulates surfaces and side-effect
         # requests here; the loader publishes them as one atomic snapshot.
         self._staged = _StagedRegistrations()
+        # The generation digest this instance's own publication minted
+        # ("" until _publish_registrations swaps the snapshot in).
+        self._published_generation = ""
         self._api_lock = threading.RLock()
         # Core settings are exposed only when a content-hash-bound owner grant
         # was already verified; otherwise the denylist silently drops them.
@@ -708,6 +722,7 @@ class PluginAPIImpl:
         skill_dir: Optional[str] = None,
         import_root: Optional[str] = None,
         module: Any = None,
+        require_live_generation: Optional[str] = None,
     ) -> None:
         """Atomically publish the staged registration snapshot (ABI-9).
 
@@ -727,7 +742,13 @@ class PluginAPIImpl:
         may publish MORE than once (the OOP companion recovery path): a
         later publication mints a fresh digest and RE-STAMPS every
         already-published descriptor the bundle owns, so per-surface
-        provenance never diverges from the bundle digest. Every
+        provenance never diverges from the bundle digest. Such a recovery
+        publication is GENERATION-BOUND: it passes
+        ``require_live_generation`` and is admitted only while the bundle it
+        observed is STILL the live publication — a vanished bundle or a
+        different generation raises a typed ``ExtensionStaleRecoveryError``
+        before any mutation, and recovery never creates a bundle, so a
+        completed unload/reload cannot be resurrected. Every
         attachable effect is recorded on the published bundle at the swap
         (futures as they are created), so a failure while attaching leaves
         nothing orphaned: it is disclosed and raised into the caller's
@@ -739,6 +760,18 @@ class PluginAPIImpl:
         with _lock:
             try:
                 self._require_open_locked()
+                if require_live_generation is not None:
+                    live_bundle = _extensions.get(self._skill)
+                    live_generation = (
+                        str(live_bundle.generation_digest or "") if live_bundle is not None else ""
+                    )
+                    if live_bundle is None or live_generation != str(require_live_generation):
+                        raise ExtensionStaleRecoveryError(
+                            f"skill {self._skill!r} recovery publication refused: "
+                            f"observed generation {str(require_live_generation)!r} is not "
+                            f"the live publication (live={live_generation!r}); "
+                            "nothing was published"
+                        )
                 conflicts = self._staged_surface_conflicts_locked()
                 if conflicts:
                     raise ExtensionRegistrationError(
@@ -762,6 +795,7 @@ class PluginAPIImpl:
             bundle.plugin_api_generation = self._plugin_api_generation
             digest = uuid.uuid4().hex
             bundle.generation_digest = digest
+            self._published_generation = digest
             for live, staged_map, bundle_keys, stamp in (
                 (_tools, staged.tools, bundle.tools, True),
                 (_routes, staged.routes, bundle.routes, True),

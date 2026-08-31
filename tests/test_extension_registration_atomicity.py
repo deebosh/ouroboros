@@ -227,7 +227,7 @@ def test_publication_carries_a_fresh_generation_digest(tmp_path):
     assert second_digest and second_digest != first_digest
 
 
-def _publish_oop(loaded, drive_root, catalog, *, current_hash=None):
+def _publish_oop(loaded, drive_root, catalog, *, current_hash=None, expected_generation=None):
     return extension_loader._publish_out_of_process_registration(
         loaded,
         catalog=catalog,
@@ -237,6 +237,7 @@ def _publish_oop(loaded, drive_root, catalog, *, current_hash=None):
         granted_keys=[],
         dependency_site_dirs_enabled=False,
         current_hash=current_hash,
+        expected_generation=expected_generation,
     )
 
 
@@ -335,7 +336,9 @@ def test_companion_recovery_failure_unloads_instead_of_silent_abort(
     """Ф3.1 fix-round-3 pin (ABI-9б): the server-side companion RECOVERY
     publication routes a failure into the standard dispose+unload path — the
     extension does not stay half-alive with published surfaces and a
-    companion it could not start."""
+    companion it could not start. (Fix-round-4: the disposal is
+    generation-bound — it reaps exactly the publication this recovery
+    swapped in, never a newer one.)"""
     from ouroboros.extension_surface_names import extension_surface_name
 
     loaded, _repo, drive_root = _oop_companion_extension(tmp_path, "recofail")
@@ -363,7 +366,10 @@ def test_companion_recovery_failure_unloads_instead_of_silent_abort(
     monkeypatch.setattr(extension_plugin_api, "is_server_process", lambda: True)
 
     with pytest.raises(RuntimeError, match="recovery spawn refused"):
-        _publish_oop(loaded, drive_root, {"companions": ["daemon"]})
+        _publish_oop(
+            loaded, drive_root, {"companions": ["daemon"]},
+            expected_generation=extension_loader.extension_generation_digest("recofail"),
+        )
     assert extension_loader.get_tool(tool_name) is None, (
         "a failed recovery publication must unload the extension, not leave "
         "its surfaces half-alive"
@@ -408,7 +414,10 @@ def test_late_publication_restamps_already_published_descriptors(
     )
     monkeypatch.setattr(extension_plugin_api, "is_server_process", lambda: True)
 
-    _publish_oop(loaded, drive_root, {"companions": ["daemon"]})
+    _publish_oop(
+        loaded, drive_root, {"companions": ["daemon"]},
+        expected_generation=first_digest,
+    )
     with extension_loader._lock:
         second_digest = extension_loader._extensions["restamp"].generation_digest
     assert second_digest and second_digest != first_digest

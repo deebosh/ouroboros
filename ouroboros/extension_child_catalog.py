@@ -3,14 +3,23 @@
 An isolated-dep extension registers its surfaces in a short-lived child process
 and reports them back as plain descriptors. The child is outside the host trust
 boundary, so every descriptor is re-validated here — namespace, provider-safe
-name, method vocabulary, render schema — before anything is installed.
+name, method vocabulary, render schema — and staged onto the loader's ABI-9
+publication snapshot before anything is installed.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 from ouroboros.contracts.plugin_api import ExtensionRegistrationError, VALID_EXTENSION_ROUTE_METHODS
+from ouroboros.extension_registry_state import (
+    _lock,
+    _routes,
+    _settings_sections,
+    _tools,
+    _ui_tabs,
+    _ws_handlers,
+)
 from ouroboros.extension_surface_names import (
     _EXTENSION_NAME_RE,
     _widget_geometry_from_render,
@@ -22,8 +31,57 @@ from ouroboros.extension_ui_validation import (
     validate_ui_render as _validate_ui_render,
 )
 
+if TYPE_CHECKING:  # pragma: no cover - annotation-only imports
+    from ouroboros.extension_plugin_api import PluginAPIImpl
+    from ouroboros.skill_loader import LoadedSkill
+
+
 def _out_of_process_handler_proxy(*_args: Any, **_kwargs: Any) -> Any:
     raise RuntimeError("extension surface is configured for out-of-process dispatch")
+
+
+def _stage_out_of_process_surfaces(
+    api: "PluginAPIImpl",
+    skill: "LoadedSkill",
+    catalog: Dict[str, Any],
+) -> None:
+    """Validate child-catalog descriptors and stage them on *api*'s snapshot.
+
+    ABI-9: nothing is installed here — every descriptor is validated and
+    staged through the same ``_stage_surface_locked`` seam the in-process
+    ``register()`` window uses, so the whole out-of-process registration
+    (surfaces AND companions) publishes as ONE validate -> swap -> attach
+    transaction; a bad catalog publishes NOTHING rather than a prefix.
+    """
+
+    def _proxy(item: Dict[str, Any]) -> Dict[str, Any]:
+        item["handler"] = _out_of_process_handler_proxy
+        item["skill"] = skill.name
+        item["out_of_process"] = True
+        item["skills_repo_path"] = str(skill.skill_dir.parent)
+        return item
+
+    kinds = (
+        ("tools", _validate_child_tool_descriptor, "name", True, _tools, "tool"),
+        ("routes", _validate_child_route_descriptor, "path", True, _routes, "route"),
+        ("ws_handlers", _validate_child_ws_descriptor, "type", True, _ws_handlers, "ws handler"),
+        ("ui_tabs", _validate_child_ui_descriptor, None, False, _ui_tabs, "ui tab"),
+        ("settings_sections", _validate_child_settings_descriptor, None, False, _settings_sections, "settings section"),
+    )
+    with _lock:
+        for kind, validate, key_field, proxied, live, label in kinds:
+            staged = getattr(api._staged, kind)
+            for raw in catalog.get(kind) or []:
+                item = validate(skill.name, dict(raw or {}))
+                key = (
+                    str(item.get(key_field) or "") if key_field
+                    else str(item.pop("key", "") or "")
+                )
+                if not key:
+                    continue
+                api._stage_surface_locked(
+                    live, staged, key, _proxy(item) if proxied else item, label,
+                )
 
 
 def _validate_child_catalog_namespace(skill_name: str, surface_kind: str, value: str) -> None:

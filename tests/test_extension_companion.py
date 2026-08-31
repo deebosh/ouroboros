@@ -1,14 +1,19 @@
+import logging
 import pathlib
 import subprocess
 import sys
 import time
 
+import pytest
+
+from ouroboros.contracts.plugin_api import ExtensionRegistrationError
 from ouroboros.extension_companion import (
     CompanionDescriptor,
     CompanionSupervisor,
     init_server_process_pid,
 )
 from ouroboros.extension_loader import PluginAPIImpl, _PluginAPIConfig
+from ouroboros.extension_plugin_api import ExtensionStaleRecoveryError
 import ouroboros.extension_loader as extension_loader
 import ouroboros.extension_plugin_api as extension_plugin_api
 from ouroboros import extension_health
@@ -181,18 +186,41 @@ def test_plugin_api_companion_uses_staged_skill_root_as_cwd(tmp_path: pathlib.Pa
     assert descriptor.env["HOST_SERVICE_TOKEN"] != "evil"
 
 
-def test_publish_out_of_process_registration_host_spawns_declared_name(tmp_path: pathlib.Path, monkeypatch) -> None:
-    """Out-of-process catalog -> host spawns the manifest-declared companion; an
-    undeclared cataloged name is rejected at the host trust boundary."""
-    import pytest
-    from ouroboros.contracts.plugin_api import ExtensionRegistrationError
-    from ouroboros.skill_loader import find_skill
+_COMPANION_FRONTMATTER = (
+    "companion_processes:\n"
+    "  - name: daemon\n"
+    "    runtime: python3\n"
+    "    command: [\"python3\", \"scripts/daemon.py\"]\n"
+)
 
-    init_server_process_pid()
+
+class _RecordingSupervisor:
+    """Fake supervisor: records spawns/stops; reports no running companions."""
+
+    def __init__(self) -> None:
+        self.started: list = []
+        self.stopped: list = []
+
+    def start(self, descriptor):
+        self.started.append(descriptor)
+        return True
+
+    def snapshot(self):
+        return {}
+
+    def stop(self, *args, **kwargs):
+        self.stopped.append(args)
+
+    def stop_skill(self, skill_name):
+        self.stopped.append((skill_name,))
+
+
+def _reviewed_companion_skill(tmp_path: pathlib.Path, name: str = "compskill"):
+    """A reviewed+enabled companion extension the recovery tests can load."""
     repo_root = tmp_path / "skills"
     drive_root = tmp_path / "drive"
-    drive_root.mkdir()
-    skill_dir = repo_root / "compskill"
+    drive_root.mkdir(exist_ok=True)
+    skill_dir = repo_root / name
     (skill_dir / "scripts").mkdir(parents=True)
     (skill_dir / "scripts" / "daemon.py").write_text("print('ok')\n", encoding="utf-8")
     (skill_dir / "plugin.py").write_text(
@@ -200,50 +228,57 @@ def test_publish_out_of_process_registration_host_spawns_declared_name(tmp_path:
     )
     (skill_dir / "SKILL.md").write_text(
         "---\n"
-        "name: compskill\n"
+        f"name: {name}\n"
         "description: companion skill\n"
         "version: 0.1.0\n"
         "type: extension\n"
         "entry: plugin.py\n"
         "permissions: [companion_process]\n"
-        "companion_processes:\n"
-        "  - name: daemon\n"
-        "    runtime: python3\n"
-        "    command: [\"python3\", \"scripts/daemon.py\"]\n"
+        f"{_COMPANION_FRONTMATTER}"
         "---\n"
         "body\n",
         encoding="utf-8",
     )
-    loaded = find_skill(drive_root, "compskill", repo_path=str(repo_root))
+    loaded = find_skill(drive_root, name, repo_path=str(repo_root))
     assert loaded is not None
+    save_enabled(drive_root, loaded.name, True)
+    save_review_state(
+        drive_root, loaded.name,
+        SkillReviewState(status="pass", content_hash=loaded.content_hash),
+    )
+    loaded = find_skill(drive_root, loaded.name, repo_path=str(repo_root))
+    assert loaded is not None
+    return loaded, repo_root, drive_root
 
-    captured = []
 
-    class FakeSupervisor:
-        def start(self, descriptor):
-            captured.append(descriptor)
-            return True
-
-        def stop(self, *args, **kwargs):
-            return None
-
+def _patch_supervisor(monkeypatch) -> _RecordingSupervisor:
     # The companion supervisor is read by PluginAPIImpl (its owner) at register
-    # time and by the loader's spawn/ensure paths; patch both readers.
-    monkeypatch.setattr(extension_plugin_api, "get_global_supervisor", lambda: FakeSupervisor())
-    monkeypatch.setattr(extension_loader, "get_global_supervisor", lambda: FakeSupervisor())
-    try:
-        extension_loader._publish_out_of_process_registration(
-            loaded,
-            catalog={"companions": ["daemon"]},
-            state_dir=drive_root / "state",
-            settings_reader=lambda: {},
-            granted_keys=[],
-            dependency_site_dirs_enabled=False,
-        )
-        assert len(captured) == 1
-        assert captured[0].name == "daemon"
+    # time and by the loader's spawn/ensure/unload paths; patch both readers.
+    fake = _RecordingSupervisor()
+    monkeypatch.setattr(extension_plugin_api, "get_global_supervisor", lambda: fake)
+    monkeypatch.setattr(extension_loader, "get_global_supervisor", lambda: fake)
+    return fake
 
-        with pytest.raises(ExtensionRegistrationError):
+
+def test_publish_out_of_process_registration_host_spawns_declared_name(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Out-of-process catalog -> host spawns the manifest-declared companion; an
+    undeclared cataloged name is rejected at the host trust boundary, and an
+    ambiguous publication form (neither initial load nor generation-bound
+    recovery) is a typed refusal (Ф3.1 fix-round-4)."""
+    init_server_process_pid()
+    loaded, _repo_root, drive_root = _reviewed_companion_skill(tmp_path)
+    fake = _patch_supervisor(monkeypatch)
+    try:
+        with pytest.raises(ExtensionRegistrationError, match="exactly one of"):
+            extension_loader._publish_out_of_process_registration(
+                loaded,
+                catalog={"companions": ["daemon"]},
+                state_dir=drive_root / "state",
+                settings_reader=lambda: {},
+                granted_keys=[],
+                dependency_site_dirs_enabled=False,
+            )
+        with pytest.raises(ExtensionRegistrationError, match="escaped manifest"):
             extension_loader._publish_out_of_process_registration(
                 loaded,
                 catalog={"companions": ["evil"]},
@@ -251,9 +286,174 @@ def test_publish_out_of_process_registration_host_spawns_declared_name(tmp_path:
                 settings_reader=lambda: {},
                 granted_keys=[],
                 dependency_site_dirs_enabled=False,
+                current_hash=loaded.content_hash,
             )
+        assert fake.started == []
+
+        extension_loader._publish_out_of_process_registration(
+            loaded,
+            catalog={"companions": ["daemon"]},
+            state_dir=drive_root / "state",
+            settings_reader=lambda: {},
+            granted_keys=[],
+            dependency_site_dirs_enabled=False,
+            current_hash=loaded.content_hash,
+        )
+        assert len(fake.started) == 1
+        assert fake.started[0].name == "daemon"
     finally:
         extension_loader.unload_extension("compskill")
+        init_server_process_pid()
+
+
+def test_recovery_publication_requires_a_pre_existing_live_bundle(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Ф3.1 fix-round-4 REPLACEMENT (disclosed): the clause this test replaces
+    pinned the OPPOSITE contract — the recovery-form publication helper
+    accepted no pre-existing live bundle and spawned the companion anyway,
+    which pinned the resurrection bug itself (a stale recovery re-created an
+    empty companion-only bundle after disable/unload). The recovery form now
+    REQUIRES a still-live bundle at the observed generation: with no live
+    bundle it refuses with zero effects and creates nothing."""
+    init_server_process_pid()
+    loaded, _repo_root, drive_root = _reviewed_companion_skill(tmp_path)
+    fake = _patch_supervisor(monkeypatch)
+    try:
+        with pytest.raises(ExtensionStaleRecoveryError):
+            extension_loader._publish_out_of_process_registration(
+                loaded,
+                catalog={"companions": ["daemon"]},
+                state_dir=drive_root / "state",
+                settings_reader=lambda: {},
+                granted_keys=[],
+                dependency_site_dirs_enabled=False,
+                expected_generation="0" * 32,
+            )
+        assert fake.started == []
+        with extension_loader._lock:
+            assert "compskill" not in extension_loader._extensions
+        assert "compskill" not in extension_loader.snapshot()["extensions"]
+    finally:
+        extension_loader.unload_extension("compskill")
+        init_server_process_pid()
+
+
+def test_unload_completing_between_snapshot_and_publication_refuses_recovery(
+    tmp_path: pathlib.Path, monkeypatch,
+) -> None:
+    """Ф3.1 fix-round-4 pin (ABI-9а, TOCTOU): an unload that COMPLETES between
+    recovery's liveness/bundle snapshot and its publication turns the
+    publication into a typed zero-effect refusal — registries and supervisor
+    stay empty and NO new bundle is created. (Before the fix the stale
+    recovery re-created an empty companion-only bundle and started its
+    companion, resurrecting the extension after disable/unload.)"""
+    init_server_process_pid()
+    loaded, repo_root, drive_root = _reviewed_companion_skill(tmp_path)
+    fake = _patch_supervisor(monkeypatch)
+    try:
+        assert extension_loader.load_extension(
+            loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
+        ) is None
+        assert len(fake.started) == 1  # the initial publication's spawn
+
+        real_state_dir = extension_loader.skill_state_dir
+
+        def _unload_wins_the_race(drive_root_arg, skill_name_arg):
+            # Deterministic interleave: the concurrent unload COMPLETES after
+            # recovery snapshotted liveness/bundle and before it publishes.
+            extension_loader.unload_extension(skill_name_arg)
+            return real_state_dir(drive_root_arg, skill_name_arg)
+
+        monkeypatch.setattr(extension_loader, "skill_state_dir", _unload_wins_the_race)
+        result = extension_loader.ensure_companions_running(
+            loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
+        )
+
+        assert result["action"] == "stale_recovery_refused"
+        assert result["started"] == []
+        assert "recovery publication refused" in result["reason"]
+        assert len(fake.started) == 1, "stale recovery must not start a companion"
+        with extension_loader._lock:
+            assert loaded.name not in extension_loader._extensions
+            assert not any(
+                entry.get("skill") == loaded.name
+                for entry in extension_loader._tools.values()
+            )
+        assert loaded.name not in extension_loader.snapshot()["extensions"]
+    finally:
+        extension_loader.unload_extension(loaded.name)
+        init_server_process_pid()
+
+
+def test_recovery_publication_refuses_on_generation_mismatch_without_effects(
+    tmp_path: pathlib.Path, monkeypatch,
+) -> None:
+    """Ф3.1 fix-round-4 pin (ABI-9б): a recovery publication naming a
+    generation that is NOT the live publication (the bundle was reloaded
+    since the snapshot) is refused with zero effects — the live bundle keeps
+    its generation and no companion is started."""
+    init_server_process_pid()
+    loaded, _repo_root, drive_root = _reviewed_companion_skill(tmp_path)
+    fake = _patch_supervisor(monkeypatch)
+    try:
+        assert extension_loader.load_extension(
+            loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
+        ) is None
+        live_generation = extension_loader.extension_generation_digest(loaded.name)
+        assert live_generation
+        spawns_before = len(fake.started)
+
+        with pytest.raises(ExtensionStaleRecoveryError):
+            extension_loader._publish_out_of_process_registration(
+                loaded,
+                catalog={"companions": ["daemon"]},
+                drive_root=drive_root,
+                state_dir=drive_root / "state",
+                settings_reader=lambda: {},
+                granted_keys=[],
+                dependency_site_dirs_enabled=False,
+                expected_generation="1" * 32,
+            )
+        assert extension_loader.extension_generation_digest(loaded.name) == live_generation
+        with extension_loader._lock:
+            assert loaded.name in extension_loader._extensions
+        assert len(fake.started) == spawns_before
+    finally:
+        extension_loader.unload_extension(loaded.name)
+        init_server_process_pid()
+
+
+def test_generation_bound_disposal_skips_a_newer_publication(
+    tmp_path: pathlib.Path, monkeypatch, caplog,
+) -> None:
+    """Ф3.1 fix-round-4 pin (ABI-9в): disposal bound to an OLD generation is a
+    disclosed no-op when the live publication is newer — recovery cleanup can
+    never unload a publication it did not make. The same call naming the live
+    generation unloads it."""
+    init_server_process_pid()
+    loaded, _repo_root, drive_root = _reviewed_companion_skill(tmp_path)
+    _patch_supervisor(monkeypatch)
+    try:
+        assert extension_loader.load_extension(
+            loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
+        ) is None
+        live_generation = extension_loader.extension_generation_digest(loaded.name)
+        assert live_generation
+
+        with caplog.at_level(logging.WARNING, logger="ouroboros.extension_loader"):
+            assert extension_loader.unload_extension(
+                loaded.name, expected_generation="f" * 32,
+            ) is False
+        assert "generation-bound disposal skipped" in caplog.text
+        with extension_loader._lock:
+            assert loaded.name in extension_loader._extensions
+
+        assert extension_loader.unload_extension(
+            loaded.name, expected_generation=live_generation,
+        ) is True
+        with extension_loader._lock:
+            assert loaded.name not in extension_loader._extensions
+    finally:
+        extension_loader.unload_extension(loaded.name)
         init_server_process_pid()
 
 

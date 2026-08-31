@@ -52,13 +52,14 @@ from ouroboros.gateway.host_service import AUTH_TOKEN_FILENAME  # noqa: F401
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS  # noqa: F401
 from ouroboros.extension_isolated_deps import _isolated_python_site_dirs, async_isolated_site_dirs_scope, isolated_site_dirs_scope, is_skill_cache_path  # noqa: F401
 from ouroboros.extension_child_catalog import (
-    _out_of_process_handler_proxy,
+    _out_of_process_handler_proxy,  # noqa: F401
+    _stage_out_of_process_surfaces,
     _validate_child_catalog_namespace,  # noqa: F401
-    _validate_child_route_descriptor,
-    _validate_child_settings_descriptor,
-    _validate_child_tool_descriptor,
-    _validate_child_ui_descriptor,
-    _validate_child_ws_descriptor,
+    _validate_child_route_descriptor,  # noqa: F401
+    _validate_child_settings_descriptor,  # noqa: F401
+    _validate_child_tool_descriptor,  # noqa: F401
+    _validate_child_ui_descriptor,  # noqa: F401
+    _validate_child_ws_descriptor,  # noqa: F401
 )
 from ouroboros.extension_import_staging import (
     _IMPORT_SWEEP_GRACE_SEC,  # noqa: F401
@@ -79,6 +80,7 @@ from ouroboros.extension_liveness import (
     runtime_state_for_skill_name,
 )
 from ouroboros.extension_plugin_api import (
+    ExtensionStaleRecoveryError,
     PluginAPIImpl,
     _reject_extension_child_side_effect,  # noqa: F401
     current_execution_mode,
@@ -143,50 +145,6 @@ def _request_server_reconcile_if_worker(
         log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
 
 
-def _stage_out_of_process_surfaces(
-    api: PluginAPIImpl,
-    skill: LoadedSkill,
-    catalog: Dict[str, Any],
-) -> None:
-    """Validate child-catalog descriptors and stage them on *api*'s snapshot.
-
-    ABI-9: nothing is installed here — every descriptor is validated and
-    staged through the same ``_stage_surface_locked`` seam the in-process
-    ``register()`` window uses, so the whole out-of-process registration
-    (surfaces AND companions) publishes as ONE validate -> swap -> attach
-    transaction; a bad catalog publishes NOTHING rather than a prefix.
-    """
-
-    def _proxy(item: Dict[str, Any]) -> Dict[str, Any]:
-        item["handler"] = _out_of_process_handler_proxy
-        item["skill"] = skill.name
-        item["out_of_process"] = True
-        item["skills_repo_path"] = str(skill.skill_dir.parent)
-        return item
-
-    kinds = (
-        ("tools", _validate_child_tool_descriptor, "name", True, _tools, "tool"),
-        ("routes", _validate_child_route_descriptor, "path", True, _routes, "route"),
-        ("ws_handlers", _validate_child_ws_descriptor, "type", True, _ws_handlers, "ws handler"),
-        ("ui_tabs", _validate_child_ui_descriptor, None, False, _ui_tabs, "ui tab"),
-        ("settings_sections", _validate_child_settings_descriptor, None, False, _settings_sections, "settings section"),
-    )
-    with _lock:
-        for kind, validate, key_field, proxied, live, label in kinds:
-            staged = getattr(api._staged, kind)
-            for raw in catalog.get(kind) or []:
-                item = validate(skill.name, dict(raw or {}))
-                key = (
-                    str(item.get(key_field) or "") if key_field
-                    else str(item.pop("key", "") or "")
-                )
-                if not key:
-                    continue
-                api._stage_surface_locked(
-                    live, staged, key, _proxy(item) if proxied else item, label,
-                )
-
-
 def _publish_out_of_process_registration(
     skill: LoadedSkill,
     *,
@@ -197,6 +155,7 @@ def _publish_out_of_process_registration(
     granted_keys: Sequence[str],
     dependency_site_dirs_enabled: bool,
     current_hash: str | None = None,
+    expected_generation: str | None = None,
     plugin_api_generation: str = "",
 ) -> None:
     """Publish an out-of-process extension's catalog as ONE staged snapshot.
@@ -205,21 +164,28 @@ def _publish_out_of_process_registration(
     the child catalog's proxy surfaces AND its declared companion spawns on
     one snapshot and publishes them in a single validate -> SWAP -> attach
     transaction — no partially published extension exists between two
-    transactions. The server-side companion recovery path
-    (``reconcile_server_companions``) is the one structurally LATER
-    publication: it re-publishes onto the already live bundle, and
-    ``_publish_registrations`` mints a fresh generation digest while
-    re-stamping every already-published descriptor, so per-surface provenance
-    never diverges from ``bundle.generation_digest``. ANY failure — a refused
-    validation (published nothing) or a post-swap attach failure (published,
-    must not stay half-alive) — routes through the standard dispose+unload
-    path: the extension ends unloaded, never partially live.
+    transactions. The one structurally LATER publication — server-side
+    companion recovery via ``ensure_companions_running`` — is GENERATION-
+    BOUND (``expected_generation``): it publishes only onto the still-live
+    bundle whose generation the caller observed, re-stamping every already-
+    published descriptor with the freshly minted digest; a vanished bundle or
+    a different generation is a typed ``ExtensionStaleRecoveryError`` refusal
+    with zero effects — recovery requires a pre-existing live bundle and can
+    never create one, so a completed unload/reload is never resurrected. ANY
+    OTHER failure — a refused validation (published nothing) or a post-swap
+    attach failure (published, must not stay half-alive) — routes through the
+    standard dispose+unload path, generation-bound on the recovery form.
 
     Cataloged companion names are re-validated against the reviewed manifest
     at the host trust boundary before any process is started; the host is the
     server process, so it owns the supervisor and reuses the in-process
     ``register_companion_process`` descriptor build.
     """
+    if (current_hash is None) == (expected_generation is None):
+        raise ExtensionRegistrationError(
+            "out-of-process publication must be exactly one of: initial load "
+            "(current_hash) or generation-bound recovery (expected_generation)"
+        )
     names = [str(n).strip() for n in (catalog.get("companions") or []) if str(n).strip()]
     declared = {
         str(item.get("name") or "").strip()
@@ -260,15 +226,27 @@ def _publish_out_of_process_registration(
             content_hash=current_hash,
             skill_dir=str(skill.skill_dir.resolve()) if current_hash is not None else None,
             import_root=None,
+            require_live_generation=expected_generation,
         )
-    except Exception:
-        # ABI-9 (fix-round-3): a refused validation published nothing (abort
-        # discards the staged snapshot); a post-swap attach failure DID
-        # publish. Both route through the standard dispose+unload path — on
-        # the recovery path this unloads the live extension rather than
-        # leaving it half-alive with a companion it could not start.
+    except ExtensionStaleRecoveryError:
+        # Typed stale-recovery refusal: nothing was published; disposing by
+        # skill name here would unload a newer publication — refuse only.
         api._abort_registration()
-        unload_extension(skill.name)
+        raise
+    except Exception:
+        # A refused validation published nothing (abort discards the staged
+        # snapshot); a post-swap attach failure DID publish. Both route
+        # through the standard dispose+unload path — generation-bound on the
+        # recovery form, so only the publication this call itself swapped in
+        # (or validated against) is ever reaped, never a newer one.
+        api._abort_registration()
+        unload_extension(
+            skill.name,
+            expected_generation=(
+                None if expected_generation is None
+                else (api._published_generation or expected_generation)
+            ),
+        )
         raise
 
 
@@ -290,12 +268,6 @@ def _run_unload_callback(skill_name: str, callback: Callable[[], Any], timeout_s
     if errors:
         exc = errors[0]
         log.warning("extension %s unload callback failed", skill_name, exc_info=(type(exc), exc, exc.__traceback__))
-
-
-# PluginAPI implementation.
-
-
-# Loader.
 
 
 def reconcile_extension(
@@ -459,6 +431,7 @@ def ensure_companions_running(
     with _lock:
         bundle = _extensions.get(skill_name)
         raw_names = list(bundle.companion_names if bundle is not None else [])
+        observed_generation = str(bundle.generation_digest or "") if bundle is not None else ""
     names: List[str] = []
     for raw in raw_names:
         name = str(raw or "").strip()
@@ -511,17 +484,29 @@ def ensure_companions_running(
         }
 
     state_dir = skill_state_dir(drive_root, skill.name)
-    # Recovery re-publication (staged protocol): a companion that cannot start
-    # UNLOADS the extension via the shared seam — never half-alive.
-    _publish_out_of_process_registration(
-        skill,
-        catalog={"companions": missing},
-        drive_root=drive_root,
-        state_dir=state_dir,
-        settings_reader=settings_reader,
-        granted_keys=list(grant_status.get("granted_keys") or []),
-        dependency_site_dirs_enabled=bool(auto_specs),
-    )
+    # ABI-9 generation-bound recovery: publish under the lifecycle lock; the
+    # seam re-validates that the publication observed above is still live —
+    # an unload/reload completing since the snapshot is a typed refusal with
+    # zero effects (no bundle resurrection).
+    with _lifecycle_lock_for(skill_name):
+        try:
+            _publish_out_of_process_registration(
+                skill,
+                catalog={"companions": missing},
+                drive_root=drive_root,
+                state_dir=state_dir,
+                settings_reader=settings_reader,
+                granted_keys=list(grant_status.get("granted_keys") or []),
+                dependency_site_dirs_enabled=bool(auto_specs),
+                expected_generation=observed_generation,
+            )
+        except ExtensionStaleRecoveryError as exc:
+            return {
+                "action": "stale_recovery_refused",
+                "started": [],
+                "missing": missing,
+                "reason": str(exc),
+            }
     return {"action": "started_missing", "started": missing, "missing": missing}
 
 
@@ -747,10 +732,25 @@ def load_extension(
     return None
 
 
-def unload_extension(skill_name: str) -> None:
+def unload_extension(skill_name: str, *, expected_generation: str | None = None) -> bool:
+    """Unload one extension; a non-None ``expected_generation`` binds disposal
+    (ABI-9 recovery failure path) to ONLY the publication whose generation the
+    caller observed or made: a missing bundle or a different (newer)
+    generation is disclosed and left untouched. Returns whether it ran."""
     lifecycle_lock = _lifecycle_lock_for(skill_name)
     with lifecycle_lock:
+        if expected_generation is not None:
+            with _lock:
+                bundle = _extensions.get(skill_name)
+                live_generation = str(bundle.generation_digest or "") if bundle is not None else ""
+            if bundle is None or live_generation != str(expected_generation):
+                log.warning(
+                    "extension %s generation-bound disposal skipped: expected generation %r, live %r",
+                    skill_name, str(expected_generation), live_generation or None,
+                )
+                return False
         _unload_extension_locked(skill_name)
+        return True
 
 
 def _unload_extension_locked(skill_name: str) -> None:
