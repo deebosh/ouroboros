@@ -387,8 +387,11 @@ Direct OpenAI tool conversations stay on Chat Completions: the physical copy is
 custom-first when non-`none` reasoning is requested, an exact custom rejection
 may fall back to function with the same effort, and explicit `none` is a
 task-local last resort only after both cognition-preserving forms fail. Direct
-OpenAI sends `reasoning_effort` and `max_completion_tokens` provider-wide;
-model-name prefixes are not admission authority.
+OpenAI sends `reasoning_effort` and `max_completion_tokens` provider-wide, and
+DeepSeek is the second effort-carrying route (`reasoning_effort` beside the
+compatible-lane `max_tokens` carrier, `ultra` clamped to its documented `max`
+ceiling); the flag is the target dict's `carries_reasoning_effort`, never a
+model-name prefix — prefixes are not admission authority.
 
 All learned request-shape adaptation goes through the one provider-neutral
 request-wire driver. Its identity is the exact provider/endpoint/API/model and

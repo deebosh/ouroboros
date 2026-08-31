@@ -177,6 +177,7 @@ def test_exact_provider_canary_matrix_logical_turns_and_attempt_bound():
         ("openai_direct_fallback", "openai::gpt-5.6-sol"),
         ("anthropic_direct", "anthropic::claude-sonnet-5"),
         ("minimax_direct", "minimax::MiniMax-M3"),
+        ("deepseek_direct", "deepseek::deepseek-v4-flash"),
         ("cloudru_direct", "cloudru::zai-org/GLM-4.7"),
         ("gigachat_direct", "gigachat::GigaChat-2-Max"),
     ]
@@ -191,6 +192,7 @@ def test_exact_provider_canary_matrix_logical_turns_and_attempt_bound():
         "openai_direct_light",
         "openai_direct_fallback",
         "anthropic_direct",
+        "deepseek_direct",
     }
     assert [row.canary_id for row in matrix if row.continue_to_final] == [
         "openai_direct_main"
@@ -199,8 +201,8 @@ def test_exact_provider_canary_matrix_logical_turns_and_attempt_bound():
         "gigachat_direct"
     ]
     logical_turns = sum(1 + int(row.continue_to_final) for row in matrix)
-    assert logical_turns == 13
-    assert logical_turns * CANARY_EMPTY_RESPONSE_MAX_ATTEMPTS == 26
+    assert logical_turns == 14
+    assert logical_turns * CANARY_EMPTY_RESPONSE_MAX_ATTEMPTS == 28
     assert sum(
         1 + int(row.continue_to_final)
         for row in matrix

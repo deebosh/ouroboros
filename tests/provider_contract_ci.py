@@ -72,6 +72,12 @@ _OPTIONAL_DIRECT_CANARIES = (
         "MINIMAX_API_KEY", False, "none",
     ),
     ProviderCanary(
+        # "medium" ON PURPOSE (unlike its optional siblings): the deepseek lane
+        # CARRIES reasoning_effort, and the canary pins that carriage.
+        "deepseek_direct", "deepseek::deepseek-v4-flash", "deepseek",
+        "DEEPSEEK_API_KEY", False, "medium",
+    ),
+    ProviderCanary(
         "cloudru_direct", "cloudru::zai-org/GLM-4.7", "cloudru",
         "CLOUDRU_FOUNDATION_MODELS_API_KEY", False, "none",
     ),
