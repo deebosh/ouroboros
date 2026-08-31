@@ -24,9 +24,13 @@ HOT_CODE_PATHS = frozenset({
     # for the inverse direction).
     "ouroboros/tools/registry_guard_process.py",
     "ouroboros/tools/registry_guards.py",
+    # F3.1 typed-organ leaves: the registry class body and the typed result
+    # vocabulary keep the hot-code label at their new homes (same parity).
+    "ouroboros/tools/registry_core.py",
     "ouroboros/tools/tool_catalog.py",
     "ouroboros/tools/tool_context.py",
     "ouroboros/tools/tool_resolution.py",
+    "ouroboros/tools/tool_result.py",
     "ouroboros/config.py",
     "supervisor/queue.py",
     "supervisor/events.py",

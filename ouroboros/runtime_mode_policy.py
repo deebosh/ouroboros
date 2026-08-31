@@ -25,9 +25,13 @@ SAFETY_CRITICAL_PATHS = frozenset({
     # the git_ops family).
     "ouroboros/tools/registry_guard_process.py",
     "ouroboros/tools/registry_guards.py",
+    # F3.1 typed-organ leaves: the registry class body and the typed result
+    # vocabulary re-homed out of the protected registry — same label parity.
+    "ouroboros/tools/registry_core.py",
     "ouroboros/tools/tool_catalog.py",
     "ouroboros/tools/tool_context.py",
     "ouroboros/tools/tool_resolution.py",
+    "ouroboros/tools/tool_result.py",
     "prompts/SAFETY.md",
 })
 

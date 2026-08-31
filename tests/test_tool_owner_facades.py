@@ -122,11 +122,13 @@ def test_registry_split_leaves_keep_protected_label_parity():
 
     parent = "ouroboros/tools/registry.py"
     leaves = (
+        "ouroboros/tools/registry_core.py",
         "ouroboros/tools/registry_guard_process.py",
         "ouroboros/tools/registry_guards.py",
         "ouroboros/tools/tool_catalog.py",
         "ouroboros/tools/tool_context.py",
         "ouroboros/tools/tool_resolution.py",
+        "ouroboros/tools/tool_result.py",
     )
     for inventory in (SAFETY_CRITICAL_PATHS, HOT_CODE_PATHS):
         assert parent in inventory

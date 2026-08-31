@@ -12,13 +12,20 @@ import inspect
 import os
 import pathlib
 
+from dataclasses import dataclass
+
 from typing import TYPE_CHECKING
+
+from ouroboros.python_interpreter import record_python_resolution, resolve_process_python
+
+from ouroboros.tools.tool_result import ToolResult
 
 if TYPE_CHECKING:  # annotation-only imports (inert at runtime)
     from typing import Any
     from typing import Callable
     from typing import Dict
     from typing import List
+    from typing import Literal
 
     from ouroboros.tools.tool_catalog import ToolEntry
 
@@ -74,9 +81,18 @@ def system_repo_dir_for(ctx: Any) -> pathlib.Path:
 
 
 _PATH_NORMALIZED_TOOLS = frozenset({"read_file", "write_file", "edit_text", "list_files", "search_code", "query_code"})
+_TOP_LEVEL_PATH_WRITE_TOOLS = frozenset({"write_file", "edit_text"})
 
 
 _ROOT_ARG_REPO_WRITE_TOOLS = frozenset({"write_file", "edit_text", "apply_patch", "edit_batch"})
+
+
+@dataclass(frozen=True)
+class _DispatchPathNormalization:
+    """Exact dispatch note plus any explicit root required before dispatch."""
+
+    text: str = ""
+    required_root: Literal["active_workspace"] | None = None
 
 
 def _payload_write_paths(name: str, args: Dict[str, Any]) -> List[str]:
@@ -115,7 +131,11 @@ def _payload_write_paths(name: str, args: Dict[str, Any]) -> List[str]:
     return [p for p in paths if str(p or "").strip()]
 
 
-def _normalize_dispatch_path_args(ctx: Any, name: str, args: Dict[str, Any]) -> str:
+def _normalize_dispatch_path_args_result(
+    ctx: Any,
+    name: str,
+    args: Dict[str, Any],
+) -> _DispatchPathNormalization:
     """ROOT-FIX (v6.35.0): normalize an absolute / redundant-root-basename
     active_workspace|system_repo path arg IN PLACE at the dispatch boundary, so
     the handler AND every downstream guard (protected-path, protected-artifact,
@@ -135,7 +155,7 @@ def _normalize_dispatch_path_args(ctx: Any, name: str, args: Dict[str, Any]) -> 
     corrected, never the authority. ``query_code`` is excluded: its
     root=user_files external-target contract handles absolute paths natively."""
     if name not in _PATH_NORMALIZED_TOOLS:
-        return ""
+        return _DispatchPathNormalization()
     root_arg = str(args.get("root") or "active_workspace")
     if root_arg in ("active_workspace", "system_repo"):
         try:
@@ -149,13 +169,13 @@ def _normalize_dispatch_path_args(ctx: Any, name: str, args: Dict[str, Any]) -> 
                         _f["path"] = _registry().normalize_root_relative(norm_root, _f["path"])
         except Exception:
             pass
-        return ""
+        return _DispatchPathNormalization()
     if root_arg != "user_files" or name == "query_code":
-        return ""
+        return _DispatchPathNormalization()
     try:
         workspace = pathlib.Path(active_repo_dir_for(ctx)).resolve(strict=False)
     except Exception:
-        return ""
+        return _DispatchPathNormalization()
 
     def _under_workspace(text: str) -> bool:
         if not _registry().is_absolute_path_text(text):
@@ -176,13 +196,16 @@ def _normalize_dispatch_path_args(ctx: Any, name: str, args: Dict[str, Any]) -> 
                 candidates.append(_f["path"])
     hits = [text for text in candidates if _under_workspace(text)]
     if not hits:
-        return ""
-    if name in ("write_file", "edit_text"):
-        return (
-            "⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE: absolute path "
-            f"{hits[0]!r} is under the active workspace, but root='user_files' does not "
-            "write there. Retry the same call with root='active_workspace' (the same "
-            "path is accepted)."
+        return _DispatchPathNormalization()
+    if name in _TOP_LEVEL_PATH_WRITE_TOOLS:
+        return _DispatchPathNormalization(
+            text=(
+                "⚠️ ROOT_REQUIRED_ACTIVE_WORKSPACE: absolute path "
+                f"{hits[0]!r} is under the active workspace, but root='user_files' does not "
+                "write there. Retry the same call with root='active_workspace' (the same "
+                "path is accepted)."
+            ),
+            required_root="active_workspace",
         )
     args["root"] = "active_workspace"
     try:
@@ -195,12 +218,19 @@ def _normalize_dispatch_path_args(ctx: Any, name: str, args: Dict[str, Any]) -> 
                     _f["path"] = _registry().normalize_root_relative(workspace, _f["path"])
     except Exception:
         pass
-    return (
-        "⚠️ AUTO_ROUTED_TO_ACTIVE_WORKSPACE: absolute path "
-        f"{hits[0]!r} is under the active workspace; the call ran with "
-        "root='active_workspace'. Pass root='active_workspace' directly for "
-        "workspace paths."
+    return _DispatchPathNormalization(
+        text=(
+            "⚠️ AUTO_ROUTED_TO_ACTIVE_WORKSPACE: absolute path "
+            f"{hits[0]!r} is under the active workspace; the call ran with "
+            "root='active_workspace'. Pass root='active_workspace' directly for "
+            "workspace paths."
+        )
     )
+
+
+def _normalize_dispatch_path_args(ctx: Any, name: str, args: Dict[str, Any]) -> str:
+    """Compatibility projection of the typed dispatch-path normalization."""
+    return _normalize_dispatch_path_args_result(ctx, name, args).text
 
 
 _TOOL_ARG_ALIASES: dict[str, dict[str, str]] = {
@@ -452,12 +482,41 @@ def _light_binding_failure_redirect(name: str, args: dict[str, Any]) -> str:
     return ""
 
 
-def _binding_error_text(name: str, root: str, exc: Exception) -> str:
+def _light_binding_failure_result(
+    name: str,
+    args: dict[str, Any],
+) -> str | ToolResult | None:
+    """Retain cognitive text while typing the structurally distinct root redirect."""
+
+    redirect = _light_binding_failure_redirect(name, args)
+    if not redirect:
+        return None
+    try:
+        root = _registry().normalize_root(str(args.get("root") or "active_workspace"))
+    except ValueError:
+        root = "active_workspace"
+    if root == "active_workspace":
+        # This branch is reached only for the user_files redirect (the cognitive
+        # one needs root=runtime_data), so the code names the demanded root: the
+        # recovery walk credits the retry only against the root it names.
+        return ToolResult(
+            status="blocked",
+            code="ROOT_REQUIRED_USER_FILES",
+            text=redirect,
+        )
+    return redirect
+
+
+def _binding_error_text(name: str, root: str, exc: Exception) -> str | ToolResult:
     detail = str(exc)
     if detail.startswith("SKILL_REDIRECT_BLOCKED:"):
         return f"⚠️ {detail}"
     if detail.startswith("profile=") and " cannot " in detail:
-        return f"⚠️ TOOL_ACCESS_BLOCKED: {detail.rstrip('.')}."
+        return ToolResult(
+            status="blocked",
+            code="ACCESS_BLOCKED",
+            text=f"⚠️ TOOL_ACCESS_BLOCKED: {detail.rstrip('.')}.",
+        )
     if isinstance(exc, _registry().UserFilesPathBlockedError) and name in {
         "read_file", "list_files", "search_code",
     }:
@@ -484,7 +543,14 @@ def _binding_error_text(name: str, root: str, exc: Exception) -> str:
         "start_service": "SHELL_CWD_BLOCKED",
         "verify_and_record": "VERIFY_ERROR",
     }
-    return f"⚠️ {prefixes.get(name, 'TOOL_ERROR')}: {type(exc).__name__}: {detail}"
+    text = f"⚠️ {prefixes.get(name, 'TOOL_ERROR')}: {type(exc).__name__}: {detail}"
+    if name == "query_code":
+        return ToolResult(status="error", code="TOOL_ARG_ERROR", text=text)
+    if name in {"vcs_status", "vcs_diff"}:
+        return ToolResult(status="ok", code="GIT_ERROR", text=text)
+    if name not in prefixes:
+        return ToolResult(status="error", code="TOOL_ERROR", text=text)
+    return text
 
 
 def _format_tool_arg_error(entry: "ToolEntry") -> str:
@@ -494,3 +560,54 @@ def _format_tool_arg_error(entry: "ToolEntry") -> str:
         f"⚠️ TOOL_ARG_ERROR ({entry.name}): invalid arguments for {entry.name}. "
         f"Accepted parameters: {accepted}."
     )
+
+
+def _resolve_python_predispatch(
+    registry: Any,
+    name: str,
+    args: Dict[str, Any],
+    runtime_mode: str,
+    effective_constraint: Any,
+    resolved_binding: Any = None,
+) -> tuple[Dict[str, Any], Any, str | ToolResult | None]:
+    """Resolve an exact python/python3 request ONCE, before the shell guard.
+
+    Every downstream guard and the handler therefore see byte-identical
+    argv; launchers must not select an interpreter after this boundary.
+    """
+    args, python_resolution = resolve_process_python(
+        registry._ctx,
+        name,
+        args,
+        runtime_mode=runtime_mode,
+        effective_constraint=effective_constraint,
+        resolved_binding=resolved_binding,
+    )
+    record_python_resolution(registry._ctx, python_resolution)
+    if python_resolution is not None and python_resolution.error_reason:
+        if python_resolution.error_reason == "cwd_resolution_failed":
+            # The failure is the CWD CONFINEMENT policy, not interpreter
+            # availability: the resolver could not prove the working directory
+            # is inside an allowed root, so no interpreter question was ever
+            # reachable. Reuse the canonical shell-CWD denial so the agent gets
+            # the actionable root list instead of a misleading "interpreter
+            # unavailable" (which twice sent agents hunting for python instead
+            # of fixing cwd). The resolver refused the LAUNCH for a policy
+            # reason, and the typed SHELL_CWD_BLOCKED status lands in the
+            # policy-denial family instead of degrading execution.
+            return args, python_resolution, _registry().shell_cwd_block_message(
+                registry._ctx,
+                str((args or {}).get("cwd") or ""),
+                operation="service" if name == "start_service" else "shell",
+            )
+        return args, python_resolution, ToolResult(
+            status="unavailable",
+            code="CAPABILITY_UNAVAILABLE",
+            text=(
+                "⚠️ PYTHON_INTERPRETER_UNAVAILABLE: Ouroboros could not prove "
+                "the target interpreter for this launch surface "
+                f"({python_resolution.error_reason}). The process was not started."
+            ),
+            meta={"reason": python_resolution.error_reason},
+        )
+    return args, python_resolution, None

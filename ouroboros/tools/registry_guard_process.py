@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import re
 import subprocess
 
 from ouroboros.contracts.skill_payload_policy import SKILL_OWNER_STATE_STEMS
+
+import ouroboros.tools.registry_guards as registry_guards
+from ouroboros.tools.tool_result import ToolResult, _replace_tool_result
 
 from typing import TYPE_CHECKING
 
@@ -403,3 +407,438 @@ def _git_ref_snapshot(repo_dir: pathlib.Path) -> Optional[Dict[str, str]]:
         return {"head": (head.stdout or "").strip(), "digest": digest.hexdigest()}
     except Exception:
         return None
+
+
+def _run_shell_safety_check(
+    self, args: Dict[str, Any], runtime_mode: str, binding: Any = None,
+) -> ToolResult | None:
+    """Pre-execution run_command filter; returns a native denial or ``None``."""
+    raw_cmd = args.get("cmd", args.get("command", ""))
+    if binding is None:
+        operation = (
+            "service"
+            if str(args.get("__tool_name") or "") == "start_service"
+            else "shell"
+        )
+        try:
+            binding = _registry().build_resolved_resource_binding(
+                self._ctx,
+                operation=operation,
+                process_cwd=str(args.get("cwd") or ""),
+                bucket=str(args.get("bucket") or ""),
+                skill_name=str(args.get("skill_name") or ""),
+            )
+        except Exception as exc:
+            return ToolResult(
+                status="blocked",
+                code="SHELL_CWD_BLOCKED",
+                text=_registry().shell_cwd_block_message(
+                    self._ctx,
+                    str(args.get("cwd") or ""),
+                    operation=operation,
+                    error=exc,
+                ),
+            )
+    workspace_mode = bool(getattr(self._ctx, "is_workspace_mode", lambda: False)())
+    # self_worktree is a checkout of the system repo, so protected shell-write
+    # guards must stay active for it even in workspace mode (acting children
+    # must use write_file/edit_text, which apply the pro+grant gate).
+    acting_self_worktree = self._acting_self_worktree()
+    acting_subagent = self._is_acting_subagent()
+    argv = _registry().strip_leading_env_assignments(_registry().unwrap_env_argv(_registry().shell_argv(raw_cmd)))
+    if _registry().sudo_noninteractive_violation(argv):
+        return ToolResult(
+            status="blocked",
+            code="SUDO_INTERACTIVE_BLOCKED",
+            text="⚠️ SUDO_INTERACTIVE_BLOCKED: sudo must be noninteractive. Use sudo -n for commands that can run without a password; if sudo -n fails, report validation/install blocked by environment.",
+        )
+    cmd_lower = (" ".join(str(x) for x in raw_cmd) if isinstance(raw_cmd, list) else str(raw_cmd)).lower()
+    cmd_path_lower = cmd_lower.replace("\\", "/")
+    while "//" in cmd_path_lower: cmd_path_lower = cmd_path_lower.replace("//", "/")
+    # Subagents must not read owner secrets/credentials/control state via shell
+    # (read_file already denies these). read_file is the gated inspection path.
+    if (acting_subagent or self._is_local_readonly_subagent()) and _subagent_shell_targets_secret(cmd_path_lower):
+        return ToolResult(
+            status="blocked",
+            code="SUBAGENT_SECRET_READ_BLOCKED",
+            text=(
+                "⚠️ SUBAGENT_SECRET_READ_BLOCKED: subagents may not read Ouroboros secrets, "
+                "credentials, or owner-control state via shell. Use the gated read_file tool "
+                "(which denies secrets) for any inspection you actually need."
+            ),
+        )
+    argv_for_write = argv
+    argv_executable = pathlib.PurePath(argv_for_write[0]).name.lower().removesuffix(".exe") if argv_for_write else ""
+    write_target_argvs = [argv_for_write] if argv_for_write else []
+    inline_argv: list = []
+    if argv_executable in {"sh", "bash", "zsh"}:
+        inline_cmd = next((str(argv_for_write[idx + 1] or "") for idx, token in enumerate(argv_for_write[1:], start=1) if str(token or "") in {"-c", "--command"} and idx + 1 < len(argv_for_write)), "")
+        if not inline_cmd:
+            inline_cmd = _registry().shell_command_string(argv_for_write)
+        inline_argv = _registry().strip_leading_env_assignments(_registry().unwrap_env_argv(_registry().shell_argv(inline_cmd)))
+        if inline_argv:
+            write_target_argvs.append(inline_argv)
+    explicit_write_targets = list(dict.fromkeys(str(token) for target_argv in write_target_argvs for token in _registry().writer_target_tokens(target_argv) if str(token or "").strip()))
+    # ``cp source Deliverables/`` (and the equivalent mv/ln form) writes a
+    # child named after the source, while the ordinary writer-target parser
+    # only sees the directory operand. Add those argv-visible child names to
+    # the same target-first policy without attempting to parse inline code,
+    # archive formats, or other deferred Q3 syntax.
+    for target_argv in write_target_argvs:
+        for command, destination, source in _registry().directory_destination_pairs(target_argv):
+            source_name = _registry().directory_destination_child_name(command, target_argv, source)
+            if source_name in {"", ".", ".."}:
+                continue
+            explicit_write_targets.append(
+                destination.rstrip("/\\") + "/" + source_name
+            )
+    # A located -e/-E/-c inline CODE BODY is not a write target: the
+    # generic fallback reported every non-flag operand of a writer command
+    # (ruby/perl) - code string included - making every one-liner
+    # write-shaped. The light fence and protected lane keep the unfiltered
+    # SSOT (pinned XG-7B3.1); only THIS lane drops the bodies. FILE
+    # operands stay write-suspect (`perl -pi -e s/a/b/ file` rewrites
+    # `file`); literal in-code targets still arrive via inline extraction.
+    from ouroboros.tools.shell_guards import interpreter_inline_code as _interp_inline_code
+    inline_code_bodies: set = set()
+    for target_argv in write_target_argvs:
+        inline_code_bodies.update(_interp_inline_code([str(t) for t in target_argv]))
+    if inline_code_bodies:
+        explicit_write_targets = [t for t in explicit_write_targets if t not in inline_code_bodies]
+    explicit_write_targets = list(dict.fromkeys(explicit_write_targets))
+    executable_path_tokens = {str(target_argv[0]) for target_argv in write_target_argvs if target_argv}
+    # Writer-command membership canonicalizes versioned interpreter spellings to
+    # their family (`ruby3.2` is `ruby`), so a versioned basename is exactly as
+    # write-suspect as the unversioned one (XG-2R.2).
+    # Interpreter argv (direct or inside sh -c) takes the MODE-AWARE
+    # write-shape classifier: the bare `open(` token classified read-only
+    # `open(p, 'rb')` as a write ("the original GAIA class"). Write-mode
+    # opens, pathlib `.open('w')`, save-APIs, opaque subprocess escapes
+    # and shell-level indicators still classify as writes;
+    # `writer_target_tokens` keeps covering literal targets below.
+    write_shape_interpreter = bool(_registry().interpreter_family(argv_executable)) or (
+        bool(inline_argv)
+        and bool(_registry().interpreter_family(pathlib.PurePath(str(inline_argv[0])).name.lower().removesuffix(".exe")))
+    )
+    # ONE mode-aware write-shape seam (write_shape.py) for BOTH halves:
+    # interpreter argv takes interpreter_write_shape; everything else takes
+    # non_interpreter_write_shape, where unconditional writers keep the
+    # membership floor, pure-filter utilities (sort/uniq/sed/tar/gzip) need a
+    # real write channel, and prose words yield to the same read-carve the
+    # owner-control detectors use. No guard below consumes a coarser fact.
+    coarse_write_shape = (
+        _registry().interpreter_write_shape(raw_cmd)
+        if write_shape_interpreter
+        else _registry().non_interpreter_write_shape(
+            raw_cmd, argv_for_write, argv_executable, is_pure_read=_is_pure_read_inspection,
+        )
+    )
+    writeish = coarse_write_shape or bool(explicit_write_targets)
+    work_dir = registry_guards._resolved_shell_cwd(self, args, binding)
+    if isinstance(work_dir, ToolResult):
+        return work_dir
+    if protected_artifact_block := _registry().protected_artifact_shell_block_reason(
+        self._ctx,
+        raw_cmd,
+        cwd=str(work_dir),
+        default_cwd=pathlib.Path(work_dir),
+        binding=_registry()._binding_items(binding)[0] if _registry()._binding_items(binding) else None,
+    ):
+        return ToolResult(
+            status="blocked",
+            # protected_artifact_shell_block_reason emits only the resource-POLICY
+            # refusal; the two resource blocks are distinct codes because only they
+            # demote a block on a read-only tool to ignored telemetry.
+            code="RESOURCE_POLICY_BLOCKED",
+            text=protected_artifact_block,
+        )
+    if writeish and (executor_state_block := _registry().workspace_executor_state_write_block(
+        raw_cmd,
+        drive_root=pathlib.Path(self._ctx.drive_root),
+        cwd=str(work_dir),
+        default_cwd=pathlib.Path(work_dir),
+    )):
+        return ToolResult(
+            status="blocked",
+            code="WORKSPACE_BLOCKED",
+            text=executor_state_block,
+        )
+    if workspace_mode and writeish:
+        workspace_write_block = registry_guards._workspace_shell_write_block(
+            self,
+            args,
+            raw_cmd,
+            cmd_path_lower,
+            explicit_write_targets,
+            write_target_argvs,
+            executable_path_tokens,
+            runtime_mode,
+            acting_subagent,
+            binding,
+        )
+        if workspace_write_block:
+            return workspace_write_block
+
+    # Elevation pattern: blocked in all modes. Every owner-control mention
+    # detector takes the shared read-carve (pure read-only inspection of the
+    # key/endpoint names is allowed; the write shape or any non-inspection
+    # head still blocks) — the scope-floor precedent applied family-wide.
+    if _detect_runtime_mode_elevation(cmd_lower, writeish=writeish):
+        return ToolResult(status="blocked", code="ELEVATION_BLOCKED", text="⚠️ ELEVATION_BLOCKED: shell command pattern looks like an OUROBOROS_RUNTIME_MODE elevation attempt (mentions ``save_settings`` together with ``OUROBOROS_RUNTIME_MODE``, or invokes ``ouroboros.config.save_settings`` directly). Runtime mode is owner-controlled — change it by stopping the agent and editing settings.json directly, then restart.")
+    if _detect_context_mode_self_lowering(cmd_lower, writeish=writeish):
+        return ToolResult(status="blocked", code="CONTEXT_MODE_SELF_LOWERING_BLOCKED", text="⚠️ CONTEXT_MODE_SELF_LOWERING_BLOCKED: shell command pattern looks like an attempt to lower OUROBOROS_CONTEXT_MODE to low through settings.json or /api/owner/context-mode. Context mode is owner-controlled — ask the owner to change the Low/Max toggle or edit settings while the agent is stopped.")
+    if _detect_safety_mode_self_lowering(cmd_lower, writeish=writeish):
+        return ToolResult(status="blocked", code="SAFETY_MODE_SELF_LOWERING_BLOCKED", text="⚠️ SAFETY_MODE_SELF_LOWERING_BLOCKED: shell command pattern looks like an attempt to change OUROBOROS_SAFETY_MODE (e.g. to ``light``/``off``) through settings.json, /api/settings, or /api/owner/safety-mode. LLM-safety coverage is owner-controlled (BIBLE P3) — the agent must not reduce its own supervision. Ask the owner to change it via the dedicated /api/owner/safety-mode endpoint, or stop the agent and edit settings.json directly.")
+    if _detect_owner_skill_attest_self_call(cmd_lower, writeish=writeish):
+        return ToolResult(status="blocked", code="OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED", text="⚠️ OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED: shell command pattern looks like an attempt to loopback-POST /api/owner/skills/<skill>/attest-review. Owner-attestation skips the expensive LLM skill review and is OWNER-ONLY — the agent must not self-attest its own skill to bypass the immune system's review. Ask the owner to attest it from the Skills UI.")
+    if _detect_mutative_toggle_self_change(cmd_lower, writeish=writeish):
+        return ToolResult(status="blocked", code="ELEVATION_BLOCKED", text="⚠️ ELEVATION_BLOCKED: OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS is owner-controlled (it grants subagents write power against the live body). Change it by stopping the agent and editing settings.json directly, then restart — the agent must not self-enable mutative subagents.")
+    if _detect_evolution_owner_control_self_change(cmd_lower, writeish=writeish):
+        return ToolResult(status="blocked", code="ELEVATION_BLOCKED", text="⚠️ ELEVATION_BLOCKED: the self-evolution controls (OUROBOROS_POST_TASK_EVOLUTION and OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE) are owner-controlled — they enable or steer self-modification cycles. Change them via the owner Settings UI, or stop the agent and edit settings.json directly — the agent must not self-set evolution controls.")
+    if _mentions_skill_owner_state(cmd_lower):
+        return ToolResult(
+            status="blocked",
+            code="SKILL_STATE_WRITE_BLOCKED",
+            text=(
+                "⚠️ SKILL_STATE_WRITE_BLOCKED: skill review, enablement, "
+                "grants, and marketplace provenance are owner/review "
+                "controlled state. Use skill_review, toggle_skill/the Skills "
+                "UI, or the desktop launcher confirmation flow."
+            ),
+        )
+    if "state" in cmd_lower and "skills" in cmd_lower and _mentions_detached_process(cmd_lower):
+        return ToolResult(
+            status="blocked",
+            code="SKILL_STATE_WRITE_BLOCKED",
+            text=(
+                "⚠️ SKILL_STATE_WRITE_BLOCKED: detached shell processes must "
+                "not target skill state directories. Use the reviewed skill "
+                "lifecycle tools instead."
+            ),
+        )
+
+    # Light-mode checks follow the selected physical target, not whether a
+    # project workspace happens to be attached.
+    if runtime_mode == "light":
+        if _registry().light_shell_repo_mutation(
+            raw_cmd,
+            repo_dir=_registry().system_repo_dir_for(self._ctx),
+            cwd=str(args.get("cwd") or ""),
+            work_dir=pathlib.Path(work_dir),
+            # Inline-code inspection now reaches EVERY surface this check guards
+            # (it defaults ON in the fence) — scoping it to `__tool_name ==
+            # "run_script"` let run_command mutate the repo first (XG-7B3.1).
+        ):
+            return ToolResult(
+                status="blocked",
+                code="LIGHT_MODE_BLOCKED",
+                text=(
+                    "⚠️ LIGHT_MODE_BLOCKED: runtime_mode=light refuses "
+                    "shell commands that mutate the Ouroboros repository. "
+                    "For external deliverables, run with cwd under user_files "
+                    "(for example /Users/<you>/Desktop), root=artifact_store, "
+                    "or root=task_drive. Switch to advanced/pro only for "
+                    "reviewed Ouroboros self-modification."
+                ),
+            )
+        runtime_data_executable = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe") if argv else ""
+        # Versioned interpreter basenames (python3.11, ruby3.2, php8.3,
+        # perl5.38, node18) must trigger the runtime_data scan exactly like
+        # their unversioned spellings. Classification is the shared structural
+        # `interpreter_family` — the exact-set + `startswith("python")` pair
+        # recognized versions of ONE family and let every other family's
+        # versioned spelling bypass the guard (XG-2R.2).
+        runtime_data_scan = (
+            writeish
+            or runtime_data_executable in {"sh", "bash", "zsh"}
+            or bool(_registry().interpreter_family(runtime_data_executable))
+        )
+        if runtime_data_scan:
+            own_task_drive = pathlib.Path(self._ctx.task_drive_root())
+            own_artifact_dir = _registry().task_artifact_dir_path(
+                pathlib.Path(self._ctx.drive_root),
+                _registry().task_id_for_artifacts(self._ctx),
+                create=False,
+            )
+            allowed_runtime_roots = [own_task_drive, own_artifact_dir]
+            for item in _registry()._binding_items(binding):
+                if item.root == "skill_payload" and item.source != "native":
+                    allowed_runtime_roots.append(pathlib.Path(item.base_path))
+            runtime_data_targets = _registry().runtime_data_guard_targets(
+                raw_cmd,
+                writeish=writeish,
+                drive_root=pathlib.Path(self._ctx.drive_root),
+                work_dir=pathlib.Path(work_dir),
+                allowed_roots=allowed_runtime_roots,
+            )
+            if runtime_data_targets:
+                action = "write under" if writeish else "write-indicating commands that mention"
+                # Name the REAL task roots: a mis-guessed absolute path used to
+                # produce this block with no way to self-correct (v6.54.3).
+                return ToolResult(
+                    status="blocked",
+                    code="LIGHT_MODE_BLOCKED",
+                    text=(
+                        "⚠️ LIGHT_MODE_BLOCKED: runtime_mode=light blocks process commands "
+                        f"that {action} runtime_data paths outside this task's own roots. "
+                        f"This task's real roots are: artifact_store={own_artifact_dir}, "
+                        f"task_drive={own_task_drive} — staged attachments live under "
+                        f"{own_artifact_dir / 'attachments'}. Use those absolute paths in scripts, "
+                        "or root=artifact_store / root=task_drive / root=user_files in file tools. "
+                        "Blocked paths: " + ", ".join(runtime_data_targets[:5])
+                    ),
+                )
+
+    if protected_shell := registry_guards._protected_shell_block(
+        self, raw_cmd, cmd_path_lower, binding, acting_self_worktree, writeish,
+    ):
+        return protected_shell
+
+    # GitHub repo create/delete/auth.
+    cmd_words = re.sub(r"\s+", " ", cmd_lower)
+    if "gh repo create" in cmd_words or "gh repo delete" in cmd_words:
+        return ToolResult(status="blocked", code="SAFETY_VIOLATION", text="⚠️ SAFETY_VIOLATION: Creating/deleting GitHub repositories requires admin approval.")
+    if "gh auth" in cmd_words:
+        return ToolResult(status="blocked", code="SAFETY_VIOLATION", text="⚠️ SAFETY_VIOLATION: Modifying GitHub authentication is not permitted.")
+
+    return registry_guards._shell_git_and_runtime_block(
+        self, raw_cmd, args, cmd_path_lower, workspace_mode,
+        acting_self_worktree, binding,
+    )
+
+
+def _snapshot_owner_files(
+    self, state_drive_root: pathlib.Path | None = None,
+) -> Dict[pathlib.Path, Optional[str]]:
+    from ouroboros import config as _cfg
+    out: Dict[pathlib.Path, Optional[str]] = {}
+    settings_path = pathlib.Path(_cfg.SETTINGS_PATH)
+    try:
+        out[settings_path] = settings_path.read_text(encoding="utf-8") if settings_path.is_file() else None
+    except OSError:
+        out[settings_path] = None
+    root = pathlib.Path(state_drive_root or self._ctx.drive_root) / "state" / "skills"
+    if not root.is_dir():
+        return out
+    for path in root.glob("*/*"):
+        if path.name.lower() not in _registry().SKILL_OWNER_STATE_FILENAMES:
+            continue
+        try:
+            out[path] = path.read_text(encoding="utf-8")
+        except OSError:
+            out[path] = None
+    return out
+
+
+def _restore_owner_files(
+    self,
+    before: Dict[pathlib.Path, Optional[str]],
+    state_drive_root: pathlib.Path | None = None,
+) -> bool:
+    from ouroboros import config as _cfg
+    root = pathlib.Path(state_drive_root or self._ctx.drive_root) / "state" / "skills"
+    current = set()
+    if root.is_dir():
+        current.update(
+            path for path in root.glob("*/*")
+            if path.name.lower() in _registry().SKILL_OWNER_STATE_FILENAMES
+        )
+    settings_path = pathlib.Path(_cfg.SETTINGS_PATH)
+    current.add(settings_path)
+    changed = False
+    for path in current - set(before):
+        try:
+            path.unlink()
+            changed = True
+        except OSError:
+            pass
+    for path, content in before.items():
+        try:
+            if content is None:
+                if path.exists():
+                    path.unlink()
+                    changed = True
+                continue
+            if not path.exists() or path.read_text(encoding="utf-8") != content:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+                changed = True
+        except OSError:
+            pass
+    return changed
+
+
+def _run_shell_post_checks(
+    self,
+    result: str | ToolResult,
+    *,
+    owner_snapshot: Dict[pathlib.Path, Optional[str]],
+    state_drive_root: pathlib.Path,
+    light_repo_before: Optional[Dict[str, Any]],
+    workspace_refs_before: Optional[Dict[str, str]],
+    tool_name: str = "run_command",
+) -> str | ToolResult:
+    import time
+
+    text = result.text if isinstance(result, ToolResult) else result
+    typed = result if isinstance(result, ToolResult) else None
+
+    restored_owner_state = False
+    for _ in range(4):
+        time.sleep(0.3)
+        restored_owner_state = (
+            _restore_owner_files(self, owner_snapshot, state_drive_root)
+            or restored_owner_state
+        )
+    if restored_owner_state:
+        text = (
+            f"{text}\n\n⚠️ OWNER_STATE_RESTORED: run_command attempted to "
+            "change owner-only settings or skill trust state; protected files were restored."
+        )
+        if typed is not None:
+            typed = _replace_tool_result(
+                typed,
+                text=text,
+                code="OWNER_STATE_RESTORED" if typed.status == "ok" else typed.code,
+                meta_updates={"owner_state_restored": True},
+            )
+    if light_repo_before is not None:
+        light_repo_after = _light_repo_snapshot(_registry().system_repo_dir_for(self._ctx))
+        if (
+            light_repo_after is not None
+            and light_repo_after.get("digest") != light_repo_before.get("digest")
+        ):
+            text = _format_light_repo_write_block(
+                light_repo_before,
+                light_repo_after,
+                text,
+                tool_name=tool_name,
+            )
+            if typed is not None:
+                typed = _replace_tool_result(
+                    typed,
+                    text=text,
+                    code="LIGHT_MODE_REPO_WRITE_BLOCKED",
+                    meta_updates={"light_repo_changed": True},
+                )
+    if workspace_refs_before is not None:
+        workspace_refs_after = _git_ref_snapshot(_registry().active_repo_dir_for(self._ctx))
+        if (
+            workspace_refs_after is not None
+            and workspace_refs_after.get("digest") != workspace_refs_before.get("digest")
+        ):
+            text = (
+                "⚠️ WORKSPACE_GIT_REF_CHANGED: run_command changed git HEAD or refs "
+                "inside the external workspace. External workspace runs must leave "
+                "changes as files/patch artifacts, not commits/tags/resets.\n\n"
+                "Original command output:\n"
+                f"{text}"
+            )
+            if typed is not None:
+                typed = _replace_tool_result(
+                    typed,
+                    text=text,
+                    code="WORKSPACE_GIT_REF_CHANGED",
+                    meta_updates={"workspace_git_refs_changed": True},
+                )
+    return typed if typed is not None else text

@@ -18,6 +18,9 @@ from ouroboros.tool_capabilities import ACTING_SUBAGENT_MODE, ACTING_SUBAGENT_TO
 from ouroboros.runtime_mode_policy import mode_allows_protected_write
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros import subagent_worktrees as sw
+from tests._typed_guard_shared import _shell_guard_text
+
+
 
 
 def _git(repo, *args, check=True):
@@ -1102,7 +1105,7 @@ def test_pro_acting_shell_write_outside_surface_blocked(tmp_path):
     )
     reg = ToolRegistry(repo_dir=repo, drive_root=drive)
     reg._ctx = ctx
-    block = reg._run_shell_safety_check({"cmd": "echo x > ../outside.txt"}, "pro")
+    block = _shell_guard_text(reg, {"cmd": "echo x > ../outside.txt"}, "pro")
     assert block and "WORKSPACE_SHELL_BLOCKED" in block
 
 
@@ -1142,7 +1145,7 @@ def test_acting_subagent_cannot_shell_read_secrets(tmp_path):
     )
     reg = ToolRegistry(repo_dir=repo, drive_root=drive)
     reg._ctx = ctx
-    block = reg._run_shell_safety_check({"cmd": "cat ~/Ouroboros/data/settings.json"}, "pro")
+    block = _shell_guard_text(reg, {"cmd": "cat ~/Ouroboros/data/settings.json"}, "pro")
     assert block and "SUBAGENT_SECRET_READ_BLOCKED" in block
 
 
