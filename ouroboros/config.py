@@ -531,7 +531,6 @@ def _exclusive_direct_remote_provider_env() -> str:
     has_openai = bool(str(os.environ.get("OPENAI_API_KEY", "") or "").strip())
     has_anthropic = bool(str(os.environ.get("ANTHROPIC_API_KEY", "") or "").strip())
     has_minimax = bool(str(os.environ.get("MINIMAX_API_KEY", "") or "").strip())
-    has_deepseek = bool(str(os.environ.get("DEEPSEEK_API_KEY", "") or "").strip())
     has_legacy_base = bool(str(os.environ.get("OPENAI_BASE_URL", "") or "").strip())
     has_compatible = bool(str(os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "") or "").strip())
     has_cloudru = bool(str(os.environ.get("CLOUDRU_FOUNDATION_MODELS_API_KEY", "") or "").strip())
@@ -539,15 +538,14 @@ def _exclusive_direct_remote_provider_env() -> str:
         bool(str(os.environ.get("GIGACHAT_USER", "") or "").strip())
         and bool(str(os.environ.get("GIGACHAT_PASSWORD", "") or "").strip())
     )
-    # OpenRouter / legacy OpenAI base / OpenAI-compatible all route through the
-    # OpenRouter-style stack, so their presence means "not an exclusive direct
-    # provider". Among the registered direct providers, return one only when
-    # exactly one is configured.
+    # OpenRouter / legacy base / compatible route through the OpenRouter-style
+    # stack → never exclusive; among registered direct providers, exactly one.
     if has_openrouter or has_legacy_base or has_compatible:
         return ""
     direct = [name for name, present in (
         ("openai", has_openai), ("anthropic", has_anthropic), ("minimax", has_minimax),
-        ("cloudru", has_cloudru), ("gigachat", has_gigachat), ("deepseek", has_deepseek),
+        ("cloudru", has_cloudru), ("gigachat", has_gigachat),
+        ("deepseek", bool(str(os.environ.get("DEEPSEEK_API_KEY", "") or "").strip())),
     ) if present]
     return direct[0] if len(direct) == 1 else ""
 
