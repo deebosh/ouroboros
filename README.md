@@ -12,7 +12,7 @@
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://ouroboros-agent.ai/install/#linux)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)][download-windows-x64]
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.109.19](https://img.shields.io/badge/version-6.109.19-green.svg)](VERSION)
+[![Version 6.109.20](https://img.shields.io/badge/version-6.109.20-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
@@ -64,13 +64,13 @@ The desktop packages already contain an optional CLI installer. On macOS, after 
 
 </details>
 
-[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.19/Ouroboros-6.109.19.dmg
-[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.19/Ouroboros-6.109.19-windows-x64.zip
-[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.19/ouroboros_6.109.19_amd64.deb
-[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.19/ouroboros-6.109.19-1.x86_64.rpm
-[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.19/ouroboros-6.109.19-1.red80.x86_64.rpm
-[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.19/Ouroboros-6.109.19-linux-x86_64.AppImage
-[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.19/Ouroboros-6.109.19-linux-x86_64.tar.gz
+[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.20/Ouroboros-6.109.20.dmg
+[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.20/Ouroboros-6.109.20-windows-x64.zip
+[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.20/ouroboros_6.109.20_amd64.deb
+[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.20/ouroboros-6.109.20-1.x86_64.rpm
+[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.20/ouroboros-6.109.20-1.red80.x86_64.rpm
+[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.20/Ouroboros-6.109.20-linux-x86_64.AppImage
+[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.20/Ouroboros-6.109.20-linux-x86_64.tar.gz
 
 Ouroboros bundles [Claudexor](https://github.com/razzant/claudexor) as its local execution layer for delegated coding and hosted-agent review. Ouroboros owns the task, memory, review, and final integration, while Claudexor runs the selected connected coding harness and returns durable execution evidence. [Explore Claudexor](https://claudexor.ai/).
 
@@ -449,6 +449,7 @@ and the reason.
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 6.109.20 | 2026-08-31 | fix(review-evidence): task-scope current_repo.stale_reason/stale_ts so one task no longer reads another's stale-advisory marker (closes ibl-00615dbd1a16). |
 | 6.109.19 | 2026-08-31 | fix(write_file): block a relative write path that spells an absolute runtime/home path without the leading slash (closes ibl-bypass-pending-restart-verify-wrong-root) |
 | 6.109.18 | 2026-08-31 | test(schedule_contract): unit coverage for schedule id/slug/cron/timezone validators (salvaged from task 929ca0a7). |
 | 6.109.17 | 2026-08-31 | fix(attribution): vcs_restore re-anchors the mutation baseline so a post-restore edit_text is task-attributed (closes ibl-692dac220462) |
