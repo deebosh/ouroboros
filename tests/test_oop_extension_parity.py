@@ -82,7 +82,7 @@ def _impl(tmp_path, **overrides):
         companion_processes=[{"name": "daemon", "command": ["python3", "daemon.py"], "runtime": "python3"}],
     )
     cfg.update(overrides)
-    return extension_loader.PluginAPIImpl(**cfg)
+    return extension_loader.PluginAPIImpl(extension_loader._PluginAPIConfig(**cfg))
 
 
 def test_child_rejects_only_unavailable_capabilities(tmp_path, monkeypatch):

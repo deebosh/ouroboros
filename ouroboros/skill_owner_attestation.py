@@ -65,6 +65,18 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
                    "manifest reviewer would flag (" + "; ".join(str(w) for w in validate_warnings[:5])
                    + "); fix them or run the full skill_review"),
         )
+    # ABI-1: the NEW-PASS admission predicate is common to every PASS-minting
+    # path — an attestation is a PASS issuance, so a field-less extension is
+    # refused here exactly like in the LLM review path. Nothing is persisted,
+    # so an existing hash-bound PASS (grandfather) stays untouched.
+    from ouroboros.contracts.plugin_api import extension_new_pass_admission_error
+
+    admission_error = extension_new_pass_admission_error(manifest)
+    if admission_error:
+        return _sr.SkillReviewOutcome(
+            skill_name=skill.name, status=_sr.STATUS_PENDING, content_hash=content_hash,
+            error=f"owner-attestation refused (PluginAPI 2.0 admission): {admission_error}",
+        )
     findings = [{
         "item": "owner_attestation",
         "verdict": "PASS",

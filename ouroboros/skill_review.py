@@ -163,6 +163,7 @@ from ouroboros.skill_review_cycles import (  # noqa: E402
     fail_items_from_history_entry as _fail_items_from_history_entry,  # noqa: F401 — re-export
     install_skill_dispatch_stamp as _install_skill_dispatch_stamp,
     persist_rebuttal_flips as _persist_rebuttal_flips,
+    plugin_api_admission_refusal_outcome as _admission_refusal_outcome,
     record_accepted_rebuttal as _record_accepted_rebuttal,  # noqa: F401 — re-export
     review_wave_budget_block as _review_wave_budget_block,
 )
@@ -185,7 +186,14 @@ def _run_deterministic_preflight(
     persist: bool,
     binding: ResolvedResourceBinding | None = None,
 ) -> Optional[SkillReviewOutcome]:
-    """Run deterministic checks before spending tri-model review tokens."""
+    """Run deterministic checks before spending tri-model review tokens.
+
+    FAIL-CLOSED (ABI-1): an exception or unparseable output from the
+    preflight machinery is a structural failure of the gate itself, never a
+    silent pass — in the owner-attestation path this preflight is the ENTIRE
+    replacement for the LLM review, so failing open there would mint trust
+    from a broken gate.
+    """
     preflight_raw = ""
     try:
         from ouroboros.tools.skill_preflight import _handle_skill_preflight
@@ -193,9 +201,22 @@ def _run_deterministic_preflight(
             ctx, skill=skill.name, _resolved_binding=binding,
         )
         preflight = json.loads(preflight_raw)
-    except Exception:
-        preflight = {"ok": True}
-    if not isinstance(preflight, dict) or preflight.get("ok", True):
+    except Exception as exc:
+        # Infrastructure failure of the gate itself: fail closed WITHOUT
+        # persisting — a transient breakage must not clobber live review state
+        # the way a genuine payload gate failure (below) deliberately does.
+        return SkillReviewOutcome(
+            skill_name=skill.name,
+            status=STATUS_PENDING,
+            content_hash=content_hash,
+            error=(
+                "deterministic preflight infrastructure failure "
+                f"(fail-closed, nothing persisted): {type(exc).__name__}: {exc}"
+            ),
+        )
+    if not isinstance(preflight, dict):
+        preflight = {"ok": False, "error": "deterministic preflight returned a non-object result (fail-closed)"}
+    if preflight.get("ok", True):
         return None
     findings = [{
         "item": "skill_preflight",
@@ -263,6 +284,26 @@ def _run_deterministic_preflight(
             list(getattr(manifest, "subscribe_events", []) or []),
         )
     return outcome
+
+
+def _admission_gate(
+    ctx: Any, skill: Any, drive_root: pathlib.Path, content_hash: str, persist: bool,
+) -> Optional[SkillReviewOutcome]:
+    """ABI-1 admission at NEW-PASS issuance, checked BEFORE dispatching a paid
+    panel that could never mint a PASS for these bytes ($0 typed refusal; the
+    byte-identical free replay in the cycles gate still serves a grandfathered
+    PASS first)."""
+    from ouroboros.contracts.plugin_api import extension_new_pass_admission_error
+
+    admission_error = extension_new_pass_admission_error(skill.manifest)
+    if not admission_error:
+        return None
+    return _admission_refusal_outcome(
+        ctx, skill, drive_root,
+        content_hash=content_hash,
+        admission_error=admission_error,
+        persist=persist,
+    )
 
 
 def _official_hub_review_profile(skill: Any) -> str:
@@ -615,6 +656,9 @@ def review_skill(
     )
     if early_outcome is not None:
         return early_outcome
+    admission_outcome = _admission_gate(ctx, skill, drive_root, content_hash, persist)
+    if admission_outcome is not None:
+        return admission_outcome
 
     if len(file_packs) > 1:
         log.warning(

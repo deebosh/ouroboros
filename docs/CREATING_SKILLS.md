@@ -661,6 +661,22 @@ The frozen ABI is documented in
 [`ouroboros/contracts/plugin_api.py`](../ouroboros/contracts/plugin_api.py).
 This section shows the practical shape.
 
+Extensions declare the PluginAPI generation they bind against in the manifest
+(PluginAPI 2.0, ABI 7.0):
+
+```yaml
+plugin_api: "2.0"            # major strict; minor = required minimum
+# or, with required capabilities (closed set, validated per execution mode):
+# plugin_api:
+#   version: "2.0"
+#   capabilities: [register_tool, subscribe_event]
+```
+
+A payload without the field binds the legacy "1.3" generation by
+construction: an already-reviewed payload keeps loading on its existing
+hash-bound review PASS, but a NEW review PASS (LLM review, owner attestation,
+or native-seed trust) is refused until the field is declared.
+
 ```python
 def register(api):
     # Tools — agent-callable, namespaced as ext_<len>_<token>_<name>.

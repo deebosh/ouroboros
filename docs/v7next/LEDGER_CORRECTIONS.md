@@ -2130,3 +2130,33 @@ reference-fact ↔ tip-fact ↔ result.
    ("extension_plugin_api.py:513/:664") re-located on base bytes to
    :513 (companion env filter) and :664 (get_settings protected set) —
    both verified before the ABI-1 alias collapse.
+4. ABI-1 execution notes (owner-ratified design + batch №6 answers):
+   - Admission timing: the ratified text anchors the predicate "at NEW-PASS
+     issuance"; the lane evaluates it EAGERLY, after the $0 free-replay gate
+     and BEFORE the paid panel dispatch — no outcome of a dispatched panel
+     could mint a PASS for an inadmissible payload, so dispatching would only
+     burn reviewer money. Byte-identical re-review of grandfathered bytes
+     still free-replays the recorded PASS first.
+   - Reload-aggregation hole found and closed: a persisted
+     plugin_api_admission FAIL finding re-aggregated to WARNINGS (executable!)
+     on load_review_state; aggregate_skill_review_status now treats it as a
+     structural gate like skill_preflight (PENDING under every enforcement).
+   - Preflight infra failures now fail closed WITHOUT persisting (a transient
+     breakage must not clobber live review state); genuine payload gate
+     failures keep persisting PENDING as before.
+   - 6.2=A scope note: the declarative dependency fingerprint is enforced on
+     the extension liveness path (deps_declaration_desync). Script-skill deps
+     flow through the same read_deps_state/specs-hash gates but their
+     readiness callers are outside this lane's files — residual disclosed for
+     the RC auditor (ABI-7) inventory.
+   - launcher_bootstrap plan ref ":565-579 resync grants" re-located: the
+     grant-carry seam landed as _carry_grants_across_reseed called from
+     _reseed_native_skill_in_place (the :565-579 span on 29e2b045 is
+     _stamp_native_seed_trust's docstring).
+5. Test pinned to the pre-2.0 contract, updated with disclosure:
+   tests/test_native_seed_trust.py seed fixtures wrote type=extension seeds
+   WITHOUT the plugin_api field and asserted the native-trust stamp — under
+   ABI-1 that stamp is correctly refused. The fixtures now declare
+   plugin_api: "2.0" (matching real bundled seeds); the field-less refusal
+   itself is pinned in tests/test_plugin_api_admission.py::
+   test_native_seed_trust_is_closed_to_fieldless_extensions.

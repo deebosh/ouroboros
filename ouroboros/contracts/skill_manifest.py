@@ -87,6 +87,10 @@ class SkillManifest:
     companion_processes: List[Dict[str, Any]] = field(default_factory=list)
     scheduled_tasks: List[Dict[str, Any]] = field(default_factory=list)
     ui_tab: Optional[Dict[str, Any]] = None
+    # ABI-1 (PluginAPI 2.0): optional declared generation, normalized to
+    # {"version": "M.m", "capabilities": [...]}. Absent (None) means the
+    # payload binds against the LEGACY generation by construction.
+    plugin_api: Optional[Dict[str, Any]] = None
     # Human-readable body after SKILL.md frontmatter.
     body: str = ""
     # Unknown fields preserved for forward compatibility.
@@ -142,6 +146,14 @@ class SkillManifest:
             warnings.append("timeout_sec must be positive")
         if self.scheduled_tasks and "supervised_task" not in self.permissions:
             warnings.append("scheduled_tasks require the supervised_task permission")
+        if self.plugin_api is not None:
+            # Semantic validation is owned by the negotiation contract; a
+            # function-level import keeps the contracts package acyclic.
+            from ouroboros.contracts.plugin_api import negotiate_plugin_api
+
+            negotiation = negotiate_plugin_api(self)
+            if not negotiation.ok:
+                warnings.append(f"invalid plugin_api declaration: {negotiation.error}")
         return warnings
 
 
@@ -213,6 +225,7 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
         "companion_processes",
         "scheduled_tasks",
         "ui_tab",
+        "plugin_api",
         "schema_version",
     }
     extras: Dict[str, Any] = {
@@ -242,6 +255,32 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
     ui_tab = data.get("ui_tab")
     if ui_tab is not None and not isinstance(ui_tab, dict):
         raise SkillManifestError("'ui_tab' must be a mapping when provided")
+
+    # ABI-1: structural shape is fail-closed here; the semantic version /
+    # capability contract is enforced by plugin_api negotiation.
+    plugin_api_raw = data.get("plugin_api")
+    plugin_api: Optional[Dict[str, Any]] = None
+    if plugin_api_raw not in (None, ""):
+        if isinstance(plugin_api_raw, str):
+            plugin_api = {"version": plugin_api_raw.strip(), "capabilities": []}
+        elif isinstance(plugin_api_raw, dict):
+            unknown_keys = sorted(set(plugin_api_raw) - {"version", "capabilities"})
+            if unknown_keys:
+                raise SkillManifestError(
+                    f"'plugin_api' mapping has unknown keys {unknown_keys} "
+                    "(expected 'version' and optional 'capabilities')"
+                )
+            version_value = plugin_api_raw.get("version")
+            if not isinstance(version_value, str) or not version_value.strip():
+                raise SkillManifestError("'plugin_api.version' must be a non-empty string")
+            plugin_api = {
+                "version": version_value.strip(),
+                "capabilities": _string_list(plugin_api_raw.get("capabilities")),
+            }
+        else:
+            raise SkillManifestError(
+                "'plugin_api' must be a version string or a mapping when provided"
+            )
 
     companion_raw = data.get("companion_processes", [])
     if companion_raw in (None, ""):
@@ -359,6 +398,7 @@ def _manifest_from_mapping(data: Dict[str, Any], *, body: str) -> SkillManifest:
         companion_processes=companion_processes,
         scheduled_tasks=scheduled_tasks,
         ui_tab=ui_tab,
+        plugin_api=plugin_api,
         body=body,
         raw_extra=extras,
         schema_version=schema_version_int,

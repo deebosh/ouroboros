@@ -33,7 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from ouroboros.contracts.plugin_api import (
     ExtensionRegistrationError,
     ExecutionMode,
-    FORBIDDEN_EXTENSION_SETTINGS,  # noqa: F401
+    FORBIDDEN_SKILL_SETTINGS,  # noqa: F401
     VALID_EXTENSION_PERMISSIONS,  # noqa: F401
     VALID_EXTENSION_ROUTE_METHODS,  # noqa: F401
     available_capabilities,  # noqa: F401
@@ -148,6 +148,7 @@ def _register_out_of_process_surfaces(
     *,
     current_hash: str,
     catalog: Dict[str, Any],
+    plugin_api_generation: str = "",
 ) -> None:
     """Install proxy surface descriptors returned by a child catalog run.
 
@@ -164,55 +165,27 @@ def _register_out_of_process_surfaces(
         item["skills_repo_path"] = str(skill.skill_dir.parent)
         return item
 
+    kinds = (
+        ("tools", _validate_child_tool_descriptor, "name", True, _tools, "tool"),
+        ("routes", _validate_child_route_descriptor, "path", True, _routes, "route"),
+        ("ws_handlers", _validate_child_ws_descriptor, "type", True, _ws_handlers, "ws handler"),
+        ("ui_tabs", _validate_child_ui_descriptor, None, False, _ui_tabs, "ui tab"),
+        ("settings_sections", _validate_child_settings_descriptor, None, False, _settings_sections, "settings section"),
+    )
     with _lock:
-        staged: Dict[str, Dict[str, Any]] = {
-            "tools": {}, "routes": {}, "ws_handlers": {},
-            "ui_tabs": {}, "settings_sections": {},
-        }
-        for raw in catalog.get("tools") or []:
-            item = _validate_child_tool_descriptor(skill.name, dict(raw or {}))
-            name = str(item.get("name") or "")
-            if not name:
-                continue
-            if name in _tools or name in staged["tools"]:
-                raise ExtensionRegistrationError(f"tool {name!r} already registered")
-            staged["tools"][name] = _proxy(item)
-
-        for raw in catalog.get("routes") or []:
-            item = _validate_child_route_descriptor(skill.name, dict(raw or {}))
-            path = str(item.get("path") or "")
-            if not path:
-                continue
-            if path in _routes or path in staged["routes"]:
-                raise ExtensionRegistrationError(f"route {path!r} already registered")
-            staged["routes"][path] = _proxy(item)
-
-        for raw in catalog.get("ws_handlers") or []:
-            item = _validate_child_ws_descriptor(skill.name, dict(raw or {}))
-            msg_type = str(item.get("type") or "")
-            if not msg_type:
-                continue
-            if msg_type in _ws_handlers or msg_type in staged["ws_handlers"]:
-                raise ExtensionRegistrationError(f"ws handler {msg_type!r} already registered")
-            staged["ws_handlers"][msg_type] = _proxy(item)
-
-        for raw in catalog.get("ui_tabs") or []:
-            item = _validate_child_ui_descriptor(skill.name, dict(raw or {}))
-            key = str(item.pop("key", "") or "")
-            if not key:
-                continue
-            if key in _ui_tabs or key in staged["ui_tabs"]:
-                raise ExtensionRegistrationError(f"ui tab {key!r} already registered")
-            staged["ui_tabs"][key] = item
-
-        for raw in catalog.get("settings_sections") or []:
-            item = _validate_child_settings_descriptor(skill.name, dict(raw or {}))
-            key = str(item.pop("key", "") or "")
-            if not key:
-                continue
-            if key in _settings_sections or key in staged["settings_sections"]:
-                raise ExtensionRegistrationError(f"settings section {key!r} already registered")
-            staged["settings_sections"][key] = item
+        staged: Dict[str, Dict[str, Any]] = {kind: {} for kind, *_ in kinds}
+        for kind, validate, key_field, proxied, live, label in kinds:
+            for raw in catalog.get(kind) or []:
+                item = validate(skill.name, dict(raw or {}))
+                key = (
+                    str(item.get(key_field) or "") if key_field
+                    else str(item.pop("key", "") or "")
+                )
+                if not key:
+                    continue
+                if key in live or key in staged[kind]:
+                    raise ExtensionRegistrationError(f"{label} {key!r} already registered")
+                staged[kind][key] = _proxy(item) if proxied else item
 
         # Swap: every descriptor validated; publish the whole snapshot.
         bundle = _extensions.get(skill.name)
@@ -224,6 +197,8 @@ def _register_out_of_process_surfaces(
         bundle.import_root = None
         digest = _uuid.uuid4().hex
         bundle.generation_digest = digest
+        if plugin_api_generation:
+            bundle.plugin_api_generation = plugin_api_generation
         _load_failures.pop(skill.name, None)
         for kind, live, bundle_keys, stamp in (
             ("tools", _tools, bundle.tools, True),
@@ -235,6 +210,8 @@ def _register_out_of_process_surfaces(
             for key, value in staged[kind].items():
                 if stamp:
                     value["extension_generation"] = digest
+                    if plugin_api_generation:
+                        value["plugin_api_generation"] = plugin_api_generation
                 live[key] = value
                 bundle_keys.append(key)
 
@@ -265,6 +242,13 @@ def _spawn_out_of_process_companions(
         for item in (skill.manifest.companion_processes or [])
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     }
+    from ouroboros.contracts.plugin_api import negotiate_plugin_api
+
+    negotiation = negotiate_plugin_api(skill.manifest)
+    if not negotiation.ok:
+        raise ExtensionRegistrationError(
+            f"PluginAPI negotiation refused: {negotiation.error}"
+        )
     api = PluginAPIImpl(_PluginAPIConfig(
         skill_name=skill.name,
         permissions=list(skill.manifest.permissions or []),
@@ -278,6 +262,7 @@ def _spawn_out_of_process_companions(
         skill_dir=skill.skill_dir,
         runtime_skill_dir=skill.skill_dir,
         dependency_site_dirs_enabled=dependency_site_dirs_enabled,
+        plugin_api_generation=negotiation.generation,
     ))
     try:
         for name in names:
@@ -605,6 +590,15 @@ def load_extension(
         )
     if runtime_state["reason"] == "disabled":
         return f"skill {skill.name!r} is disabled"
+    # ABI-1: negotiate the manifest against this host's PluginAPI BEFORE any
+    # plugin import or out-of-process catalog. Absent field -> the LEGACY
+    # generation (grandfathered on its existing hash-bound PASS); a declared
+    # field is held to the full contract with typed, educational refusals.
+    from ouroboros.contracts.plugin_api import negotiate_plugin_api
+
+    negotiation = negotiate_plugin_api(skill.manifest, mode=current_execution_mode())
+    if not negotiation.ok:
+        return f"skill {skill.name!r} PluginAPI negotiation refused: {negotiation.error}"
     entry_path = _plugin_entry_path(skill)
     if entry_path is None:
         return (
@@ -656,7 +650,12 @@ def load_extension(
                     repo_dir=pathlib.Path(__file__).resolve().parents[1],
                     skills_repo_path=skill.skill_dir.parent,
                 )
-                _register_out_of_process_surfaces(skill, current_hash=current_hash, catalog=catalog)
+                _register_out_of_process_surfaces(
+                    skill,
+                    current_hash=current_hash,
+                    catalog=catalog,
+                    plugin_api_generation=negotiation.generation,
+                )
                 _spawn_out_of_process_companions(
                     skill,
                     catalog=catalog,
@@ -714,6 +713,7 @@ def load_extension(
                 skill_dir=skill.skill_dir,
                 runtime_skill_dir=(staged_import_root / "skill") if staged_import_root is not None else None,
                 dependency_site_dirs_enabled=bool(auto_specs),
+                plugin_api_generation=negotiation.generation,
             ))
             if current_execution_mode() is ExecutionMode.IN_PROCESS:
                 api._disclose_model_capable_dispatch("register", "register")

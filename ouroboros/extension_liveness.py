@@ -114,11 +114,22 @@ def _deps_block_reason(drive_root: pathlib.Path, skill: LoadedSkill) -> str:
     try:
         from ouroboros.marketplace.install_specs import install_specs_hash
         from ouroboros.marketplace.isolated_deps import read_deps_state
-        from ouroboros.skill_dependencies import auto_install_specs_for_skill
+        from ouroboros.skill_dependencies import (
+            auto_install_specs_for_skill,
+            declared_dependency_names,
+            payload_declared_install_specs,
+        )
 
         auto_specs = auto_install_specs_for_skill(drive_root, skill)
         if not auto_specs:
             return ""
+        # 6.2=A (ABI-1): the EFFECTIVE dependency set must match the names
+        # declared by hash-covered payload carriers — an unhashed state-plane
+        # record can never widen (or swap) the dependency surface silently.
+        if declared_dependency_names(auto_specs) != declared_dependency_names(
+            payload_declared_install_specs(skill)
+        ):
+            return "deps_declaration_desync"
         deps_state = read_deps_state(drive_root, skill.name, skill.skill_dir)
         status = str(deps_state.get("status") or "")
         if status != "installed":

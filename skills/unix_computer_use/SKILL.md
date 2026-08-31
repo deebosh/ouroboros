@@ -1,9 +1,10 @@
 ---
 name: unix_computer_use
 description: Local and remote desktop observation/input tools with coordinate normalization (local macOS/Linux by default; optional OSWorld HTTP and SSH Mac backends).
-version: 0.4.0
+version: 0.4.1
 type: extension
 entry: plugin.py
+plugin_api: "2.0"
 runtime: python3
 permissions: [tool, subprocess, net]
 env_from_settings: []

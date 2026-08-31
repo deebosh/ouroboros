@@ -478,6 +478,80 @@ def skill_review_cycles_refusal(
     )
 
 
+def plugin_api_admission_refusal_outcome(
+    ctx: Any,
+    skill: Any,
+    drive_root: pathlib.Path,
+    *,
+    content_hash: str,
+    admission_error: str,
+    persist: bool,
+) -> Any:
+    """ABI-1: typed $0 refusal at NEW-PASS issuance for an inadmissible extension.
+
+    The predicate (``extension_new_pass_admission_error``) is common to every
+    PASS-minting path and lives OUTSIDE the deterministic preflight. Clobber
+    guard: when the SAME bytes already hold a live executable verdict (the
+    grandfather), nothing is persisted — a repeat review must never destroy
+    the hash-bound PASS the grandfather construction depends on.
+    """
+    from ouroboros.skill_loader import SkillReviewState, save_review_state
+    from ouroboros.skill_review import SkillReviewOutcome, _append_skill_review_history
+    from ouroboros.skill_review_status import (
+        STATUS_CLEAN,
+        STATUS_WARNINGS,
+        normalize_skill_review_status,
+    )
+
+    findings = [{
+        "item": "plugin_api_admission",
+        "verdict": "FAIL",
+        "severity": "critical",
+        "reason": admission_error,
+        "model": "plugin_api_admission",
+    }]
+    live = getattr(skill, "review", None)
+    live_pass = bool(
+        live is not None
+        and not live.is_stale_for(content_hash)
+        and normalize_skill_review_status(live.status) in (STATUS_CLEAN, STATUS_WARNINGS)
+    )
+    outcome = SkillReviewOutcome(
+        skill_name=skill.name,
+        status=STATUS_PENDING,
+        findings=findings,
+        reviewer_models=["plugin_api_admission"],
+        content_hash=content_hash,
+        error=(
+            "new review PASS refused (PluginAPI 2.0 admission): " + admission_error
+            + (
+                "; the existing hash-bound PASS for these bytes is preserved "
+                "(grandfather) and nothing was persisted"
+                if live_pass else ""
+            )
+        ),
+    )
+    if persist and not live_pass:
+        review_state = SkillReviewState(
+            status=outcome.status,
+            content_hash=content_hash,
+            findings=findings,
+            reviewer_models=outcome.reviewer_models,
+            timestamp=utc_now_iso(),
+        )
+        save_review_state(drive_root, skill.name, review_state)
+        if not getattr(ctx, "_skill_review_lifecycle_guard", False):
+            _append_skill_review_history(
+                drive_root,
+                skill.name,
+                status=outcome.status,
+                content_hash=content_hash,
+                findings=findings,
+            )
+        skill.review = review_state
+    return outcome
+
+
 def install_skill_dispatch_stamp(
     ctx: Any,
     drive_root: pathlib.Path,

@@ -27,7 +27,9 @@ from typing import Any, Callable, Dict, Optional, Sequence
 from ouroboros.contracts.plugin_api import (
     ExecutionMode,
     ExtensionRegistrationError,
-    FORBIDDEN_EXTENSION_SETTINGS,
+    FORBIDDEN_SKILL_SETTINGS,
+    LEGACY_PLUGIN_API_GENERATION,
+    RuntimeInfo,
     VALID_EXTENSION_PERMISSIONS,
     VALID_EXTENSION_ROUTE_METHODS,
     available_capabilities,
@@ -152,9 +154,9 @@ def set_ws_broadcaster(broadcaster: Callable[[dict], None] | None) -> None:
 class PluginAPIImpl:
     """PluginAPI bound to one skill, permission set, and state dir."""
 
-    def __init__(self, config: _PluginAPIConfig | None = None, **legacy: Any) -> None:
-        if config is None:
-            config = _PluginAPIConfig(**legacy)
+    def __init__(self, config: _PluginAPIConfig) -> None:
+        # ABI-1 (7.0): the legacy keyword construction path is gone; every
+        # caller builds an explicit _PluginAPIConfig.
         self._skill = config.skill_name
         self._permissions = frozenset(str(p).strip() for p in (config.permissions or []))
         self._env_allow = frozenset(str(k).strip() for k in (config.env_allowlist or []))
@@ -179,7 +181,9 @@ class PluginAPIImpl:
         self._registration_closed = False
         self._runtime_closing = False
         self._runtime_closed = False
-        self._plugin_api_generation = str(getattr(config, "plugin_api_generation", "") or "")
+        self._plugin_api_generation = (
+            str(config.plugin_api_generation or "") or LEGACY_PLUGIN_API_GENERATION
+        )
         # ABI-9 staging area: register() accumulates surfaces and side-effect
         # requests here; the loader publishes them as one atomic snapshot.
         self._staged = _StagedRegistrations()
@@ -533,7 +537,7 @@ class PluginAPIImpl:
         reserved_env = {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL"}
         for key, value in (spec.get("env") or {}).items():
             key_text = str(key)
-            if key_text.upper() in FORBIDDEN_EXTENSION_SETTINGS or key_text.upper() in reserved_env:
+            if key_text.upper() in FORBIDDEN_SKILL_SETTINGS or key_text.upper() in reserved_env:
                 continue
             base_env[key_text] = str(value)
         token = self.get_skill_token()
@@ -818,7 +822,7 @@ class PluginAPIImpl:
                 if self._runtime_closing or self._runtime_closed or self._skill in _unloading:
                     return {}
             out: Dict[str, Any] = {}
-            protected_upper = {k.upper() for k in FORBIDDEN_EXTENSION_SETTINGS}
+            protected_upper = {k.upper() for k in FORBIDDEN_SKILL_SETTINGS}
             protected_upper.update(requested_core_setting_keys(list(self._env_allow)))
             for raw_key in keys or ():
                 key = str(raw_key).strip()
@@ -855,7 +859,7 @@ class PluginAPIImpl:
     def get_skill_token(self) -> SkillToken:
         return SkillToken(mint_skill_token(self._state_dir, self._skill, self._skill_dir))
 
-    def get_runtime_info(self) -> Dict[str, Any]:
+    def get_runtime_info(self) -> RuntimeInfo:
         """Return the PluginAPI runtime-info snapshot without manifest I/O."""
         try:
             from ouroboros.config import (
@@ -898,4 +902,7 @@ class PluginAPIImpl:
             # instead of calling an unavailable capability and aborting register().
             "execution_mode": mode.value,
             "capabilities": sorted(available_capabilities(mode)),
+            # ABI-1: the generation NEGOTIATED for this extension (LEGACY for
+            # grandfathered field-less payloads), not the host's own version.
+            "plugin_api_version": self._plugin_api_generation,
         }

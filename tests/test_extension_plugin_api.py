@@ -15,7 +15,7 @@ import pathlib
 
 from ouroboros import extension_loader
 from ouroboros.contracts.plugin_api import (
-    FORBIDDEN_EXTENSION_SETTINGS,
+    FORBIDDEN_SKILL_SETTINGS,
     PluginAPI,
     VALID_EXTENSION_PERMISSIONS,
 )
@@ -30,13 +30,13 @@ from tests._extension_loader_shared import (  # noqa: F401  (autouse fixture app
 
 def test_plugin_api_impl_matches_protocol():
     """Runtime-checkable Protocol must structurally accept PluginAPIImpl."""
-    impl = extension_loader.PluginAPIImpl(
+    impl = extension_loader.PluginAPIImpl(extension_loader._PluginAPIConfig(
         skill_name="x",
         permissions=(),
         env_allowlist=(),
         state_dir=pathlib.Path("/tmp"),
         settings_reader=lambda: {},
-    )
+    ))
     assert isinstance(impl, PluginAPI)
     info = impl.get_runtime_info()
     assert info["app_version"]
@@ -45,11 +45,18 @@ def test_plugin_api_impl_matches_protocol():
         "capabilities",
         "data_dir",
         "execution_mode",
+        "plugin_api_version",
         "runtime_mode",
         "server_port",
         "skill_dir",
         "state_dir",
     ]
+    # The frozen RuntimeInfo contract and the live shape stay in lockstep.
+    from ouroboros.contracts.plugin_api import LEGACY_PLUGIN_API_GENERATION, RuntimeInfo
+
+    assert sorted(info) == sorted(RuntimeInfo.__annotations__)
+    # A directly-built impl carries no negotiated generation -> LEGACY.
+    assert info["plugin_api_version"] == LEGACY_PLUGIN_API_GENERATION
     # In-process build sees the full capability set including subscribe_event.
     assert info["execution_mode"] == "in_process"
     assert "subscribe_event" in info["capabilities"]
@@ -64,13 +71,13 @@ def test_plugin_api_runtime_info_uses_port_file(tmp_path, monkeypatch):
     port_file.parent.mkdir()
     port_file.write_text("9012\n", encoding="utf-8")
     monkeypatch.setattr(cfg, "PORT_FILE", port_file)
-    impl = extension_loader.PluginAPIImpl(
+    impl = extension_loader.PluginAPIImpl(extension_loader._PluginAPIConfig(
         skill_name="x",
         permissions=(),
         env_allowlist=(),
         state_dir=tmp_path / "state",
         settings_reader=lambda: {},
-    )
+    ))
 
     assert impl.get_runtime_info()["server_port"] == 9012
 
@@ -102,10 +109,10 @@ def test_register_settings_section_lifecycle(tmp_path):
 def test_forbidden_extension_settings_carries_repo_secrets():
     """The forbidden-settings tuple must match the repo-credentials set
     ``skill_exec`` already refuses to forward."""
-    assert "OPENROUTER_API_KEY" in FORBIDDEN_EXTENSION_SETTINGS
-    assert "MINIMAX_API_KEY" in FORBIDDEN_EXTENSION_SETTINGS
-    assert "GITHUB_TOKEN" in FORBIDDEN_EXTENSION_SETTINGS
-    assert "OUROBOROS_NETWORK_PASSWORD" in FORBIDDEN_EXTENSION_SETTINGS
+    assert "OPENROUTER_API_KEY" in FORBIDDEN_SKILL_SETTINGS
+    assert "MINIMAX_API_KEY" in FORBIDDEN_SKILL_SETTINGS
+    assert "GITHUB_TOKEN" in FORBIDDEN_SKILL_SETTINGS
+    assert "OUROBOROS_NETWORK_PASSWORD" in FORBIDDEN_SKILL_SETTINGS
 
 
 def test_valid_permissions_is_closed_set():
@@ -140,14 +147,14 @@ def test_get_settings_blocks_core_keys_without_grant(tmp_path):
     assert "missing owner grants" in err
     assert "OPENROUTER_API_KEY" in err
 
-    impl = extension_loader.PluginAPIImpl(
+    impl = extension_loader.PluginAPIImpl(extension_loader._PluginAPIConfig(
         skill_name="envtest",
         permissions=["read_settings"],
         env_allowlist=["OPENROUTER_API_KEY", "TIMEZONE", "MY_OK"],
         state_dir=tmp_path,
         settings_reader=lambda: settings_snapshot,
         granted_keys=[],
-    )
+    ))
     got = impl.get_settings(["OPENROUTER_API_KEY", "TIMEZONE", "MY_OK", "RANDOM_OTHER"])
     assert "OPENROUTER_API_KEY" not in got
     assert got["TIMEZONE"] == "UTC"
@@ -168,13 +175,13 @@ def test_get_settings_rechecks_runtime_close_after_reader_returns(tmp_path):
         assert release_reader.wait(1.0)
         return {"MY_OK": "visible"}
 
-    impl = extension_loader.PluginAPIImpl(
+    impl = extension_loader.PluginAPIImpl(extension_loader._PluginAPIConfig(
         skill_name="settings_race",
         permissions=["read_settings"],
         env_allowlist=["MY_OK"],
         state_dir=tmp_path,
         settings_reader=settings_reader,
-    )
+    ))
     result = []
     thread = threading.Thread(target=lambda: result.append(impl.get_settings(["MY_OK"])))
     thread.start()
@@ -297,26 +304,26 @@ def test_get_settings_returns_core_key_with_grant(tmp_path):
     err = extension_loader.load_extension(loaded, lambda: settings_snapshot, drive_root=drive_root)
     assert err is None, err
 
-    impl = extension_loader.PluginAPIImpl(
+    impl = extension_loader.PluginAPIImpl(extension_loader._PluginAPIConfig(
         skill_name="granted_ext",
         permissions=["read_settings"],
         env_allowlist=["OPENROUTER_API_KEY", "TIMEZONE"],
         state_dir=tmp_path,
         settings_reader=lambda: settings_snapshot,
         granted_keys=["OPENROUTER_API_KEY"],
-    )
+    ))
     got = impl.get_settings(["OPENROUTER_API_KEY", "TIMEZONE"])
     assert got.get("OPENROUTER_API_KEY") == "sk-allowed"
     assert got.get("TIMEZONE") == "UTC"
 
     # Grant on the WRONG content hash must not authorise — the loader
     # builds an empty granted_keys list and drops the value.
-    impl_no_grant = extension_loader.PluginAPIImpl(
+    impl_no_grant = extension_loader.PluginAPIImpl(extension_loader._PluginAPIConfig(
         skill_name="granted_ext",
         permissions=["read_settings"],
         env_allowlist=["OPENROUTER_API_KEY", "TIMEZONE"],
         state_dir=tmp_path,
         settings_reader=lambda: settings_snapshot,
         granted_keys=[],
-    )
+    ))
     assert "OPENROUTER_API_KEY" not in impl_no_grant.get_settings(["OPENROUTER_API_KEY"])

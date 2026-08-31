@@ -1208,8 +1208,19 @@ def test_plugin_api_surface_is_frozen():
 def test_plugin_api_version_matches_documented_surface():
     from ouroboros.contracts.plugin_api import PLUGIN_API_VERSION, VALID_EXTENSION_PERMISSIONS
 
-    assert PLUGIN_API_VERSION == "1.4"
+    assert PLUGIN_API_VERSION == "2.0"
     assert "presence" in VALID_EXTENSION_PERMISSIONS
+    # ABI-1: absent manifest field binds the LEGACY generation by construction
+    # (owner-ratified: 1.3, deliberately NOT 1.4), and the version's surface
+    # fingerprint is recorded (fail-closed in both directions).
+    from ouroboros.contracts.plugin_api import (
+        LEGACY_PLUGIN_API_GENERATION,
+        PLUGIN_API_SURFACE_FINGERPRINTS,
+        plugin_api_surface_fingerprint,
+    )
+
+    assert LEGACY_PLUGIN_API_GENERATION == "1.3"
+    assert PLUGIN_API_SURFACE_FINGERPRINTS[PLUGIN_API_VERSION] == plugin_api_surface_fingerprint()
 
 
 def test_extension_route_methods_contract_matches_server_dispatch():

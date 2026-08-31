@@ -83,14 +83,15 @@ def aggregate_skill_review_status(
     against the live catalog. Deterministic preflight/sensitive/binary/path/
     dependency/grant/enablement gates remain fail-closed outside this function.
     """
-    # A deterministic preflight FAIL is a structural gate failure, not an LLM
-    # verdict. It persists as STATUS_PENDING (non-executable under every
-    # enforcement mode) and MUST reload that way — never as advisory-overridable
-    # BLOCKERS — so honor it before the severity-driven aggregation below.
+    # A deterministic preflight FAIL — and the ABI-1 PluginAPI admission
+    # refusal — are structural gate failures, not LLM verdicts. They persist
+    # as STATUS_PENDING (non-executable under every enforcement mode) and MUST
+    # reload that way — never as advisory-overridable BLOCKERS or WARNINGS —
+    # so honor them before the severity-driven aggregation below.
     for finding in findings:
         if finding.get("verdict") == "FAIL" and (
-            finding.get("item") == "skill_preflight"
-            or str(finding.get("model") or "") == "deterministic_preflight"
+            finding.get("item") in ("skill_preflight", "plugin_api_admission")
+            or str(finding.get("model") or "") in ("deterministic_preflight", "plugin_api_admission")
         ):
             return STATUS_PENDING
     is_official_hub = review_profile == "official_hub"
