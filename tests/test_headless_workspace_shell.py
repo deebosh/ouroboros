@@ -100,11 +100,11 @@ def test_workspace_run_shell_cwd_allows_scratch_and_explicit_system(tmp_path, mo
     assert "SHELL_CWD_BLOCKED" in runtime_data_cwd
     # READ-ONLY git at a runtime target is ALLOWED (owner contract "read-only
     # everywhere"; the f14baf8f false-block class). Only MUTATING git is target-checked.
-    git_read = _shell_guard_text(registry, 
+    git_read = _shell_guard_text(registry,
         {"cmd": ["git", "-C", str(system_repo), "status"]}, "advanced"
     )
     assert git_read is None, git_read
-    git_escape = _shell_guard_text(registry, 
+    git_escape = _shell_guard_text(registry,
         {"cmd": ["git", "-C", str(system_repo), "commit", "-m", "x"]}, "advanced"
     )
     assert git_escape and "WORKSPACE_GIT_BLOCKED" in git_escape
@@ -321,7 +321,7 @@ def test_external_workspace_shell_allows_task_local_git(tmp_path, monkeypatch):
 
     # The read-only exemption is ALL-or-NOTHING per segment: a compound that only
     # STARTS with git still meets the runtime/secret read guard in full.
-    mixed = _shell_guard_text(registry, 
+    mixed = _shell_guard_text(registry,
         {"cmd": ["sh", "-c", f"git status && cat {(data / 'settings.json').as_posix()}"]},
         "advanced",
     )
@@ -395,17 +395,17 @@ def test_workspace_run_shell_allows_absolute_cwd_under_workspace_and_child_drive
     blocked = registry.execute("run_command", {"cmd": ["pwd"], "cwd": str(parent_data / "logs")})
     assert "SHELL_CWD_BLOCKED" in blocked
     # Read-only git is allowed everywhere now; the escape check uses a MUTATING form.
-    git_read = _shell_guard_text(registry, 
+    git_read = _shell_guard_text(registry,
         {"cmd": ["git", "-C", "../other-repo", "status"], "cwd": str(child_dir)},
         "advanced",
     )
     assert git_read is None, git_read
-    git_escape = _shell_guard_text(registry, 
+    git_escape = _shell_guard_text(registry,
         {"cmd": ["git", "-C", "..", "commit", "-m", "x"], "cwd": str(child_dir)},
         "advanced",
     )
     assert git_escape and "WORKSPACE_GIT_BLOCKED" in git_escape, git_escape
-    protected_escape = _shell_guard_text(registry, 
+    protected_escape = _shell_guard_text(registry,
         {"cmd": ["touch", "../data/state/state.json"]},
         "pro",
     )

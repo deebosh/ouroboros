@@ -415,5 +415,3 @@ def test_write_edit_search_and_forward_terminals_are_native(tmp_path, tool, args
         assert adapter_code == "LEGACY_WARNING"
     else:
         assert result.code == adapter_code
-
-

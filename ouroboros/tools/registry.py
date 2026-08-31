@@ -304,5 +304,3 @@ def _owner_control_mention_blocks(text_lower: str, detected: bool, writeish: boo
 # LOCAL_READONLY_SUBAGENT_TOOL_NAMES leaked subagent-only tools:
 # schedule_subagent spawns durable children, wait_task/wait_tasks BLOCK a
 # short turn, browser_action INTERACTS with pages).
-
-

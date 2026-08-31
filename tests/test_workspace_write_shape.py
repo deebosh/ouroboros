@@ -324,7 +324,7 @@ def test_sed_script_write_channels_stay_write_shaped(tmp_path):
     # reading host scratch passes.
     reg = _registry(tmp_path, mode="external")
     data = tmp_path / "data"
-    out = _shell_guard_text(reg, 
+    out = _shell_guard_text(reg,
         {"cmd": ["sed", f"w {data / 'x'}", "/etc/hostname"], "cwd": str(tmp_path / "workspace")},
         "advanced",
     ) or ""
@@ -333,7 +333,7 @@ def test_sed_script_write_channels_stay_write_shaped(tmp_path):
     scratch.mkdir()
     target = scratch / "f.txt"
     target.write_text("x", encoding="utf-8")
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["sed", "-n", "/delete/p", str(target)], "cwd": str(tmp_path / "workspace")},
         "advanced",
     ) is None

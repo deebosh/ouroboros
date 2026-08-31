@@ -323,7 +323,7 @@ def test_external_workspace_shell_can_write_configured_deliverable_only_at_top_l
     assert "ARTIFACT_OUTPUT_UNDECLARED" in relative_result
 
     arbitrary_home_target = home / "other.txt"
-    blocked = _shell_guard_text(reg, 
+    blocked = _shell_guard_text(reg,
         {"cmd": ["cp", str(source), str(arbitrary_home_target)], "cwd": str(workspace)},
         "advanced",
     )
@@ -342,7 +342,7 @@ def test_external_workspace_shell_can_write_configured_deliverable_only_at_top_l
         ),
     )
     reg.set_context(child_ctx)
-    child_blocked = _shell_guard_text(reg, 
+    child_blocked = _shell_guard_text(reg,
         {"cmd": command, "cwd": str(workspace)}, "advanced",
     )
     assert child_blocked and "WORKSPACE_SHELL_BLOCKED" in child_blocked
@@ -361,7 +361,7 @@ def test_external_workspace_shell_can_write_configured_deliverable_only_at_top_l
     else:
         targets.append(deliverables / "escape" / "written.txt")
     for target in targets:
-        blocked_target = _shell_guard_text(reg, 
+        blocked_target = _shell_guard_text(reg,
             {"cmd": ["touch", str(target)], "cwd": str(workspace)}, "advanced",
         )
         assert blocked_target and (
@@ -398,7 +398,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
     )
     reg = ToolRegistry(repo_dir=system, drive_root=data)
     reg.set_context(ctx)
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["touch", str(deliverables / "ordinary.txt")], "cwd": str(workspace)},
         "advanced",
     ) is None
@@ -407,7 +407,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         deliverables / ".ssh" / "key",
         deliverables / "token.pem",
     ):
-        blocked = _shell_guard_text(reg, 
+        blocked = _shell_guard_text(reg,
             {"cmd": ["touch", str(target)], "cwd": str(workspace)}, "advanced",
         )
         assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
@@ -428,7 +428,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         ["cp", "--context", str(hidden_source), str(deliverables)],
         ["mv", str(hidden_source), str(deliverables)],
     ):
-        blocked = _shell_guard_text(reg, 
+        blocked = _shell_guard_text(reg,
             {"cmd": command, "cwd": str(workspace)}, "advanced",
         )
         assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
@@ -441,7 +441,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         ["cp", "-as", str(source), str(deliverables)],
         ["cp", "--symbolic-link", str(source), str(deliverables)],
     ):
-        blocked = _shell_guard_text(reg, 
+        blocked = _shell_guard_text(reg,
             {"cmd": command, "cwd": str(workspace)}, "advanced",
         )
         assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
@@ -449,7 +449,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
     link_source = workspace / "ordinary.txt"
     link_source.write_text("ordinary", encoding="utf-8")
     try:
-        link_blocked = _shell_guard_text(reg, 
+        link_blocked = _shell_guard_text(reg,
             {"cmd": ["ln", "-s", str(link_source), str(deliverables)], "cwd": str(workspace)},
             "advanced",
         )
@@ -459,7 +459,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
 
     ordinary_move = workspace / "move-me.txt"
     ordinary_move.write_text("move", encoding="utf-8")
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["mv", str(ordinary_move), str(deliverables)], "cwd": str(workspace)},
         "advanced",
     ) is None
@@ -468,7 +468,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         moved_link.symlink_to(link_source)
     except OSError:
         pytest.skip("symlinks unavailable on this platform")
-    moved_link_blocked = _shell_guard_text(reg, 
+    moved_link_blocked = _shell_guard_text(reg,
         {"cmd": ["mv", str(moved_link), str(deliverables)], "cwd": str(workspace)},
         "advanced",
     )
@@ -476,13 +476,13 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
 
     # A regular source remains usable with link-preserving flags; only an
     # actual source symlink needs the payload-target check.
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["cp", "-P", str(ordinary_move), str(deliverables)], "cwd": str(workspace)},
         "advanced",
     ) is None
     # The uppercase ``-S`` suffix option must not be mistaken for lowercase
     # ``cp -s`` symlink creation when its attached suffix contains an ``s``.
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["cp", "-Ssuffix", str(ordinary_move), str(deliverables)], "cwd": str(workspace)},
         "advanced",
     ) is None
@@ -495,7 +495,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         suffix_link.symlink_to(suffix_target)
     except OSError:
         pytest.skip("symlinks unavailable on this platform")
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["cp", "-Sbak", str(suffix_link), str(deliverables)], "cwd": str(workspace)},
         "advanced",
     ) is None
@@ -510,7 +510,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         ["cp", "-d", str(relative_link), str(deliverables)],
         ["cp", "--preserve=links", str(relative_link), str(deliverables)],
     ):
-        blocked = _shell_guard_text(reg, 
+        blocked = _shell_guard_text(reg,
             {"cmd": command, "cwd": str(workspace)}, "advanced",
         )
         assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
@@ -532,15 +532,15 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         ["ln", "-sr", "ordinary.txt", str(deliverables / "ln-relative-cluster")],
         ["ln", "-s", "--relative", "ordinary.txt", str(deliverables / "ln-relative-long")],
     ):
-        blocked = _shell_guard_text(reg, 
+        blocked = _shell_guard_text(reg,
             {"cmd": command, "cwd": str(workspace)}, "advanced",
         )
         assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["cp", str(ordinary_move), str(deliverables / "copy-explicit.txt")], "cwd": str(workspace)},
         "advanced",
     ) is None
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["mv", str(ordinary_move), str(deliverables / "move-explicit.txt")], "cwd": str(workspace)},
         "advanced",
     ) is None
@@ -549,7 +549,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
     # Deliverables; the fix must not become a blanket denial of ``ln -r``.
     inside = deliverables / "inside.txt"
     inside.write_text("inside", encoding="utf-8")
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["ln", "-s", "-r", str(inside), str(deliverables / "inside-link")], "cwd": str(workspace)},
         "advanced",
     ) is None
@@ -559,7 +559,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         link.symlink_to(outside, target_is_directory=True)
     except OSError:
         pytest.skip("symlinks unavailable on this platform")
-    blocked_link = _shell_guard_text(reg, 
+    blocked_link = _shell_guard_text(reg,
         {"cmd": ["touch", str(link / "escaped.txt")], "cwd": str(workspace)},
         "advanced",
     )
@@ -570,7 +570,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         alias.symlink_to(deliverables, target_is_directory=True)
     except OSError:
         pytest.skip("symlinks unavailable on this platform")
-    alias_into_deliverables = _shell_guard_text(reg, 
+    alias_into_deliverables = _shell_guard_text(reg,
         {"cmd": ["touch", str(alias / ".env")], "cwd": str(workspace)},
         "advanced",
     )
@@ -606,7 +606,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         ["touch", str(hidden_alias)],
         ["cp", str(source), str(hidden_alias)],
     ):
-        blocked = _shell_guard_text(reg, 
+        blocked = _shell_guard_text(reg,
             {"cmd": command, "cwd": str(workspace)}, "advanced",
         )
         assert blocked and "WORKSPACE_SHELL_BLOCKED" in blocked
@@ -632,7 +632,7 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
     )
     child_registry = ToolRegistry(repo_dir=system, drive_root=data)
     child_registry.set_context(child_ctx)
-    child_blocked = _shell_guard_text(child_registry, 
+    child_blocked = _shell_guard_text(child_registry,
         {"cmd": ["touch", str(deliverables / "child.txt")], "cwd": str(workspace)},
         "advanced",
     )
@@ -658,16 +658,16 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
     )
     executor_registry = ToolRegistry(repo_dir=system, drive_root=data)
     executor_registry.set_context(executor_ctx)
-    assert _shell_guard_text(executor_registry, 
+    assert _shell_guard_text(executor_registry,
         {"cmd": ["touch", "/deliverables/ordinary-backend.txt"], "cwd": str(workspace)},
         "advanced",
     ) is None
-    backend_hidden = _shell_guard_text(executor_registry, 
+    backend_hidden = _shell_guard_text(executor_registry,
         {"cmd": ["touch", "/deliverables/.env"], "cwd": str(workspace)},
         "advanced",
     )
     assert backend_hidden and "WORKSPACE_SHELL_BLOCKED" in backend_hidden
-    backend_link = _shell_guard_text(executor_registry, 
+    backend_link = _shell_guard_text(executor_registry,
         {"cmd": ["touch", "/deliverables/link/backend.txt"], "cwd": str(workspace)},
         "advanced",
     )
@@ -713,14 +713,14 @@ def test_external_workspace_deliverables_guard_maps_executor_paths(tmp_path, mon
         ["cp", "/workspace/dist/app.html", "/deliverables/app.html"],
         ["sh", "-c", "cp /workspace/dist/app.html /deliverables/app2.html"],
     ):
-        assert _shell_guard_text(reg, 
+        assert _shell_guard_text(reg,
             {"cmd": command, "cwd": str(workspace)}, "advanced",
         ) is None
 
     # Case-insensitive host semantics must agree with user_files_path_block_reason
     # for a new target whose spelling differs from the configured root.
     casefolded = pathlib.Path(str(deliverables).casefold()) / "casefold.html"
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["cp", "/workspace/dist/app.html", str(casefolded)], "cwd": str(workspace)},
         "advanced",
     ) is None
@@ -750,13 +750,13 @@ def test_external_workspace_deliverables_guard_maps_executor_paths(tmp_path, mon
     assert "ARTIFACT_OUTPUT_UNDECLARED" in backend_result
     assert (deliverables / "backend.html").exists()
 
-    backend_hidden = _shell_guard_text(reg, 
+    backend_hidden = _shell_guard_text(reg,
         {"cmd": ["touch", "/deliverables/.env"], "cwd": str(workspace)},
         "advanced",
     )
     assert backend_hidden and "WORKSPACE_SHELL_BLOCKED" in backend_hidden
 
-    blocked = _shell_guard_text(reg, 
+    blocked = _shell_guard_text(reg,
         {"cmd": ["cp", "/workspace/dist/app.html", "/tmp/not-deliverables.html"], "cwd": str(workspace)},
         "advanced",
     )
@@ -800,16 +800,16 @@ def test_executor_deliverables_root_symlink_keeps_target_policy(tmp_path, monkey
     )
     reg = ToolRegistry(repo_dir=system, drive_root=data)
     reg.set_context(ctx)
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": ["touch", "/deliverables/ordinary.txt"], "cwd": str(workspace)},
         "advanced",
     ) is None
-    hidden = _shell_guard_text(reg, 
+    hidden = _shell_guard_text(reg,
         {"cmd": ["touch", "/deliverables/.env"], "cwd": str(workspace)},
         "advanced",
     )
     assert hidden and "WORKSPACE_SHELL_BLOCKED" in hidden
-    escaped = _shell_guard_text(reg, 
+    escaped = _shell_guard_text(reg,
         {"cmd": ["touch", "/deliverables/escape/file"], "cwd": str(workspace)},
         "advanced",
     )
@@ -834,7 +834,7 @@ def test_deliverables_carveout_rejects_a_root_containing_protected_drives(tmp_pa
     )
     reg = ToolRegistry(repo_dir=system, drive_root=data)
     reg.set_context(ctx)
-    blocked = _shell_guard_text(reg, 
+    blocked = _shell_guard_text(reg,
         {"cmd": ["touch", str(runtime / "sibling.txt")], "cwd": str(workspace)},
         "advanced",
     )
@@ -858,7 +858,7 @@ def test_malformed_deliverables_config_fails_closed_without_shell_crash(tmp_path
     )
     reg = ToolRegistry(repo_dir=system, drive_root=data)
     reg.set_context(ctx)
-    blocked = _shell_guard_text(reg, 
+    blocked = _shell_guard_text(reg,
         {"cmd": ["touch", str(tmp_path / "home" / "out.html")], "cwd": str(workspace)},
         "advanced",
     )
@@ -1002,7 +1002,7 @@ def test_deliverables_carveout_respects_presence_resource_ceiling(tmp_path, monk
     )
     reg = ToolRegistry(repo_dir=system, drive_root=data)
     reg.set_context(ctx)
-    blocked = _shell_guard_text(reg, 
+    blocked = _shell_guard_text(reg,
         {"cmd": ["cp", str(source), str(deliverables / "out.html")], "cwd": str(workspace)},
         "advanced",
     )
@@ -1062,7 +1062,7 @@ def test_deliverables_shell_presence_grant_preserves_declared_and_undeclared_cus
     reg.set_context(ctx)
     destination = deliverables / "out.html"
     command = ["cp", str(source), str(destination)]
-    assert _shell_guard_text(reg, 
+    assert _shell_guard_text(reg,
         {"cmd": command, "cwd": str(workspace)}, "advanced",
     ) is None
 
@@ -1132,7 +1132,7 @@ def test_deliverables_presence_prefix_uses_logical_user_files_path(
         cwd_root="active_workspace",
     )
     assert resolved is None and "presence" in reason.lower()
-    blocked = _shell_guard_text(reg, 
+    blocked = _shell_guard_text(reg,
         {"cmd": ["touch", str(deliverables / "report.html")], "cwd": str(workspace)},
         "advanced",
     )

@@ -124,12 +124,12 @@ def test_registry_level_read_carve_end_to_end(tmp_path):
     reg.set_context(ToolContext(repo_dir=system, drive_root=data, task_id="carve-test"))
 
     # Route inspection of an owner endpoint in the repo source: allowed.
-    out = _shell_guard_text(reg, 
+    out = _shell_guard_text(reg,
         {"cmd": ["rg", "/api/owner/safety-mode", str(system)], "cwd": str(system)}, "advanced"
     )
     assert out is None
     # An HTTP client naming the same endpoint: blocked, whatever verb it spells.
-    out = _shell_guard_text(reg, 
+    out = _shell_guard_text(reg,
         {
             "cmd": [
                 "python3",
