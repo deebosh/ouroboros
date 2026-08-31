@@ -783,7 +783,7 @@ def test_replayed_schedule_event_keeps_one_physical_task_and_transition(
     def unexpected_constraint_resolution(*_args, **_kwargs):
         raise AssertionError("a replay must stop before workspace provisioning")
 
-    monkeypatch.setattr(events, "_resolve_subagent_constraint", unexpected_constraint_resolution)
+    monkeypatch.setattr(schedule_module, "_resolve_subagent_constraint", unexpected_constraint_resolution)
     events._handle_schedule_task(event, ctx)
     replayed = json.loads(
         (tmp_path / "task_results" / "same-child.json").read_text(encoding="utf-8")

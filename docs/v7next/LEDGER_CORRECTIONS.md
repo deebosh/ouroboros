@@ -1460,3 +1460,16 @@ with evidence, found lane by lane. Applied to the campaign's carried ledger at F
    refused by the tool for leaf-resident names (ambiguous ownership, by
    design). (b) `_build_scheduled_task_payload` restored as a noqa facade
    import — tests import it from supervisor.events.
+4. SUPERSEDING correction to entry 1 of this section (audit 31.08 07:27, F5):
+   the FINAL landed leaf carries TWO handle reads (_parent_delegation_budget
+   AND get_max_subagent_depth - the latter added when the patch-surface scan
+   found tests monkeypatching it on the facade), and the facade size after
+   the final import restores is 1392 lines, not 1406/1389 as the earlier
+   prose said. The proof chain (span emit + hardened verify with leaf_owned)
+   was re-run at each state; entry 1's figures describe an intermediate
+   state and are superseded by these.
+5. Audit 31.08 F1 second name: tests patching `_resolve_subagent_constraint`
+   on the facade (one negative sentinel in test_nested_rights_depth) were
+   retargeted to the reading leaf module - same oracle retarget-to-owner
+   shape as the _find_duplicate_task sites; the sentinel's teeth are
+   restored (the leaf's import-bound name is the one the handler reads).
