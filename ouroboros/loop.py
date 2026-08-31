@@ -4200,6 +4200,132 @@ def _merge_finalization_trace(
     return llm_trace
 
 
+# ibl-d29bc3cc9d67: a host-bound task that produced tracked-file edits and then
+# wrote a prose summary ("changes on disk, awaiting commit_reviewed") gets that
+# prose turned into a terminal _delivery_candidate; from then on every further
+# edit re-arms effect_revision_required and the JSON-only delivery-control prompt
+# makes commit_reviewed unreachable until the acceptance capsule is spent
+# (work_uncommitted STATUS_FAILED, commit_reviewed never called — tasks
+# 393e0fe8 / 776254cf / 91f720d3). Before a FRESH prose turn becomes a
+# candidate, if the task still has its own uncommitted tracked edits, re-loop
+# with a reminder to land or abandon them instead. Bounded so a task that
+# genuinely cannot commit still finalizes (as work_uncommitted, unchanged) after
+# the nudges are spent.
+_MAX_UNCOMMITTED_DELIVERY_NUDGES = 4
+
+
+def _uncommitted_attributed_paths(
+    tools: ToolRegistry, llm_trace: Dict[str, Any]
+) -> List[str]:
+    """Repo-tracked files this task edited that are still uncommitted.
+
+    Reuses the ``ee5c42dd`` SSOT (``detect_work_uncommitted`` +
+    ``filter_work_uncommitted_to_attributed``) intersected with the paths this
+    task's own coding-tool effects touched, so a concurrent task's dirty state on
+    the shared tree does not count. Read-only, fail-open (``[]`` on any probe
+    error or a missing/absolute repo). Host-bound (non-subagent) tasks only — a
+    subagent's worktree is absorbed by its parent.
+    """
+    ctx = getattr(tools, "_ctx", None)
+    if ctx is None:
+        return []
+    if str(getattr(ctx, "delegation_role", "") or "").lower() == "subagent":
+        return []
+    repo_dir = getattr(ctx, "repo_dir", None)
+    if not repo_dir:
+        return []
+    try:
+        from ouroboros.outcomes import (
+            detect_work_uncommitted,
+            filter_work_uncommitted_to_attributed,
+        )
+
+        dirty = detect_work_uncommitted(repo_dir)
+        if not dirty:
+            return []
+        repo_path = pathlib.Path(str(repo_dir))
+        attributed: set[str] = set()
+        for effect in reviewable_effect_projection(llm_trace) or []:
+            args = effect.get("args") if isinstance(effect.get("args"), dict) else {}
+            raw_paths: List[Any] = []
+            if args.get("path"):
+                raw_paths.append(args.get("path"))
+            if isinstance(args.get("paths"), list):
+                raw_paths.extend(args.get("paths"))
+            for raw in raw_paths:
+                text = str(raw or "").strip()
+                if not text:
+                    continue
+                p = pathlib.Path(text)
+                if p.is_absolute():
+                    try:
+                        text = str(p.relative_to(repo_path))
+                    except ValueError:
+                        continue
+                attributed.add(text.lstrip("./"))
+        if not attributed:
+            return []
+        hits = filter_work_uncommitted_to_attributed(dirty, attributed)
+        return [line[3:].strip() if len(line) > 3 else line for line in hits]
+    except Exception:
+        log.debug("uncommitted-attributed probe failed (non-fatal)", exc_info=True)
+        return []
+
+
+def _withhold_prose_for_uncommitted_work(
+    tools: ToolRegistry,
+    messages: List[Dict[str, Any]],
+    llm_trace: Dict[str, Any],
+    content: str,
+    emit_progress: Callable[[str], None],
+) -> bool:
+    """ibl-d29bc3cc9d67: keep a FRESH prose turn from latching a terminal
+    delivery candidate while the task's own tracked edits are still uncommitted.
+
+    Returns ``True`` (caller re-loops so ``commit_reviewed`` stays reachable)
+    when the task has uncommitted mutation-attributed changes and the per-task
+    nudge budget is not spent; ``False`` to let finalization proceed unchanged.
+    """
+    uncommitted = _uncommitted_attributed_paths(tools, llm_trace)
+    if not uncommitted:
+        return False
+    nudges = int(getattr(tools._ctx, "_uncommitted_delivery_nudges", 0) or 0)
+    if nudges >= _MAX_UNCOMMITTED_DELIVERY_NUDGES:
+        return False
+    tools._ctx._uncommitted_delivery_nudges = nudges + 1
+    if content.strip():
+        messages.append({"role": "assistant", "content": content})
+    _append_or_merge_user_message(messages, _uncommitted_delivery_reminder(uncommitted))
+    llm_trace["reasoning_notes"].append(
+        "Prose finalization withheld: task has uncommitted tracked changes; "
+        "commit_reviewed or explicit revert required "
+        f"(nudge {nudges + 1}/{_MAX_UNCOMMITTED_DELIVERY_NUDGES})."
+    )
+    emit_progress(
+        f"Uncommitted tracked changes ({len(uncommitted)} file(s)) — call "
+        "commit_reviewed to land them or revert before finalizing."
+    )
+    return True
+
+
+def _uncommitted_delivery_reminder(paths: List[str]) -> str:
+    listed = "\n".join(f"  - {p}" for p in paths[:20])
+    more = f"\n  … and {len(paths) - 20} more" if len(paths) > 20 else ""
+    return (
+        "[UNCOMMITTED_WORK]\n"
+        "You produced a prose answer, but these tracked files were changed by "
+        "this task and are NOT committed:\n"
+        f"{listed}{more}\n"
+        "A summary is not a delivery. Do ONE of:\n"
+        "  1. Call commit_reviewed(commit_message='…') now to land the changes. "
+        "Advisory review runs inline on the commit_reviewed call — you do NOT "
+        "need to run advisory_review first.\n"
+        "  2. If the changes are wrong or abandoned, revert them "
+        "(run_command git checkout -- <files>) before finalizing.\n"
+        "Leaving tracked changes uncommitted will finalize the task as FAILED."
+    )
+
+
 def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool) -> str:
     keep_line = (
         "keep is allowed because no answer-invalidating evidence changed."
@@ -4795,6 +4921,10 @@ def _no_tool_final_answer(
     content = controlled_content
     _project_child_result_dispositions(limit_ctx, llm_trace)
     if control_state == "fresh" and str(content or "").strip():
+        if _withhold_prose_for_uncommitted_work(
+            tools, messages, llm_trace, str(content), emit_progress,
+        ):
+            return None
         candidate = _replace_delivery_candidate(
             tools, limit_ctx, llm_trace, str(content), control="candidate",
         )
