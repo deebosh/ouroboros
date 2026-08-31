@@ -73,8 +73,11 @@ def test_copy_child_result_cannot_overwrite_finalized_accounting(tmp_path):
     merged = copy_child_task_result(parent, {"id": task_id, "drive_root": str(child)})
 
     assert merged is not None
-    assert merged["cost_usd"] == 127.97
-    assert merged["cost_usd_with_children"] == 127.97
+    # ABI-3 fix-round-2: finalized accounting stays parent-owned AND is
+    # persisted/merged under the honest names only.
+    assert merged["accounted_upper_bound_usd"] == 127.97
+    assert merged["accounted_upper_bound_usd_with_children"] == 127.97
+    assert "cost_usd" not in merged and "cost_usd_with_children" not in merged
     assert merged["cost_with_children_partial"] is False
     assert merged["total_rounds"] == 200
     assert merged["prompt_tokens"] == 1000
@@ -105,7 +108,10 @@ def test_copy_child_result_merges_cost_before_finalization(tmp_path):
     merged = copy_child_task_result(parent, {"id": task_id, "drive_root": str(child)})
 
     assert merged is not None
-    assert merged["cost_usd"] == 12.5
+    # ABI-3 fix-round-2: the write seam persists the honest name only, even
+    # for a legacy-spelled writer (deprecated-wins, then stripped).
+    assert merged["accounted_upper_bound_usd"] == 12.5
+    assert "cost_usd" not in merged
     assert merged["total_rounds"] == 42
 
 

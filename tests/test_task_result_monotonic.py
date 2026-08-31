@@ -124,7 +124,10 @@ def test_completed_result_survives_a_late_cancellation(drive):
     assert kept["result"] == "real child result"
     assert kept["final_answer"] == "real answer"
     assert kept["artifacts"] == [{"name": "real.txt"}]
-    assert kept["cost_usd"] == 1.25
+    # ABI-3 fix-round-2: stored under the honest name only (the write above
+    # used the legacy kwarg — deprecated-wins honored it, then stripped it).
+    assert kept["accounted_upper_bound_usd"] == 1.25
+    assert "cost_usd" not in kept
 
     tr.write_task_result(drive, "failed", tr.STATUS_FAILED, result="real failure")
     tr.write_task_result(drive, "failed", tr.STATUS_CANCELLED)

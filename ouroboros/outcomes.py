@@ -871,6 +871,22 @@ def public_task_result(result: Dict[str, Any], *, include_outcome_axes: bool = T
                     stack.append((child_value, clone, child_key))
     if not isinstance(public, dict):
         return {}
+    # ABI-3 projection boundary: the public contract carries NO retired cost
+    # alias — a stored legacy row's pair resolves deprecated-wins and leaves
+    # under the honest names only, at the top level and on the two nested
+    # planes whose cost fields reach this payload (the subagent envelope and
+    # the loop-outcome usage snapshot). Internal planes that merely share the
+    # spelling inside evidence blobs (review receipts, ledger rows) are their
+    # own schemas and pass through untouched.
+    from ouroboros.cost_projection import with_cost_aliases
+
+    public = with_cost_aliases(public)
+    envelope = public.get("subagent_envelope")
+    if isinstance(envelope, dict):
+        public["subagent_envelope"] = with_cost_aliases(envelope)
+    loop_outcome = public.get("loop_outcome")
+    if isinstance(loop_outcome, dict) and isinstance(loop_outcome.get("usage"), dict):
+        loop_outcome["usage"] = with_cost_aliases(loop_outcome["usage"])
     plan_state = public.get("plan_review_state")
     if isinstance(plan_state, dict) and plan_state.get("schema_version") == 1:
         plan_state["legacy_v1_projection"] = legacy_plan_review_projection(plan_state)
@@ -925,6 +941,25 @@ def _apply_actor_first_terminal_projection(
         })
     outcome["actor_first_terminal"] = actor
     return outcome
+
+
+def _loop_usage_snapshot(usage: Dict[str, Any], resource_limit: Dict[str, Any]) -> Dict[str, Any]:
+    """The loop-outcome's flat usage snapshot (module-size law extraction).
+
+    ABI-3: the loop's own accounted cost rides the honest name — this
+    sub-dict reaches the public task-result payload through ``loop_outcome``
+    (stored legacy rows still resolve deprecated-wins at the projection
+    boundary)."""
+    return {
+        "accounted_upper_bound_usd": (
+            round(float(usage["cost"]), 6)
+            if usage.get("cost") is not None else None
+        ),
+        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "total_rounds": int(usage.get("rounds") or 0),
+        **({"resource_limit": resource_limit} if resource_limit else {}),
+    }
 
 
 def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[str, Any]) -> Dict[str, Any]:
@@ -1214,16 +1249,7 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         "final_answer_missing_sentinel": not final_answer_payload,
         "failure": headline_failure,
         "recoveries": recovered_tool_errors[:20],
-        "usage": {
-            "cost_usd": (
-                round(float(usage["cost"]), 6)
-                if usage.get("cost") is not None else None
-            ),
-            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-            "completion_tokens": int(usage.get("completion_tokens") or 0),
-            "total_rounds": int(usage.get("rounds") or 0),
-            **({"resource_limit": resource_limit} if resource_limit else {}),
-        },
+        "usage": _loop_usage_snapshot(usage, resource_limit),
         "trace_refs": collect_trace_refs(usage, llm_trace),
     }
     return _apply_actor_first_terminal_projection(outcome, usage)

@@ -8,7 +8,12 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from ouroboros.cost_projection import honest_accounted_amount, with_cost_aliases
+from ouroboros.cost_projection import (
+    COST_ALIAS_PAIRS,
+    carry_cost_meta,
+    honest_accounted_amount,
+    with_cost_aliases,
+)
 from ouroboros.task_results import (
     TASK_COST_META_FIELDS,
     STATUS_COMPLETED,
@@ -29,6 +34,15 @@ _TERMINAL_ACCOUNTING_FIELDS = (
     "total_rounds",
     "prompt_tokens",
     "completion_tokens",
+)
+# Scrub set for the stale-accounting pops below: ABI-3 keeps the retired
+# alias spellings HERE (read/scrub tolerance, never an emission) so a legacy
+# replica/patch overlay cannot smuggle a stale `cost_usd` past a scrub that
+# only knows the honest names — deprecated-wins at the write seam would then
+# resurrect the stale amount.
+_TERMINAL_ACCOUNTING_SCRUB_FIELDS = (
+    *_TERMINAL_ACCOUNTING_FIELDS,
+    *(old for _new, old in COST_ALIAS_PAIRS),
 )
 
 
@@ -84,7 +98,7 @@ def project_replica_task_result_fields(
                 "post_task_stop_reason"
             ]
         overlay["root_phase_checkpoint"] = merged_checkpoint
-        for field in _TERMINAL_ACCOUNTING_FIELDS:
+        for field in _TERMINAL_ACCOUNTING_SCRUB_FIELDS:
             overlay.pop(field, None)
 
     # Non-Project split synthesis writes this field in the canonical parent
@@ -137,7 +151,7 @@ def project_root_post_task_checkpoint_fields(
                 "post_task_stop_reason"
             ]
         if patch_post_task != canonical_post_task:
-            for field in _TERMINAL_ACCOUNTING_FIELDS:
+            for field in _TERMINAL_ACCOUNTING_SCRUB_FIELDS:
                 overlay.pop(field, None)
     else:
         if "post_task_stop_reason" in patch:
@@ -281,9 +295,12 @@ def set_root_post_task_checkpoint(
                 "task_id": task_id,
                 "root_task_id": str(stored.get("root_task_id") or task.get("root_task_id") or task_id),
                 "post_task_status": stored_post_task,
+                # ABI-3: cost pair CONVERTED from a possibly-legacy stored row
+                # (deprecated-wins) — the event carries honest names only.
+                **carry_cost_meta(stored),
                 **{
                     field: stored[field]
-                    for field in _TERMINAL_ACCOUNTING_FIELDS
+                    for field in ("total_rounds", "prompt_tokens", "completion_tokens")
                     if field in stored
                 },
             }

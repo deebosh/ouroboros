@@ -1123,14 +1123,14 @@ def _finish_captured_running(
         # artifact on a shared drive; a split-drive copy-back REPLACING the
         # canonical settled answer — completion-wins violations). Deliver +
         # settle exactly like the natural-completion branch.
-        from ouroboros.task_results import TASK_COST_META_FIELDS
+        from ouroboros.cost_projection import carry_cost_meta
 
         stored = load_task_result(q.DRIVE_ROOT, task_id) or {}
-        stored_cost = {
-            key: stored[key] for key in TASK_COST_META_FIELDS if key in stored
-        } or {"cost_accounting_status": "unavailable", "cost_final": False,
-              # ABI-3: honest name only — the retired alias is read-only.
-              "accounted_upper_bound_usd": None}
+        # ABI-3: carry_cost_meta CONVERTS a stored legacy pair (deprecated-
+        # wins) so the cancel path emits honest names only.
+        stored_cost = carry_cost_meta(stored) or {
+            "cost_accounting_status": "unavailable", "cost_final": False,
+            "accounted_upper_bound_usd": None}
         owed_ok = _register_owed_terminal_delivery(
             q, task, task_id, stored, deliver=deliver,
             unreconciled_runs=unreconciled,
@@ -1160,7 +1160,7 @@ def _finish_captured_running(
         from ouroboros.headless import (
             copy_child_task_result, finalize_task_artifacts, task_is_readonly_subagent,
         )
-        from ouroboros.task_results import TASK_COST_META_FIELDS
+        from ouroboros.cost_projection import carry_cost_meta
         from ouroboros.task_status import SETTLED_STATUSES
 
         child_result = copy_child_task_result(pathlib.Path(q.DRIVE_ROOT), task)
@@ -1172,13 +1172,11 @@ def _finish_captured_running(
                     finalize_task_artifacts(pathlib.Path(q.DRIVE_ROOT), task)
             except Exception:
                 log.debug("Artifact finalize failed for naturally-settled %s", task_id, exc_info=True)
-            child_cost = {
-                key: child_result[key]
-                for key in TASK_COST_META_FIELDS
-                if key in child_result
-            } or {"cost_accounting_status": "unavailable", "cost_final": False,
-                  # ABI-3: honest name only — the retired alias is read-only.
-                  "accounted_upper_bound_usd": None}
+            # ABI-3: carry_cost_meta CONVERTS a stored legacy pair
+            # (deprecated-wins) so the cancel path emits honest names only.
+            child_cost = carry_cost_meta(child_result) or {
+                "cost_accounting_status": "unavailable", "cost_final": False,
+                "accounted_upper_bound_usd": None}
             kept_row = load_task_result(q.DRIVE_ROOT, task_id) or child_result
             # GR2-4: the kept answer is registered as OWED before the intent
             # settles — a crash between the two must not lose both the

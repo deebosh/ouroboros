@@ -840,10 +840,13 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         swarm_efficiency = _build_swarm_efficiency(env, task)
         subagent_envelope = task.get("subagent_envelope") if isinstance(task.get("subagent_envelope"), dict) else {}
         if str(task.get("delegation_role") or "").lower() == "subagent":
-            subagent_envelope = envelope_from_task(task, status=status, usage=usage, cost_usd=cost_fields.get("accounted_upper_bound_usd"))
+            subagent_envelope = envelope_from_task(
+                task, status=status, usage=usage,
+                accounted_upper_bound_usd=cost_fields.get("accounted_upper_bound_usd"),
+            )
             if cost_fields.get("cost_accounting_status") != "available":
                 subagent_envelope.update({
-                    "cost_usd": None,
+                    "accounted_upper_bound_usd": None,
                     "cost_accounting_status": "unavailable",
                     "cost_final": False,
                 })

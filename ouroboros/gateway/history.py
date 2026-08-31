@@ -18,6 +18,7 @@ from ouroboros.gateway._helpers import (
     coerce_int,
     read_rotated_jsonl_entries,
 )
+from ouroboros.cost_projection import carry_cost_meta
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, subagent_message_meta
@@ -482,9 +483,9 @@ def _copy_task_summary_metadata(rec: Dict[str, Any], entry: Dict[str, Any]) -> N
     # written by agent_task_pipeline; replay it so a reload still shows cost.
     # _annotate_terminal_task_truth later OVERRIDES these with the persisted
     # task_results values when the result file survives (row = fallback only).
-    for key in _TASK_COST_META_FIELDS:
-        if key in entry:
-            rec[key] = entry[key]
+    # ABI-3: CONVERTED, not copied — a stored legacy row's pair resolves
+    # deprecated-wins and replays under the honest names only.
+    rec.update(carry_cost_meta(entry))
 
 
 def _load_terminal_result(
@@ -601,10 +602,10 @@ def _annotate_terminal_task_truth(
                 # v6.82 P1: attach the persisted terminal cost truth. Applied via
                 # message.update() below, so it OVERRIDES any row-embedded
                 # task_summary snapshot values (the result file is authoritative;
-                # the row snapshot is the pruned-result fallback).
-                for key in _TASK_COST_META_FIELDS:
-                    if key in result:
-                        terminal_truth[key] = result[key]
+                # the row snapshot is the pruned-result fallback). ABI-3:
+                # CONVERTED, not copied — a stored legacy result's pair
+                # resolves deprecated-wins and leaves under the honest names.
+                terminal_truth.update(carry_cost_meta(result))
                 terminal_truth_by_task[task_id] = terminal_truth
             suggested_name = str(result.get("suggested_name") or "").strip()
             if suggested_name:
@@ -983,6 +984,10 @@ def _collect_progress_rows(
             for field in _PROGRESS_META_FIELDS:
                 if field in entry:
                     rec[field] = entry[field]
+            # ABI-3: the whitelist passes only the honest cost names; a stored
+            # legacy row's pair is CONVERTED here (deprecated-wins) instead of
+            # being replayed under the retired spelling or silently dropped.
+            rec.update(carry_cost_meta(entry))
             combined.append(rec)
     except Exception as exc:
         log.warning("Failed to read progress log: %s", exc)

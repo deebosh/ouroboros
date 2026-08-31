@@ -147,15 +147,22 @@ class TestProducers:
 
         assert "accounted_upper_bound_usd" in get_type_hints(TaskCostBreakdown)
 
-    def test_meta_fields_keep_stored_legacy_tolerance(self):
-        # TASK_COST_META_FIELDS is the CARRY list for stored records, so it
-        # keeps both spellings: a legacy row's alias key must keep travelling
-        # (read tolerance) even though no producer emits it any more.
+    def test_meta_fields_are_honest_only_and_legacy_resolves_via_carry(self):
+        # Ф3.1 fix-round-2 (converted OLD-ABI clause: the list used to keep
+        # both spellings as a raw carry): TASK_COST_META_FIELDS names the
+        # HONEST set only — a retired alias may never travel forward by key
+        # copy. Stored-legacy tolerance lives in carry_cost_meta instead:
+        # the pair resolves deprecated-wins and leaves under the honest name.
+        from ouroboros.cost_projection import carry_cost_meta
         from ouroboros.task_results import TASK_COST_META_FIELDS
 
         assert "accounted_upper_bound_usd" in TASK_COST_META_FIELDS
         assert "accounted_upper_bound_usd_with_children" in TASK_COST_META_FIELDS
-        assert "cost_usd" in TASK_COST_META_FIELDS
+        assert "cost_usd" not in TASK_COST_META_FIELDS
+        assert "cost_usd_with_children" not in TASK_COST_META_FIELDS
+        carried = carry_cost_meta({"cost_usd": 1.25, "cost_final": True})
+        assert carried["accounted_upper_bound_usd"] == 1.25
+        assert "cost_usd" not in carried
 
 
 class TestOnePrecedence:
@@ -214,7 +221,10 @@ class TestOpennessCarry:
         from ouroboros.cost_projection import COST_ALIAS_PAIRS, COST_OPENNESS_FIELDS
         from ouroboros.task_results import TASK_COST_META_FIELDS
 
-        expected = {name for pair in COST_ALIAS_PAIRS for name in pair}
+        # Ф3.1 fix-round-2: derived from the SSOT's HONEST names only (the
+        # retired alias spellings are read tolerance, never part of the
+        # carry-forward set).
+        expected = {new for new, _old in COST_ALIAS_PAIRS}
         expected |= set(COST_OPENNESS_FIELDS)
         assert set(TASK_COST_META_FIELDS) == expected
         assert "ledger_integrity_degraded" in TASK_COST_META_FIELDS

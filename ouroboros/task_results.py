@@ -9,7 +9,7 @@ import pathlib
 import re
 from typing import Any, Callable, Dict, List, Optional
 
-from ouroboros.cost_projection import COST_ALIAS_PAIRS, COST_OPENNESS_FIELDS
+from ouroboros.cost_projection import COST_ALIAS_PAIRS, COST_OPENNESS_FIELDS, with_cost_aliases
 from ouroboros.utils import read_json_dict, update_json_locked, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -241,16 +241,17 @@ STATUS_CANCEL_REQUESTED = "cancel_requested"
 # replay, task_summary chat rows, and the persisted result written here (v6.82
 # P1) — one home, so no consumer grows a divergent literal list.
 # DERIVED from the cost SSOT (``ouroboros/cost_projection.py``) rather than
-# re-typed: both alias spellings (C2, owner 10=B — the additive HONEST names for
-# what ``cost_usd[_with_children]`` always were, plus the deprecated aliases that
-# stay outbound until a separately approved ABI break) and EVERY accounting
-# openness/integrity marker. Hand-maintained copies are how a marker reaches one
-# surface and not the next: ``non_final_rows`` rides with ``cost_final`` because
-# it is that flag's DISCLOSED CAUSE (v6.89.0 panel D2), and
-# ``ledger_integrity_degraded`` was produced by the authority but named in no
-# list at all, so it never reached any surface.
+# re-typed: the HONEST names only (ABI 7.0/ABI-3: the retired
+# ``cost_usd[_with_children]`` aliases are read-tolerance, never carried
+# forward — a consumer copying by this list from a possibly-legacy source must
+# resolve the pair with ``carry_cost_meta`` instead of a key loop) and EVERY
+# accounting openness/integrity marker. Hand-maintained copies are how a
+# marker reaches one surface and not the next: ``non_final_rows`` rides with
+# ``cost_final`` because it is that flag's DISCLOSED CAUSE (v6.89.0 panel D2),
+# and ``ledger_integrity_degraded`` was produced by the authority but named in
+# no list at all, so it never reached any surface.
 TASK_COST_META_FIELDS = tuple(dict.fromkeys(
-    [name for pair in COST_ALIAS_PAIRS for name in pair] + list(COST_OPENNESS_FIELDS)
+    [new for new, _old in COST_ALIAS_PAIRS] + list(COST_OPENNESS_FIELDS)
 ))
 
 # Monotonic lifecycle ordering. A write that would move a task *backwards* past
@@ -829,14 +830,21 @@ def write_task_result(
                       existing.get("status"), projected_status, task_id)
             return None
         now = utc_now_iso()
-        return stamp_task_result_schema({
-            **existing,
+        # ABI-3 write seam: the merge BASE is the existing row normalized onto
+        # the honest cost names (its own legacy spelling wins its own pair,
+        # then is stripped) so a stored alias can neither survive the rewrite
+        # nor outrank this write's fresh honest value at the final
+        # normalization below; a legacy spelling arriving IN the write itself
+        # (a legacy mutator's edit) still wins that final resolution and
+        # leaves under the honest name only.
+        return stamp_task_result_schema(with_cost_aliases({
+            **with_cost_aliases(existing),
             **projected_fields,
             "task_id": task_id,
             "status": projected_status,
             "ts": explicit_ts or str(existing.get("ts") or now),
             "updated_at": now,
-        })
+        }))
 
     # Never fall back to an unlocked read/merge/write. Every task-result write is
     # lifecycle authority; accepting stale state here makes the winner of a

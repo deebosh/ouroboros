@@ -143,59 +143,83 @@ class TestUiPreferenceAliasRemoval:
 
 
 class TestAliasProducerFanOutSweep:
-    """Ф3.1 fix-round: fan-out-complete producer pin over the WHOLE runtime
+    """Ф3.1 fix-round-2: fan-out-complete producer pin over the WHOLE runtime
     tree (every ``ouroboros/**/*.py`` and ``supervisor/**/*.py``).
 
     No production code emits a retired gateway alias key in an emission-shaped
-    AST position — a dict-literal key, a subscript assignment, or a keyword
-    argument on a ``write_task_result`` call (the durable ABI-3 store).
-    Legacy READS stay legal and are naturally invisible to this scan:
-    ``resolve_cost_pair``/``.get``/``in``/``.pop`` never author a key.
+    AST position — a dict-literal key, a subscript assignment, a keyword
+    argument on ANY call (receipt constructors, event emitters, ``dict()``
+    builders), or anything on a ``write_task_result`` call (the durable ABI-3
+    store; NO allowlist there). Legacy READS stay legal and are naturally
+    invisible to this scan: ``resolve_cost_pair``/``.get``/``in``/``.pop``
+    never author a key. Generic passthrough (projections, deep copies) is
+    structurally invisible to ANY static scan — the projection-boundary
+    runtime pin (``TestProjectionBoundaryNormalization``) covers that shape
+    by feeding stored legacy bytes through the outbound projections.
 
-    The allowlist names the ONLY surviving dict-key/subscript occurrences:
-    fields of INTERNAL non-gateway planes that merely share a spelling with
-    the retired ChatOutbound/task-result aliases (physical usage ledger rows,
-    llm/usage observability events, review/evidence receipts, subagent
-    envelope, evolution campaign state, custody settlement events, reflection
-    records). None of them is a task-result, chat-frame or gateway-response
-    producer, and the ``write_task_result`` kwarg check has NO allowlist at
-    all. A stale allowlist entry (nothing matches it any more) FAILS the test,
-    so the list can only shrink honestly.
+    The allowlist is PER-SITE: ``(posix path, alias, enclosing scope)``. A
+    new emission in an already-allowlisted FILE but a different function is
+    NOT allowlisted; a stale row (no emission matches it) FAILS the test, so
+    the list can only shrink honestly. Every surviving row is an INTERNAL
+    non-gateway plane that merely shares the spelling: physical usage-ledger
+    rows, llm/usage observability events, review/evidence receipt schemas,
+    evolution campaign state, custody settlement events,
+    reflection/consciousness records. ``outcomes.py`` (loop-outcome usage
+    snapshot) and the subagent envelope are deliberately GONE from this list
+    (fix-round-2): their data reaches the public task-result projection, so
+    their producers now stamp the honest name and stored legacy spellings
+    normalize at the projection boundary.
     """
 
     RETIRED_ALIASES = frozenset({
         "cost_usd", "cost_usd_with_children", "telegram_chat_id",
         "project_last_viewed", "project_hidden",
     })
-    # (posix path, alias) -> why this INTERNAL plane legitimately keeps the spelling.
+    # (posix path, alias, enclosing scope) -> why this INTERNAL plane
+    # legitimately keeps the spelling at exactly this site.
     INTERNAL_PLANE_ALLOWLIST = {
         # physical usage ledger rows / legacy usage import (P7 monetary authority)
-        ("ouroboros/usage_accounting.py", "cost_usd"): "ledger settlement row schema",
-        ("ouroboros/usage_legacy_import.py", "cost_usd"): "legacy usage.json ledger import rows",
+        ("ouroboros/usage_accounting.py", "cost_usd", "record_unmetered_external_dispatch"): "ledger unmetered dispatch row",
+        ("ouroboros/usage_accounting.py", "cost_usd", "record_subscription_session"): "ledger subscription session row",
+        ("ouroboros/usage_accounting.py", "cost_usd", "terminalize_abandoned_attempt"): "ledger settlement transition",
+        ("ouroboros/usage_accounting.py", "cost_usd", "settle_attempt"): "ledger settlement transition",
+        ("ouroboros/usage_accounting.py", "cost_usd", "_terminalize_failed_attempt"): "ledger settlement transition",
+        ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt"): "ledger settlement call",
+        ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt_async"): "ledger settlement call",
+        ("ouroboros/usage_legacy_import.py", "cost_usd", "_ensure_legacy_imported_locked"): "legacy usage.json ledger import rows",
+        ("ouroboros/tools/search.py", "cost_usd", "_web_search"): "ledger settlement call (web search attempt)",
         # usage/observability event streams (events.jsonl, live log frames)
-        ("ouroboros/loop_llm_call.py", "cost_usd"): "llm_round usage event rows",
-        ("ouroboros/outcomes.py", "cost_usd"): "nested usage sub-dict (usage-row schema)",
-        ("ouroboros/post_task_synthesis.py", "cost_usd"): "chat_block_consolidation event row",
-        ("ouroboros/consciousness.py", "cost_usd"): "consciousness thought receipt row",
-        ("supervisor/events_evolution_done.py", "cost_usd"): "supervisor.jsonl observability row",
+        ("ouroboros/loop_llm_call.py", "cost_usd", "call_llm_with_retry"): "llm_round usage event rows",
+        ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_chat_consolidation"): "chat_block_consolidation event row",
+        ("ouroboros/post_task_synthesis.py", "cost_usd", "_run_reflection"): "reflection generation gate args",
+        ("ouroboros/consciousness.py", "cost_usd", "_think_scoped"): "consciousness thought receipt row",
+        ("supervisor/events_evolution_done.py", "cost_usd", "_handle_evolution_task_done"): "supervisor.jsonl observability row",
         # review/evidence receipt schemas (internal review plane)
-        ("ouroboros/triad_review.py", "cost_usd"): "triad review receipt",
-        ("ouroboros/skill_loader.py", "cost_usd"): "skill review outcome receipt",
-        ("ouroboros/tools/delegate_terminal_evidence.py", "cost_usd"): "delegate terminal evidence rows",
-        ("ouroboros/tools/preflight_review_run.py", "cost_usd"): "advisory preflight receipts",
-        ("ouroboros/tools/review_admission.py", "cost_usd"): "review admission receipt",
-        ("ouroboros/tools/review_helpers.py", "cost_usd"): "review usage receipt",
-        ("ouroboros/tools/scope_review.py", "cost_usd"): "scope review receipt",
-        # subagent envelope (nested schema, its own producer/reader pair)
-        ("ouroboros/subagents.py", "cost_usd"): "subagent envelope field",
-        ("ouroboros/agent_task_pipeline.py", "cost_usd"): "subagent envelope patch",
+        ("ouroboros/triad_review.py", "cost_usd", "to_dict"): "triad review receipt serialization",
+        ("ouroboros/triad_review.py", "cost_usd", "_actor_record"): "triad review actor record",
+        ("ouroboros/skill_loader.py", "cost_usd", "to_dict"): "skill review outcome receipt serialization",
+        ("ouroboros/skill_loader.py", "cost_usd", "load_review_state"): "skill review state load",
+        ("ouroboros/skill_review.py", "cost_usd", "_run_deterministic_preflight"): "skill review preflight receipt",
+        ("ouroboros/skill_review.py", "cost_usd", "_persist_reviewed_outcome"): "skill review outcome receipt",
+        ("ouroboros/skill_owner_attestation.py", "cost_usd", "run_owner_attestation"): "owner attestation review receipt",
+        ("ouroboros/tools/claude_advisory_review.py", "cost_usd", "_run_advisory_native"): "advisory review receipt",
+        ("ouroboros/tools/delegate_terminal_evidence.py", "cost_usd", "_reported_cost"): "delegate terminal evidence rows",
+        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_llm_extract_advisory_items"): "advisory preflight usage receipt",
+        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_run_advisory_delegated"): "advisory preflight receipt",
+        ("ouroboros/tools/preflight_review_run.py", "cost_usd", "_run_claude_advisory"): "advisory preflight receipt",
+        ("ouroboros/tools/review_admission.py", "cost_usd", "triad_not_dispatched_records"): "review admission receipt",
+        ("ouroboros/tools/review_helpers.py", "cost_usd", "build_scope_actor_record"): "review usage receipt",
+        ("ouroboros/tools/scope_review.py", "cost_usd", "_scope_oversize_result"): "scope review receipt",
+        ("ouroboros/tools/scope_review.py", "cost_usd", "run_scope_review"): "scope review receipt",
+        ("ouroboros/tools/parallel_review.py", "cost_usd", "_run_scope"): "scope review receipt",
         # evolution campaign/checkpoint plane
-        ("ouroboros/evolution_checkpoints.py", "cost_usd"): "evolution checkpoint records",
-        ("supervisor/evolution_lifecycle.py", "cost_usd"): "evolution campaign history rows",
+        ("ouroboros/evolution_checkpoints.py", "cost_usd", "build_solve_capability_digest"): "evolution capability digest",
+        ("ouroboros/evolution_checkpoints.py", "cost_usd", "append_evolution_checkpoint"): "evolution checkpoint records",
+        ("supervisor/evolution_lifecycle.py", "cost_usd", "update_evolution_campaign_after_task"): "evolution campaign history rows",
         # custody settlement events
-        ("ouroboros/delegate_custody.py", "cost_usd"): "custody SETTLED event row",
+        ("ouroboros/delegate_custody.py", "cost_usd", "settle_run"): "custody SETTLED event row",
         # reflection records
-        ("ouroboros/reflection.py", "cost_usd"): "task reflection record",
+        ("ouroboros/reflection.py", "cost_usd", "generate_reflection"): "task reflection record",
     }
 
     @staticmethod
@@ -207,37 +231,45 @@ class TestAliasProducerFanOutSweep:
         aliases = TestAliasProducerFanOutSweep.RETIRED_ALIASES
         dict_hits: list = []
         writer_kwarg_hits: list = []
+
+        def visit(node, rel, scope):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                scope = node.name
+            if isinstance(node, ast.Dict):
+                for key in node.keys:
+                    if isinstance(key, ast.Constant) and key.value in aliases:
+                        dict_hits.append((rel, key.value, scope, key.lineno))
+            elif isinstance(node, (ast.Assign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if (
+                        isinstance(target, ast.Subscript)
+                        and isinstance(target.slice, ast.Constant)
+                        and target.slice.value in aliases
+                    ):
+                        dict_hits.append((rel, target.slice.value, scope, target.lineno))
+            elif isinstance(node, ast.Call):
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                for kw in node.keywords:
+                    if kw.arg in aliases:
+                        if name == "write_task_result":
+                            writer_kwarg_hits.append((rel, kw.arg, scope, node.lineno))
+                        else:
+                            dict_hits.append((rel, kw.arg, scope, node.lineno))
+                if name == "write_task_result":
+                    for arg in [kw.value for kw in node.keywords if kw.arg is None] + list(node.args):
+                        if isinstance(arg, ast.Dict):
+                            for key in arg.keys:
+                                if isinstance(key, ast.Constant) and key.value in aliases:
+                                    writer_kwarg_hits.append((rel, key.value, scope, node.lineno))
+            for child in ast.iter_child_nodes(node):
+                visit(child, rel, scope)
+
         for package in ("ouroboros", "supervisor"):
             for path in sorted((repo_root / package).rglob("*.py")):
                 rel = path.relative_to(repo_root).as_posix()
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Dict):
-                        for key in node.keys:
-                            if isinstance(key, ast.Constant) and key.value in aliases:
-                                dict_hits.append((rel, key.value, key.lineno))
-                    elif isinstance(node, (ast.Assign, ast.AugAssign)):
-                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                        for target in targets:
-                            if (
-                                isinstance(target, ast.Subscript)
-                                and isinstance(target.slice, ast.Constant)
-                                and target.slice.value in aliases
-                            ):
-                                dict_hits.append((rel, target.slice.value, target.lineno))
-                    elif isinstance(node, ast.Call):
-                        func = node.func
-                        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-                        if name != "write_task_result":
-                            continue
-                        for kw in node.keywords:
-                            if kw.arg in aliases:
-                                writer_kwarg_hits.append((rel, kw.arg, node.lineno))
-                        for arg in [kw.value for kw in node.keywords if kw.arg is None] + list(node.args):
-                            if isinstance(arg, ast.Dict):
-                                for key in arg.keys:
-                                    if isinstance(key, ast.Constant) and key.value in aliases:
-                                        writer_kwarg_hits.append((rel, key.value, node.lineno))
+                visit(ast.parse(path.read_text(encoding="utf-8")), rel, "<module>")
         return dict_hits, writer_kwarg_hits
 
     def test_no_task_result_writer_passes_a_retired_alias(self):
@@ -251,14 +283,15 @@ class TestAliasProducerFanOutSweep:
         dict_hits, _ = self._emission_hits()
         unexpected = [
             hit for hit in dict_hits
-            if (hit[0], hit[1]) not in self.INTERNAL_PLANE_ALLOWLIST
+            if (hit[0], hit[1], hit[2]) not in self.INTERNAL_PLANE_ALLOWLIST
         ]
         assert unexpected == [], (
             "new emission-shaped occurrence of a retired gateway alias; either "
             "cut the producer over to the honest name or (only for a genuinely "
-            f"internal non-gateway plane) extend the allowlist: {unexpected!r}"
+            "internal non-gateway plane) add a PER-SITE allowlist row: "
+            f"{unexpected!r}"
         )
-        matched = {(rel, alias) for rel, alias, _lineno in dict_hits}
+        matched = {(rel, alias, scope) for rel, alias, scope, _lineno in dict_hits}
         stale = sorted(set(self.INTERNAL_PLANE_ALLOWLIST) - matched)
         assert stale == [], (
             f"stale allowlist rows (no emission matches them any more): {stale!r}"
@@ -273,6 +306,162 @@ class TestAliasProducerFanOutSweep:
             if hit[1] in {"telegram_chat_id", "project_last_viewed", "project_hidden"}
         ]
         assert non_cost == []
+
+    def test_the_public_projection_planes_are_not_allowlisted(self):
+        """Fix-round-2 pin: no allowlist row may name a plane whose data
+        reaches the public task-result projection — the loop-outcome usage
+        snapshot, the subagent envelope, or the projection module itself."""
+        banned_files = {
+            "ouroboros/outcomes.py", "ouroboros/subagents.py",
+            "ouroboros/agent_task_pipeline.py",
+        }
+        offending = sorted(
+            row for row in self.INTERNAL_PLANE_ALLOWLIST if row[0] in banned_files
+        )
+        assert offending == []
+
+
+def _retired_alias_paths_deep(payload):
+    """Every path in *payload* whose KEY is a retired cost alias, recursively.
+
+    This is the generic-passthrough catcher no AST sweep can be: it inspects
+    the actual outbound bytes, so a projection or deep copy that carried a
+    stored legacy spelling through shows up regardless of how the code
+    spelled the copy."""
+    found = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in {"cost_usd", "cost_usd_with_children"}:
+                    found.append(f"{path}.{key}")
+                walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{path}[{index}]")
+
+    walk(payload, "$")
+    return found
+
+
+class TestProjectionBoundaryNormalization:
+    """Ф3.1 fix-round-2: the ABI carries NO alias — outbound payloads built
+    from STORED LEGACY rows contain only the honest cost names.
+
+    Stored tolerance is read-side only: the legacy spelling resolves
+    (deprecated-wins) and is NORMALIZED at the projection boundary
+    (public_task_result / task detail / the list row) and at re-write
+    (write_task_result strips aliases from the merged existing row)."""
+
+    LEGACY_ROW = {
+        "_schema_version": 1,
+        "task_id": "legacy-cost",
+        "status": "completed",
+        "result": "done",
+        "ts": "2026-01-01T00:00:00Z",
+        "cost_usd": 1.5,
+        "cost_usd_with_children": 2.75,
+        "cost_final": True,
+        "cost_accounting_status": "available",
+        "subagent_envelope": {
+            "task_id": "legacy-cost",
+            "status": "completed",
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "rounds": 3},
+            "cost_usd": 0.25,
+        },
+        "loop_outcome": {
+            "reason_code": "final_answer",
+            "usage": {"cost_usd": 0.5, "prompt_tokens": 1,
+                      "completion_tokens": 2, "total_rounds": 3},
+        },
+    }
+
+    def _write_legacy(self, data):
+        results = data / "task_results"
+        results.mkdir(parents=True, exist_ok=True)
+        (results / "legacy-cost.json").write_text(
+            json.dumps(self.LEGACY_ROW), encoding="utf-8"
+        )
+
+    def test_public_task_result_emits_honest_names_only(self):
+        from ouroboros.outcomes import public_task_result
+
+        out = public_task_result(dict(self.LEGACY_ROW))
+        assert _retired_alias_paths_deep(out) == []
+        assert out["accounted_upper_bound_usd"] == 1.5
+        assert out["accounted_upper_bound_usd_with_children"] == 2.75
+        assert out["cost_final"] is True
+        assert out["subagent_envelope"]["accounted_upper_bound_usd"] == 0.25
+        assert out["loop_outcome"]["usage"]["accounted_upper_bound_usd"] == 0.5
+        # And the stored input was not mutated (projection, not conversion).
+        assert self.LEGACY_ROW["cost_usd"] == 1.5
+
+    def test_task_detail_and_list_row_emit_honest_names_only(self, tmp_path):
+        import asyncio
+        from types import SimpleNamespace
+
+        from ouroboros.gateway.tasks import api_task_get, api_tasks_list
+
+        data = tmp_path / "data"
+        self._write_legacy(data)
+        detail_request = SimpleNamespace(
+            path_params={"task_id": "legacy-cost"},
+            app=SimpleNamespace(state=SimpleNamespace(drive_root=data)),
+        )
+        detail = json.loads(
+            asyncio.run(api_task_get(detail_request)).body.decode("utf-8")
+        )
+        assert _retired_alias_paths_deep(detail) == []
+        assert detail["accounted_upper_bound_usd"] == 1.5
+        assert detail["subagent_envelope"]["accounted_upper_bound_usd"] == 0.25
+        assert detail["loop_outcome"]["usage"]["accounted_upper_bound_usd"] == 0.5
+
+        list_request = SimpleNamespace(
+            query_params={},
+            path_params={},
+            app=SimpleNamespace(state=SimpleNamespace(drive_root=data)),
+        )
+        payload = json.loads(
+            asyncio.run(api_tasks_list(list_request)).body.decode("utf-8")
+        )
+        assert _retired_alias_paths_deep(payload) == []
+        row = next(r for r in payload["tasks"] if r["task_id"] == "legacy-cost")
+        assert row["accounted_upper_bound_usd"] == 1.5
+        assert row["accounted_upper_bound_usd_with_children"] == 2.75
+
+    def test_rewrite_normalizes_the_stored_row_to_honest_names(self, tmp_path):
+        """write_task_result strips aliases from the merged EXISTING row after
+        deprecated-wins, and a fresh honest write is never outranked by the
+        stored legacy spelling."""
+        from ouroboros.task_results import load_task_result, write_task_result
+
+        results = tmp_path / "task_results"
+        results.mkdir(parents=True, exist_ok=True)
+        (results / "legacy-rw.json").write_text(json.dumps({
+            "_schema_version": 1, "task_id": "legacy-rw", "status": "running",
+            "ts": "2026-01-01T00:00:00Z", "cost_usd": 1.0, "cost_final": False,
+        }), encoding="utf-8")
+
+        write_task_result(tmp_path, "legacy-rw", "completed",
+                          accounted_upper_bound_usd=7.0, cost_final=True)
+        stored = load_task_result(tmp_path, "legacy-rw")
+        assert "cost_usd" not in stored and "cost_usd_with_children" not in stored
+        assert stored["accounted_upper_bound_usd"] == 7.0
+        assert stored["cost_final"] is True
+
+    def test_rewrite_honors_a_legacy_mutators_edit_then_strips_it(self, tmp_path):
+        """A legacy spelling arriving IN the write itself still wins the pair
+        (deprecated-wins: the mutator's edit is honored) but is persisted
+        under the honest name only."""
+        from ouroboros.task_results import load_task_result, write_task_result
+
+        write_task_result(tmp_path, "legacy-mut", "running",
+                          accounted_upper_bound_usd=1.0)
+        write_task_result(tmp_path, "legacy-mut", "completed",
+                          **{"cost_usd": 9.0})
+        stored = load_task_result(tmp_path, "legacy-mut")
+        assert "cost_usd" not in stored
+        assert stored["accounted_upper_bound_usd"] == 9.0
 
 
 class TestApiV1ShimRemoval:

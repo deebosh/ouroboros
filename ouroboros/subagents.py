@@ -1097,15 +1097,17 @@ def build_subagent_envelope(
     capability_delta: Dict[str, Any] | None = None,
     status: str = "",
     usage: Dict[str, Any] | None = None,
-    cost_usd: float | None = None,
+    accounted_upper_bound_usd: float | None = None,
     execution_evidence: Dict[str, Any] | None = None,
     actual_substrate: str = "",
 ) -> Dict[str, Any]:
     usage_data = dict(usage or {})
+    cost_usd = accounted_upper_bound_usd
     if cost_usd is None:
         try:
             raw_cost = usage_data.get("cost")
             if raw_cost is None:
+                # Read tolerance for a legacy usage snapshot's spelling.
                 raw_cost = usage_data.get("cost_usd")
             cost_usd = float(raw_cost) if raw_cost is not None else None
         except (TypeError, ValueError):
@@ -1157,7 +1159,10 @@ def build_subagent_envelope(
         "capability_delta": dict(capability_delta or {}),
         "status": str(status or ""),
         "usage": usage_data,
-        "cost_usd": round(float(cost_usd), 6) if cost_usd is not None else None,
+        # ABI-3: the envelope's own amount rides the honest name — this
+        # envelope reaches the public task-result payload (stored legacy
+        # envelopes still resolve deprecated-wins at the projection boundary).
+        "accounted_upper_bound_usd": round(float(cost_usd), 6) if cost_usd is not None else None,
     }
     if execution_evidence is not None:
         # ADDITIVE, completion-time only. `executor_route`/`effective_executor`
@@ -1299,7 +1304,7 @@ def envelope_from_task(
     *,
     status: str,
     usage: Dict[str, Any] | None = None,
-    cost_usd: float | None = None,
+    accounted_upper_bound_usd: float | None = None,
 ) -> Dict[str, Any]:
     """Build a child's envelope from its durable task record — the ONE mapping.
 
@@ -1354,7 +1359,7 @@ def envelope_from_task(
             "completion_tokens": int(usage.get("completion_tokens") or 0),
             "rounds": int(usage.get("rounds") or 0),
         },
-        cost_usd=cost_usd,
+        accounted_upper_bound_usd=accounted_upper_bound_usd,
         execution_evidence=evidence,
         actual_substrate=substrate,
     )

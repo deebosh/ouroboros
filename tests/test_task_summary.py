@@ -94,7 +94,7 @@ def test_task_summary_row_carries_flat_snapshot_cost_fields(tmp_path):
         "cost_snapshot_at": "2026-07-29T00:00:00Z",
         "cost_final": False,
         "cost_with_children_partial": True,
-        "cost_usd_with_children": 1.25,
+        "accounted_upper_bound_usd_with_children": 1.25,
         "reserved_usd": 0.1,
         "unresolved_upper_bound_usd": 0.2,
         "unknown_unmetered": 0,
@@ -117,7 +117,10 @@ def test_task_summary_row_carries_flat_snapshot_cost_fields(tmp_path):
     row = next(r for r in rows if r.get("type") == "task_summary")
     assert row["cost_final"] is False
     assert row["cost_with_children_partial"] is True
-    assert row["cost_usd_with_children"] == 1.25
+    # ABI-3 fix-round-2: the snapshot producer emits the honest name only
+    # (the legacy fixture spelling here was stale).
+    assert row["accounted_upper_bound_usd_with_children"] == 1.25
+    assert "cost_usd_with_children" not in row
     assert row["reserved_usd"] == 0.1
     assert row["unresolved_upper_bound_usd"] == 0.2
     assert row["unknown_unmetered"] == 0

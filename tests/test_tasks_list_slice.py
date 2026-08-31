@@ -269,7 +269,10 @@ def test_list_rows_are_compact_while_detail_keeps_bulk_fields(tmp_path):
     assert row["result"] == "done"  # pinned summary field
     assert row["status"] == "completed"
     assert row["ts"] == "2026-01-01T01:00:00Z"
-    assert row["cost_usd"] == 0.5
+    # ABI-3 (fix-round-2 conversion of this OLD-ABI clause): the stored
+    # legacy spelling leaves the list row under the honest name only.
+    assert row["accounted_upper_bound_usd"] == 0.5
+    assert "cost_usd" not in row
     assert "outcome_axes" in row
 
     detail_request = SimpleNamespace(
