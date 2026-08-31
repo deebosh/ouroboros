@@ -2469,3 +2469,17 @@ every closure carries its pin.
    ouroboros/tools/registry.py — a PROTECTED file; the delta is exactly the
    two trailing blank lines left by the lane-A facade assembly, zero code
    bytes (disclosed in the commit).
+7. Function-size law (found by the fix-round's own gate run, not by the
+   review): the ABI-2 strict-probe block pushed `api_tasks_create` to 310
+   lines and `scripts/regenerate_size_ratchet.py --check` refused new
+   function debt. Resolved per the lane-A entry-7 precedent — module-level
+   helper extraction (`_task_identity_occupied`, behavior identical), no
+   band exception, no manifest change. Enforcement note for auditors: this
+   line's ratchet is pairwise base-vs-tip with NO committed-history replay
+   (`ouroboros/review.py::validate_size_ratchet` docstring), so the four
+   fix-round commits between the ABI-2 landing and the extraction carry the
+   over-limit function in their trees without being audited surfaces; the
+   final tree and the CI base (the pushed 9edb9199) are both clean, and the
+   local degraded parent-tree check is green from this commit's parent on.
+   DOMAIN_QUOTIENT_REPORT.md regenerated once more so its analyzed-inputs
+   fingerprint matches the final runtime tree.
