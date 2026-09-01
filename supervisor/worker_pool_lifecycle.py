@@ -20,7 +20,7 @@ import pathlib
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from supervisor.state import append_jsonl
 from ouroboros.outcomes import EXECUTION_INFRA_FAILED, terminal_outcome_axes
 from ouroboros.utils import utc_now_iso
@@ -113,33 +113,68 @@ def _write_failure_result(
         raise
 
 
-def _first_worker_event_since(
-    offset_bytes: int, event_type: str = "worker_boot"
-) -> Optional[Dict[str, Any]]:
-    """Read the first event of one worker lifecycle type after a file offset.
+def events_log_cursor() -> Tuple[int, int, int]:
+    """The live event log's ``(size, device, inode)`` — a cursor, not an offset.
 
-    The event log rotates (CPL4-C1): a rotation between the offset capture and
-    this read shrinks the live file below the offset and may move the sought
-    event into the newest ``archive/events_*.jsonl`` segment — on that reset the
-    newest segment is scanned too, so a boot event cannot vanish into the
-    archive mid-verification.
+    A byte offset alone cannot tell "the file I measured" from "a different
+    file at the same path": ``_first_worker_event_since`` must know WHICH file
+    the offset belongs to (audit #14-6c). Missing log = a zeroed cursor that
+    reads from the start.
     """
+    path = _pool().DRIVE_ROOT / "logs" / "events.jsonl"
+    try:
+        stat = path.stat()
+        return int(stat.st_size), int(stat.st_dev), int(stat.st_ino)
+    except OSError:
+        return 0, 0, 0
+
+
+def _first_worker_event_since(
+    cursor: Tuple[int, int, int], event_type: str = "worker_boot"
+) -> Optional[Dict[str, Any]]:
+    """Read the first event of one worker lifecycle type after a cursor.
+
+    The event log rotates (CPL4-C1), so the file the cursor was taken from may
+    now BE an archive segment. Rotation is detected by IDENTITY, not by size:
+    the previous test ("the live file is smaller than my offset") missed every
+    rotation where the new live file had already grown past the old offset —
+    exactly what happens under a busy supervisor — and then read the wrong
+    file's bytes from a meaningless offset. When the identity moved, the
+    matching segment is read from the SAME offset (the continuation is exact);
+    a cursor whose file is gone entirely falls back to the newest segment
+    whole.
+    """
+    offset_bytes, dev, ino = cursor
     path = _pool().DRIVE_ROOT / "logs" / "events.jsonl"
     if not path.exists():
         return None
     chunks: list[str] = []
     try:
         with path.open("rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            rotated_under_offset = not 0 <= offset_bytes <= size
-            f.seek(0 if rotated_under_offset else offset_bytes)
+            stat = os.fstat(f.fileno())
+            rotated = (dev, ino) != (0, 0) and (int(stat.st_dev), int(stat.st_ino)) != (dev, ino)
+            if not rotated and not 0 <= offset_bytes <= stat.st_size:
+                rotated = True  # same file, truncated under the cursor
+            f.seek(0 if rotated else offset_bytes)
             chunks.append(f.read().decode("utf-8", errors="replace"))
-        if rotated_under_offset:
+        if rotated:
             from ouroboros.utils import jsonl_archive_segments
 
             segments = jsonl_archive_segments(path)
-            if segments:
+            carried = None
+            for segment in reversed(segments):
+                try:
+                    seg_stat = segment.stat()
+                except OSError:
+                    continue
+                if (int(seg_stat.st_dev), int(seg_stat.st_ino)) == (dev, ino):
+                    carried = segment
+                    break
+            if carried is not None:
+                with carried.open("rb") as sf:
+                    sf.seek(min(offset_bytes, carried.stat().st_size))
+                    chunks.insert(0, sf.read().decode("utf-8", errors="replace"))
+            elif segments:
                 chunks.insert(0, segments[-1].read_bytes().decode("utf-8", errors="replace"))
     except Exception:
         log.debug("Suppressed exception", exc_info=True)
@@ -159,11 +194,13 @@ def _first_worker_event_since(
     return None
 
 
-def _first_worker_boot_event_since(offset_bytes: int) -> Optional[Dict[str, Any]]:
-    return _first_worker_event_since(offset_bytes, "worker_boot")
+def _first_worker_boot_event_since(cursor: Tuple[int, int, int]) -> Optional[Dict[str, Any]]:
+    return _first_worker_event_since(cursor, "worker_boot")
 
 
-def _verify_worker_sha_after_spawn(events_offset: int, timeout_sec: float = 90.0) -> None:
+def _verify_worker_sha_after_spawn(
+    events_cursor: Tuple[int, int, int], timeout_sec: float = 90.0,
+) -> None:
     """Verify newly spawned workers booted at expected current_sha."""
     st = _pool().load_state()
     expected_sha = str(st.get("current_sha") or "").strip()
@@ -181,7 +218,7 @@ def _verify_worker_sha_after_spawn(events_offset: int, timeout_sec: float = 90.0
     deadline = time.time() + max(float(timeout_sec), 1.0)
     boot_evt = None
     while time.time() < deadline:
-        boot_evt = _first_worker_boot_event_since(events_offset)
+        boot_evt = _first_worker_boot_event_since(events_cursor)
         if boot_evt is not None:
             break
         time.sleep(0.25)

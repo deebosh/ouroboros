@@ -1017,11 +1017,7 @@ def spawn_workers(n: int = 0) -> None:
     reap_orphaned_workers()
     _CTX = mp.get_context(_WORKER_START_METHOD)
     event_q = get_event_q()
-    events_path = DRIVE_ROOT / "logs" / "events.jsonl"
-    try:
-        events_offset = int(events_path.stat().st_size)
-    except Exception:
-        events_offset = 0
+    events_cursor = events_log_cursor()
 
     count = n or MAX_WORKERS
     append_jsonl(
@@ -1067,7 +1063,7 @@ def spawn_workers(n: int = 0) -> None:
         _LAST_SPAWN_TIME = time.time()
     _record_worker_pids()
     # Verify asynchronously so spawn does not block the supervisor loop.
-    threading.Thread(target=_verify_worker_sha_after_spawn, args=(events_offset,), daemon=True).start()
+    threading.Thread(target=_verify_worker_sha_after_spawn, args=(events_cursor,), daemon=True).start()
 
 
 @_serialized_worker_lifecycle
@@ -2069,6 +2065,7 @@ from supervisor.worker_pool_lifecycle import (  # noqa: E402, F401 -- intentiona
     _verify_worker_sha_after_spawn,
     _worker_pids_path,
     _write_failure_result,
+    events_log_cursor,
     kill_workers_for_update,
     reap_orphaned_workers,
     respawn_worker,

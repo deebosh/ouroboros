@@ -230,17 +230,44 @@ def test_settled_cursor_advances_across_rotation(tmp_path, monkeypatch):
 
 def test_worker_boot_event_found_after_rotation(tmp_path, monkeypatch):
     from supervisor import workers
-    from supervisor.worker_pool_lifecycle import _first_worker_event_since
+    from supervisor.worker_pool_lifecycle import _first_worker_event_since, events_log_cursor
 
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path, raising=False)
     events_path = tmp_path / "logs" / "events.jsonl"
     append_jsonl(events_path, {"type": "noise"})
-    offset = events_path.stat().st_size
+    cursor = events_log_cursor()
     append_jsonl(events_path, {"type": "worker_boot", "git_sha": "abc123", "pid": 7})
     _rotate_events(tmp_path)
 
-    evt = _first_worker_event_since(offset)
+    evt = _first_worker_event_since(cursor)
     assert evt is not None and evt.get("git_sha") == "abc123"
+
+
+def test_worker_boot_event_found_when_the_new_live_log_outgrew_the_cursor(tmp_path, monkeypatch):
+    """Audit #14-6c: rotation was detected as "the live file is smaller than my
+    offset". Under a busy supervisor the FRESH live file is already bigger than
+    the old offset by the time the verify reads, so the rotation went
+    unnoticed and the read seeked into an unrelated file at a meaningless
+    offset — the boot event vanished. Detect by file IDENTITY."""
+    from supervisor import workers
+    from supervisor.worker_pool_lifecycle import _first_worker_event_since, events_log_cursor
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path, raising=False)
+    events_path = tmp_path / "logs" / "events.jsonl"
+    append_jsonl(events_path, {"type": "noise", "pad": "x" * 200})
+    cursor = events_log_cursor()
+    append_jsonl(events_path, {"type": "worker_boot", "git_sha": "abc123", "pid": 7})
+    _rotate_events(tmp_path)
+    # The new live file overtakes the old offset before the verify runs.
+    for i in range(20):
+        append_jsonl(events_path, {"type": "llm_round", "i": i, "pad": "y" * 200})
+    assert events_path.stat().st_size > cursor[0]
+
+    evt = _first_worker_event_since(cursor)
+    assert evt is not None and evt.get("git_sha") == "abc123"
+    # The pre-cursor noise row stays excluded: the offset is honored inside the
+    # segment the cursor actually named.
+    assert _first_worker_event_since(cursor, "noise") is None
 
 
 def test_legacy_snapshot_includes_rotated_llm_usage(tmp_path):

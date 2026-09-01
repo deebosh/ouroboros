@@ -542,11 +542,7 @@ def ensure_assisted_resolver_ready(expected_sha: str, timeout_sec: float = 90.0)
     with _queue_lock:
         if workers.WORKERS:
             return False  # update quiescence must leave no ambiguous prior generation
-    events_path = _g.DRIVE_ROOT / "logs" / "events.jsonl"
-    try:
-        events_offset = int(events_path.stat().st_size)
-    except Exception:
-        events_offset = 0
+    events_cursor = workers.events_log_cursor()
     try:
         if not workers.ensure_worker_pool_started(n=1, allow_disabled_restart=True):
             return False
@@ -563,7 +559,7 @@ def ensure_assisted_resolver_ready(expected_sha: str, timeout_sec: float = 90.0)
             }
         if not live_pids:
             return False
-        boot = workers._first_worker_event_since(events_offset, "worker_ready")
+        boot = workers._first_worker_event_since(events_cursor, "worker_ready")
         try:
             boot_pid = int((boot or {}).get("pid") or 0)
         except (TypeError, ValueError):
