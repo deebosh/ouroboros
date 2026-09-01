@@ -13,10 +13,6 @@ probes (2026-09-01):
   an explicit empty string satisfies the gate for turns produced elsewhere).
 """
 
-import os
-
-import pytest
-
 from ouroboros import provider_models
 from ouroboros.llm import LLMClient
 from ouroboros.provider_models import (

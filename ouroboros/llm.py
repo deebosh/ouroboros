@@ -493,7 +493,7 @@ def add_usage(total: Dict[str, Any], usage: Dict[str, Any]) -> None:
 # Live pricing-catalog fetchers moved whole to ouroboros/provider_catalogs.py
 # at the 200,000-byte module ratchet ceiling; re-exported here so existing
 # importers (ouroboros.pricing, tests) keep the historical names.
-from ouroboros.provider_catalogs import (  # noqa: E402
+from ouroboros.provider_catalogs import (  # noqa: F401,E402
     fetch_cloudru_pricing,
     fetch_openrouter_pricing,
 )
