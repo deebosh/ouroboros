@@ -3021,3 +3021,42 @@ transports NOT rebuilt):
 4. `ReviewSlot`/`commit_triad_delivery` keep their existing parallel-vector
    ABI (models/routes/efforts) — the sweep types the route-fact derivation,
    not the review delivery contract (review models/behaviour byte-identical).
+
+## From the F3.2 lane B (dispatch digest read, base 3ba9f452)
+
+1. The digest-API inventory the seam relied on is EXACTLY as the F3.1-B
+   ledger promised — nothing new was built (reuse-first proven): the
+   per-surface `extension_generation` stamp minted at publication
+   (extension_plugin_api.py `_publish_registrations`) already reaches the
+   dispatcher through `extension_loader.get_tool()`'s descriptor copy, and
+   `extension_registry_state.extension_generation_digest` (re-exported by
+   extension_loader) already serves the registry read. The Ф3.2 delta is
+   confined to ouroboros/tools/extension_dispatch.py:
+   `_dispatch_extension_tool_result` became a stamping wrapper over the
+   verbatim inner dispatcher (`_dispatch_extension_tool_untagged`) plus the
+   `_generation_digest_for` reader (descriptor stamp first, registry reader
+   fallback for a descriptor predating the stamp).
+2. Provenance seam REUSED, no new ledger: the digest rides the typed
+   `ToolResult.meta` (`extension_generation` key), which the loop already
+   projects into the tools.jsonl record via `_tool_result_fields` →
+   `tool_result_meta` (loop_tool_execution.py). `ToolResult` is frozen with
+   MappingProxyType meta, so the wrapper REBUILDS the result with the same
+   status/code/text — the model-facing projection is byte-identical.
+3. Scope of the stamp, disclosed: only outcomes of a PHYSICAL dispatch
+   attempt carry the digest. The two pre-dispatch typed refusals —
+   EXTENSION_UNAVAILABLE (liveness) and SAFETY_VIOLATION (safety block) —
+   are excluded by `_UNDISPATCHED_CODES` and keep their exact pre-seam
+   shape (pin: test_unavailable_refusal_keeps_the_pre_seam_typed_shape
+   asserts meta == {"dynamic_provider": True}). No validation, no gate, no
+   behavior branch reads the digest (P5: a provenance fact, not a gate).
+4. Pins (tests/test_extension_registration_atomicity.py), red-proof done by
+   running them against the base dispatcher:
+   test_dispatch_provenance_carries_the_published_generation_digest (red
+   pre-fix; also proves a reload's NEW publication puts the NEW digest on
+   the next call) and
+   test_dispatch_provenance_falls_back_to_the_registry_reader (red
+   pre-fix); the unavailable-shape pin is an invariance pin (green on both
+   sides by design).
+5. Size pins: extension_loader.py and extension_plugin_api.py untouched at
+   1000/1000; extension_child_catalog.py untouched (222);
+   extension_registry_state.py untouched (182).

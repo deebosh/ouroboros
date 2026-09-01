@@ -227,6 +227,102 @@ def test_publication_carries_a_fresh_generation_digest(tmp_path):
     assert second_digest and second_digest != first_digest
 
 
+def _load_dispatch_extension(tmp_path, name):
+    loaded, _repo, drive_root = _prepare_extension(
+        tmp_path,
+        name,
+        plugin_body=(
+            "def register(api):\n"
+            "    api.register_tool('t1', lambda **kw: 'ok', description='d', schema={})\n"
+        ),
+        permissions=["tool"],
+    )
+    err = extension_loader.load_extension(
+        loaded, lambda: {}, drive_root=drive_root, _force_in_process=True
+    )
+    assert err is None, err
+    return loaded, drive_root
+
+
+def test_dispatch_provenance_carries_the_published_generation_digest(tmp_path, monkeypatch):
+    """Ф3.2 seam: a physical call's typed meta names the published generation.
+
+    The dispatch-side READ of the ABI-9 digest: a successful call carries
+    ``extension_generation`` equal to the live publication's digest, and after
+    a reload (a NEW publication) the next call carries the NEW digest. The
+    read never gates dispatch — the model-facing text is unchanged."""
+    from ouroboros.extension_surface_names import extension_surface_name
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+    from ouroboros.tools.tool_context import ToolContext
+
+    loaded, drive_root = _load_dispatch_extension(tmp_path, "provgen")
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *_a, **_k: (True, ""))
+    monkeypatch.setattr("ouroboros.extension_loader.is_extension_live", lambda *_a, **_k: True)
+    name = extension_surface_name("provgen", "t1")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=drive_root, task_id="prov-task")
+
+    ext_tool = extension_loader.get_tool(name)
+    result = _dispatch_extension_tool_result(ctx, name, ext_tool, {})
+    first_digest = extension_loader.extension_generation_digest("provgen")
+    assert result.status == "ok" and result.text == "ok"
+    assert first_digest
+    assert result.meta.get("extension_generation") == first_digest
+
+    extension_loader.unload_extension("provgen")
+    err = extension_loader.load_extension(
+        loaded, lambda: {}, drive_root=drive_root, _force_in_process=True
+    )
+    assert err is None, err
+    ext_tool = extension_loader.get_tool(name)
+    result = _dispatch_extension_tool_result(ctx, name, ext_tool, {})
+    second_digest = extension_loader.extension_generation_digest("provgen")
+    assert second_digest and second_digest != first_digest
+    assert result.status == "ok" and result.text == "ok"
+    assert result.meta.get("extension_generation") == second_digest
+
+
+def test_dispatch_provenance_falls_back_to_the_registry_reader(tmp_path, monkeypatch):
+    """A descriptor predating the per-surface stamp still names the live
+    generation through the ``extension_generation_digest`` registry reader."""
+    from ouroboros.extension_surface_names import extension_surface_name
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+    from ouroboros.tools.tool_context import ToolContext
+
+    _loaded, drive_root = _load_dispatch_extension(tmp_path, "provfall")
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *_a, **_k: (True, ""))
+    monkeypatch.setattr("ouroboros.extension_loader.is_extension_live", lambda *_a, **_k: True)
+    name = extension_surface_name("provfall", "t1")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=drive_root, task_id="prov-task")
+
+    ext_tool = extension_loader.get_tool(name)
+    ext_tool.pop("extension_generation", None)
+    result = _dispatch_extension_tool_result(ctx, name, ext_tool, {})
+    assert result.status == "ok" and result.text == "ok"
+    assert result.meta.get("extension_generation") == (
+        extension_loader.extension_generation_digest("provfall")
+    )
+
+
+def test_unavailable_refusal_keeps_the_pre_seam_typed_shape(tmp_path, monkeypatch):
+    """The typed EXTENSION_UNAVAILABLE refusal is NOT part of the Ф3.2 read:
+    a not-live registration refuses with the exact pre-seam status/code/meta
+    (no digest key), so the existing unavailable path breaks in no new way."""
+    from ouroboros.extension_surface_names import extension_surface_name
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+    from ouroboros.tools.tool_context import ToolContext
+
+    _loaded, drive_root = _load_dispatch_extension(tmp_path, "provdead")
+    monkeypatch.setattr("ouroboros.extension_loader.is_extension_live", lambda *_a, **_k: False)
+    name = extension_surface_name("provdead", "t1")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=drive_root, task_id="prov-task")
+
+    ext_tool = extension_loader.get_tool(name)
+    result = _dispatch_extension_tool_result(ctx, name, ext_tool, {})
+    assert result.status == "unavailable"
+    assert result.code == "EXTENSION_UNAVAILABLE"
+    assert dict(result.meta) == {"dynamic_provider": True}
+
+
 def _publish_oop(loaded, drive_root, catalog, *, current_hash=None, expected_generation=None):
     return extension_loader._publish_out_of_process_registration(
         loaded,

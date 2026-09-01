@@ -124,7 +124,60 @@ def _extension_completion(result: str, safety_msg: str) -> ToolResult:
     return _extension_result("ok", "OK", result)
 
 
+# Typed refusals issued BEFORE any physical dispatch attempt: the liveness
+# refusal and the safety block never reached the handler, so the ABI-9
+# generation stamp below does not apply to them (their typed shape stays
+# byte-identical to the pre-seam behavior).
+_UNDISPATCHED_CODES = frozenset({"EXTENSION_UNAVAILABLE", "SAFETY_VIOLATION"})
+
+
+def _generation_digest_for(ext_tool: Dict[str, Any]) -> str:
+    """Published-generation digest this descriptor dispatches against (ABI-9).
+
+    Provenance READ only (the Ф3.2 seam): the digest names the exact published
+    registration generation — taken from the per-surface stamp minted at
+    publication, with the registry reader as the fallback for a descriptor
+    that predates the stamp. Dispatch never validates or gates on it."""
+    digest = str(ext_tool.get("extension_generation") or "")
+    if digest:
+        return digest
+    try:
+        from ouroboros.extension_loader import (
+            extension_generation_digest as _ext_generation_digest,
+        )
+
+        return str(_ext_generation_digest(str(ext_tool.get("skill") or "")) or "")
+    except Exception:
+        return ""
+
+
 def _dispatch_extension_tool_result(
+    ctx: Any,
+    name: str,
+    ext_tool: Dict[str, Any],
+    args: Optional[Dict[str, Any]],
+) -> ToolResult:
+    """Dispatch once, stamping ABI-9 generation provenance on physical calls.
+
+    The model-facing text and the typed status/code are exactly the inner
+    dispatcher's; the only addition is the ``extension_generation`` meta fact
+    on outcomes of a physical dispatch attempt, which the loop projects into
+    the tools.jsonl ``tool_result_meta`` provenance record."""
+    result = _dispatch_extension_tool_untagged(ctx, name, ext_tool, args)
+    if not isinstance(result, ToolResult) or result.code in _UNDISPATCHED_CODES:
+        return result
+    digest = _generation_digest_for(ext_tool)
+    if not digest:
+        return result
+    return ToolResult(
+        status=result.status,
+        code=result.code,
+        text=result.text,
+        meta={**dict(result.meta), "extension_generation": digest},
+    )
+
+
+def _dispatch_extension_tool_untagged(
     ctx: Any,
     name: str,
     ext_tool: Dict[str, Any],
