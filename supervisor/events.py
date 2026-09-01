@@ -269,7 +269,11 @@ EVENT_HANDLERS = {
     "task_metrics": _handle_task_metrics,
     "deep_self_review_request": _handle_deep_self_review_request,
     "promote_to_stable": _handle_promote_to_stable,
-    "schedule_task": _handle_schedule_task,
+    # D06: the "schedule_task" key retired here had no producer anywhere in the
+    # tree — it advertised a capability nothing could reach. The FUNCTION keeps
+    # its name (its family and FUNCTION_DEBT key are pinned to it); only the
+    # dead wire vocabulary is gone. supervisor/event_taxonomy.py declares the
+    # pairing this closes.
     "schedule_subagent": _handle_schedule_task,
     "promote_chat_to_task": _handle_promote_chat_to_task,
     "ensure_project_scope": _handle_ensure_project_scope,

@@ -176,7 +176,6 @@ def test_dispatch_table_entries_resolve_to_their_owner_families():
     # F2 addendum: _handle_schedule_task lives with its family (the D11
     # same-qualname rule carried its FUNCTION_DEBT key along).
     assert owners["schedule_subagent"] == "supervisor.events_schedule_task"
-    assert owners["schedule_task"] == "supervisor.events_schedule_task"
     assert owners["toggle_evolution"] == "supervisor.events_runtime_controls"
     assert owners["promote_to_stable"] == "supervisor.events_runtime_controls"
     # F2.2: the cancel/custody organ handlers live in their family leaves

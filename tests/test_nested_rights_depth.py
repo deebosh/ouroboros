@@ -476,7 +476,7 @@ def test_supervisor_ingress_records_explicit_root_depth_request(tmp_path, monkey
     })
     event = _schedule_event("root", "", depth=0, drive_root=tmp_path)
     event.update({
-        "type": "schedule_task",
+        "type": "schedule_subagent",
         "chat_id": 1,
         "delegation_role": "root",
         "root_task_id": "root",

@@ -5514,3 +5514,64 @@ Cross-cutting notes:
   `_queue()` module handle (four call sites) and three tests monkeypatch it. It
   now carries the same `noqa` marker as its two sibling facade names instead of
   looking like a leftover.
+
+### D06 — the event taxonomy, four tiers with pairing enforced (owner 3A)
+
+| Question | Answer |
+| --- | --- |
+| What the table had to be | DERIVED, not restated. The tree already holds the truth in two places — `EVENT_HANDLERS` (who answers) and the emitter call sites (who asks). A taxonomy that re-types either one is a third copy that drifts. So `supervisor/event_taxonomy.py` declares only what neither place records: the TIER, and the producing files |
+| Home | `supervisor/event_taxonomy.py` — data plus one lookup. It imports `__future__`/`dataclasses`/`typing` and nothing from the runtime, and a test pins that import set: a table that can call nothing decides nothing, so it cannot quietly become a second dispatcher beside `EVENT_HANDLERS` |
+| Reuse over a new framework | The producer→answer direction is ALREADY scanned by `tests/test_worker_event_registry.py`. The new suite imports its `_emitted_types`/`ALLOWLIST` rather than growing a second AST walker, so the two tables cannot describe different runtimes |
+
+The four tiers, and why the split is real rather than decorative:
+
+- **`worker_handler` (34)** — a dispatch entry whose handler takes a runtime
+  action.
+- **`telemetry_only` (7)** — also a dispatch entry, but the answer is the
+  durable append in `telemetry_events.py` and nothing more. The tier is not a
+  prose claim: the test asserts it equals `TELEMETRY_EVENT_HANDLERS` exactly, so
+  a passthrough handler that grows an action has to change tier to stay green.
+- **`server_intercept` (1)** — `restart_request`, consumed by `server.py`'s drain
+  loop before dispatch because the supervisor thread cannot restart itself.
+- **`nested_log_event` (3)** — `task_checkpoint`,
+  `task_start_settings_reload_failed`, `review_reference` travel inside
+  `log_event.data` and are answered by the nested branch, so they need no
+  dispatch key. Without a row these read as producers nobody answers, which is
+  precisely the shape the taxonomy exists to distinguish from a real hole.
+
+`worker_handler ∪ telemetry_only == EVENT_HANDLERS` is asserted in BOTH
+directions, and the two undispatched tiers are asserted ABSENT from it — so a
+new key with no row, and a row claiming a dispatched tier with no key, both fail.
+
+**The audit finding, retired rather than excused.** `events.py:272` advertised a
+`schedule_task` dispatch key with no emitter anywhere in the tree — a capability
+nothing could reach, indistinguishable by grep from a live one. The key is gone;
+the FUNCTION keeps its name (`_handle_schedule_task`, whose family placement and
+FUNCTION_DEBT key are pinned to it) and serves `schedule_subagent`, its only real
+producer. Two tests followed the vocabulary rather than the behaviour and were
+corrected with it: `test_events_extraction`'s owner assertion for the dead key is
+dropped, and `test_nested_rights_depth` — which calls the handler DIRECTLY, so
+the type string was incidental — now names the key that exists.
+
+Cross-cutting notes:
+
+- **No producer-less allowlist, deliberately.** The brief allowed known
+  exceptions with a stated reason. After the retirement there were none, and
+  adding an empty allowlist would have built the door through which the next
+  dead key walks. A row with no producer is a hard failure; the remedy is to
+  retire the key, as this lane did. The one exception that DOES exist —
+  `test_worker_event_registry`'s `restart_request` — is not re-excused here:
+  the taxonomy requires it to name the tier that answers it instead, so being
+  "allowlisted" over there means "declared as `server_intercept`" over here.
+- **The declared-producer check is the half no scan can do.** The scan only
+  proves an emitted type is answered; nothing in it notices when the LAST
+  emitter of an answered type disappears. Each row therefore names its producing
+  files, and the test fails when a named file no longer contains the event
+  string — a producer that moves or stops producing surfaces as a failure
+  instead of a key that still reads as live.
+- **One documented claim went stale and was fixed in the same commit.**
+  `docs/ARCHITECTURE.md` said an `emit_log_event`-enveloped type was outside the
+  scan's reach and that "for those the discipline is code review, not this
+  test". That is no longer true — `review_reference` and the two nested
+  siblings are exactly such types and now carry declared rows — so the sentence
+  now points at the taxonomy.
