@@ -19,7 +19,7 @@ import { showToast } from './toast.js';
 import { escapeHtmlAttr as escapeHtml, formatDualVersion } from './utils.js';
 import { apiClient, apiFetch, cleanExtensionRoute, extensionRoutePath } from './api_client.js';
 import { claudexorStatus } from './claudexor_status_store.js';
-import { collectSafeFieldValues, renderSafeField, setInlineStatus } from './ui_helpers.js';
+import { collectSafeFieldValues, renderSafeField, revealNewRow, setInlineStatus } from './ui_helpers.js';
 
 let markSettingsDirty = () => {};
 const BASE_SECRET_KEYS = new Set(SECRET_KEYS.map(([key]) => key));
@@ -997,8 +997,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (host.querySelector('.muted')) host.innerHTML = '';
         const row = customSecretRow();
         host.appendChild(row);
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        row.querySelector('[data-custom-secret-key]')?.focus();
+        revealNewRow(row, row.querySelector('[data-custom-secret-key]'));
         markSettingsDirty();
     });
 

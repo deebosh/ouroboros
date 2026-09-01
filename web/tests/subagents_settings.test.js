@@ -26,6 +26,7 @@ import {
     validateAvailableSubagentsSetting,
 } from '../modules/subagents_settings.js';
 import { buildReviewerSlotsSetting } from '../modules/reviewer_slots.js';
+import { revealNewRow } from '../modules/ui_helpers.js';
 
 const CONTRACT_FIXTURE = JSON.parse(fs.readFileSync(
     new URL('./fixtures/available_subagents_contract.json', import.meta.url),
@@ -662,4 +663,20 @@ test('Settings section keeps global task-authority controls beside the actor lis
     assert.match(html, /id="s-subagent-worktree-root"/);
     assert.match(html, /id="s-subagent-projects-root"/);
     assert.doesNotMatch(html, /chooses one by its stable ID/);
+});
+
+test('revealNewRow scrolls the shortest distance and focuses the named field without a second scroll', () => {
+    // docs/DESIGN.md "List editors": a freshly added entry is scrolled into
+    // view without animation and takes the caret. Both arguments are the
+    // caller's; a stub or detached node without the DOM methods is tolerated.
+    const calls = [];
+    const row = { scrollIntoView: (opts) => calls.push(['scroll', opts]) };
+    const field = { focus: (opts) => calls.push(['focus', opts]) };
+    revealNewRow(row, field);
+    assert.deepEqual(calls, [
+        ['scroll', { block: 'nearest' }],
+        ['focus', { preventScroll: true }],
+    ]);
+    assert.doesNotThrow(() => revealNewRow({}, null));
+    assert.doesNotThrow(() => revealNewRow(null, {}));
 });

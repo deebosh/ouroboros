@@ -137,6 +137,20 @@ export function setInlineStatus(el, text, tone = 'muted') {
 }
 
 /**
+ * A list editor's freshly added entry is shown where it landed and takes the
+ * caret (docs/DESIGN.md "List editors"). The row is scrolled the SHORTEST
+ * distance into view with no animation — a WebKit shell's smooth scroll would
+ * race the focus below, and a browser test must see the final geometry at once
+ * — and the caller's named field receives focus without a second scroll. Both
+ * arguments are the caller's: every add path knows its row and its first
+ * field, so no heuristic picks one. Detached or stub nodes are tolerated.
+ */
+export function revealNewRow(row, field) {
+    row?.scrollIntoView?.({ block: 'nearest' });
+    field?.focus?.({ preventScroll: true });
+}
+
+/**
  * A packaged launcher answers `{ok:false, error}` when its file bridge refuses
  * the URL — most often because its allowlist predates the route it was handed,
  * which no amount of retrying fixes. Throwing there leaves the owner with a
