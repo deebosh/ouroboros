@@ -409,8 +409,10 @@ def test_unreadable_skills_tree_is_an_audit_failure_exit_2_not_clean(tmp_path):
     """Adversarial fix-round 2, claim 3a: the audit's traversal must not stand
     on the runtime's fail-soft listdir — an unreadable skills directory is an
     audit failure (exit 2), never an empty walk that audits clean."""
+    import pytest
+    if os.name == "nt":
+        pytest.skip("chmod-based unreadable probes are POSIX-only")
     if os.geteuid() == 0:
-        import pytest
         pytest.skip("permission probes are meaningless as root")
     data = _build_clean_70_install(tmp_path / "install")
     locked = data / "skills" / "external"
@@ -428,8 +430,10 @@ def test_unreadable_task_results_dir_is_an_audit_failure_exit_2_not_clean(tmp_pa
     source of the same class as the skills tree — Path.glob would suppress a
     PermissionError on supported Python 3.10 and the unreadable directory
     would audit clean; the strict lister maps it to exit 2."""
+    import pytest
+    if os.name == "nt":
+        pytest.skip("chmod-based unreadable probes are POSIX-only")
     if os.geteuid() == 0:
-        import pytest
         pytest.skip("permission probes are meaningless as root")
     data = _build_clean_70_install(tmp_path / "install")
     locked = data / "task_results"

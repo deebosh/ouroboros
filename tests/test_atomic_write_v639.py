@@ -217,7 +217,10 @@ def test_write_text_atomic_is_byte_exact_on_every_platform(tmp_path, monkeypatch
     it, and pin the exact bytes on both lanes."""
     import os as _os
 
-    fake_o_binary = 1 << 26
+    # Windows has the real bit: pin it as-is (stripping it would re-enable the
+    # text-mode translation this test forbids). POSIX has none, so simulate one.
+    real_o_binary = getattr(_os, "O_BINARY", None)
+    fake_o_binary = real_o_binary if real_o_binary is not None else 1 << 26
     target = tmp_path / "run_manifest.json"
     content = '{\n  "seed": "v7next\\r",\n  "lines": "a\\nb"\n}\n'
     flags_seen: list[int] = []
@@ -225,7 +228,9 @@ def test_write_text_atomic_is_byte_exact_on_every_platform(tmp_path, monkeypatch
 
     def spy_open(path, flags, *args, **kwargs):
         flags_seen.append(flags)
-        return real_open(path, flags & ~fake_o_binary, *args, **kwargs)
+        if real_o_binary is None:
+            flags &= ~fake_o_binary
+        return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(_os, "O_BINARY", fake_o_binary, raising=False)
     monkeypatch.setattr(utils.os, "open", spy_open)

@@ -96,7 +96,7 @@ def test_scope_review_floor_left_no_source_remnants():
             if "SCOPE_REVIEW_FLOOR" in text.upper() or "scope-review-floor" in text:
                 rel = path.relative_to(REPO)
                 if rel not in allowed:
-                    offenders.append(str(rel))
+                    offenders.append(rel.as_posix())
     assert not offenders, f"retired floor surface respelled in: {offenders}"
 
 
@@ -119,7 +119,7 @@ def test_fail_tasks_left_no_source_remnants():
     for root in ("ouroboros", "supervisor", "web", "prompts"):
         for path in sorted((REPO / root).rglob("*.py")):
             if "fail_tasks" in path.read_text(encoding="utf-8", errors="replace"):
-                offenders.append(str(path.relative_to(REPO)))
+                offenders.append(path.relative_to(REPO).as_posix())
     assert not offenders, f"removed fail_tasks respelled in: {offenders}"
 
 
@@ -176,7 +176,7 @@ def test_deadline_aliases_left_no_source_remnants():
     offenders = []
     for root in ("ouroboros", "supervisor", "web", "prompts"):
         for path in sorted((REPO / root).rglob("*.py")):
-            rel = str(path.relative_to(REPO))
+            rel = path.relative_to(REPO).as_posix()  # Windows walks with backslashes
             if rel in refusal_only:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")

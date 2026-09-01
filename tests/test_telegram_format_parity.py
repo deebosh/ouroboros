@@ -12,6 +12,9 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+# signal.alarm is POSIX-only; on Windows the suite-wide pytest-timeout is the guard.
+_alarm = getattr(signal, "alarm", lambda _seconds: None)
+
 
 _PACKAGE = "telegram_format_parity_test"
 
@@ -228,12 +231,12 @@ def test_chunker_terminates_for_oversized_link_tag_and_pre_block():
     )
     pre_source = "```text\n" + ("x" * 12_000) + "\n```"
 
-    signal.alarm(10)
+    _alarm(10)
     try:
         link_chunks = telegram_api.markdown_to_telegram_chunks(link_source)
         pre_chunks = telegram_api.markdown_to_telegram_chunks(pre_source)
     finally:
-        signal.alarm(0)
+        _alarm(0)
 
     assert link_chunks
     assert pre_chunks
@@ -246,11 +249,11 @@ def test_chunker_balances_100kb_single_block_paragraph_within_alarm():
     _plugin, telegram_api = _load_skill()
     source = "**" + ("word " * 20_000) + "**"
 
-    signal.alarm(10)
+    _alarm(10)
     try:
         chunks = telegram_api.markdown_to_telegram_chunks(source)
     finally:
-        signal.alarm(0)
+        _alarm(0)
 
     assert len(chunks) > 1
     assert all(telegram_api._u16len(chunk) <= 4096 for chunk in chunks)

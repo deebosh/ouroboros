@@ -773,7 +773,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.scope_only:
-        print(json.dumps(build_scope(), ensure_ascii=False, indent=2))
+        # ASCII-escaped: the scope text carries non-cp1252 characters and a
+        # Windows pipe/console would raise UnicodeEncodeError (exit 1 == "found").
+        print(json.dumps(build_scope(), ensure_ascii=True, indent=2))
         return 0
 
     try:

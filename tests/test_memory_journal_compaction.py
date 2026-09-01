@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 
 import pytest
@@ -117,6 +118,7 @@ def test_a_concurrent_append_is_never_dropped_by_the_rewrite(tmp_path):
     assert rows[1] == racing  # the concurrent row is intact whichever branch ran
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the reader holds the journal open; Windows refuses to unlink it (no FILE_SHARE_DELETE)")
 def test_a_replaced_source_aborts_the_publish(tmp_path):
     """Identity, not just size: if the journal is swapped for a different file
     under the rewrite, the finished temp must be dropped, not published over
