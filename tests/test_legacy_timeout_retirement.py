@@ -118,6 +118,10 @@ def test_no_runtime_or_settings_surface_still_names_either_key():
         "tests/test_settings_honesty.py",
         "tests/test_heartbeat_presentation.py",
         "docs/ARCHITECTURE.md",                 # the retirement is documented
+        "ADOPTION_v7next.md",                   # ...and adopted: the D04 row names
+                                                # what it retired, same as the already
+                                                # skipped docs/v7next/ ledger. A record
+                                                # of a removal is not a live surface
     }
     offenders = []
     for pattern in ("*.py", "*.js", "*.json", "*.md", "*.html"):
