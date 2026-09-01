@@ -26,8 +26,11 @@ data-relative path to be covered by a row here (count-anchored both ways).
   row; new stamps use the shared key.
 - **GC retention** — `ouroboros/retention.py`: one owner knob
   `OUROBOROS_GC_RETENTION_DAYS` (default 7, clamped 1–365; legacy per-subsystem
-  keys migrate). Governs ONLY subagent worktrees, headless/task drives, task
-  trees, and service logs.
+  keys migrate). Governs subagent worktrees, headless/task drives, task trees,
+  service logs, and — since the CPL4 train — consumed schedule receipts,
+  confirmed capability probes, delegate recovery/supervision sweeps, code_intel
+  and reconcile-failed prunes, memory-journal digesting, agent media, and the
+  acknowledged-observation fold.
 - **Rotation** — `supervisor/state.py::rotate_jsonl_log_if_needed`: >800 KB →
   atomic rename to `archive/<prefix>_<ts>.jsonl` under the append lock.
   Applied on the supervisor tick to `chat.jsonl`, `progress.jsonl` and — since
@@ -42,9 +45,11 @@ data-relative path to be covered by a row here (count-anchored both ways).
 - **Atomic writes** — `atomic_write_json`/`atomic_write_text` (tmp+rename) and
   `update_json_locked` (sidecar `<file>.lock`); JSONL appends go through
   `append_jsonl` (O_APPEND + sidecar lock) unless noted.
-- **Candidate fixes** — rows marked `→ CPL4-Cn` name real gaps; the candidate
-  table lives in the campaign ledger (`docs/v7next/LEDGER_CORRECTIONS.md`,
-  F5 lane B section). This lane changes no persistence code (plan rule).
+- **Candidate fixes** — the CPL4-C1..C23 candidate table lives in the campaign
+  ledger (`docs/v7next/LEDGER_CORRECTIONS.md`, F5 lane B section). The
+  mechanical train (owner №9=A) plus owner batch №8 closed every row except
+  CPL4-C6 (usage-ledger compaction — its own reviewed lane, monetary
+  authority); rows above cite their CPL4-Cn as provenance, not as open gaps.
 
 ## 1. Root files
 
@@ -141,7 +146,7 @@ data-relative path to be covered by a row here (count-anchored both ways).
 | Path | Writer | Marker | Retention | Reset |
 |---|---|---|---|---|
 | `skills/{native,clawhub,ouroboroshub,external}/<name>/**` (+`.staging/`, `.ouroboros_env/` with `cache/ tmp/ home/`) | `ouroboros/marketplace/*`, `launcher_bootstrap.py` seed, agent self-authoring | provenance sidecars `schema_version: 1`; env `fingerprint.json: 1` | no age GC (payloads are installed software); staging rmtree'd per install, crash orphans recognized by name fragments; package caches live with the skill | bucket recreated empty; native seeds NOT re-seeded (deletion intent preserved) except post-bootstrap set; orphaned `state/skills/` rows keep grants + tombstone only after the CPL4-C11 sweep |
-| `task_results/<id>.json` | `ouroboros/task_results.py` (locked merge) | `_schema_version: 1` (ABI-2); unstamped/future/malformed → quarantine, no conversion (Q8=B) | UNBOUNDED — one file per task forever, no GC — accepted for 7.0 (lifecycle authority; prune candidates need an owner decision, see CPL4-C19) | lifecycle authority lost; drive prunes degrade to age-only; strict authority reads break |
+| `task_results/<id>.json` | `ouroboros/task_results.py` (locked merge) | `_schema_version: 1` (ABI-2); unstamped/future/malformed → quarantine, no conversion (Q8=B) | UNBOUNDED — one file per task forever, no GC — RATIFIED for 7.0 (CPL4-C19, owner batch №8 5A: lifecycle authority stays eternal deliberately; any future prune needs a fresh owner decision) | lifecycle authority lost; drive prunes degrade to age-only; strict authority reads break |
 | `task_results/quarantine/` | `ouroboros/task_result_schema.py` (same-dir rename) | quarantined bytes unchanged | NEVER GC'd (pinned); recovery is manual owner re-stamp | quarantined evidence lost |
 | `task_results/artifacts/<id>/**` (+`verification_receipts.jsonl`), `task_results/artifact_versions/` | `ouroboros/artifacts.py`, `headless.py`, `outcome_receipt_store.py` | artifact manifest `schema_version: 1`; scratch manifest 2 | artifact versions bounded (5 per name); artifacts live with their result | deliverable bytes lost; results keep dangling manifests |
 | `task_drives/<id>/**` (+`tmp_scripts/`) | `ouroboros/headless.py`, `tools/tool_context.py`, `tools/shell.py` | child stamps as above | GC-retention prune at startup (terminal + age, default 7 d); the `data/tmp_scripts` fallback's hard-kill orphans are in `sweep_stale_temp_files` scope (CPL4-C20, startup-only when no script can be live) | scratch lost; canonical artifacts survive |

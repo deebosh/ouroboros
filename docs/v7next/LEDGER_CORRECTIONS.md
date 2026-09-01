@@ -4614,3 +4614,66 @@ _bind_pytest_runtime_roots` rebound config/state/queue/workers but not
      skill_smoke lane that triggers it runs only outside the default CI
      shape. Follow-up candidate: the same lazy-resolution treatment for the
      skill-host spawn env.
+
+## From the persistence mechanical train (№9=A, base d1276c5f, 2026-09-01)
+
+The CPL4-C1..C23 candidate table (F5 lane B) executed as one lane. Scope =
+the owner-sanctioned mechanical set (№9=A) PLUS the owner batch №8 rulings
+delivered mid-lane (all A: 1A..7A). Single-intent commits, author Ouroboros;
+docs/PERSISTENCE.md rows and the verify pin moved in the same commit as each
+fix. Disposition per row:
+
+| id | disposition | mechanism |
+|---|---|---|
+| CPL4-C1 | fixed (rotation train) | events.jsonl rotates on the supervisor tick AFTER its custody readers went chain-aware: `utils.jsonl_chain_handles` (open-live-first + inode dedup, rotation-race-safe) feeds `delegate_custody._iter_rows` (full replay + chain-windowed fault tail), strict `complete_custody_rows` (unopenable segment = incomplete view), `custody_log_unreadable` probes the chain, the settled-terminal cursor became a monotonic CHAIN offset (immutable archive ⇒ monotonic; torn archive line consumed, torn live line waits), legacy usage import snapshots the chain, the swarm-fanout rollup reads `iter_jsonl_chain_objects`, worker boot verify falls back to the newest segment on a rotated offset. 8 MB live tripwire (rotation-regression) + 100 MB chain watch inherit the old signals |
+| CPL4-C2 | fixed (rotation train) | tools.jsonl rotates on the same tick; api_logs_tail/task_events were already archive-chain-aware; tripwire re-texted to rotation-regression |
+| CPL4-C3 | fixed (rotation train) | supervisor.jsonl rotates + gains its tripwire row (`SUPERVISOR_LOG_WARN_BYTES`); `memory.read_jsonl_tail` (the tail-200 context read) backfills from newest archive segments |
+| CPL4-C4 | fixed (rotation train) | task_reflections.jsonl rotates + gains its tripwire; the tail-20 read backfills; project-scoped copies stay under project retention (never age-pruned) |
+| CPL4-C5 | fixed | launcher pipe-copy thread rotates agent_stdout.log at 2 MB × `.1..3` backups (the server.log RotatingFileHandler bound), rotation failure never kills the copy thread |
+| CPL4-C6 | NOT touched (owner 1A) | monetary usage-ledger compaction is excised to its own reviewed lane — monetary authority; the 20 MB WARN and quarantine semantics stand |
+| CPL4-C7 | fixed (half pre-landed) | the consumed-once receipt prune already landed with the scheduler tick (`prune_consumed_once_records` + GC retention, found in-tree at base); this lane authored the missing `schema_version` stamp at `_write_scheduled_tasks` and trued up the tripwire text |
+| CPL4-C8 | fixed | `_store_evidence` drops expired probe keys on write: failed/unprobeable past `_FAILED_TTL_SEC`, confirmed past GC retention; owner acks never expire, in-retention stale confirmed survives (blip-keep invariant pinned), unreadable ts/unknown status kept fail-closed |
+| CPL4-C9 | fixed (owner 2A) | reader surface retired: `inject_crash_report`, the CRITICAL crash-rollback health line and their stickiness tests removed; no writer existed in this tree, stale files inert; PERSISTENCE row retired, scan pin moved |
+| CPL4-C10 | fixed | `_schema_version: 1` (ABI-2 `with_schema_version`) on all six owner-state writes; review_job gained the one `_write_review_job` seam so merge writers stamp; grants re-stamp at write (its read normalizes keys away); readers keep legacy-0 tolerance, no read-time retrofits; content_hash never covers state files so no verdict/grant staled |
+| CPL4-C11 | fixed (owner 3A) | hub uninstalls write a stamped `uninstalled.json` tombstone; the startup sweep clears dead state BY the mark keeping `grants.json` (owner authority) + the tombstone; reinstall self-heals; tombstone filename joined the owner-state forgery allowlist; gateway local delete (whole-dir removal) untouched |
+| CPL4-C12 | fixed (bounded reads; rotation declined) | every review_history reader windows the 4 MB tail (`find_history_job_bounded` idiom incl. `load_history` and the idempotent terminal dedup scan); counters stay exact inside the window because lifecycle terminal rows persist their ordinals and `normalize_history` takes max(stored, derived) — a group aged past the window under-counts, never over-blocks (disclosed). Per-skill archive rotation NOT taken: no per-skill archive plane exists and the bounded reads land the read-cost half; retention stays unbounded-accepted with disclosure |
+| CPL4-C13 | fixed | terminal+age startup sweep beside the custody sweep: terminal-status recovery rows (vetoed/adopted) past GC retention, transactions no surviving row references (skipped wholesale if ANY recovery row unreadable), supervision files of SETTLED tasks; `active.json` never; unreadable custody log skips the sweep (the `_prune_delegated_snapshots` idiom) |
+| CPL4-C14 | fixed | code_intel roots age-prune by inventory.json mtime past GC retention (pure cache; the root key is a one-way hash so mtime IS the liveness signal) |
+| CPL4-C15 | fixed | `failed/` reconcile markers age-prune past GC retention (failure fact already durable in events.jsonl) |
+| CPL4-C16 | fixed (owner 4A) | identity/knowledge/patterns journal entries older than GC retention become digest-only (sha256+len, existing hashes never overwritten, `content_digested` mark) under the append lock; unparseable lines and ts-less rows byte-preserved; scratchpad journal and the observation inbox out of scope |
+| CPL4-C17 | fixed | both knowledge_history writers + knowledge_journal now append through the sidecar-locked `append_jsonl` seam (last raw `open("a")` journals) |
+| CPL4-C18 | fixed | startup sweep unlinks mailboxes (+acks) of tasks with a SETTLED durable result; no result / non-terminal / unclassifiable name keeps them fail-closed; reuses `cleanup_task_mailbox` |
+| CPL4-C19 | recorded (owner 5A) | task_results stay eternal for 7.0 deliberately — ratified in PERSISTENCE + ADOPTION; any future prune needs a fresh owner decision |
+| CPL4-C20 | fixed | the data-root `tmp_scripts` fallback's `script_*` hard-kill orphans joined `sweep_stale_temp_files` scope (top-level dir only, same age guard, startup-only); task-drive copies stay owned by the drive prune |
+| CPL4-C21 | fixed (owner 6A) | `uploads/screenshots` + `uploads/views` (agent-generated) age out past GC retention at startup; owner attachments in the uploads/ root untouched (owner-explicit delete only); readers already skip missing |
+| CPL4-C22 | fixed (owner 7A) | `OUROBOROS_OBSERVABILITY_RETENTION_DAYS` removed entirely (parse/clamp/report); `prune_observability_blobs` is now the honest startup census; key added to `RETIRED_SETTING_KEYS` (ghost drop on load); ARCHITECTURE env row removed; preserve-indefinitely contract stands |
+| CPL4-C23 | fixed | acknowledged observations older than GC retention fold — with their ack rows — into `archive/consciousness_observations_<ts>.jsonl` at startup under the store's writer lock; unACKed rows NEVER pruned; any malformed line / ghost ack skips the whole fold; archive written before the live rewrite (crash duplicates into forensic history, never loses) |
+
+Cross-cutting disclosures:
+
+- **Verify pin**: `tests/test_persistence_inventory.py` EXPECTED_SCAN_PATHS
+  118 → 123 across the lane (C13 +2 dir enumerations, C14/C15 +2, C16 +2
+  canonical journal paths, C9 −1 retired plane), each move in the same commit
+  as its rows.
+- **Size ratchet**: utils.py (1451→1550), launcher.py (1500→1536) and
+  agent_startup_checks.py (1487→1515) left the tracked 1001–1500 band into
+  the untracked 1501–1600 zone; the regenerator retired their band
+  rationales and `--check` is green. The chain helpers stay in utils beside
+  the jsonl family (splitting the jsonl seam would scatter it); memory.py
+  was shaved back under 1000 instead of banding.
+- **C12 residual**: direct (non-lifecycle) `append_history` rows still do
+  not persist ordinals; only a group whose newest ordinal-bearing row aged
+  past the 4 MB window under-counts. Named, not hidden.
+- **Worker-boot verify residual (C1)**: on the rare rotated-offset fallback
+  the newest-segment scan can surface a PREVIOUS generation's boot event
+  (worst case: a spurious sha-verify supervisor row); the pre-train behavior
+  on that race was a spurious timeout instead.
+- **C13/C18 residual**: state files of tasks that never wrote a durable
+  result are kept forever by design (fail-closed beats leak-free).
+- **Owner batch №8** (2026-09-01, all A): 1A C6 excised to its own lane;
+  2A C9 retire reader; 3A C11 tombstone with grants preserved; 4A C16
+  digest-only past GC retention; 5A C19 recorded eternal; 6A C21 agent
+  media only; 7A C22 knob removed with `RETIRED_SETTING_KEYS` idiom.
+  prompts/SYSTEM.md's combined "CRASH ROLLBACK / RESCUE SNAPSHOT" line was
+  left untouched (rescue-snapshot half still live; prompts are outside this
+  lane's mechanical scope).
