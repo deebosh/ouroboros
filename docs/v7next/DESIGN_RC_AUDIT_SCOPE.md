@@ -42,7 +42,11 @@ Feeder inventories (each lane freezes its list as data, not prose):
 
 - Read-only over the audited install; never mutates it. Output: typed report
   (JSON + human rendering), exit 0 = clean, 1 = incompatibilities found,
-  2 = install unreadable.
+  2 = install unreadable or the audit itself failed (traversal/report-write
+  OSError; PYTHONPYCACHEPREFIX inside the audited root without startup
+  bytecode suppression). A mandatory source the audit cannot read/parse is a
+  BLOCKING `unauditable-source` finding (exit 1, an audit-integrity plane
+  outside the five scope classes) — never a silent exit 0.
 - N−1 fixtures (F14, shared with ABI-2/ABI-7a): a settings document and a
   skill manifest authored by the previous minor run through the auditor as
   test fixtures — real bytes, not synthetic shapes.
