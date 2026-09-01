@@ -255,9 +255,10 @@ def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptReques
         from ouroboros.observability import persist_physical_candidate
 
         scope = current_usage_scope()
+        task_id = str(scope.task_id if scope is not None else request.task_id)
         persisted = persist_physical_candidate(
             reservation.drive_root,
-            task_id=str(scope.task_id if scope is not None else request.task_id),
+            task_id=task_id,
             attempt_id=reservation.attempt_id,
             candidate=candidate,
             candidate_facts={
@@ -270,6 +271,23 @@ def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptReques
                     dict(vars(request.physical_context)) if request.physical_context is not None else None
                 ),
             },
+        )
+        # CPL-5 forward invariant (model-visible ⟺ logged): reconstruct the
+        # durable record just written and byte-compare it with the wire-bound
+        # candidate. A mismatch is a typed durable fact, never a second dispatch
+        # gate — the in-memory identity refusal above stays the only blocking
+        # authority. The fresh seam digests are reused so the raw candidate is
+        # not serialized again.
+        from ouroboros.model_send_seal import verify_sealed_candidate
+
+        verify_sealed_candidate(
+            reservation.drive_root,
+            task_id=task_id,
+            attempt_id=reservation.attempt_id,
+            candidate=candidate,
+            manifest_ref=persisted["manifest_ref"],
+            raw_sha256=fresh.candidate_raw_sha256,
+            raw_size_bytes=fresh.candidate_raw_size_bytes,
         )
         if predicate is not None:
             try:

@@ -469,6 +469,10 @@ def promote_call_manifest_ref(
                 nested,
                 transform_json=transform_json,
             )
+    # Honest provenance: a promoted copy's accounting rows legitimately live in
+    # the CHILD drive's ledger, so the model_send reconciliation sweep must not
+    # read this copy as an orphan seal on the canonical drive.
+    manifest.setdefault("promoted_call_manifest", True)
     promoted = write_call_manifest(
         pathlib.Path(canonical_drive_root),
         task_id=str(task_id),
@@ -1095,8 +1099,14 @@ def persist_call(
     payload: Dict[str, Any],
     manifest: Dict[str, Any] | None = None,
     keep_raw: Optional[bool] = None,
+    finalize_manifest: Optional[Callable[["RedactionResult"], Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Persist the payload and return refs plus a redacted projection.
+
+    ``finalize_manifest`` receives the exact :class:`RedactionResult` of this
+    CAS write and returns additional manifest entries — the seam the
+    ``model_send_seal`` builder uses to disclose the redaction instances that
+    actually fired, without re-running redaction (CPL-5).
 
     By default the AUTHORITATIVE blob (``full_payload_ref``) is the REDACTED value:
     secret VALUES are masked while structure, paths, model route, and all non-secret
@@ -1144,6 +1154,7 @@ def persist_call(
             "redacted_projection_ref": projection_ref,
             "redaction": redacted.manifest(),
             **dict(manifest or {}),
+            **(finalize_manifest(redacted) if finalize_manifest is not None else {}),
         },
     )
     return {
@@ -1163,29 +1174,20 @@ def persist_physical_candidate(
     candidate: Dict[str, Any],
     candidate_facts: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Persist one inspectable post-transform candidate under its attempt id.
+    """Persist one sealed post-transform candidate (home: ``model_send_seal``).
 
-    ``candidate_facts`` describe the pre-redaction canonical object. The normal
-    ``persist_call`` refs describe the redacted-by-default CAS blob; the two
-    digest domains are deliberately labelled rather than equated.
+    Kept as a thin compatibility name on the historical import surface; the
+    CPL-5 module owns the seal-bearing implementation over this module's
+    ``persist_call``.
     """
-    from ouroboros.anthropic_native_custody import physical_custody_projection
+    from ouroboros.model_send_seal import persist_physical_candidate as _persist
 
-    projected = physical_custody_projection(candidate)
-    return persist_call(
+    return _persist(
         drive_root,
         task_id=task_id,
-        call_id=attempt_id,
-        call_type="physical_llm_candidate",
-        payload=projected,
-        keep_raw=False,
-        manifest={
-            "candidate_manifest_kind": "physical_llm_candidate",
-            "candidate_raw_digest_basis": "canonical_json_v1_pre_redaction",
-            "redacted_projection_digest_basis": "observability_json_v1_post_default_redaction_cas",
-            "anthropic_native_custody_projected": projected != candidate,
-            **dict(candidate_facts),
-        },
+        attempt_id=attempt_id,
+        candidate=candidate,
+        candidate_facts=candidate_facts,
     )
 
 

@@ -897,6 +897,10 @@ def record_subscription_session(
         "credential_profile_id": str(credential_profile_id or ""),
         "access_profile": str(access_profile or ""),
         "session_id_sha256": identity,
+        # CPL-5 lane-level disclosure: a delegated/harness session never hands
+        # the host the final wire bytes, so it carries this typed limit instead
+        # of a fake model_send seal (design note §4, provider_side_transform).
+        "model_send_seal": "unobserved",
     }
     return _append_single_settled_row(root, row, comparable=(
         "kind", "model", "provider", "task_id", "root_task_id", "parent_task_id",
