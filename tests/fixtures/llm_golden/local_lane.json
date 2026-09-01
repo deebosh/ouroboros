@@ -111,7 +111,9 @@
             "prompt_tokens": 30,
             "completion_tokens": 9,
             "cost": 0.0,
-            "cost_final": true
+            "cost_final": true,
+            "provider": "local",
+            "resolved_model": "local-model"
           },
           "ledger_attempt_count": 1
         },

@@ -103,7 +103,6 @@ class ProviderDriver:
         timeout_of: Callable[[Dict[str, Any]], Optional[float]],
         chat_kwargs: Optional[Dict[str, Any]] = None,
         spec_extra: Optional[Dict[str, Any]] = None,
-        usage_stamped: bool = True,   # usage carries provider/resolved_model
         choice_shaped: bool = False,  # OpenAI choice family (finish_reason surface)
         free_lane: bool = False,      # cost is honestly 0.0 by contract (local)
         remote: bool = True,          # resolves through _resolve_remote_target
@@ -115,7 +114,6 @@ class ProviderDriver:
         self.timeout_of = timeout_of
         self.chat_kwargs = dict(chat_kwargs or {})
         self.spec_extra = dict(spec_extra or {})
-        self.usage_stamped = usage_stamped
         self.choice_shaped = choice_shaped
         self.free_lane = free_lane
         self.remote = remote
@@ -183,10 +181,8 @@ PROVIDER_DRIVERS: Dict[str, ProviderDriver] = {
         success_step=_openai_success(), timeout_of=_payload_timeout,
         chat_kwargs={"use_local": True},
         spec_extra={"local_context_length": 8192},
-        # The local lane stamps the LEDGER (provider=local) but not the usage
-        # dict — recorded as a CPL-6 finding in the campaign ledger, pinned
-        # as today's contract here, not silently ignored.
-        usage_stamped=False,
+        # CPL6-F1 closed: the local lane now stamps usage provider/resolved_model
+        # symmetrically with every remote lane, so no asymmetry flag remains.
         choice_shaped=False,  # local normalizes its own text/tool-call path
         free_lane=True, remote=False,
     ),
@@ -254,9 +250,9 @@ def test_success_has_the_shared_response_and_ledger_shape(name):
     assert message.get("content") is None or isinstance(message.get("content"), str)
     assert int(usage.get("prompt_tokens") or 0) >= 0
     assert int(usage.get("completion_tokens") or 0) >= 0
-    if driver.usage_stamped:
-        assert usage.get("provider") == driver.provider
-        assert usage.get("resolved_model")
+    # EVERY lane stamps usage provenance — the local asymmetry was CPL6-F1.
+    assert usage.get("provider") == driver.provider
+    assert usage.get("resolved_model")
 
     # Honest cost planes: the key always exists; cost_final is a bool and may
     # be True only for a KNOWN, non-estimated cost.

@@ -282,4 +282,9 @@ class _LocalLaneMixin:
 
         usage["cost"] = 0.0
         usage["cost_final"] = True
+        # CPL6-F1: the same usage provenance every remote lane stamps — the
+        # ledger row already carried provider=local, but a consumer reading the
+        # returned usage alone could not attribute the call.
+        usage["provider"] = "local"
+        usage["resolved_model"] = "local-model"
         return msg, usage
