@@ -4484,3 +4484,133 @@ lane claimed S11-S13 first, so wave-3a's rows landed as S14 (plan review),
 S15 (advisory class), S16 (blocking class + freshness), S17 (acceptance
 loop). The wave-3a section text above says "S11-S14" — read it through this
 mapping; test names and the scenario manifest carry the final numbers.
+## From the hermetic class-fix lane (base 8827fd2c, 2026-09-01)
+
+Issue #455 (confirmed by a LIVE repeat 2026-09-01 14:55 UTC): with all four
+OUROBOROS_* env variables pointing at a temp root, update-merge tests still
+wrote `managed_update_stash_restored (context=test)` /
+`managed_update_wave_floor_refused` into the LIVE
+`~/ouro/data/logs/supervisor.jsonl` (455 `context=test` lines accumulated, 56
+on 2026-09-01 alone). Root: `supervisor/git_ops.py` bound
+`REPO_DIR`/`DRIVE_ROOT` at import to hardcoded `Path.home()/"Ouroboros"/...`
+— the one process-global root pair that NEVER read the env — and
+`update_merge._log_supervisor` (update_merge.py:742), the update_candidate
+stash writers (update_candidate.py:554-576) and the git_ops_reset `_go()`
+writers all resolve supervisor.jsonl through it; `tests/conftest.py
+_bind_pytest_runtime_roots` rebound config/state/queue/workers but not
+`git_ops.DRIVE_ROOT`.
+
+1. WRITER MAP (process-global data/repo roots, classified):
+
+   | global | resolution | class |
+   |---|---|---|
+   | supervisor/git_ops.py REPO_DIR/DRIVE_ROOT | hardcoded home default, env never read, rebound only by init()/worker bind/monkeypatch | DEFECT (the proven live leak; fixed) |
+   | ouroboros/config.py APP_ROOT/REPO_DIR/DATA_DIR/SETTINGS_PATH/... | env at import (documented four-env recipe) | import-cache; healthy under the whole-process recipe, stale under late isolation — mitigated by the conftest rebind list + the new fail-closed guard |
+   | supervisor/state.py DRIVE_ROOT/STATE_PATH/... , queue.py DRIVE_ROOT, workers.py REPO_DIR/DRIVE_ROOT | Path(config.DATA_DIR) at import + init() rebind; conftest rebinds all three | import-cache; same mitigation, guard-covered |
+   | ouroboros/server_process.py DATA_DIR | env at import (own copy) | import-cache; read for child-env assembly, guard-covered downstream |
+   | ouroboros/tools/evolution_stats.py _REPO_DIR | env at import | import-cache (repo dir, read-only stats) |
+   | ouroboros/tools/browser.py:336 | env per call | healthy |
+   | hardcoded home paths in state.py:46/360, worker_process.py:166, server.py:117/1211, gateway/files.py:802, gateway/settings.py:1023 | comparison targets ("is this the live root?"), not writers | healthy by design |
+   | ouroboros/packaged_cli.py PYTHONPYCACHEPREFIX | known sibling class, packaged launcher only | out of this lane's scope (already documented in AGENTS) |
+
+2. CLASS FIX (both sides of the shared helper):
+   - Resolution side: `config.resolve_app_root()/resolve_repo_dir()/
+     resolve_data_dir()` — the per-call form of the SSOT constants (same
+     precedence, two env reads + Path construction, no cache needed — file
+     I/O dominates every consumer). `git_ops.REPO_DIR`/`DRIVE_ROOT` are now
+     UNBOUND until init()/worker rebind/monkeypatch pins them; module
+     `__getattr__` resolves un-pinned attribute access per call via the
+     resolvers, and `current_repo_dir()/current_drive_root()` serve git_ops'
+     internal uses. This fixes every `_g.DRIVE_ROOT`/`_go().DRIVE_ROOT`
+     consumer at once (update_merge, update_candidate, update_merge_plan,
+     update_recovery, update_source, git_ops_reset, evolution_lifecycle,
+     gateway/control) with zero call-site edits outside git_ops, and covers
+     consumers nobody thought of (AGENTS class-fix rule). Live server
+     behavior unchanged: server.py:569 bootstrap still calls git_ops.init()
+     which pins real attributes; worker `_bind_worker_repo_root` unchanged.
+   - Guard side (the structural invariant): `assert_test_data_path` moved to
+     the ouroboros/utils leaf (state.py re-exports it) and `append_jsonl` now
+     calls it — the jsonl half of the durable-write plane was the unguarded
+     half that let the leak land silently while `state.atomic_write_text` was
+     already guarded. Outside pytest this is one env read per append.
+   - conftest `_bind_pytest_runtime_roots` now also pins
+     `git_ops.DRIVE_ROOT` (the one root the rebind list missed).
+   - Leaking fixture fixed: `tests/test_update_merge_plan.py _point_at` now
+     patches `DRIVE_ROOT` like its siblings in test_update_dirty_stash.py.
+
+3. PINS (all six RED on base 8827fd2c, verified on a git-archive copy of the
+   base tree — the E2E pin fails there with exactly
+   `home/Ouroboros/data/logs/supervisor.jsonl` leaked):
+   - tests/test_git_ops_default_roots.py (the D13 hook, previously named in
+     the ledger but nonexistent): unpinned roots follow env PER CALL, pinned
+     roots win, `_log_supervisor` lands in the env root, and the exact issue
+     #455 subprocess repro (all four env set + throwaway HOME → the
+     live-shaped root stays empty). D13 flipped pending→done.
+   - tests/test_hermetic_data_root.py: append_jsonl fails closed on a
+     live-root write (PYTEST_LIVE_DATA_WRITE_BLOCKED) + the serial E2E class
+     pin — a real subprocess pytest run of test_update_dirty_stash.py +
+     test_update_merge_plan.py under throwaway HOME + full env isolation with
+     an empty pre/post inventory delta of `$HOME/Ouroboros/data` (the AGENTS
+     `find -newermt` etalon as a regression test).
+
+4. ISSUE #455 CLOSURE: the fix closes exactly the issue's class — "a
+   process-global root that resolves before the isolation applies" — for the
+   supervisor writer plane (the proven leak), and adds the fail-closed guard
+   that turns ANY residual member (late in-process isolation of the
+   import-cached config-derived globals, future writers) into a loud pytest
+   failure instead of a silent live write. DISCLOSED RESIDUAL:
+   `utils.atomic_write_json` and other non-jsonl writers outside
+   state.atomic_write_text are not guard-wrapped (no observed leak path;
+   candidates for the same one-line guard if one appears), and non-pytest
+   drivers (bench harnesses) still rely on explicit rebinds per AGENTS.
+5. LIVE PROOF + GATE COUNTERS (host 0897-oma, 2026-09-01, all pytest via
+   ~/ouro/venv with isolated OUROBOROS_APP_ROOT/DATA_DIR mktemp roots;
+   `git rev-parse HEAD` = 8827fd2c re-checked after EVERY pytest;
+   `git diff --check` clean; `ruff check . --select F` clean):
+   - Red repro pre-fix (throwaway HOME + all four OUROBOROS_* env): the write
+     landed in the fake home root, not the isolated one. Post-fix: isolated
+     root; a LATE env change is followed per call; init() pin honored; unpin
+     returns to lazy.
+   - All 6 new pins RED on a git-archive copy of base 8827fd2c (the E2E pin
+     fails there with exactly home/Ouroboros/data/logs/supervisor.jsonl
+     leaked); all GREEN on the fixed tree.
+   - Gates: targeted update-merge/git_ops suites 161 passed (-n 8, not
+     serial) + 35 passed (serial), both EXIT=0; full CI-shape battery
+     (-n 16, 'not serial' composed WITH the default addopts exclusions) →
+     13351 passed, 3 skipped, EXIT=0; full serial pass → 622 passed,
+     19 skipped, EXIT=0; size_ratchet lane 5 passed EXIT=0. (A first battery
+     attempt passed `-m 'not serial'` ALONE, which OVERRODE the default
+     addopts exclusions and pulled the skill_smoke/browser lanes in — its 4
+     fails/4 errors were lane-selection noise plus two real same-class test
+     instances, both fixed below.)
+   - LIVE class check: tight-window run of the exact leak reproducers
+     (update_merge_plan / dirty_stash / merge_assisted / git_ops_managed)
+     15:26:57-15:27:05 UTC → live supervisor.jsonl delta ZERO lines
+     (context=test 456→456, total 899→899); the green serial rerun window
+     (~15:33-15:38) likewise added ZERO context=test lines. The live log's
+     context=test stream CONTINUES from other writers exactly as before this
+     lane's gates (15:06/15:12/15:16 pre-gate; 15:25:30 and the 15:28
+     cluster in-gate): concurrent NEIGHBOR pytest batteries on unfixed trees
+     (~/ouro/subagent_worktrees/v7next and ~/ouro/worktrees/
+     frontend-sprint-20260901 were running `pytest tests/` at those moments,
+     recorded by PID+cwd) plus a foreign preflight runtime
+     (/tmp/ouro-issue449-formal-r1-runtime, the `wave_floor_refused
+     estimated_wave_usd=6.42` writer). A silent live write from THIS lane is
+     structurally excluded: its runs had the append_jsonl guard armed, under
+     which a live-root write is a LOUD red test, and the runs were green.
+   - Collateral same-class instances the new guard exposed (fixed here):
+     tests/test_v678_receipt_reconciliation.py and
+     tests/test_v652_scratch_and_masking.py shaped their tmp harness as
+     home/Ouroboros/data under a patched Path.home — moved to neutral tmp
+     layouts (their registries already take explicit roots).
+   - OBSERVED SIBLING-CLASS RESIDUAL (not fixed here, disclosed): fresh pyc
+     mirrors landed in the LIVE ~/ouro/data/state/pycache/tmp/
+     ouroboros-pytest-data-*/skills/ouroboroshub/{a2a,duckduckgo}/
+     .ouroboros_env/... at 15:28:39-54 — a skill-host/exec child resolved
+     PYTHONPYCACHEPREFIX (or its data dir) to the live root while importing
+     isolated skill deps from a pytest session dir. A twin directory from
+     2026-07-18 shows the mechanism predates this lane entirely (the known
+     packaged_cli/PYTHONPYCACHEPREFIX sibling class from AGENTS). The
+     skill_smoke lane that triggers it runs only outside the default CI
+     shape. Follow-up candidate: the same lazy-resolution treatment for the
+     skill-host spawn env.
