@@ -91,6 +91,7 @@ from ouroboros.tools.core_artifacts import (  # noqa: F401
     LinkActionsValidationError,
     QuizValidationError,
     _MAX_LINK_ACTIONS,
+    _MAX_QUIZ_OPTIONS,
     _escalate,
     _send_links,
     validate_link_actions,
