@@ -421,6 +421,16 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   iterator drives smoke, health, census, and the 200,000-byte ratchet. Sources
   decode as strict UTF-8 and normalize line endings to canonical POSIX LF before
   line and UTF-8-byte counts, so checkout policy cannot change the inventory.
+- Paying down a size cap (owner rule, 2026-09-01): when a change runs into a module band, the hard
+  cap, the function-size gate or the byte debt, pay it down by SIMPLIFYING where the change lives
+  — simpler control/data flow and interfaces, dead code and duplicates removed, an existing SSOT
+  reused, prose made compact and legible so the module reads BETTER after the change. Extracting
+  a helper, a passthrough wrapper or a neighbour module is the LAST resort and is a paydown only
+  when the new unit is a natural boundary that would stay correct with the parent far below the
+  cap: its own reason-to-change, an explicit contract and a real caller. A cap-driven bucket, a
+  one-caller passthrough, and bytes bought by deleting contract-bearing comments, docstrings,
+  messages or tests are defects, not paydown — report the conflict instead (BIBLE P7: «When
+  adding a major feature — first simplify what exists»; scope review advisory item 31).
 - The exact-current 1001-1500-line band lives in `BAND_PATHS`. A new or
   re-entered path requires a nonblank rationale. `BYTE_DEBT` stores exact counts
   above 200,000 UTF-8 bytes and is shrink-only; regenerate both with
