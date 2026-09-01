@@ -5329,3 +5329,94 @@ reaches `check_safety`. So the branch's only current exerciser is its pin. It
 is kept because it is half of the owner-adopted fact and because the attribute
 name is an EXISTING convention in this codebase rather than an invented
 protocol — not because a caller was found.
+
+**11A — the doc-only carve in `release_metadata_preflight` (finding W3A-F1).**
+Two gates classified the same diff two different ways. `ouroboros/tools/git.py`
+exempts a doc-only diff from the compensating tests preflight
+(`_doc_only = _diff_aware and _diff_is_doc_only(classification_paths)`), while
+`ouroboros/commit_admission.py::release_metadata_preflight` returned
+PREFLIGHT_BLOCKED for ANY changed set without `VERSION` in scope — the doc-only
+diff included. The consequence was not a nuisance refusal: it was a structural
+one. `preflight_review` is the only producer of a FRESH advisory verdict, so a
+doc-only change on any install could not obtain one at all, and the standard
+`preflight_review` → `commit_reviewed` flow degraded to the AUDITED BYPASS for
+the whole class. It bites hardest on the two commit classes BIBLE P9 itself
+exempts from the bump (`BIBLE.md:717-725`): a version-neutral external
+contribution and a forensic recovery snapshot have no `VERSION` to name by
+construction, so for them the bypass was the ONLY door.
+
+The carve is three statements and reuses the commit gate's own detector,
+imported from its owner module (`ouroboros.tools.git_review_cycle._diff_is_doc_only`,
+which `git.py` re-exports at line 1635). SSOT on purpose: a second doc-only
+predicate written here would be a detector the two gates could drift apart on,
+and the whole finding is that they had already drifted. The import is
+call-time and sits INSIDE the no-VERSION branch — the local idiom in this
+module — so the ordinary VERSION-in-scope preflight pulls in no new module and
+the admission layer keeps no import-time edge into `ouroboros.tools`.
+
+| scope | before | now |
+|---|---|---|
+| `docs/NOTES.md` | PREFLIGHT_BLOCKED (never reaches a critic) | admitted — the advisory actually runs |
+| `ouroboros/feature.py` | PREFLIGHT_BLOCKED | PREFLIGHT_BLOCKED (unchanged) |
+| `docs/NOTES.md` + `ouroboros/feature.py` | PREFLIGHT_BLOCKED | PREFLIGHT_BLOCKED (mixed is not doc-only) |
+| `tests/NOTES.md` | PREFLIGHT_BLOCKED | PREFLIGHT_BLOCKED (`_diff_is_doc_only` excludes `tests/`) |
+| `VERSION` + a desynced carrier | PREFLIGHT_BLOCKED | PREFLIGHT_BLOCKED (the carve never runs; carrier coherence owns the answer) |
+
+**Deliberately NARROWER than the two BIBLE classes it is motivated by.** A
+version-neutral external contribution or a rescue snapshot that carries code
+still blocks here, exactly as before. The carve keys on the diff's shape, not
+on a claimed provenance, because provenance is caller-asserted and would be a
+new trust surface on an admission gate; widening it is an owner decision this
+lane did not take. Recorded as the residual of the finding rather than left
+implicit.
+
+Pins (`tests/test_advisory_preflight.py`, the class that already owned the
+block): `test_doc_only_diff_without_version_reaches_the_critic` drives the real
+`_handle_advisory_pre_review` and asserts the critic is DISPATCHED (not merely
+"not blocked") for a doc-only scope with no `VERSION`;
+`test_doc_only_carve_is_the_commit_gate_classifier` walks the table above and
+asserts the classifier verdict beside every admission verdict, so a divergence
+between the two gates fails as a classifier mismatch rather than as a mystery
+block. The pre-existing
+`test_changed_diff_without_version_blocks_before_sdk` is untouched — the
+ordinary code diff still blocks, and it still proves the SDK is never reached.
+
+**E2E S16 pinned the bypass-consequence, and is updated honestly.** In
+`tests/system_e2e/test_system_scenarios_w3a.py`, S13B's `preflight_review` step
+used to name the UNCHANGED `VERSION` alongside the doc — a workaround written
+INTO the scenario precisely because the admission blocked the doc-only scope
+(the finding says so in its own row). The step now names the doc-only scope
+ALONE, which makes S16 a live end-to-end proof of the carve instead of a
+scenario routing around it. Two consequences are disclosed rather than
+silently absorbed:
+
+- Naming `VERSION` put the run on the VERSION-in-scope branch, where
+  `check_history_limit` runs. This checkout's README carries more patch rows
+  than the P9 limit (finding W3A-F2, a PRE-EXISTING tree-state violation), so
+  the scenario needed a `_trim_readme_history_to_p9_limit` fixture repair to
+  reach a verdict at all. With no `VERSION` in scope that branch is never
+  entered, so the fixture is deleted — it was compensation for the workaround,
+  not for the scenario. W3A-F2 itself is NOT fixed by this lane and remains
+  open against the tree.
+- S16's contracts are unchanged: the fresh advisory, the post-verdict
+  stale-from-edit refusal, and the revalidation refusal are all still asserted
+  on the same steps. What changed is which door the first step walks through.
+
+**GATE EVIDENCE: NOT PRODUCED IN THIS SESSION — disclosed, not implied.** The
+session that wrote this entry had no permission to execute Python: every form
+of `python3 -m pytest`, `python3 <script>`, `python3 -c`, and
+`scripts/v7next_adoption.py` was refused by the host policy, and `ruff` is not
+installed on it. So NONE of the owner-required gates ran here — not the
+targeted suites, not the CI-shape non-serial battery, not `-m serial`, not
+`-m size_ratchet`, not `ruff check . --select F`, not the adoption validator.
+The change was verified by reading only: the classifier's contract and its
+`tests/` exclusion, the carve's placement strictly inside the
+`touched and not version_in_scope` branch (so no carrier-coherence check moves),
+the call-time import (no new import-time edge into `ouroboros.tools`), the new
+pins' fixtures against their proven siblings in the same file, and the size
+lanes (`ouroboros/commit_admission.py` 246 lines, `tests/test_advisory_preflight.py`
+709, `tests/system_e2e/test_system_scenarios_w3a.py` 791 — all under
+TARGET_MODULE_LINES, so no `BAND_PATHS`/`GIANT_PATHS` membership changes and the
+manifest stays exact). `git diff --check` is clean. The two commits of this lane
+MUST NOT be treated as gate-proven; whoever integrates them owes the full
+battery on an integrated tree.

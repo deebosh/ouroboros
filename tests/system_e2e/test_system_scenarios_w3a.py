@@ -580,14 +580,15 @@ S13B_SCRIPT = [
         "root": "system_repo", "path": S13B_DOC,
         "content": "# w3a freshness smoke\n\nCandidate reviewed by the advisory episode.\n",
     }},
-    # The UNCHANGED "VERSION" is deliberately named in paths: the advisory
-    # admission (`release_metadata_preflight`) hard-blocks ANY changed set
-    # without VERSION in scope — including doc-only diffs the commit gate
-    # exempts (finding W3A-F1). Naming the consistent, unmodified VERSION
-    # satisfies the P9 scope check (all carriers already match) without
-    # buying the release-tag binding a real bump would.
+    # The doc-only scope is named ALONE, with no VERSION: this step is also the
+    # live proof of the doc-only carve in the advisory admission (owner 11A,
+    # finding W3A-F1). Before the carve, `release_metadata_preflight` blocked
+    # ANY changed set without VERSION in scope — including the doc-only diffs
+    # the commit gate exempts — so this scenario had to name the UNCHANGED
+    # VERSION to reach a real verdict at all, and every real install's doc-only
+    # work degraded to the audited bypass.
     {"tool": "preflight_review", "arguments": {
-        "commit_message": S13B_MSG, "skip_tests": True, "paths": [S13B_DOC, "VERSION"],
+        "commit_message": S13B_MSG, "skip_tests": True, "paths": [S13B_DOC],
     }},
     {"tool": "write_file", "arguments": {
         "root": "system_repo", "path": S13B_DOC,
@@ -598,37 +599,6 @@ S13B_SCRIPT = [
 ]
 
 
-def _trim_readme_history_to_p9_limit(clone) -> None:
-    """Fixture repair of a PRE-EXISTING tree-state violation (finding W3A-F2):
-    this checkout's README Version History carries more patch rows than the P9
-    limit, so every VERSION-in-scope advisory admission on the tree is
-    deterministically blocked by ``check_history_limit`` before any review.
-    The private scenario clone trims the oldest over-limit rows (the exact
-    repair the refusal asks for) and commits it, so the scenario can reach a
-    REAL fresh advisory verdict."""
-    from ouroboros.tools.release_sync import _VERSION_ROW_RE, check_history_limit
-
-    readme = clone / "README.md"
-    text = readme.read_text(encoding="utf-8")
-    for _ in range(10):
-        warnings = check_history_limit(text)
-        if not warnings:
-            break
-        assert all("patch rows" in w for w in warnings), warnings
-        patch_rows = [m for m in _VERSION_ROW_RE.finditer(text) if int(m.group(3)) > 0]
-        assert patch_rows, warnings
-        oldest = patch_rows[-1]  # the table is newest-first
-        line_start = text.rfind("\n", 0, oldest.start()) + 1
-        line_end = text.find("\n", oldest.end())
-        line_end = len(text) if line_end < 0 else line_end + 1
-        text = text[:line_start] + text[line_end:]
-    assert not check_history_limit(text)
-    readme.write_text(text, encoding="utf-8")
-    subprocess.run(
-        ["git", "commit", "-aqm", "test-fixture: trim README version history to the P9 row limit"],
-        cwd=str(clone), check=True, capture_output=True)
-
-
 @pytest.mark.integration
 @pytest.mark.serial
 def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
@@ -636,7 +606,6 @@ def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s13b")
     clone = clone_repo(root)
-    _trim_readme_history_to_p9_limit(clone)
 
     def _mutate_staged_tree_then_pass(_body):
         # The post-verdict freshness probe: stage NEW bytes while the paid
