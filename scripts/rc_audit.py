@@ -36,10 +36,14 @@ Everything not machine-checkable is an OWNER ATTESTATION list the auditor
 prints verbatim (F13: no pretend-coverage).
 
 Exit codes: 0 = clean, 1 = incompatibilities found, 2 = install unreadable or
-the audit itself failed (traversal/report-write OSError). A mandatory source
-the audit cannot read or parse (a skill manifest, a hash-verifiable payload)
-is NEVER a clean exit 0: it becomes a BLOCKING ``unauditable-source`` finding
-(exit 1) — the install is not proven clean until the source is fixed.
+the audit itself failed (traversal/report-write OSError, or the RuntimeError
+supported-3.10 pathlib raises for a symlink loop). Mandatory scan sources
+(``task_results``, ``state/ui_preferences.json``) are probed with a strict
+``os.stat``: only TRUE absence skips them — a symlink loop or dangling link
+there is exit 2, never a silent clean. A mandatory source the audit cannot
+read or parse (a skill manifest, a hash-verifiable payload) is NEVER a clean
+exit 0: it becomes a BLOCKING ``unauditable-source`` finding (exit 1) — the
+install is not proven clean until the source is fixed.
 
 Reuse-first: the classifiers are the runtime's own, consumed read-only —
 ``task_result_schema_refusal`` (pure), ``parse_skill_manifest_text``,
@@ -71,6 +75,7 @@ sys.dont_write_bytecode = True
 
 import argparse  # noqa: E402
 import json  # noqa: E402
+import os  # noqa: E402
 import pathlib  # noqa: E402
 import subprocess  # noqa: E402
 from typing import Any, Dict, List, Optional  # noqa: E402
@@ -542,6 +547,22 @@ def _audit_one_skill(
                 "fix the payload files, then re-run the audit",
             ))
             return
+        except (OSError, RuntimeError) as exc:
+            # compute_content_hash resolves the DECLARED entry/script paths
+            # unguarded (skill_loader._add_if_confined): a symlink loop there
+            # raises RuntimeError on supported 3.10 (OSError on later
+            # pathlib), never SkillPayloadUnreadable. Same disposition as an
+            # unreadable payload — this skill's PASS is unverifiable, but the
+            # rest of the install still gets audited (blocking finding, not
+            # exit 2).
+            findings.append(_finding(
+                "unauditable-source", SEV_INCOMPATIBLE, rel,
+                f"skill payload hash failed ({type(exc).__name__}: {exc}) — "
+                "the hash-bound review PASS cannot be verified against the "
+                "current bytes",
+                "fix the payload paths/symlinks, then re-run the audit",
+            ))
+            return
         if stored_hash == current_hash:
             grandfathered = True
         else:
@@ -575,6 +596,26 @@ def _audit_one_skill(
         ))
 
 
+def _stat_mandatory_source(path: pathlib.Path) -> Optional[os.stat_result]:
+    """Strict existence probe for a mandatory audit source. TRUE absence is
+    the only legitimate skip (``None``); every other stat failure RAISES to
+    the exit-2 handler in ``main`` — ``Path.is_dir()``/``is_file()`` would
+    fold a symlink loop (ELOOP), an unreadable parent, or a DANGLING symlink
+    into plain ``False`` and the source would silently audit clean."""
+    try:
+        return os.stat(path)
+    except FileNotFoundError as exc:
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            return None  # genuinely absent — nothing to audit here
+        # The name EXISTS (as a symlink) but its target does not: a broken
+        # link is not absence — the source cannot be proven clean.
+        raise OSError(
+            f"mandatory audit source {path} is a dangling symlink"
+        ) from exc
+
+
 def _strict_json_files(root: pathlib.Path) -> List[pathlib.Path]:
     """Strict file lister for a mandatory audit source: the same direct-child
     ``*.json`` selection the fail-soft ``Path.glob(\"*.json\")`` gave, but a
@@ -587,7 +628,10 @@ def _strict_json_files(root: pathlib.Path) -> List[pathlib.Path]:
 
 def _audit_task_results(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> None:
     results_dir = data_root / "task_results"
-    if not results_dir.is_dir():
+    # Strict pre-check: only TRUE absence skips; ELOOP/dangling raise (exit 2).
+    # A present non-directory then fails in iterdir (NotADirectoryError → exit
+    # 2) rather than being skipped as if the history did not exist.
+    if _stat_mandatory_source(results_dir) is None:
         return
     reasons: Dict[str, List[str]] = {}
     stored_alias_examples: List[str] = []
@@ -629,7 +673,8 @@ def _audit_task_results(data_root: pathlib.Path, findings: List[Dict[str, str]])
 
 def _audit_ui_preferences(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> None:
     path = data_root / "state" / "ui_preferences.json"
-    if not path.is_file():
+    # Strict pre-check: only TRUE absence skips; ELOOP/dangling raise (exit 2).
+    if _stat_mandatory_source(path) is None:
         return
     try:
         data = _read_json(path)
@@ -754,9 +799,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     except InstallUnreadable as exc:
         print(f"INSTALL UNREADABLE: {exc}", file=sys.stderr)
         return 2
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         # Traversal failure is an AUDIT failure (exit 2), never Python's exit 1
         # — that code means "incompatibilities found" to automation.
+        # RuntimeError joins OSError for the same reason as the resolve points
+        # above: supported-3.10 pathlib raises it for a symlink loop anywhere
+        # the audit (or a runtime classifier it consumes read-only) resolves a
+        # path — exit 2 says "the audit itself failed", fail-closed either way.
         print(f"INSTALL UNREADABLE: audit traversal failed: "
               f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 2

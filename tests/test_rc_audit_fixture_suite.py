@@ -442,6 +442,84 @@ def test_unreadable_task_results_dir_is_an_audit_failure_exit_2_not_clean(tmp_pa
     assert "audit traversal failed" in result.stderr
 
 
+def test_symlink_loop_at_task_results_is_an_audit_failure_exit_2(tmp_path):
+    """Adversarial fix-round 4, finding 2: ``Path.is_dir()`` folds ELOOP into
+    plain False — a symlink loop standing where the mandatory ``task_results``
+    source lives would silently skip the whole history scan. The strict
+    ``os.stat`` pre-check raises instead (exit 2)."""
+    data = _build_clean_70_install(tmp_path / "install")
+    shutil.rmtree(data / "task_results")
+    os.symlink("task_results", data / "task_results")
+    result = _run(data, isolated_root=tmp_path / "isol")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "audit traversal failed" in result.stderr
+
+
+def test_dangling_ui_preferences_symlink_is_an_audit_failure_exit_2(tmp_path):
+    """Adversarial fix-round 4, finding 2: a DANGLING symlink is not absence —
+    ``Path.is_file()`` reads it as False and the source would silently audit
+    clean; only a truly absent path is a legitimate skip."""
+    data = _build_clean_70_install(tmp_path / "install")
+    (data / "state").mkdir()
+    os.symlink("nonexistent-target.json", data / "state" / "ui_preferences.json")
+    result = _run(data, isolated_root=tmp_path / "isol")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "dangling symlink" in result.stderr
+
+
+def test_truly_absent_optional_sources_still_audit_clean(tmp_path):
+    """Fix-round 4 contrast pin: genuine absence of ``task_results`` and
+    ``state/ui_preferences.json`` stays a legitimate skip — the strict stat
+    probe must not turn a minimal install into an audit failure."""
+    data = _build_clean_70_install(tmp_path / "install")
+    shutil.rmtree(data / "task_results")
+    result = _run(data, isolated_root=tmp_path / "isol")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_symlink_loop_in_a_declared_entry_is_a_blocking_finding_not_a_crash(tmp_path):
+    """Adversarial fix-round 4, finding 3: compute_content_hash resolves the
+    manifest-DECLARED entry unguarded (skill_loader._add_if_confined) — a
+    symlink loop there raises RuntimeError on supported 3.10, which passed the
+    OSError-only handlers and crashed as Python's bare exit 1 (no report).
+    Now: blocking unauditable-source finding, report still written."""
+    data = _build_nminus1_install(tmp_path / "install")
+    skill_dir = data / "skills" / "external" / "telegram"
+    _write_review_pass(data, "telegram", _real_content_hash(skill_dir))
+    # The fixture manifest declares `entry: plugin.py`; make that entry a
+    # self-referencing symlink so its resolve() hits the 3.10 loop detector.
+    os.symlink("plugin.py", skill_dir / "plugin.py")
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    unauditable = [f for f in report["findings"]
+                   if f["check_id"] == "unauditable-source"]
+    assert any("telegram" in f["subject"] and "hash failed" in f["detail"]
+               for f in unauditable)
+    assert not any("GRANDFATHERED" in f["detail"] for f in report["findings"])
+
+
+def test_runtime_error_from_the_audit_walk_maps_to_exit_2(tmp_path, monkeypatch, capsys):
+    """Adversarial fix-round 4, finding 3 (class backstop): the top-level
+    handler treats RuntimeError like OSError — a 3.10 pathlib symlink loop
+    raised from ANY path the audit (or a runtime classifier it consumes)
+    resolves is exit 2, never Python's bare exit 1. The N−1 install is the
+    one whose legacy telegram manifest actually reaches the review-state
+    read."""
+    module = _load_module()
+    data = _build_nminus1_install(tmp_path / "install")
+
+    def _loop_boom(*_a, **_k):
+        raise RuntimeError("Symlink loop from 'state/skills/telegram'")
+
+    monkeypatch.setattr(module, "load_review_state", _loop_boom)
+    rc = module.main([str(data)])
+    assert rc == 2
+    assert "audit traversal failed" in capsys.readouterr().err
+
+
 def test_data_root_resolve_symlink_loop_exits_2(tmp_path, monkeypatch, capsys):
     """Adversarial fix-round 3, finding 4: a symlink loop under the data-root
     argument raises RuntimeError from the 3.10 pathlib resolver — that must
