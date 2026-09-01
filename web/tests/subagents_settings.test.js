@@ -26,6 +26,7 @@ import {
     validateAvailableSubagentsSetting,
 } from '../modules/subagents_settings.js';
 import { buildReviewerSlotsSetting } from '../modules/reviewer_slots.js';
+import { sessionRouteAvailability, sessionRouteVerdict } from '../modules/subagent_status_primitives.js';
 import { revealNewRow } from '../modules/ui_helpers.js';
 
 const CONTRACT_FIXTURE = JSON.parse(fs.readFileSync(
@@ -679,4 +680,74 @@ test('revealNewRow scrolls the shortest distance and focuses the named field wit
     ]);
     assert.doesNotThrow(() => revealNewRow({}, null));
     assert.doesNotThrow(() => revealNewRow(null, {}));
+});
+
+const QUIET_STATE = Object.freeze({
+    snapshot: null, catalogKnown: false, accountsKnown: false, quotaKnown: false,
+    dirty: false, baselineLabel: 'Saved intent', saveAttempted: false,
+});
+
+test('the card head carries the ordinal, the route mark, a two-word status and the actions', () => {
+    // docs/DESIGN.md §6 row anatomy on the compact card: one primary thing (the
+    // ordinal), the harness mark, a dot + short words for the two status axes
+    // (intent · availability, full sentences in the title), actions docked right.
+    const html = availableSubagentRowMarkup(sessionRow(), QUIET_STATE, 2);
+    const head = html.slice(html.indexOf('available-subagent-head'), html.indexOf('available-subagent-purpose'));
+    assert.match(head, /class="available-subagent-heading"[^>]*>Subagent 3</);
+    assert.match(head, /available-subagent-route-identity-wrap/);
+    assert.match(head, /class="settings-inline-status" data-subagent-status data-tone="neutral" title="Saved intent · Agent session · live availability not checked">Saved · Not checked</);
+    assert.match(head, /data-subagent-duplicate/);
+    assert.match(head, /data-subagent-remove/);
+    assert.match(html, /<textarea data-subagent-field="recommended_use" rows="1"/);
+    assert.equal((html.match(/<textarea/g) || []).length, 1);
+    // A routed row with no run evidence carries no meta band at all.
+    assert.match(html, /data-subagent-meta[^>]*hidden/);
+    assert.doesNotMatch(html, /data-invalid/);
+    const api = availableSubagentRowMarkup(apiRow(), { ...QUIET_STATE, dirty: true }, 0);
+    assert.match(api, /data-tone="neutral" title="Draft intent · API model · availability is checked when a child starts">Draft · API</);
+});
+
+test('a fresh row invites instead of erroring until the owner tries to save', () => {
+    const fresh = {
+        subagent_id: 'subagent_new', recommended_use: '',
+        route: { kind: ROUTE_KIND_API_MODEL, target_id: '' },
+    };
+    const before = availableSubagentRowMarkup(fresh, QUIET_STATE, 3);
+    assert.doesNotMatch(before, /data-invalid/);
+    assert.doesNotMatch(before, /data-tone="error"/);
+    assert.match(before, /data-subagent-meta[^>]*>Choose how this subagent runs: an API model or an agent session\.</);
+
+    const after = availableSubagentRowMarkup(fresh, { ...QUIET_STATE, saveAttempted: true }, 3);
+    assert.match(after, /<article[^>]*data-invalid/);
+    assert.match(after, /data-subagent-meta data-tone="error"[^>]*>Subagent 4 needs a model or agent-session route\.</);
+});
+
+test('validate() stays pure and names rows the way the cards do', () => {
+    const editor = createAvailableSubagentsEditor({ doc: null, win: null });
+    editor.load(setting([apiRow()]), { source: 'configured' });
+    assert.deepEqual(editor.validate(), []);
+    // The Save button reports the attempt; the validator itself changes nothing
+    // and a host-less editor (node tests, detached panel) tolerates the note.
+    assert.doesNotThrow(() => editor.noteSaveAttempt());
+    assert.deepEqual(editor.validate(), []);
+    assert.deepEqual(editor.collect(), { OUROBOROS_SUBAGENTS: setting([apiRow()]) });
+
+    const unrouted = validateAvailableSubagentsSetting(setting([
+        apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: '' } }),
+    ]));
+    assert.deepEqual(unrouted, ['Subagent 1 needs a model or agent-session route.']);
+    const errors = validateAvailableSubagentsSetting(setting([apiRow(), apiRow()]));
+    assert.match(errors[0], /^Subagent 2 repeats stable ID/);
+    assert.doesNotMatch(errors.join(' '), /\bRow \d/);
+});
+
+test('sessionRouteVerdict decides label, tone and sentence together', () => {
+    const unchecked = sessionRouteVerdict(sessionRow(), { catalogKnown: false, accountsKnown: false });
+    assert.deepEqual(unchecked, {
+        label: 'Not checked', tone: 'neutral', text: 'Agent session · live availability not checked',
+    });
+    const gone = { catalogKnown: true, accountsKnown: true, quotaKnown: true, snapshot: { harnesses: [] } };
+    const missing = sessionRouteVerdict(sessionRow(), gone);
+    assert.deepEqual(missing, { label: 'Unavailable', tone: 'warn', text: 'codex · currently unavailable' });
+    assert.equal(sessionRouteAvailability(sessionRow(), gone), missing.text);
 });

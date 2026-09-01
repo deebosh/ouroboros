@@ -22,7 +22,6 @@ import {
     compoundSessionEffortConflict,
     composeSessionTarget,
     decodeRouteChoice,
-    describeExecutionEvidence,
     effortSelectHtml,
     encodeRouteChoice,
     indexProfilesByHarness,
@@ -35,7 +34,8 @@ import {
     sessionModelOptions,
     splitSessionTarget,
 } from './route_editor_primitives.js';
-import { sessionRouteAvailability } from './subagent_status_primitives.js';
+import { harnessMap, rowMeta, rowStatus, sessionRouteVerdict } from './subagent_status_primitives.js';
+import { revealNewRow } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 
 export const MAX_AVAILABLE_SUBAGENTS = 10;
@@ -171,52 +171,58 @@ export function parseAvailableSubagentsSetting(value) {
     };
 }
 
-export function validateAvailableSubagentsSetting(setting) {
+// One row's owner-facing errors, named the way the card is ("Subagent N").
+// `ids` accumulates in list order so a repeated stable ID blames the later row;
+// the list validator and the per-row display read this one source.
+function rowErrors(row, index, ids) {
     const errors = [];
+    const id = String(row?.subagent_id || '').trim();
+    if (!SUBAGENT_ID_PATTERN.test(id)) {
+        errors.push('needs a stable ID using letters, numbers, ., _ or - (maximum 64 characters).');
+    } else if (ids.has(id)) {
+        errors.push(`repeats stable ID “${id}”.`);
+    }
+    ids.add(id);
+    const route = row?.route || {};
+    if (![ROUTE_KIND_API_MODEL, ROUTE_KIND_AGENT_SESSION].includes(route.kind)) {
+        errors.push('must use API model or Agent session.');
+    }
+    if (!String(route.target_id || '').trim()) {
+        errors.push('needs a model or agent-session route.');
+    }
+    if (route.kind !== ROUTE_KIND_AGENT_SESSION && route.credential_profile_id) {
+        errors.push('can pin an account only for an Agent session.');
+    }
+    if (route.kind === ROUTE_KIND_AGENT_SESSION) {
+        const target = String(route.target_id || '');
+        const parts = target.split('=');
+        if (/\s|:/.test(target) || parts.length > 2
+            || !SUBAGENT_ID_PATTERN.test(parts[0] || '')
+            || (parts.length === 2 && !parts[1])) {
+            errors.push('Agent session must use harness or harness=model without whitespace or legacy :effort.');
+        }
+    }
+    if (row?.effort && !EFFORT_CHOICES.includes(String(row.effort))) {
+        errors.push('has an unsupported reasoning effort.');
+    }
+    const encodedEffort = route.kind === ROUTE_KIND_AGENT_SESSION
+        ? compoundSessionEffortConflict(route.target_id, row?.effort) : '';
+    if (encodedEffort) {
+        errors.push(`effort “${row.effort}” conflicts with compound route effort “${encodedEffort}”.`);
+    }
+    return errors.map((text) => `Subagent ${index + 1} ${text}`);
+}
+
+export function validateAvailableSubagentsSetting(setting) {
     if (!setting || typeof setting.enabled !== 'boolean' || !Array.isArray(setting.items)) {
         return ['Available subagents configuration is not loaded.'];
     }
+    const errors = [];
     if (setting.items.length > MAX_AVAILABLE_SUBAGENTS) {
         errors.push(`Available subagents supports at most ${MAX_AVAILABLE_SUBAGENTS} rows.`);
     }
     const ids = new Set();
-    setting.items.forEach((row, index) => {
-        const label = `Row ${index + 1}`;
-        const id = String(row?.subagent_id || '').trim();
-        if (!SUBAGENT_ID_PATTERN.test(id)) {
-            errors.push(`${label} needs a stable ID using letters, numbers, ., _ or - (maximum 64 characters).`);
-        } else if (ids.has(id)) {
-            errors.push(`${label} repeats stable ID “${id}”.`);
-        }
-        ids.add(id);
-        const route = row?.route || {};
-        if (![ROUTE_KIND_API_MODEL, ROUTE_KIND_AGENT_SESSION].includes(route.kind)) {
-            errors.push(`${label} must use API model or Agent session.`);
-        }
-        if (!String(route.target_id || '').trim()) {
-            errors.push(`${label} needs a model or agent-session route.`);
-        }
-        if (route.kind !== ROUTE_KIND_AGENT_SESSION && route.credential_profile_id) {
-            errors.push(`${label} can pin an account only for an Agent session.`);
-        }
-        if (route.kind === ROUTE_KIND_AGENT_SESSION) {
-            const target = String(route.target_id || '');
-            const parts = target.split('=');
-            if (/\s|:/.test(target) || parts.length > 2
-                || !SUBAGENT_ID_PATTERN.test(parts[0] || '')
-                || (parts.length === 2 && !parts[1])) {
-                errors.push(`${label} Agent session must use harness or harness=model without whitespace or legacy :effort.`);
-            }
-        }
-        if (row.effort && !EFFORT_CHOICES.includes(String(row.effort))) {
-            errors.push(`${label} has an unsupported reasoning effort.`);
-        }
-        const encodedEffort = route.kind === ROUTE_KIND_AGENT_SESSION
-            ? compoundSessionEffortConflict(route.target_id, row.effort) : '';
-        if (encodedEffort) {
-            errors.push(`${label} effort “${row.effort}” conflicts with compound route effort “${encodedEffort}”.`);
-        }
-    });
+    setting.items.forEach((row, index) => errors.push(...rowErrors(row, index, ids)));
     return errors;
 }
 
@@ -285,32 +291,11 @@ function diagnosticsText(diagnostics, out = []) {
     return out;
 }
 
-function harnessMap(snapshot) {
-    return Object.fromEntries((snapshot?.harnesses || [])
-        .filter((harness) => harness?.id)
-        .map((harness) => [String(harness.id), harness]));
-}
-
 function connectedHarnessIds(snapshot) {
     return new Set(accountRows(snapshot)
         .filter((row) => row?.enabled !== false
             && String(row?.status?.verification || '') === 'passed')
         .map((row) => String(row.harness || '')));
-}
-
-function executionFor(snapshot, subagentId) {
-    const receipt = snapshot?.subagent_last_delegation;
-    if (!receipt || typeof receipt !== 'object') return null;
-    return String(receipt.selected_subagent_id || '') === String(subagentId || '')
-        ? receipt : null;
-}
-
-function savedIntentStatus(row, state) {
-    const intent = state.dirty ? 'Draft intent' : (state.baselineLabel || 'Saved intent');
-    if (row.route.kind !== ROUTE_KIND_AGENT_SESSION) {
-        return `${intent} · API model · availability is checked when a child starts`;
-    }
-    return `${intent} · ${sessionRouteAvailability(row, state)}`;
 }
 
 function focusSnapshot(host, doc) {
@@ -358,10 +343,12 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
         row.route.credential_profile_id || '',
         { accountsKnown: state.accountsKnown },
     );
-    const evidence = describeExecutionEvidence(executionFor(state.snapshot, row.subagent_id));
     const gap = session ? modelsGapNote(harnesses[split.harness], state.catalogKnown) : '';
-    const meta = [savedIntentStatus(row, state), gap, evidence ? `Last actual run: ${evidence}` : '']
-        .filter(Boolean).join(' · ');
+    const status = rowStatus(row, state);
+    const statusTitle = [status.text, gap].filter(Boolean).join(' · ');
+    const errors = rowErrors(row, index, new Set());
+    const meta = rowMeta(row, state, errors);
+    const invalid = state.saveAttempted && errors.length > 0;
     const routeIdentity = session
         ? harnessIdentityMarkup(split.harness, {
             // A retained snapshot is useful for preserving the controls, but
@@ -378,11 +365,18 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
             className: 'available-subagent-route-identity',
         });
     return `
-        <article class="available-subagent-row" data-subagent-row="${escapeHtml(rowKey)}" aria-labelledby="${escapeHtml(headingId)}">
-            <h4 class="available-subagent-heading" id="${escapeHtml(headingId)}">Subagent ${ordinal}</h4>
-            <div class="available-subagent-route-identity-wrap">${routeIdentity}</div>
+        <article class="available-subagent-row" data-subagent-row="${escapeHtml(rowKey)}" aria-labelledby="${escapeHtml(headingId)}"${invalid ? ' data-invalid' : ''}>
+            <div class="available-subagent-head">
+                <h4 class="available-subagent-heading" id="${escapeHtml(headingId)}">Subagent ${ordinal}</h4>
+                <div class="available-subagent-route-identity-wrap">${routeIdentity}</div>
+                <span class="settings-inline-status" data-subagent-status data-tone="${escapeHtml(status.tone)}" title="${escapeHtml(statusTitle)}">${escapeHtml(status.label)}</span>
+                <div class="available-subagent-actions">
+                    <button type="button" class="btn btn-default" data-subagent-duplicate aria-label="Duplicate Subagent ${ordinal}">Duplicate</button>
+                    <button type="button" class="btn btn-default" data-subagent-remove aria-label="Remove Subagent ${ordinal}">Remove</button>
+                </div>
+            </div>
             <label class="available-subagent-purpose">Description
-                <textarea data-subagent-field="recommended_use" rows="2" aria-label="Description for Subagent ${ordinal}" placeholder="When should Ouroboros choose this subagent?">${escapeHtml(row.recommended_use)}</textarea>
+                <textarea data-subagent-field="recommended_use" rows="1" aria-label="Description for Subagent ${ordinal}" placeholder="When should Ouroboros choose this subagent?">${escapeHtml(row.recommended_use)}</textarea>
             </label>
             <div class="available-subagent-route">
                 ${selectHtml(`data-subagent-field="route" aria-label="Type for Subagent ${ordinal}"`, routeGroups, encodeRouteChoice(row))}
@@ -394,11 +388,7 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
                     : ''}
                 ${effortSelectHtml(`data-subagent-field="effort" aria-label="Reasoning effort for Subagent ${ordinal}"`, row.effort || '', 'route default')}
             </div>
-            <div class="available-subagent-meta">${escapeHtml(meta)}</div>
-            <div class="available-subagent-actions">
-                <button type="button" class="btn btn-default" data-subagent-duplicate aria-label="Duplicate Subagent ${ordinal}">Duplicate</button>
-                <button type="button" class="btn btn-default" data-subagent-remove aria-label="Remove Subagent ${ordinal}">Remove</button>
-            </div>
+            <div class="available-subagent-meta" data-subagent-meta${meta.tone ? ` data-tone="${escapeHtml(meta.tone)}"` : ''} title="${escapeHtml(meta.text)}"${meta.text ? '' : ' hidden'}>${escapeHtml(meta.text)}</div>
         </article>`;
 }
 
@@ -407,6 +397,7 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         state.loaded,
         state.parseError,
         state.setting,
+        state.saveAttempted,
         state.baselineLabel,
         state.source,
         diagnosticsText(state.diagnostics),
@@ -419,7 +410,7 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         state.snapshot?.quota || [],
         state.snapshot?.subagent_last_delegation || null,
         (state.setting?.items || []).map((row) => row?.route?.kind === ROUTE_KIND_AGENT_SESSION
-            ? sessionRouteAvailability(row, state, nowMs) : ''),
+            ? sessionRouteVerdict(row, state, nowMs).text : ''),
         state.apiModels,
     ]);
 }
@@ -448,6 +439,7 @@ export function createAvailableSubagentsEditor({
         source: '',
         diagnostics: [],
         dirty: false,
+        saveAttempted: false,
         baselineLabel: String(baselineLabel || 'Saved intent'),
         statusError: '',
         catalogKnown: false,
@@ -488,12 +480,43 @@ export function createAvailableSubagentsEditor({
         return validateAvailableSubagentsSetting(state.setting);
     }
 
+    // The ONE painter of verdicts, patching in place (never innerHTML, so the
+    // caret survives): the section-level line, and every row's own error tint
+    // and meta line. A load/parse problem is always shown; a draft's own errors
+    // only after the owner tried to save — until then a fresh entry carries
+    // its hint. Rows and the top line are reconciled together so a fix typed
+    // into a field can never clear one and leave the other red.
     function renderValidation() {
-        const box = host()?.querySelector?.('[data-subagents-validation]');
-        if (!box) return;
+        const container = host();
+        if (!container) return;
         const errors = validationErrors();
-        box.hidden = !errors.length;
-        box.textContent = errors[0] || '';
+        const box = container.querySelector('[data-subagents-validation]');
+        if (box) {
+            box.hidden = !errors.length || !(state.saveAttempted || !state.loaded || state.parseError);
+            box.textContent = errors[0] || '';
+        }
+        const ids = new Set();
+        state.setting.items.forEach((row, index) => {
+            const key = row._uiKey || row.subagent_id;
+            const el = container.querySelector(`[data-subagent-row="${key}"]`);
+            if (!el) return;
+            const rowErrs = state.loaded ? rowErrors(row, index, ids) : [];
+            el.toggleAttribute('data-invalid', state.saveAttempted && rowErrs.length > 0);
+            const meta = rowMeta(row, state, rowErrs);
+            const metaEl = el.querySelector('[data-subagent-meta]');
+            if (!metaEl) return;
+            metaEl.hidden = !meta.text;
+            metaEl.textContent = meta.text;
+            metaEl.title = meta.text;
+            if (meta.tone) metaEl.dataset.tone = meta.tone;
+            else delete metaEl.dataset.tone;
+        });
+    }
+
+    /** The Save/Finish button says the owner tried to commit the draft. */
+    function noteSaveAttempt() {
+        state.saveAttempted = true;
+        renderValidation();
     }
 
     function markDirty({ structural = false } = {}) {
@@ -562,6 +585,7 @@ export function createAvailableSubagentsEditor({
                 state.setting.items.splice(state.setting.items.indexOf(row) + 1, 0, copy);
                 markDirty({ structural: true });
                 paint();
+                revealRow(copy._uiKey);
             });
             rowElement.querySelector('[data-subagent-remove]')?.addEventListener('click', () => {
                 const index = state.setting.items.indexOf(row);
@@ -613,19 +637,28 @@ export function createAvailableSubagentsEditor({
         container.querySelector('[data-subagent-add]')?.addEventListener('click', () => {
             if (state.setting.items.length >= MAX_AVAILABLE_SUBAGENTS) return;
             const id = mintStableId('subagent', state.setting.items.map((row) => row.subagent_id));
+            const uiKey = mintStableId('actor_row', state.setting.items.map((row) => row._uiKey));
             state.setting.items.push({
                 subagent_id: id,
                 recommended_use: '',
                 route: { kind: ROUTE_KIND_API_MODEL, target_id: '' },
-                _uiKey: mintStableId('actor_row',
-                    state.setting.items.map((row) => row._uiKey)),
+                _uiKey: uiKey,
             });
             markDirty({ structural: true });
             paint();
+            revealRow(uiKey);
         });
         bindRows(container);
         restoreFocus(container, focused);
+        renderValidation();
         return true;
+    }
+
+    // After the repaint (whose last act restores the previous focus): the row
+    // that just appeared is scrolled into view and its Description takes the caret.
+    function revealRow(uiKey) {
+        const row = host()?.querySelector?.(`[data-subagent-row="${uiKey}"]`);
+        revealNewRow(row, row?.querySelector?.('[data-subagent-field="recommended_use"]'));
     }
 
     function load(value, { source = '', diagnostics = [], allowOmission = false } = {}) {
@@ -643,6 +676,7 @@ export function createAvailableSubagentsEditor({
         state.source = String(source || '');
         state.diagnostics = diagnostics;
         state.dirty = false;
+        state.saveAttempted = false;
         state.signature = '';
         onDirtyChange(false);
         paint();
@@ -667,6 +701,7 @@ export function createAvailableSubagentsEditor({
         if (canApply) {
             state.loaded = true;
             state.parseError = '';
+            state.saveAttempted = false;
             state.setting = attachUiKeys(parsed.setting, state.setting.items);
             onDirtyChange(false);
             onGeneratedApply(buildAvailableSubagentsSetting(state.setting));
@@ -787,6 +822,7 @@ export function createAvailableSubagentsEditor({
         applyGeneratedPreview,
         setPreviewFailure,
         validate: validationErrors,
+        noteSaveAttempt,
         collect: () => availableSubagentsSavePayload(state),
         get setting() { return buildAvailableSubagentsSetting(state.setting); },
         get loaded() { return state.loaded; },
@@ -937,6 +973,11 @@ export function collectSubagentsSettings() {
 
 export function validateSubagentsDraft() {
     return settingsEditor?.validate() || ['Available subagents editor is not loaded.'];
+}
+
+/** Settings' Save button: the draft's own errors become visible from here on. */
+export function noteSubagentsSaveAttempt() {
+    settingsEditor?.noteSaveAttempt();
 }
 
 // Compatibility name retained for focused callers; the signature now covers

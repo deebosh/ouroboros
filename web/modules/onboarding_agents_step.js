@@ -814,6 +814,9 @@ export function createAgentsStep({
         get previewPending() { return state.previewPending; },
         get previewError() { return state.previewError; },
         validateSubagents() { return subagents.validate(); },
+        // Finish is the wizard's commit: the roster then shows its own errors
+        // beside the rows they name when the owner steps back here.
+        noteSaveAttempt() { subagents.noteSaveAttempt(); },
         refreshSubagentsPreview,
         invalidateGeneratedPreview,
         setSkipPresets(value) {

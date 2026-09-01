@@ -8,6 +8,7 @@ import {
     availableSubagentsPreviewPayload,
     collectSubagentsSettings,
     initSubagentsSection,
+    noteSubagentsSaveAttempt,
     reloadSubagentsSection,
     subagentSettingsFingerprint,
     validateSubagentsDraft,
@@ -1212,6 +1213,9 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             setStatus('Every-N cadence needs a whole number ≥ 1.', 'warn');
             return;
         }
+        // The owner just tried to commit the draft: from here the roster shows
+        // its own errors beside the rows they name, not only in this status.
+        noteSubagentsSaveAttempt();
         const subagentErrors = validateSubagentsDraft();
         if (subagentErrors.length) {
             setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn');
