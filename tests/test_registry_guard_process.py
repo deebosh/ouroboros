@@ -21,7 +21,8 @@ from ouroboros.tools.tool_result import LegacyTextResultAdapter, ToolResult
 #   its guard were retired outright in the 7.0 ABI window (owner Q10=A);
 # - three constant cardinalities moved by upstream drift after the fork
 #   (_SUBAGENT_SHELL_SECRET_MARKERS 17->18, _DENIED_READ_OPTIONS 11->12,
-#   _SKILL_OWNER_STATE_STEMS 12->14);
+#   _SKILL_OWNER_STATE_STEMS 12->14; 14->15 with the CPL4-C11 uninstall
+#   tombstone joining the owner-state allowlist);
 # - ``_workspace_shell_write_block`` gained the upstream ``write_target_argvs``
 #   parameter.
 _FUNCTION_SIGNATURES = {
@@ -71,7 +72,7 @@ _CONSTANT_CARDINALITIES = {
     "_TRUSTED_EXECUTABLE_DIRS": 6,
     "_NESTED_EXECUTION_MARKERS": 4,
     "_NESTED_EXECUTION_TOKENS": 6,
-    "_SKILL_OWNER_STATE_STEMS": 14,
+    "_SKILL_OWNER_STATE_STEMS": 15,
     "_DETACHED_PROCESS_MARKERS": 5,
 }
 

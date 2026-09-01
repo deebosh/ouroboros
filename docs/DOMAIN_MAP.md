@@ -14,21 +14,21 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D04 | Tool execution: registry, access & typed results | 20 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 25 | 1 |
 | D06 | Review stack | 62 | 17 |
-| D07 | Delegation, subagents & Claudexor | 47 | 17 |
+| D07 | Delegation, subagents & Claudexor | 48 | 17 |
 | D08 | Supervisor: queue, workers, events & runtime control | 41 | 4 |
 | D09 | Cancellation, owner control & process custody | 12 | 0 |
 | D10 | Git, update & release machinery | 28 | 1 |
 | D11 | Gateway, server & Web UI | 45 | 2 |
 | D12 | Settings & configuration | 14 | 1 |
 | D13 | Safety, guards & runtime mode | 8 | 2 |
-| D14 | Skills & extensions | 51 | 8 |
-| D15 | Memory, knowledge, consciousness & self-evolution | 16 | 1 |
+| D14 | Skills & extensions | 52 | 8 |
+| D15 | Memory, knowledge, consciousness & self-evolution | 17 | 1 |
 | D16 | Observability, usage accounting & cost | 8 | 0 |
 | D17 | Projects, workspaces & task results | 20 | 1 |
 | D18 | Launcher, packaging, platform & shared substrate | 11 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 9 |
-| **total** | | **500** | **80** |
+| **total** | | **503** | **80** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -388,6 +388,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/delegate_source_coverage.py` *
 - `ouroboros/delegate_start_claims.py` *
 - `ouroboros/delegate_start_instructions.py` *
+- `ouroboros/delegate_state_sweep.py`
 - `ouroboros/delegate_supervision.py` *
 - `ouroboros/delegate_terminal.py` *
 - `ouroboros/depth_evidence.py` *
@@ -633,6 +634,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/skill_review_status.py`
 - `ouroboros/skill_review_usage.py` *
 - `ouroboros/skill_token.py`
+- `ouroboros/skill_uninstall_state.py`
 - `ouroboros/tools/skill_exec.py`
 - `ouroboros/tools/skill_preflight.py`
 - `ouroboros/tools/skill_publish.py`
@@ -646,6 +648,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/evolution_fingerprint.py`
 - `ouroboros/improvement_backlog.py`
 - `ouroboros/memory.py`
+- `ouroboros/memory_journal_compaction.py`
 - `ouroboros/post_task_evolution.py`
 - `ouroboros/project_facts.py`
 - `ouroboros/reflection.py`
