@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-import signal
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
+
+from ouroboros.platform_layer import posix_signal_name
 
 ToolStatus = Literal["ok", "error", "blocked", "timeout", "unavailable"]
 _TOOL_STATUSES = frozenset({"ok", "error", "blocked", "timeout", "unavailable"})
@@ -623,11 +624,7 @@ def _publish_process_result(
     if exit_code is not None:
         facts["exit_code"] = int(exit_code)
         if int(exit_code) < 0 and not signal_name:
-            signal_number = abs(int(exit_code))
-            try:
-                signal_name = signal.Signals(signal_number).name
-            except ValueError:
-                signal_name = f"SIG{signal_number}"
+            signal_name = posix_signal_name(abs(int(exit_code)))
     if signal_name:
         facts["signal"] = signal_name
     if artifact_registered:

@@ -26,6 +26,26 @@ _SUBPROCESS_NO_WINDOW = (
 )
 _PATH_BOOTSTRAPPED = False
 
+# POSIX signal numbers -> names, the same on every platform. ``signal.Signals``
+# knows only the host's own signals, so a child that died of SIGKILL would be
+# named "SIG9" wherever the reader lacks that signal (Windows).
+_POSIX_SIGNAL_NAMES = {
+    1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 6: "SIGABRT", 9: "SIGKILL",
+    11: "SIGSEGV", 13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM",
+}
+
+
+def posix_signal_name(signum: int) -> str:
+    """Name of a POSIX signal number (``SIGKILL``); ``SIG<n>`` when unknown."""
+    number = int(signum)
+    try:
+        name = signal.Signals(number).name
+    except ValueError:
+        name = ""
+    if not name or re.fullmatch(r"SIG\d+", name):
+        name = _POSIX_SIGNAL_NAMES.get(number, name or f"SIG{number}")
+    return name
+
 
 def executable_name_candidates(name: str) -> List[str]:
     """Platform spellings for an executable stored in a known directory."""

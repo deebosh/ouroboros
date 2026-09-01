@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import pathlib
-import re
 import shutil
 import signal
 import subprocess
@@ -30,7 +29,9 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, Response, StreamingResponse
 
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
-from ouroboros.platform_layer import merge_hidden_kwargs, subprocess_new_group_kwargs
+from ouroboros.platform_layer import (
+    merge_hidden_kwargs, posix_signal_name, subprocess_new_group_kwargs,
+)
 from ouroboros.skill_loader import find_skill, grant_status_for_skill, skill_state_dir
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.shell import _active_subprocesses, _kill_process_group, _subprocess_lock
@@ -47,17 +48,6 @@ _INPUT_CAP = 1024 * 1024
 _RESULT_CAP = 512 * 1024
 _CATALOG_TIMEOUT_SEC = 30
 _RUNTIME_MODE_ENV_KEYS = ("OUROBOROS_BOOT_RUNTIME_MODE", "OUROBOROS_RUNTIME_MODE")
-_POSIX_SIGNAL_NAMES = {
-    1: "SIGHUP",
-    2: "SIGINT",
-    3: "SIGQUIT",
-    6: "SIGABRT",
-    9: "SIGKILL",
-    11: "SIGSEGV",
-    13: "SIGPIPE",
-    14: "SIGALRM",
-    15: "SIGTERM",
-}
 _POSIX_SIGABRT = 6
 
 
@@ -78,21 +68,11 @@ def _format_child_returncode(returncode: int) -> str:
         return f"returncode={returncode}"
     if code < 0:
         signum = -code
-        try:
-            sig_name = signal.Signals(signum).name
-        except ValueError:
-            sig_name = ""
-        if not sig_name or re.fullmatch(r"SIG\d+", sig_name):
-            sig_name = _POSIX_SIGNAL_NAMES.get(signum, sig_name or f"SIG{signum}")
+        sig_name = posix_signal_name(signum)
         return f"signal={sig_name}({signum}), returncode={code}"
     if code >= 128:
         signum = code - 128
-        try:
-            sig_name = signal.Signals(signum).name
-        except ValueError:
-            sig_name = ""
-        if not sig_name or re.fullmatch(r"SIG\d+", sig_name):
-            sig_name = _POSIX_SIGNAL_NAMES.get(signum, sig_name or f"SIG{signum}")
+        sig_name = posix_signal_name(signum)
         if sig_name:
             return f"signal={sig_name}({signum}), returncode={code}"
     return f"returncode={code}"

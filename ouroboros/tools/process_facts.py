@@ -21,11 +21,12 @@ This lives outside ``tools/shell.py`` deliberately: it is a loop↔handler seam
 
 from __future__ import annotations
 
-import signal
 import pathlib
 import threading
 import time
 from typing import Dict
+
+from ouroboros.platform_layer import posix_signal_name
 
 
 def signal_name_for_returncode(returncode) -> str:
@@ -44,11 +45,7 @@ def signal_name_for_returncode(returncode) -> str:
         return ""
     if rc >= 0:
         return ""
-    signal_num = abs(rc)
-    try:
-        return signal.Signals(signal_num).name
-    except ValueError:
-        return f"SIG{signal_num}"
+    return posix_signal_name(abs(rc))
 
 
 _process_facts_tls = threading.local()

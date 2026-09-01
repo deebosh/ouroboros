@@ -16,7 +16,6 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
-import signal
 import subprocess
 from typing import Dict, List, NamedTuple, Tuple
 
@@ -54,10 +53,7 @@ def _probe_node_version_outcome(node_path: str, timeout_sec: float = 10) -> Tupl
     rc = int(result.returncode or 0)
     if rc != 0:
         if rc < 0:
-            try:
-                name = signal.Signals(abs(rc)).name
-            except ValueError:
-                name = f"SIG{abs(rc)}"
+            name = _platform.posix_signal_name(abs(rc))
             return "", f"signal:{name}"
         return "", f"exit:{rc}"
     version = str(result.stdout or "").strip().removeprefix("v")
