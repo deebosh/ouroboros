@@ -459,6 +459,32 @@ def test_tree_sha_appends_dirty_suffix_for_tracked_changes(monkeypatch):
     assert module._tree_sha() == "f" * 40
 
 
+def test_tree_sha_is_fail_closed_when_the_dirty_check_fails(monkeypatch):
+    """Adversarial fix-round 2, claim 4: rev-parse OK but git status failing
+    (or erroring) must never yield a bare SHA that reads as proven-clean —
+    the suffix names the unproven state."""
+    module = _load_module()
+
+    class _Out:
+        def __init__(self, stdout, returncode=0):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    mode = {"kind": "rc"}
+
+    def _fake_run(cmd, **kwargs):
+        if "rev-parse" in cmd:
+            return _Out("f" * 40 + "\n")
+        if mode["kind"] == "rc":
+            return _Out("", returncode=128)
+        raise OSError("status exploded")
+
+    monkeypatch.setattr(module.subprocess, "run", _fake_run)
+    assert module._tree_sha() == "f" * 40 + "-unknown-dirty-state"
+    mode["kind"] = "raise"
+    assert module._tree_sha() == "f" * 40 + "-unknown-dirty-state"
+
+
 def test_repo_root_wins_the_import_resolution():
     module = _load_module()
     assert sys.path[0] == str(module.REPO_ROOT)

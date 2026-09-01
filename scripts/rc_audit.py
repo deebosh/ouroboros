@@ -203,7 +203,13 @@ OWNER_ATTESTATION: List[str] = [
 def _tree_sha() -> str:
     """Provenance of the classifier BYTES actually used, not just of HEAD:
     uncommitted tracked changes append the ``-dirty`` suffix (untracked files
-    do not ship classifiers this run resolved — the sweep is tracked-scope)."""
+    do not ship classifiers this run resolved — the sweep is tracked-scope).
+
+    Fail-closed dirtiness: when ``rev-parse`` succeeds but ``git status``
+    fails or errors, the tree's cleanliness is UNPROVEN — the SHA is suffixed
+    ``-unknown-dirty-state`` (chosen over the conservative bare ``-dirty`` so
+    an auditor can tell \"proven dirty\" from \"could not check\"), never
+    returned bare as if proven clean."""
     try:
         out = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
@@ -211,12 +217,17 @@ def _tree_sha() -> str:
         )
         sha = (out.stdout or "").strip()
         if out.returncode == 0 and sha:
-            st = subprocess.run(
-                ["git", "-C", str(REPO_ROOT), "status", "--porcelain",
-                 "--untracked-files=no"],
-                capture_output=True, text=True, timeout=10, check=False,
-            )
-            if st.returncode == 0 and (st.stdout or "").strip():
+            try:
+                st = subprocess.run(
+                    ["git", "-C", str(REPO_ROOT), "status", "--porcelain",
+                     "--untracked-files=no"],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return f"{sha}-unknown-dirty-state"
+            if st.returncode != 0:
+                return f"{sha}-unknown-dirty-state"
+            if (st.stdout or "").strip():
                 return f"{sha}-dirty"
             return sha
     except (OSError, subprocess.SubprocessError):
