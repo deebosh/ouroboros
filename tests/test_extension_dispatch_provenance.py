@@ -306,6 +306,109 @@ def test_spawn_marker_attaches_even_when_the_exception_refuses_attributes():
     assert extension_process_runner.extension_child_was_spawned(exc) is True
 
 
+class _UnhashableRigid(Exception):
+    """Refuses both the marker attribute and hashing — a WeakSet fallback
+    would TypeError on add AND on the membership check."""
+
+    __hash__ = None
+
+    def __setattr__(self, _key, _value):
+        raise AttributeError("frozen exception")
+
+
+def test_spawn_marker_side_table_serves_an_unhashable_exception():
+    """Fix-round 4, finding 1: the fallback is keyed by IDENTITY, not by
+    hash — an unhashable setattr-refusing exception marked post-spawn still
+    reads as a positive spawn fact, and an UNMARKED unhashable exception
+    reads unstamped without raising (the membership check itself used to
+    TypeError on both sides)."""
+    from ouroboros import extension_process_runner
+
+    unmarked = _UnhashableRigid("pre-spawn, never marked")
+    assert extension_process_runner.extension_child_was_spawned(unmarked) is False
+
+    exc = _UnhashableRigid("post-spawn")
+    marked = extension_process_runner._mark_child_spawned(exc)
+    assert marked is exc
+    assert extension_process_runner.extension_child_was_spawned(exc) is True
+
+
+def test_spawn_marker_is_identity_bound_not_equality_bound():
+    """Fix-round 4, finding 1: two DISTINCT exception objects that compare
+    equal must not share the spawn fact — only the exact marked object reads
+    stamped (a WeakSet fallback would false-positive on __eq__/__hash__)."""
+    from ouroboros import extension_process_runner
+
+    class _Equalish(Exception):
+        def __setattr__(self, _key, _value):
+            raise AttributeError("frozen exception")
+
+        def __eq__(self, other):
+            return isinstance(other, _Equalish)
+
+        def __hash__(self):
+            return 42
+
+    marked = _Equalish("really crossed the spawn boundary")
+    twin = _Equalish("never did")
+    extension_process_runner._mark_child_spawned(marked)
+    assert extension_process_runner.extension_child_was_spawned(marked) is True
+    assert extension_process_runner.extension_child_was_spawned(twin) is False
+
+
+def test_spawn_marker_side_table_entries_die_with_the_exception():
+    """Fix-round 4, finding 1: the identity side-table must not leak — the
+    weakref finalizer purges the entry when the marked exception is
+    collected, before its id can be reused for a fresh object."""
+    import gc
+
+    from ouroboros import extension_process_runner
+
+    exc = _UnhashableRigid("short-lived")
+    extension_process_runner._mark_child_spawned(exc)
+    key = id(exc)
+    with extension_process_runner._spawned_marker_lock:
+        assert key in extension_process_runner._spawned_marker_fallback
+    del exc
+    gc.collect()
+    with extension_process_runner._spawned_marker_lock:
+        assert key not in extension_process_runner._spawned_marker_fallback
+
+
+def test_broken_marker_check_fails_closed_and_never_masks_the_original(tmp_path, monkeypatch):
+    """Fix-round 4, finding 1: the marker READ is called inside the
+    dispatcher's except handler — a hostile exception object (unhashable,
+    raising __getattr__) must yield the fail-closed answer False, so the
+    ORIGINAL tool error is reported unstamped instead of being replaced by a
+    secondary TypeError from the check itself."""
+    from ouroboros import extension_process_runner
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+
+    class _Hostile(Exception):
+        __hash__ = None
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"hostile attribute read: {name}")
+
+    hostile = _Hostile("child never provably existed")
+    assert extension_process_runner.extension_child_was_spawned(hostile) is False
+
+    surface, ctx, ext_tool, _root, _loaded = _dispatch_ready(tmp_path, monkeypatch, "oopc")
+    ext_tool = dict(ext_tool)
+    ext_tool["out_of_process"] = True
+
+    def _hostile_boom(*_a, **_k):
+        raise _Hostile("child never provably existed")
+
+    monkeypatch.setattr(
+        extension_process_runner, "dispatch_extension_tool_subprocess", _hostile_boom
+    )
+    result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    assert (result.status, result.code) == ("error", "EXTENSION_ERROR")
+    assert "child never provably existed" in result.text
+    assert "physical_dispatch" not in result.meta
+
+
 def test_fallback_digest_is_snapshotted_before_the_handler_runs(tmp_path, monkeypatch):
     """Finding 11: for a descriptor predating the per-surface stamp the
     registry digest is read BEFORE the handler, so a publication that lands

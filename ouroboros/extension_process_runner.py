@@ -339,12 +339,17 @@ _CHILD_SPAWNED_ATTR = "_ouroboros_extension_child_spawned"
 
 # Fallback registry for exception objects that refuse the attribute (e.g. an
 # overriding __setattr__): the spawn fact must be recorded once the child
-# exists, so the marker read consults this weak side-table too (weak, so
-# marked exceptions never leak). BaseException subclasses always expose
-# __dict__, so the attribute path covers every ordinary exception; an object
-# that ALSO lacks __weakref__ support cannot carry the fact at all — that
-# theoretical residue is logged, never silently dropped.
-_spawned_marker_fallback: "weakref.WeakSet[BaseException]" = weakref.WeakSet()
+# exists, so the marker read consults this side-table too. The table is keyed
+# by id() with a weakref finalizer purging the entry, so it is IDENTITY-safe
+# and never depends on the exception being hashable or well-behaved under
+# __eq__ (a WeakSet would TypeError on an unhashable exception — on add AND
+# on the membership check — and could false-positive an equal-but-distinct
+# one), and marked exceptions never leak (the entry dies with the object,
+# before its id can be reused). An object that ALSO refuses weak references
+# cannot carry the fact at all — that theoretical residue is logged, never
+# silently dropped.
+_spawned_marker_fallback: Dict[int, "weakref.ref[BaseException]"] = {}
+_spawned_marker_lock = threading.Lock()
 
 
 def extension_child_was_spawned(exc: BaseException) -> bool:
@@ -353,19 +358,50 @@ def extension_child_was_spawned(exc: BaseException) -> bool:
     marker on every exception that crosses the spawn boundary; a pre-spawn
     failure — payload staging, dispatch resolve/load/env, the ``Popen`` call
     itself — carries no marker, so dispatch provenance never records a
-    ``physical_dispatch`` for a child that never existed."""
-    if bool(getattr(exc, _CHILD_SPAWNED_ATTR, False)):
-        return True
-    return exc in _spawned_marker_fallback
+    ``physical_dispatch`` for a child that never existed.
+
+    FAIL-CLOSED read: this is called from ``except`` handlers, so a broken
+    marker check (a hostile ``__getattr__``, whatever else the exception
+    object does) must never raise — it would REPLACE the original in-flight
+    error — and must never claim a physical dispatch it cannot prove."""
+    try:
+        try:
+            if bool(getattr(exc, _CHILD_SPAWNED_ATTR, False)):
+                return True
+        except Exception:
+            # A hostile __getattr__ only fires when the attribute was never
+            # SET (a set attribute is found by normal lookup first), so the
+            # probe failure falls through to exactly where the marker would
+            # then live: the identity side-table.
+            pass
+        with _spawned_marker_lock:
+            ref = _spawned_marker_fallback.get(id(exc))
+        # The referent identity check makes a stale or colliding id entry
+        # (impossible for live objects, cheap to rule out anyway) inert.
+        return ref is not None and ref() is exc
+    except Exception:
+        return False
+
+
+def _fallback_mark_spawned(exc: BaseException) -> None:
+    key = id(exc)
+
+    def _purge(_ref: "weakref.ref[BaseException]", *, _key: int = key) -> None:
+        with _spawned_marker_lock:
+            _spawned_marker_fallback.pop(_key, None)
+
+    ref = weakref.ref(exc, _purge)
+    with _spawned_marker_lock:
+        _spawned_marker_fallback[key] = ref
 
 
 def _mark_child_spawned(exc: BaseException) -> BaseException:
     try:
         setattr(exc, _CHILD_SPAWNED_ATTR, True)
-    except Exception:  # attribute refused: use the weak side-table
+    except Exception:  # attribute refused: use the identity side-table
         try:
-            _spawned_marker_fallback.add(exc)
-        except TypeError:
+            _fallback_mark_spawned(exc)
+        except Exception:
             log.warning(
                 "extension spawn marker could not be attached to %s",
                 type(exc).__name__,
