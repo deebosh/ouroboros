@@ -48,7 +48,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 | **D10** | · | · | · | ✓ | ✓ | ✓ | · | ✓ | · | · | · | ✓ | ✓ | · | · | · | · | ✓ | ✓ | · |
 | **D11** | ✓ | ✓ | ✓ | ✓ | ✓ | · | ✓ | ✓ | ✓ | ✓ | · | ✓ | · | ✓ | · | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **D12** | ✓ | ✓ | ✓ | · | · | · | ✓ | · | · | · | ✓ | · | · | · | · | · | · | ✓ | · | · |
-| **D13** | ✓ | ✓ | · | ✓ | · | · | · | ✓ | · | · | · | ✓ | · | · | · | · | ✓ | ✓ | · | · |
+| **D13** | ✓ | ✓ | · | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | · | ✓ | ✓ | · | · |
 | **D14** | · | ✓ | · | ✓ | ✓ | ✓ | · | · | ✓ | ✓ | ✓ | ✓ | · | · | · | ✓ | · | ✓ | ✓ | · |
 | **D15** | ✓ | ✓ | ✓ | ✓ | · | · | · | · | · | · | · | ✓ | · | · | · | ✓ | · | ✓ | ✓ | · |
 | **D16** | · | ✓ | · | · | · | ✓ | · | · | · | · | · | ✓ | · | ✓ | · | · | · | ✓ | · | · |
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **92**
+- lazy-only cross-domain pairs: **93**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -124,6 +124,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D12->D17
   - D13->D05
   - D13->D06
+  - D13->D08
   - D13->D15
   - D14->D08
   - D14->D13
