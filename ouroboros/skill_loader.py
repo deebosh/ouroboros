@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ouroboros.contracts.skill_manifest import SkillManifest, SkillManifestError, canonical_skill_name, parse_skill_manifest_text
 from ouroboros.contracts.plugin_api import FORBIDDEN_SKILL_SETTINGS
+from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.skill_review_status import STATUS_BLOCKERS, STATUS_CLEAN, STATUS_PENDING, STATUS_WARNINGS, VALID_SKILL_REVIEW_STATUSES, aggregate_skill_review_status, normalize_skill_review_status, skill_review_gate
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
 
@@ -52,6 +53,11 @@ def review_status_allows_execution(status: str) -> bool:
 
 GRANTS_FILENAME = "grants.json"
 SELF_AUTHORED_MARKER_FILENAME = ".self_authored.json"
+# CPL4-C10: every per-skill owner-state document the runtime authors carries
+# the shared ABI-2 stamp on write (review.json, enabled.json, grants.json,
+# review_job.json, owner_attestation.json, accepted_rebuttals.json). Readers
+# keep legacy-0 tolerance: unstamped files are never retrofitted on read.
+SKILL_OWNER_STATE_SCHEMA_VERSION = 1
 
 
 # Dataclasses
@@ -498,10 +504,13 @@ def load_enabled(drive_root: pathlib.Path, name: str) -> bool:
 def save_enabled(drive_root: pathlib.Path, name: str, enabled: bool) -> None:
     atomic_write_json(
         skill_state_dir(drive_root, name) / "enabled.json",
-        {
-            "enabled": bool(enabled),
-            "updated_at": utc_now_iso(),
-        },
+        with_schema_version(
+            {
+                "enabled": bool(enabled),
+                "updated_at": utc_now_iso(),
+            },
+            SKILL_OWNER_STATE_SCHEMA_VERSION,
+        ),
     )
 
 
@@ -611,7 +620,7 @@ def save_review_state(
 ) -> None:
     atomic_write_json(
         skill_state_dir(drive_root, name) / "review.json",
-        review.to_dict(),
+        with_schema_version(review.to_dict(), SKILL_OWNER_STATE_SCHEMA_VERSION),
     )
 
 
@@ -737,16 +746,22 @@ def save_skill_grants(
         granted_permissions,
         allowed=allowed_permissions,
     )
+    # Stamp at write (CPL4-C10): load_skill_grants normalizes to a fixed key
+    # set, so the stamp must be re-authored here rather than carried through
+    # the read-merge round trip.
     atomic_write_json(
         skill_state_dir(drive_root, name) / GRANTS_FILENAME,
-        {
-            "granted_keys": merged,
-            "requested_keys": sorted(allowed),
-            "granted_permissions": sorted(existing_permissions),
-            "requested_permissions": sorted(allowed_permissions),
-            "content_hash": str(content_hash or ""),
-            "updated_at": utc_now_iso(),
-        },
+        with_schema_version(
+            {
+                "granted_keys": merged,
+                "requested_keys": sorted(allowed),
+                "granted_permissions": sorted(existing_permissions),
+                "requested_permissions": sorted(allowed_permissions),
+                "content_hash": str(content_hash or ""),
+                "updated_at": utc_now_iso(),
+            },
+            SKILL_OWNER_STATE_SCHEMA_VERSION,
+        ),
     )
 
 

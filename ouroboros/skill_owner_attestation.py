@@ -19,7 +19,9 @@ from ouroboros.config import (
     SKILL_SOURCE_NATIVE,
     SKILL_SOURCE_OUROBOROSHUB,
 )
+from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.skill_loader import (
+    SKILL_OWNER_STATE_SCHEMA_VERSION,
     SkillPayloadUnreadable,
     SkillReviewState,
     compute_content_hash,
@@ -127,7 +129,10 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
             content_hash=content_hash, findings=findings,
         )
     marker_path = skill_state_dir(drive_root, skill.name) / "owner_attestation.json"
-    atomic_write_json(marker_path, {"attested_at": utc_now_iso(), "content_hash": content_hash})
+    atomic_write_json(marker_path, with_schema_version(
+        {"attested_at": utc_now_iso(), "content_hash": content_hash},
+        SKILL_OWNER_STATE_SCHEMA_VERSION,
+    ))
     skill.review = review_state
     return _sr.SkillReviewOutcome(
         skill_name=skill.name,

@@ -756,7 +756,14 @@ def record_accepted_rebuttal(
         if passed_models:
             target["models_that_passed_after"] = list(passed_models)
     try:
+        from ouroboros.contracts.schema_versions import with_schema_version
+        from ouroboros.skill_loader import SKILL_OWNER_STATE_SCHEMA_VERSION
+
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(path, {"items": existing}, trailing_newline=True)
+        atomic_write_json(
+            path,
+            with_schema_version({"items": existing}, SKILL_OWNER_STATE_SCHEMA_VERSION),
+            trailing_newline=True,
+        )
     except OSError:
         log.debug("accepted rebuttal write failed", exc_info=True)
