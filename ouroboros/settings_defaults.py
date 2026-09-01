@@ -126,11 +126,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC": 1800,
     "OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC": 300,
     "OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC": 90,
-    "OUROBOROS_SOFT_TIMEOUT_SEC": 600,
-    # OUROBOROS_HARD_TIMEOUT_SEC is only soft-warning/status input; task runtime uses
-    # the activity model below (idle + subtree liveness + absolute ceiling).
-    "OUROBOROS_HARD_TIMEOUT_SEC": 1800,
-    # Activity-based liveness (replaces flat wall-clock as the primary stop):
     # Activity-based liveness (the flat wall-clock pair it replaced is RETIRED below):
     # idle window = no real progress AND no progressing subtree; abs ceiling = the
     # unconditional per-task backstop (budget/cost stays a separate hard axis).

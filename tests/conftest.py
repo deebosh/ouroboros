@@ -132,11 +132,10 @@ def _bind_pytest_runtime_roots() -> None:
     config.DATA_DIR = root
     config.SETTINGS_PATH = root / "settings.json"
     state.init(root, state.TOTAL_BUDGET_LIMIT)
-    queue.init(root, queue.SOFT_TIMEOUT_SEC, queue.HARD_TIMEOUT_SEC)
+    queue.init(root)
     # git_ops has no env fallback: keep every rescue/log writer on the disposable
     # data root without init(), which would also overwrite branch/remote authority.
     git_ops.DRIVE_ROOT = root
-    queue.init(root)
     workers.DRIVE_ROOT = root
     # git_ops.DRIVE_ROOT was the one runtime root this rebind list missed
     # (issue #455): _log_supervisor and the reset/rescue writers resolve
