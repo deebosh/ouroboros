@@ -150,6 +150,45 @@ def _startup_worktree_prune() -> None:
         log.debug("Subagent worktree prune failed", exc_info=True)
 
 
+def prune_agent_media_uploads(
+    drive_root: pathlib.Path,
+    retention_days: "int | None" = None,
+    *,
+    now: "float | None" = None,
+) -> dict:
+    """Age-prune AGENT-generated media under uploads/ (CPL4-C21, owner 6A).
+
+    Only ``uploads/screenshots/`` (browser tool) and ``uploads/views/``
+    (view_image durable copies) follow GC retention — owner attachments live
+    in the uploads/ ROOT and are owner-explicit-delete only, untouched here.
+    Readers already skip missing files (the eviction placeholder only formats
+    a re-view hint), so a pruned screenshot degrades to a stale hint, never
+    an error. Fail-soft per file.
+    """
+    from ouroboros.retention import age_cutoff, get_gc_retention_days
+
+    if retention_days is None:
+        retention_days = get_gc_retention_days()
+    cutoff = age_cutoff(retention_days, now)
+    report: dict = {"removed": 0, "kept": 0, "errors": 0}
+    for family in ("screenshots", "views"):
+        family_dir = pathlib.Path(drive_root) / "uploads" / family
+        try:
+            entries = sorted(p for p in family_dir.iterdir() if p.is_file())
+        except OSError:
+            continue
+        for path in entries:
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    report["kept"] += 1
+                    continue
+                path.unlink()
+                report["removed"] += 1
+            except OSError:
+                report["errors"] += 1
+    return report
+
+
 def _startup_prune_sweeps() -> None:
     """Startup hygiene: prune stale task drives/trees and orphaned temp files."""
     from supervisor.state import append_jsonl
@@ -239,6 +278,18 @@ def _startup_prune_sweeps() -> None:
             })
     except Exception:
         log.debug("Owner mailbox sweep failed", exc_info=True)
+    try:
+        # CPL4-C21 (owner 6A): agent screenshots/views follow GC retention;
+        # owner attachments in the uploads/ root are never touched.
+        media_report = prune_agent_media_uploads(DATA_DIR)
+        if media_report.get("removed") or media_report.get("errors"):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "agent_media_prune",
+                "report": media_report,
+            })
+    except Exception:
+        log.debug("Agent media prune failed", exc_info=True)
 
 
 def _cursor_refresh_settled_terminals() -> None:
