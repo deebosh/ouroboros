@@ -12,7 +12,7 @@ import hashlib
 import logging
 import pathlib
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ouroboros.contracts.skill_manifest import SkillManifest, SkillManifestError, canonical_skill_name, parse_skill_manifest_text
 from ouroboros.contracts.plugin_api import FORBIDDEN_SKILL_SETTINGS
@@ -977,8 +977,16 @@ def _walk_skill_packages(
     selected_manifestless_name: str = "",
     include_manifestless_root: bool = False,
     excluded_manifestless_children: frozenset[str] = frozenset(),
+    listdir: Optional[Callable[[pathlib.Path], List[pathlib.Path]]] = None,
 ) -> List[pathlib.Path]:
-    """Yield ordinary packages plus one exact selected manifestless target."""
+    """Yield ordinary packages plus one exact selected manifestless target.
+
+    ``listdir`` overrides the traversal reader: the runtime keeps the
+    fail-soft ``_safe_listdir`` default (an unreadable repo loads as empty),
+    while a strict consumer (the RC auditor) passes a raising lister so a
+    traversal ``OSError`` surfaces instead of silently emptying the walk."""
+    if listdir is None:
+        listdir = _safe_listdir
     out: List[pathlib.Path] = []
     if not root.is_dir():
         return out
@@ -993,7 +1001,7 @@ def _walk_skill_packages(
         and _sanitize_skill_name(root.name) == selected_manifestless_name
     )
     found_manifest_package = False
-    for child in _safe_listdir(root):
+    for child in listdir(root):
         if _is_orphan_marker_name(child.name):
             continue
         if _looks_like_skill_dir(child):
@@ -1002,7 +1010,7 @@ def _walk_skill_packages(
             continue
         child_has_manifest_package = False
         # One level deeper for grouping containers such as native/clawhub.
-        for grandchild in _safe_listdir(child):
+        for grandchild in listdir(child):
             if _is_orphan_marker_name(grandchild.name):
                 continue
             if _looks_like_skill_dir(grandchild):

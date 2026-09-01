@@ -334,12 +334,22 @@ def _audit_settings(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> 
             ))
 
 
+def _strict_listdir(root: pathlib.Path) -> List[pathlib.Path]:
+    """Traversal reader for the STRICT audit walk: same selection as the
+    runtime's ``_safe_listdir`` but a traversal ``OSError`` RAISES (mapped to
+    exit 2 in ``main``) — the fail-soft runtime reader would swallow it and
+    let an unreadable skills tree audit clean."""
+    return sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+
+
 def _iter_skill_dirs(data_root: pathlib.Path):
     """The RUNTIME's own discovery walk, consumed read-only (no parallel rules):
     hidden and ``.replaced-``/``.staging-``/``.tmp-`` orphan names are excluded
     and descent stops at a found package, exactly as ``skill_loader`` loads —
-    a crash leftover the runtime never loads must not become an audit finding."""
-    yield from _walk_skill_packages(data_root / "skills")
+    a crash leftover the runtime never loads must not become an audit finding.
+    Only the traversal READER is strict (``_strict_listdir``): an unreadable
+    directory is an audit failure, never an empty listing."""
+    yield from _walk_skill_packages(data_root / "skills", listdir=_strict_listdir)
 
 
 def _review_gate_for(
@@ -627,7 +637,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     if args.json is not None:
-        out = args.json.resolve()
+        try:
+            # resolve() itself can raise OSError (dead cwd, symlink loop) —
+            # a report-path failure is an audit failure (exit 2), never a
+            # bare Python exit 1 that reads as "incompatibilities found".
+            out = args.json.resolve()
+        except OSError as exc:
+            print(f"REPORT UNWRITABLE: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return 2
         if out == data_root or data_root in out.parents:
             print("refusing to write the report inside the audited install "
                   "(read-only guarantee)", file=sys.stderr)

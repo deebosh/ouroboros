@@ -316,6 +316,43 @@ def test_malformed_manifest_is_a_blocking_unauditable_source_never_exit_0(tmp_pa
     assert findings and all(f["severity"] == "incompatible" for f in findings)
 
 
+def test_unreadable_skills_tree_is_an_audit_failure_exit_2_not_clean(tmp_path):
+    """Adversarial fix-round 2, claim 3a: the audit's traversal must not stand
+    on the runtime's fail-soft listdir — an unreadable skills directory is an
+    audit failure (exit 2), never an empty walk that audits clean."""
+    if os.geteuid() == 0:
+        import pytest
+        pytest.skip("permission probes are meaningless as root")
+    data = _build_clean_70_install(tmp_path / "install")
+    locked = data / "skills" / "external"
+    locked.chmod(0)
+    try:
+        result = _run(data, isolated_root=tmp_path / "isol")
+    finally:
+        locked.chmod(0o755)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "audit traversal failed" in result.stderr
+
+
+def test_report_path_resolve_failure_exits_2_not_python_exit_1(tmp_path, monkeypatch, capsys):
+    """Adversarial fix-round 2, claim 3b: an OSError from resolving the
+    report path itself maps to exit 2 (REPORT UNWRITABLE), never Python's
+    bare exit 1 that automation reads as \"incompatibilities found\"."""
+    module = _load_module()
+    data = _build_clean_70_install(tmp_path / "install")
+    real_resolve = pathlib.Path.resolve
+
+    def _resolve(self, *args, **kwargs):
+        if self.name == "boom-report.json":
+            raise OSError("resolve exploded")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", _resolve)
+    rc = module.main([str(data), "--json", str(tmp_path / "boom-report.json")])
+    assert rc == 2
+    assert "REPORT UNWRITABLE" in capsys.readouterr().err
+
+
 def test_report_write_failure_exits_2_not_1(tmp_path):
     """A report-write OSError is an audit failure (exit 2) — a bare Python
     exit 1 would read as "incompatibilities found" to automation."""
