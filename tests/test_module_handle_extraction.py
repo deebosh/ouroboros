@@ -127,7 +127,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     "ouroboros/tools/git_vcs_ops.py": ("ouroboros/tools/git.py", "_git", frozenset({
         "_acquire_git_lock", "_binding_relative_path", "_ff_pull",
-        "_limit_git_output", "_release_git_lock", "_review_paths_from_porcelain_line",
+        "_limit_git_output", "_release_git_lock",
         "_run_git_network_cmd", "_vcs_binding", "_vcs_result",
         "binding_targets_system_repo", "build_resolved_resource_binding",
         "is_protected_runtime_path", "normalize_repo_path", "protected_paths_in",
@@ -282,7 +282,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_forced_final_answer", "_forced_orphan_note",
         "_forced_swarm_router_result", "_forced_unaccepted_binding",
         "_live_delivery_candidate", "_load_direct_child_results",
-        "_merge_finalization_trace", "_parse_delivery_control_body",
+        "_merge_finalization_trace", "_resolve_forced_delivery_control_body",
         "_project_child_result_dispositions", "_publish_delivery_candidate",
         "_record_forced_acceptance_bypass", "_record_forced_finalization",
         "_replace_delivery_candidate", "_run_task_acceptance_review_once",

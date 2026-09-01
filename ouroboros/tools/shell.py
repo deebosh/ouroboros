@@ -241,33 +241,30 @@ def _literal_argv_notes(cmd: List[str]) -> str:
     literally, so a genuinely mistaken spelling still explains its own cryptic
     program error.
     """
-    notes: list[str] = []
-    executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
-    if executable_name not in _SHELL_INTERPRETERS:
-        for arg in cmd:
-            match = _ENV_REF_PATTERN.search(arg)
-            if match:
-                notes.append(
-                    f'⚠️ SHELL_LITERAL_ARGV_NOTE: literal env reference "{match.group(0)}" in the cmd '
-                    "array reached the program UNEXPANDED (run_command executes argv directly). "
-                    'Use ["sh", "-c", "..."] if you intended shell expansion.\n'
-                )
-                break
-    if found_ops := _SHELL_OPERATORS.intersection(cmd):
-        notes.append(
-            f'⚠️ SHELL_LITERAL_ARGV_NOTE: shell operator "{sorted(found_ops)[0]}" in the cmd array was '
-            "passed to the program as a LITERAL argument (subprocess interprets no shell syntax). "
-            'Use ["sh", "-c", "cmd1 && cmd2"] for pipes/chaining.\n'
+    def _note(subject: str, remedy: str) -> str:
+        return (
+            f"⚠️ SHELL_LITERAL_ARGV_NOTE: {subject} in the cmd array reached the "
+            "program as LITERAL data (run_command executes argv directly; "
+            f"subprocess interprets no shell syntax). {remedy}\n"
         )
+
+    notes: list[str] = []
+    if (pathlib.Path(cmd[0]).name.lower() if cmd else "") not in _SHELL_INTERPRETERS:
+        env_ref = next(filter(None, (_ENV_REF_PATTERN.search(arg) for arg in cmd)), None)
+        if env_ref:
+            notes.append(_note(
+                f'literal env reference "{env_ref.group(0)}"',
+                'Use ["sh", "-c", "..."] if you intended shell expansion.'))
+    if found_ops := _SHELL_OPERATORS.intersection(cmd):
+        notes.append(_note(
+            f'shell operator "{sorted(found_ops)[0]}"',
+            'Use ["sh", "-c", "cmd1 && cmd2"] for pipes/chaining.'))
     # Glued redirects bypass the standalone-operator set but remain shell-looking.
-    for arg in cmd:
-        if _GLUED_REDIRECT_RE.match(arg):
-            notes.append(
-                f'⚠️ SHELL_LITERAL_ARGV_NOTE: redirect-looking argument "{arg}" in the cmd array was '
-                "passed to the program as a LITERAL argument (subprocess interprets no shell "
-                'syntax). Use ["sh", "-c", "..."] for real redirection.\n'
-            )
-            break
+    glued = next((arg for arg in cmd if _GLUED_REDIRECT_RE.match(arg)), "")
+    if glued:
+        notes.append(_note(
+            f'redirect-looking argument "{glued}"',
+            'Use ["sh", "-c", "..."] for real redirection.'))
     return "".join(notes)
 
 

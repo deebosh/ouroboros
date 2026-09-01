@@ -1539,6 +1539,14 @@
    "is_error": false,
    "status": "ok"
   },
+  "ident:OWNER_SETTINGS_CHANGED:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:OWNER_SETTINGS_CHANGED:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
   "ident:OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED:named": {
    "is_error": true,
    "status": "blocked"
@@ -1546,14 +1554,6 @@
   "ident:OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED:plain": {
    "is_error": true,
    "status": "blocked"
-  },
-  "ident:OWNER_STATE_RESTORED:named": {
-   "is_error": false,
-   "status": "ok"
-  },
-  "ident:OWNER_STATE_RESTORED:plain": {
-   "is_error": false,
-   "status": "ok"
   },
   "ident:PARTIAL:named": {
    "is_error": false,
@@ -1707,6 +1707,14 @@
    "is_error": true,
    "status": "error"
   },
+  "ident:QUERY_CODE_TRUNCATED:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:QUERY_CODE_TRUNCATED:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
   "ident:READ_FILE_BLOCKED:named": {
    "is_error": true,
    "status": "blocked"
@@ -1786,6 +1794,14 @@
   "ident:RESTORE_ERROR:plain": {
    "is_error": true,
    "status": "error"
+  },
+  "ident:RESTORE_PARTIAL:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:RESTORE_PARTIAL:plain": {
+   "is_error": false,
+   "status": "ok"
   },
   "ident:RESULT:named": {
    "is_error": false,
@@ -2075,6 +2091,14 @@
    "is_error": true,
    "status": "error"
   },
+  "ident:SECRET_BYTES_MASKED:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:SECRET_BYTES_MASKED:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
   "ident:SELF_OVERWRITE_NOTICE:named": {
    "is_error": false,
    "status": "ok"
@@ -2147,14 +2171,6 @@
    "is_error": true,
    "status": "cwd_blocked"
   },
-  "ident:SHELL_ENV_ERROR:named": {
-   "is_error": true,
-   "status": "shell_error"
-  },
-  "ident:SHELL_ENV_ERROR:plain": {
-   "is_error": true,
-   "status": "shell_error"
-  },
   "ident:SHELL_ERROR:named": {
    "is_error": true,
    "status": "shell_error"
@@ -2170,6 +2186,14 @@
   "ident:SHELL_EXIT_ERROR:plain": {
    "is_error": true,
    "status": "non_zero_exit"
+  },
+  "ident:SHELL_LITERAL_ARGV_NOTE:named": {
+   "is_error": true,
+   "status": "shell_error"
+  },
+  "ident:SHELL_LITERAL_ARGV_NOTE:plain": {
+   "is_error": true,
+   "status": "shell_error"
   },
   "ident:SHELL_REGEX_AUTO_CORRECTED:named": {
    "is_error": false,

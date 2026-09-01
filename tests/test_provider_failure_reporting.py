@@ -1297,9 +1297,14 @@ def test_llm_usage_durable_row_carries_reasoning_pin(monkeypatch, tmp_path):
     (issue #468 triad finding). Mirrors the web_search_sources projection."""
     import pathlib
     from supervisor import events as sup_events
+    from supervisor import events_budget as sup_events_budget
 
     captured = {}
-    monkeypatch.setattr(sup_events, "append_jsonl", lambda path, row: captured.update(row))
+    # The handler lives in the events_budget leaf on this tree and appends
+    # through its own import, so that is the seam to observe.
+    monkeypatch.setattr(
+        sup_events_budget, "append_jsonl", lambda path, row: captured.update(row),
+    )
 
     class _Ctx:
         RUNNING = {}

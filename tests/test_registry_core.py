@@ -90,7 +90,9 @@ def test_registry_core_extraction_preserves_only_proven_facades():
         *guard_names,
     }
 
-    assert len(proven) == 32
+    # 31 since #447: `_binding_state_drive_root` went with the deleted post-hoc
+    # owner-state restore organ, so the facade no longer proves it.
+    assert len(proven) == 31
     # Tip adaptation of the reference pin: this tree's facade deliberately keeps
     # the broad HISTORICAL import surface (importers and monkeypatch targets are
     # not migrated in this window), so the reference's exact-32-name equality

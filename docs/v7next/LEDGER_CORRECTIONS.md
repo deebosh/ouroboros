@@ -3836,6 +3836,151 @@ Open fork questions for the owner:
   drain path no longer reads through the loop facade. No test relied on that
   monkeypatch point; flagged in case an external harness did.
 
+## From the F6 rolling-upstream sync #2 (upstream f3fbfdbb, base 3e4a6181)
+
+One merge (`git merge f3fbfdbb`, merge-base 8d13373b: 101 upstream commits,
+180 files, 20 of them new, 13 overlapping campaign-touched paths) under the
+standing principle **upstream = semantic truth, campaign = structural truth**.
+Merge commit b9ceed6e; every conflict resolved by keeping OUR facade/leaf form
+and re-seating the upstream semantic delta in the leaf that owns its span.
+
+Decision map by conflict class:
+
+- **Campaign-split monoliths** (registry.py, tools/core.py, tools/shell.py,
+  tools/git.py, llm.py, loop.py, loop_tool_execution.py, tool_access.py,
+  review_state.py, review_helpers.py, skill_review.py, headless.py,
+  supervisor/events.py, supervisor/workers.py, config.py, delegate_integration.py,
+  subagent_integration.py, and the four split test monoliths): OUR facade kept;
+  each upstream hunk re-seated in its owner. Notable seats:
+  - registry post-exec organ: the owner-state snapshot/restore was DELETED
+    upstream (it reverted ANY post-command difference without proving cause, and
+    read an OSError as "file absent" so a transient read error could unlink the
+    live settings.json). Its replacement — the `_owner_settings_snapshot`
+    baseline plus the OWNER_SETTINGS_CHANGED tripwire, which ANNOTATES and never
+    rolls back — lives in `registry_guard_process`, with the dispatch half
+    (`settings_before`, tripwires on the TOOL_ERROR path, #447 B2) in
+    `registry_core`. `_binding_state_drive_root` went with it as dead code.
+  - the read-carve's git classification now consumes the `git_shell_policy`
+    SSOT (`_git_subcommand_is_readonly` + `_git_output_file_args`, #447 A7); the
+    divergent `_READ_ONLY_GIT_SUBCOMMANDS` table is retired.
+  - `gh repo create/delete/auth` moved from substring matching to the
+    argv-positional `gh_shell_block_reason` resolver (A7).
+  - #447 H1 note ordering: ALL host notes (auto-route, safety warning,
+    light-repo, workspace-ref and settings tripwires) now TRAIL the payload, in
+    `tool_result._compose_execute_result`, `extension_dispatch` and the
+    post-exec guard. `_wrap_run_script_process_result` stops REPLACING a
+    successful script's payload with the undeclared-outputs nudge.
+  - В23=A owner-home read carve: `user_files_path_block_reason(operation=)` in
+    `tool_access_user_files` applies the credential-shape gate to MUTATIONS
+    only, delegating to the new upstream `credential_shapes` leaf; the read
+    egress is masked instead, in `core_file_tools` (read) and `tools/core`
+    (search). `_WRITE_LIKE_OPS` (H2) seats in `tool_access_types`.
+  - #468 shape-first reasoning pin: `transcript_has_sealed_reasoning` replaces
+    the model-family portability predicate in BOTH directions —
+    `llm_openai_compatible` (proactive dispatch pin) and `llm_fallback`
+    (reactive reroute) — with the pin fact staged on send success
+    (`llm_attempt._stage_reasoning_pin_disclosure`), carried on a ContextVar in
+    `llm_messages`, read into usage in `llm_openai_compatible`, and rendered by
+    `supervisor/events_budget`. `_pop_thread_disclosure` generalizes the
+    thread-local popper in `llm_capability_policy`.
+  - delivery control: `control_episode_seen` provenance, the
+    `_classify_parsed_delivery_control` classifier and
+    `_resolve_forced_delivery_control_body` seat in `loop_delivery`; the forced
+    flow (control resolved BEFORE the incomplete branch, `candidate_reason`
+    plumbed through `_forced_fallback_result`) in `loop_forced_finalization`.
+  - D4 export policy (per-member skip receipts, workspace-patch SSOT for
+    credential shapes) -> `shell_outputs`; A5 literal-argv DISCLOSURE (shell
+    operators/redirects/env refs in direct argv are notes, no longer refusals)
+    -> `tools/shell._literal_argv_notes`.
+  - patch capture: sensitive untracked files became a per-file exclusion rather
+    than a whole-manifest error, and PEM private-key material is detected by
+    CONTENT (`workspace_patch_capture`); the exclusion RENDERER seats in
+    `workspace_patch_rules` (the SSOT for the pure manifest rules it renders,
+    and the natural owner of a formatter two integration tools display).
+  - partial attachment staging (В25c) -> `supervisor/worker_chat_lane` beside
+    the already-merged `workers.py` half; `reason_kind` (H4) ->
+    `review_state_records`; `--untracked-files=all` -> `review_file_pack`;
+    the H3 module-load omission ledger -> `registry_core`.
+- **Upstream twins of campaign organs — the twin never lives**:
+  - `tools/read_inspection.py` (verbatim extraction of the read-carve at
+    upstream's byte gate) folds into `registry_guard_process`, which already
+    owned it; the facade re-export serves every test.
+  - `tools/result_envelope.py` (the В12=A *minimal* typed-result variant) folds
+    into `tools/tool_result.py`, which is the same contract in stronger form
+    (status/code/meta published objects the loop reads directly). Its test was
+    retargeted onto the campaign organ. ONE product gap the fold surfaced is
+    closed with it: with a note appended, the whole text is no longer parseable
+    JSON, so the legacy TEXT adapter lost structured-failure detection —
+    `_structured_failure` now also tries the pre-note payload.
+  - `tools/output_export_policy.py` (extraction of the export-eligibility rules)
+    folds into `shell_outputs`, which already owned them.
+  - `delivery_protocol.py` stays folded in `loop_delivery` (sync #1 decision);
+    upstream's further edits to it were re-seated there.
+- **Protected surfaces**: docs/CHECKLISTS.md took upstream's restructured item
+  21 (executable guard-change trigger, owner-acceptance rule, standing
+  disclosures moved to the new `docs/CHECKLISTS_ARCHIVE.md`), and the
+  campaign's two scope-review-floor corrections were re-seated INTO the archive
+  so they stay binding. gateway/contracts.py, runtime_mode_policy.py and
+  registry.py deltas landed by the leaf-seating rule above.
+- **size_ratchet_manifest**: union-resolved (mcp_client's rationale merges the
+  campaign typed-organ and upstream E5 reasons), then regenerated by
+  `scripts/regenerate_size_ratchet.py`; `--check` green.
+- **Web/vendored assets**: the upstream web wave (chat.js +1379, style.css,
+  chat_decision.js) landed as-is; `node --test` 838/838.
+
+Disclosed dispositions (contract-affecting):
+
+- **`ambiguous_safety_wrapper` retired**: the meta recorded ambiguity about a
+  `---` separator the host itself inserted around the payload. With H1 the host
+  inserts no wrapper, so a separator in the composed text is the producer's own
+  markdown rule and carries no ambiguity. Which notes rode along stays disclosed
+  by the existing `route_note`/`safety_warning` host facts. Upstream's `notes`
+  LIST is deliberately NOT adopted: it carries full note text, and the campaign's
+  host-meta reserve is a bounded 256 bytes — a real safety warning would raise
+  ValueError inside composition. The note text is in the result itself.
+- **`OWNER_STATE_RESTORED` kept as a legacy-only code**: no producer emits it
+  any more, but persisted traces from ≤6.113 still carry the marker text and
+  must keep classifying through `LegacyTextResultAdapter` rather than degrading
+  to `LEGACY_TOOL_ERROR`. Documented, not resurrected.
+- **Two preflight heuristics removed (В27)** — the commit-message
+  version-reference guess and the tests-required predicate. Six enforcement
+  pins that asserted the block were inverted to assert the pass, with the
+  reason named in each; `test_copy_source_not_treated_as_deletion` was removed
+  because it pinned an effect that no longer exists.
+- **Skill review judges binaries by CONTENT** (X4/В21): a renamed ELF still
+  hard-blocks, a text file with a scary extension no longer does, and a
+  non-executable non-UTF-8 file enters the pack as a typed descriptor. The
+  campaign's `test_skill_review_packs` pins were rewritten to the new contract
+  rather than kept asserting the retired "any non-UTF-8 blocks review" rule.
+- **Function/band gates paid down where the change lives**, not by raising a
+  ceiling: `api_tasks_create` (dead pre-assignment + one duplicated statement of
+  the same fail-closed rationale, 299), `_execute_legacy_text` (one elif ladder
+  instead of a second early_error branch, 296), `subagent_integration` (the
+  exclusion renderer moved to its natural owner, 998).
+  `tests/test_services_tool_v2.py` took a band rationale.
+
+Domain map (`ouroboros/domains.toml`): new rows `credential_shapes.py` (D13),
+`reasoning_artifacts.py` (D02), `gateway/claudexor_quota.py` (D11).
+
+Open fork questions for the owner:
+
+- **Q-F6b-1 (upstream `notes` meta vs the bounded host reserve)**: upstream
+  records every host note's TEXT in result_meta. This branch records the typed
+  booleans instead, because the campaign's `_MAX_HOST_META_BYTES` is 256 and a
+  single safety warning exceeds it — adopting the list verbatim would make
+  composition raise on ordinary traffic. If the owner wants the note text in
+  result_meta, the decision is whether to widen the host reserve (a numeric
+  contract change) or to store bounded note KINDS.
+- **Q-F6b-2 (В23=A read carve scope)**: upstream's owner-home read carve lifts
+  the credential-NAME gate for the root principal on read/list/search and
+  relies on egress masking. The campaign inherits it unchanged, including the
+  disclosed residual that masking is shape-based. Re-affirm or narrow.
+- **Q-F6b-3 (A5 literal-argv disclosure)**: shell operators, redirects and env
+  references in a direct argv array are now DISCLOSED notes rather than
+  refusals. This is a capability widening on the model-facing surface (commands
+  that used to be refused now run). Ratify, or keep the refusal for the
+  operator subset.
+
 ## From the F5 lane C (CPL-3/6, base a12c873c)
 
 Lane deliverables (single-intent commits on this lane):

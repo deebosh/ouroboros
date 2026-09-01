@@ -16,6 +16,7 @@ import pathlib
 import subprocess
 import types
 
+from tests._typed_guard_shared import _shell_guard_text
 import pytest
 
 from ouroboros.tool_access import user_files_path_block_reason
@@ -106,7 +107,7 @@ def test_root_read_authorization_is_location_only(user_files_ctx, operation, rel
 ])
 def test_sudo_named_as_data_passes_the_deterministic_prefilter(tmp_path, cmd):
     registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
-    assert registry._run_shell_safety_check({"cmd": cmd}, "advanced") is None
+    assert _shell_guard_text(registry, {"cmd": cmd}, "advanced") is None
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +137,7 @@ def test_git_read_modes_pass_the_read_allowlist(cmd):
 ])
 def test_skill_owner_state_inspection_read_passes(tmp_path, cmd):
     registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
-    assert registry._run_shell_safety_check({"cmd": cmd}, "advanced") is None
+    assert _shell_guard_text(registry, {"cmd": cmd}, "advanced") is None
 
 
 # ---------------------------------------------------------------------------

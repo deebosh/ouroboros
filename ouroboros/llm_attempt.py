@@ -441,8 +441,10 @@ class _PayloadCachePolicyMixin:
         candidate (the recovery ladder can strip and unpin). Only a wire
         ``allow_fallbacks=false`` over a genuinely sealed transcript reports; an
         owner ``repro`` pin on a portable transcript is never laundered in."""
-        from ouroboros.llm_messages import _REASONING_PIN_CVAR
-        from ouroboros.reasoning_artifacts import sealed_reasoning_pin_fact
+        from ouroboros.reasoning_artifacts import (
+            _REASONING_PIN_CVAR,
+            sealed_reasoning_pin_fact,
+        )
 
         extra_body = candidate.get("extra_body")
         provider = extra_body.get("provider") if isinstance(extra_body, dict) else None

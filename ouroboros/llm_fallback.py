@@ -28,8 +28,10 @@ from ouroboros.llm_attempt import (
     _is_structured_context_overflow_exception,
     _physical_candidate,
 )
-from ouroboros.llm_messages import _pop_reasoning_pin_note
-from ouroboros.reasoning_artifacts import transcript_has_sealed_reasoning
+from ouroboros.reasoning_artifacts import (
+    pop_reasoning_pin_note,
+    transcript_has_sealed_reasoning,
+)
 from ouroboros.request_wire_recovery import (
     note_wire_send_failed,
     note_wire_send_succeeded,
@@ -349,7 +351,7 @@ class _RecoveryLadderMixin:
         target: Dict[str, Any],
     ) -> Any:
         # Discard a prior aborted ladder's pin note.
-        _pop_reasoning_pin_note()
+        pop_reasoning_pin_note()
 
         def _send(candidate: Dict[str, Any]) -> Any:
             candidate = _physical_candidate(candidate)
@@ -497,7 +499,7 @@ class _RecoveryLadderMixin:
         target: Dict[str, Any],
     ) -> Any:
         # Discard a prior aborted ladder's pin note.
-        _pop_reasoning_pin_note()
+        pop_reasoning_pin_note()
 
         async def _send(candidate: Dict[str, Any]) -> Any:
             candidate = _physical_candidate(candidate)

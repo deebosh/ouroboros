@@ -432,9 +432,9 @@ class _OpenAICompatibleLaneMixin:
             usage["prompt_cache_breakpoints_reduced"] = _cache_note
         # Why same-model provider failover was withheld on THIS call (issue #468):
         # typed, bounded, and read off the terminal sent candidate — never a guess.
-        from ouroboros.llm_messages import _pop_reasoning_pin_note
+        from ouroboros.reasoning_artifacts import pop_reasoning_pin_note
 
-        _pin_note = _pop_reasoning_pin_note()
+        _pin_note = pop_reasoning_pin_note()
         if _pin_note:
             usage["reasoning_pin"] = _pin_note
         from ouroboros.openai_chat_dispatch import normalize_direct_openai_completion

@@ -15,7 +15,11 @@ import subprocess
 from ouroboros.contracts.skill_payload_policy import SKILL_OWNER_STATE_STEMS
 
 import ouroboros.tools.registry_guards as registry_guards
-from ouroboros.tools.tool_result import ToolResult, _replace_tool_result
+from ouroboros.tools.tool_result import (
+    LegacyTextResultAdapter,
+    ToolResult,
+    _replace_tool_result,
+)
 
 from typing import TYPE_CHECKING
 
@@ -605,7 +609,7 @@ def _run_shell_safety_check(
         return ToolResult(status="blocked", code="ELEVATION_BLOCKED", text="⚠️ ELEVATION_BLOCKED: OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS is owner-controlled (it grants subagents write power against the live body). Change it by stopping the agent and editing settings.json directly, then restart — the agent must not self-enable mutative subagents.")
     if _detect_evolution_owner_control_self_change(cmd_lower, writeish=writeish):
         return ToolResult(status="blocked", code="ELEVATION_BLOCKED", text="⚠️ ELEVATION_BLOCKED: the self-evolution controls (OUROBOROS_POST_TASK_EVOLUTION and OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE) are owner-controlled — they enable or steer self-modification cycles. Change them via the owner Settings UI, or stop the agent and edit settings.json directly — the agent must not self-set evolution controls.")
-    if _mentions_skill_owner_state(cmd_lower):
+    if _mentions_skill_owner_state(cmd_lower, writeish=writeish):
         return ToolResult(
             status="blocked",
             code="SKILL_STATE_WRITE_BLOCKED",
@@ -613,7 +617,8 @@ def _run_shell_safety_check(
                 "⚠️ SKILL_STATE_WRITE_BLOCKED: skill review, enablement, "
                 "grants, and marketplace provenance are owner/review "
                 "controlled state. Use skill_review, toggle_skill/the Skills "
-                "UI, or the desktop launcher confirmation flow."
+                "UI, or the desktop launcher confirmation flow. Pure read-only "
+                "inspection (grep/rg/cat/jq) of these names is allowed."
             ),
         )
     if "state" in cmd_lower and "skills" in cmd_lower and _mentions_detached_process(cmd_lower):
@@ -760,6 +765,17 @@ def _run_shell_post_checks(
     text = result.text if isinstance(result, ToolResult) else result
     typed = result if isinstance(result, ToolResult) else None
 
+    def _typed_base() -> ToolResult:
+        # A tripwire fact must survive even when the producer returned plain
+        # text: since the notes TRAIL the payload (#447 H1), the marker no
+        # longer owns line 1, so a text-only reader could not re-derive the
+        # classification. Adapt once, through the ONE legacy adapter, so the
+        # fact is carried typed instead of being lost in prose.
+        nonlocal typed
+        if typed is None:
+            typed = LegacyTextResultAdapter.from_text(tool_name, text)
+        return typed
+
     if settings_before is not None:
         settings_after = _owner_settings_snapshot()
         if settings_after is not None and settings_after != settings_before:
@@ -770,12 +786,11 @@ def _run_shell_post_checks(
                 "can clobber a concurrent legitimate owner edit) — the owner surface is "
                 "the place to verify and restore."
             )
-            if typed is not None:
-                typed = _replace_tool_result(
-                    typed,
-                    text=text,
-                    meta_updates={"tripwire": "owner_settings_changed"},
-                )
+            typed = _replace_tool_result(
+                _typed_base(),
+                text=text,
+                meta_updates={"tripwire": "owner_settings_changed"},
+            )
     if light_repo_before is not None:
         light_repo_after = _light_repo_snapshot(_registry().system_repo_dir_for(self._ctx))
         if (
@@ -788,13 +803,12 @@ def _run_shell_post_checks(
                     light_repo_before, light_repo_after, tool_name=tool_name
                 )
             )
-            if typed is not None:
-                typed = _replace_tool_result(
-                    typed,
-                    text=text,
-                    code="LIGHT_MODE_REPO_WRITE_BLOCKED",
-                    meta_updates={"light_repo_changed": True},
-                )
+            typed = _replace_tool_result(
+                _typed_base(),
+                text=text,
+                code="LIGHT_MODE_REPO_WRITE_BLOCKED",
+                meta_updates={"light_repo_changed": True},
+            )
     if workspace_refs_before is not None:
         workspace_refs_after = _git_ref_snapshot(_registry().active_repo_dir_for(self._ctx))
         if (
@@ -807,11 +821,10 @@ def _run_shell_post_checks(
                 "inside the external workspace. External workspace runs must leave "
                 "changes as files/patch artifacts, not commits/tags/resets."
             )
-            if typed is not None:
-                typed = _replace_tool_result(
-                    typed,
-                    text=text,
-                    code="WORKSPACE_GIT_REF_CHANGED",
-                    meta_updates={"workspace_git_refs_changed": True},
-                )
+            typed = _replace_tool_result(
+                _typed_base(),
+                text=text,
+                code="WORKSPACE_GIT_REF_CHANGED",
+                meta_updates={"workspace_git_refs_changed": True},
+            )
     return typed if typed is not None else text

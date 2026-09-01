@@ -11,23 +11,14 @@ transform copies before touching.
 
 from __future__ import annotations
 
-import contextvars
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ouroboros.anthropic_native_custody import custody_private_key, scrub_native_custody
 from ouroboros.llm_attempt import _VALID_CACHE_TTLS
 from ouroboros.provider_models import normalize_model_identity
 
 
-# Pin disclosure slot: a ContextVar isolates threads AND concurrent asyncio tasks.
-_REASONING_PIN_CVAR = contextvars.ContextVar("ouroboros_reasoning_pin_note", default=None)
-
-
-def _pop_reasoning_pin_note() -> Optional[Dict[str, Any]]:
-    pending = _REASONING_PIN_CVAR.get()
-    _REASONING_PIN_CVAR.set(None)
-    return pending if isinstance(pending, dict) else None
 
 
 class _MessageShapingMixin:

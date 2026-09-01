@@ -742,11 +742,15 @@ def test_process_guard_denials_preserve_exact_text(tmp_path, monkeypatch):
             "agent and edit settings.json directly — the agent must not self-set evolution controls.",
         ),
         (
-            "echo state/skills/alpha/review.json",
+            # A WRITE shape: since #447 A2 the family read-carve lets a pure
+            # inspection (`echo`/`grep`/`rg`) name these files, so the denial is
+            # pinned on a spelling that actually writes.
+            "cp payload.json state/skills/alpha/review.json",
             "SKILL_STATE_WRITE_BLOCKED",
             "⚠️ SKILL_STATE_WRITE_BLOCKED: skill review, enablement, grants, and marketplace "
             "provenance are owner/review controlled state. Use skill_review, toggle_skill/the "
-            "Skills UI, or the desktop launcher confirmation flow.",
+            "Skills UI, or the desktop launcher confirmation flow. Pure read-only inspection "
+            "(grep/rg/cat/jq) of these names is allowed.",
         ),
         (
             "nohup echo state/skills/alpha/unknown.json",
@@ -762,7 +766,10 @@ def test_process_guard_denials_preserve_exact_text(tmp_path, monkeypatch):
         (
             "gh auth login",
             "SAFETY_VIOLATION",
-            "⚠️ SAFETY_VIOLATION: Modifying GitHub authentication is not permitted.",
+            # #447 A7: the argv-positional gh resolver names the read-only
+            # subcommands that stay available instead of a bare refusal.
+            "⚠️ SAFETY_VIOLATION: Modifying GitHub authentication is not permitted. "
+            "Read-only `gh auth status` / `gh auth token` are allowed.",
         ),
     )
     for command, code, expected in cases:

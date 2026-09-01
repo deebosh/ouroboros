@@ -9,6 +9,7 @@ A7: git read-only classification is one SSOT with mode parsers, gh is argv-parse
 
 import textwrap
 
+from tests._typed_guard_shared import _shell_guard_text
 import pytest
 
 from ouroboros.shell_parse import sudo_noninteractive_violation
@@ -69,7 +70,7 @@ def _registry(tmp_path):
 def test_skill_state_pure_read_inspection_is_allowed(tmp_path, cmd):
     # The runtime_data file plane explicitly allows reading review.json; the
     # shell plane must not refuse the same read with a WRITE-named marker.
-    blocked = _registry(tmp_path)._run_shell_safety_check({"cmd": cmd}, "advanced")
+    blocked = _shell_guard_text(_registry(tmp_path), {"cmd": cmd}, "advanced")
     assert blocked is None
 
 
@@ -79,7 +80,7 @@ def test_skill_state_pure_read_inspection_is_allowed(tmp_path, cmd):
     'python -c "open(\'data/state/skills/w/enabled.json\', \'w\').write(\'{}\')"',
 ])
 def test_skill_state_write_shapes_stay_blocked(tmp_path, cmd):
-    blocked = _registry(tmp_path)._run_shell_safety_check({"cmd": cmd}, "advanced")
+    blocked = _shell_guard_text(_registry(tmp_path), {"cmd": cmd}, "advanced")
     assert blocked is not None and "SKILL_STATE_WRITE_BLOCKED" in blocked
 
 

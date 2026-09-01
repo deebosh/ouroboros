@@ -688,7 +688,7 @@
     },
     {
       "id": "openrouter.payload.or_provider_never_unpins_reasoning",
-      "route": "a resilience preset cannot lift the reasoning-continuity pin",
+      "route": "a resilience preset cannot lift the reasoning-continuity pin a SEALED artifact earned (#468 shape-first)",
       "spec": {
         "env": {
           "OPENROUTER_API_KEY": "or-fixture-key",
@@ -706,7 +706,12 @@
               {
                 "role": "assistant",
                 "content": "a",
-                "reasoning": "t"
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.encrypted",
+                    "data": "opaque"
+                  }
+                ]
               }
             ]
           }
@@ -724,7 +729,12 @@
               {
                 "role": "assistant",
                 "content": "a",
-                "reasoning": "t"
+                "reasoning_details": [
+                  {
+                    "type": "reasoning.encrypted",
+                    "data": "opaque"
+                  }
+                ]
               }
             ],
             "max_tokens": 1024,
@@ -738,7 +748,7 @@
               }
             }
           },
-          "value_sha256": "23b3978ea62c02dbf0e26a786744b5c34deac8f4aab43f67ada5b7f2f79c45ed"
+          "value_sha256": "88ef6025d8546cff22e981a577f98bbd541388587f3b8334436e5f1827b6901e"
         },
         "sends": [],
         "unused_script_steps": 0
