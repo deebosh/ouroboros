@@ -3060,3 +3060,55 @@ transports NOT rebuilt):
 5. Size pins: extension_loader.py and extension_plugin_api.py untouched at
    1000/1000; extension_child_catalog.py untouched (222);
    extension_registry_state.py untouched (182).
+
+## From the F3.3 RC auditor (base 4fa2f01a)
+
+Sources of each check class of the machine-readable scope
+(scripts/rc_audit.py, ABI-7b/F13), file:line of the feeder inventory at this
+base, consumed READ-ONLY (reuse-first — no parallel parsers or lists):
+
+1. gateway-alias (5 checks) — the frozen F11 per-alias inventory
+   docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md (cost_usd/cost_usd_with_children
+   §1–2 at :16, telegram_chat_id §3 at :53, project_last_viewed/project_hidden
+   §4–5 at :76). Stored-axis tolerance kept per the inventory, so on-disk hits
+   (task_results alias keys, state/ui_preferences.json legacy keys) render as
+   NOTES, never blocking findings; the live-client half is owner attestation.
+2. retired-setting — ouroboros/settings_defaults.py::RETIRED_SETTING_KEYS
+   (:314), imported at execution time; the ABI-5/Q10 semantics per
+   tests/test_abi5_q10_removals.py. fail_tasks (no install-visible key) and
+   until_deadline/stall_rounds_threshold (pacing knobs, not settings keys)
+   live in the report PROSE plane exactly as the design note requires.
+3. comma-list — ouroboros/settings_defaults.py::RETIRED_COMMA_LIST_SETTING_KEYS
+   (:350, NEW in this commit): the ABI-10 classification INSIDE
+   RETIRED_SETTING_KEYS, placed at the retirement SSOT so the auditor snaps
+   the exact list at execution time instead of hardcoding it; subset
+   membership is fail-closed in build_scope() and pinned by the suite.
+4. plugin-api — ouroboros/contracts/plugin_api.py: PLUGIN_API_VERSION="2.0"
+   (:29), LEGACY_PLUGIN_API_GENERATION="1.3" (:32, absent ≡ 1.3 by
+   construction), extension_new_pass_admission_error (:285) reused as THE
+   admission predicate; hash-bound grandfather adjudicated via
+   skill_review_status.skill_review_gate over the install's
+   state/skills/<name>/review.json (read without the creating
+   skill_state_dir helper — read-only guarantee).
+5. schema-stamp — ouroboros/task_result_schema.py:
+   TASK_RESULT_SCHEMA_VERSION=1 (:34) and the PURE classifier
+   task_result_schema_refusal (:39) reused directly (never
+   load_task_result, which quarantines on read — a mutation). The Q8=B
+   consequence is named verbatim in the scope check, in every schema-stamp
+   finding, and in the owner-attestation list.
+
+N−1 fixture catalog (F14, real bytes): tests/fixtures/nminus1/ —
+settings_v6.113.4.json and task_result_v6.113.4.json were produced by RUNNING
+the v6.113.4 code itself (git archive of the tag; config.save_settings /
+task_results.write_task_result in an isolated mktemp root; all secret fields
+empty), telegram_SKILL_v6.113.4.md is `git show f0313064:skills/telegram/SKILL.md`
+(the commit before ABI-1 added the plugin_api field). The inline N−1 byte
+forms of the ABI-2 quarantine suite and the ABI-7a updater shim remain where
+they are; this catalog is the one FILE-shaped N−1 store (no second catalog).
+
+Remaining owner attestation (F13 — printed by the auditor, never pretended
+machine-checked): live custom gateway clients (send/read of the five removed
+aliases), external automation treating the retired comma-list env spellings
+as a settings surface, out-of-tree extension authors declaring plugin_api
+"2.0" before new PASSes, reliance on fail_tasks / the removed pacing knobs,
+and owner acceptance of the Q8=B quarantine consequence.
