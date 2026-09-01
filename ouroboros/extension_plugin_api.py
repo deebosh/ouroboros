@@ -37,8 +37,8 @@ from ouroboros.contracts.plugin_api import (
 )
 from ouroboros.event_bus import VALID_TOPICS as VALID_EVENT_TOPICS, get_global_event_bus
 from ouroboros.extension_companion import CompanionDescriptor, get_global_supervisor, is_server_process
+from ouroboros.extension_child_catalog import materialize_companion_env
 from ouroboros.extension_isolated_deps import (
-    _isolated_python_site_dirs,
     async_isolated_site_dirs_scope,
     isolated_site_dirs_scope,
 )
@@ -77,7 +77,6 @@ from ouroboros.gateway.host_service import AUTH_TOKEN_FILENAME
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
 from ouroboros.skill_loader import compute_content_hash, requested_core_setting_keys
 from ouroboros.skill_token import SkillToken
-from ouroboros.tools.skill_exec import _scrub_env
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -90,7 +89,8 @@ class ExtensionStaleRecoveryError(ExtensionRegistrationError):
     publication that is no longer live (the bundle vanished or was reloaded):
     the refusal has zero effects — no bundle is created, nothing is staged
     into the registries, the companion auth token (``auth_token.json``) is
-    neither created nor rotated, and nothing may be disposed by the caller.
+    neither created nor rotated, no settings read/lock or state directory is
+    materialized (fix-round-6), and nothing may be disposed by the caller.
     """
 
 
@@ -546,37 +546,18 @@ class PluginAPIImpl:
         supervisor = get_global_supervisor()
         if supervisor is None:
             raise ExtensionRegistrationError("companion supervisor is not initialized")
-        base_env = _scrub_env(
-            list(self._env_allow),
-            self._state_dir,
-            self._skill,
-            granted_keys=list(self._granted_upper),
-        )
-        reserved_env = {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL"}
-        for key, value in (spec.get("env") or {}).items():
-            key_text = str(key)
-            if key_text.upper() in FORBIDDEN_SKILL_SETTINGS or key_text.upper() in reserved_env:
-                continue
-            base_env[key_text] = str(value)
-        # HOST_SERVICE_TOKEN is NOT minted here: descriptor build stays pure;
-        # the token file create/rotate happens only at publication, after the
-        # generation fence admitted it (fix-round-5).
-        from ouroboros.gateway.host_service import DEFAULT_HOST_SERVICE_HOST, host_service_port
-        base_env["HOST_SERVICE_URL"] = f"http://{DEFAULT_HOST_SERVICE_HOST}:{host_service_port()}"
-        if self._skill_dir is not None:
-            site_dirs = [str(path) for path in _isolated_python_site_dirs(self._skill_dir)]
-            if site_dirs:
-                existing_pythonpath = base_env.get("PYTHONPATH")
-                base_env["PYTHONPATH"] = os.pathsep.join(
-                    [*site_dirs, existing_pythonpath] if existing_pythonpath else site_dirs
-                )
+        # Fix-round-6: the descriptor build is purely computational — the env
+        # stays EMPTY here. The settings-derived values (``load_settings``
+        # takes the settings lock and may persist a migration), the manifest
+        # env overlay, the host bridge URL and the auth token all materialize
+        # only in the post-fence attach of ``_publish_registrations``.
         workdir = self._runtime_skill_dir or self._skill_dir or self._state_dir
         descriptor = CompanionDescriptor(
             skill_name=self._skill,
             name=clean_name,
             command=cmd,
             cwd=workdir,
-            env=base_env,
+            env={},
             ports=[int(port) for port in (spec.get("ports") or []) if str(port).isdigit()],
             restart_policy=str(spec.get("restart_policy") or "on_failure"),
             max_restarts=max(0, int(spec.get("max_restarts") or 5)),
@@ -587,7 +568,7 @@ class PluginAPIImpl:
             self._require_open_locked()
             self._stage_companion_name_locked(clean_name)
             self._staged.companion_spawns.append(
-                _StagedCompanionSpawn(name=clean_name, descriptor=descriptor)
+                _StagedCompanionSpawn(name=clean_name, descriptor=descriptor, spec=dict(spec))
             )
 
     def _stage_companion_name_locked(self, name: str) -> None:
@@ -751,9 +732,10 @@ class PluginAPIImpl:
         ``require_live_generation`` and is admitted only while the bundle it
         observed is STILL the live publication — a vanished bundle or a
         different generation raises a typed ``ExtensionStaleRecoveryError``
-        before any mutation (the companion auth token included: it
-        materializes into the staged descriptors only in the post-swap attach
-        below, never during descriptor build), and recovery never creates a
+        before any mutation (the whole companion env included — state dir,
+        auth token and settings-derived values materialize into the staged
+        descriptors only in the post-swap attach below, never during the
+        purely computational descriptor build), and recovery never creates a
         bundle, so a completed unload/reload cannot be resurrected. Every
         attachable effect is recorded on the published bundle at the swap
         (futures as they are created), so a failure while attaching leaves
@@ -845,16 +827,18 @@ class PluginAPIImpl:
             # only against the already-published bundle.
             try:
                 if staged.companion_spawns:
-                    # Fix-round-5: the companion auth token materializes only
-                    # HERE, after the generation fence admitted this
-                    # publication. A mint during descriptor build would let a
-                    # stale recovery rotate auth_token.json before its typed
-                    # refusal, de-authorizing the LIVE publication's
-                    # companions (their spawn env holds the previous token;
-                    # the Host Service rereads the file on every request).
+                    # Fix-round-5/6: the companion env materializes only HERE,
+                    # after the generation fence admitted this publication —
+                    # the state dir, the auth token (a mint during descriptor
+                    # build would let a stale recovery rotate auth_token.json
+                    # before its typed refusal, de-authorizing the LIVE
+                    # publication's companions) and the settings-derived
+                    # values (``load_settings`` takes the settings lock and
+                    # may persist a migration). The pre-fence build is pure.
+                    self._state_dir.mkdir(parents=True, exist_ok=True)
                     token = mint_skill_token(self._state_dir, self._skill, self._skill_dir)
                     for spawn in staged.companion_spawns:
-                        spawn.descriptor.env["HOST_SERVICE_TOKEN"] = token
+                        materialize_companion_env(self, spawn.descriptor, spawn.spec, token)
                 bus = get_global_event_bus()
                 for sub in staged.event_subscriptions:
                     bus.subscribe(self._skill, sub.topic, sub.handler, sub_id=sub.sub_id)

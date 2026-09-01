@@ -220,7 +220,9 @@ class _RecordingSupervisor:
         self.stopped.append((skill_name,))
 
 
-def _reviewed_companion_skill(tmp_path: pathlib.Path, name: str = "compskill"):
+def _reviewed_companion_skill(
+    tmp_path: pathlib.Path, name: str = "compskill", extra_frontmatter: str = "",
+):
     """A reviewed+enabled companion extension the recovery tests can load."""
     repo_root = tmp_path / "skills"
     drive_root = tmp_path / "drive"
@@ -240,6 +242,7 @@ def _reviewed_companion_skill(tmp_path: pathlib.Path, name: str = "compskill"):
         "entry: plugin.py\n"
         "permissions: [companion_process]\n"
         f"{_COMPANION_FRONTMATTER}"
+        f"{extra_frontmatter}"
         "---\n"
         "body\n",
         encoding="utf-8",
@@ -385,15 +388,15 @@ def test_unload_completing_between_snapshot_and_publication_refuses_recovery(
         )
         token_bytes = token_path.read_bytes()
 
-        real_state_dir = extension_loader.skill_state_dir
+        real_state_path = extension_loader.skill_state_path
 
         def _unload_wins_the_race(drive_root_arg, skill_name_arg):
             # Deterministic interleave: the concurrent unload COMPLETES after
             # recovery snapshotted liveness/bundle and before it publishes.
             extension_loader.unload_extension(skill_name_arg)
-            return real_state_dir(drive_root_arg, skill_name_arg)
+            return real_state_path(drive_root_arg, skill_name_arg)
 
-        monkeypatch.setattr(extension_loader, "skill_state_dir", _unload_wins_the_race)
+        monkeypatch.setattr(extension_loader, "skill_state_path", _unload_wins_the_race)
         result = extension_loader.ensure_companions_running(
             loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
         )
@@ -441,21 +444,21 @@ def test_recovery_publication_refuses_on_generation_mismatch_without_effects(
         )
         token_bytes = token_path.read_bytes()
 
-        real_state_dir = extension_loader.skill_state_dir
+        real_state_path = extension_loader.skill_state_path
 
         def _reload_wins_the_race(drive_root_arg, skill_name_arg):
             # Deterministic interleave: the unload/reload COMPLETES after
             # recovery snapshotted the generation and before it publishes;
             # the bundle EXISTS again, under a fresh generation. Restore the
             # real resolver first — the reload itself resolves state dirs.
-            monkeypatch.setattr(extension_loader, "skill_state_dir", real_state_dir)
+            monkeypatch.setattr(extension_loader, "skill_state_path", real_state_path)
             extension_loader.unload_extension(skill_name_arg)
             assert extension_loader.load_extension(
                 loaded, lambda: {}, drive_root=drive_root_arg, skills=[loaded],
             ) is None
-            return real_state_dir(drive_root_arg, skill_name_arg)
+            return real_state_path(drive_root_arg, skill_name_arg)
 
-        monkeypatch.setattr(extension_loader, "skill_state_dir", _reload_wins_the_race)
+        monkeypatch.setattr(extension_loader, "skill_state_path", _reload_wins_the_race)
         result = extension_loader.ensure_companions_running(
             loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
         )
@@ -506,7 +509,7 @@ def test_stale_recovery_does_not_break_live_publication_authorization(
         (repo_root_v2 / loaded_v1.name / "scripts" / "daemon.py").write_text(
             "print('v2')\n", encoding="utf-8"
         )
-        real_state_dir = extension_loader.skill_state_dir
+        real_state_path = extension_loader.skill_state_path
         g2_token_bytes: dict = {}
 
         def _reload_v2_wins_the_race(drive_root_arg, skill_name_arg):
@@ -514,7 +517,7 @@ def test_stale_recovery_does_not_break_live_publication_authorization(
             # recovery snapshotted generation/payload and before it publishes;
             # the G2 token is bound to the NEW root's content hash while the
             # stale recovery still holds the v1 snapshot at the old root.
-            monkeypatch.setattr(extension_loader, "skill_state_dir", real_state_dir)
+            monkeypatch.setattr(extension_loader, "skill_state_path", real_state_path)
             extension_loader.unload_extension(skill_name_arg)
             loaded_v2 = find_skill(
                 drive_root, skill_name_arg, repo_path=str(repo_root_v2),
@@ -532,9 +535,9 @@ def test_stale_recovery_does_not_break_live_publication_authorization(
                 loaded_v2, lambda: {}, drive_root=drive_root_arg, skills=[loaded_v2],
             ) is None
             g2_token_bytes["value"] = token_path.read_bytes()
-            return real_state_dir(drive_root_arg, skill_name_arg)
+            return real_state_path(drive_root_arg, skill_name_arg)
 
-        monkeypatch.setattr(extension_loader, "skill_state_dir", _reload_v2_wins_the_race)
+        monkeypatch.setattr(extension_loader, "skill_state_path", _reload_v2_wins_the_race)
         result = extension_loader.ensure_companions_running(
             loaded_v1.name, drive_root, lambda: {}, repo_path=str(repo_root),
             selected_skill=loaded_v1,  # the stale v1 snapshot the recovery holds
@@ -565,6 +568,77 @@ def test_stale_recovery_does_not_break_live_publication_authorization(
         assert payload["token"] == g2_env_token
     finally:
         extension_loader.unload_extension(loaded_v1.name)
+        init_server_process_pid()
+
+
+def _data_root_tree(root: pathlib.Path) -> list:
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+
+
+def test_stale_recovery_with_env_from_settings_has_zero_filesystem_effects(
+    tmp_path: pathlib.Path, monkeypatch,
+) -> None:
+    """Ф3.1 fix-round-6 pin (MEDIUM): with an ``env_from_settings`` manifest
+    the pre-fence descriptor build stays purely computational — no
+    ``load_settings`` read (its lock-file create/unlink and possible settings-
+    migration persistence) and no state-directory creation happen before the
+    generation fence, so a stale refusal leaves the data root's file tree
+    identical. The settings-derived env, the state dir and the auth token
+    materialize only in the post-fence attach — proved on the initial
+    publication's spawn env. Pre-fix, ``register_companion_process`` called
+    ``_scrub_env`` (-> ``load_settings``) during descriptor build and the
+    recovery entry resolved the state dir with a creating ``mkdir``."""
+    init_server_process_pid()
+    loaded, repo_root, drive_root = _reviewed_companion_skill(
+        tmp_path, extra_frontmatter="env_from_settings: [EXT_DEMO_VALUE]\n",
+    )
+    fake = _patch_supervisor(monkeypatch)
+    import ouroboros.tools.skill_exec as skill_exec
+
+    settings_calls: list = []
+    real_load_settings = skill_exec.load_settings
+
+    def _counted_load_settings():
+        settings_calls.append(1)
+        return real_load_settings()
+
+    monkeypatch.setattr(skill_exec, "load_settings", _counted_load_settings)
+    try:
+        assert extension_loader.load_extension(
+            loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
+        ) is None
+        # The initial publication DID materialize the env — post-fence.
+        assert settings_calls, "publication must read settings for env_from_settings"
+        env = fake.started[0].env
+        assert env["OUROBOROS_SKILL_NAME"] == loaded.name
+        assert env["HOST_SERVICE_TOKEN"]
+        assert env["HOST_SERVICE_URL"].startswith("http://")
+
+        real_state_path = extension_loader.skill_state_path
+        snapshot: dict = {}
+
+        def _unload_wins_and_snapshots(drive_root_arg, skill_name_arg):
+            # Deterministic interleave (as in the round-4 pin), plus the
+            # tripwires armed exactly at the recovery's state-dir resolution.
+            extension_loader.unload_extension(skill_name_arg)
+            settings_calls.clear()
+            snapshot["tree"] = _data_root_tree(drive_root_arg)
+            return real_state_path(drive_root_arg, skill_name_arg)
+
+        monkeypatch.setattr(extension_loader, "skill_state_path", _unload_wins_and_snapshots)
+        result = extension_loader.ensure_companions_running(
+            loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
+        )
+
+        assert result["action"] == "stale_recovery_refused"
+        assert settings_calls == [], (
+            "stale recovery read settings pre-fence (lock file / migration hazard)"
+        )
+        assert _data_root_tree(drive_root) == snapshot["tree"], (
+            "stale recovery mutated the data root at/before its refusal"
+        )
+    finally:
+        extension_loader.unload_extension(loaded.name)
         init_server_process_pid()
 
 

@@ -54,6 +54,7 @@ from ouroboros.extension_isolated_deps import _isolated_python_site_dirs, async_
 from ouroboros.extension_child_catalog import (
     _out_of_process_handler_proxy,  # noqa: F401
     _stage_out_of_process_surfaces,
+    skill_state_path,
     _validate_child_catalog_namespace,  # noqa: F401
     _validate_child_route_descriptor,  # noqa: F401
     _validate_child_settings_descriptor,  # noqa: F401
@@ -483,11 +484,12 @@ def ensure_companions_running(
             "missing_permissions": list(grant_status.get("missing_permissions") or []),
         }
 
-    state_dir = skill_state_dir(drive_root, skill.name)
+    # Fix-round-6: resolved WITHOUT mkdir — the post-fence attach creates it.
+    state_dir = skill_state_path(drive_root, skill.name)
     # ABI-9 generation-bound recovery: publish under the lifecycle lock; the
     # seam re-validates that the publication observed above is still live —
     # an unload/reload completing since the snapshot is a typed refusal with
-    # zero effects (no bundle resurrection).
+    # zero effects (no bundle resurrection, no filesystem writes).
     with _lifecycle_lock_for(skill_name):
         try:
             _publish_out_of_process_registration(

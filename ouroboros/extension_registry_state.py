@@ -61,10 +61,16 @@ class _StagedSupervisedTask:
 
 @dataclass
 class _StagedCompanionSpawn:
-    """A validated companion descriptor whose spawn is deferred to publication."""
+    """A validated companion descriptor whose spawn is deferred to publication.
+
+    ``spec`` carries the manifest companion entry so the post-fence attach can
+    materialize the settings-derived env (fix-round-6): the descriptor's env is
+    EMPTY until ``_publish_registrations`` fills it after the generation fence.
+    """
 
     name: str
     descriptor: Any
+    spec: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

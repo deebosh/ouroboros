@@ -9,6 +9,8 @@ publication snapshot before anything is installed.
 
 from __future__ import annotations
 
+import os
+import pathlib
 from typing import TYPE_CHECKING, Any, Dict
 
 from ouroboros.contracts.plugin_api import ExtensionRegistrationError, VALID_EXTENSION_ROUTE_METHODS
@@ -165,3 +167,56 @@ def _validate_child_settings_descriptor(skill_name: str, item: Dict[str, Any]) -
         raise ExtensionRegistrationError(f"out-of-process settings section {key!r} render must be an object")
     item["render"] = _validate_settings_schema(dict(item.get("render") or {}))
     return item
+
+
+def skill_state_path(drive_root: pathlib.Path, name: str) -> pathlib.Path:
+    """The per-skill state-dir PATH without creating the directory.
+
+    The generation-fenced companion recovery resolves this path BEFORE its
+    fence (fix-round-6); creation belongs to the post-fence attach in
+    ``_publish_registrations``, so a stale refusal creates no directories.
+    ``skill_state_dir`` remains the creating variant for load paths.
+    """
+    from ouroboros.skill_loader import _sanitize_skill_name, _skills_state_root
+
+    return _skills_state_root(pathlib.Path(drive_root)) / _sanitize_skill_name(name)
+
+
+def materialize_companion_env(api: "PluginAPIImpl", descriptor: Any, spec: Dict[str, Any], token: str) -> None:
+    """Fill one staged companion descriptor's env at publication (fix-round-6).
+
+    Runs only inside ``_publish_registrations``'s post-swap attach, after the
+    generation fence admitted the publication: the settings-derived values
+    (``_scrub_env`` -> ``load_settings`` takes the settings lock and may
+    persist a settings migration), the manifest env overlay, the Host Service
+    bridge URL/token and the isolated-dep PYTHONPATH are all filled in HERE,
+    keeping the pre-fence descriptor build purely computational.
+    """
+    from ouroboros.contracts.plugin_api import FORBIDDEN_SKILL_SETTINGS
+    from ouroboros.extension_isolated_deps import _isolated_python_site_dirs
+    from ouroboros.gateway.host_service import DEFAULT_HOST_SERVICE_HOST, host_service_port
+    from ouroboros.tools.skill_exec import _scrub_env
+
+    env = _scrub_env(
+        list(api._env_allow),
+        api._state_dir,
+        api._skill,
+        granted_keys=list(api._granted_upper),
+    )
+    reserved_env = {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL"}
+    for key, value in (spec.get("env") or {}).items():
+        key_text = str(key)
+        if key_text.upper() in FORBIDDEN_SKILL_SETTINGS or key_text.upper() in reserved_env:
+            continue
+        env[key_text] = str(value)
+    env["HOST_SERVICE_URL"] = f"http://{DEFAULT_HOST_SERVICE_HOST}:{host_service_port()}"
+    env["HOST_SERVICE_TOKEN"] = token
+    if api._skill_dir is not None:
+        site_dirs = [str(path) for path in _isolated_python_site_dirs(api._skill_dir)]
+        if site_dirs:
+            existing_pythonpath = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = os.pathsep.join(
+                [*site_dirs, existing_pythonpath] if existing_pythonpath else site_dirs
+            )
+    descriptor.env.clear()
+    descriptor.env.update(env)
