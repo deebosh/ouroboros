@@ -273,6 +273,19 @@ def _atomic_overwrite(path: pathlib.Path, write_temp: Callable[[pathlib.Path], N
         raise
 
 
+def _write_fd_fully(fd: int, data: bytes, tmp: pathlib.Path) -> None:
+    """``os.write`` until every byte lands: a single call may write SHORT
+    (POSIX permits partial writes — signals, quota edges, some filesystems),
+    and treating its return as done silently truncates the temp file the
+    atomic rename then publishes as the whole document."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError(f"short write to {tmp}")
+        view = view[written:]
+
+
 def write_bytes_atomic(
     path: pathlib.Path,
     content: bytes,
@@ -288,12 +301,7 @@ def write_bytes_atomic(
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
         fd = os.open(str(tmp), flags, 0o644)
         try:
-            view = memoryview(content)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError(f"short write to {tmp}")
-                view = view[written:]
+            _write_fd_fully(fd, content, tmp)
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -311,9 +319,12 @@ def write_text_atomic(
 
     def _write(tmp: pathlib.Path) -> None:
         if fsync:
+            # Same full-write loop as write_bytes_atomic (the fd flags stay
+            # this path's own: no O_BINARY, preserving the historical platform
+            # newline semantics of the text lane on Windows).
             fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
             try:
-                os.write(fd, content.encode("utf-8"))
+                _write_fd_fully(fd, content.encode("utf-8"), tmp)
                 os.fsync(fd)
             finally:
                 os.close(fd)

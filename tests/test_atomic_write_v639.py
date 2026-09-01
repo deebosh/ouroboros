@@ -128,3 +128,26 @@ def test_replace_atomic_does_not_retry_other_oserrors(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         utils.replace_atomic(tmp_path / "a", tmp_path / "b")
     assert calls["n"] == 1
+
+
+@pytest.mark.parametrize("writer,payload,read", [
+    (write_text_atomic, "short-write survivor ✓ text", lambda p: p.read_text(encoding="utf-8")),
+    (write_bytes_atomic, b"short-write survivor bytes", lambda p: p.read_bytes()),
+])
+def test_fsync_path_survives_short_os_writes(tmp_path, monkeypatch, writer, payload, read):
+    """External-audit correction lane (base 8827fd2c), item 2: the fsync lane
+    of write_text_atomic issued ONE bare ``os.write`` and trusted its return —
+    a partial write published a truncated file behind a successful rename.
+    Both fsync lanes must loop until every byte lands (``_write_fd_fully``)."""
+    import os as _os
+
+    target = tmp_path / "out.dat"
+    real_write = _os.write
+
+    def one_byte_at_a_time(fd, data):
+        return real_write(fd, bytes(data)[:1])
+
+    monkeypatch.setattr(utils.os, "write", one_byte_at_a_time)
+    writer(target, payload, fsync=True)
+    monkeypatch.undo()
+    assert read(target) == payload
