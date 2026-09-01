@@ -38,8 +38,11 @@ def _reg(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     home = tmp_path / "home"
-    repo = home / "Ouroboros" / "repo"
-    data = home / "Ouroboros" / "data"
+    # NEUTRAL layout, not home/Ouroboros/data: the registry gets explicit
+    # roots, and a live-SHAPED path under the (patched) home now trips the
+    # pytest fail-closed guard in append_jsonl (issue #455 class).
+    repo = tmp_path / "repo"
+    data = tmp_path / "data"
     desktop = home / "Desktop"
     for d in (repo, data, desktop):
         d.mkdir(parents=True)
