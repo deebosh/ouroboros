@@ -2259,6 +2259,11 @@ def _run_supervisor(settings: dict) -> None:
             # readers (history backfill, SSE replay, api_logs_tail, TB ATIF) are
             # archive-chain-aware.
             rotate_jsonl_log_if_needed(DATA_DIR, "progress.jsonl", "progress")
+            # events.jsonl + tools.jsonl also rotate on the supervisor tick (v6.109.29):
+            # their readers (SSE _TaskEventFollower via _ROTATED_LOG_PREFIXES,
+            # api_logs_tail via read_rotated_jsonl_entries) are archive-chain-aware.
+            rotate_jsonl_log_if_needed(DATA_DIR, "events.jsonl", "events")
+            rotate_jsonl_log_if_needed(DATA_DIR, "tools.jsonl", "tools")
             ensure_workers_healthy()
 
             event_q = get_event_q()

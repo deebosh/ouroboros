@@ -73,10 +73,12 @@ async def api_logs_tail(request: Request) -> JSONResponse:
     rows: List[Dict[str, Any]] = []
     for root in roots:
         path = pathlib.Path(root) / "logs" / filename
-        # Bounded tail (v6.90.x P2): a window-doubled byte tail of the live file
-        # plus a newest-first archive/<name>_*.jsonl backfill until `limit`
-        # MATCHING rows are collected (only chat/progress rotate; for the other
-        # logs the archive glob finds nothing). `_line` is the entry's position
+        # Bounded tail (v6.90.x P2, events/tools added v6.109.29): a window-doubled
+        # byte tail of the live file plus a newest-first archive/<name>_*.jsonl
+        # backfill until `limit` MATCHING rows are collected. chat/progress/events/
+        # tools rotate on the supervisor tick (see _ROTATED_LOG_PREFIXES for the
+        # SSE heal); supervisor.jsonl does NOT rotate, so its archive glob is empty.
+        # `_line` is the entry's position
         # within the read window (archive chain -> live tail) — a chronological
         # tie-break within one root, no longer an absolute file line number.
         entries = read_rotated_jsonl_entries(
