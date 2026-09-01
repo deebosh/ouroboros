@@ -93,6 +93,14 @@ SCENARIOS = {
     "S15": ("commit triad+scope, ADVISORY class: red verdicts recorded + waved through with durable override, commit lands", LANE_MOCK),
     "S16": ("commit triad+scope, BLOCKING class: red blocks (HEAD unmoved), identical resubmit refused free, green lands; freshness stale-rejection", LANE_MOCK),
     "S17": ("acceptance loop (required+blocking): reject -> rework -> accept; paid-identity / free-replay invariants", LANE_MOCK),
+    # Ф4 wave 4 (plan §8 remainder: update variations, chat-lineage cancel,
+    # absorb kill-recovery, delegated interactive answer).
+    "S18": ("managed update carrier path: diverged fork, span-confined VERSION conflict auto-resolved, carriers transferred to the official version", LANE_MOCK),
+    "S19": ("managed update conflicting: typed budget refusal at the assisted gate, tree byte-identical, dirty work restored", LANE_MOCK),
+    "S20": ("managed update crash mid-apply: boot-finalize honesty across stash-crash / half-written tx / applied-but-unrestarted", LANE_MOCK),
+    "S21": ("cancellation with chat lineage: outbox-delivered receipt, chat.jsonl row, cancel_receipt block, intent forensics", LANE_MOCK),
+    "S22": ("evolution absorb kill-recovery: SIGKILL after the reviewed commit, markerless boot reconcile absorbs once, never twice", LANE_MOCK),
+    "S23": ("delegated interactive answer: waiting_on_user -> delegate_answer -> run continues; wire + custody truth", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"

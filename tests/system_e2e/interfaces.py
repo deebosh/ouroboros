@@ -7,11 +7,14 @@ the capability/quota answers ``subagent_route_health.route_health`` reads, proje
 registration with Idempotency-Key, ``POST /v2/runs`` with the engine's replay
 check (same key + byte-identical body → the ORIGINAL handle; same key + different
 digest → 409 ``idempotency_conflict``), run detail with the ``summary`` facts the
-custody settler consumes, and the cancel control verb. Behavior is scripted PER
-RUN by markers in the POSTed prompt (success / hang / typed refusal) plus the
-pinned-profile refusal, so one daemon serves every delegated-transport scenario
-without a second boot. It records every request (method, path, idempotency key,
-body) for wire-truth assertions.
+custody settler consumes, the cancel control verb, and (wave 4) the interactive
+question surface — ``pendingInteractions`` on the detail plus the
+``POST /v2/runs/:id/interactions/:iid/answer`` verb ``delegate_answer`` speaks,
+with its typed delivered/already_resolved/rejected statuses. Behavior is scripted
+PER RUN by markers in the POSTed prompt (success / hang / typed refusal / ask)
+plus the pinned-profile refusal, so one daemon serves every delegated-transport
+scenario without a second boot. It records every request (method, path,
+idempotency key, body) for wire-truth assertions.
 
 ``PlaywrightUIClient`` stays an interface stub until the gateway/UI-truth wave
 lands: instantiating it is a scenario bug, and it refuses loudly.
@@ -38,6 +41,35 @@ _NOT_LANDED = (
 # ride inside an ordinary delegate_start prompt verbatim.
 FAKE_HANG_MARKER = "[FAKE:HANG]"       # the run never reaches a terminal state
 FAKE_REFUSE_MARKER = "[FAKE:REFUSE]"   # the start POST is refused 400, typed
+FAKE_ASK_MARKER = "[FAKE:ASK]"         # the run asks ONE question and waits for the answer
+
+# The one scripted question a [FAKE:ASK] run raises — the exact
+# ``ControlPendingInteraction`` wire keys ``pending_interactions()`` consumes.
+FAKE_QUESTION_TEXT = "Which port should the fake service use?"
+FAKE_ANSWER_LABEL = "8080"
+
+
+def _fake_pending_interaction(run_id: str, harness_id: str) -> Dict[str, Any]:
+    return {
+        "interactionId": "int-" + run_id[:8],
+        "runId": run_id,
+        "attemptId": "a01",
+        "harnessId": harness_id,
+        "sourceTool": "AskUserQuestion",
+        "questions": [{
+            "id": "q1",
+            "question": FAKE_QUESTION_TEXT,
+            "header": "Port",
+            "options": [{"label": FAKE_ANSWER_LABEL, "description": "the default"},
+                        {"label": "9090", "description": None}],
+            "multi_select": False,
+        }],
+        "requestedAt": "2026-09-01T00:00:00Z",
+        # None = "waits until answered": the honest scripting for a scenario
+        # that WILL answer (a non-null timeout would promise an engine-side
+        # benign decline this fake never performs).
+        "timeoutAt": None,
+    }
 
 
 def _tree_engine_identity() -> tuple:
@@ -247,6 +279,24 @@ class FakeClaudexorDaemon:
                 return 404, {"code": "run_not_found", "message": "no such run"}
             if method == "GET" and len(parts) == 3:
                 return 200, self._detail(run)
+            if (method == "POST" and len(parts) == 6
+                    and parts[3] == "interactions" and parts[5] == "answer"):
+                # The delegate_answer verb. Typed statuses at ANY http code are
+                # the client contract (answer_interaction accepts a body whose
+                # ``status`` is one of delivered/not_found/already_resolved/
+                # rejected regardless of the code).
+                iid = parts[4]
+                if not any(str(row.get("interactionId")) == iid for row in run["pending"]):
+                    return 409, {"accepted": False, "status": "already_resolved",
+                                 "message": "no such pending interaction"}
+                rows = body.get("answers")
+                if not isinstance(rows, list) or not rows:
+                    return 400, {"accepted": False, "status": "rejected",
+                                 "message": "answers must be a non-empty list"}
+                run["answers"].append({"interaction_id": iid, "answers": rows})
+                run["pending"] = [row for row in run["pending"]
+                                  if str(row.get("interactionId")) != iid]
+                return 200, {"accepted": True, "status": "delivered"}
             if method == "POST" and len(parts) == 4 and parts[3] == "control":
                 control = body.get("control") if isinstance(body.get("control"), dict) else {}
                 if str(control.get("kind") or "") == "cancel":
@@ -303,12 +353,17 @@ class FakeClaudexorDaemon:
             "hang": FAKE_HANG_MARKER in prompt,
             "access": str(body.get("access") or ""),
             "run_dir": run_dir, "body": body, "cancel_reason": "",
+            "pending": ([_fake_pending_interaction(rid, self.harness_id)]
+                        if FAKE_ASK_MARKER in prompt else []),
+            "answers": [],
         }
         return _remember(200, {"runId": rid, "runDir": run_dir})
 
     def _detail(self, run: Dict[str, Any]) -> Dict[str, Any]:
         run["polls"] += 1
-        if run["state"] == "running" and not run["hang"]:
+        # A run with a pending interaction WAITS (state stays running) until
+        # the answer verb clears it; the very next poll then flips terminal.
+        if run["state"] == "running" and not run["hang"] and not run["pending"]:
             run["state"] = "succeeded"
         state = run["state"]
         terminal = state in ("succeeded", "cancelled", "failed")
@@ -316,14 +371,14 @@ class FakeClaudexorDaemon:
             "state": state,
             "model": self.applied_model,
             "effectiveAccess": run["access"],
-            "waitingOnUser": False,
+            "waitingOnUser": bool(run["pending"]),
             "runDir": run["run_dir"],
         }
         detail: Dict[str, Any] = {
             "id": run["id"],
             "lastSeq": 3 if terminal else run["polls"],
             "summary": summary,
-            "pendingInteractions": [],
+            "pendingInteractions": [json.loads(json.dumps(row)) for row in run["pending"]],
         }
         if terminal:
             summary.update({
