@@ -106,6 +106,7 @@ from ouroboros.extension_registry_state import (
     _unloading,
     _ws_handlers,
     extension_generation_digest,  # noqa: F401 — ABI-9 dispatch-provenance API
+    get_tool_stamped as _registry_get_tool_stamped,
 )
 from ouroboros.extension_surface_names import (
     _EXTENSION_NAME_PREFIX,  # noqa: F401
@@ -961,9 +962,8 @@ def snapshot() -> Dict[str, Any]:
 
 
 def get_tool(name: str) -> Optional[Dict[str, Any]]:
-    """Return the registered extension tool, if any."""
-    with _lock:
-        return dict(_tools.get(name) or {}) or None
+    """The registered tool, if any (ABI-9: legacy descriptors digest-stamped)."""
+    return _registry_get_tool_stamped(name)
 
 
 def list_ws_handlers() -> Dict[str, Any]:

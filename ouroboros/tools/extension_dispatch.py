@@ -24,24 +24,20 @@ def _extension_dispatch_candidate(
     """Return a live descriptor or a host-attested unavailable marker."""
     try:
         from ouroboros.extension_loader import (
+            get_tool as _ext_get_tool,
             is_extension_live as _ext_is_live,
             parse_extension_surface_name as _ext_parse_name,
-        )
-        from ouroboros.extension_registry_state import (
-            get_tool_with_generation as _ext_get_tool_with_generation,
         )
     except Exception:
         return None, False
     if not _ext_parse_name(name):
         return None, False
     try:
-        ext_tool, digest = _ext_get_tool_with_generation(name)
-        if ext_tool and digest and not ext_tool.get("extension_generation"):
-            # ABI-9 atomic legacy fallback: the digest was read in the SAME
-            # lock hold as the descriptor — stamping it onto the detached
-            # copy means the dispatch stamp can never name a generation
-            # published between two separate registry reads.
-            ext_tool["extension_generation"] = digest
+        # ABI-9 atomic legacy fallback: get_tool pre-stamps an unstamped
+        # descriptor with the generation digest read in the SAME lock hold
+        # (registry_state.get_tool_stamped), so the dispatch stamp can never
+        # name a generation published between two separate registry reads.
+        ext_tool = _ext_get_tool(name)
         meta = getattr(ctx, "task_metadata", {})
         budget_root = meta.get("budget_drive_root") if isinstance(meta, dict) else ""
         capability_root = pathlib.Path(
@@ -145,13 +141,13 @@ def _generation_digest_for(ext_tool: Dict[str, Any]) -> str:
 
     Provenance READ only (the Ф3.2 seam): the digest names the exact published
     registration generation — taken from the per-surface stamp minted at
-    publication. The live dispatch path pre-stamps legacy descriptors in
-    ``_extension_dispatch_candidate`` via the ATOMIC combined registry read
-    (``get_tool_with_generation``: descriptor and digest under one lock hold),
-    so the separate registry-reader fallback below serves only descriptors
-    handed in directly (tests, legacy callers) and can no longer pair an old
-    handler with a digest published after the descriptor was taken. Dispatch
-    never validates or gates on it."""
+    publication. The loader's ``get_tool`` pre-stamps a legacy descriptor via
+    the ATOMIC combined registry read (``registry_state.get_tool_stamped``:
+    descriptor and digest under one lock hold), so the separate
+    registry-reader fallback below serves only descriptors handed in directly
+    (tests, legacy callers) and can no longer pair an old handler with a
+    digest published after the descriptor was taken. Dispatch never validates
+    or gates on it."""
     digest = str(ext_tool.get("extension_generation") or "")
     if digest:
         return digest

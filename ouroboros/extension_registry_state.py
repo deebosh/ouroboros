@@ -198,6 +198,16 @@ def get_tool_with_generation(name: str) -> tuple[Optional[Dict[str, Any]], str]:
         return tool, digest
 
 
+def get_tool_stamped(name: str) -> Optional[Dict[str, Any]]:
+    """``get_tool`` body: the detached descriptor with a legacy (unstamped)
+    entry pre-stamped from the SAME lock hold's digest — every consumer of the
+    loader's ``get_tool`` reads dispatch provenance atomically."""
+    tool, digest = get_tool_with_generation(name)
+    if tool is not None and digest and not tool.get("extension_generation"):
+        tool["extension_generation"] = digest
+    return tool
+
+
 def _record_companion_name(bundle: _ExtensionRegistrations, name: str) -> None:
     if name not in bundle.companion_names:
         bundle.companion_names.append(name)
