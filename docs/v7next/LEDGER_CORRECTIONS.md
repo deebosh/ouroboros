@@ -4476,3 +4476,11 @@ scenario green on this host.
    in ~610s (10:09) on this host, inside the plan's 10-25 min PR keyless
    budget; wave 3a added 12 tests / ~6.5 min over wave 2's ~219s. The five
    new default-lane pins add well under 1s to the ordinary battery.
+
+## Integration note for the F4 wave-3a section above (2026-09-01)
+
+The wave-3a scenarios were RENUMBERED at integration: the parallel wave-3b
+lane claimed S11-S13 first, so wave-3a's rows landed as S14 (plan review),
+S15 (advisory class), S16 (blocking class + freshness), S17 (acceptance
+loop). The wave-3a section text above says "S11-S14" — read it through this
+mapping; test names and the scenario manifest carry the final numbers.
