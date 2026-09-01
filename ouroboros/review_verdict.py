@@ -11,7 +11,6 @@ review_substrate.py re-exports every name.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import Any, Dict, List, TYPE_CHECKING
 
 from ouroboros.outcomes import OUTCOME_TIER_BEST_EFFORT, OUTCOME_TIER_BLOCKED, OUTCOME_TIER_SOLVED

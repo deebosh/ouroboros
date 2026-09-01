@@ -6,6 +6,9 @@ completed result, and the owed answer is registered before the intent settles.
 """
 
 from __future__ import annotations
+import json
+import subprocess
+import sys
 import types
 import pytest
 from ouroboros import cancel_intents as ci
@@ -254,4 +257,3 @@ def test_e2e_cancel_of_inflight_run_command_child_never_reads_as_tool_failure(
                 os.kill(pid, 9)
             except (ProcessLookupError, PermissionError):
                 pass
-

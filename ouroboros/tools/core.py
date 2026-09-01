@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import fnmatch
-import ipaddress
 import json
 import logging
 import os
@@ -872,6 +871,16 @@ def _edit_text(
         return f"⚠️ EDIT_TEXT_ERROR: file not found: {_root_display_path(normalized, path)}"
     except Exception as exc:
         return f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}"
+
+_MAX_SEARCH_RESULTS = 200
+# Search file-skip helper and caps live in ouroboros.code_search_rg (the search
+# module SSOT); imported with the historical private names used by call sites.
+from ouroboros.code_search_rg import (  # noqa: E402
+    MAX_SEARCH_FILES_SCANNED as _MAX_SEARCH_FILES_SCANNED,
+    _search_wall_clock_sec,
+    is_search_skippable as _is_search_skippable,
+)
+
 
 def _code_search(ctx: ToolContext, query: str, path: str = ".",
                  regex: bool = False, max_results: int = 200,

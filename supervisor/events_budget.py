@@ -293,4 +293,3 @@ def _handle_budget_root_fence(evt: Dict[str, Any], ctx: Any) -> None:
         ctx.bridge.push_log(event)
     except Exception:
         log.warning("Failed to forward root budget pause to Activity", exc_info=True)
-

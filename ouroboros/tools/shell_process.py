@@ -20,7 +20,6 @@ from typing import List
 from ouroboros.platform_layer import kill_process_tree, scrub_repo_from_pythonpath, subprocess_new_group_kwargs
 from ouroboros.config import SETTINGS_DEFAULTS, load_settings
 from ouroboros.tools.registry import ToolContext
-from ouroboros.tool_access import ResolvedResourceBinding
 from ouroboros.deadline_utils import deadline_remaining_sec
 from ouroboros.workspace_executor import executor_ref_from_ctx
 from ouroboros.workspace_executor import map_host_path as executor_map_host_path
@@ -163,7 +162,7 @@ def _resolve_effective_timeout(
 # R5 (node-runtime sprint): the render moved to the typed process-facts SSOT
 # (signal naming, lived_ms/resolved_runtime disclosure); the historical private
 # spelling stays importable here for call sites and tests.
-from ouroboros.tools.process_facts import describe_returncode as _describe_returncode  # noqa: E402
+from ouroboros.tools.process_facts import describe_returncode as _describe_returncode  # noqa: E402, F401 — historical private spelling for call sites and tests
 
 
 def _format_process_output(stdout: str, stderr: str, *, limit: int = 50_000) -> str:

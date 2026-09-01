@@ -455,4 +455,3 @@ def test_kill_path_clean_audit_clears_a_stale_unreconciled_list(qenv, monkeypatc
     (only_write,) = disclosure_writes
     assert only_write["delegated_runs_unreconciled"] == []
     assert only_write["delegate_terminal_reconciliation"]["trigger"] == "cancel_publication"
-

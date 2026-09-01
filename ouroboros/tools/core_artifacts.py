@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
+import uuid
 import pathlib
+from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
@@ -362,14 +365,6 @@ def _send_links(
     return "OK: link buttons queued for delivery to owner."
 
 
-_MAX_SEARCH_RESULTS = 200
-# Search file-skip helper and caps live in ouroboros.code_search_rg (the search
-# module SSOT); imported with the historical private names used by call sites.
-from ouroboros.code_search_rg import (  # noqa: E402
-    MAX_SEARCH_FILES_SCANNED as _MAX_SEARCH_FILES_SCANNED,
-    _search_wall_clock_sec,
-    is_search_skippable as _is_search_skippable,
-)
 
 
 def _escalate(

@@ -991,4 +991,3 @@ def test_retry_admission_block_write_carries_custody_disclosure(qenv, monkeypatc
     row = load_task_result(qenv.drive, old_id)
     assert row["delegated_runs_unreconciled"] == []
     assert row["delegate_terminal_reconciliation"]["trigger"] == "reaper_idle_timeout"
-

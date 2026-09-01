@@ -126,7 +126,7 @@ _CONTROL_DIR_BACKUP_MAX_BYTES = 5 * 1024 * 1024
 # Historical private spellings stay as aliases for call sites and tests.
 from ouroboros.tools.process_facts import (  # noqa: E402
     active_resolved_runtime as _active_resolved_runtime,
-    publish_process_facts as _publish_process_facts,
+    publish_process_facts as _publish_process_facts,  # noqa: F401 — historical private spelling for call sites and tests
 )
 from ouroboros.tools.shell_process import (  # noqa: E402
     _publish_finished_process_facts,
