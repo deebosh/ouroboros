@@ -297,10 +297,46 @@ def _store_evidence(drive_root: Any, kind: str, fp: str, value: Dict[str, Any]) 
     try:
         with _STORE_LOCK:
             data = _load(drive_root)
+            _drop_expired_probes(data)
             data.setdefault(kind, {})[fp] = value
             _save(drive_root, data)
     except Exception:
         log.debug("capability evidence store failed (%s)", kind, exc_info=True)
+
+
+def _drop_expired_probes(data: Dict[str, Any]) -> None:
+    """Write-side expiry for the ``probes`` namespace (CPL4-C8).
+
+    Failed/unprobeable records are pure retry throttles: past
+    ``_FAILED_TTL_SEC`` the reader ignores them, so the write drops them.
+    Confirmed records outlive their read TTL as provider-blip evidence
+    (``probe`` deliberately keeps a stale prior CONFIRMED across an outage)
+    and drop only past the unified GC retention — a route unprobed for that
+    long re-establishes evidence from scratch, the documented fail-closed
+    reset. ``owner_acks`` are owner authority and never expire; the other
+    namespaces already filter expired entries on their own write paths.
+    Records with an unparseable timestamp or an unknown status are KEPT
+    (fail-closed: never delete what cannot be read).
+    """
+    from ouroboros.retention import get_gc_retention_days
+
+    probes = data.get("probes")
+    if not isinstance(probes, dict):
+        return
+    confirmed_max_age_sec = get_gc_retention_days() * 86400.0
+    for fp in list(probes):
+        record = probes.get(fp)
+        if not isinstance(record, dict):
+            continue
+        if parse_deadline_ts(str(record.get("ts") or "")) is None:
+            continue  # unreadable timestamp: fail-closed, keep
+        age = _age_seconds(str(record.get("ts") or ""))
+        status = str(record.get("status") or "")
+        if status == STATUS_CONFIRMED:
+            if age > confirmed_max_age_sec:
+                probes.pop(fp, None)
+        elif status in (STATUS_FAILED, STATUS_UNPROBEABLE) and age > _FAILED_TTL_SEC:
+            probes.pop(fp, None)
 
 
 def _age_seconds(ts: str) -> float:

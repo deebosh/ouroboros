@@ -880,3 +880,44 @@ def test_a_failed_probe_is_retried_once_its_throttle_expires_and_not_before(tmp_
     assert fetches, "an expired failure record must be retried"
     assert retried.status == ce.STATUS_CONFIRMED and retried.window_tokens == 1_000_000
     assert ce.confirms_at_least(retried, ce.ONE_MILLION, require_fresh=True) is True
+
+
+def test_expired_probe_records_drop_on_write(tmp_path):
+    """CPL4-C8: the write seam drops probe records the reader already treats as
+    expired — failed/unprobeable past their TTL, confirmed past GC retention —
+    while owner acks, in-retention stale confirmed (the blip-keep invariant),
+    and records with unreadable timestamps survive untouched."""
+    from ouroboros.utils import utc_now_iso
+
+    store = tmp_path / "state" / "capability_evidence.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    old_failed = {"status": ce.STATUS_FAILED, "ts": "2020-01-01T00:00:00+00:00"}
+    old_unprobeable = {"status": ce.STATUS_UNPROBEABLE, "ts": "2020-01-01T00:00:00+00:00"}
+    ancient_confirmed = {
+        "status": ce.STATUS_CONFIRMED, "window_tokens": 1_000_000,
+        "ts": "2020-01-01T00:00:00+00:00",
+    }
+    stale_confirmed_within_gc = {
+        "status": ce.STATUS_CONFIRMED, "window_tokens": 1_000_000, "ts": utc_now_iso(),
+    }
+    broken_ts = {"status": ce.STATUS_FAILED, "ts": "not-a-time"}
+    store.write_text(json.dumps({
+        "probes": {
+            "old-failed": old_failed,
+            "old-unprobeable": old_unprobeable,
+            "ancient-confirmed": ancient_confirmed,
+            "fresh-confirmed": stale_confirmed_within_gc,
+            "broken-ts": broken_ts,
+        },
+        "owner_acks": {"acked-route": {"tokens": 1_000_000, "ts": "2020-01-01T00:00:00+00:00"}},
+    }), encoding="utf-8")
+
+    ce._store_evidence(tmp_path, "probes", "new-route", {
+        "status": ce.STATUS_CONFIRMED, "window_tokens": 200_000, "ts": utc_now_iso(),
+    })
+
+    on_disk = json.loads(store.read_text(encoding="utf-8"))
+    assert set(on_disk["probes"]) == {"fresh-confirmed", "broken-ts", "new-route"}
+    assert on_disk["owner_acks"] == {
+        "acked-route": {"tokens": 1_000_000, "ts": "2020-01-01T00:00:00+00:00"},
+    }
