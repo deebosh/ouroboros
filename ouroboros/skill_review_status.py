@@ -133,6 +133,17 @@ def normalize_skill_review_status(status: str) -> str:
     } else STATUS_PENDING)
 
 
+def review_status_grandfatherable(status: str) -> bool:
+    """ABI-1 grandfather predicate, shared by the PluginAPI admission refusal
+    path (``skill_review_cycles.plugin_api_admission_refusal_outcome``) and the
+    RC auditor: only a ``clean``/``warnings`` verdict counts as the hash-bound
+    PASS that keeps a plugin_api-less extension loading. Deliberately
+    ENFORCEMENT-INDEPENDENT: advisory enforcement can make a BLOCKERS verdict
+    executable (``skill_review_gate``), but it never makes one a grandfather —
+    the refusal path persists ``pending`` over anything else."""
+    return normalize_skill_review_status(status) in (STATUS_CLEAN, STATUS_WARNINGS)
+
+
 WARNINGS_CONVERGENCE_ROUNDS = 3
 
 

@@ -45,7 +45,8 @@ def _load_module():
     return module
 
 
-def _run(data_root: pathlib.Path, *extra: str, isolated_root: pathlib.Path):
+def _run(data_root: pathlib.Path, *extra: str, isolated_root: pathlib.Path,
+         env_extra: dict | None = None):
     env = dict(os.environ)
     env.update({
         "OUROBOROS_APP_ROOT": str(isolated_root),
@@ -53,6 +54,7 @@ def _run(data_root: pathlib.Path, *extra: str, isolated_root: pathlib.Path):
         "OUROBOROS_DATA_DIR": str(isolated_root / "data"),
         "OUROBOROS_SETTINGS_PATH": str(isolated_root / "data" / "settings.json"),
     })
+    env.update(env_extra or {})
     return subprocess.run(
         [sys.executable, str(SCRIPT), str(data_root), *extra],
         capture_output=True, text=True, env=env, timeout=120,
@@ -216,6 +218,93 @@ def test_review_state_lookup_uses_the_directory_basename_not_manifest_name(tmp_p
     plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
     assert plugin_findings
     assert all(f["severity"] == "note" for f in plugin_findings)
+
+
+def test_pass_with_blockers_never_grandfathers_even_under_advisory_enforcement(tmp_path):
+    """Adversarial fix-round 3, finding 1: the audit's grandfather predicate
+    is the PluginAPI refusal path's own — only clean|warnings. Advisory
+    enforcement makes a BLOCKERS verdict EXECUTABLE (skill_review_gate), but
+    the runtime grandfather (plugin_api_admission_refusal_outcome) never
+    grandfathers blockers, so the audit must report INCOMPATIBLE ("would be
+    pending"), never the grandfather note."""
+    data = _build_nminus1_install(tmp_path / "install")
+    skill_dir = data / "skills" / "external" / "telegram"
+    _write_review_pass(
+        data, "telegram", _real_content_hash(skill_dir),
+        status="blockers",
+        findings=[{"item": "bug_hunting", "verdict": "FAIL",
+                   "severity": "critical", "reason": "pinned blocker"}],
+    )
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol",
+                  env_extra={"OUROBOROS_REVIEW_ENFORCEMENT": "advisory"})
+    assert result.returncode == 1
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
+    assert plugin_findings
+    assert all(f["severity"] == "incompatible" for f in plugin_findings)
+    assert not any("GRANDFATHERED" in f["detail"] for f in plugin_findings)
+
+
+def test_symlinked_skill_is_judged_by_its_resolved_target_identity(tmp_path):
+    """Adversarial fix-round 3, finding 2: the runtime resolves the skill
+    directory FIRST (skill_loader.load_skill) and derives state identity from
+    the resolved basename — a symlinked skill must be judged by its TARGET's
+    review state, never by the link's lexical name."""
+    data = _build_nminus1_install(tmp_path / "install")
+    target = tmp_path / "payloads" / "telegram_target"
+    target.parent.mkdir(parents=True)
+    (data / "skills" / "external" / "telegram").rename(target)
+    link = data / "skills" / "external" / "telegram_link"
+    link.symlink_to(target, target_is_directory=True)
+
+    # A PASS stored under the LINK's lexical name is the WRONG state dir.
+    _write_review_pass(data, "telegram_link", _real_content_hash(target))
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 1
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
+    assert plugin_findings
+    assert all(f["severity"] == "incompatible" for f in plugin_findings)
+
+    # Stored under the resolved TARGET basename, the same PASS grandfathers.
+    _write_review_pass(data, "telegram_target", _real_content_hash(target))
+    result = _run(data, "--json", str(tmp_path / "report2.json"),
+                  isolated_root=tmp_path / "isol")
+    report = json.loads((tmp_path / "report2.json").read_text(encoding="utf-8"))
+    plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
+    assert plugin_findings
+    assert all(f["severity"] == "note" for f in plugin_findings)
+    assert any("GRANDFATHERED" in f["detail"] for f in plugin_findings)
+
+
+def test_identity_collision_is_a_blocking_finding_never_a_grandfather(tmp_path):
+    """Adversarial fix-round 3, finding 2 (collision half): two directories
+    sanitising to ONE runtime identity are refused by the runtime BEFORE any
+    review-state read — the audit must report a blocking finding and must not
+    bind either payload to the shared (ambiguous) review state, even when a
+    matching PASS is stored under that identity."""
+    data = _build_nminus1_install(tmp_path / "install")
+    fixture = FIXTURES / "telegram_SKILL_v6.113.4.md"
+    a = data / "skills" / "external" / "telegram fork"
+    b = data / "skills" / "external" / "telegram+fork"
+    for d in (a, b):
+        d.mkdir(parents=True)
+        shutil.copyfile(fixture, d / "SKILL.md")
+    _write_review_pass(data, "telegram_fork", _real_content_hash(a))
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 1
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    collisions = [f for f in report["findings"]
+                  if f["check_id"] == "unauditable-source"
+                  and "telegram_fork" in f["subject"]]
+    assert collisions and all(f["severity"] == "incompatible" for f in collisions)
+    assert any("one runtime identity" in f["detail"] for f in collisions)
+    # Neither colliding directory reached the plugin-api judgment.
+    assert not any("fork" in f["subject"] for f in report["findings"]
+                   if f["check_id"] == "plugin-api")
 
 
 def test_native_seed_pass_without_seed_origin_is_not_grandfathered(tmp_path):

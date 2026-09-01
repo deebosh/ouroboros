@@ -49,6 +49,7 @@ from ouroboros.skill_review_status import (
     STATUS_PENDING,
     STATUS_WARNINGS,
     normalize_skill_review_status,
+    review_status_grandfatherable,
 )
 from ouroboros.utils import atomic_write_json, iter_jsonl_objects, utc_now_iso
 
@@ -497,11 +498,6 @@ def plugin_api_admission_refusal_outcome(
     """
     from ouroboros.skill_loader import SkillReviewState, save_review_state
     from ouroboros.skill_review import SkillReviewOutcome, _append_skill_review_history
-    from ouroboros.skill_review_status import (
-        STATUS_CLEAN,
-        STATUS_WARNINGS,
-        normalize_skill_review_status,
-    )
 
     findings = [{
         "item": "plugin_api_admission",
@@ -514,7 +510,7 @@ def plugin_api_admission_refusal_outcome(
     live_pass = bool(
         live is not None
         and not live.is_stale_for(content_hash)
-        and normalize_skill_review_status(live.status) in (STATUS_CLEAN, STATUS_WARNINGS)
+        and review_status_grandfatherable(live.status)
     )
     outcome = SkillReviewOutcome(
         skill_name=skill.name,

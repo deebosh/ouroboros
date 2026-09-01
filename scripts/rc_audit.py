@@ -43,10 +43,14 @@ is NEVER a clean exit 0: it becomes a BLOCKING ``unauditable-source`` finding
 
 Reuse-first: the classifiers are the runtime's own, consumed read-only —
 ``task_result_schema_refusal`` (pure), ``parse_skill_manifest_text``,
-``extension_new_pass_admission_error``, ``skill_review_gate``,
-``skill_loader._walk_skill_packages`` / ``compute_content_hash`` /
-``load_review_state`` (the runtime's own skill discovery, review-staleness
-hash and admission-state read — provenance-gated exactly like the runtime,
+``extension_new_pass_admission_error``, ``review_status_grandfatherable``
+(the PluginAPI refusal path's own grandfather predicate — clean|warnings
+only, enforcement-independent),
+``skill_loader._walk_skill_packages`` / ``_sanitize_skill_name`` /
+``compute_content_hash`` /
+``load_review_state`` (the runtime's own skill discovery, identity
+sanitisation, review-staleness hash and admission-state read —
+provenance-gated exactly like the runtime,
 resolving state paths without creating them),
 ``RETIRED_SETTING_KEYS`` / ``RETIRED_COMMA_LIST_SETTING_KEYS``. None of the
 imported modules touches config paths at import time. Review-exempt dev/ops
@@ -95,11 +99,12 @@ from ouroboros.settings_defaults import (  # noqa: E402
 )
 from ouroboros.skill_loader import (  # noqa: E402
     SkillPayloadUnreadable,
+    _sanitize_skill_name,
     _walk_skill_packages,
     compute_content_hash,
     load_review_state,
 )
-from ouroboros.skill_review_status import skill_review_gate  # noqa: E402
+from ouroboros.skill_review_status import review_status_grandfatherable  # noqa: E402
 from ouroboros.task_result_schema import (  # noqa: E402
     TASK_RESULT_QUARANTINE_DIR,
     TASK_RESULT_SCHEMA_VERSION,
@@ -363,7 +368,7 @@ def _iter_skill_dirs(data_root: pathlib.Path):
     yield from _walk_skill_packages(data_root / "skills", listdir=_strict_listdir)
 
 
-def _review_gate_for(
+def _admission_state_for(
     data_root: pathlib.Path,
     name: str,
     *,
@@ -378,7 +383,14 @@ def _review_gate_for(
     an ``owner_attested`` verdict without its owner marker all demote to
     pending — so a stored PASS the runtime would refuse can never grandfather
     here. State paths resolve WITHOUT being created
-    (``skill_state_dir_path``), preserving the read-only guarantee."""
+    (``skill_state_dir_path``), preserving the read-only guarantee.
+
+    The grandfather predicate is the PluginAPI refusal path's OWN
+    (``review_status_grandfatherable``): only a clean|warnings verdict.
+    ``skill_review_gate``'s ``executable_review`` is deliberately NOT used —
+    under advisory enforcement it admits a BLOCKERS verdict for execution,
+    but the runtime grandfather (``plugin_api_admission_refusal_outcome``)
+    never grandfathers blockers under ANY enforcement mode."""
     state = load_review_state(
         data_root,
         name,
@@ -386,111 +398,182 @@ def _review_gate_for(
         is_module_widget=is_module_widget,
         skill_dir=skill_dir,
     )
-    gate = skill_review_gate(state.status)
-    gate["content_hash"] = str(state.content_hash or "")
-    return gate
+    return {
+        "grandfather_pass": review_status_grandfatherable(state.status),
+        "content_hash": str(state.content_hash or ""),
+    }
+
+
+def _resolved_skill_identities(
+    data_root: pathlib.Path, findings: List[Dict[str, str]],
+) -> List[tuple]:
+    """Resolve every discovered package dir to its RUNTIME identity.
+
+    ``skill_loader.load_skill`` resolves the directory FIRST and derives the
+    state/tool identity from the sanitized RESOLVED basename, so a symlinked
+    skill is judged by its target's review state, never by the link's lexical
+    name. Duplicate resolved directories collapse to one candidate exactly
+    like the runtime inventory (which dedups on ``entry.resolve()``). A
+    directory whose identity cannot be established is a BLOCKING
+    ``unauditable-source`` finding, never a silent skip."""
+    identities: List[tuple] = []
+    seen: set = set()
+    for skill_dir in _iter_skill_dirs(data_root):
+        try:
+            resolved = skill_dir.resolve()
+        except (OSError, RuntimeError) as exc:
+            findings.append(_finding(
+                "unauditable-source", SEV_INCOMPATIBLE,
+                str(skill_dir.relative_to(data_root)),
+                f"skill directory does not resolve ({type(exc).__name__}: "
+                f"{exc}) — its runtime identity cannot be established, so "
+                "the install is NOT proven clean",
+                "fix the symlink/directory, then re-run the audit",
+            ))
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        identities.append((skill_dir, resolved, _sanitize_skill_name(resolved.name)))
+    return identities
 
 
 def _audit_skills(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> None:
-    for skill_dir in _iter_skill_dirs(data_root):
-        manifest_text = None
-        for name in _MANIFEST_NAMES:
-            mf = skill_dir / name
-            if mf.is_file():
-                try:
-                    manifest_text = mf.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError) as exc:
-                    # A mandatory source the audit cannot read is a BLOCKING
-                    # audit-integrity finding (exit 1), never a clean exit 0.
-                    findings.append(_finding(
-                        "unauditable-source", SEV_INCOMPATIBLE,
-                        str(mf.relative_to(data_root)),
-                        f"manifest unreadable ({type(exc).__name__}) — this skill "
-                        "cannot be audited, so the install is NOT proven clean",
-                        "fix the manifest file, then re-run the audit",
-                    ))
-                break
-        if manifest_text is None:
+    by_name: Dict[str, List[tuple]] = {}
+    for entry in _resolved_skill_identities(data_root, findings):
+        by_name.setdefault(entry[2], []).append(entry)
+    for name in sorted(by_name):
+        group = by_name[name]
+        if len(group) > 1:
+            # Identity collision, judged BEFORE any review-state read exactly
+            # like the runtime (skill_loader._load_skill_location_candidates
+            # marks every member broken): the shared state dir cannot be bound
+            # to ONE payload, so no member may grandfather on the ambiguous
+            # review state.
+            dirs = ", ".join(sorted(str(d) for d, _r, _n in group))
+            findings.append(_finding(
+                "unauditable-source", SEV_INCOMPATIBLE,
+                f"skills identity {name!r} ({dirs})",
+                "multiple skill directories sanitise to one runtime identity; "
+                "the runtime refuses to enable/review/execute them all and "
+                "their shared review state cannot be audited against a single "
+                "payload",
+                "rename the directories so their basenames yield distinct "
+                "identifiers, then re-run the audit",
+            ))
             continue
-        rel = str(skill_dir.relative_to(data_root))
+        skill_dir, resolved, _ = group[0]
+        _audit_one_skill(data_root, skill_dir, resolved, name, findings)
+
+
+def _audit_one_skill(
+    data_root: pathlib.Path,
+    skill_dir: pathlib.Path,
+    resolved: pathlib.Path,
+    name: str,
+    findings: List[Dict[str, str]],
+) -> None:
+    manifest_text = None
+    for manifest_name in _MANIFEST_NAMES:
+        mf = resolved / manifest_name
+        if mf.is_file():
+            try:
+                manifest_text = mf.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                # A mandatory source the audit cannot read is a BLOCKING
+                # audit-integrity finding (exit 1), never a clean exit 0.
+                findings.append(_finding(
+                    "unauditable-source", SEV_INCOMPATIBLE,
+                    f"{skill_dir.relative_to(data_root)}/{manifest_name}",
+                    f"manifest unreadable ({type(exc).__name__}) — this skill "
+                    "cannot be audited, so the install is NOT proven clean",
+                    "fix the manifest file, then re-run the audit",
+                ))
+            break
+    if manifest_text is None:
+        return
+    rel = str(skill_dir.relative_to(data_root))
+    try:
+        manifest = parse_skill_manifest_text(manifest_text)
+    except SkillManifestError as exc:
+        findings.append(_finding(
+            "unauditable-source", SEV_INCOMPATIBLE, rel,
+            f"manifest does not parse ({exc}) — this skill cannot be "
+            "audited, so the install is NOT proven clean",
+            "fix the manifest, then re-run the audit",
+        ))
+        return
+    if str(getattr(manifest, "type", "") or "") != "extension":
+        return
+    admission_error = extension_new_pass_admission_error(manifest)
+    if not admission_error:
+        return
+    # Runtime/state identity is the sanitized RESOLVED-directory basename
+    # (skill_loader.load_skill); manifest.name is display metadata and may
+    # point at another state dir.
+    is_module_widget = (
+        isinstance(getattr(manifest, "ui_tab", None), dict)
+        and str(((manifest.ui_tab or {}).get("render") or {}).get("kind") or "")
+        == "module"
+    )
+    gate = _admission_state_for(
+        data_root,
+        name,
+        skill_type=str(getattr(manifest, "type", "") or ""),
+        is_module_widget=is_module_widget,
+        skill_dir=resolved,
+    )
+    declared = manifest_plugin_api_field(manifest) is not None
+    stored_hash = str(gate.get("content_hash") or "")
+    grandfathered = False
+    if not declared and gate.get("grandfather_pass") and stored_hash:
+        # A PASS is HASH-BOUND: only a PASS over the payload's CURRENT bytes
+        # keeps loading. The hash is the runtime's own (read-only reuse).
         try:
-            manifest = parse_skill_manifest_text(manifest_text)
-        except SkillManifestError as exc:
+            current_hash = compute_content_hash(
+                resolved,
+                manifest_entry=manifest.entry,
+                manifest_scripts=manifest.scripts,
+            )
+        except SkillPayloadUnreadable as exc:
             findings.append(_finding(
                 "unauditable-source", SEV_INCOMPATIBLE, rel,
-                f"manifest does not parse ({exc}) — this skill cannot be "
-                "audited, so the install is NOT proven clean",
-                "fix the manifest, then re-run the audit",
+                f"skill payload unreadable ({exc}) — the hash-bound review "
+                "PASS cannot be verified against the current bytes",
+                "fix the payload files, then re-run the audit",
             ))
-            continue
-        if str(getattr(manifest, "type", "") or "") != "extension":
-            continue
-        admission_error = extension_new_pass_admission_error(manifest)
-        if not admission_error:
-            continue
-        # Runtime/state identity is the DIRECTORY BASENAME (skill_loader.load_skill);
-        # manifest.name is display metadata and may point at another state dir.
-        is_module_widget = (
-            isinstance(getattr(manifest, "ui_tab", None), dict)
-            and str(((manifest.ui_tab or {}).get("render") or {}).get("kind") or "")
-            == "module"
-        )
-        gate = _review_gate_for(
-            data_root,
-            skill_dir.name,
-            skill_type=str(getattr(manifest, "type", "") or ""),
-            is_module_widget=is_module_widget,
-            skill_dir=skill_dir,
-        )
-        declared = manifest_plugin_api_field(manifest) is not None
-        stored_hash = str(gate.get("content_hash") or "")
-        grandfathered = False
-        if not declared and gate.get("executable_review") and stored_hash:
-            # A PASS is HASH-BOUND: only a PASS over the payload's CURRENT bytes
-            # keeps loading. The hash is the runtime's own (read-only reuse).
-            try:
-                current_hash = compute_content_hash(
-                    skill_dir,
-                    manifest_entry=manifest.entry,
-                    manifest_scripts=manifest.scripts,
-                )
-            except SkillPayloadUnreadable as exc:
-                findings.append(_finding(
-                    "unauditable-source", SEV_INCOMPATIBLE, rel,
-                    f"skill payload unreadable ({exc}) — the hash-bound review "
-                    "PASS cannot be verified against the current bytes",
-                    "fix the payload files, then re-run the audit",
-                ))
-                continue
-            if stored_hash == current_hash:
-                grandfathered = True
-            else:
-                findings.append(_finding(
-                    "plugin-api", SEV_INCOMPATIBLE, rel,
-                    "extension manifest declares no plugin_api field and its "
-                    "stored review PASS is STALE (payload bytes changed since "
-                    "the PASS): the runtime will not load it and a NEW PASS "
-                    "will be refused",
-                    admission_error,
-                ))
-                continue
-        if grandfathered:
-            findings.append(_finding(
-                "plugin-api", SEV_NOTE, rel,
-                "extension manifest declares no plugin_api field but holds a "
-                "hash-bound review PASS over its CURRENT bytes: it keeps loading "
-                "GRANDFATHERED on that PASS; any edit invalidates it and a NEW "
-                "PASS will be refused",
-                admission_error,
-            ))
+            return
+        if stored_hash == current_hash:
+            grandfathered = True
         else:
             findings.append(_finding(
                 "plugin-api", SEV_INCOMPATIBLE, rel,
-                "extension is not admissible for a NEW review PASS after upgrade "
-                + ("(declared plugin_api fails negotiation)" if declared
-                   else "(no plugin_api field and no executable hash-bound PASS)"),
+                "extension manifest declares no plugin_api field and its "
+                "stored review PASS is STALE (payload bytes changed since "
+                "the PASS): the runtime will not load it and a NEW PASS "
+                "will be refused",
                 admission_error,
             ))
+            return
+    if grandfathered:
+        findings.append(_finding(
+            "plugin-api", SEV_NOTE, rel,
+            "extension manifest declares no plugin_api field but holds a "
+            "hash-bound review PASS over its CURRENT bytes: it keeps loading "
+            "GRANDFATHERED on that PASS; any edit invalidates it and a NEW "
+            "PASS will be refused",
+            admission_error,
+        ))
+    else:
+        findings.append(_finding(
+            "plugin-api", SEV_INCOMPATIBLE, rel,
+            "extension is not admissible for a NEW review PASS after upgrade "
+            + ("(declared plugin_api fails negotiation)" if declared
+               else "(no plugin_api field and no grandfatherable hash-bound "
+                    "PASS — a PASS carrying blocker findings never "
+                    "grandfathers, whatever the enforcement mode)"),
+            admission_error,
+        ))
 
 
 def _audit_task_results(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> None:
