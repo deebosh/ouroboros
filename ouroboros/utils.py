@@ -362,6 +362,12 @@ def sweep_stale_temp_files(root: pathlib.Path, *, min_age_sec: float = 3600.0) -
     Only files whose suffix after the final ``.tmp.`` is the atomic signature
     (pid/tid/uuid → hex digits and dots) are reaped, so a legitimate user dotfile
     such as ``.config.tmp.backup`` is never deleted.
+
+    The data-root ``tmp_scripts/`` fallback is in scope too (CPL4-C20):
+    ``tools/shell.py`` unlinks its ``script_<uuid>.<ext>`` files in a
+    ``finally``, so one that survived is a hard-kill orphan. Only the
+    TOP-LEVEL fallback dir is swept here — task-drive copies die with their
+    drive's own GC prune — and only at startup, when no script can be live.
     """
     root = pathlib.Path(root)
     if not root.is_dir():
@@ -371,17 +377,21 @@ def sweep_stale_temp_files(root: pathlib.Path, *, min_age_sec: float = 3600.0) -
     now = time.time()
     try:
         candidates = list(root.rglob(".*.tmp.*"))
+        candidates.extend(root.glob("tmp_scripts/script_*"))
     except OSError:
         return 0
+    fallback_scripts = root / "tmp_scripts"
     for tmp in candidates:
         try:
             if not tmp.is_file():
                 continue
-            # Require the post-".tmp." suffix to be the atomic signature (hex/dot
-            # only) so we never delete an unrelated dotfile that happens to match.
-            suffix = tmp.name.rsplit(".tmp.", 1)
-            if len(suffix) != 2 or not suffix[1] or set(suffix[1]) - hex_chars:
-                continue
+            if not (tmp.parent == fallback_scripts and tmp.name.startswith("script_")):
+                # Require the post-".tmp." suffix to be the atomic signature
+                # (hex/dot only) so we never delete an unrelated dotfile that
+                # happens to match.
+                suffix = tmp.name.rsplit(".tmp.", 1)
+                if len(suffix) != 2 or not suffix[1] or set(suffix[1]) - hex_chars:
+                    continue
             if now - tmp.stat().st_mtime < min_age_sec:
                 continue
             tmp.unlink()
