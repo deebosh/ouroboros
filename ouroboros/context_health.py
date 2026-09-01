@@ -313,17 +313,9 @@ def build_health_invariants(env: Any, task_id: str = "") -> str:
     except Exception:
         pass
 
-    try:
-        crash_report = env.drive_path("state/crash_report.json")
-        crash_data = read_json_dict(crash_report)
-        if crash_data:
-            checks.append(
-                f"CRITICAL: RECENT CRASH ROLLBACK — rolled back from "
-                f"{crash_data.get('rolled_back_from', '?')[:12]} to tag "
-                f"{crash_data.get('tag', '?')} at {crash_data.get('ts', '?')}"
-            )
-    except Exception:
-        pass
+    # state/crash_report.json retired (CPL4-C9, owner 2A): its writer — the
+    # crash-rollback path — no longer exists in this tree, so the reader and
+    # its CRITICAL health line were dead surface. Stale files are inert.
 
     try:
         from ouroboros.extension_health import regressed_extensions

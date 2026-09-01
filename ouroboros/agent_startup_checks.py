@@ -956,36 +956,6 @@ def _reconcile_review_attempts_on_startup(env: Any) -> Dict[str, Any]:
     return reconcile_review_custody_on_process_start(drive_root)
 
 
-def inject_crash_report(env: Any) -> None:
-    """If a crash report exists from a rollback, log it to events.
-
-    The file is NOT deleted — it stays so that build_health_invariants()
-    shows CRITICAL: RECENT CRASH ROLLBACK on every task until the issue
-    is investigated and removed via run_command (LLM-first, P5).
-    """
-    try:
-        crash_path = env.drive_path("state") / "crash_report.json"
-        if not crash_path.exists():
-            return
-        crash_data = read_json_dict(crash_path)
-        if not crash_data:
-            append_jsonl(env.drive_path("logs") / "events.jsonl", {
-                "ts": utc_now_iso(),
-                "type": "crash_report_invalid",
-                "path": str(crash_path),
-            })
-            log.warning("Crash report exists but is not valid JSON object: %s", crash_path)
-            return
-        append_jsonl(env.drive_path("logs") / "events.jsonl", {
-            "ts": utc_now_iso(),
-            "type": "crash_rollback_detected",
-            "crash_data": crash_data,
-        })
-        log.warning("Crash rollback detected: %s", crash_data)
-    except Exception:
-        log.debug("Failed to process crash report", exc_info=True)
-
-
 def _record_pending_owner_report(campaign: Dict[str, Any], tx: Dict[str, Any]) -> None:
     """Stage the WS-13.5 owner absorb/abandon report ON THE CAMPAIGN for the
     server to deliver.

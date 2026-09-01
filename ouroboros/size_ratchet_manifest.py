@@ -110,6 +110,7 @@ BAND_PATHS = {
     "devtools/benchmarks/terminal_bench/harbor_installed_agent.py": None,
     "devtools/benchmarks/terminal_bench/run_tb.py": None,
     "ouroboros/agent.py": "Subagent message identity now lives in a shared helper; keep agent.py below the giant-file threshold rather than re-expanding it.",
+    "ouroboros/agent_startup_checks.py": "Re-entered the band from the 1501-1600 zone by the CPL4-C9 removal of the dead crash-report reader; the re-entry is the reduction's artifact, not growth.",
     "ouroboros/agent_task_pipeline.py": "Shrank INTO the band from 1599 lines: the post-task synthesis family moved byte-preserving into ouroboros/post_task_synthesis.py (D01 lane); no new content was added.",
     "ouroboros/artifacts.py": "Exact task-source persistence and repository-diff materialization now share the actor-readable artifact seam for acceptance evidence.",
     "ouroboros/cancel_intents.py": "Entered the band from 929 lines: reciprocal timeout-retry lineage validation and physical-leaf/logical-root aliasing stay with the durable cancel-intent mutation authority so Stop-now hardens the same request across retry races.",

@@ -63,7 +63,9 @@ SUBROOT_ALIASES = {
 # state/extension_reconcile/failed the same way.
 # 122 -> 124: the CPL4-C16 compaction names the three memory-journal paths
 # directly (previously only their writers' per-module spellings were seen).
-EXPECTED_SCAN_PATHS = 124
+# 124 -> 123: state/crash_report.json retired with its readers (CPL4-C9,
+# owner 2A) — no writer existed in this tree; stale files are inert.
+EXPECTED_SCAN_PATHS = 123
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

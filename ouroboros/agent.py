@@ -34,7 +34,6 @@ from ouroboros.context import build_llm_messages
 from ouroboros.loop import run_llm_loop
 from ouroboros.config import EFFORT_SCALE, resolve_effort  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
 from ouroboros.agent_startup_checks import (
-    inject_crash_report,
     persist_early_origin_stub as _persist_early_origin_stub_impl,  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
     validate_task_authority_sources,
     verify_restart,
@@ -315,7 +314,6 @@ class OuroborosAgent:
             })
             verify_restart(self.env, git_sha)
             verify_system_state(self.env, git_sha)
-            inject_crash_report(self.env)
         except Exception:
             log.warning("Worker boot logging failed", exc_info=True)
             return
