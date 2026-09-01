@@ -12,7 +12,7 @@
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://ouroboros-agent.ai/install/#linux)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)][download-windows-x64]
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.109.28](https://img.shields.io/badge/version-6.109.28-green.svg)](VERSION)
+[![Version 6.109.29](https://img.shields.io/badge/version-6.109.29-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
@@ -64,13 +64,13 @@ The desktop packages already contain an optional CLI installer. On macOS, after 
 
 </details>
 
-[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.28/Ouroboros-6.109.28.dmg
-[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.28/Ouroboros-6.109.28-windows-x64.zip
-[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.28/ouroboros_6.109.28_amd64.deb
-[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.28/ouroboros-6.109.28-1.x86_64.rpm
-[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.28/ouroboros-6.109.28-1.red80.x86_64.rpm
-[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.28/Ouroboros-6.109.28-linux-x86_64.AppImage
-[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.28/Ouroboros-6.109.28-linux-x86_64.tar.gz
+[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.29/Ouroboros-6.109.29.dmg
+[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.29/Ouroboros-6.109.29-windows-x64.zip
+[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.29/ouroboros_6.109.29_amd64.deb
+[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.29/ouroboros-6.109.29-1.x86_64.rpm
+[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.29/ouroboros-6.109.29-1.red80.x86_64.rpm
+[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.29/Ouroboros-6.109.29-linux-x86_64.AppImage
+[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.29/Ouroboros-6.109.29-linux-x86_64.tar.gz
 
 Ouroboros bundles [Claudexor](https://github.com/razzant/claudexor) as its local execution layer for delegated coding and hosted-agent review. Ouroboros owns the task, memory, review, and final integration, while Claudexor runs the selected connected coding harness and returns durable execution evidence. [Explore Claudexor](https://claudexor.ai/).
 
@@ -449,11 +449,11 @@ and the reason.
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 6.109.29 | 2026-09-01 | fix(logs): events.jsonl + tools.jsonl now rotate on the supervisor tick via the generalized rotator; SSE follower archive-chain-aware for both (closes ibl-86f8b98069e8 / razzant#132) |
 | 6.109.28 | 2026-09-01 | docs(review-continuity): document missing-result retirement and periodic sweep |
 | 6.109.27 | 2026-09-01 | fix(review-continuity): retire_settled_continuations also archives abandoned (no-result) records past 3x the settle floor + a ~6h periodic sweep; .ouroboros/ gitignored (closes ibl-a7953bc2c2b7) |
 | 6.109.26 | 2026-09-01 | fix(consolidator): a transient empty/non-JSON model reply defers cleanly instead of erroring the whole pass; context.py downgrades the recoverable dialogue-offset-ignored log to INFO (closes ibl-28109914789e) |
 | 6.109.25 | 2026-09-01 | fix(backlog): tag nominated items with referent_status (verified/unverified/partial/none) and downgrade a high-priority item whose named code referents do not resolve, so phantom IBLs stop burning worker rounds (closes ibl-74bd59bab040) |
-| 6.109.24 | 2026-09-01 | fix(review-atlas): name the specific oversized required artifact(s) + token counts in the assembly-failure reason (closes ibl-f320ce46acb0) |
 | 6.109.0 | 2026-08-21 | **feat: live task cost and ready-on-open agent accounts.** Running root-task heartbeats now project the existing physical-attempt ledger into one non-final subtree total, so compact Chat and Activity cards advance live without a second timer, endpoint, or client-side sum while preserving reserved, unresolved, and unmetered disclosure (PR #288). Opening Agents now wakes only an already-provisioned stale Claudexor home through the existing owner-action endpoint after a side-effect-free status read; background polling, first-time installs, foreign homes, and repair states remain untouched (PR #289). Fail-closed staged-binary review fixtures now inject exact Git tree-read errors instead of assuming loose object storage, removing the macOS stable-CI race without changing production behavior. |
 | 6.107.0 | 2026-08-21 | **feat: secret-safe skill publishing and portable provider tool contracts.** OuroborosHub publishing now works from an immutable reviewed-byte snapshot, scans the exact candidate through pinned Betterleaks before any GitHub effect, keeps raw findings out of model and durable-result surfaces, guides repair and fresh review through the existing managed-task flow, and treats only a validated pull-request receipt as publication success. The Skills UI exposes the selected-skill preflight and publishing journey without turning its passive card projection into a second readiness authority. Provider compatibility now validates the complete shipped built-in tool registry against portable JSON Schema rules and trusted live canaries across OpenRouter, direct OpenAI, direct Anthropic, GigaChat, and configured optional providers; confirmed contract failures block release preflight while pull-request CI remains secretless. |
 | 6.106.0 | 2026-08-21 | **feat: configurable subagents, managed subscription setup, provider-native reasoning and tool compatibility, and terminal-truth UI.** Available subagents becomes an owner-configured roster with stable internal identities, descriptions, exact API and session routes, immutable task-start snapshots, quiet session supervision, and typed refusal instead of silent substitution. Connect now consumes each harness's `setupLogin` capability, offers the platform-appropriate terminal path, and can install a missing vendor CLI once through the exact pinned Claudexor 3.8.0 runtime before retrying login once, without vendor-specific recipes in Ouroboros. Direct OpenAI requests project custom tools at the physical wire boundary and preserve reasoning effort through bounded task-local recovery; direct Anthropic requests replay complete native assistant tool turns, and custom-origin arguments are schema-validated before execution. Canonical task-result custody and snapshot ordering keep terminal lifecycle, finalization, accounting, activity, and cancel authority monotonic across replicas and reconnects. This release also adds credential testing on every provider card, non-blocking serialized Settings saves, same-install launcher cleanup and Linux running-instance feedback, profile-scoped plan health, reliable account removal confirmation, and bounded Windows atomic-state-write recovery. |

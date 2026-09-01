@@ -171,8 +171,9 @@ async def api_task_events(request: Request) -> StreamingResponse:
 
 
 # Live logs that the supervisor rotates into archive/<prefix>_<ts>.jsonl
-# (supervisor/state.rotate_jsonl_log_if_needed); the other sources never rotate.
-_ROTATED_LOG_PREFIXES = {"progress": "progress", "chat": "chat"}
+# (supervisor/state.rotate_jsonl_log_if_needed). supervisor / task_reflections /
+# chat_annotations do NOT rotate and never need archive-chain healing here.
+_ROTATED_LOG_PREFIXES = {"progress": "progress", "chat": "chat", "events": "events", "tools": "tools"}
 
 
 def _event_sort_key(item: Dict[str, Any]) -> tuple:
