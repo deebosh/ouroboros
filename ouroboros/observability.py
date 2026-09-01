@@ -1376,57 +1376,24 @@ def salvaged_output_note(
     return f"\n\n{label}):\n" + salvaged
 
 
-def prune_observability_blobs(
-    drive_root: pathlib.Path,
-    retention_days: int | None = None,
-    *,
-    now: float | None = None,
-) -> Dict[str, Any]:
-    """Best-effort observability retention audit.
+def prune_observability_blobs(drive_root: pathlib.Path) -> Dict[str, Any]:
+    """Startup observability census — counts only, never deletion.
 
-    Forensic call manifests and CAS blobs are durable replay evidence. This
-    function intentionally does not delete them; it returns counts for startup
-    housekeeping telemetry while preserving the "keep compressed" contract.
+    Forensic call manifests and CAS blobs are durable replay evidence,
+    preserved indefinitely BY CONTRACT. The retirable half of this surface —
+    ``OUROBOROS_OBSERVABILITY_RETENTION_DAYS``, a knob that was parsed,
+    clamped and reported while deleting nothing — is GONE (CPL4-C22, owner
+    7A): a documented no-op was a misleading operator surface. The key sits
+    in ``RETIRED_SETTING_KEYS`` so stored ghosts drop on settings load.
     """
 
-    enabled = retention_days is not None
-    if retention_days is None:
-        raw = os.environ.get("OUROBOROS_OBSERVABILITY_RETENTION_DAYS", "").strip()
-        if not raw:
-            return {
-                "enabled": False,
-                "preserved_indefinitely": True,
-                "manifest_count": 0,
-                "blob_count": 0,
-                "deleted_manifests": 0,
-                "deleted_blobs": 0,
-                "errors": [],
-            }
-        try:
-            retention_days = int(raw)
-            enabled = True
-        except ValueError:
-            return {
-                "enabled": False,
-                "preserved_indefinitely": True,
-                "manifest_count": 0,
-                "blob_count": 0,
-                "deleted_manifests": 0,
-                "deleted_blobs": 0,
-                "errors": [f"invalid retention days: {raw!r}"],
-            }
-    retention_days = max(1, min(int(retention_days), 365))
     root = pathlib.Path(drive_root) / OBSERVABILITY_DIR
     calls_root = root / "calls"
     blobs_root = root / "blobs"
-    report = {
-        "enabled": enabled,
+    report: Dict[str, Any] = {
         "preserved_indefinitely": True,
-        "retention_days": retention_days,
         "manifest_count": 0,
         "blob_count": 0,
-        "deleted_manifests": 0,
-        "deleted_blobs": 0,
         "errors": [],
     }
     if not root.exists():

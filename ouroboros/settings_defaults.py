@@ -337,6 +337,11 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_REVIEW_ROUTES",
     "OUROBOROS_SCOPE_REVIEW_ROUTES",
     "OUROBOROS_ADVISORY_REVIEW_ROUTE",
+    # CPL4-C22 (owner 7A): the observability retention knob was parsed,
+    # clamped and reported while deleting nothing — a documented no-op is a
+    # misleading operator surface. Manifests/blobs stay preserved
+    # indefinitely BY CONTRACT; the knob is gone, not honored.
+    "OUROBOROS_OBSERVABILITY_RETENTION_DAYS",
 )
 
 
