@@ -230,6 +230,7 @@ D20 = "Presence"
 "ouroboros/outcome_receipt_store.py" = "D01"
 "ouroboros/outcomes.py" = "D01"
 "ouroboros/owner_hurry.py" = "D09"
+"ouroboros/owner_quiz.py" = "D09"  # F6 sync (#Q-2b): owner quiz cards, structural expiry with the authoring task
 "ouroboros/owner_mailbox.py" = "D01"
 "ouroboros/packaged_cli.py" = "D18"
 "ouroboros/packaged_cli_install.py" = "D18"
@@ -259,7 +260,7 @@ D20 = "Presence"
 "ouroboros/promotion_source.py" = "D08"
 "ouroboros/protected_artifacts.py" = "D04"
 "ouroboros/provider_models.py" = "D02"
-"ouroboros/python_interpreter.py" = "D05"
+"ouroboros/process_interpreters.py" = "D05"  # F6 sync: upstream retired python_interpreter.py into this two-family (python/node) resolver
 "ouroboros/reflection.py" = "D15"
 "ouroboros/repo_remotes.py" = "D10"
 "ouroboros/request_wire_attempt.py" = "D02"
@@ -532,6 +533,19 @@ D20 = "Presence"
 "supervisor/worker_pool_lifecycle.py" = "D08"
 "supervisor/worker_process.py" = "D08"
 "supervisor/worker_promotion.py" = "D08"
+
+# F6 rolling-upstream sync (b9f7597f..8d13373b) — new upstream leaves, placed by
+# their campaign families (same evidence discipline as the base map).
+"ouroboros/delegate_registration_policy.py" = "D07"
+"ouroboros/gateway/endpoint_index.py" = "D11"
+"ouroboros/gateway/routing_decision.py" = "D11"
+"ouroboros/gateway/task_decision.py" = "D11"
+"ouroboros/node_runtime.py" = "D18"
+"ouroboros/routing_wait.py" = "D17"
+"ouroboros/tools/owner_delivery.py" = "D05"
+"ouroboros/tools/patch_verdict.py" = "D07"
+"ouroboros/tools/process_facts.py" = "D04"
+"supervisor/telemetry_events.py" = "D08"
 
 [classification]
 # new upstream modules classified by this campaign (classification=proposed, review pending)
