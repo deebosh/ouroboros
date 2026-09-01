@@ -3206,6 +3206,12 @@ Panic is a complete owner stop, not a restart. It stops consciousness, records t
 12. **Frozen contracts extend explicitly.** `ouroboros/contracts/` remains versioned, backward-compatible ABI. New capability extends the frozen shape or uses an explicitly versioned successor; convenience code does not smuggle policy into it.
 13. **Provider wire adaptation stays exact-route and success-confirmed.** Canonical history remains provider-neutral; typed physical projections may change values, fields, or a registered dialect on one provider/endpoint/API/model only. Failed candidates teach nothing durable, task-local cognition degradation never becomes future dispatch authority, and the physical-attempt ledger remains distinct from terminal request-wire history.
 
+The durable data-plane inventory — every entity under `data/` with its
+schema_version, migration, retention, and reset decision — lives in
+[`docs/PERSISTENCE.md`](PERSISTENCE.md) (CPL-4), verify-paired with
+`tests/test_persistence_inventory.py`: the test AST-scans every runtime
+data-path writer and fails when a written path has no inventory row.
+
 ### 10.1 Continuity data-flow map
 
 The table below is the canonical map for continuity changes. A bounded view is

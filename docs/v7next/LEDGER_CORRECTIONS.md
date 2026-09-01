@@ -3627,3 +3627,85 @@ cycle is declared CONVERGED at this base.
 7. Suite time (this host, mock lane, serial): 23 tests in ~142s wall — inside
    the plan's 10-25min PR keyless budget with room for the next scenario
    waves; the default-lane pins add ~2.4s to the ordinary non-serial battery.
+
+## From the F5 lane B (CPL-4/7 + CPL-5 note, base 5187fcdc, 2026-09-01)
+
+Lane deliverables (single-intent commits on this lane):
+
+- CPL-7 (feat commit): skill-manifest `model_experience` prose section
+  (`what_model_sees` / `token_effect`; bare string = shorthand), rendered on
+  BOTH model-visible skill surfaces (`summarize_skills` rows → `list_skills`
+  JSON; installed-skills context section, bounded), preserved across clawhub
+  adaptation; teaching refusals — `SkillManifestError` gained a typed
+  `fix_hint` rendered into the message and EVERY refusal site in
+  `contracts/skill_manifest.py` now explains the repair. Bundled telegram +
+  unix_computer_use manifests carry the section (their content hash moves —
+  same owner-ratified class as the ABI-1 `plugin_api` field rollout).
+  Pins in `tests/test_skill_model_experience.py`: with-section parses and
+  reaches the surfaces; without-section behavior byte-identical; refusals
+  teach. Disclosed residual: `ExtensionRegistrationError` (registration
+  layer below the manifest) already carries prose guidance from ABI-1
+  negotiation but was not converted to the typed fix_hint shape — separate
+  seam, untouched here.
+- CPL-5 (docs commit): `docs/v7next/DESIGN_MODEL_VISIBLE_LOGGED.md` — the
+  F15-narrowed model-visible⟺logged contract (sealed model_send records at
+  `llm_attempt._candidate_before_dispatch`, reconstruction + byte compare on
+  call, typed durable mismatch facts, reverse-⟺ for model_send only, closed
+  exclusion enum, divergence-class canonicalization contracts incl. the
+  single-assembly rule for streaming and per-rung retry seals). Design only;
+  implementation sketch names the next lane's seams. ADOPTION row CPL-5
+  stays in-progress until the reconstruction suite lands.
+- CPL-4 (docs+test commit): `docs/PERSISTENCE.md` — full durable data-plane
+  inventory (≈60 entities; per-entity schema_version / migration / retention
+  / reset decisions, all local, no framework) + verify pair
+  `tests/test_persistence_inventory.py` (AST scan of every runtime
+  data-path writer; 118 distinct normalized paths, count-anchored both
+  directions, sentinel-guarded).
+
+§16 disclosure: the plan's "§16 findings" (undocumented planes, unbounded
+ledgers, mismatched temp) could not be recovered from the plan, the v7 spec,
+the campaign scratchpads, or the roast archives — no §16 exists in any of
+them. Per the lane instruction the inventory was built from scratch by
+factual scan; the classes §16 named were independently re-derived and are
+covered: undocumented planes (e.g. `state/consciousness_observations.jsonl`,
+`state/betterleaks/`, reader-only `state/crash_report.json`, orphan
+`state/project_source_locks/`), unbounded ledgers (table below), and
+temp/cache planes (`state/pycache`, `state/python-userbase`, `.staging`,
+`tmp_scripts` fallback).
+
+### CPL-4 candidate code fixes (NOT touched in this lane — plan rule)
+
+Real gaps where a decision is recorded in PERSISTENCE.md but the closing code
+change belongs to a later lane / post-release backlog. Each is local; none
+proposes a generic framework.
+
+| id | entity | gap | proposed local fix |
+|---|---|---|---|
+| CPL4-C1 | logs/events.jsonl | unbounded, no rotation (100 MB WARN says "tracked as issue"); delegate custody replays it and the fault tail-scan reads last 4 MB | rotation with archive chain ONLY after custody readers (delegate_custody.replay, fault scan, legacy-usage import) become chain-aware; alternative: move custody rows to their own bounded store first |
+| CPL4-C2 | logs/tools.jsonl | unbounded, no rotation (100 MB WARN) | reuse rotate_jsonl_log_if_needed on the supervisor tick; readers (recent-tools tail, ATIF auditors) are tail/chain-tolerant |
+| CPL4-C3 | logs/supervisor.jsonl | unbounded AND no size tripwire at all | add hot-store tripwire row + same rotation |
+| CPL4-C4 | logs/task_reflections.jsonl | unbounded, no tripwire; read is tail-20 | same rotation; project-scoped copies follow project retention |
+| CPL4-C5 | logs/agent_stdout.log | launcher pipe-copy, unbounded, no cap | size-capped rotation in the launcher copy thread (keep N segments) |
+| CPL4-C6 | state/usage_attempts.jsonl | unbounded monetary ledger; 20 MB WARN; full re-read under the monetary lock | seq-preserving compaction snapshot (settled rows folded into a stamped baseline row + archive of the raw segment) — needs its own reviewed design, monetary authority |
+| CPL4-C7 | state/scheduled_tasks.json | consumed `once` receipts kept forever; `schema_version` defaulted on read, never authored on write | author the stamp in _write_scheduled_tasks; prune consumed-once receipts older than GC retention |
+| CPL4-C8 | state/capability_evidence.json | TTL-expired entries never deleted; route-key growth unbounded | drop expired keys on write (same TTLs the reader applies) |
+| CPL4-C9 | state/crash_report.json | reader-only orphan — the rollback writer no longer exists in this tree | either restore the writer on the rollback path or retire the reader + health line (owner decision: crash-rollback visibility) |
+| CPL4-C10 | state/skills/<name>/ core files | review.json/grants.json/enabled.json/review_job.json/owner_attestation.json/accepted_rebuttals.json carry no version key (ABI-2 idiom exists) | stamp `_schema_version: 1` on write; readers keep legacy-0 tolerance |
+| CPL4-C11 | state/skills/<name>/ lifetime | uninstall removes only deps.json; state dir + stale grants outlive the payload forever | tombstone-on-uninstall (keep grants as owner authority, mark payload-gone; GC only what the owner's uninstall names) |
+| CPL4-C12 | state/skills/<name>/review_history.jsonl | unbounded per skill; load_history whole-file reads | bounded segment reads everywhere (find_history_job_bounded idiom), optional archive rotation per skill |
+| CPL4-C13 | state/delegate_recovery*, delegate_supervision | one file per crashed/restarted task, never unlinked | terminal+age local sweep beside the existing startup custody sweep (fail-closed on unreadable custody, like _prune_delegated_snapshots) |
+| CPL4-C14 | state/code_intel/<root-sha>/ | root-dir count unbounded; stale workspace roots never expire | age-prune roots whose inventory.json mtime exceeds GC retention (pure cache) |
+| CPL4-C15 | state/extension_reconcile/failed/ | kept forever, never retried | age-prune failed markers past GC retention (events.jsonl already carries the failure) |
+| CPL4-C16 | memory journals (identity_journal, knowledge_history, patterns_history) | full old+new document text per write → O(doc×edits) growth | keep full-text only for the newest N entries per journal, older entries digest-only — needs owner sign-off (cognitive provenance) |
+| CPL4-C17 | knowledge_history.jsonl / knowledge_journal.jsonl appends | raw open("a") without the append sidecar lock → torn-line hazard | route through append_jsonl (same seam every other journal uses) |
+| CPL4-C18 | memory/owner_mailbox/ | a task that dies off the terminal paths leaks its mailbox permanently | startup sweep: unlink mailboxes whose task is terminal per task_results (fail-closed when no result) |
+| CPL4-C19 | task_results/<id>.json | one file per task forever (lifecycle authority) | accepted-unbounded for 7.0; any prune needs an owner decision first (authority precedent: archive/ never GC'd) — named here so the decision is visible, not silently open |
+| CPL4-C20 | data/tmp_scripts fallback | never swept (task-drive copies are swept transitively) | include the fallback dir in sweep_stale_temp_files scope |
+| CPL4-C21 | uploads/ (+screenshots, views) | no retention of any kind; owner-explicit delete only | accepted for owner attachments; screenshots/views (agent-generated) could follow GC retention — owner decision |
+| CPL4-C22 | observability retention knob | OUROBOROS_OBSERVABILITY_RETENTION_DAYS is parsed, clamped, reported — and deletes nothing (preserve-indefinitely contract) | retire the knob or make it honest (documented no-op is misleading operator surface); the preserve contract itself is accepted |
+| CPL4-C23 | state/consciousness_observations.jsonl | unbounded append (render bounded last-10) | ACKed rows older than GC retention fold into an archive segment; unacknowledged rows never pruned (contract: survive restart/overflow) |
+
+Cross-lane note: CPL4-C1..C5 and C12 are one mechanism family (the existing
+rotator + chain-aware readers) — a later lane should land them as one train,
+not six bespoke rotators. C6, C9, C11, C16, C19, C21, C22 carry owner
+decisions and must go to a batch before code.
