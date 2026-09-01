@@ -17,13 +17,21 @@ from typing import Any, Dict, List, Optional, Tuple
 from supervisor.state import (
     append_jsonl, atomic_write_text, load_state, save_state,  # noqa: F401
 )
+from ouroboros import config as _config
 from ouroboros.utils import utc_now_iso
 
 log = logging.getLogger(__name__)
 
 
-REPO_DIR: pathlib.Path = pathlib.Path.home() / "Ouroboros" / "repo"
-DRIVE_ROOT: pathlib.Path = pathlib.Path.home() / "Ouroboros" / "data"
+# REPO_DIR / DRIVE_ROOT are UNBOUND until init() (server bootstrap), a worker
+# rebind or a test monkeypatch pins them as real module attributes. Until then
+# attribute access resolves PER CALL from the OUROBOROS_* env via the config
+# path SSOT (module __getattr__ below), so a process that imported this module
+# before its path isolation applied still reads and writes its OWN roots —
+# not a root baked at import time (issue #455 hermeticity class; the old
+# hardcoded ~/Ouroboros default never read the env at all).
+REPO_DIR: pathlib.Path
+DRIVE_ROOT: pathlib.Path
 REMOTE_URL: str = ""
 BRANCH_DEV: str = "ouroboros"
 BRANCH_STABLE: str = "ouroboros-stable"
@@ -33,11 +41,31 @@ UPDATE_INTENT_MARKER_NAME = "ouroboros-update-intent.json"
 OFFICIAL_UPDATE_REMOTE_URL = "https://github.com/razzant/ouroboros"
 
 
+def __getattr__(name: str) -> Any:
+    if name == "REPO_DIR":
+        return _config.resolve_repo_dir()
+    if name == "DRIVE_ROOT":
+        return _config.resolve_data_dir()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def current_repo_dir() -> pathlib.Path:
+    """The pinned REPO_DIR when init()/a rebind set it, else the env-resolved one."""
+    pinned = globals().get("REPO_DIR")
+    return pinned if pinned is not None else _config.resolve_repo_dir()
+
+
+def current_drive_root() -> pathlib.Path:
+    """The pinned DRIVE_ROOT when init()/a rebind set it, else the env-resolved one."""
+    pinned = globals().get("DRIVE_ROOT")
+    return pinned if pinned is not None else _config.resolve_data_dir()
+
+
 def _guard_live_repo_destructive_git(cmd: List[str]) -> None:
     if os.environ.get("OUROBOROS_ALLOW_LIVE_REPO_TESTS") == "1":
         return
     try:
-        live_repo = REPO_DIR.resolve(strict=False) == (
+        live_repo = current_repo_dir().resolve(strict=False) == (
             pathlib.Path.home() / "Ouroboros" / "repo"
         ).resolve(strict=False)
     except OSError:
@@ -65,7 +93,7 @@ def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, remote_url: str,
 
 
 def _git_dir() -> pathlib.Path:
-    return REPO_DIR / ".git"
+    return current_repo_dir() / ".git"
 
 
 def _managed_repo_meta_path() -> pathlib.Path:
@@ -92,7 +120,7 @@ def _read_managed_repo_meta() -> Dict[str, Any]:
 
 
 def managed_branch_defaults(repo_dir: Optional[pathlib.Path] = None) -> Tuple[str, str]:
-    repo = repo_dir or REPO_DIR
+    repo = repo_dir or current_repo_dir()
     meta_path = repo / ".git" / MANAGED_REPO_META_NAME
     if not meta_path.is_file():
         return BRANCH_DEV, BRANCH_STABLE
@@ -219,7 +247,7 @@ def _run_git_process_bounded(
     try:
         proc = subprocess.Popen(
             cmd,
-            cwd=str(cwd or REPO_DIR),
+            cwd=str(cwd or current_repo_dir()),
             stdin=subprocess.PIPE if input_data is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -276,17 +304,18 @@ def git_capture(cmd: List[str], *, timeout: Optional[float] = None) -> Tuple[int
     # ``timeout`` is None for existing non-rescue call sites: a bound here is a
     # behavior change, so it stays opt-in rather than silently retiming them.
     env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+    repo = current_repo_dir()
     for _attempt in range(2):
         if timeout is None:
             result = subprocess.run(
-                cmd, cwd=str(REPO_DIR), capture_output=True, text=True, env=env,
+                cmd, cwd=str(repo), capture_output=True, text=True, env=env,
             )
             returncode, stdout, raw_stderr = (
                 result.returncode, result.stdout or "", result.stderr or "",
             )
         else:
             returncode, stdout, raw_stderr = _run_git_process_bounded(
-                cmd, timeout=timeout, cwd=REPO_DIR, env=env, text=True,
+                cmd, timeout=timeout, cwd=repo, env=env, text=True,
             )
         stderr = str(raw_stderr or "").strip()
         if returncode == 0:
@@ -327,7 +356,7 @@ def _resolve_managed_update_target(
 
 
 def _stale_git_lock_paths(max_age_sec: float = 15.0) -> List[pathlib.Path]:
-    git_dir = REPO_DIR / ".git"
+    git_dir = current_repo_dir() / ".git"
     if not git_dir.exists():
         return []
     candidates = [git_dir / "index.lock"]
@@ -367,7 +396,8 @@ def _maybe_repair_git_index(stderr: str, *, timeout: Optional[float] = None) -> 
     if not any(marker in error_lower for marker in corrupt_markers):
         return repaired
 
-    git_dir = REPO_DIR / ".git"
+    repo = current_repo_dir()
+    git_dir = repo / ".git"
     if not git_dir.exists():
         return repaired
 
@@ -387,7 +417,7 @@ def _maybe_repair_git_index(stderr: str, *, timeout: Optional[float] = None) -> 
     if timeout is None:
         rebuild = subprocess.run(
             rebuild_cmd,
-            cwd=str(REPO_DIR),
+            cwd=str(repo),
             capture_output=True,
             text=True,
             env=rebuild_env,
@@ -396,11 +426,11 @@ def _maybe_repair_git_index(stderr: str, *, timeout: Optional[float] = None) -> 
         rebuild_error = (rebuild.stderr or "").strip() or (rebuild.stdout or "").strip()
     else:
         rebuild_rc, rebuild_stdout, rebuild_stderr = _run_git_process_bounded(
-            rebuild_cmd, timeout=timeout, cwd=REPO_DIR, env=rebuild_env, text=True,
+            rebuild_cmd, timeout=timeout, cwd=repo, env=rebuild_env, text=True,
         )
         rebuild_error = str(rebuild_stderr or "").strip() or str(rebuild_stdout or "").strip()
     if rebuild_rc == 0:
-        log.warning("Rebuilt git index after corruption in %s", REPO_DIR)
+        log.warning("Rebuilt git index after corruption in %s", repo)
         return True
 
     log.warning(
@@ -456,7 +486,7 @@ python-standalone/
 
 def _ensure_repo_gitignore(repo_dir: pathlib.Path = None) -> None:
     """Write .gitignore if missing before any git add -A."""
-    target = repo_dir or REPO_DIR
+    target = repo_dir or current_repo_dir()
     gi = target / ".gitignore"
     if not gi.exists():
         gi.write_text(_REPO_GITIGNORE, encoding="utf-8")
@@ -470,7 +500,7 @@ def _ensure_git_identity() -> None:
 
 def _ensure_local_version_tag() -> None:
     """Create the current VERSION tag locally when a local-only repo has none."""
-    version_path = REPO_DIR / "VERSION"
+    version_path = current_repo_dir() / "VERSION"
     if not version_path.exists():
         return
 
@@ -508,27 +538,28 @@ def _ensure_local_version_tag() -> None:
 
 
 def ensure_repo_present() -> None:
-    if not (REPO_DIR / ".git").exists():
+    repo = current_repo_dir()
+    if not (repo / ".git").exists():
         if _is_launcher_managed_repo():
             raise RuntimeError(
                 "Launcher-managed repo is missing .git metadata. "
                 "The launcher bootstrap must recreate REPO_DIR from the embedded repo bundle."
             )
         # REPO_DIR is live code: initialize in place, never remove it.
-        REPO_DIR.mkdir(parents=True, exist_ok=True)
+        repo.mkdir(parents=True, exist_ok=True)
         _ensure_repo_gitignore()
         import dulwich.repo
-        dulwich.repo.Repo.init(str(REPO_DIR))
+        dulwich.repo.Repo.init(str(repo))
 
         _ensure_git_identity()
 
         rc, _, _ = git_capture(["git", "status", "--porcelain"])
         if rc == 0:
-            subprocess.run(["git", "add", "-A"], cwd=str(REPO_DIR), check=True)
-            subprocess.run(["git", "commit", "-m", "Initial commit from bundle"], cwd=str(REPO_DIR), check=False)
+            subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+            subprocess.run(["git", "commit", "-m", "Initial commit from bundle"], cwd=str(repo), check=False)
 
-        subprocess.run(["git", "branch", "-M", BRANCH_DEV], cwd=str(REPO_DIR), check=False)
-        subprocess.run(["git", "branch", BRANCH_STABLE], cwd=str(REPO_DIR), check=False)
+        subprocess.run(["git", "branch", "-M", BRANCH_DEV], cwd=str(repo), check=False)
+        subprocess.run(["git", "branch", BRANCH_STABLE], cwd=str(repo), check=False)
 
     if not _is_launcher_managed_repo():
         _ensure_local_version_tag()
@@ -550,7 +581,7 @@ def safe_restart(
     """
     if str(os.environ.get("OUROBOROS_DISABLE_MANAGED_UPDATES", "") or "").strip() == "1":
         append_jsonl(
-            DRIVE_ROOT / "logs" / "supervisor.jsonl",
+            current_drive_root() / "logs" / "supervisor.jsonl",
             {"ts": utc_now_iso(), "type": "managed_checkout_disabled",
              "reason": reason, "target_branch": BRANCH_DEV},
         )
@@ -575,7 +606,7 @@ def safe_restart(
         return True, f"OK: {BRANCH_DEV}"
 
     append_jsonl(
-        DRIVE_ROOT / "logs" / "supervisor.jsonl",
+        current_drive_root() / "logs" / "supervisor.jsonl",
         {
             "ts": utc_now_iso(),
             "type": "safe_restart_dev_import_failed",
@@ -714,7 +745,7 @@ def prepare_managed_update(
         _write_update_intent(update_intent)
 
     append_jsonl(
-        DRIVE_ROOT / "logs" / "supervisor.jsonl",
+        current_drive_root() / "logs" / "supervisor.jsonl",
         {
             "ts": utc_now_iso(),
             "type": "ui_update_requested",

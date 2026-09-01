@@ -113,10 +113,31 @@ from ouroboros.runtime_limits import (
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
 
 # Paths
+#
+# The resolve_*() trio is the per-call form of the constants below (same env
+# precedence). The constants freeze the env of the moment this module was first
+# imported; a writer that must follow isolation applied AFTER its import (an
+# isolated test or a spawned child whose OUROBOROS_* env landed late) resolves
+# per call through these instead of caching a root at import time (the
+# hermeticity class of issue #455).
+
+
+def resolve_app_root() -> pathlib.Path:
+    return pathlib.Path(os.environ.get("OUROBOROS_APP_ROOT", pathlib.Path.home() / "Ouroboros"))
+
+
+def resolve_repo_dir() -> pathlib.Path:
+    return pathlib.Path(os.environ.get("OUROBOROS_REPO_DIR", resolve_app_root() / "repo"))
+
+
+def resolve_data_dir() -> pathlib.Path:
+    return pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR", resolve_app_root() / "data"))
+
+
 HOME = pathlib.Path.home()
-APP_ROOT = pathlib.Path(os.environ.get("OUROBOROS_APP_ROOT", HOME / "Ouroboros"))
-REPO_DIR = pathlib.Path(os.environ.get("OUROBOROS_REPO_DIR", APP_ROOT / "repo"))
-DATA_DIR = pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR", APP_ROOT / "data"))
+APP_ROOT = resolve_app_root()
+REPO_DIR = resolve_repo_dir()
+DATA_DIR = resolve_data_dir()
 SETTINGS_PATH = pathlib.Path(os.environ.get("OUROBOROS_SETTINGS_PATH", DATA_DIR / "settings.json"))
 PID_FILE = pathlib.Path(os.environ.get("OUROBOROS_PID_FILE", APP_ROOT / "ouroboros.pid"))
 PORT_FILE = pathlib.Path(os.environ.get("OUROBOROS_PORT_FILE", DATA_DIR / "state" / "server_port"))

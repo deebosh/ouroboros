@@ -134,6 +134,14 @@ def _bind_pytest_runtime_roots() -> None:
     state.init(root, state.TOTAL_BUDGET_LIMIT)
     queue.init(root, queue.SOFT_TIMEOUT_SEC, queue.HARD_TIMEOUT_SEC)
     workers.DRIVE_ROOT = root
+    # git_ops.DRIVE_ROOT was the one runtime root this rebind list missed
+    # (issue #455): _log_supervisor and the reset/rescue writers resolve
+    # supervisor.jsonl through it. Un-pinned it now lazily follows the env
+    # (git_ops.__getattr__), but the explicit session pin keeps every writer
+    # on ONE root even for tests that mutate OUROBOROS_DATA_DIR mid-test.
+    from supervisor import git_ops
+
+    git_ops.DRIVE_ROOT = root
     # spawn_workers hands str(workers.REPO_DIR) to every child, and the child binds git_ops to
     # it — so leaving this at the live default would send workers started BY A TEST back at the
     # operator's checkout, undoing the isolation above.
