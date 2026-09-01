@@ -211,6 +211,20 @@ def _startup_prune_sweeps() -> None:
             })
     except Exception:
         log.debug("Stale cache prune failed", exc_info=True)
+    try:
+        # CPL4-C16 (owner 4A): memory-journal snapshots older than GC retention
+        # become digest-only (sha256 + length); fresh entries keep full text.
+        from ouroboros.memory_journal_compaction import compact_memory_journal_snapshots
+
+        journal_report = compact_memory_journal_snapshots(DATA_DIR)
+        if journal_report.get("digested") or journal_report.get("errors"):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "memory_journal_compaction",
+                "report": journal_report,
+            })
+    except Exception:
+        log.debug("Memory journal compaction failed", exc_info=True)
 
 
 def _cursor_refresh_settled_terminals() -> None:
