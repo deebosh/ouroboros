@@ -485,6 +485,25 @@ def test_consumed_once_records_are_pruned_past_gc_retention(tmp_path):
     assert pending == []
 
 
+def test_schema_version_is_authored_on_write(tmp_path):
+    """CPL4-C7: the stamp is written to the durable file, not just defaulted on
+    read — a legacy unversioned table gains it on its next write cycle."""
+    import json
+
+    queue, _pending = _queue(tmp_path)
+    path = tmp_path / "state" / "scheduled_tasks.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"tasks": []}), encoding="utf-8")  # legacy: no version
+
+    queue.upsert_scheduled_task({
+        "id": "st", "enabled": True,
+        "trigger": {"type": "once", "run_at": "2999-01-01T00:00:00+00:00"},
+        "task": {"type": "task", "text": "stamped"},
+    })
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["schema_version"] == 1
+
+
 def test_identical_last_error_does_not_rewrite_the_table_every_tick(tmp_path, monkeypatch):
     """Review fix 10a: a permanently invalid record (bad once run_at AND a cron
     row with no expression) writes its typed last_error ONCE; later ticks with the

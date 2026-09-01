@@ -73,6 +73,10 @@ def list_scheduled_tasks(drive_root: pathlib.Path | None = None) -> Dict[str, An
 
 
 def _write_scheduled_tasks(data: Dict[str, Any], drive_root: pathlib.Path | None = None) -> None:
+    # Author the stamp at the write seam (CPL4-C7): reads default it, but a
+    # document that only ever gains its version in memory leaves the durable
+    # file unversioned for every out-of-process reader.
+    data.setdefault("schema_version", 1)
     path = _scheduled_tasks_path(drive_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, data, trailing_newline=True)
