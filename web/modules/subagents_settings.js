@@ -422,6 +422,7 @@ export function createAvailableSubagentsEditor({
     store = claudexorStatus,
     onChange = () => {},
     onDirtyChange = () => {},
+    onJudged = () => {},
     isOuterDraftClean = () => true,
     onGeneratedApply = () => {},
     allowUnloadedOmission = false,
@@ -516,6 +517,8 @@ export function createAvailableSubagentsEditor({
         });
         const box = container.querySelector('[data-subagents-validation]');
         if (box) Object.assign(box, { hidden: !shown.length, textContent: shown[0] || '' });
+        // The host mirrors this verdict in whatever it said about the roster.
+        if (state.saveAttempted) onJudged(!shown.length);
     }
 
     // The Save/Finish button says the owner tried to commit the draft: the rows
@@ -939,6 +942,7 @@ export function availableSubagentsHasExplicitDraft(settings) {
 
 export function initSubagentsSection({
     onChange,
+    onJudged,
     isOuterDraftClean,
     onGeneratedApply,
     previewGenerated = null,
@@ -948,10 +952,9 @@ export function initSubagentsSection({
     settingsEditor = createAvailableSubagentsEditor({
         store,
         onChange: typeof onChange === 'function' ? onChange : () => {},
-        isOuterDraftClean: typeof isOuterDraftClean === 'function'
-            ? isOuterDraftClean : () => true,
-        onGeneratedApply: typeof onGeneratedApply === 'function'
-            ? onGeneratedApply : () => {},
+        onJudged: typeof onJudged === 'function' ? onJudged : () => {},
+        isOuterDraftClean: typeof isOuterDraftClean === 'function' ? isOuterDraftClean : () => true,
+        onGeneratedApply: typeof onGeneratedApply === 'function' ? onGeneratedApply : () => {},
         allowUnloadedOmission: true,
         previewGenerated,
     });

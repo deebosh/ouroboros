@@ -90,10 +90,15 @@ function isTruthySetting(value) {
     return value === true || ['true', '1', 'yes', 'on'].includes(normalized);
 }
 
-function setStatus(text, tone = 'ok') {
+// `owner` names the surface a message belongs to (today only the Available
+// subagents roster claims one); a later message from anyone else drops it, so
+// an owner may clear its own stale message but never a newer one.
+function setStatus(text, tone = 'ok', owner = '') {
     const status = byId('settings-status');
     status.textContent = text;
     status.dataset.tone = tone;
+    if (owner) status.dataset.owner = owner;
+    else delete status.dataset.owner;
 }
 
 function setButtonBusy(button, busy) {
@@ -409,21 +414,17 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     let settingsLoaded = false;
     let settingsBaseline = '';
     let settingsDirty = false;
-    // True while the footer status names a roster error from the last Save;
-    // the fix typed into the card clears that message with the card's own tint
-    // and the section line, so no surface keeps reporting a stale draft.
-    let rosterErrorShown = false;
     const providerTestGenerations = new Map();
     const providerTestsInFlight = new Set();
     initMcpSettings({ onChange: updateSettingsDirtyState });
     initReviewerSlots({ onChange: () => updateSettingsDirtyState() });
     initSubagentsSection({
-        onChange: () => {
-            updateSettingsDirtyState();
-            if (rosterErrorShown && !validateSubagentsDraft().length) {
-                rosterErrorShown = false;
-                setStatus('', 'ok');
-            }
+        onChange: () => updateSettingsDirtyState(),
+        // The roster's section line and the footer message it owns read one
+        // verdict: when the judged rows come clean, the footer clears with the
+        // line and the tint — unless someone else has written the footer since.
+        onJudged: (clean) => {
+            if (clean && byId('settings-status').dataset.owner === 'subagents') setStatus('', 'ok');
         },
         isOuterDraftClean: () => !settingsDirty,
         onGeneratedApply: () => {
@@ -1229,8 +1230,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         }
         const subagentErrors = validateSubagentsDraft();
         if (subagentErrors.length) {
-            setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn');
-            rosterErrorShown = true;
+            setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn', 'subagents');
             return;
         }
         const body = collectBody();

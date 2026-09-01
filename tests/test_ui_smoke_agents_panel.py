@@ -120,21 +120,25 @@ def test_ui_smoke_agents_panel_list_editor(direct_server_with_data):
                 # aborts: with a malformed Every-N cadence the roster is still judged (line +
                 # tint) while the footer names the cadence error. The segmented control's
                 # hidden inputs are poked directly — the cadence row is not the point here.
+                def set_cadence(mode, n):
+                    page.evaluate(
+                        "([mode, n]) => { document.getElementById('s-post-task-evolution-mode').value = mode;"
+                        " document.getElementById('s-evo-cadence-n').value = n; }", [mode, n])
+
+                def save_expecting(footer_prefix):
+                    page.click("#btn-save-settings")
+                    page.wait_for_function(
+                        "(p) => document.getElementById('settings-status').textContent.startsWith(p)",
+                        arg=footer_prefix, timeout=5_000)
+
                 mode_before = page.evaluate("() => document.getElementById('s-post-task-evolution-mode').value")
-                page.evaluate("() => { document.getElementById('s-post-task-evolution-mode').value = 'every_n';"
-                              " document.getElementById('s-evo-cadence-n').value = 'x'; }")
-                page.click("#btn-save-settings")
-                page.wait_for_function(
-                    "() => !document.querySelector('[data-subagents-validation]').hidden", timeout=5_000)
+                set_cadence("every_n", "x")
+                save_expecting("Every-N cadence")
+                assert not page.evaluate("() => document.querySelector('[data-subagents-validation]').hidden")
                 assert page.locator(".available-subagent-row[data-invalid]").count() == 1
-                assert "Every-N cadence" in page.locator("#settings-status").inner_text()
-                page.evaluate("(mode) => { document.getElementById('s-post-task-evolution-mode').value = mode;"
-                              " document.getElementById('s-evo-cadence-n').value = ''; }", mode_before)
+                set_cadence(mode_before, "")
                 # With the cadence valid again, Save names the roster error in the footer too.
-                page.click("#btn-save-settings")
-                page.wait_for_function(
-                    "() => document.getElementById('settings-status').textContent.startsWith('Available subagents:')",
-                    timeout=5_000)
+                save_expecting("Available subagents:")
                 line = page.locator("[data-subagents-validation]").inner_text()
                 assert line.startswith("Subagent 4 needs a model or agent-session route.")
                 tinted = page.locator(".available-subagent-row[data-invalid]")
@@ -142,23 +146,38 @@ def test_ui_smoke_agents_panel_list_editor(direct_server_with_data):
                 assert tinted.locator('[data-subagent-meta][data-tone="error"]').inner_text().startswith(
                     "Subagent 4 needs")
 
-                # A fix typed into the field clears the section line and the tint TOGETHER …
-                tinted.locator('[data-subagent-field="model"]').fill("openai/gpt-5.6-luna")
-                page.wait_for_function(
-                    "() => document.querySelector('[data-subagents-validation]').hidden"
-                    " && !document.querySelector('.available-subagent-row[data-invalid]')",
-                    timeout=5_000,
-                )
-                assert "Subagent 4" not in page.locator("#settings-status").inner_text()
-                # … and the NEXT added entry is still an invitation, not an error: the
-                # attempt judged the rows that existed then, not every row forever.
+                # The NEXT added entry is still an invitation: the attempt judged the rows
+                # that existed then, not every row forever — row 4 stays judged beside it.
                 page.click("[data-subagent-add]")
                 page.wait_for_function(
                     "() => document.querySelectorAll('.available-subagent-row').length === 5", timeout=5_000)
-                assert page.evaluate("() => document.querySelector('[data-subagents-validation]').hidden") is True
-                assert page.locator(".available-subagent-row[data-invalid]").count() == 0
-                assert "Choose how this subagent runs" in page.locator(
-                    ".available-subagent-row").last.locator("[data-subagent-meta]").inner_text()
+                fresh = page.locator(".available-subagent-row").last
+                assert not fresh.evaluate("(el) => el.hasAttribute('data-invalid')")
+                assert "Choose how this subagent runs" in fresh.locator("[data-subagent-meta]").inner_text()
+                assert page.locator(".available-subagent-row[data-invalid]").count() == 1
+
+                # A fix typed into the judged card clears the section line, the tint AND the
+                # roster-owned footer message together; the unjudged fresh row keeps none of
+                # them alive.
+                tinted.locator('[data-subagent-field="model"]').fill("openai/gpt-5.6-luna")
+                page.wait_for_function(
+                    "() => document.querySelector('[data-subagents-validation]').hidden"
+                    " && !document.querySelector('.available-subagent-row[data-invalid]')"
+                    " && !document.getElementById('settings-status').textContent.startsWith('Available subagents:')",
+                    timeout=5_000,
+                )
+
+                # A newer, unrelated footer message is not the roster's to clear: the cadence
+                # error written by the next Save survives the roster fix that follows it.
+                set_cadence("every_n", "x")
+                save_expecting("Every-N cadence")
+                assert page.locator(".available-subagent-row[data-invalid]").count() == 1
+                fresh.locator('[data-subagent-field="model"]').fill("openai/gpt-5.6-luna")
+                page.wait_for_function(
+                    "() => document.querySelector('[data-subagents-validation]').hidden"
+                    " && !document.querySelector('.available-subagent-row[data-invalid]')", timeout=5_000)
+                assert page.locator("#settings-status").inner_text().startswith("Every-N cadence")
+                set_cadence(mode_before, "")
 
                 # Review lanes: the group's Add sits in its head and reveals the appended row.
                 assert page.evaluate(
@@ -198,5 +217,137 @@ def test_ui_smoke_agents_panel_list_editor(direct_server_with_data):
                     webkit.close()
     except PlaywrightError as exc:
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+            pytest.skip(str(exc))
+        raise
+
+
+def _wizard_step_until(page, predicate_js: str, forward: bool, limit: int = 8) -> None:
+    """Walk the wizard with Next/Back until `predicate_js` holds. Steps that hold Continue
+    until they have a value (a provider key, the main/light models) get placeholders — the
+    subject here is the Agents step and the summary's Finish, not those steps."""
+    placeholders = {
+        "#openrouter-key": "sk-or-placeholder-not-real",
+        "#main-model": "openai/gpt-5.6-luna",
+        "#light-model": "openai/gpt-5.6-luna",
+    }
+    for _ in range(limit):
+        if page.locator("#onboarding-available-subagents").count():
+            # The Agents step settles asynchronously (saved roster or generated draft);
+            # judge it only once it shows rows or its own failure line.
+            page.wait_for_function(
+                "() => document.querySelectorAll('#onboarding-available-subagents .available-subagent-row').length"
+                " || !document.querySelector('#onboarding-available-subagents [data-subagents-validation]').hidden",
+                timeout=20_000)
+        if page.evaluate(predicate_js):
+            return
+        if forward and page.evaluate("() => Boolean(document.getElementById('next-btn')?.disabled)"):
+            for selector, value in placeholders.items():
+                if page.locator(selector).count() and not page.input_value(selector):
+                    page.fill(selector, value)
+        button = "#next-btn" if forward else "#back-btn"
+        try:
+            # A step may hold its button while it settles (a probe, a preview).
+            page.wait_for_function(
+                "(id) => !document.querySelector(id)?.disabled", arg=button, timeout=15_000)
+        except Exception as exc:  # noqa: BLE001 - the step's own state is the useful message
+            step = page.evaluate(
+                "() => ({title: document.querySelector('.step-title')?.textContent,"
+                " error: document.querySelector('.wizard-error')?.textContent,"
+                " inputs: [...document.querySelectorAll('input:not([type=hidden])')].map((i) => i.id)})")
+            raise AssertionError(f"wizard button {button} stayed disabled on {step}") from exc
+        page.click(button)
+        page.wait_for_timeout(300)
+    seen = page.evaluate(
+        "() => ({title: document.querySelector('.step-title')?.textContent,"
+        " agents: (document.querySelector('#onboarding-available-subagents')?.innerText || '').slice(0, 400)})")
+    raise AssertionError(f"wizard never reached: {predicate_js}; last seen {seen}")
+
+
+_WIZARD_ON_AGENTS_JS = "() => document.querySelectorAll('#onboarding-available-subagents .available-subagent-row').length > 0"
+_WIZARD_ON_SUMMARY_JS = "() => (document.querySelector('.step-title')?.textContent || '').startsWith('Review before launch')"
+
+
+@pytest.mark.ui_browser
+def test_ui_smoke_agents_panel_wizard_finish_judges_the_roster(direct_server_with_data):
+    """First-run wizard (docs/ARCHITECTURE.md §3): an unrouted entry added on the Agents step
+    does not block Continue; Finish on the summary reports it and, back on Agents, the card
+    is already tinted and self-naming; the fix reconciles line and tint together and the
+    second Finish succeeds."""
+    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    # A saved roster on an OpenRouter-shaped install: the Agents step's preview validates
+    # the model setup the way a first run does, and the shared fixture's mock-LLM model is
+    # not a confirmed main model — so this test mirrors an owner's machine instead.
+    settings_path = direct_server_with_data["data_dir"] / "settings.json"
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    for key in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_HEAVY", "OUROBOROS_MODEL_LIGHT", "OUROBOROS_MODEL_FALLBACKS"):
+        saved.pop(key, None)
+    saved["OPENROUTER_API_KEY"] = "sk-or-v1-smoke-placeholder-not-real"
+    saved["OUROBOROS_SUBAGENTS"] = json.dumps(_AGENTS_PANEL_ROSTER)
+    settings_path.write_text(json.dumps(saved), encoding="utf-8")
+    direct_server_with_data["restart_server"]()
+    url = direct_server_with_data["url"]
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": 1440, "height": 900})
+                page.goto(f"{url}/onboarding", wait_until="domcontentloaded")
+                page.wait_for_selector("#next-btn", timeout=30_000)
+                _wizard_step_until(page, _WIZARD_ON_AGENTS_JS, forward=True)
+                # The step may still be generating its draft; Add waits for it to settle.
+                page.wait_for_function(
+                    "() => !document.querySelector('#onboarding-available-subagents [data-subagent-add]').disabled",
+                    timeout=20_000)
+                before = page.locator("#onboarding-available-subagents .available-subagent-row").count()
+                page.click("#onboarding-available-subagents [data-subagent-add]")
+                page.wait_for_function(
+                    "(n) => document.querySelectorAll('#onboarding-available-subagents .available-subagent-row')"
+                    ".length === n + 1", arg=before, timeout=5_000)
+                assert page.locator(
+                    "#onboarding-available-subagents .available-subagent-row[data-invalid]").count() == 0
+
+                _wizard_step_until(page, _WIZARD_ON_SUMMARY_JS, forward=True)
+                page.click("#next-btn")
+                page.wait_for_function(
+                    "(n) => (document.querySelector('.wizard-error')?.textContent || '')"
+                    ".startsWith('Subagent ' + n + ' needs')", arg=before + 1, timeout=5_000)
+
+                _wizard_step_until(page, _WIZARD_ON_AGENTS_JS, forward=False)
+                tinted = page.locator("#onboarding-available-subagents .available-subagent-row[data-invalid]")
+                assert tinted.count() == 1
+                assert tinted.locator('[data-subagent-meta][data-tone="error"]').inner_text().startswith(
+                    f"Subagent {before + 1} needs")
+                assert not page.evaluate(
+                    "() => document.querySelector('#onboarding-available-subagents [data-subagents-validation]').hidden")
+
+                tinted.locator('[data-subagent-field="model"]').fill("openai/gpt-5.6-luna")
+                page.wait_for_function(
+                    "() => document.querySelector('#onboarding-available-subagents [data-subagents-validation]').hidden"
+                    " && !document.querySelector('#onboarding-available-subagents .available-subagent-row[data-invalid]')",
+                    timeout=5_000)
+
+                _wizard_step_until(page, _WIZARD_ON_SUMMARY_JS, forward=True)
+                page.click("#next-btn")
+                # The second Finish passes the wizard's own checks and hands the draft to
+                # the save (which probes providers — with a placeholder key that round-trip
+                # is not this test's subject): saved, or saving with no wizard error.
+                try:
+                    page.wait_for_function(
+                        "() => (document.querySelector('.step-title')?.textContent || '').startsWith('Setup saved')"
+                        " || (document.getElementById('next-btn')?.disabled"
+                        "     && !(document.querySelector('.wizard-error')?.textContent || '').trim())",
+                        timeout=10_000)
+                except Exception as exc:  # noqa: BLE001 - the wizard's own error is the useful message
+                    seen = page.evaluate(
+                        "() => ({title: document.querySelector('.step-title')?.textContent,"
+                        " error: document.querySelector('.wizard-error')?.textContent})")
+                    raise AssertionError(f"second Finish was refused: {seen}") from exc
+            finally:
+                browser.close()
+    except PlaywrightError as exc:
+        if "executable doesn't exist" in str(exc).lower():
             pytest.skip(str(exc))
         raise
