@@ -261,6 +261,24 @@ not move them into the migrated set in section 8.
   `--menu-item-hover`. One gesture, one fill: a menu that highlights at a
   different strength than the menu beside it reads as a different control.
 
+### List editors
+
+A list editor is any section where the owner adds and edits entries in place:
+the Available subagents roster, the Review lanes groups, MCP servers, custom
+keys.
+
+- A section-level add action acts from its group's header (§6). A list
+  editor's new entry appears at the end of its own group, is scrolled into
+  view — the shortest distance, without animation — and takes the caret in its
+  first field. A button that stays in view while the entry it made is born
+  off-screen has not finished its job.
+- A freshly added entry is an invitation, not an error. It shows a neutral hint
+  in its own meta line until the owner tries to save; the error then names the
+  entry and stands beside it — the entry tinted with the status pair, never
+  dimmed — with the section-level line as the summary.
+- A multi-field card (an MCP server) follows the add-and-reveal rule without
+  adopting the §6 row anatomy.
+
 ### Reviews inside task cards
 
 Real tasks and real subagents are cards. Reviews are a subsection of the

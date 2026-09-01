@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULES = ROOT / "web" / "modules"
@@ -28,6 +29,41 @@ def test_available_subagents_is_one_canonical_settings_editor() -> None:
     assert 'data-subagent-field="name"' not in editor
     for action in ("data-subagent-add", "data-subagent-duplicate", "data-subagent-remove"):
         assert action in editor
+
+
+def test_every_list_editor_reveals_its_added_entry_through_the_shared_helper() -> None:
+    """docs/DESIGN.md "List editors": a new entry is scrolled into view and takes
+    the caret through ONE seam, `ui_helpers.revealNewRow` — a local
+    scrollIntoView/focus pair in an add path is the class this pins closed
+    (DEVELOPMENT.md § Design System). The class is every Settings list editor,
+    not the panel the owner happened to report."""
+    helper = _read(MODULES / "ui_helpers.js")
+    assert "export function revealNewRow(row, field)" in helper
+    assert "scrollIntoView?.({ block: 'nearest' })" in helper
+    assert "focus?.({ preventScroll: true })" in helper
+    for name in ("subagents_settings.js", "reviewer_slots.js", "mcp_settings.js", "settings.js"):
+        source = _read(MODULES / name)
+        assert re.search(r"import \{[^}]*\brevealNewRow\b[^}]*\} from './ui_helpers\.js'", source), name
+        assert "revealNewRow(" in source, f"{name} never calls the shared reveal"
+    for name in ("subagents_settings.js", "reviewer_slots.js", "mcp_settings.js"):
+        assert "scrollIntoView" not in _read(MODULES / name), f"{name} rolls its own reveal"
+
+
+def test_a_fresh_subagent_row_invites_and_only_a_save_attempt_makes_it_red() -> None:
+    """docs/DESIGN.md "List editors": the section-level line and the row-local
+    tint appear only after the owner tried to save; Save and Finish say so
+    through `noteSaveAttempt`, and `validate()` stays pure."""
+    editor = _read(MODULES / "subagents_settings.js")
+    assert "noteSaveAttempt" in editor
+    assert "validate: validationErrors," in editor
+    assert "state.saveAttempted && " in editor
+    assert "Choose how this subagent runs: an API model or an agent session." in _read(
+        MODULES / "subagent_status_primitives.js")
+    assert "noteSubagentsSaveAttempt();" in _read(MODULES / "settings.js")
+    assert "agentsStep?.noteSaveAttempt?.();" in _read(MODULES / "onboarding_wizard.js")
+    # Errors name the card the way its heading does, never a bare "Row N".
+    assert "`Subagent ${index + 1} ${text}`" in editor
+    assert "`Row ${index + 1}`" not in editor
 
 
 def test_route_editor_extraction_does_not_merge_reviewer_semantics() -> None:

@@ -2466,6 +2466,12 @@ existing token, not declaring a new one.
   shared toast host unless status belongs to a permanently reserved control
   row. Working, warning, error, and destructive states keep consistent meaning
   across Chat, Logs, Settings, and Skills.
+- A list editor reveals the entry it just added through
+  `ui_helpers.revealNewRow(row, field)` — the one seam for "scrolled into
+  view, caret in the first field" (`docs/DESIGN.md` "List editors"). A local
+  `scrollIntoView`/`focus` pair in an add path is review debt, and a freshly
+  added entry shows no error before the owner tries to save
+  (`tests/test_available_subagents_ui_static.py` pins both).
 - Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
   `taskTerminalPhase`; `taskPresentation` is the one compact factual projection
   consumed by task chips, live completion, history replay, and child terminal
