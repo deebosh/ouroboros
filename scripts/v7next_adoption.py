@@ -55,7 +55,14 @@ REQUIRED_CPL = tuple(f"CPL-{n}" for n in range(1, 8))
 REQUIRED_PHASE = {
     # D02 F1->F3: owner-ratified F3 layout (2026-08-31) — the typed organ is
     # re-derived whole by the F3.1 lane A; seam commit updates row + pin together.
-    "D02": "F3", "D03": "F1", "D04": "F1", "D05": "F1", "D06": "F1",
+    # D03 F1->F6 (ADOPTION truth wave, 2026-09-01): F1 closed with the settings
+    # seam's rows 913-917/1080-1081 still hot-deferred, so the pin named a dead
+    # phase. F6 is the live phase. This is an OPERATOR scheduling correction, not
+    # an owner decision — disclosed in the manifest row and the ledger so the
+    # owner can overturn it. Sibling rows D04/D05/D06/D35 have the same stale F1
+    # pin with owner-scheduled lanes still owed; they were deliberately left
+    # alone here (one decision per class, and nobody has decided this one).
+    "D02": "F3", "D03": "F6", "D04": "F1", "D05": "F1", "D06": "F1",
     "D07": "F2", "D08": "F2", "D09": "F1", "D11": "F1", "D13": "F1",
     "D18": "F1", "D31": "F2", "D33": "F1", "D34": "F2", "D35": "F1",
     "D36": "F2", "D37": "F2", "D38": "F1",

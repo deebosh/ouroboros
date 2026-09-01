@@ -5575,3 +5575,172 @@ Cross-cutting notes:
   test". That is no longer true — `review_reference` and the two nested
   siblings are exactly such types and now carry declared rows — so the sentence
   now points at the taxonomy.
+## From the ADOPTION truth wave (base bef13f5e, 2026-09-01)
+
+`ADOPTION_v7next.md` is the release inventory, and until this wave it was the
+one campaign artifact nobody re-read against the tree. Its rows were written at
+F0 and left alone: eleven deltas that LANDED months of lanes ago still read
+`pending`, four rows still carried `pending-decision` after the owner had
+answered them, and several hook cells named suites from the frozen reference
+that do not exist here — a hook that cannot resolve proves nothing, and a
+`pending` row whose work is done hides completed work exactly as badly as a
+`done` row whose work is not.
+
+This wave changes NO code. It is a bookkeeping pass in which every row was
+re-read against the tree, every flip proven by running the suite named in its
+new hook cell, and every remainder written down rather than rounded away. The
+rule applied throughout: a row goes `done` only when a resolvable file hook
+exists AND is green here; a row that owes work keeps its honest status and
+describes the owed suite in `what` instead of spelling a non-existent path in
+the hook cell.
+
+### The flips, one row per line
+
+| row | was | became | hook | evidence |
+|---|---|---|---|---|
+| D07 | `pending-decision` / `pending`, hook = the cancellation E2E suite (E1–E12) | `re-prove` / `done` | `tests/test_panic_stop_port_sweep.py` (both bound-port pins) + `tests/test_server_control_panic_daemon.py` + `tests/test_post_task_evolution.py::test_execute_panic_stop_wires_owner_stop` | Owner batch №5 5.5-5.8=A (2026-08-31) took the §5.4 three-column pass, so the disposition had no reason left to be `pending-decision`; the code landed at `88479fa7`. The F0 hook was REPLACED, not extended — the cancellation E2E suite pins nothing about the panic sweep, so it could never have proven this row |
+| D08 | `pending-decision` / `pending`, hook = `tests/test_cancel_protocol_inventory_s6.py`, `what` = "same three-column pass as D07" | `re-prove` / `done` | + `tests/test_cancel_intent_corruption_s6.py` + `tests/test_subagent_worktree_registry_s6.py` | Re-proven from the owner batch verbatim rather than by cross-reference: 5.6=A (the four fail-open cancel-intent mutators re-derived on the upstream custody floor; `request_cancel`/`claim_intent` already strict = the one superseded sub-row) and 5.10=A (the `subagent_worktrees` strict registry applied byte-identical). Landed by `1b4a8da9` and `4fffefb1`. The borrowed-resolution cross-reference is dropped — both rows now carry their own |
+| D09 | `re-prove` / `pending`, hook = `tests/test_llm_extraction.py` + "Ф4 D09-invariant scenario (plan §8)" | `re-prove` / `done` | `tests/test_context_overflow_hint.py::test_local_transport_makes_exactly_one_physical_attempt` + `tests/test_llm_typed_policy_refusal.py` + `tests/test_llm_provider_golden.py` + `tests/test_multiprovider_conformance.py::test_typed_policy_refusal_is_permanent_one_send_only` + `tests/test_llm_extraction.py` | Both halves landed (`86244943` deleted the `for attempt in range(3)` loop, `b94a6d1d` brought the typed-refusal subfamily with goldens 15→17). Two corrections travel with the flip. ADDRESS: the F0 row's `llm.py:2487` is the pre-split base address — the lane lives in `ouroboros/llm_local.py` here. PROMISE NOT KEPT, now disclosed instead of dropped: the Ф4 "D09-scenario" was never built. `tests/system_e2e/` runs S1–S23 and none of them is an LLM-routing row (checked by enumeration, not by memory); the invariant is carried by the unit, golden and CPL-6 conformance pins. Building an S24 belongs to the scenario lane |
+| D11 | `retain` / `pending`, hook = "`scripts/v7_migration.py`-style ledger checker (reference: v7_wip)" | `retain` / `done` | `tests/test_repo_health_smoke.py::test_transition_allows_a_same_qualname_relocation_but_not_a_swap` + `tests/test_smoke.py::test_size_ratchet_transition_against_explicit_base` | Landed by `d1c8fca4` and exercised on real history by `14567df5`. HOOK REPLACED: the F0 cell named a checker from the frozen reference that does not exist in this tree — an unresolvable hook on a row whose work was finished |
+| D31 | `re-prove` / `pending` | `re-prove` / `done` | `tests/test_external_review_script.py` (D31 pins named individually) | Landed by `3b62c1d6` with the marker teeth of `db944347` and preserved through the F6 sync; upstream still carries the classifier gate instead, so the delta is live, not superseded |
+| D33 | `re-prove` / `pending` | `re-prove` / `done` | `tests/test_module_handle_extraction.py` (the nine `_loop` LEAVES rows) + `tests/test_loop_owner_facades.py` | Landed by `f0d8b147`, declared sets re-derived after the F6 sync |
+| D34 | `re-prove` / `pending` | `re-prove` / `done` | + `tests/test_update_merge_owner_facade.py` + `tests/test_update_merge_assisted.py::test_materialize_projects_version_to_target_and_pins_m0` | Landed by `7f0a1124` under owner 5.12-5.14=A. Two residuals disclosed in the row rather than left implicit by `done`: the engine governs steady state only (the first pre-v7 upgrade still runs the OLD updater) and the boot-recovery M0 backfill degrades to assisted |
+| D36 | `re-prove` / `pending` | `re-prove` / `done` | `tests/test_module_handle_extraction.py` (the four delegate-family rows) + `tests/test_delegate_owner_facades.py` | Landed by `782b5fe3` and `1b4a8da9`; the leaf rename `delegate_terminal` → `delegate_terminal_evidence` is owner 5.9=A |
+| D37 | `re-prove` / `pending` | `re-prove` / `done` | `tests/test_module_handle_extraction.py` (three review-stack rows) + `tests/test_review_owner_facades.py` | Landed by `04b1de9c` and `3b62c1d6`. The reference leaf names `review_advisory_prompt`/`run` were byte-falsified by the drift probe (the SDK transport had been retired) and were re-minted under the organ's public rename |
+| D38 | `re-prove` / `pending` | `re-prove` / `done` | + `tests/test_lc2_owner_facades.py` + `tests/test_generated_inventories.py::test_facade_inventory_is_byte_identical` | Landed by `1a17218d` and `f0d8b147`. Disclosed: the usage declared set and the `post_task_synthesis` handle diverge from the frozen reference table — tip truth |
+| ABI-6 | `retain` / `in-progress`, hook = "ruff F + targeted per-item suites + grep-level absence checks" | `retain` / `done` | `tests/test_contracts.py::test_api_v1_shim_removed_and_gateway_declares_core_ws_message_types` + `tests/test_gateway_abi3_removals.py` (`TestApiV1ShimRemoval`) + `tests/test_tool_classification_differential.py` + the per-item consumer suites | Both ROUTED items closed since the F0 text was written: the `_typed_or_adapted` branch was not reproduced by the F3.1 lane A re-derivation (`ccbb933a`, zero tip hits) and the `contracts/api_v1` shim was removed with negative pins by lane D3 (`33ba6e83`). HOOK REPLACED: the F0 cell was prose plus grep verbs and could never resolve. RESIDUAL kept in the row: the three F3.0 removals are proven by surviving positive suites plus grep-level absence, not by dedicated negative pins |
+
+### The rows that did NOT flip, and why
+
+- **D03 — partial, and the hook the F0 row promised does not exist.**
+  `tests/test_settings_read_seam.py` is a reference name with no file behind
+  it. The vocabulary split (oracle rows 840-912) and the launcher half (rows
+  918-920) landed at `a4481521`; the semantic delta proper — rows 913-917 and
+  1080-1081 — is hot-deferred and no later train re-derived it. The hook cell
+  now names the two landed halves (`tests/test_config_extraction.py`,
+  `tests/test_onboarding_host.py`), both green here, and the owed pin is
+  described in `what` instead of being spelled as a path. The phase moved
+  F1→F6 because F1 closed without the remainder, so the cell named a dead
+  phase; `scripts/v7next_adoption.py`'s `REQUIRED_PHASE` moved in the SAME
+  commit, which is the point of that pin. Recorded plainly: this is an
+  OPERATOR scheduling correction, not an owner decision about where the
+  remainder lands, and the owner may overturn it.
+- **D18 — the four F2.2 leaves were proof-green and never pinned.** The f22
+  ledger entry claimed `queue_snapshot`, `queue_timeouts`, `worker_health` and
+  `worker_assignment` had their declared sets in `LEAVES`; the tree did not
+  bear it out, so none of the three parametrized invariants was running on
+  them. `fc1528d5` adds the four rows with tool-derived exact read sets — 147
+  passed, up from 135. DISPOSITION OF MIGRATION ROW 1030, which is why the row
+  stays `pending`: the `QUEUE_SNAPSHOT_PATH` single-authority collapse is
+  neither re-applied nor dispositioned. Verified on the tree, not assumed —
+  `supervisor/queue.py:17` imports the name from `supervisor/state.py` and
+  `supervisor/queue.py:71-73` rebinds its own copy in `init()`, beside
+  `supervisor/state.py:31,41-46` doing the same. Two module globals answer one
+  question and agree only because both inits are handed the same drive root.
+  That is a live single-authority defect, so the row cannot go `done`, and
+  choosing which global wins is a change to durable-state addressing — a lane,
+  not a bookkeeping edit.
+- **R-WINWAVE — the registry now exists; the matrix that would prove it does
+  not.** `docs/v7next/WINWAVE_CLASS_REGISTRY.md` records one decision per
+  class: 7 re-applied in reference form, 3 superseded-by-upstream, 6
+  not-applicable because the carriers the reference patched are absent here.
+  The count is SIXTEEN, not the fifteen the campaign audit's summary line
+  said: the recount separates the `PermissionError`-beside-`IsADirectoryError`
+  clause from the `tools.jsonl` utf-8 read, which that line had merged. A
+  seventeenth class was found by the matrix itself and is recorded the same
+  way — source-text regex pins in the JS suite cannot match a CRLF checkout —
+  decided narrowly (normalize at the two `readFileSync` reads) and fixed by
+  `a0b35fcd`, which is NOT an ancestor of this worktree. Run log: run
+  33555971481 on `9a28e58f` is green on ubuntu and macos and RED on windows on
+  exactly that class; run 33563498919 on `196438c9` carries the fix
+  (`a0b35fcd` verified as an ancestor of `196438c9`) and is recorded as
+  **pending** because nobody here read its result. The hook cell now points at
+  the registry plus the per-class Linux pins — a real file that a reader can
+  open — instead of the F0 cell's prose `gh workflow run` invocation.
+- **D04, D05, D06, D35 — owner-decided, lanes owed.** These are not operator
+  judgements; owner batch №9 (2026-09-01) answered all four, and three of the
+  four answers went AGAINST the operator's recommendation. №1=B: retire
+  `OUROBOROS_SOFT/HARD_TIMEOUT_SEC` in 7.0 via `RETIRED_SETTING_KEYS` rather
+  than accept upstream's keep-and-warn form — lane d04d06. №2=B: port
+  `_safety_drive_root` and the function-scope budget import INTO the protected
+  `ouroboros/safety.py` rather than keep the upstream form and disclose the
+  residual — lane gates; the B answer is itself the explicit owner sanction
+  the protected-file rule requires. №3=A: build the four-tier event taxonomy
+  in 7.0, absorbing (not forking) the upstream `telemetry_events.py` registry
+  that arrived with the F6 sync — lane d04d06. №13=B: do the transport work
+  (f-string support in the transplant tool) and move `prepare_managed_update`
+  and `safe_restart` rather than ratify their current facade shape — lane d35.
+  All four keep `status = pending` with those texts in `what`; their
+  dispositions leave `pending-decision` for `re-prove`, because a decision the
+  owner has taken is no longer a decision that is owed. Their phase cells
+  still read F1 although F1 is closed: re-phasing a required row is an owner
+  decision and this wave does not invent one.
+
+### Prose corrections in the same manifest
+
+1. **"17 delta families" → 18.** The header sentence had read 17 since the F0
+   skeleton. The list it introduces (`D02–D09, D11, D13, D18, D31, D33–D38`)
+   and the validator's `REQUIRED_DELTAS` tuple both hold 18 and always did.
+   The word was wrong, not the inventory — a documentation error, not a
+   missing row, and it is stated that way so no one goes looking for a
+   nineteenth family.
+2. **CPL-1 "488 tracked runtime modules" → 504.** Re-counted from the manifest
+   rather than carried forward: `docs/DOMAIN_MAP.md` totals 504 across the
+   twenty domains, and `ouroboros/domains.toml` has 504 module entries. The
+   488 was true when the row was written and stopped being true when the F6
+   sync and the accepted proposed placements grew the population. The same row
+   loses its stale open residual: the 80 `[classification].proposed`
+   placements were accepted as the 7.0 base by owner batch №9 №10=A and the
+   map regenerated with zero starred rows (`8e885412`).
+3. **TRAIN-F6-8d13373b "(owner signal, 2026-09-01)" → the real provenance.**
+   The parenthetical claimed the «иди забирай» signal that the Q1 adoption
+   contract names. That signal was not given for this train. The train was
+   adopted on the OPERATOR's inference from the owner's «И надо как-то
+   ускоряться … а то уроборос двигается вперёд быстрее чем ты работаешь»
+   (10:10Z), and the owner sanctioned taking upstream POST HOC — after the
+   merge — with «уроборос далеко уехал в ветке ouroboros … можешь
+   ребейзнуться, забрать оттуда вещи новые» (19:12Z). The sanction is real and
+   the train stands; the ORDER is what was misstated, and a row that reads
+   "owner signal" where the truth is "operator inference, sanctioned
+   afterwards" is precisely the kind of drift this ledger exists to catch.
+   CPL-4 and CPL-5 were left untouched by this wave.
+
+### What `--release` still refuses, verbatim
+
+The validator is green in normal mode and red at the release bar. The eight
+refusals are the honest remainder of the campaign, and they are listed here so
+that nobody has to run the tool to learn the size of what is left:
+
+```
+release: D03 status 'pending' != done
+release: D04 status 'pending' != done
+release: D05 status 'pending' != done
+release: D06 status 'pending' != done
+release: D18 status 'pending' != done
+release: D35 status 'pending' != done
+release: R-WINWAVE status 'pending' != done
+release: CPL-4 status 'in-progress' != done
+```
+
+Every one is a status refusal. NOT ONE is a hook-resolution refusal, and that
+is the load-bearing result of this wave: `--release` resolves every `tests/`,
+`scripts/` and `docs/` token in the hook cell of every `done` row and would
+name any that pointed at a missing file. Before the wave, four rows (D07, D09,
+D11, ABI-6) carried hooks that could not resolve at all; after it, the whole
+inventory's hook surface is real files. The suites behind them were RUN, not
+merely resolved — 74 hook files, green.
+
+### Notes rewritten under the rows
+
+- The F0 note "the `pending-decision` rows (D04, D05, D07, D08) are exactly the
+  deltas that need the plan §5.4 three-column matrix" is now false and was
+  replaced rather than left to age: all four have their resolutions (D07/D08
+  from batch №5, D04/D05 from batch №9). The enum value stays in the schema
+  for the next genuine fork.
+- The F0 note "hook suites named from the frozen reference do not exist on this
+  tree yet; the validator checks the manifest contract, not hook existence" was
+  written before the release-bar hook contract existed. The replacement states
+  the contract that is actually enforced, and states the corollary that governs
+  the non-`done` rows: an owed suite is described in `what`, never spelled as a
+  path in the hook cell, because a path nobody wrote reads as a hook and proves
+  nothing.
