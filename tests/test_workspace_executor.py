@@ -539,3 +539,68 @@ def test_docker_executor_protected_artifact_policy_matches_host_and_backend_spel
     assert "RESOURCE_POLICY_BLOCKED" in backend_policy_host_arg
     assert "RESOURCE_POLICY_BLOCKED" in relative_policy_backend_arg
     assert "RESOURCE_POLICY_BLOCKED" in backend_policy_interpreter_arg
+
+
+def test_overlay_env_is_case_aware():
+    """T17 pin: the shared local-env merge replaces a Windows case-variant key
+    instead of duplicating it, and stays exact-match on POSIX."""
+    from ouroboros import workspace_executor as wx
+
+    base = {"Path": "C:/old", "HOME": "/h"}
+    overlay = {"PATH": "/bundle:C:/old"}
+    real = wx.IS_WINDOWS
+    try:
+        wx.IS_WINDOWS = True
+        merged = wx.overlay_env(base, overlay)
+        assert merged["PATH"] == "/bundle:C:/old" and "Path" not in merged
+        wx.IS_WINDOWS = False
+        merged = wx.overlay_env(base, overlay)
+        assert merged["Path"] == "C:/old" and merged["PATH"] == "/bundle:C:/old"
+    finally:
+        wx.IS_WINDOWS = real
+    assert wx.overlay_env(base, None) == base
+
+
+def test_start_service_local_branch_uses_case_aware_overlay(tmp_path, monkeypatch):
+    """T19 pin: the LOCAL start_service branch merges env_overlay through the
+    shared case-aware helper — a stale case-variant Path never survives next to
+    the attested PATH prepend (grok A-F finding)."""
+    from types import SimpleNamespace
+
+    from ouroboros import workspace_executor as wx
+
+    captured = {}
+
+    def fake_spawn(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(pid=4242, poll=lambda: None)
+
+    monkeypatch.setattr("ouroboros.process_custody.spawn_supervised", fake_spawn)
+    monkeypatch.setattr(wx, "IS_WINDOWS", True)
+    monkeypatch.setenv("Path", "C:/stale")
+    monkeypatch.delenv("PATH", raising=False)
+    ctx = SimpleNamespace(
+        task_id="svc-overlay",
+        drive_root=tmp_path,
+        executor_ref={
+            "type": "local",
+            "id": "local-overlay",
+            "workspace_host_path": str(tmp_path),
+            "workspace_backend_path": "/workspace",
+        },
+    )
+    payload = wx.start_service(
+        ctx,
+        name="svc",
+        cmd=["node", "server.js"],
+        host_cwd=tmp_path,
+        cwd_root="task_drive",
+        readiness={},
+        outputs=[],
+        before_outputs={},
+        env_overlay={"PATH": "/bundle/bin:C:/stale"},
+    )
+    env = captured["env"]
+    assert env["PATH"] == "/bundle/bin:C:/stale"
+    assert "Path" not in env
+    assert payload.get("state") in ("running", "ready", "started", None) or payload

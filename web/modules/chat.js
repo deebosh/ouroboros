@@ -1,12 +1,11 @@
-import {
-    escapeHtmlAttr,
-    escapeHtmlText as escapeHtml,
-    renderMarkdown,
-} from './utils.js';
+import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
+import { destroyChatMarkdown, enhanceChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
 import { renderPageHeader } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
-import { createSystemMessageAction, downloadViaHostBridge, openViaHostBridge } from './ui_helpers.js';
+import { createSystemMessageAction } from './ui_helpers.js';
+import { createChatMedia, showTaskIncidentToast } from './chat_media.js';
+import { createChatDecision } from './chat_decision.js';
 import { clientSurfaceField } from './client_surface.js';
 import { apiClient, apiFetch, fetchTaskDetail, fetchTaskDetailStrict } from './api_client.js';
 import {
@@ -30,11 +29,13 @@ import {
     ACTION_FINALIZE,
     ACTION_HURRY,
     REUSABLE_TASK_IDS,
+    ACTION_RESUME,
     TASK_CONTROL_TRIGGER_LABEL,
     cancelRunEligibility,
     hurryTaskAction,
     openTaskControlMenu,
     requestStop,
+    resumeTaskAction,
     taskControlBusy,
 } from './task_control_menu.js';
 import { openConfirmDialog } from './confirm_dialog.js';
@@ -65,6 +66,7 @@ import { harnessIdentityMarkup } from './harness_presentation.js';
 import {
     createHistoryResyncScheduler,
     createRebuildBatch,
+    createTimelineAnchors,
     insertTimelineNode,
     loadOlderControlState,
     nextQuotaEscalation,
@@ -102,7 +104,6 @@ import {
     rawTimestampEpoch,
     reconcileHydratedDirectActivities,
     reconnectBannerText,
-    routingAnnotationText,
     saveChatInputHistory,
     senderLabel,
     shouldAlwaysShowTaskCard,
@@ -144,20 +145,6 @@ const CHAT_INPUT_HISTORY_KEY = 'ouro_chat_input_history';
 const MAX_PENDING_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_PENDING_ATTACHMENT_BYTES = 100 * 1024 * 1024;
-const shownIncidentToastKeys = new Set();
-
-function showTaskIncidentToast(msg) {
-    const incident = taskKey(msg?.task_incident);
-    if (!incident) return;
-    const key = String(msg?.toast_once || `${msg?.task_id || ''}:${incident}`).trim();
-    if (!key || shownIncidentToastKeys.has(key)) return;
-    shownIncidentToastKeys.add(key);
-    if (shownIncidentToastKeys.size > 500) {
-        const oldest = shownIncidentToastKeys.values().next().value;
-        shownIncidentToastKeys.delete(oldest);
-    }
-    showToast(String(msg?.content || msg?.text || incident), 'error');
-}
 
 export function initChat(ctx) {
     // Back-compat main-chat entry: one full-page instance bound to chat 1.
@@ -284,6 +271,21 @@ export function createChatInstance({
     // Every ws.on subscription's disposer, released together in destroy().
     const wsDisposers = [];
     const onWs = (event, fn) => wsDisposers.push(ws.on(event, fn));
+    const chatMedia = createChatMedia({
+        chatSessionId,
+        durableChatMediaUrl,
+        formatMsgTime,
+        insertMessageNode,
+        senderLabel,
+        stampNodeTimestamp,
+    });
+    const chatDecision = createChatDecision({
+        apiFetch,
+        frameNode: chatMedia.bubbleFrameNode,
+        renderMarkdown: renderChatMarkdown,
+        enhanceMarkdown: enhanceChatMarkdown,
+        showToast,
+    });
 
     async function loadUiPreferences() {
         try {
@@ -720,152 +722,8 @@ export function createChatInstance({
         return remaining <= threshold;
     }
 
-    function captureVisibleTimelineAnchor(excludeNode = null) {
-        // The Load-older control is excluded like .typing-bubble [GPT#13]:
-        // anchoring must land on the first visible TIMESTAMPED node, or a
-        // Load-older restore would pin the button itself and drift the view.
-        const nodes = Array.from(messagesDiv.children).filter(
-            (node) => node !== excludeNode
-                && !excludeNode?.contains?.(node)
-                && !node.classList.contains('typing-bubble')
-                && !node.classList.contains('chat-load-older')
-        );
-        const messagesRect = messagesDiv.getBoundingClientRect();
-        const topNode = nodes.find((item) => {
-            const rect = item.getBoundingClientRect();
-            return rect.bottom > messagesRect.top && rect.top < messagesRect.bottom;
-        }) || null;
-        if (!topNode) return null;
-
-        // A live-card can span several screens while the reader is inside a
-        // child summary or timeline line. Preserve that visible boundary, not
-        // merely the root card whose own top may be far above the viewport.
-        let node = topNode;
-        if (topNode.classList.contains('chat-live-card')) {
-            const selector = [
-                '.chat-live-card',
-                '[data-live-summary-button]',
-                '[data-live-title]',
-                '[data-live-activity]',
-                '[data-live-meta]',
-                '.chat-live-actions',
-                '.chat-live-line',
-                '.chat-live-project-card-btn',
-            ].join(',');
-            const candidates = [topNode, ...topNode.querySelectorAll(selector)]
-                .map((candidate) => {
-                    let depth = 0;
-                    let parent = candidate === topNode ? null : candidate.parentElement;
-                    while (parent && topNode.contains(parent) && parent !== topNode) {
-                        depth += 1;
-                        parent = parent.parentElement;
-                    }
-                    return { node: candidate, rect: candidate.getBoundingClientRect(), depth };
-                })
-                .filter(({ node: candidate, rect }) => candidate.getClientRects().length
-                    && rect.width > 0
-                    && rect.height > 0
-                    && rect.bottom > messagesRect.top
-                    && rect.top < messagesRect.bottom);
-            const belowTop = candidates
-                .filter(({ rect }) => rect.top >= messagesRect.top)
-                .sort((a, b) => (a.rect.top - b.rect.top) || (b.depth - a.depth));
-            const crossing = candidates
-                .filter(({ rect }) => rect.top <= messagesRect.top && rect.bottom > messagesRect.top)
-                .sort((a, b) => b.depth - a.depth);
-            node = belowTop[0]?.node || crossing[0]?.node || topNode;
-        }
-
-        const cardChain = [];
-        let card = node.classList.contains('chat-live-card')
-            ? node
-            : node.closest?.('.chat-live-card');
-        while (card && messagesDiv.contains(card)) {
-            cardChain.push({
-                node: card,
-                taskId: card.dataset?.taskId || '',
-                offset: card.getBoundingClientRect().top - messagesRect.top,
-            });
-            card = card.parentElement?.closest?.('.chat-live-card') || null;
-        }
-
-        const ts = topNode.dataset?.ts || '';
-        const anchorRole = [
-            '[data-live-summary-button]',
-            '[data-live-title]',
-            '[data-live-activity]',
-            '[data-live-meta]',
-            '.chat-live-actions',
-            '.chat-live-project-card-btn',
-        ].find((candidate) => node.matches?.(candidate)) || '';
-        return {
-            node,
-            cardChain,
-            lineKey: node.matches?.('.chat-live-line') ? (node.dataset?.liveLineKey || '') : '',
-            anchorRole,
-            topNode,
-            clientMessageId: topNode.dataset?.clientMessageId || '',
-            ts,
-            ordinal: ts ? nodes.filter((item) => item.dataset?.ts === ts).indexOf(topNode) : -1,
-            offset: node.getBoundingClientRect().top - messagesRect.top,
-            topOffset: topNode.getBoundingClientRect().top - messagesRect.top,
-        };
-    }
-
-    function restoreVisibleTimelineAnchor(anchor) {
-        if (!anchor) return false;
-        const isRendered = (node) => {
-            if (!node?.isConnected || !messagesDiv.contains(node)) return false;
-            const rect = node.getBoundingClientRect();
-            return node.getClientRects().length > 0 && rect.width > 0 && rect.height > 0;
-        };
-        const restoreNode = (node, offset) => {
-            if (!isRendered(node)) return false;
-            const currentOffset = node.getBoundingClientRect().top
-                - messagesDiv.getBoundingClientRect().top;
-            messagesDiv.scrollTop += currentOffset - offset;
-            return true;
-        };
-
-        if (restoreNode(anchor.node, anchor.offset)) return true;
-
-        const cardChain = Array.isArray(anchor.cardChain) && anchor.cardChain.length
-            ? anchor.cardChain
-            : [];
-        const resolveCard = (entry) => {
-            if (isRendered(entry?.node)) return entry.node;
-            if (!entry?.taskId) return null;
-            const record = liveCardRecords.get(entry.taskId);
-            return isRendered(record?.root) ? record.root : null;
-        };
-        const ownerCard = resolveCard(cardChain[0]);
-        if (ownerCard && anchor.lineKey) {
-            const line = Array.from(ownerCard.querySelectorAll('.chat-live-line'))
-                .find((candidate) => candidate.dataset?.liveLineKey === anchor.lineKey
-                    && candidate.closest('.chat-live-card') === ownerCard);
-            if (restoreNode(line, anchor.offset)) return true;
-        }
-        if (ownerCard && anchor.anchorRole) {
-            const roleNode = Array.from(ownerCard.querySelectorAll(anchor.anchorRole))
-                .find((candidate) => candidate.closest('.chat-live-card') === ownerCard);
-            if (restoreNode(roleNode, anchor.offset)) return true;
-        }
-        for (const entry of cardChain) {
-            if (restoreNode(resolveCard(entry), entry.offset)) return true;
-        }
-
-        let node = isRendered(anchor.topNode) ? anchor.topNode : null;
-        if (!node && anchor.clientMessageId) {
-            node = Array.from(messagesDiv.children).find(
-                (item) => item.dataset?.clientMessageId === anchor.clientMessageId
-            ) || null;
-        }
-        if (!node && anchor.ts) {
-            const matches = Array.from(messagesDiv.children).filter((item) => item.dataset?.ts === anchor.ts);
-            node = matches[anchor.ordinal] || matches[0] || null;
-        }
-        return restoreNode(node, anchor.topOffset ?? anchor.offset);
-    }
+    const { captureVisibleTimelineAnchor, restoreVisibleTimelineAnchor } =
+        createTimelineAnchors({ messagesDiv, liveCardRecords });
 
     function withStableViewport(mutate) {
         if (typeof mutate !== 'function') return undefined;
@@ -1240,10 +1098,13 @@ export function createChatInstance({
             event.stopPropagation();
             openTaskControlMenu(btn, {
                 cancelPending: Boolean(record.cancelPendingPolicy),
+                budgetPaused: activeDirectActivities.get(record.groupId)?.phase === 'budget_paused',
                 busy: taskControlBusy(record.groupId),
-                onAction: (action) => (action === ACTION_HURRY
-                    ? hurryTaskAction(record.groupId)
-                    : cancelRunFromCard(record, action)),
+                onAction: (action) => {
+                    if (action === ACTION_HURRY) return hurryTaskAction(record.groupId);
+                    if (action === ACTION_RESUME) return resumeTaskAction(record.groupId);
+                    return cancelRunFromCard(record, action);
+                },
             });
         });
         actions.appendChild(btn);
@@ -2791,9 +2652,11 @@ export function createChatInstance({
         }, chatSessionId);
         const rendered = role === 'user'
             ? escapeHtml(text)
-            : (role === 'system' && systemType === 'skill_review'
+            : role === 'system' && systemType === 'skill_review'
                 ? renderSkillReviewDisclosure(text, opts.skillReview || null)
-                : renderMarkdown(text));
+                : role === 'system' && systemType !== 'skill_review' && markdown !== true
+                    ? escapeHtml(text)
+                    : renderChatMarkdown(text);
         const timeFmt = formatMsgTime(ts);
         const timeHtml = timeFmt ? `<div class="msg-time" title="${escapeHtmlAttr(timeFmt.full)}">${escapeHtml(timeFmt.short)}</div>` : '';
         const pendingHtml = pending ? `<div class="msg-pending">Queued until reconnect</div>` : '';
@@ -2803,6 +2666,7 @@ export function createChatInstance({
             ${pendingHtml}
             ${timeHtml}
         `;
+        if (!isProgress && text) chatMedia.attachCopyControl(bubble, String(text));
         if (PROJECT_ROW_TYPES.has(systemType) && projectId) {
             const actions = document.createElement('div');
             actions.className = 'system-message-actions';
@@ -2817,33 +2681,11 @@ export function createChatInstance({
         wireSkillReviewDisclosure(bubble, () => requestAnimationFrame(() => !destroyed && updateMessagesPadding({ preserveStickiness: true })));
         stampNodeTimestamp(bubble, ts);
         insertMessageNode(bubble, { forceStick: !!opts.forceStick });
-        renderRoutingAnnotation(bubble, opts.chatAnnotation);
+        if (role !== 'user' && systemType !== 'skill_review' && (role !== 'system' || markdown === true)) enhanceChatMarkdown(bubble);
+        chatDecision.renderRoutingDecision(bubble, opts.chatAnnotation);
         rememberMessageKey(messageKey);
         if (pending && clientMessageId) pendingUserBubbles.set(clientMessageId, bubble);
         return bubble;
-    }
-
-    function renderRoutingAnnotation(bubble, annotation) {
-        if (!bubble) return false;
-        const text = routingAnnotationText(annotation);
-        let note = bubble.querySelector('.msg-routing-annotation');
-        if (!text) {
-            note?.remove();
-            delete bubble.dataset.chatAnnotationStatus;
-            return false;
-        }
-        if (!note) {
-            note = document.createElement('div');
-            note.className = 'msg-routing-annotation';
-            const time = bubble.querySelector('.msg-time');
-            if (time) time.before(note);
-            else bubble.append(note);
-        }
-        const status = String(annotation.status || '');
-        note.textContent = text;
-        note.dataset.annotationStatus = status;
-        bubble.dataset.chatAnnotationStatus = status;
-        return true;
     }
 
     function updateMessageAnnotation(clientMessageId, annotation) {
@@ -2854,7 +2696,7 @@ export function createChatInstance({
         if (journalEntry) journalEntry.annotation = annotation || null;
         const bubble = Array.from(messagesDiv.querySelectorAll('.chat-bubble.user[data-client-message-id]'))
             .find((candidate) => candidate.dataset.clientMessageId === messageId);
-        return renderRoutingAnnotation(bubble, annotation);
+        return chatDecision.renderRoutingDecision(bubble, annotation);
     }
 
     function clearTransientRoutingAnnotations() {
@@ -3026,6 +2868,7 @@ export function createChatInstance({
                     localEchoJournal.delete(entry.clientMessageId);
                 }
                 if (rebuildAll) {
+                    chatMedia.reset();
                     // The cards below are a new presentation generation. Keep
                     // hydrator single-flight/pending state, but let an already
                     // applied durable Plan revision attach to the rebuilt card.
@@ -3047,7 +2890,10 @@ export function createChatInstance({
                     // state so the rebuild below cannot produce duplicates even if
                     // stale bubbles lingered in the DOM. Keep the typing indicator.
                     for (const bubble of Array.from(messagesDiv.querySelectorAll('.chat-bubble'))) {
-                        if (!bubble.classList.contains('typing-bubble')) bubble.remove();
+                        if (!bubble.classList.contains('typing-bubble')) {
+                            destroyChatMarkdown(bubble);
+                            bubble.remove();
+                        }
                     }
                     seenMessageKeys.clear();
                     messageKeyOrder.length = 0;
@@ -3135,8 +2981,10 @@ export function createChatInstance({
                     // message — render it BEFORE the taskId/finishLiveCard block so
                     // a mid-task delivery replayed while its task is still
                     // running does not falsely finalize that task's live card.
-                    if (msg.msg_type === 'document' || msg.msg_type === 'photo' || msg.msg_type === 'video') {
+                    if (['document', 'photo', 'video', 'links', 'quiz'].includes(msg.msg_type)) {
                         if (msg.msg_type === 'document') appendDocumentBubble(msg);
+                        else if (msg.msg_type === 'links') appendLinksMessage(msg);
+                        else if (msg.msg_type === 'quiz') appendQuizMessage(msg);
                         else appendMediaBubble(msg);
                         continue;
                     }
@@ -3963,10 +3811,11 @@ export function createChatInstance({
     }
 
     function deriveChatStatus() {
-        let directCount = 0, managedActive = 0, managedQueued = 0;
+        let directCount = 0, managedActive = 0, managedQueued = 0, managedPaused = 0;
         for (const entry of activeDirectActivities.values()) {
             if (String(entry?.kind || '') !== 'managed_task') directCount += 1;
             else if (String(entry?.phase || '') === 'queued') managedQueued += 1;
+            else if (String(entry?.phase || '') === 'budget_paused') managedPaused += 1;
             else managedActive += 1;
         }
         return computeDerivedChatStatus({
@@ -3975,6 +3824,7 @@ export function createChatInstance({
             activeDirectCount: directCount,
             activeManagedCount: managedActive,
             queuedManagedCount: managedQueued,
+            pausedManagedCount: managedPaused,
             pendingSubmissionsCount: pendingSubmissions.size,
         });
     }
@@ -4096,6 +3946,7 @@ export function createChatInstance({
             activities: nextMap,
             departedManagedTaskIds,
             disappearedManagedTaskIds,
+            concludedDirectActivities: settledDirectRows,
             globallyActiveActivityIds,
         } = reconcileHydratedDirectActivities(
             activeDirectActivities, turnsList, chatId, snapshotBarrierMs,
@@ -4111,6 +3962,11 @@ export function createChatInstance({
             }
         }
         for (const taskId of globallyActiveActivityIds) missingManagedTaskIds.delete(taskId);
+        for (const row of settledDirectRows) {
+            // Reusable slots host many cycles: never settle them into the ledger.
+            if (!REUSABLE_TASK_IDS.has(row.activityId)) recordConcludedActivity(row.activityId);
+            if (row.clientMessageId) pendingSubmissions.delete(row.clientMessageId);
+        }
         for (const taskId of departedManagedTaskIds) revokeManagedTaskCancelAuthority(taskId);
         for (const taskId of disappearedManagedTaskIds) observeMissingManagedTask(taskId);
         for (const taskId of unconfirmedForegroundCardIds(
@@ -4210,7 +4066,10 @@ export function createChatInstance({
             }
             learnSubagentLineage(msg);
             const ephemeralDecision = registerEphemeralDecisionFrame(msg);
-            if (ephemeralDecision && explicitTaskId) {
+            // A concluded turn stays concluded: a late progress/duplicate
+            // frame must not resurrect the activity after the snapshot (or a
+            // typed final) already settled it.
+            if (ephemeralDecision && explicitTaskId && !concludedDirectActivities.has(explicitTaskId)) {
                 const existing = activeDirectActivities.get(explicitTaskId) || {};
                 activeDirectActivities.set(explicitTaskId, {
                     activityId: explicitTaskId,
@@ -4250,7 +4109,7 @@ export function createChatInstance({
                     // concurrent turn's state (2A keeps later `Sending...`).
                     const finished = activeDirectActivities.get(explicitTaskId);
                     activeDirectActivities.delete(explicitTaskId);
-                    recordConcludedActivity(explicitTaskId);
+                    if (!REUSABLE_TASK_IDS.has(explicitTaskId)) recordConcludedActivity(explicitTaskId);
                     if (finished?.clientMessageId) {
                         pendingSubmissions.delete(finished.clientMessageId);
                     }
@@ -4341,171 +4200,21 @@ export function createChatInstance({
         }
     });
 
-    function buildMediaBubble(msg) {
-        const type = msg.msg_type || msg.type;
-        if (type !== 'photo' && type !== 'video') return null;
-        const role = msg.role === 'user' ? 'user' : 'assistant';
-        const sender = role === 'user'
-            ? senderLabel('user', false, '', {
-                source: msg.source || '',
-                senderLabel: msg.sender_label || '',
-                senderSessionId: msg.sender_session_id || '',
-            }, chatSessionId)
-            : 'Ouroboros';
-        const bubble = document.createElement('div');
-        bubble.className = `chat-bubble ${role}`;
-        const rawTs = msg.ts || new Date().toISOString();
-        const timeFmt = formatMsgTime(rawTs);
-        const timeHtml = timeFmt ? `<div class="msg-time" title="${escapeHtmlAttr(timeFmt.full)}">${escapeHtml(timeFmt.short)}</div>` : '';
-        const captionHtml = msg.caption ? `<div class="message">${escapeHtml(msg.caption)}</div>` : '';
-        const fallbackMime = type === 'photo' ? 'image/png' : 'video/mp4';
-        const mimePattern = type === 'photo' ? /^image\/[a-z0-9.+-]+$/i : /^video\/[a-z0-9.+-]+$/i;
-        const mime = mimePattern.test(String(msg.mime || '')) ? String(msg.mime) : fallbackMime;
-        const base64Value = type === 'photo' ? msg.image_base64 : msg.video_base64;
-        const mediaBase64 = /^[A-Za-z0-9+/=\s]+$/.test(String(base64Value || ''))
-            ? String(base64Value || '').replace(/\s+/g, '')
-            : '';
-        const durableUrl = durableChatMediaUrl(msg.download_url);
-        const mediaUrl = mediaBase64 ? `data:${mime};base64,${mediaBase64}` : durableUrl;
-        if (!mediaUrl) return null;
-        const mediaHtml = type === 'photo'
-            ? `<img class="chat-photo" src="${escapeHtmlAttr(mediaUrl)}" alt="Photo attachment">`
-            : `<video class="chat-video" src="${escapeHtmlAttr(mediaUrl)}" controls></video>`;
-        bubble.innerHTML = `
-            <div class="sender">${escapeHtml(sender)}</div>
-            ${captionHtml}
-            <div class="message">${mediaHtml}</div>
-            ${timeHtml}
-        `;
-        const img = bubble.querySelector('.chat-photo');
-        if (img) {
-            img.addEventListener('click', () => window.open(mediaUrl, '_blank'));
-        }
-        stampNodeTimestamp(bubble, rawTs);
-        return bubble;
-    }
-
-    function appendMediaBubble(msg) {
-        const key = chatMediaMessageKey(msg);
-        if (key && seenMessageKeys.has(key)) return false;
-        const bubble = buildMediaBubble(msg);
-        if (!bubble) return false;
-        rememberMessageKey(key);
-        insertMessageNode(bubble);
-        return true;
-    }
-
-    for (const type of ['photo', 'video']) onWs(type, (msg) => {
-        if (!isMyThread(msg)) return;
-        // Media frames carry no activity identity: hide the dots row but leave
-        // the authoritative active set intact; sync derives the header from it.
-        hideTypingIndicatorOnly();
-        syncChatStatus();
-        if (appendMediaBubble(msg)) incrementUnreadIfNeeded(msg);
-    });
-
-    // Shared document-bubble builder for both live WS frames and history replay.
-    // Download priority: a durable server download_url routed through
-    // downloadViaHostBridge (desktop host-bridge saves to Downloads instead of
-    // navigating the WKWebView fullscreen; browser falls back to fetch+blob),
-    // else an in-memory base64 blob (live-only), else a disabled label.
-    function buildDocumentBubble(msg) {
-        const role = msg.role === 'user' ? 'user' : 'assistant';
-        const sender = role === 'user'
-            ? senderLabel('user', false, '', {
-                source: msg.source || '',
-                senderLabel: msg.sender_label || '',
-                senderSessionId: msg.sender_session_id || '',
-            }, chatSessionId)
-            : 'Ouroboros';
-        const bubble = document.createElement('div');
-        bubble.className = `chat-bubble ${role}`;
-        const rawTs = msg.ts || new Date().toISOString();
-        const timeFmt = formatMsgTime(rawTs);
-        const timeHtml = timeFmt ? `<div class="msg-time" title="${escapeHtmlAttr(timeFmt.full)}">${escapeHtml(timeFmt.short)}</div>` : '';
-        const captionHtml = msg.caption ? `<div class="message">${escapeHtml(msg.caption)}</div>` : '';
-        const mime = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/.test(String(msg.mime || ''))
-            ? String(msg.mime)
-            : 'application/octet-stream';
-        const fileBase64 = /^[A-Za-z0-9+/=\s]+$/.test(String(msg.file_base64 || ''))
-            ? String(msg.file_base64 || '').replace(/\s+/g, '')
-            : '';
-        const downloadUrl = /^\/api\/files\/download\?/.test(String(msg.download_url || ''))
-            ? String(msg.download_url)
-            : '';
-        const filename = String(msg.filename || 'file').replace(/[\r\n]+/g, ' ').slice(0, 200);
-        const canDownload = Boolean(downloadUrl || fileBase64);
-        // Body click = open in default OS app (external window); a separate ↓
-        // button saves to ~/Downloads. Both degrade to a base64 blob when only
-        // the live payload is present (no durable server URL to hand the bridge).
-        const openHtml = canDownload
-            ? `<button type="button" class="chat-file" data-open="1">📎 ${escapeHtml(filename)}</button>`
-            : `<span class="chat-file chat-file-empty">📎 ${escapeHtml(filename)}</span>`;
-        const downloadHtml = canDownload
-            ? `<button type="button" class="chat-file-download" data-download="1" title="Download" aria-label="Download">↓</button>`
-            : '';
-        bubble.innerHTML = `
-            <div class="sender">${escapeHtml(sender)}</div>
-            ${captionHtml}
-            <div class="message"><div class="chat-file-row">${openHtml}${downloadHtml}</div></div>
-            ${timeHtml}
-        `;
-        const saveBlobFallback = () => {
-            const bytes = Uint8Array.from(atob(fileBase64), (c) => c.charCodeAt(0));
-            const blobUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
-            const tmp = document.createElement('a');
-            Object.assign(tmp, { href: blobUrl, download: filename, rel: 'noopener' });
-            document.body.appendChild(tmp);
-            tmp.click();
-            tmp.remove();
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-        };
-        const openBtn = bubble.querySelector('.chat-file[data-open]');
-        if (openBtn && canDownload) {
-            openBtn.addEventListener('click', async () => {
-                try {
-                    if (downloadUrl) {
-                        await openViaHostBridge(downloadUrl, filename);
-                        return;
-                    }
-                    saveBlobFallback();
-                } catch (err) {
-                    showToast(`Could not open file: ${err && err.message ? err.message : err}`, 'error');
-                }
-            });
-        }
-        const dlBtn = bubble.querySelector('.chat-file-download[data-download]');
-        if (dlBtn && canDownload) {
-            dlBtn.addEventListener('click', async () => {
-                try {
-                    if (downloadUrl) {
-                        await downloadViaHostBridge(downloadUrl, filename);
-                        return;
-                    }
-                    saveBlobFallback();
-                } catch (err) {
-                    showToast(`Could not download file: ${err && err.message ? err.message : err}`, 'error');
-                }
-            });
-        }
-        stampNodeTimestamp(bubble, rawTs);
-        return bubble;
-    }
-
-    function appendDocumentBubble(msg) {
-        const key = documentMessageKey(msg);
-        if (key && seenMessageKeys.has(key)) return false;
-        rememberMessageKey(key);
-        insertMessageNode(buildDocumentBubble(msg));
-        return true;
-    }
-
-    onWs('document', (msg) => {
-        if (!isMyThread(msg)) return;
-        hideTypingIndicatorOnly();
-        syncChatStatus();
-        if (appendDocumentBubble(msg)) incrementUnreadIfNeeded(msg);
-    });
+    const { appendMediaBubble, appendDocumentBubble, appendLinksMessage, appendQuizMessage } =
+        chatMedia.wireDeliveries({
+            onWs,
+            isMyThread,
+            hideTypingIndicatorOnly,
+            syncChatStatus,
+            incrementUnreadIfNeeded,
+            seenMessageKeys,
+            rememberMessageKey,
+            chatMediaMessageKey,
+            documentMessageKey,
+            buildQuizCard: chatDecision.buildQuizCard,
+            applyQuizStateFrame: chatDecision.applyQuizStateFrame,
+            messagesRoot: () => messagesDiv,
+        });
 
     let wsHasConnectedOnce = false;
 
@@ -4594,6 +4303,7 @@ export function createChatInstance({
                 try { dispose(); } catch {}
             }
             wsDisposers.length = 0;
+            chatMedia.destroy();
             window.removeEventListener('ouro:page-shown', handlePageShown);
             document.removeEventListener('visibilitychange', handleVisibilityChange);
             if (documentClickHandler) document.removeEventListener('click', documentClickHandler);
@@ -4625,7 +4335,7 @@ export function createChatInstance({
             seenMessageKeys.clear();
             messageKeyOrder.length = 0;
             persistedHistory.length = 0;
-            try { page.remove(); } catch {}
+            try { destroyChatMarkdown(page); page.remove(); } catch {}
         },
     };
 }

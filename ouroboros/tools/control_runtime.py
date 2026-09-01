@@ -235,26 +235,36 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "") -> str:
     Use when you have something genuinely worth saying — an insight,
     a question, a status update, or an invitation to collaborate.
     """
-    if not ctx.current_chat_id:
+    chat_id = getattr(ctx, "current_chat_id", None)
+    if chat_id is None or chat_id == "":  # 0 is a real hidden session, not absence
         return "⚠️ No active chat — cannot send proactive message."
     if not text or not text.strip():
         return "⚠️ Empty message."
 
+    from ouroboros.tools.owner_delivery import deliver_owner_event
     from ouroboros.utils import append_jsonl
-    ctx.pending_events.append({
+    mode = deliver_owner_event(ctx, {
         "type": "send_message",
-        "chat_id": ctx.current_chat_id,
+        "chat_id": chat_id,
         "text": text,
         "format": "markdown",
         "is_progress": False,
+        # Discriminates the row from a bare final on history replay: the
+        # client treats an UNtyped assistant row with a task_id as the task's
+        # last word and would finalize a still-running live card. Persisted
+        # via log_chat(record_type=...) exactly like media rows.
+        "system_type": "proactive_message",
         "ts": utc_now_iso(),
     })
     append_jsonl(ctx.drive_logs() / "events.jsonl", {
         "ts": utc_now_iso(),
         "type": "proactive_message",
         "reason": reason,
+        "transport_mode": mode,
         "text_preview": text[:200],
     })
+    if mode == "live":
+        return "OK: message sent to owner chat."
     return "OK: message queued for delivery."
 
 
@@ -351,9 +361,16 @@ def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
 
     Stored in ToolContext, applied on the next LLM call in the loop.
     """
-    from ouroboros.llm import LLMClient, normalize_reasoning_effort
+    from ouroboros.config import EFFORT_SCALE
+    from ouroboros.llm import LLMClient
     available = LLMClient().available_models()
     changes = []
+
+    # Validated before anything is applied: an unknown effort refuses the WHOLE call,
+    # so a same-call model switch is not half-applied behind a rejected tier.
+    requested_effort = str(effort or "").strip().lower()
+    if requested_effort and requested_effort not in EFFORT_SCALE:
+        return f"⚠️ Unknown effort: {effort}. Valid: {', '.join(EFFORT_SCALE)}"
 
     if model:
         if model not in available:
@@ -374,10 +391,9 @@ def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
         ctx.active_use_local_override = use_local
         changes.append(f"model={model}{' (local)' if use_local else ''}")
 
-    if effort:
-        normalized = normalize_reasoning_effort(effort, default="medium")
-        ctx.active_effort_override = normalized
-        changes.append(f"effort={normalized}")
+    if requested_effort:
+        ctx.active_effort_override = requested_effort
+        changes.append(f"effort={requested_effort}")
 
     if not changes:
         return f"Current available models: {', '.join(available)}. Pass model and/or effort to switch."

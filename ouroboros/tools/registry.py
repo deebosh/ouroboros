@@ -80,7 +80,12 @@ from ouroboros.tool_access import (
     user_files_path_block_reason,  # noqa: F401 — historical facade surface
     workspace_mode_block_reason,  # noqa: F401 — historical facade surface
 )
-from ouroboros.python_interpreter import record_python_resolution, resolve_process_python  # noqa: F401 — historical facade surface
+from ouroboros.process_interpreters import (  # noqa: F401 — historical facade surface
+    interpreter_attestation,
+    record_interpreter_resolution,
+    resolve_node_postgates,
+    resolve_process_python,
+)
 from ouroboros.utils import safe_relpath  # noqa: F401 — historical facade surface
 from ouroboros.contracts.task_constraint import TaskConstraint, VALID_WRITE_SURFACES, normalize_task_constraint  # noqa: F401 — historical facade surface
 from ouroboros.contracts.skill_payload_policy import (

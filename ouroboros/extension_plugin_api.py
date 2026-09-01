@@ -529,10 +529,7 @@ class PluginAPIImpl:
 
         return asyncio.run_coroutine_threadsafe(_runner(), loop)
 
-    def register_companion_process(
-        self,
-        name: str,
-    ) -> None:
+    def register_companion_process(self, name: str) -> None:
         _reject_extension_child_side_effect("register_companion_process")
         self._require("companion_process")
         clean_name = _assert_tool_name(name)
@@ -549,13 +546,16 @@ class PluginAPIImpl:
                 self._require_open_locked()
                 self._stage_companion_name_locked(clean_name)
             return
-        expected_cmd = [str(part) for part in (spec.get("command") or []) if str(part)]
+        cmd = [str(part) for part in (spec.get("command") or []) if str(part)]
         expected_runtime = str(spec.get("runtime") or "").strip()
-        cmd = list(expected_cmd)
         if not cmd:
             raise ExtensionRegistrationError("companion command must be declared in manifest")
         if expected_runtime in {"python", "python3"} and cmd[0] in {"python", "python3"}:
             cmd = [sys.executable, *cmd[1:]]
+        # T14 node symmetry with the python rewrite; policy in child_catalog.
+        from ouroboros.extension_child_catalog import companion_node_argv
+
+        cmd = companion_node_argv(spec, expected_runtime, cmd)
         if not is_server_process():
             with _lock:
                 self._require_open_locked()
@@ -565,10 +565,9 @@ class PluginAPIImpl:
         if supervisor is None:
             raise ExtensionRegistrationError("companion supervisor is not initialized")
         # Fix-round-6: the descriptor build is purely computational — the env
-        # stays EMPTY here. The settings-derived values (``load_settings``
-        # takes the settings lock and may persist a migration), the manifest
-        # env overlay, the host bridge URL and the auth token all materialize
-        # only in the post-fence attach of ``_publish_registrations``.
+        # stays EMPTY here; settings-derived values, the manifest env overlay,
+        # the bridge URL and the auth token materialize only in the post-fence
+        # attach of ``_publish_registrations``.
         workdir = self._runtime_skill_dir or self._skill_dir or self._state_dir
         descriptor = CompanionDescriptor(
             skill_name=self._skill,

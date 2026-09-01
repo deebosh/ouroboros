@@ -20,6 +20,11 @@ from typing import Dict, List  # noqa: F401
 
 from ouroboros.artifacts import copy_directory_to_task_artifacts, copy_file_to_task_artifacts, record_task_scratch  # noqa: F401
 from ouroboros.platform_layer import bootstrap_process_path, kill_process_tree, scrub_repo_from_pythonpath, subprocess_new_group_kwargs  # noqa: F401
+from ouroboros.process_interpreters import (
+    active_node_resolution,
+    apply_env_path_prepend,
+    interpreter_path_overlay,
+)
 from ouroboros.config import SETTINGS_DEFAULTS, load_settings  # noqa: F401
 from ouroboros.runtime_mode_policy import (
     is_protected_runtime_path,  # noqa: F401
@@ -117,6 +122,17 @@ from ouroboros.workspace_executor import map_host_path as executor_map_host_path
 log = logging.getLogger(__name__)
 # Tracked process groups let panic kill descendant trees too.
 _CONTROL_DIR_BACKUP_MAX_BYTES = 5 * 1024 * 1024
+# Typed process-facts channel (R5) seam: ouroboros/tools/process_facts.py.
+# Historical private spellings stay as aliases for call sites and tests.
+from ouroboros.tools.process_facts import (  # noqa: E402
+    active_resolved_runtime as _active_resolved_runtime,
+    publish_process_facts as _publish_process_facts,  # noqa: F401 — historical private spelling for call sites and tests
+)
+from ouroboros.tools.shell_process import (  # noqa: E402
+    _publish_finished_process_facts,
+    _publish_unfinished_process_facts,
+)
+
 
 
 # v6.90.x (submarine unwind) — the DECLARATION-NUDGE marker, deliberately typed
@@ -378,21 +394,27 @@ def _run_shell(
         _scratch_reason = _scratch_safety_reason(ctx, scratch_abs, pathlib.Path(work_dir), repo_root)
         if _scratch_reason:
             return f"⚠️ SCRATCH_BLOCKED: {_scratch_reason}."
-
     timeout_sec = _resolve_effective_timeout(_RUN_SHELL_DEFAULT_TIMEOUT_SEC, ctx, override_sec=_timeout_override)
     bootstrap_process_path()
-    _command_start_ts = time.time()
+    # Emergency bundled-node PATH prepend; None on every healthy path (env stays byte-identical).
+    node_resolution = active_node_resolution(ctx)
+    # Two clocks (D2-1): EPOCH feeds the st_mtime audit; MONOTONIC feeds durations.
+    _command_start_epoch = time.time()
+    _command_start_ts = time.monotonic()
     try:
         if _executor_can_run_cwd(ctx, pathlib.Path(work_dir)):
-            res = executor_execute(ctx, cmd, pathlib.Path(work_dir), timeout_sec)
+            res = executor_execute(ctx, cmd, pathlib.Path(work_dir), timeout_sec,
+                                   env_overlay=interpreter_path_overlay(node_resolution))
         else:
-            run_env = _shell_env_for_cwd(ctx, pathlib.Path(work_dir))
+            run_env = apply_env_path_prepend(
+                _shell_env_for_cwd(ctx, pathlib.Path(work_dir)), node_resolution)
             res = _tracked_subprocess_run(
                 cmd, cwd=str(work_dir),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, timeout=timeout_sec,
                 **({"env": run_env} if run_env is not None else {}),
             )
+        _lived_ms = _publish_finished_process_facts(ctx, res, _command_start_ts)
         # Post-run hashes exclude scratch only while its exact bytes still match.
         _record_scratch_fingerprints(ctx, scratch_abs)
         if res.returncode != 0:
@@ -406,7 +428,7 @@ def _run_shell(
                     f"{executor_note}"
                 )
                 return _publish_process_result(ctx, "SHELL_NO_MATCH", text, exit_code=res.returncode, shell_regex_auto_corrected=regex_autocorrected)
-            text = autocorrect_note + f"⚠️ SHELL_EXIT_ERROR: command exited with {_describe_returncode(res.returncode, cwd=work_dir, binding=binding)}.\n\n{_format_process_output(res.stdout or '', res.stderr or '')}{executor_note}"
+            text = autocorrect_note + f"⚠️ SHELL_EXIT_ERROR: command exited with {_describe_returncode(res.returncode, cwd=work_dir, binding=binding, lived_ms=_lived_ms, resolved_runtime=_active_resolved_runtime(ctx))}.\n\n{_format_process_output(res.stdout or '', res.stderr or '')}{executor_note}"
             return _publish_process_result(ctx, "SHELL_EXIT_ERROR", text, exit_code=res.returncode, shell_regex_auto_corrected=regex_autocorrected)
         after_changed = _status_snapshot(repo_root)
         if after_changed != before_changed:
@@ -422,7 +444,7 @@ def _run_shell(
             cmd,
             outputs,
             scratch_abs=scratch_abs,
-            command_start_ts=_command_start_ts,
+            command_start_ts=_command_start_epoch,
             cwd=work_dir,
         )
         if undeclared_user_outputs:
@@ -489,6 +511,7 @@ def _run_shell(
         text = autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}"
         return _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected)
     except subprocess.TimeoutExpired:
+        _publish_unfinished_process_facts(ctx, _command_start_ts)
         # Timeout-created scratch still needs its exclusion fingerprint.
         _record_scratch_fingerprints(ctx, scratch_abs)
         return (
@@ -500,6 +523,7 @@ def _run_shell(
             f"(up to the per-call ceiling) — and preserve a best-effort deliverable before the task deadline."
         )
     except Exception as e:
+        _publish_unfinished_process_facts(ctx, _command_start_ts)
         _record_scratch_fingerprints(ctx, scratch_abs)
         return f"⚠️ SHELL_ERROR: {e}. root={binding.root}, cwd={work_dir}"
 
@@ -524,6 +548,14 @@ def _load_project_context(repo_dir: pathlib.Path) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+# The run_script interpreter VALIDATOR (SSOT; the schema enum below is the
+# advertised subset — Windows launcher spellings are accepted, not advertised).
+RUN_SCRIPT_INTERPRETER_ALLOWLIST = frozenset({
+    "python", "python3", "python.exe", "python3.exe",
+    "bash", "sh", "node", "node.exe", "ruby",
+})
+
+
 def _run_script(
     ctx: ToolContext,
     script: str,
@@ -545,17 +577,24 @@ def _run_script(
     bucket = str(kwargs.get("bucket") or "")
     skill_name = str(kwargs.get("skill_name") or "")
     interp = str(interpreter or "python3").strip()
-    allowed = {"python", "python3", "python.exe", "python3.exe", "bash", "sh", "node", "ruby"}
+    allowed = RUN_SCRIPT_INTERPRETER_ALLOWLIST
     resolver_attested = False
     try:
-        from ouroboros.python_interpreter import PythonResolutionTrace
+        from ouroboros.process_interpreters import InterpreterResolutionTrace
 
-        resolution = getattr(ctx, "_active_python_resolution", None)
+        resolution = getattr(ctx, "_active_interpreter_resolution", None)
         resolver_attested = bool(
-            isinstance(resolution, PythonResolutionTrace)
+            isinstance(resolution, InterpreterResolutionTrace)
             and resolution.verified
             and resolution.tool == "run_script"
-            and resolution.requested_interpreter in {"python", "python3"}
+            and (
+                resolution.requested_interpreter in {"python", "python3"}
+                if resolution.family == "python"
+                # A node attestation admits only an actual SUBSTITUTION (emergency
+                # rewrite); healthy paths have changed=False, so bare spellings
+                # still hit the allowlist (A-F1).
+                else (resolution.family == "node" and resolution.changed)
+            )
             and resolution.resolved_interpreter == interp
         )
     except Exception:
@@ -578,7 +617,8 @@ def _run_script(
     # executes in so a relatively-declared scratch path matches a user_files write in the body.
     resolved_workdir = pathlib.Path(binding.target_path)
     _scratch_abs_body = _resolve_scratch_abs(scratch, resolved_workdir)
-    _body_start_ts = time.time()
+    _body_start_epoch = time.time()  # st_mtime audit; monotonic below is for durations
+    _body_start_ts = time.monotonic()
     executor_active = _executor_can_run_cwd(ctx, resolved_workdir)
     active_workspace_script = binding.root == "active_workspace"
     if active_workspace_script:
@@ -629,7 +669,7 @@ def _run_script(
         [interp, "-c", body],
         outputs,
         scratch_abs=_scratch_abs_body,
-        command_start_ts=_body_start_ts,
+        command_start_ts=_body_start_epoch,
         cwd=resolved_workdir,
     )
     audit_note = ""

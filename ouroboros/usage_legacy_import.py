@@ -243,7 +243,7 @@ def _ensure_legacy_imported_locked(
         current_watermark = _completed_import_watermark(root)
         if current_watermark is not None:
             return current_watermark
-        records = _usage()._read_records_locked(root)
+        records = _usage()._read_records_locked_cached(root)
         existing_ids = {str(row.get("attempt_id") or "") for row in records}
         missing = [row for row in candidates if row["attempt_id"] not in existing_ids]
         _append_rows_locked(root, records, missing)

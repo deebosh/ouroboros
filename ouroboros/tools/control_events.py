@@ -15,7 +15,6 @@ import logging
 import os
 import queue
 import threading
-import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -164,40 +163,14 @@ def _wait_for_promotion_admission(
     client_message_id: str = "",
     timeout_sec: float = _PROMOTE_CONFIRM_TIMEOUT_SEC,
 ) -> Dict[str, Any]:
-    """Wait for matching-token admission in the canonical task-result SSOT."""
-    from ouroboros.task_results import load_task_result
+    """Wait for matching-token admission (SSOT moved to routing_wait, #198)."""
+    from ouroboros.routing_wait import wait_for_promotion_admission
 
-    root = _routing_status_root(ctx)
-    deadline = time.monotonic() + max(0.0, float(timeout_sec))
-    while True:
-        result = load_task_result(root, task_id) or {}
-        admission = result.get("promotion_admission")
-        if (
-            isinstance(admission, dict)
-            and str(admission.get("routing_token") or "") == routing_token
-        ):
-            status = str(admission.get("status") or "")
-            if status in {"scheduled", "rejected", "unconfirmed"}:
-                return {**admission, "task_status": str(result.get("status") or "")}
-        # A duplicate id must never overwrite the existing task_result merely
-        # to report the loser.  The exact-token chat annotation is therefore a
-        # negative-only fallback; positive scheduling authority stays solely in
-        # the task-result admission record.
-        if str(client_message_id or "").strip():
-            from ouroboros.project_dialogue import chat_annotation_receipt
-
-            receipt = chat_annotation_receipt(
-                root, str(client_message_id), routing_token
-            )
-            if str(receipt.get("status") or "") in {
-                "needs_manual_target",
-                "rejected",
-                "unconfirmed",
-            }:
-                return receipt
-        if time.monotonic() >= deadline:
-            return {"status": "unconfirmed", "reason": "confirmation_timeout"}
-        time.sleep(_PROMOTE_CONFIRM_POLL_SEC)
+    return wait_for_promotion_admission(
+        _routing_status_root(ctx), task_id, routing_token,
+        client_message_id=client_message_id, timeout_sec=timeout_sec,
+        poll_sec=_PROMOTE_CONFIRM_POLL_SEC,
+    )
 
 
 def _wait_for_routing_annotation(
@@ -207,21 +180,13 @@ def _wait_for_routing_annotation(
     *,
     timeout_sec: float = _PROMOTE_CONFIRM_TIMEOUT_SEC,
 ) -> Dict[str, Any]:
-    """Wait for an exact existing chat-annotation receipt (manual/steer)."""
-    from ouroboros.project_dialogue import chat_annotation_receipt
+    """Wait for an exact chat-annotation receipt (SSOT in routing_wait, #198)."""
+    from ouroboros.routing_wait import wait_for_routing_annotation
 
-    if not str(client_message_id or "").strip():
-        return {"status": "unconfirmed", "reason": "client_message_id_missing"}
-    root = _routing_status_root(ctx)
-    deadline = time.monotonic() + max(0.0, float(timeout_sec))
-    while True:
-        receipt = chat_annotation_receipt(root, client_message_id, routing_token)
-        status = str(receipt.get("status") or "")
-        if status in {"delivered", "needs_manual_target", "unconfirmed"}:
-            return receipt
-        if time.monotonic() >= deadline:
-            return {"status": "unconfirmed", "reason": "confirmation_timeout"}
-        time.sleep(_PROMOTE_CONFIRM_POLL_SEC)
+    return wait_for_routing_annotation(
+        _routing_status_root(ctx), client_message_id, routing_token,
+        timeout_sec=timeout_sec, poll_sec=_PROMOTE_CONFIRM_POLL_SEC,
+    )
 
 
 def _emit_and_wait_for_routing(

@@ -778,6 +778,7 @@ from supervisor.git_ops_reset import (  # noqa: E402,F401
 # _go() handle). prepare_managed_update stays a facade def for the same
 # f-string fail-closed reason as safe_restart above.
 from supervisor.git_ops_updates import (  # noqa: E402,F401
+    _public_repo_url,
     compute_managed_update_status,
     ensure_official_update_remote,
     list_commits,

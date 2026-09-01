@@ -3709,3 +3709,129 @@ Cross-lane note: CPL4-C1..C5 and C12 are one mechanism family (the existing
 rotator + chain-aware readers) — a later lane should land them as one train,
 not six bespoke rotators. C6, C9, C11, C16, C19, C21, C22 carry owner
 decisions and must go to a batch before code.
+## From the F6 rolling-upstream sync (upstream 8d13373b, base 5187fcdc, 2026-09-01)
+
+One merge (`git merge 8d13373b`, merge-base b9f7597f: 121 upstream commits,
+319 files, 93 overlapping) under the standing principle **upstream = semantic
+truth, campaign = structural truth**. Decision map by conflict class:
+
+- **Campaign-split monoliths** (loop.py, supervisor/events.py, tools/registry.py,
+  tools/control.py, tools/core.py, tools/shell.py, extension_loader.py, config.py,
+  llm.py, usage_accounting.py, delegate_custody.py, review_evidence.py,
+  review_substrate.py, supervisor/queue.py, supervisor/git_ops.py, server.py,
+  agent_task_pipeline.py, skill_review_status.py, subagent_dispatch_notes.py,
+  scope_review.py, claude_advisory_review.py): OUR facade form kept; every
+  upstream semantic delta re-seated in its owner leaf (retarget-to-owner).
+  Notable seats: DESIGN.md governance doc -> scope_review_pack +
+  preflight_review_prompt; EFFORT_SCALE `ultra` -> settings_scales +
+  llm_capability_policy + control_runtime (whole-call effort validation);
+  bounded prompt-token estimate -> llm_attempt + usage_accounting dataclass;
+  cached ledger read -> usage_legacy_import; sweep_orphaned_budget_fences ->
+  queue_snapshot restore seam; managed-update truthfulness (checked_at
+  discipline, availability recompute, `_public_repo_url` credential strip,
+  list_versions sha) -> git_ops_updates (+ facade re-export); custody
+  cursor/backfill passes -> server_maintenance; R5 delegated-custody
+  projection -> control_task_results; routing candidates reorder + durable
+  attachment carrier -> control_routing; owner_delivery live-first send family
+  -> control_runtime + core_artifacts; child-absorption hold + fresh-listing
+  prompts -> loop_delivery/loop_forced_finalization/loop_budget; quiz-answer
+  drain + extracted handle_finalize_now_entry -> loop_round_limits.
+- **Double extractions — the upstream twin never lives**:
+  - `acceptance_dialogue.py` (853 L) -> folded into `loop_acceptance.py`
+    (REASON_* closed-set rows) and `loop_acceptance_review.py` (A-material
+    paid identity family: `acceptance_paid_identity`,
+    `bind_acceptance_paid_identity`, `_refuse_identical_acceptance`,
+    `acceptance_dialogue_history`, superseded-replay `_prior_acceptance_run`,
+    inconclusive/DEGRADED dialogue semantics in `_apply_task_acceptance_result`,
+    paid-cycles timing disclosure, UNHASHED history key). Importers (loop.py
+    re-export list, tests/test_acceptance_a_material.py) retargeted; file removed.
+  - `delivery_protocol.py` (170 L) -> folded into `loop_delivery.py`
+    (hold-control literals, RecursionError-degraded object parser,
+    `_parse_delivery_control_body` over `strip_protocol_fence` +
+    `extract_trailing_json_object`); file removed.
+  - `supervisor/chat_delivery_events.py` (150 L) -> folded into
+    `events_chat_delivery.py` (unified `_delivery_chat_id` incl. chat-0 media,
+    `send_links`/`send_quiz`, EVENT_HANDLERS merged as `**_CDE`); test importers
+    retargeted; file removed. `telemetry_events.py` has no campaign twin and
+    lands as-is; the campaign copy of `_handle_review_wave_budget_insufficient`
+    (events_budget) is retired for the typed telemetry registry, its
+    extraction-test pin removed with it.
+- **Rename classes accepted** (same behavior, public name): `_deadline_expired`
+  -> `deadline_utils.deadline_expired` (tests/test_delegated_run_profile pins
+  moved); `_contract_valid_actors` -> `review_actor_aggregation
+  .contract_valid_actors` (review_verdict local copy deleted, re-export list +
+  extraction pin updated); `record_python_resolution`/`python_interpreter` ->
+  `process_interpreters.record_interpreter_resolution` + scoped
+  `interpreter_attestation` (registry_core save/restore replaced; node
+  post-gates seated as a registry_core helper under the 300-line function gate);
+  `_describe_returncode` -> `process_facts.describe_returncode` (shell_process
+  aliases it); `_write_verdict` -> `tools/patch_verdict.py` (upstream leaf
+  as-is, subagent_integration re-exports).
+- **Protected surfaces as-is**: BIBLE.md (+P7 DESIGN.md), safety.py (chat.links,
+  node-runtime, escalate carve), docs/CHECKLISTS.md, gateway/contracts.py incl.
+  the `endpoint_index.py` extraction (campaign's scope-review-floor endpoint
+  removal re-applied there; upstream's `POST /api/decisions` kept), registry.py
+  deltas seated into the campaign leaf structure.
+- **size_ratchet_manifest**: union-resolved, then regenerated twice via
+  `scripts/regenerate_size_ratchet.py` (band rationales recorded for
+  loop_acceptance_review, loop_delivery, tests/test_delegate_answer;
+  extension_plugin_api held at 1000 by moving the node argv policy beside its
+  PATH-prepend half in extension_child_catalog); `--check` green. To keep
+  tools/core.py under the 1600 giant gate the upstream-new link/quiz/escalate
+  spans live in `core_artifacts.py` (the D05 owner-chat delivery leaf) with
+  re-exports; `_run_shell` and the registry dispatch were shaved under the
+  300-line function gate via shell_process/registry_core helpers.
+- **Web/VERSION**: upstream web wave, vendor assets, VERSION 6.113.5 and
+  package data landed as-is (node --test: 812/812).
+
+Disclosed dispositions (contract-affecting):
+
+- **Upstream R5 regex fallback vs the ratified D02 typed organ**: upstream kept
+  `_EXIT_CODE_RE`/`_SIGNAL_RE` prose harvest as a fallback for untyped records
+  and pinned it in tests/test_process_signal_observability. The campaign organ
+  (owner-ratified D02) retired prose classification: process facts flow ONLY
+  from typed publications (ToolResult meta + the new thread-local
+  `process_facts` channel, which the loop merges with whole-family precedence).
+  The fallback pin was REPLACED by a campaign-contract pin (untyped legacy
+  prose forges no process facts); stale fallback comments corrected. This
+  replaces a clause that would have re-opened stdout forgery of
+  exit_code/signal.
+- **Classification deltas A.23** (tests/test_tool_classification_differential):
+  BROWSER_SESSION_RETIRED ok->timeout/error, BROWSER_BACKLOG_RETIRED_SESSIONS
+  ok->unavailable/error (upstream #440 failure prefixes, typed here as exact
+  identifier codes), ESCALATE_UNAVAILABLE error->unavailable (generic marker
+  chain). Golden regenerated by the corpus recipe at 0f715831. The `A.23`
+  numbering continues the existing owner-item sequence but has NOT been through
+  an owner batch — see open fork Q-F6-2.
+- **Cost-projection doc row**: upstream's ARCHITECTURE text still describes the
+  deprecated `cost_usd[_with_children]` outbound aliases; the campaign's ABI 7.0
+  (ABI-3) removal is owner-ratified and its text was kept. No code conflict —
+  upstream never re-added the aliases.
+- **test_v678_acceptance_state / test_owner_facing_honesty / test_loop_misc
+  writer inventory**: upstream counts assumed acceptance_dialogue.py; pins now
+  count the campaign leaves (19 writers incl. the A-material refusal;
+  expression-valued reasons resolved through loop_acceptance/_review/outcomes).
+- **ABI 7.0 test fixtures**: upstream-new tests (routing_decision,
+  find_child_prefilter) wrote unstamped task-result rows, which campaign
+  readers QUARANTINE; fixtures now stamp `_schema_version` like real writers.
+
+Domain map (`scripts/v7next_domains.toml`): python_interpreter.py row replaced
+by process_interpreters.py (D05); new rows D04 process_facts, D05
+owner_delivery, D07 delegate_registration_policy + patch_verdict, D08
+telemetry_events, D09 owner_quiz, D11 endpoint_index + routing_decision +
+task_decision, D17 routing_wait, D18 node_runtime.
+
+Open fork questions for the owner:
+
+- **Q-F6-1 (D02 vs R5 fallback)**: the regex-fallback retirement above follows
+  the ratified D02 organ; if the owner wants upstream's fallback-for-legacy
+  reading preserved on THIS branch, the typed-absence contract pin and the two
+  comment corrections are the exact surface to revisit.
+- **Q-F6-2 (A.23 numbering)**: three approved classification deltas are recorded
+  under a self-assigned `A.23` owner-item id (the table validator requires the
+  `A.` prefix); ratify or renumber in the next owner batch.
+- **Q-F6-3 (owner-stop drain monkeypatch surface)**: the FINALIZE_NOW drain now
+  calls the upstream-extracted `supervisor.owner_stop.handle_finalize_now_entry`
+  directly; `loop._mark_owner_stop_control_drained` remains re-exported but the
+  drain path no longer reads through the loop facade. No test relied on that
+  monkeypatch point; flagged in case an external harness did.

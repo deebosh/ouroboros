@@ -226,6 +226,17 @@ _LIGHT_START_SERVICE_RESULT = ToolResult(
 )
 
 
+
+def _resolve_node_postgates_predispatch(registry, name, args, runtime_mode, effective_constraint, resolved_binding):
+    """Node post-gates resolution (A-F4), off the hot dispatch body for the function-size gate."""
+    from ouroboros.process_interpreters import resolve_node_postgates
+
+    return resolve_node_postgates(
+        registry._ctx, name, args, runtime_mode=runtime_mode,
+        effective_constraint=effective_constraint, resolved_binding=resolved_binding,
+    )
+
+
 def _unknown_tool_result(entries: Dict[str, Any], name: str, extension_unavailable: bool) -> str | ToolResult:
     """The unknown-name answer, typed EXTENSION_UNAVAILABLE for a dead extension.
 
@@ -964,63 +975,53 @@ class ToolRegistry:
         entry: Any,
         args: Dict[str, Any],
         resolved_binding: Any,
-        python_resolution: Any,
+        interpreter_resolution: Any,
         worktree_before: Any,
     ) -> tuple[str | None, Any]:
-        """Run one builtin handler; returns (early_error_text, result).
+        """Run one builtin handler under the scoped attestation."""
+        from ouroboros.process_interpreters import interpreter_attestation
 
-        The launcher attestation lives exactly as long as the handler call:
-        run_script consults it to accept the resolver-chosen interpreter.
-        """
         missing = object()
-        prior = getattr(self._ctx, "_active_python_resolution", missing)
         prior_tool_result_attr = getattr(self._ctx, _TOOL_RESULT_ATTR, missing)
         tool_result_sentinel = object()
         tool_result_token = _install_tool_result_sidecar(
             self._ctx,
             tool_result_sentinel,
         )
-        self._ctx._active_python_resolution = python_resolution
         try:
-            try:
-                handler_args = dict(args)
-                if resolved_binding is not None:
-                    parameters = inspect.signature(entry.handler).parameters
-                    if "_resolved_binding" not in parameters:
-                        return (
-                            f"⚠️ TOOL_INTERNAL_ERROR ({name}): target-sensitive handler "
-                            "does not declare the private _resolved_binding keyword.",
-                            None,
-                        )
-                    handler_args["_resolved_binding"] = resolved_binding
+            with interpreter_attestation(self._ctx, interpreter_resolution):
                 try:
-                    inspect.signature(entry.handler).bind(self._ctx, **handler_args)
-                except TypeError:
-                    return tool_resolution._format_tool_arg_error(entry), None
-                result = entry.handler(self._ctx, **handler_args)
-                published = _published_tool_result(
-                    self._ctx,
-                    tool_result_sentinel,
-                )
-                if (
-                    isinstance(published, ToolResult)
-                    and isinstance(result, str)
-                    and published.text == result
-                ):
-                    return None, published
-                return None, result
-            except TypeError as e:
-                return f"⚠️ TOOL_ERROR ({name}): {e}", None
-            except Exception as e:
-                return f"⚠️ TOOL_ERROR ({name}): {e}", None
+                    handler_args = dict(args)
+                    if resolved_binding is not None:
+                        parameters = inspect.signature(entry.handler).parameters
+                        if "_resolved_binding" not in parameters:
+                            return (
+                                f"⚠️ TOOL_INTERNAL_ERROR ({name}): target-sensitive handler "
+                                "does not declare the private _resolved_binding keyword.",
+                                None,
+                            )
+                        handler_args["_resolved_binding"] = resolved_binding
+                    try:
+                        inspect.signature(entry.handler).bind(self._ctx, **handler_args)
+                    except TypeError:
+                        return tool_resolution._format_tool_arg_error(entry), None
+                    result = entry.handler(self._ctx, **handler_args)
+                    published = _published_tool_result(
+                        self._ctx,
+                        tool_result_sentinel,
+                    )
+                    if (
+                        isinstance(published, ToolResult)
+                        and isinstance(result, str)
+                        and published.text == result
+                    ):
+                        return None, published
+                    return None, result
+                except TypeError as e:
+                    return f"⚠️ TOOL_ERROR ({name}): {e}", None
+                except Exception as e:
+                    return f"⚠️ TOOL_ERROR ({name}): {e}", None
         finally:
-            if prior is missing:
-                try:
-                    delattr(self._ctx, "_active_python_resolution")
-                except AttributeError:
-                    pass
-            else:
-                self._ctx._active_python_resolution = prior
             _restore_tool_result_sidecar(tool_result_token)
             if prior_tool_result_attr is missing:
                 try:
@@ -1175,11 +1176,11 @@ class ToolRegistry:
             if ext_tool and callable(ext_tool.get("handler")):
                 return extension_dispatch._dispatch_extension_tool_result(self._ctx, name, ext_tool, args)
             return _unknown_tool_result(self._entries, name, extension_unavailable)
-        args, python_resolution, python_block = tool_resolution._resolve_python_predispatch(
+        args, interpreter_resolution, interpreter_block = tool_resolution._resolve_python_predispatch(
             self, name, args, _runtime_mode, effective_constraint, resolved_binding,
         )
-        if python_block is not None:
-            return python_block
+        if interpreter_block is not None:
+            return interpreter_block
         allow_short_relative = bool(
             effective_constraint and effective_constraint.mode == "skill_repair"
         )
@@ -1287,7 +1288,7 @@ class ToolRegistry:
             args,
             messages=getattr(self._ctx, "messages", None),
             ctx=self._ctx,
-            python_resolution=python_resolution,
+            python_resolution=interpreter_resolution,
         )
         if not is_safe:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)
@@ -1314,8 +1315,11 @@ class ToolRegistry:
             else None
         )
         worktree_before = self._worktree_status_snapshot() if entry.mutates_worktree else None
+        if interpreter_resolution is None:  # node: post-gates (A-F4)
+            args, interpreter_resolution = _resolve_node_postgates_predispatch(
+                self, name, args, _runtime_mode, effective_constraint, resolved_binding)
         early_error, result = self._invoke_builtin_handler(
-            name, entry, args, resolved_binding, python_resolution, worktree_before,
+            name, entry, args, resolved_binding, interpreter_resolution, worktree_before,
         )
         if early_error is not None:
             return early_error

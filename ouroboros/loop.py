@@ -741,7 +741,13 @@ from ouroboros.loop_acceptance_review import (  # noqa: E402, F401 -- intentiona
     _record_acceptance_infra_failure,
     _prior_acceptance_run,
     _direct_context_fence_state,
+    _disposition_reason_sha256,
+    _refuse_identical_acceptance,
     _run_task_acceptance_review_once,
+    _total_paid_acceptance_cycles,
+    acceptance_dialogue_history,
+    acceptance_paid_identity,
+    bind_acceptance_paid_identity,
 )
 from ouroboros.loop_round_limits import (  # noqa: E402, F401 -- intentional public re-exports
     _CompactionRoundContext,
@@ -834,7 +840,11 @@ from ouroboros.loop_delivery import (  # noqa: E402, F401 -- intentional public 
     _arm_delivery_control,
     _hold_delivery_for_skill_action,
     _parse_delivery_control_object,
+    _parse_delivery_control_body,
     _resolve_delivery_control,
+    _CHILD_ABSORPTION_HOLD_CONTROL,
+    _DELIVERY_HOLD_CONTROLS,
+    _SKILL_ACTION_HOLD_CONTROL,
     _compose_delivery_suffix,
     _no_tool_final_answer,
 )
@@ -847,6 +857,7 @@ from ouroboros.loop_forced_finalization import (  # noqa: E402, F401 -- intentio
     _forced_orphan_note,
     _claimed_child_dispositions,
     _undispositioned_children,
+    _undecided_children_listing,
     _maybe_enforce_child_absorption_gate,
     _run_forced_children_acceptance,
     _enforce_swarm_actions,

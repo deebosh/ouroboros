@@ -137,7 +137,7 @@ class LoadedSkill:
         from ouroboros.tools.skill_exec import _resolve_runtime_binary, _resolve_script_path
 
         runtime = (self.manifest.runtime or "").strip().lower()
-        if _resolve_runtime_binary(runtime) is None:
+        if _resolve_runtime_binary(runtime)[0] is None:
             return False
         for entry in self.manifest.scripts or []:
             if not isinstance(entry, dict):
@@ -1446,7 +1446,7 @@ def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
     available = blocked_by_grants = pending_review = blocker_review = warning_review = broken = 0
     for s in skills:
         stale = s.review.is_stale_for(s.content_hash)
-        gate = skill_review_gate(s.review.status, stale=stale)
+        gate = skill_review_gate(s.review.status, stale=stale, findings=s.review.findings)
         if s.identity_collision:
             # Readiness probes include lifecycle/dependency state. A collision
             # has no unique lifecycle identity, so its UI projection must stay

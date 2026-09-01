@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import pathlib
-import signal
 import subprocess
 import threading
 from typing import List
@@ -21,7 +20,6 @@ from typing import List
 from ouroboros.platform_layer import kill_process_tree, scrub_repo_from_pythonpath, subprocess_new_group_kwargs
 from ouroboros.config import SETTINGS_DEFAULTS, load_settings
 from ouroboros.tools.registry import ToolContext
-from ouroboros.tool_access import ResolvedResourceBinding
 from ouroboros.deadline_utils import deadline_remaining_sec
 from ouroboros.workspace_executor import executor_ref_from_ctx
 from ouroboros.workspace_executor import map_host_path as executor_map_host_path
@@ -161,27 +159,10 @@ def _resolve_effective_timeout(
     return max(1, int(effective))
 
 
-def _describe_returncode(returncode: int, *, cwd: pathlib.Path | str | None = None,
-                         binding: ResolvedResourceBinding | None = None) -> str:
-    """Render a return code with signal details when applicable."""
-    suffix: list[str] = []
-    if int(returncode) < 0:
-        signal_num = abs(int(returncode))
-        try:
-            signal_name = signal.Signals(signal_num).name
-        except ValueError:
-            signal_name = f"SIG{signal_num}"
-        suffix.append(f"signal={signal_name}")
-    if cwd is not None:
-        suffix.append(f"cwd={pathlib.Path(cwd).resolve(strict=False)}")
-    rendered_suffix = f" ({', '.join(suffix)})" if suffix else ""
-    target_suffix = ""
-    if binding is not None:
-        target = [f"root={binding.root}", f"source={binding.source}"]
-        if binding.skill_name:
-            target.append(f"skill={binding.skill_name}")
-        target_suffix = "; " + ", ".join(target)
-    return f"exit_code={returncode}{rendered_suffix}{target_suffix}"
+# R5 (node-runtime sprint): the render moved to the typed process-facts SSOT
+# (signal naming, lived_ms/resolved_runtime disclosure); the historical private
+# spelling stays importable here for call sites and tests.
+from ouroboros.tools.process_facts import describe_returncode as _describe_returncode  # noqa: E402, F401 — historical private spelling for call sites and tests
 
 
 def _format_process_output(stdout: str, stderr: str, *, limit: int = 50_000) -> str:
@@ -208,3 +189,33 @@ def _executor_can_run_cwd(ctx: ToolContext, work_dir: pathlib.Path) -> bool:
         return True
     except Exception:
         return False
+
+def _publish_finished_process_facts(ctx, res, started_ts) -> int:
+    """Typed process facts (R5) for a returned child, measured structurally —
+    never re-derived from prose. Returns the child's lifetime in ms."""
+    import time
+
+    from ouroboros.tools.process_facts import (
+        active_resolved_runtime,
+        publish_process_facts,
+    )
+
+    lived_ms = max(0, int((time.monotonic() - started_ts) * 1000))
+    publish_process_facts(
+        returncode=getattr(res, "returncode", None),
+        started_ts=started_ts,
+        resolved_runtime=active_resolved_runtime(ctx),
+    )
+    return lived_ms
+
+
+def _publish_unfinished_process_facts(ctx, started_ts) -> None:
+    """Typed facts for a child with no returncode (timeout / pre-exec failure):
+    duration only, plus the attested substituted runtime when one applied."""
+    from ouroboros.tools.process_facts import (
+        active_resolved_runtime,
+        publish_process_facts,
+    )
+
+    publish_process_facts(started_ts=started_ts,
+                          resolved_runtime=active_resolved_runtime(ctx))

@@ -102,12 +102,19 @@ export function durableChatMediaUrl(value) {
 }
 
 export function chatMediaMessageKey(msg) {
-    return [msg.msg_type || msg.type, String(msg.ts || ''), String(msg.caption || ''), String(msg.mime || '')].join('|');
+    return [
+        msg.msg_type || msg.type,
+        String(msg.task_id || ''),
+        String(msg.ts || ''),
+        String(msg.caption || ''),
+        String(msg.mime || ''),
+    ].join('|');
 }
 
 export function documentMessageKey(msg) {
     return [
         'document',
+        String(msg.task_id || ''),
         String(msg.ts || ''),
         String(msg.download_url || ''),
         String(msg.filename || ''),
@@ -538,6 +545,7 @@ export function computeDerivedChatStatus({
     activeDirectCount = 0,
     activeManagedCount = 0,
     queuedManagedCount = 0,
+    pausedManagedCount = 0,
     pendingSubmissionsCount = 0,
 } = {}) {
     if (!isConnected) {
@@ -557,6 +565,11 @@ export function computeDerivedChatStatus({
     }
     if (queuedManagedCount > 0) {
         return { kind: 'thinking', text: 'Queued...', showDots: true };
+    }
+    if (pausedManagedCount > 0) {
+        // Budget-paused work is NOT running and will not start by itself:
+        // never dress it up as Working or Queued.
+        return { kind: 'online', text: 'Paused (budget)', showDots: false };
     }
     return { kind: 'online', text: 'Online', showDots: false };
 }
@@ -645,6 +658,19 @@ export function formatMsgTime(isoStr) {
     }
 }
 
+/** Human label for ONE manual-routing option row (shared with the picker card). */
+export function routingOptionLabel(option) {
+    if (!option || typeof option !== 'object') return '';
+    if (option.label) return String(option.label);
+    if (option.action === 'new_task_in_project') {
+        return `New task in ${String(option.project_name || 'Project')}`;
+    }
+    if (option.title || option.project_name) {
+        return String(option.title || option.project_name);
+    }
+    return option.project_id && !option.task_id ? 'Project' : 'Task';
+}
+
 /** Human text for a typed routing annotation ('' hides the line). */
 export function routingAnnotationText(annotation) {
     if (!annotation || typeof annotation !== 'object') return '';
@@ -656,17 +682,7 @@ export function routingAnnotationText(annotation) {
     if (status === 'pending') return 'Choosing the right destination…';
     if (status === 'needs_manual_target') {
         const optionLabels = (Array.isArray(annotation.options) ? annotation.options : [])
-            .map(option => {
-                if (!option || typeof option !== 'object') return '';
-                if (option.label) return String(option.label);
-                if (option.action === 'new_task_in_project') {
-                    return `New task in ${String(option.project_name || 'Project')}`;
-                }
-                if (option.title || option.project_name) {
-                    return String(option.title || option.project_name);
-                }
-                return option.project_id && !option.task_id ? 'Project' : 'Task';
-            })
+            .map(routingOptionLabel)
             .filter(Boolean);
         if (optionLabels.length) return `Choose a target · ${optionLabels.join(' / ')}`;
         return targetLabel ? `Choose a target · ${targetLabel}` : 'Choose a target';
@@ -762,7 +778,9 @@ export function computeHydratedDirectActivities(
  * that can wake durable task-detail convergence: a host-stamped managed root
  * observed before this request, now absent from the GLOBAL snapshot. A root
  * still listed under another chat merely departed locally. Direct/ephemeral
- * removals still update header status without task-detail/card authority.
+ * removals carry no task-detail/card authority, but they ARE conclusions
+ * (#369): the caller records them so a late frame cannot resurrect the
+ * turn, and clears the linked Sending... submission.
  */
 export function reconcileHydratedDirectActivities(
     existingMap,
@@ -782,10 +800,23 @@ export function reconcileHydratedDirectActivities(
     }
     const departedManagedTaskIds = [];
     const disappearedManagedTaskIds = [];
+    const concludedDirectActivities = [];
     for (const [activityId, entry] of existingMap || []) {
-        if (String(entry?.kind || '') !== 'managed_task') continue;
         if (activities.has(activityId)) continue;
         if (concludedIds?.has(activityId)) continue;
+        if (String(entry?.kind || '') !== 'managed_task') {
+            // A direct/ephemeral row the authoritative snapshot no longer
+            // lists is settled: its live final was missed (ephemeral
+            // task_done frames never reach the card layer), so the snapshot
+            // is the conclusion of record.
+            if (!globallyActiveActivityIds.has(activityId)) {
+                concludedDirectActivities.push({
+                    activityId,
+                    clientMessageId: String(entry?.clientMessageId || ''),
+                });
+            }
+            continue;
+        }
         departedManagedTaskIds.push(activityId);
         if (globallyActiveActivityIds.has(activityId)) continue;
         disappearedManagedTaskIds.push(activityId);
@@ -794,6 +825,7 @@ export function reconcileHydratedDirectActivities(
         activities,
         departedManagedTaskIds,
         disappearedManagedTaskIds,
+        concludedDirectActivities,
         globallyActiveActivityIds,
     };
 }
@@ -829,4 +861,29 @@ export function unconfirmedForegroundCardIds(cards, activeIds) {
         out.push(id);
     }
     return out;
+}
+
+// Extracted from chat.js (byte-ratchet payment): the DOM half of the routing
+// acknowledgement, kept beside its text builder above.
+export function renderRoutingAnnotation(bubble, annotation) {
+    if (!bubble) return false;
+    const text = routingAnnotationText(annotation);
+    let note = bubble.querySelector('.msg-routing-annotation');
+    if (!text) {
+        note?.remove();
+        delete bubble.dataset.chatAnnotationStatus;
+        return false;
+    }
+    if (!note) {
+        note = document.createElement('div');
+        note.className = 'msg-routing-annotation';
+        const time = bubble.querySelector('.msg-time');
+        if (time) time.before(note);
+        else bubble.append(note);
+    }
+    const status = String(annotation.status || '');
+    note.textContent = text;
+    note.dataset.annotationStatus = status;
+    bubble.dataset.chatAnnotationStatus = status;
+    return true;
 }

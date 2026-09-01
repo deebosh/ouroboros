@@ -182,6 +182,31 @@ def skill_state_path(drive_root: pathlib.Path, name: str) -> pathlib.Path:
     return _skills_state_root(pathlib.Path(drive_root)) / _sanitize_skill_name(name)
 
 
+def companion_manifest_path_override(spec: Dict[str, Any]) -> bool:
+    """An explicit manifest PATH means the author owns the runtime lookup —
+    neither the bundled argv rewrite nor the emergency prepend may shadow it
+    (T14)."""
+    return any(str(key).upper() == "PATH" for key in (spec.get("env") or {}))
+
+
+def companion_node_argv(spec: Dict[str, Any], expected_runtime: str, cmd: list) -> list:
+    """T14 node symmetry with the python->sys.executable rewrite:
+    platform_layer.select_skill_node_runtime owns the bundled-first precedence
+    (health rollback included). npm is never rewritten — the emergency PATH
+    prepend in ``materialize_companion_env`` covers its `#!/usr/bin/env node`
+    shebang. On a healthy PATH argv and env stay byte-identical; an npm
+    launcher rewritten to an ABSOLUTE node shebang ignores PATH and keeps
+    failing honestly (disclosed residual)."""
+    if expected_runtime not in {"node", "npm"} or companion_manifest_path_override(spec):
+        return cmd
+    from ouroboros.platform_layer import select_skill_node_runtime
+
+    selected_node, _node_provenance = select_skill_node_runtime()
+    if selected_node and cmd and cmd[0] == "node":
+        return [selected_node, *cmd[1:]]
+    return cmd
+
+
 def materialize_companion_env(api: "PluginAPIImpl", descriptor: Any, spec: Dict[str, Any], token: str) -> None:
     """Fill one staged companion descriptor's env at publication (fix-round-6).
 
@@ -204,11 +229,19 @@ def materialize_companion_env(api: "PluginAPIImpl", descriptor: Any, spec: Dict[
         granted_keys=list(api._granted_upper),
     )
     reserved_env = {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL"}
-    for key, value in (spec.get("env") or {}).items():
-        key_text = str(key)
-        if key_text.upper() in FORBIDDEN_SKILL_SETTINGS or key_text.upper() in reserved_env:
-            continue
-        env[key_text] = str(value)
+    manifest_env = {
+        str(key): str(value)
+        for key, value in (spec.get("env") or {}).items()
+        if str(key).upper() not in FORBIDDEN_SKILL_SETTINGS
+        and str(key).upper() not in reserved_env
+    }
+    # Case-aware merge (delta finding D2-8): a manifest "Path" must REPLACE
+    # the allowlisted "PATH" on Windows, never sit next to it — duplicate
+    # case-variant env keys make CreateProcess-era spawns fail or pick an
+    # undefined winner. Same contract as the executor-local service lane.
+    from ouroboros.workspace_executor import overlay_env
+
+    env = overlay_env(env, manifest_env)
     env["HOST_SERVICE_URL"] = f"http://{DEFAULT_HOST_SERVICE_HOST}:{host_service_port()}"
     env["HOST_SERVICE_TOKEN"] = token
     if api._skill_dir is not None:
@@ -217,6 +250,22 @@ def materialize_companion_env(api: "PluginAPIImpl", descriptor: Any, spec: Dict[
             existing_pythonpath = env.get("PYTHONPATH")
             env["PYTHONPATH"] = os.pathsep.join(
                 [*site_dirs, existing_pythonpath] if existing_pythonpath else site_dirs
+            )
+    expected_runtime = str(spec.get("runtime") or "").strip()
+    if expected_runtime in {"node", "npm"} and not companion_manifest_path_override(spec):
+        # T14 emergency-only PATH prepend (see register_companion_process):
+        # descriptor env keys win over the supervisor's `_companion_base_env`
+        # merge, so the prepended PATH reaches the child and survives
+        # supervisor restarts.
+        from ouroboros.platform_layer import skill_node_emergency_path_dir
+
+        node_prepend_dir = skill_node_emergency_path_dir()
+        if node_prepend_dir:
+            existing_path = env.get("PATH") or os.environ.get("PATH", "")
+            env["PATH"] = (
+                os.pathsep.join([node_prepend_dir, existing_path])
+                if existing_path
+                else node_prepend_dir
             )
     descriptor.env.clear()
     descriptor.env.update(env)

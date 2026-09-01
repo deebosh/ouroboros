@@ -89,6 +89,7 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
             # its owning task is no longer running. It has no pid, so the process
             # reaper cannot see it — but it is still spending quota and still writing.
             _reconcile_delegated_runs(live_tasks)
+            _cursor_refresh_settled_terminals()
         except Exception:
             log.debug("Periodic custody reap failed", exc_info=True)
     if time.time() - last_review_reconcile[0] > 300:
@@ -179,6 +180,25 @@ def _startup_prune_sweeps() -> None:
         log.debug("Headless task drive prune failed", exc_info=True)
 
 
+def _cursor_refresh_settled_terminals() -> None:
+    """Cursor-driven pass: runs settled OUTSIDE a generation's reconcile
+    outcomes (terminal-boundary settlements, earlier generations) never
+    reappear in the orphan sweep, so their tasks' stored evidence would stay
+    stale forever. Bounded to newly appended custody rows per tick. At BOOT
+    this runs AFTER the D1a backfill (see ``_startup_custody_sweep``), so a
+    same-generation heal keeps its pinned ``boot_backfill`` attribution and
+    the cursor's change-gated pass advances past it without a second write.
+    """
+    try:
+        from ouroboros.delegate_terminal import refresh_recently_settled_terminals
+
+        refreshed = refresh_recently_settled_terminals(DATA_DIR)
+        if refreshed:
+            log.info("Cursor refresh healed %d stale terminal result(s)", refreshed)
+    except Exception:
+        log.debug("Cursor terminal-refresh pass failed", exc_info=True)
+
+
 def _startup_custody_sweep() -> None:
     """Both custody surfaces, swept once per generation at supervisor startup.
 
@@ -194,6 +214,22 @@ def _startup_custody_sweep() -> None:
     except Exception:
         log.debug("Process custody startup reap failed", exc_info=True)
     _reconcile_delegated_runs(set())
+    try:
+        # D1a boot backfill, ONCE per generation and AFTER the orphan reconcile
+        # (so this generation's settlements are already visible to the audit):
+        # a run settled in a PREVIOUS generation never appears in any current
+        # pass's outcomes, so the sweep-side refresh above can never reach its
+        # task's stored disclosure — the backfill joins from the stored terminal
+        # results instead and heals every generation-crossing stale row.
+        from ouroboros.delegate_terminal import backfill_terminal_reconciliations
+
+        refreshed = backfill_terminal_reconciliations(DATA_DIR)
+        if refreshed:
+            log.info("Boot custody backfill refreshed %d stored disclosure(s): %s",
+                     len(refreshed), refreshed)
+    except Exception:
+        log.debug("Boot custody-disclosure backfill failed", exc_info=True)
+    _cursor_refresh_settled_terminals()
     try:
         # Phase A boot migration: legacy ``cancel_requested`` status latches
         # become ordinary durable cancel intents; the supervisor watchdog then

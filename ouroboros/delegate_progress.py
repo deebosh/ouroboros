@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 
 _TIMELINE_TAIL = 12
 _TIMELINE_LABEL_CHARS = 300
+_TEXT_KINDS = ("thinking", "message")
 # The closing `note` is appended AFTER the advance list is sized, so its cost is
 # reserved rather than measured; it is a fixed string of this module's own authorship.
 _NOTE_RESERVE_CHARS = 700
@@ -63,11 +64,19 @@ def _bounded(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return truncate_review_artifact(value, _TIMELINE_LABEL_CHARS) \
             if isinstance(value, str) else value
 
-    return [
-        {"type": _label(row.get("type")), "title": _label(row.get("title")),
-         "severity": _label(row.get("severity"))}
-        for row in rows[-_TIMELINE_TAIL:]
-    ]
+    out = []
+    for row in rows[-_TIMELINE_TAIL:]:
+        item = {"type": _label(row.get("type")), "title": _label(row.get("title")),
+                "severity": _label(row.get("severity"))}
+        if row.get("textKind") in _TEXT_KINDS and isinstance(row.get("detail"), str):
+            # The typed body preserves stream whitespace; the engine's title is
+            # only a preview. Keep the same disclosed bound, without a second copy.
+            item.update(title=_label(row["detail"]), textKind=row["textKind"],
+                        textDelta=row.get("textDelta") is True,
+                        attemptId=_label(row.get("attemptId")),
+                        harnessId=_label(row.get("harnessId")))
+        out.append(item)
+    return out
 
 
 def timeline_tail(detail: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -526,9 +535,26 @@ def _fitted_pending(payload: Dict[str, Any], pending: List[Dict[str, Any]],
 
 
 def live_line(run_id: str, advance: _Advance) -> str:
-    titles = " · ".join(
-        str(row.get("title") or row.get("type") or "") for row in advance.events
-    )
+    parts: List[str] = []
+    previous_stream = None
+    for row in advance.events:
+        text_kind = row.get("textKind")
+        is_text = text_kind in _TEXT_KINDS and isinstance(row.get("title"), str)
+        text = row["title"] if is_text else str(row.get("title") or row.get("type") or "")
+        stream = (text_kind, row.get("attemptId"), row.get("harnessId")) \
+            if is_text and row.get("textDelta") is True else None
+        if not text:
+            if stream != previous_stream:
+                previous_stream = None
+            continue
+        # Native fragments may split a word or contain only whitespace. Only the
+        # engine's explicit delta fact authorizes concatenation, never the prose.
+        if parts and stream is not None and stream == previous_stream:
+            parts[-1] += text
+        else:
+            parts.append(text)
+        previous_stream = stream
+    titles = " · ".join(parts)
     # A batch larger than the display tail shows its LAST rows. Saying how many it is not
     # showing is the difference between an honest subset and a line that reads like the
     # whole batch — the human's stream is the one surface that had no marker at all. It
@@ -576,7 +602,7 @@ def window_payload(
 
     ``pending_interactions`` is the caller's BOUNDED question projection (B4): a
     known question the model chose not to answer keeps riding every expiry payload
-    beside the ``waiting_on_user`` boolean, so a nanny that escalated to its human
+    beside the ``waiting_on_user`` boolean, so a nanny that escalated up the hierarchy
     is re-shown what the run is paused on instead of a bare flag. MEASURED into
     the payload in BOTH branches (F2) — through ``_fitted_pending``'s shed
     discipline, before the advance list is sized — so it can never push the
@@ -602,7 +628,9 @@ def window_payload(
         payload["note"] = (
             ("The run is alive and PAUSED on the question(s) it already asked "
              "(waiting_on_user; see pending_interactions). Decide: answer with "
-             "delegate_answer, escalate to your human via a progress message, or "
+             "delegate_answer, escalate an above-authority question with the "
+             "escalate verb (parent-first; the reply reaches your mailbox on a "
+             "later round), or "
              f"keep waiting (call again) — {waiting_expiry_clause(pending_interactions)}. "
              "Do not cancel a run merely because it asked a question.")
             if waiting_on_user else
@@ -664,7 +692,8 @@ def window_payload(
         # The expiry claim is keyed on the rows' own timeout_at (R2-7e).
         payload["note"] += (
             " The run is PAUSED on a question: answer it (delegate_answer), "
-            f"escalate to your human, or keep waiting — "
+            "raise it with the escalate verb (parent-first) if it is above "
+            f"your authority, or keep waiting — "
             f"{waiting_expiry_clause(pending_interactions)}; do not cancel over it."
         )
     return payload

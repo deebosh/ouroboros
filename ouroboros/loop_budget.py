@@ -607,8 +607,16 @@ def _prepare_post_tool_budget_context(
 
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if isinstance(candidate, _loop().DeliveryCandidate):
-        skill_action_pending = (
-            candidate.finalization_control == "skill_action_or_revision_required"
+        hold_control = (
+            candidate.finalization_control
+            if candidate.finalization_control in _loop()._DELIVERY_HOLD_CONTROLS
+            else ""
+        )
+        # The absorption gate stays open while undispositioned children remain:
+        # arming JSON there would recreate the conflicting-instruction round.
+        absorption_gate_open = (
+            hold_control == _loop()._CHILD_ABSORPTION_HOLD_CONTROL
+            and bool(_loop()._undispositioned_children(limit_ctx))
         )
         evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(
             tools, limit_ctx, llm_trace,
@@ -617,19 +625,26 @@ def _prepare_post_tool_budget_context(
             candidate.evidence_revision != evidence_revision
             or candidate.evidence_fingerprint != evidence_fingerprint
         ):
-            _loop()._arm_delivery_control(
-                tools,
-                limit_ctx,
-                llm_trace,
-                control="effect_revision_required",
-            )
-        elif skill_action_pending:
+            if absorption_gate_open:
+                _loop()._hold_delivery_for_skill_action(
+                    tools, llm_trace, control=_loop()._CHILD_ABSORPTION_HOLD_CONTROL,
+                )
+            else:
+                _loop()._arm_delivery_control(
+                    tools,
+                    limit_ctx,
+                    llm_trace,
+                    control="effect_revision_required",
+                )
+        elif hold_control == _loop()._SKILL_ACTION_HOLD_CONTROL:
             _loop()._arm_delivery_control(
                 tools,
                 limit_ctx,
                 llm_trace,
                 control="skill_revision_required",
             )
+        # An absorption hold with unchanged evidence keeps holding: only
+        # dispositions close the gate, and a disposition changes evidence.
     # Cross-model fallback can adopt a different route during this round.
     limit_ctx.active_model = active_model
     limit_ctx.active_use_local = active_use_local

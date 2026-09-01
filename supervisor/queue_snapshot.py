@@ -409,6 +409,11 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
                     "blocked_admission": blocked_restore, "invalid_task_depth": invalid_depth_restore,
                 },
             )
+        from supervisor.queue_transitions import sweep_orphaned_budget_fences
+
+        sweep_orphaned_budget_fences(
+            _queue().PENDING, _queue().BUDGET_ROOT_FENCES, _queue().DRIVE_ROOT,
+        )
         if restored > 0 or skipped_terminal > 0 or invalid_depth_restore:
             _queue().persist_queue_snapshot(reason="queue_restored")
         return restored

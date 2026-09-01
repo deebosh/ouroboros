@@ -19,7 +19,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ouroboros.utils import atomic_write_json, replace_atomic, utc_now_iso
+from ouroboros.utils import (
+    atomic_write_json,
+    extract_trailing_json_object,
+    replace_atomic,
+    utc_now_iso,
+)
 
 
 OBSERVABILITY_DIR = "observability"
@@ -1221,11 +1226,40 @@ def latest_llm_response_text(drive_root: pathlib.Path, task_id: str) -> str:
             message = payload.get("message") if isinstance(payload, dict) else None
             content = message.get("content") if isinstance(message, dict) else None
             text = str(content or "").strip()
-            if text and not _is_delivery_control_payload(text):
-                return text
+            if not text or _is_delivery_control_payload(text):
+                continue
+            # Lockstep with the loop's trailing-object parse: a body of prose
+            # plus one TRAILING protocol object salvages the prose only — the
+            # machine directive must never reach the owner's terminal result.
+            # (A whole-body protocol object stays suppressed above; an object
+            # with prose AFTER it is quoted material and passes through.)
+            prose, parsed, duplicate_key = extract_trailing_json_object(
+                text, duplicate_flag_keys=("delivery_control", "full_answer"),
+            )
+            if duplicate_key or (isinstance(parsed, dict) and "delivery_control" in parsed):
+                if prose.strip():
+                    return prose.rstrip()
+                continue
+            return text
         except Exception:
             continue
     return ""
+
+
+def strip_protocol_fence(text: str) -> str:
+    """Strip ONE whole-body markdown fence, returning the trimmed inner body.
+
+    Shared normalization for every delivery-control protocol reader (the loop
+    resolvers and the salvage predicate below): a fenced protocol object is
+    still the protocol object. Anything short of a single fence spanning the
+    whole body is returned stripped but otherwise unchanged.
+    """
+    body = str(text or "").strip()
+    if body.startswith("```"):
+        first_break = body.find("\n")
+        if first_break != -1 and body.endswith("```"):
+            return body[first_break + 1:-3].strip()
+    return body
 
 
 def _is_delivery_control_payload(text: str) -> bool:
@@ -1237,14 +1271,13 @@ def _is_delivery_control_payload(text: str) -> bool:
     loop-side resolution used to let raw-salvage promote that JSON into the
     owner-facing terminal result. This is a STRUCTURAL typed-protocol check
     (exact JSON object carrying the protocol key, optionally in one markdown
-    fence) — never semantic prose classification. Matching payloads stay
-    forensic evidence in the observability store; they are simply not answers.
+    fence) — never semantic prose classification: a MIXED prose+object answer
+    stays salvageable here (this predicate has no latch knowledge; embedded-
+    object containment belongs to the loop's latch-gated resolvers). Matching
+    payloads stay forensic evidence in the observability store; they are
+    simply not answers.
     """
-    body = str(text or "").strip()
-    if body.startswith("```"):
-        first_break = body.find("\n")
-        if first_break != -1 and body.endswith("```"):
-            body = body[first_break + 1:-3].strip()
+    body = strip_protocol_fence(text)
     if not (body.startswith("{") and body.endswith("}")):
         return False
     try:

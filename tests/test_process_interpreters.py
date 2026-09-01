@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros.python_interpreter import resolve_process_python
+from ouroboros.process_interpreters import resolve_process_python
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 
 
@@ -397,7 +397,7 @@ def test_run_script_accepts_registry_attested_versioned_agent_python(
 
     assert result.endswith("\nok")
     assert "RUN_SCRIPT_BLOCKED" not in result
-    assert not hasattr(ctx, "_active_python_resolution")
+    assert not hasattr(ctx, "_active_interpreter_resolution")
 
 
 def test_run_script_still_blocks_unattested_versioned_interpreter(tmp_path):
@@ -414,7 +414,7 @@ def test_run_script_still_blocks_unattested_versioned_interpreter(tmp_path):
 
 def test_safety_fast_path_requires_matching_verified_resolver_provenance(tmp_path, monkeypatch):
     import ouroboros.safety as safety
-    from ouroboros.python_interpreter import PythonResolutionTrace
+    from ouroboros.process_interpreters import PythonResolutionTrace
 
     agent_python = str(_executable(tmp_path / "agent" / "bin" / "python"))
     verified = PythonResolutionTrace(
@@ -455,7 +455,7 @@ def test_safety_fast_path_requires_matching_verified_resolver_provenance(tmp_pat
 
 def test_verified_python_c_body_still_requires_safety_review(tmp_path, monkeypatch):
     import ouroboros.safety as safety
-    from ouroboros.python_interpreter import PythonResolutionTrace
+    from ouroboros.process_interpreters import PythonResolutionTrace
 
     agent_python = str(_executable(tmp_path / "agent" / "bin" / "python"))
     verified = PythonResolutionTrace(
@@ -478,7 +478,7 @@ def test_verified_python_c_body_still_requires_safety_review(tmp_path, monkeypat
 
 
 def test_resolution_trace_failure_is_fail_soft(tmp_path, monkeypatch):
-    import ouroboros.python_interpreter as resolver
+    import ouroboros.process_interpreters as resolver
 
     trace = resolver.PythonResolutionTrace(
         tool="run_command",

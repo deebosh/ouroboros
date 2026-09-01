@@ -88,12 +88,8 @@ def aggregate_skill_review_status(
     # as STATUS_PENDING (non-executable under every enforcement mode) and MUST
     # reload that way — never as advisory-overridable BLOCKERS or WARNINGS —
     # so honor them before the severity-driven aggregation below.
-    for finding in findings:
-        if finding.get("verdict") == "FAIL" and (
-            finding.get("item") in ("skill_preflight", "plugin_api_admission")
-            or str(finding.get("model") or "") in ("deterministic_preflight", "plugin_api_admission")
-        ):
-            return STATUS_PENDING
+    if preflight_failed(findings):
+        return STATUS_PENDING
     is_official_hub = review_profile == "official_hub"
     has_critical_fail = False
     has_warning_fail = False
@@ -177,13 +173,48 @@ def count_trailing_warnings_rounds(
     return count
 
 
-def skill_review_gate(status: str, *, stale: bool = False, enforcement: Optional[str] = None) -> Dict[str, Any]:
+def preflight_failed(findings: Any) -> bool:
+    """True when the persisted findings carry a deterministic preflight FAIL.
+
+    The SSOT for the shape is the finding `_run_deterministic_preflight`
+    persists (item=skill_preflight / model=deterministic_preflight) — plus the
+    ABI-1 PluginAPI admission refusal (item/model=plugin_api_admission), the
+    same structural-gate class; the same condition drives the pending
+    aggregation above. UI cards use this fact to offer Repair instead of a
+    Re-review that would deterministically fail again (#335).
+    """
+    for finding in findings or []:
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("verdict") == "FAIL" and (
+            finding.get("item") in ("skill_preflight", "plugin_api_admission")
+            or str(finding.get("model") or "") in ("deterministic_preflight", "plugin_api_admission")
+        ):
+            return True
+    return False
+
+
+def skill_review_gate(
+    status: str, *, stale: bool = False, enforcement: Optional[str] = None,
+    findings: Any = None,
+) -> Dict[str, Any]:
     """Structured, agent-facing explanation of whether a review is executable.
 
     Deterministic hard-gate failures (e.g. skill_preflight) are persisted as
     STATUS_PENDING by `_run_deterministic_preflight`, so they are non-executable
     here under every enforcement mode without needing per-caller findings — only
     LLM blocker verdicts are overridable by advisory enforcement.
+
+    ``findings`` is optional: a caller that has the persisted findings gets a
+    ``preflight_failed`` key in the gate (the typed fact behind the Repair
+    affordance, #335) plus its companion ``preflight_failed_stale``. Absence
+    of the keys means the caller could not know — they are never fabricated.
+    A STALE review's persisted failure no longer describes the current payload
+    bytes (the owner may have fixed it by hand), so ``preflight_failed`` is
+    True only while the findings are fresh; the recorded-but-stale failure
+    surfaces as ``preflight_failed_stale`` instead, and the card offers BOTH
+    actions: the cheap Re-review (which reruns the preflight) stays primary,
+    with Repair offered based on the last recorded preflight.
     """
     raw_status = normalize_skill_review_status(status)
     if enforcement is None:
@@ -229,4 +260,8 @@ def skill_review_gate(status: str, *, stale: bool = False, enforcement: Optional
         "blocking_reason": reason,
         "review_enforcement": enforcement,
         "summary": summary,
+        **({
+            "preflight_failed": (not stale) and preflight_failed(findings),
+            "preflight_failed_stale": bool(stale) and preflight_failed(findings),
+        } if findings is not None else {}),
     }

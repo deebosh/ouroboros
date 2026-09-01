@@ -171,3 +171,60 @@ test('the UNIFIED wire shape feeds the same readers: all rows named, pools carry
     assert.deepEqual(nextUpAccount(payload, 'codex'),
         { kind: 'profile', profileId: 'codex-default' });
 });
+
+test('delivered photo, video, and document rows keep their replay wire fields', () => {
+    const history = repoFile('ouroboros/gateway/history.py');
+    const chat = moduleFile('chat.js');
+
+    const documentBranch = history.slice(
+        history.indexOf('if entry.get("type") == "document":'),
+        history.indexOf('elif entry.get("type") in {"photo", "video"}',
+            history.indexOf('if entry.get("type") == "document":')),
+    );
+    for (const field of ['msg_type', 'filename', 'mime', 'download_url', 'caption', 'size_bytes']) {
+        assert.match(documentBranch, new RegExp(`rec\\["${field}"\\]`),
+            `document replay no longer emits ${field}`);
+    }
+
+    const mediaBranchStart = history.indexOf('elif entry.get("type") in {"photo", "video"}');
+    const mediaBranch = history.slice(mediaBranchStart, history.indexOf('\n            if ', mediaBranchStart));
+    for (const field of ['msg_type', 'mime', 'download_url', 'caption']) {
+        assert.match(mediaBranch, new RegExp(`rec\\["${field}"\\]`),
+            `photo/video replay no longer emits ${field}`);
+    }
+
+    const linksBranchStart = history.indexOf('elif entry.get("type") == "links"');
+    const linksBranch = history.slice(linksBranchStart, history.indexOf('\n            if ', linksBranchStart));
+    for (const field of ['msg_type="links"', 'actions=', 'title=']) {
+        assert.ok(linksBranch.includes(field), `links replay no longer emits ${field}`);
+    }
+
+    assert.match(chat, /\['document', 'photo', 'video', 'links', 'quiz'\]\.includes\(msg\.msg_type\)/);
+    assert.match(chat, /if \(msg\.msg_type === 'document'\) appendDocumentBubble\(msg\);/);
+    assert.match(chat, /else if \(msg\.msg_type === 'links'\) appendLinksMessage\(msg\);/);
+    assert.match(chat, /else appendMediaBubble\(msg\);/);
+});
+
+test('live structured delivery frames keep additive grouping and size fields', () => {
+    const bus = repoFile('supervisor/message_bus.py');
+    const contracts = repoFile('ouroboros/gateway/contracts.py');
+    const types = moduleFile('api_types.js');
+
+    for (const className of ['PhotoOutbound', 'VideoOutbound', 'DocumentOutbound', 'LinksOutbound', 'QuizOutbound']) {
+        assert.ok(contracts.includes(`class ${className}(TypedDict):`));
+        assert.ok(types.includes(`@typedef {Object} ${className}`));
+    }
+    assert.match(bus, /"type": "photo",[\s\S]*?"task_id": str\(task_id or ""\)/);
+    assert.match(bus, /"type": "video",[\s\S]*?"task_id": str\(task_id or ""\)/);
+    assert.match(bus, /"type": "document",[\s\S]*?"size_bytes": len\(file_bytes\),[\s\S]*?"task_id": str\(task_id or ""\)/);
+    assert.match(bus, /"type": "links",[\s\S]*?"actions": validated,[\s\S]*?"task_id": str\(task_id or ""\)/);
+    assert.match(bus, /"type": "quiz",[\s\S]*?"quiz_id": qid,[\s\S]*?"task_id": str\(task_id or ""\)/);
+    // Replay: the quiz row joins the non-terminal delivery family in chat.js
+    // BEFORE the finishLiveCard/plainUntypedFinal block.
+    const chat = moduleFile('chat.js');
+    assert.match(chat, /msg\.msg_type === 'quiz'\) appendQuizMessage\(msg\)/);
+    // The card gets the SAME sanitizing markdown pipeline as assistant bubbles.
+    assert.match(chat, /renderMarkdown: renderChatMarkdown/);
+    assert.match(chat, /enhanceMarkdown: enhanceChatMarkdown/);
+    assert.match(contracts, /WS_MESSAGE_TYPES[\s\S]*?"links"/);
+});

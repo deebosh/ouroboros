@@ -293,18 +293,3 @@ def _handle_budget_root_fence(evt: Dict[str, Any], ctx: Any) -> None:
         ctx.bridge.push_log(event)
     except Exception:
         log.warning("Failed to forward root budget pause to Activity", exc_info=True)
-
-
-def _handle_review_wave_budget_insufficient(evt: Dict[str, Any], ctx: Any) -> None:
-    """Persist the typed review-wave admission refusal durably (v6.69.0).
-
-    Without a registered handler the worker event would land in
-    supervisor.jsonl as an unknown_worker_event repr instead of a typed
-    events.jsonl row that budget audits can aggregate."""
-    try:
-        append_jsonl(
-            ctx.DRIVE_ROOT / "logs" / "events.jsonl",
-            {"ts": evt.get("ts", utc_now_iso()), **{k: v for k, v in evt.items() if k != "ts"}},
-        )
-    except Exception:
-        log.debug("Failed to log review_wave_budget_insufficient event", exc_info=True)

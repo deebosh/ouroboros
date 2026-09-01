@@ -23,7 +23,7 @@ from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, subagent_message_meta
 from ouroboros.task_results import TASK_COST_META_FIELDS as _TASK_COST_META_FIELDS
-from ouroboros.utils import utc_now_iso
+from ouroboros.utils import strip_markdown, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -259,7 +259,7 @@ def _user_annotation(
         key: annotation.get(key)
         for key in (
             "action", "target", "target_label", "status", "detail", "options",
-            "attachment_manifest",
+            "attachment_manifest", "routing_token",
         )
         if key in annotation
     }
@@ -439,6 +439,11 @@ def _chat_quota_predicate(row_matches_thread):
         if not isinstance(e, dict):
             return False
         if str(e.get("direction", "")).lower() not in ("in", "out"):
+            return False
+        if e.get("type") == "routing_options":
+            # LLM-grounding rows (#198) are skipped by the render loop, so
+            # they must not consume the human-row quota either — a run of
+            # picker refusals would silently evict real messages.
             return False
         if is_a2a_chat_id(e.get("chat_id", 1)):
             return False
@@ -798,6 +803,11 @@ def _collect_chat_rows(
     Returns ``(rows, quota_row_count)`` — the transformed history records and
     how many read entries satisfied the reader's quota predicate (feeds the
     window-truncation metadata)."""
+    # Quiz lifecycle merge (#Q-2b): the chat row froze the card at ask time
+    # ("open"); the durable truth lives in the owner_quiz task-result
+    # projection. One projection read per distinct asking task, cached for
+    # this call.
+    quiz_projection_cache: Dict[str, Dict[str, Any]] = {}
     combined: list = []
     chat_quota_rows = 0
     stream_gaps: set[str] = set()
@@ -852,6 +862,10 @@ def _collect_chat_rows(
                 # provenance surface.
             }
             if rec["system_type"] in {"project_started", "project_completion_summary"}:
+                # Read-side plain normalization for lifecycle rows persisted
+                # before the producer stripped markdown; a no-op on new rows.
+                # The durable chat.jsonl is never rewritten.
+                rec["text"] = strip_markdown(rec["text"])
                 for key in ("project_id", "project_name", "target_label", "status"):
                     if key in entry:
                         rec[key] = str(entry.get(key) or "")
@@ -873,17 +887,40 @@ def _collect_chat_rows(
             # Delivered document rows carry lightweight media metadata (no
             # base64); surface a msg_type + download_url so the frontend
             # rebuilds the file bubble on reload instead of a bare text line.
+            if entry.get("type") == "routing_options":
+                # LLM-context grounding row (#198, decision 4=A): the web
+                # surface renders the richer picker card from the annotation,
+                # so the plain-text list never double-renders here.
+                continue
             if entry.get("type") == "document":
                 rec["msg_type"] = "document"
                 rec["filename"] = str(entry.get("filename") or "file")
                 rec["mime"] = str(entry.get("mime") or "application/octet-stream")
                 rec["download_url"] = str(entry.get("download_url") or "")
                 rec["caption"] = str(entry.get("caption") or "")
+                if "size_bytes" in entry:
+                    rec["size_bytes"] = coerce_int(entry.get("size_bytes"), 0)
             elif entry.get("type") in {"photo", "video"} and entry.get("download_url"):
                 rec["msg_type"] = str(entry["type"])
                 rec["mime"] = str(entry.get("mime") or "")
                 rec["download_url"] = str(entry["download_url"])
                 rec["caption"] = str(entry.get("caption") or "")
+            elif entry.get("type") == "links":
+                rec.update(msg_type="links", actions=list(entry.get("actions") or []), title=str(entry.get("title") or ""))
+            elif entry.get("type") == "quiz" and isinstance(entry.get("quiz"), dict):
+                quiz = dict(entry["quiz"])
+                _qtid = str(entry.get("task_id") or "")
+                if _qtid:
+                    if _qtid not in quiz_projection_cache:
+                        from ouroboros.owner_quiz import quiz_states
+
+                        quiz_projection_cache[_qtid] = quiz_states(chat_path.parent.parent, _qtid)
+                    _live = quiz_projection_cache[_qtid].get(str(quiz.get("quiz_id") or ""))
+                    if isinstance(_live, dict):
+                        quiz["state"] = str(_live.get("state") or quiz.get("state") or "open")
+                        if "answered_index" in _live:
+                            quiz["answered_index"] = _live["answered_index"]
+                rec.update(msg_type="quiz", quiz=quiz)
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")
             _copy_task_summary_metadata(rec, entry)

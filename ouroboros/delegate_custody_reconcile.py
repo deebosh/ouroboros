@@ -13,6 +13,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
+from ouroboros.delegate_registration_policy import record_persistent as _record_persistent
 
 from typing import TYPE_CHECKING
 
@@ -38,9 +39,11 @@ def _custody():
     return delegate_custody
 
 
-def open_runs(drive_root: Any) -> List[RunCustody]:
-    """Runs with a durable start and no durable settlement."""
-    return [custody for custody in _custody().replay(drive_root).values() if not custody.settled]
+def open_runs(drive_root: Any, state: Optional[Dict[str, "RunCustody"]] = None) -> List[RunCustody]:
+    """Runs with a durable start and no durable settlement (``state``: a shared
+    pre-replayed snapshot, so a batch of audits pays one log traversal)."""
+    return [custody for custody in (state if state is not None else _custody().replay(drive_root)).values()
+            if not custody.settled]
 
 
 def pending_invocations(drive_root: Any,
@@ -238,6 +241,7 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
         model=str(body.get("model") or ""),
         profile_id=str(body.get("credentialProfileId") or ""),
         project_id=record["project_id"], project_owned=bool(record["project_owned"]),
+        project_persistent=_record_persistent(record),
         root_task_id=str(record.get("root_task_id") or ""),
         parent_task_id=str(record.get("parent_task_id") or ""),
         category=str(record.get("category") or "subagent"),
@@ -286,7 +290,7 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
 
 def _retire_recovered_registration(gateway: Any, record: Dict[str, Any]) -> bool:
     """Discharge the registration an ORIGINAL attempt owned, when its invocation dies."""
-    if not (record.get("project_owned") and record.get("project_id")):
+    if _record_persistent(record) or not (record.get("project_owned") and record.get("project_id")):
         return False
     try:
         gateway.remove_project(record["project_id"])

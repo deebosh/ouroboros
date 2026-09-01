@@ -156,10 +156,13 @@ from supervisor.events_budget import (  # noqa: E402, F401 -- intentional public
     _handle_budget_pause,
     _handle_budget_root_fence,
     _handle_llm_usage,
-    _handle_review_wave_budget_insufficient,
     _set_root_budget_pause_locked,
 )
+from supervisor.telemetry_events import (  # noqa: E402
+    TELEMETRY_EVENT_HANDLERS as _TELEMETRY_EVENT_HANDLERS,
+)
 from supervisor.events_chat_delivery import (  # noqa: E402, F401 -- intentional public re-exports
+    EVENT_HANDLERS as _CDE,
     HOST_NARRATION,
     _DELIVERED_MESSAGE_IDS,
     _handle_send_document,
@@ -254,6 +257,7 @@ EVENT_HANDLERS = {
     "llm_usage": _handle_llm_usage,
     "external_wait_lease": _handle_external_wait_lease,
     **_CEH,
+    **_CDE,
     "main_llm_call_state": _handle_main_llm_call_state,
     "budget_pause": _handle_budget_pause,
     "budget_root_fence": _handle_budget_root_fence,
@@ -273,14 +277,11 @@ EVENT_HANDLERS = {
     "steer_task": _handle_steer_task,
     "project_digest": _handle_project_digest,
     "cancel_task": _handle_cancel_task,
-    "send_photo": _handle_send_photo,
-    "send_video": _handle_send_video,
-    "send_document": _handle_send_document,
     "toggle_evolution": _handle_toggle_evolution,
     "toggle_consciousness": _handle_toggle_consciousness,
     "owner_message_injected": _handle_owner_message_injected,
     "log_event": _handle_log_event,
-    "review_wave_budget_insufficient": _handle_review_wave_budget_insufficient,
+    **_TELEMETRY_EVENT_HANDLERS,
     "skill_exec_finished": _handle_skill_lifecycle,
     "skill_exec_failed": _handle_skill_lifecycle,
     "acceptance_fence": _handle_acceptance_fence,

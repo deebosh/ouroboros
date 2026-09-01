@@ -128,6 +128,8 @@ _PROMOTE_CHAT_DESCRIPTION = (
 
 
 def get_tools() -> List[ToolEntry]:
+    from ouroboros.config import EFFORT_SCALE
+
     return [
         ToolEntry("set_tool_timeout", {
             "name": "set_tool_timeout",
@@ -216,6 +218,7 @@ def get_tools() -> List[ToolEntry]:
                 "message": {"type": "string", "description": "The owner message / work to route into the project."},
                 "reason": {"type": "string", "default": "", "description": "Optional short why-this-project note (provenance)."},
                 "predecessor_task_id": {"type": "string", "description": "Required explicit selector: pass an empty string for fresh work, or the completed result id listed by the Main host manifest to continue it."},
+                "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional, ONLY with project_id='': the task/project ids you consider plausible, in preference order. The typed picker shows them first; ids not in the host-built option list are ignored."},
             }, "required": ["message", "predecessor_task_id"]},
         }, _route_to_project),
         ToolEntry("steer_task", {
@@ -362,8 +365,8 @@ def get_tools() -> List[ToolEntry]:
                            "or want to save budget (simple tasks). Takes effect on next round.",
             "parameters": {"type": "object", "properties": {
                 "model": {"type": "string", "description": "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to keep current."},
-                "effort": {"type": "string", "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-                           "description": "Reasoning effort level (clamped to the model's real ceiling). Leave empty to keep current."},
+                "effort": {"type": "string", "enum": list(EFFORT_SCALE),
+                           "description": "Reasoning effort level (adapted down per route when a model tops out lower). Leave empty to keep current."},
             }, "required": []},
         }, _switch_model),
         ToolEntry("get_task_result", {

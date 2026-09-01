@@ -32,23 +32,8 @@ class LocalContextTooLargeError(RuntimeError):
     """Raised when a local model cannot fit context without silent truncation."""
 
 
-def _estimate_message_chars(messages: List[Dict[str, Any]]) -> int:
-    from ouroboros.context_budget import IMAGE_BLOCK_CHAR_EQUIVALENT
-
-    total = 0
-    for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if str(block.get("type") or "") in ("image_url", "image"):
-                    total += IMAGE_BLOCK_CHAR_EQUIVALENT
-                    continue
-                total += len(str(block.get("text", "")))
-        else:
-            total += len(str(content or ""))
-    return total
+# Lives beside its proxy constant; the historical private name stays importable.
+from ouroboros.context_budget import estimate_message_chars as _estimate_message_chars
 
 
 def _split_markdown_sections(text: str) -> Tuple[str, List[Tuple[str, str]]]:

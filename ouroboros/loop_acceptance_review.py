@@ -144,7 +144,10 @@ def _latest_agent_acceptance_evidence(llm_trace: Dict[str, Any]) -> Dict[str, An
 
 def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, Any]:
     """Build the one bounded host packet shared by binding and reviewer input."""
-    from ouroboros.review_evidence import build_task_acceptance_evidence
+    from ouroboros.review_evidence import (
+        UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY,
+        build_task_acceptance_evidence,
+    )
 
     committed_this_turn = any(
         isinstance(call, dict)
@@ -168,7 +171,26 @@ def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, An
     undecided = getattr(ctx.tools._ctx, "_forced_undispositioned_children", None)
     if isinstance(undecided, list) and undecided:
         evidence["undispositioned_children"] = undecided
+    # The dialogue so far, so this panel adjudicates knowing what the previous
+    # ones judged instead of re-raising blind. Bounded here rather than by the
+    # packet budget because it is attached AFTER the builder's budget pass — and
+    # it is the one key `task_acceptance_evidence_revision` excludes, so growing
+    # history can never mint a fresh revision (and thus a fresh paid binding).
+    history = acceptance_dialogue_history(ctx.llm_trace)
+    if history:
+        evidence[UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY] = history
     return evidence
+
+
+def _total_paid_acceptance_cycles(ctx: _TaskAcceptanceContext) -> Any:
+    """Paid acceptance panels this task TREE has already bought, read from the
+    SAME ledger the wallet claim counts (``claimed_cycles``); ``None`` when the
+    projection is unavailable (a descendant that may observe but not initialize)."""
+    from ouroboros.task_results import project_task_acceptance_review_capacity
+
+    return project_task_acceptance_review_capacity(
+        ctx.tools._ctx, task_id=str(ctx.task_id or ""),
+    ).get("claimed_cycles")
 
 
 def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
@@ -276,8 +298,12 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
         )
     duration_sec = round(time.monotonic() - started, 3)
     try:
+        from ouroboros.review_cycles import review_max_cycles, review_max_cycles_source
         from ouroboros.utils import append_jsonl, utc_now_iso
 
+        # A panel that just cost money says what bounded it and how many the tree
+        # has bought: "21 paid panels" was invisible until someone summed receipts.
+        _cap = review_max_cycles()
         append_jsonl(
             task_pacing.acceptance_timing_events_path(ctx.tools._ctx),
             {
@@ -287,6 +313,9 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
                 "duration_sec": duration_sec,
                 "pass_index": ctx.passes_done,
                 "aggregate_signal": str(result.aggregate_signal or ""),
+                "effective_max_cycles": "unlimited" if _cap is None else _cap,
+                "cycles_source": review_max_cycles_source(),
+                "total_paid_cycles": _total_paid_acceptance_cycles(ctx),
             },
         )
     except Exception:
@@ -356,7 +385,7 @@ def _apply_task_acceptance_result(
 ) -> bool:
     """Apply one panel result; return whether the agent must take another round."""
     from ouroboros.review_substrate import (
-        DIALOGUE_CONTINUE,
+        DIALOGUE_TERMINAL_STATUSES,
         aggregate_dialogue_status,
         build_improvement_capsule,
         dissent_findings,
@@ -381,14 +410,29 @@ def _apply_task_acceptance_result(
         rails_line=ctx.rails_line,
         open_obligations=open_obligations,
     )
-    # v6.74.0 (A5): the reviewers' typed dialogue judgement, reduced over
-    # ALL contract-valid actors with the panel's own quorum; persisted for
-    # audit on the authoritative run record whatever branch applies below.
+    # v6.74.0 (A5): the reviewers' typed dialogue judgement, reduced over the
+    # CONTRIBUTING actors with the panel's own quorum; persisted for audit on
+    # the authoritative run record whatever branch applies below. `inconclusive`
+    # (no well-formed vote at all) grants the dialogue NO authority: it is not a
+    # terminal verdict and not a licence to continue — the existing non-dialogue
+    # terminals below decide, exactly as they did before the dialogue existed.
     dialogue = aggregate_dialogue_status(
         result, quorum=_acceptance_dialogue_quorum(result),
     )
     _attach_dialogue_to_host_run(ctx.llm_trace, dialogue)
-    dialogue_terminal = dialogue["status"] != DIALOGUE_CONTINUE
+    dialogue_terminal = dialogue["status"] in DIALOGUE_TERMINAL_STATUSES
+    if reused and getattr(result, "replayed_from_superseded", False):
+        # A run superseded by an evidence revision replays ONLY into the typed
+        # identical-refusal terminal — never into clean-PASS authorization: its
+        # verdict predates the evidence change, so re-accepting would stamp a
+        # stale PASS (and the trace's superseded rows would contradict the
+        # applied decision — the delivery binding could never match). The
+        # refusal is conservative and consistent: nothing new was bought,
+        # nothing stale is re-authorized.
+        return _refuse_identical_acceptance(
+            ctx, result,
+            dialogue=dialogue, dissent=bool(dissent), open_obligations=open_obligations,
+        )
     if task_acceptance_is_clean(result):
         ctx.tools._ctx._task_acceptance_reviewed = True
         _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="terminal")
@@ -408,6 +452,12 @@ def _apply_task_acceptance_result(
         ctx.emit_progress("Task acceptance review: PASS (clean acceptance).")
         return False
 
+    if reused:
+        return _refuse_identical_acceptance(
+            ctx, result,
+            dialogue=dialogue, dissent=bool(dissent), open_obligations=open_obligations,
+        )
+
     budget_snapshot = task_pacing.build_budget_snapshot(
         ctx.tools._ctx, profile=ctx.budget_profile,
     )
@@ -421,7 +471,13 @@ def _apply_task_acceptance_result(
         ),
         ctx=ctx.tools._ctx,
     )
-    if dialogue_terminal:
+    # A DEGRADED panel (no valid verdict quorum) cannot "judge" the dialogue:
+    # a lone terminal vote from the one contributing slot must NOT shadow the
+    # review_degraded path below, which is the only surface carrying the
+    # per-slot causes and degraded_reasons the v6.70.0 honesty invariant (P1)
+    # requires. Letting the dialogue-terminal branch fire here recorded a false
+    # "reviewer quorum judged" rationale and silently dropped those causes.
+    if dialogue_terminal and str(result.aggregate_signal or "DEGRADED").upper() != "DEGRADED":
         # v6.74.0 (A5): a reviewer quorum judged the dialogue no longer
         # actionable (unreachable_here / stable_disagreement). Finalize via
         # the EXISTING honest path recording BOTH positions in one
@@ -654,33 +710,220 @@ def _record_acceptance_infra_failure(ctx: _TaskAcceptanceContext, exc: Exception
     return False
 
 
+def _disposition_reason_sha256(reason: Any) -> str:
+    """Content identity of one obligation-disposition reason; "" when blank.
+
+    Mirrors ``commit_gate.compute_rebuttal_sha256`` on purpose: on BOTH gates an
+    empty rebuttal is not an argument and buys no paid cycle."""
+    import hashlib
+
+    text = str(reason or "").strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def acceptance_paid_identity(candidate_hash: str, llm_trace: Dict[str, Any]) -> str:
+    """The identity ONE paid acceptance panel is claimed under (A-material).
+
+    ``sha256(candidate_hash + the sorted set of nonempty (obligation_id,
+    disposition, sha256(reason)) tuples)``. Exactly two things mint a new paid
+    panel: a changed candidate answer, or an obligation disposition whose content
+    the reviewers have not answered yet. The evidence revision is deliberately NOT
+    in here — every cosmetic tool call moves it, which is how one task bought 21
+    paid panels; it stays what it always was, stale-packet detection for the
+    supersede paths. A disposition with an empty reason contributes nothing.
+    Rows are read live from the agent's own ``acceptance_obligations`` (the
+    ``task_acceptance_review`` tool stamps ``status="agent_disposed"`` there)."""
+    import hashlib
+
+    material = sorted({
+        (
+            str(row.get("id") or "").strip(),
+            str(row.get("disposition") or "").strip().lower(),
+            _disposition_reason_sha256(row.get("disposition_reason")),
+        )
+        for row in (llm_trace.get("acceptance_obligations") or [])
+        if isinstance(row, dict)
+        and str(row.get("id") or "").strip()
+        and str(row.get("disposition") or "").strip()
+        and _disposition_reason_sha256(row.get("disposition_reason"))
+    })
+    payload = json.dumps(
+        [str(candidate_hash or ""), [list(item) for item in material]],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def bind_acceptance_paid_identity(
+    review_binding: Dict[str, Any], llm_trace: Dict[str, Any],
+) -> str:
+    """Stamp the A-material paid identity onto a freshly built review binding.
+
+    The binding keeps carrying its three hashes (the supersede paths still need
+    the evidence revision); ``paid_identity`` rides ALONGSIDE them and is what the
+    wallet claim and the free-replay lookup key on."""
+    identity = acceptance_paid_identity(
+        str(review_binding.get("candidate_hash") or ""), llm_trace,
+    )
+    review_binding["paid_identity"] = identity
+    return identity
+
+
+def acceptance_dialogue_history(llm_trace: Dict[str, Any], *, limit: int = 6) -> List[Dict[str, Any]]:
+    """Bounded per-panel history of the dialogue so far, for the NEXT reviewer.
+
+    Reviewers were adjudicating each round blind to the previous rounds' typed
+    judgement, which is most of why the same finding kept being re-raised. The
+    rows are tiny host facts already recorded on the run records; the caller
+    attaches them to the evidence packet OUTSIDE the hashed material
+    (``review_evidence.UNHASHED_EVIDENCE_KEYS``) so reading the history can never
+    mint a fresh evidence revision — and therefore never a fresh paid binding."""
+    rows: List[Dict[str, Any]] = []
+    for run in (llm_trace.get("review_runs") or []):
+        if not isinstance(run, dict) or str(run.get("authority") or "") != "host_root":
+            continue
+        dialogue = run.get("dialogue") if isinstance(run.get("dialogue"), dict) else {}
+        votes = dialogue.get("votes") if isinstance(dialogue.get("votes"), dict) else {}
+        rows.append({
+            "round": len(rows) + 1,
+            "aggregate_signal": str(run.get("aggregate_signal") or "").upper(),
+            "dialogue_status": str(dialogue.get("status") or ""),
+            "votes": {str(k): len(v or []) for k, v in votes.items()},
+        })
+    obligations = [
+        row for row in (llm_trace.get("acceptance_obligations") or [])
+        if isinstance(row, dict)
+    ]
+    if rows:
+        rows[-1]["obligations_new"] = sum(
+            1 for row in obligations if not int(row.get("reopened_count") or 0)
+        )
+        rows[-1]["obligations_re_raised"] = sum(
+            1 for row in obligations if int(row.get("reopened_count") or 0)
+        )
+    return rows[-max(1, int(limit)):]
+
+
+def _refuse_identical_acceptance(
+    ctx: Any,
+    result: Any,
+    *,
+    dialogue: Dict[str, Any],
+    dissent: bool,
+    open_obligations: List[Dict[str, Any]],
+) -> bool:
+    """Terminate a resubmit whose A-material paid identity was already bought.
+
+    The recorded verdict is replayed for FREE and quoted; the improvement capsule
+    is deliberately NOT re-entered. Feeding the note again asks for a round the
+    agent has already answered with nothing new, and every such round shifted the
+    evidence revision into a fresh paid binding — the 21-panel pump. The dialogue
+    record and the decision row still land, so the replay stays auditable."""
+    from ouroboros.outcomes import REASON_IDENTICAL_ACCEPTANCE_REFUSED
+
+    ctx.tools._ctx._task_acceptance_reviewed = True
+    _loop()._end_task_acceptance_fence(ctx.tools._ctx, outcome="terminal")
+    _loop()._mark_root_acceptance_checkpoint(
+        ctx.tools._ctx,
+        ctx.llm_trace,
+        status=str(result.aggregate_signal or "DEGRADED").lower(),
+        pass_index=ctx.passes_done,
+    )
+    _loop()._set_acceptance_decision(ctx.llm_trace, {
+        "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
+        "reason": REASON_IDENTICAL_ACCEPTANCE_REFUSED,
+        "source": "task_acceptance_review",
+        "rationale": (
+            "No new material since the paid panel: neither the candidate answer nor "
+            "any obligation disposition changed. Quoting the recorded verdict "
+            f"({str(result.aggregate_signal or 'DEGRADED').upper()}; dialogue "
+            f"{dialogue['status']}) with {len(open_obligations)} open "
+            "obligation(s); no further round."
+        ),
+        "dialogue_status": dialogue["status"],
+        "dialogue_votes": dialogue["votes"],
+        "dissent_noted": dissent,
+        "open_obligations": [str(item.get("id")) for item in open_obligations],
+    })
+    ctx.emit_progress(
+        f"Task acceptance review: {result.aggregate_signal} — identical paid identity "
+        "(no changed answer, no new obligation disposition); the recorded verdict "
+        "stands and no further panel is bought."
+    )
+    return False
+
+
 def _prior_acceptance_run(
-    tools_ctx: Any, llm_trace: Dict[str, Any], binding_hash: str,
+    tools_ctx: Any,
+    llm_trace: Dict[str, Any],
+    binding_hash: str,
+    *,
+    paid_identity: str = "",
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-    """Locate the authoritative host run already recorded for this binding:
+    """Locate the authoritative host run already recorded for this submission:
     first the trace (survives requeue replay), then the process-local
-    ``_task_acceptance_seen_bindings`` cache. Returns (cache, prior_run)."""
+    ``_task_acceptance_seen_bindings`` cache. Returns (cache, prior_run).
+
+    EITHER identity replays for free: the same binding hash (byte-identical
+    submission, as before) OR the same A-material ``paid_identity`` — unchanged
+    candidate answer and no new obligation disposition — which is the identity the
+    tree's wallet actually bought."""
     seen_bindings = getattr(tools_ctx, "_task_acceptance_seen_bindings", None)
     if not isinstance(seen_bindings, dict):
         seen_bindings = {}
         tools_ctx._task_acceptance_seen_bindings = seen_bindings
+    identity = str(paid_identity or "")
+
+    def _matches(run: Any) -> bool:
+        return isinstance(run, dict) and (
+            str(run.get("binding_hash") or "") == binding_hash
+            or bool(identity and str(run.get("paid_identity") or "") == identity)
+        )
+
     prior_run = next(
         (
             run for run in reversed(llm_trace.get("review_runs") or [])
             if isinstance(run, dict)
             and run.get("authority") == "host_root"
             and not run.get("superseded_by_revision")
-            and str(run.get("binding_hash") or "") == binding_hash
+            and _matches(run)
         ),
         None,
     )
-    cached_run = seen_bindings.get(binding_hash)
-    if (
-        prior_run is None
-        and isinstance(cached_run, dict)
-        and not cached_run.get("superseded_by_revision")
-    ):
-        prior_run = cached_run
+    if prior_run is None:
+        prior_run = next(
+            (
+                run for run in reversed(list(seen_bindings.values()))
+                if isinstance(run, dict)
+                and not run.get("superseded_by_revision")
+                and _matches(run)
+            ),
+            None,
+        )
+    if prior_run is None and identity:
+        # A run superseded by an evidence revision is stale as a CURRENT
+        # acceptance, but the wallet already bought its A-material. When the
+        # resubmission carries the SAME paid identity (unchanged candidate, no
+        # new nonempty disposition), the recorded verdict replays for free —
+        # otherwise the dispatch claim refuses `binding_dispatch_already_claimed`
+        # and the loop records a synthetic DEGRADED panel instead of the typed
+        # identical-refusal terminal the contract requires. Evidence revision
+        # is stale-DETECTION, never a paid-cycle mint (owner decision 5=A).
+        superseded = next(
+            (
+                run for run in reversed(llm_trace.get("review_runs") or [])
+                if isinstance(run, dict)
+                and run.get("authority") == "host_root"
+                and run.get("superseded_by_revision")
+                and str(run.get("paid_identity") or "") == identity
+            ),
+            None,
+        )
+        if superseded is not None:
+            prior_run = dict(superseded)
+            prior_run["replayed_from_superseded"] = True
     return seen_bindings, prior_run
 
 
@@ -876,8 +1119,11 @@ def _run_task_acceptance_review_once(
             fence_token_or_state=_direct_context_fence_state(tools._ctx, _fence_token),
         )
         binding_hash = str(review_ctx.review_binding.get("binding_hash") or "")
+        # A-material: what the tree's wallet actually buys. Stamped onto the
+        # binding before the free-replay lookup and the dispatch claim both read it.
+        paid_identity = bind_acceptance_paid_identity(review_ctx.review_binding, llm_trace)
         seen_bindings, prior_run = _prior_acceptance_run(
-            tools._ctx, llm_trace, binding_hash,
+            tools._ctx, llm_trace, binding_hash, paid_identity=paid_identity,
         )
         reused_result = None
         if prior_run is not None:
