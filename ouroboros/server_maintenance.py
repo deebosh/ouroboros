@@ -290,6 +290,21 @@ def _startup_prune_sweeps() -> None:
             })
     except Exception:
         log.debug("Agent media prune failed", exc_info=True)
+    try:
+        # CPL4-C23: acknowledged observations older than GC retention fold into
+        # an archive segment; unacknowledged rows are never pruned. Runs before
+        # Background Consciousness starts (it is created later in startup).
+        from ouroboros.consciousness import compact_acknowledged_observations
+
+        fold_report = compact_acknowledged_observations(DATA_DIR)
+        if fold_report.get("folded") or fold_report.get("skipped"):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "consciousness_observation_fold",
+                "report": fold_report,
+            })
+    except Exception:
+        log.debug("Observation fold failed", exc_info=True)
 
 
 def _cursor_refresh_settled_terminals() -> None:

@@ -729,8 +729,9 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
             "state/consciousness_observations.jsonl",
             BG_OBSERVATIONS_WARN_BYTES,
             "Background consciousness replays this append-only inbox on wake; "
-            "archive only through an owner-preserving retention change that keeps "
-            "every unacknowledged row readable.",
+            "acknowledged rows past GC retention fold into an archive segment "
+            "at startup (unacknowledged rows never) — growth past this size "
+            "means a large unacknowledged backlog or a gap-blocked fold.",
         ),
         (
             "state/usage_attempts.jsonl",
