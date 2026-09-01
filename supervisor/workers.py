@@ -29,8 +29,6 @@ from ouroboros.utils import utc_now_iso
 REPO_DIR: pathlib.Path = pathlib.Path(CONFIG_REPO_DIR)
 DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
 MAX_WORKERS: int = 10
-SOFT_TIMEOUT_SEC: int = 600
-HARD_TIMEOUT_SEC: int = 1800
 HEARTBEAT_STALE_SEC: int = 120
 QUEUE_MAX_RETRIES: int = 1
 TOTAL_BUDGET_LIMIT: float = 0.0
@@ -67,21 +65,19 @@ def _get_ctx():
 
 
 def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, max_workers: int,
-         soft_timeout: int, hard_timeout: int, total_budget_limit: float,
+         total_budget_limit: float,
          branch_dev: str = "ouroboros", branch_stable: str = "ouroboros-stable") -> None:
-    global REPO_DIR, DRIVE_ROOT, MAX_WORKERS, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC
+    global REPO_DIR, DRIVE_ROOT, MAX_WORKERS
     global TOTAL_BUDGET_LIMIT, BRANCH_DEV, BRANCH_STABLE
     REPO_DIR = repo_dir
     DRIVE_ROOT = drive_root
     MAX_WORKERS = max_workers
-    SOFT_TIMEOUT_SEC = soft_timeout
-    HARD_TIMEOUT_SEC = hard_timeout
     TOTAL_BUDGET_LIMIT = total_budget_limit
     BRANCH_DEV = branch_dev
     BRANCH_STABLE = branch_stable
 
     from supervisor import queue
-    queue.init(drive_root, soft_timeout, hard_timeout)
+    queue.init(drive_root)
     queue.init_queue_refs(PENDING, RUNNING, QUEUE_SEQ_COUNTER_REF)
 
 @dataclass

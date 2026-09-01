@@ -198,15 +198,6 @@ _IMMEDIATE_KEYS = frozenset({
     "MCP_TOOL_TIMEOUT_SEC",
 })
 
-# Retired keys the settings document still carries: changing them has NO
-# effect at any point (supervisor/queue.py accepts them as typed no-ops).
-# Classifying them as immediate or next-task would both be lies; the save
-# reports them with an explicit "retired" warning instead.
-_RETIRED_NO_EFFECT_KEYS = frozenset({
-    "OUROBOROS_SOFT_TIMEOUT_SEC",
-    "OUROBOROS_HARD_TIMEOUT_SEC",
-})
-
 _RESTART_REQUIRED_KEYS = frozenset({
     "OUROBOROS_MAX_WORKERS",
     "OUROBOROS_SERVER_HOST",
@@ -241,26 +232,19 @@ def _classify_settings_changes(
     ]
 
 
-def _effect_buckets(all_changed: list, warnings: list) -> tuple:
+def _effect_buckets(all_changed: list) -> tuple:
     """Split changed keys into the honest effect buckets for the save response.
 
-    A retired key applies NEVER, so neither bucket may claim it — it is
-    reported through an explicit warning instead (#285).
+    Every key that reaches here applies at SOME point, so both buckets are
+    truthful claims (#285). A key a release retired cannot reach here at all:
+    the merge only walks SETTINGS_DEFAULTS, and load_settings strips retired
+    keys off disk — the RC auditor is what tells an upgrading install its
+    stored value is gone (scripts/rc_audit.py "retired-setting").
     """
-    retired_changed = sorted(k for k in all_changed if k in _RETIRED_NO_EFFECT_KEYS)
-    if retired_changed:
-        warnings.append(
-            "Retired setting(s) saved, but they no longer affect anything: "
-            + ", ".join(retired_changed)
-            + ". Task runtime is governed by OUROBOROS_TASK_IDLE_TIMEOUT_SEC "
-            "and OUROBOROS_TASK_ABS_CEILING_SEC."
-        )
     immediate_changed = [k for k in all_changed if k in _IMMEDIATE_KEYS]
     next_task_changed = [
         k for k in all_changed
-        if k not in _IMMEDIATE_KEYS
-        and k not in _RESTART_REQUIRED_KEYS
-        and k not in _RETIRED_NO_EFFECT_KEYS
+        if k not in _IMMEDIATE_KEYS and k not in _RESTART_REQUIRED_KEYS
     ]
     return immediate_changed, next_task_changed
 
@@ -1350,7 +1334,7 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
                 settings_to_save["GITHUB_REPO"] = resolved_slug
                 _owner_write_settings(settings_to_save)
                 os.environ["GITHUB_REPO"] = resolved_slug
-        immediate_changed, next_task_changed = _effect_buckets(all_changed, warnings)
+        immediate_changed, next_task_changed = _effect_buckets(all_changed)
         agent_task_running = bool(next_task_changed) and started_before_save
         if agent_task_running:
             # Owner decision (2026-08-05): the task-start snapshot boundary STAYS —

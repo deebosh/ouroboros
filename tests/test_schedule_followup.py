@@ -44,7 +44,7 @@ def test_once_due_selection_logic_with_a_fake_clock():
 def _queue(tmp_path):
     from supervisor import queue
 
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     pending: list = []
     queue.init_queue_refs(pending, {}, {"value": 0})
     return queue, pending
@@ -334,7 +334,7 @@ def test_schedules_gateway_accepts_and_validates_once_triggers(tmp_path):
     from ouroboros.gateway.schedules import api_schedules_list, api_schedules_upsert
     from supervisor import queue
 
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     app = Starlette(routes=[
         Route("/api/schedules", endpoint=api_schedules_list, methods=["GET"]),
         Route("/api/schedules", endpoint=api_schedules_upsert, methods=["POST"]),
@@ -374,7 +374,7 @@ def test_gateway_rearm_of_completed_once_requires_a_fresh_run_at(tmp_path):
     from ouroboros.gateway.schedules import api_schedules_upsert
     from supervisor import queue
 
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     pending: list = []
     queue.init_queue_refs(pending, {}, {"value": 0})
     fired = datetime.datetime(2020, 1, 1, tzinfo=UTC).isoformat()
@@ -425,7 +425,7 @@ def test_scheduled_tasks_digest_projects_run_at_for_once_records(tmp_path):
     from ouroboros.context import _scheduled_tasks_digest
     from supervisor import queue
 
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     queue.upsert_scheduled_task({
         "id": "fu", "name": "Follow-up", "enabled": True,
         "trigger": {"type": "once", "run_at": "2030-01-01T00:00:00+00:00"},

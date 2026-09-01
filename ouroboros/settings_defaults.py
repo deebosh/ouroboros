@@ -131,6 +131,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # the activity model below (idle + subtree liveness + absolute ceiling).
     "OUROBOROS_HARD_TIMEOUT_SEC": 1800,
     # Activity-based liveness (replaces flat wall-clock as the primary stop):
+    # Activity-based liveness (the flat wall-clock pair it replaced is RETIRED below):
     # idle window = no real progress AND no progressing subtree; abs ceiling = the
     # unconditional per-task backstop (budget/cost stays a separate hard axis).
     "OUROBOROS_TASK_IDLE_TIMEOUT_SEC": 900,
@@ -340,6 +341,14 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # misleading operator surface. Manifests/blobs stay preserved
     # indefinitely BY CONTRACT; the knob is gone, not honored.
     "OUROBOROS_OBSERVABILITY_RETENTION_DAYS",
+    # ABI 7.0 (D04, owner 1B): the flat wall-clock pair. Their kill was replaced by
+    # the activity model (OUROBOROS_TASK_IDLE_TIMEOUT_SEC + OUROBOROS_TASK_ABS_CEILING_SEC)
+    # long ago, after which they were kept as typed no-ops that a settings save reported
+    # as "retired" and a non-default value merely logged. A knob the UI accepts, the
+    # status line renders and nothing obeys is the misleading-surface class; the 7.0 ABI
+    # window deletes it rather than carrying the ghost another minor.
+    "OUROBOROS_SOFT_TIMEOUT_SEC",
+    "OUROBOROS_HARD_TIMEOUT_SEC",
 )
 
 

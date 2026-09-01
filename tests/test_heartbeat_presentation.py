@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 import pathlib
 import time
 import types
@@ -151,36 +150,24 @@ def test_root_heartbeat_keeps_unknown_zero_cost_nullable_and_measured_zero_numer
     assert pushed[0]["accounted_upper_bound_usd_with_children"] == 0.0
 
 
-def test_retired_timeout_defaults_are_quiet_but_custom_value_is_loud(tmp_path, monkeypatch) -> None:
-    from supervisor import queue
+def test_a_retired_liveness_knob_leaves_no_deprecation_chatter(tmp_path, monkeypatch) -> None:
+    """Retirement is silent by construction, for the whole class.
 
-    monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
-    queue.init(tmp_path, 600, 1800)
-    events = tmp_path / "logs" / "events.jsonl"
-    assert not events.exists()
-
-    queue.init(tmp_path, 601, 1800)
-    row = json.loads(events.read_text(encoding="utf-8"))
-    assert row["type"] == "deprecated_settings_ignored"
-    assert row["keys"] == ["OUROBOROS_SOFT_TIMEOUT_SEC"]
-
-
-def test_retired_planning_heartbeat_key_is_silent_and_dropped_on_load(
-    tmp_path, monkeypatch,
-) -> None:
-    """The planning-scout heartbeat knob is RETIRED with the scout swarm (plan-review
-    redesign 2026-08-15): ``config.RETIRED_SETTING_KEYS`` drops it on settings load, so
-    there is no saved value left to be loud about, and the supervisor's timeout
-    deprecation path no longer names it (deleted consistently, not kept half-loud)."""
+    Three knobs (the planning-scout heartbeat, and D04's flat soft/hard wall
+    clock) were once accepted as typed no-ops that logged a
+    ``deprecated_settings_ignored`` row. ``config.RETIRED_SETTING_KEYS`` drops
+    all three on settings load, so there is no stored value left for the
+    supervisor to be loud about — and no half-retired key it still names."""
     from ouroboros import config
     from supervisor import queue
 
-    assert "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC" in config.RETIRED_SETTING_KEYS
-    monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
-    monkeypatch.setenv("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "121")
-    queue.init(tmp_path, 600, 1800)
-    assert not (tmp_path / "logs" / "events.jsonl").exists()
-    queue.refresh_timeouts_from_settings({"OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC": 121})
+    retired = ("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
+               "OUROBOROS_SOFT_TIMEOUT_SEC", "OUROBOROS_HARD_TIMEOUT_SEC")
+    for key in retired:
+        assert key in config.RETIRED_SETTING_KEYS
+        monkeypatch.setenv(key, "121")
+    queue.init(tmp_path)
+    queue.refresh_timeouts_from_settings({key: 121 for key in retired})
     assert not (tmp_path / "logs" / "events.jsonl").exists()
 
 

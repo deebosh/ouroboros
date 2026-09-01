@@ -522,9 +522,8 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 ctx.send_with_budget(chat_id, f"🧠 Background consciousness: {bg_status}")
         elif lowered.startswith("/status"):
             from supervisor.state import status_text
-            from supervisor.queue import SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC
 
-            status = status_text(ctx.WORKERS, ctx.PENDING, ctx.RUNNING, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC)
+            status = status_text(ctx.WORKERS, ctx.PENDING, ctx.RUNNING)
             ctx.send_with_budget(chat_id, status)
         else:
             _route_owner_message(
@@ -681,14 +680,11 @@ def _run_supervisor(settings: dict) -> None:
         )
 
         max_workers = int(settings.get("OUROBOROS_MAX_WORKERS", 10))
-        soft_timeout = int(settings.get("OUROBOROS_SOFT_TIMEOUT_SEC", 600))
-        hard_timeout = int(settings.get("OUROBOROS_HARD_TIMEOUT_SEC", 1800))
 
         # Managed manifest branch defaults must drive worker commit/restart flows too.
         _workers_branch_dev, _workers_branch_stable = _runtime_branch_defaults()
         workers_init(
             repo_dir=REPO_DIR, drive_root=DATA_DIR, max_workers=max_workers,
-            soft_timeout=soft_timeout, hard_timeout=hard_timeout,
             total_budget_limit=float(settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])),
             branch_dev=_workers_branch_dev, branch_stable=_workers_branch_stable,
         )
@@ -783,7 +779,6 @@ def _run_supervisor(settings: dict) -> None:
             queue_deep_self_review_task=queue_deep_self_review_task, persist_queue_snapshot=persist_queue_snapshot,
             safe_restart=safe_restart, kill_workers=kill_workers, spawn_workers=spawn_workers,
             sort_pending=sort_pending, consciousness=_consciousness,
-            soft_timeout=soft_timeout, hard_timeout=hard_timeout,
             get_chat_agent=_get_chat_agent, handle_chat_direct=handle_chat_direct,
             handle_chat_ephemeral=handle_chat_ephemeral, request_restart=_request_restart_exit,
         )

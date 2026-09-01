@@ -18,7 +18,9 @@ were frozen at), and ``checks[]`` of exactly five classes:
   read-tolerated BY DESIGN, so on-disk hits are notes; live clients are
   owner attestation.
 - ``retired-setting`` — keys a release deleted (``RETIRED_SETTING_KEYS``,
-  ABI-5/Q10 plus earlier retirements): stripped-on-load, value inert.
+  ABI-5/Q10 and D04 plus earlier retirements): stripped-on-load, value
+  inert. ``since`` separates this window's own removals
+  (``RETIRED_IN_THIS_ABI``) from ones that were already inert.
 - ``comma-list`` — the ABI-10 reviewer comma-list / route keys
   (``RETIRED_COMMA_LIST_SETTING_KEYS``, snapped from settings_defaults at
   execution time): migration is "move the config to the structured
@@ -121,6 +123,16 @@ ABI = "7.0"
 # landed (ABI-3 doc, ABI-5/ABI-10 RETIRED_SETTING_KEYS, ABI-1 admission facts,
 # ABI-2 stamp semantics) — the F3.3 serial-tail base.
 INVENTORIES_FROZEN_AT = "4fa2f01abc02e7f68ee3ce0e3c7931046fc92173"
+
+# Retirements this ABI window itself performs, as opposed to the ones it merely
+# inherits: the P3 scope-review floor (Q10=A) and D04's flat wall-clock timeout
+# pair (owner 1B). An upgrading install reads the difference as "your stored
+# value stopped working in THIS upgrade" versus "it was already inert".
+RETIRED_IN_THIS_ABI = frozenset({
+    "OUROBOROS_SCOPE_REVIEW_FLOOR",
+    "OUROBOROS_SOFT_TIMEOUT_SEC",
+    "OUROBOROS_HARD_TIMEOUT_SEC",
+})
 
 SEV_INCOMPATIBLE = "incompatible"
 SEV_NOTE = "note"
@@ -267,7 +279,7 @@ def build_scope() -> Dict[str, Any]:
         checks.append({
             "id": "retired-setting",
             "key": key,
-            "since": "7.0" if key == "OUROBOROS_SCOPE_REVIEW_FLOOR" else "pre-7.0",
+            "since": ABI if key in RETIRED_IN_THIS_ABI else "pre-7.0",
             "behavior": "stripped-on-load",
             "migration": "remove the key; the surface is retired with no replacement "
                          "knob — a stored value never reaches effective settings",

@@ -12,7 +12,8 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from supervisor.state import (
-    load_state, append_jsonl,
+    load_state,
+    append_jsonl,  # noqa: F401 -- queue_snapshot leaf reads it via the _queue() handle
     atomic_write_text,  # noqa: F401 -- queue_snapshot leaf reads it via the _queue() handle
     QUEUE_SNAPSHOT_PATH,  # noqa: F401 -- queue_snapshot leaf reads it via the _queue() handle
     budget_remaining, EVOLUTION_BUDGET_RESERVE,
@@ -55,8 +56,6 @@ log = logging.getLogger(__name__)
 
 
 DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
-SOFT_TIMEOUT_SEC: int = 600
-HARD_TIMEOUT_SEC: int = 1800
 HEARTBEAT_STALE_SEC: int = 120
 QUEUE_MAX_RETRIES: int = 1
 FINALIZATION_GRACE_SEC: int = FINALIZATION_GRACE_DEFAULT_SEC
@@ -64,51 +63,25 @@ SCHEDULED_TASKS_FILE = pathlib.Path("state") / "scheduled_tasks.json"
 # BUG3: pause a campaign whose objective fails to absorb after this many reviewed cycles.
 # Mirrors the consecutive-failures threshold; keyed on the objective fingerprint, not failures.
 OBJECTIVE_REPEAT_CAP: int = 3
-_timeout_deprecation_emitted: bool = False
 
 
-def init(drive_root: pathlib.Path, soft_timeout: int, hard_timeout: int) -> None:
-    global DRIVE_ROOT, SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC, FINALIZATION_GRACE_SEC, QUEUE_SNAPSHOT_PATH
+def init(drive_root: pathlib.Path) -> None:
+    global DRIVE_ROOT, FINALIZATION_GRACE_SEC, QUEUE_SNAPSHOT_PATH
     DRIVE_ROOT = drive_root
     QUEUE_SNAPSHOT_PATH = drive_root / "state" / "queue_snapshot.json"
-    legacy_keys = []
-    if int(soft_timeout) != 600:
-        legacy_keys.append("OUROBOROS_SOFT_TIMEOUT_SEC")
-    if int(hard_timeout) != 1800:
-        legacy_keys.append("OUROBOROS_HARD_TIMEOUT_SEC")
-    SOFT_TIMEOUT_SEC, HARD_TIMEOUT_SEC = 600, 1800
     FINALIZATION_GRACE_SEC = get_finalization_grace_sec()
     BUDGET_ROOT_FENCES.clear()
-    _emit_timeout_deprecation_once(legacy_keys)
 
 
 def refresh_timeouts_from_settings(settings: dict) -> None:
-    """Hot-reload active liveness settings; accept retired keys as typed no-ops."""
+    """Hot-reload the active liveness settings.
+
+    The flat wall-clock pair this once also had to absorb (soft/hard) is retired
+    in 7.0: load_settings strips the keys, so there is no stored value left to
+    accept, warn about, or lie about honoring.
+    """
     global FINALIZATION_GRACE_SEC
     FINALIZATION_GRACE_SEC = get_finalization_grace_sec(settings)
-    legacy_keys = []
-    if str(settings.get("OUROBOROS_SOFT_TIMEOUT_SEC", "600")) != "600":
-        legacy_keys.append("OUROBOROS_SOFT_TIMEOUT_SEC")
-    if str(settings.get("OUROBOROS_HARD_TIMEOUT_SEC", "1800")) != "1800":
-        legacy_keys.append("OUROBOROS_HARD_TIMEOUT_SEC")
-    _emit_timeout_deprecation_once(legacy_keys)
-
-
-def _emit_timeout_deprecation_once(keys: List[str]) -> None:
-    global _timeout_deprecation_emitted
-    if _timeout_deprecation_emitted or not keys:
-        return
-    _timeout_deprecation_emitted = True
-    append_jsonl(
-        pathlib.Path(DRIVE_ROOT) / "logs" / "events.jsonl",
-        {
-            "ts": utc_now_iso(),
-            "type": "deprecated_settings_ignored",
-            "keys": list(keys),
-            "remove_in": "7.0.0",
-            "replacement": "current task-liveness and shared planning-cutoff policies",
-        },
-    )
 
 
 # Set by workers.init_queue_refs().

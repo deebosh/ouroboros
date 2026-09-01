@@ -305,7 +305,7 @@ def test_stale_campaign_cannot_overwrite_a_new_campaign(tmp_path):
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     first = evolution_lifecycle.start_evolution_campaign("First", source="test")
     stale = dict(first)
     evolution_lifecycle.complete_evolution_campaign("done", cleanup_worktree=False)
@@ -320,7 +320,7 @@ def test_panic_campaign_close_uses_nonblocking_state_lock(tmp_path, monkeypatch)
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     timeouts = []
     monkeypatch.setattr(

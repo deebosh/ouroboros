@@ -37,7 +37,7 @@ def _active_transaction(tmp_path: pathlib.Path, task_id: str = "evo-task"):
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     queue.init_queue_refs([], {}, {"value": 0})
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     live = state.load_state()

@@ -5426,3 +5426,91 @@ the credential-listing pin's own fold (JSON-escaped `\\` became `//`),
 fixed; macOS red on two scheduler-sensitive pins (timed-out-tool lease drain,
 SSE incremental follow at the 8 s stream deadline) — bounded waits, test-only;
 neither touches the state-write delegation (in-memory queue / progress.jsonl).
+## From the D04/D06 closure lane (owner 1B/3A, base bef13f5e)
+
+### D04 — the flat wall-clock timeout pair, retired (owner 1B)
+
+| Question | Answer |
+| --- | --- |
+| What the owner chose | 1B: DELETE both settings. Not "keep them one more minor as documented no-ops" |
+| Idiom used | The existing one — membership in `RETIRED_SETTING_KEYS`, which `load_settings` strips off disk. No new migration machinery, no converter, no seed-into-a-successor-knob (there is no successor: the activity model already governs) |
+| Why it was worth doing | The pair stopped terminating anything when the activity model (idle window + subtree liveness + absolute ceiling) replaced it. What survived was five surfaces discussing a value none of them obeyed: `SETTINGS_DEFAULTS` offered it, the Settings UI accepted a number, the save response apologised for it in a warning, `queue.init` compared the caller's value against the constant it then wrote anyway and logged a `deprecated_settings_ignored` row, and `/status` printed `legacy_timeouts_ignored: soft=600s, hard=1800s` on every request. A knob that is discussed everywhere and obeyed nowhere is worse than a deleted one — it reads as a live tunable to anyone grepping the setting name |
+
+What went, by surface:
+
+- `ouroboros/settings_defaults.py` — the two `SETTINGS_DEFAULTS` entries and
+  the NOTE explaining that one of them no longer terminates tasks; both keys
+  added to `RETIRED_SETTING_KEYS` with the rationale.
+- `ouroboros/gateway/settings.py` — `_RETIRED_NO_EFFECT_KEYS` and the save
+  warning built from it. A retired key cannot reach an effect bucket at all
+  (the merge walks only `SETTINGS_DEFAULTS`; `load_settings` strips the key
+  off disk), so `_effect_buckets` no longer needs the `warnings` parameter or
+  the third exclusion, and both buckets are now truthful by construction
+  rather than by subtraction.
+- `supervisor/queue.py` — the two module globals, the `soft_timeout`/
+  `hard_timeout` parameters of `init` (taken only to be compared and
+  discarded), the legacy-key detection in `refresh_timeouts_from_settings`,
+  and `_emit_timeout_deprecation_once` with its `_timeout_deprecation_emitted`
+  latch. Keeping the emitter would have left a branch only a future
+  non-default value could reach, and there can be no future value.
+- `supervisor/workers.py` — the two globals and the two `init` parameters that
+  existed only to forward them to `queue.init`.
+- `supervisor/state.py` — the two `status_text` parameters and the
+  `legacy_timeouts_ignored` line. The surviving line states the active model
+  (`active_liveness: idle+deadline+absolute_ceiling+reaper`) without pretending
+  two constants are configuration.
+- `server.py` — the two `settings.get` reads, the `workers_init` arguments and
+  the two supervisor-ctx fields (nothing read them).
+- Bench carriers: the four SWE-Pro `e1v2` settings documents and the TB
+  harbor agent's forwarded-env allowlist. A stripped key forwarded into a
+  container is a value that silently does nothing on the far side too.
+- `docs/ARCHITECTURE.md` — the two settings-table rows deleted; the settings-save
+  paragraph now states the general rule (retired keys never reach a bucket; the
+  RC auditor is the migration surface) instead of the special case.
+
+Pins (`tests/test_legacy_timeout_retirement.py`, ten cases): keys in
+`RETIRED_SETTING_KEYS` and absent from `SETTINGS_DEFAULTS`; a stored document
+carrying both loads without them while the rest of the round trip survives, and
+the env plane cannot smuggle them back; neither supervisor module still carries
+a global; neither `init` still asks a caller for a value it discards; the
+deprecation-event path is gone with its keys; `status_text` renders no legacy
+line and grew no replacement knob; a grep-class sweep over every `.py/.js/.json/
+.md/.html` in the tree with a named allowlist; and the RC auditor reports both
+keys as `since: 7.0`, `behavior: stripped-on-load`.
+
+Two existing tests asserted the OLD semantics and were reshaped rather than
+deleted, because both still have a contract to state:
+
+- `tests/test_settings_honesty.py` — was "a retired key is reported retired";
+  now "a retired key is absorbed silently and claimed by no bucket", naming
+  the RC auditor as where an upgrading install actually learns.
+- `tests/test_heartbeat_presentation.py` — the two adjacent tests (one asserting
+  the deprecation row fires on a non-default value, one asserting the retired
+  planning-heartbeat key stays silent) collapse into one class-level pin: all
+  three retired liveness knobs leave no deprecation chatter.
+
+`tests/test_rc_audit_fixture_suite.py` gains the migration-visibility pin: the
+frozen N−1 document (`settings_v6.113.4.json`) carries the pair at its DEFAULT
+values, and a default-valued ghost is exactly the one nobody would think to look
+for — so the retired-setting finding must appear for both keys on that fixture.
+
+Cross-cutting notes:
+
+- **`rc_audit.py`'s `since` field stopped being a one-key special case.** It read
+  `"7.0" if key == "OUROBOROS_SCOPE_REVIEW_FLOOR" else "pre-7.0"`. Rather than
+  grow an `if`-chain, the distinction it encodes is now named data —
+  `RETIRED_IN_THIS_ABI` — so the auditor keeps telling an upgrading install the
+  difference between "your stored value stopped working in THIS upgrade" and
+  "it was already inert".
+- **One deliberate small loss, disclosed.** Saving `OUROBOROS_SOFT_TIMEOUT_SEC`
+  through `POST /api/settings` used to return an explicit "Retired setting(s)
+  saved" warning; now the key is merged away silently, exactly like every other
+  retired key. Restoring the warning would have meant reading the raw request
+  body for keys the merge deliberately never looks at — new plumbing for a
+  surface the RC auditor already owns. Consistency with the other seven retired
+  keys won.
+- **`queue.append_jsonl` kept its import.** With the deprecation emitter gone the
+  name has no in-module caller, but `queue_snapshot.py` reads it through the
+  `_queue()` module handle (four call sites) and three tests monkeypatch it. It
+  now carries the same `noqa` marker as its two sibling facade names instead of
+  looking like a leftover.

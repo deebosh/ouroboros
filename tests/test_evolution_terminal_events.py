@@ -55,7 +55,7 @@ def test_metadata_less_terminal_cannot_mutate_active_campaign(tmp_path):
     from supervisor import evolution_lifecycle, queue, state
 
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
 
     result = evolution_lifecycle.update_evolution_campaign_after_task(

@@ -235,7 +235,7 @@ def test_new_campaign_is_stamped_for_same_generation_worker_respawns(tmp_path, m
 
     monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "same-server")
     state.init(tmp_path)
-    queue.init(tmp_path, 600, 1800)
+    queue.init(tmp_path)
     queue.init_queue_refs([], {}, {"value": 0})
     campaign = evolution_lifecycle.start_evolution_campaign("Improve", source="test")
     assert campaign["last_boot_reconcile_gen"] == "same-server"

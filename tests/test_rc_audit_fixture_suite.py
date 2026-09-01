@@ -119,6 +119,11 @@ def test_nminus1_fixture_install_exits_1_with_the_expected_checks(tmp_path):
         by_check.setdefault(f["check_id"], []).append(f["subject"])
 
     assert "settings.json:OUROBOROS_SCOPE_REVIEW_FLOOR" in by_check["retired-setting"]
+    # D04 (owner 1B): the N−1 document carried the flat timeout pair at its
+    # defaults, so retiring them must be VISIBLE to an upgrading install — a
+    # default-valued ghost is exactly the one nobody would think to look for.
+    for key in ("OUROBOROS_SOFT_TIMEOUT_SEC", "OUROBOROS_HARD_TIMEOUT_SEC"):
+        assert f"settings.json:{key}" in by_check["retired-setting"]
     # The real N−1 settings document carried the comma-list keys as defaults.
     comma_subjects = set(by_check["comma-list"])
     for key in ("OUROBOROS_REVIEW_MODELS", "OUROBOROS_SCOPE_REVIEW_MODELS",
