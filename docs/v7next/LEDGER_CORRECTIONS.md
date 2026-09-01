@@ -5420,3 +5420,9 @@ TARGET_MODULE_LINES, so no `BAND_PATHS`/`GIANT_PATHS` membership changes and the
 manifest stays exact). `git diff --check` is clean. The two commits of this lane
 MUST NOT be treated as gate-proven; whoever integrates them owes the full
 battery on an integrated tree.
+
+Follow-up from CI run 33567328254 (9754cc95): Windows down to one red —
+the credential-listing pin's own fold (JSON-escaped `\\` became `//`),
+fixed; macOS red on two scheduler-sensitive pins (timed-out-tool lease drain,
+SSE incremental follow at the 8 s stream deadline) — bounded waits, test-only;
+neither touches the state-write delegation (in-memory queue / progress.jsonl).
