@@ -3199,7 +3199,13 @@ HTTP base: `ScriptedStubModel` (an ordered per-scenario tool script; review-orga
 calls are classified by prompt markers and answered with canned parse-clean verdicts
 BEFORE the finalization-turn check) and `ReplayModel` (deterministic fixtures bound
 by `(lineage, slot, attempt)`; a miss or an unconsumed row is red via
-`assert_consumed`). Reviewer routing is pinned through the structured
+`assert_consumed`). Review-organ calls are classified per surface (triad, scope,
+reviewer slot, acceptance, plan-review packet, native inspection episode), and a
+scenario may hand the scripted stub a `ReviewScript` — ordered per-kind verdict
+queues (an entry may be a callable over the request body) that override the canned
+all-clean answers for exactly the scripted red rounds and then fall back, with
+`assert_consumed` as the integrity gate; review calls never consume agent script
+steps in either direction. Reviewer routing is pinned through the structured
 `OUROBOROS_REVIEWER_SLOTS` (the retired comma keys are silently dropped by
 `load_settings` — pinning them would fall back to the shipped paid default panel).
 The scenario inventory is DATA (`SCENARIOS` in `harness.py`) with a two-direction

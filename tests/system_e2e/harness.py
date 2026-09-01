@@ -86,6 +86,13 @@ SCENARIOS = {
     "S11": ("delegated transport: full nanny run over FakeClaudexorDaemon, wire/custody truth, typed refusals", LANE_MOCK),
     "S12": ("delegated no-orphans: SIGKILL mid-run -> restart -> boot custody sweep settles the run, one physical attempt", LANE_MOCK),
     "S13": ("skills lifecycle E2E: payload -> stub review -> grants -> enable -> dispatch -> disable/delete + Model Experience", LANE_MOCK),
+    # Ф4 wave 3a (plan §8: plan review; commit triad+scope BOTH enforcement
+    # classes + stale-rejection; acceptance loop). Renumbered S14-S17 at
+    # integration: the parallel wave-3b lane claimed S11-S13 first.
+    "S14": ("plan review: scripted REVISE->ACCEPT cycle, honest durable chronicle, cycle-cap refusal", LANE_MOCK),
+    "S15": ("commit triad+scope, ADVISORY class: red verdicts recorded + waved through with durable override, commit lands", LANE_MOCK),
+    "S16": ("commit triad+scope, BLOCKING class: red blocks (HEAD unmoved), identical resubmit refused free, green lands; freshness stale-rejection", LANE_MOCK),
+    "S17": ("acceptance loop (required+blocking): reject -> rework -> accept; paid-identity / free-replay invariants", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -98,6 +105,8 @@ MOCK_SLUG = "openai-compatible::mock-model"
 #   ACCEPTANCE_KEYS_MARKER — same function, the task_acceptance criteria_used key list
 #   TRIAD_USER_MARKER      — ouroboros/tools/review.py::_dispatch_unified_review
 #   SCOPE_USER_MARKER      — ouroboros/tools/scope_review.py::_call_scope_llm
+#   PLAN_REVIEW_MARKER     — ouroboros/tools/plan_packet.py::build_plan_review_system_prompt
+#   NATIVE_EPISODE_MARKER  — ouroboros/review_native_episode.py::episode_prompt
 # The default-lane marker-pin test greps them out of the source files so drift is a
 # named test failure, not a silently mute stub.
 # ---------------------------------------------------------------------------
@@ -106,7 +115,22 @@ ACCEPTANCE_KEYS_MARKER = "criteria_used (the acceptance criteria you re-derived"
 TRIAD_USER_MARKER = "Review the staged diff and context provided in the instructions above."
 SCOPE_USER_MARKER = "Review the staged change and context above. Output ONLY a JSON array."
 SKILL_REVIEW_MARKER = "You are performing a SKILL review, not a repo-commit review."
+PLAN_REVIEW_MARKER = (
+    "You are one independent reviewer of an INTENTION — a plan spec — "
+    "before the work starts."
+)
+# Deliberately the FIRST source line of the two-literal prompt head only: the
+# marker-pin test greps the SOURCE file, where the concatenated sentence is
+# split across adjacent string literals.
+NATIVE_EPISODE_MARKER = (
+    "You are an independent Ouroboros reviewer slot running a bounded"
+)
 FINALIZATION_MARKERS = ("[OWNER_STOP]", "[FINALIZE_NOW]")
+
+# The native inspection episode names its surface on a dedicated prompt line
+# (review_native_episode.episode_prompt); the stub parses it so an advisory
+# pre-review episode and any future native surface classify by NAME.
+_SURFACE_LINE_RE = re.compile(r"^Surface: ([A-Za-z_]+)$", re.MULTILINE)
 
 MARKER_SOURCES = {
     REVIEWER_SLOT_MARKER: "ouroboros/review_execution.py",
@@ -114,6 +138,8 @@ MARKER_SOURCES = {
     TRIAD_USER_MARKER: "ouroboros/tools/review.py",
     SCOPE_USER_MARKER: "ouroboros/tools/scope_review.py",
     SKILL_REVIEW_MARKER: "ouroboros/skill_review_prompt.py",
+    PLAN_REVIEW_MARKER: "ouroboros/tools/plan_packet.py",
+    NATIVE_EPISODE_MARKER: "ouroboros/review_native_episode.py",
 }
 
 
@@ -160,12 +186,15 @@ def classify_call(body: dict) -> str:
     """Name the branch a chat-completion body belongs to.
 
     Returns one of: ``safety``, ``skill_review``, ``scope_review``, ``triad_review``,
-    ``acceptance``, ``reviewer_slot``, ``finalization``, ``agent``. ORDER MATTERS
-    (roast F22): every
-    review-organ branch is checked BEFORE the finalization-turn check, because a
-    review packet may quote a transcript that itself contains a finalization marker —
-    a stub that answered such a packet with a final chat answer would silently break
-    the review organ mid-scenario.
+    ``acceptance``, ``reviewer_slot``, ``plan_review``, ``advisory_review``,
+    ``native_episode``, ``finalization``, ``agent``. ORDER MATTERS (roast F22):
+    every review-organ branch is checked BEFORE the finalization-turn check,
+    because a review packet may quote a transcript that itself contains a
+    finalization marker — a stub that answered such a packet with a final chat
+    answer would silently break the review organ mid-scenario. The native
+    inspection episode (a TOOL-BEARING review call — review_native_episode)
+    must also be classified here, or it would fall through to the agent branch
+    and eat a scenario's script steps.
     """
     fmt = body.get("response_format")
     if isinstance(fmt, dict) and fmt.get("type") == "json_object":
@@ -185,11 +214,26 @@ def classify_call(body: dict) -> str:
         return "scope_review"
     if TRIAD_USER_MARKER in user_tail:
         return "triad_review"
+    if PLAN_REVIEW_MARKER in full:
+        return "plan_review"
+    if NATIVE_EPISODE_MARKER in full:
+        match = _SURFACE_LINE_RE.search(full)
+        surface = match.group(1) if match else ""
+        return "advisory_review" if surface == "advisory_review" else "native_episode"
     if REVIEWER_SLOT_MARKER in full:
         return "acceptance" if ACCEPTANCE_KEYS_MARKER in full else "reviewer_slot"
     if any(marker in full for marker in FINALIZATION_MARKERS):
         return "finalization"
     return "agent"
+
+
+# Every kind the review-organ/safety branch owns: calls of these kinds never
+# consume an agent script step or a ReplayModel fixture row, and a scenario's
+# ReviewScript may override their canned answers.
+REVIEW_KINDS = frozenset({
+    "safety", "scope_review", "triad_review", "acceptance", "reviewer_slot",
+    "plan_review", "advisory_review", "native_episode",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +264,12 @@ def canned_review_answer(kind: str) -> dict | None:
         return {"role": "assistant", "content": TRIAD_CLEAN_TEXT}
     if kind in ("acceptance", "reviewer_slot"):
         return {"role": "assistant", "content": reviewer_slot_clean_text(kind)}
+    if kind in ("plan_review", "advisory_review", "native_episode"):
+        # One shared clean shape: the plan-review findings contract
+        # (plan_spec.parse_findings) and the advisory episode's clean predicate
+        # (triad_review.empty_array_is_verified_clean) both accept the bare
+        # empty array + NO_FINDINGS sentinel as a verified-clean verdict.
+        return {"role": "assistant", "content": TRIAD_CLEAN_TEXT}
     return None
 
 
@@ -266,7 +316,59 @@ def reviewer_slot_clean_text(kind: str) -> str:
     return json.dumps(verdict)
 
 
-def scripted_completion(body: dict, seq: int, script_next, final_answer: str) -> tuple[str, dict]:
+class ReviewScript:
+    """Ordered per-kind verdict queues for review-organ calls (wave 3a).
+
+    The wave-1 stub answers every review-organ call with the canned ALL-CLEAN
+    verdict; the review-surface scenarios need the organ to say something else
+    first (a REVISE plan finding, a critical triad FAIL, an acceptance reject)
+    and only then converge. A ReviewScript maps ``kind`` (a ``REVIEW_KINDS``
+    member) to an ORDERED queue of verdicts; each review call of that kind
+    consumes one entry, and an exhausted or absent queue falls back to the
+    canned all-clean answer — so a scenario scripts exactly the red rounds it
+    means to and the organ converges by construction.
+
+    Entry forms: ``str`` (assistant content), ``dict`` (full assistant
+    message), or ``callable(body) -> str | dict | None`` — the same
+    dynamic-argument contract script steps use (a hook may also carry a
+    scenario side effect, e.g. mutating the staged tree to prove the
+    post-verdict freshness gate; ``None`` falls back to canned).
+    ``served`` records ``(kind, message)`` in consumption order;
+    ``assert_consumed()`` is the integrity gate a scripted-review scenario must
+    end with (an unserved red verdict = the organ never ran = red).
+    """
+
+    def __init__(self, steps: dict) -> None:
+        unknown = sorted(set(steps or {}) - REVIEW_KINDS)
+        if unknown:
+            raise ValueError(f"ReviewScript kinds must be review-organ kinds: {unknown}")
+        self.steps = {kind: list(queue) for kind, queue in (steps or {}).items()}
+        self.served: list = []
+
+    def __call__(self, kind: str, body: dict):
+        queue = self.steps.get(kind)
+        if not queue:
+            return None
+        step = queue.pop(0)
+        if callable(step):
+            step = step(body)
+        if step is None:
+            return None
+        message = ({"role": "assistant", "content": str(step)}
+                   if isinstance(step, str) else dict(step))
+        self.served.append((kind, message))
+        return message
+
+    def consumed(self) -> bool:
+        return not any(self.steps.values())
+
+    def assert_consumed(self) -> None:
+        leftover = {kind: len(queue) for kind, queue in self.steps.items() if queue}
+        assert not leftover, f"ReviewScript verdicts never served: {leftover}"
+
+
+def scripted_completion(body: dict, seq: int, script_next, final_answer: str,
+                        review_next=None) -> tuple[str, dict]:
     """The stub's whole decision function, pure so the default lane can pin it.
 
     ``script_next`` is a callable returning the next scripted tool step (or None when
@@ -275,10 +377,17 @@ def scripted_completion(body: dict, seq: int, script_next, final_answer: str) ->
     contract: a scenario cannot know a server-minted child task id statically, so the
     step derives its arguments from the prompt the server actually sent (e.g. parse
     the ``schedule_subagent`` receipt out of the transcript to build ``wait_tasks``
-    arguments). Returns ``(kind, message)`` where message is the OpenAI-style
-    assistant message.
+    arguments). ``review_next(kind, body)`` (wave 3a, usually a ``ReviewScript``)
+    may override the canned answer of a review-organ call; it is consulted ONLY for
+    ``REVIEW_KINDS`` — the review-organ branch still sits BEFORE the finalization
+    check and review calls still never consume agent script steps. Returns
+    ``(kind, message)`` where message is the OpenAI-style assistant message.
     """
     kind = classify_call(body)
+    if review_next is not None and kind in REVIEW_KINDS:
+        scripted = review_next(kind, body)
+        if scripted is not None:
+            return kind, scripted
     canned = canned_review_answer(kind)
     if canned is not None:
         return kind, canned
@@ -409,10 +518,11 @@ class ScriptedStubModel(LoopbackModelServer):
     """
 
     def __init__(self, script=None, *, final_answer: str = "Final answer: scripted scenario complete.",
-                 latency_sec: float = 0.0) -> None:
+                 latency_sec: float = 0.0, review_script: "ReviewScript | None" = None) -> None:
         super().__init__(latency_sec=latency_sec)
         self.script = list(script or [])
         self.final_answer = final_answer
+        self.review_script = review_script
         self._script_index = 0
 
     def _next_step(self, _body) -> dict | None:
@@ -423,7 +533,8 @@ class ScriptedStubModel(LoopbackModelServer):
         return step
 
     def _answer(self, body: dict, seq: int) -> tuple[str, dict]:
-        return scripted_completion(body, seq, self._next_step, self.final_answer)
+        return scripted_completion(body, seq, self._next_step, self.final_answer,
+                                   review_next=self.review_script)
 
     def script_consumed(self) -> bool:
         with self._lock:
@@ -723,7 +834,7 @@ class KeylessIsolatedServer(IsolatedServer):
         return env
 
 
-def keyless_reviewer_slots() -> str:
+def keyless_reviewer_slots(*, advisory: bool = False) -> str:
     """The structured ``OUROBOROS_REVIEWER_SLOTS`` value pinning every reviewer row
     to the loopback stub.
 
@@ -733,12 +844,20 @@ def keyless_reviewer_slots() -> str:
     (observed live on this tree: S2's triad dispatched gemini/terra/opus with no
     credential and deterministically blocked at pack assembly). The structured key
     is the ONE configuration surface, so the keyless lane pins THAT.
+
+    ``advisory=True`` additionally pins the ONE optional advisory reviewer row to
+    the stub (wave 3a): the advisory pre-review then runs the bounded NATIVE
+    inspection episode against the loopback model instead of being unavailable
+    keyless (which the commit gate compensates with an audited bypass).
     """
     row = {"kind": "api_chat", "target_id": MOCK_SLUG}
-    return json.dumps({
+    payload = {
         "triad": [{"slot_id": f"t{i}", "route": dict(row)} for i in (1, 2, 3)],
         "scope": [{"slot_id": "s1", "route": dict(row)}],
-    })
+    }
+    if advisory:
+        payload["advisory"] = {"enabled": True, "route": dict(row)}
+    return json.dumps(payload)
 
 
 def keyless_settings(stub: ScriptedStubModel, **overrides) -> dict:
