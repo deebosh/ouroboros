@@ -3835,3 +3835,85 @@ Open fork questions for the owner:
   directly; `loop._mark_owner_stop_control_drained` remains re-exported but the
   drain path no longer reads through the loop facade. No test relied on that
   monkeypatch point; flagged in case an external harness did.
+
+## From the F5 lane C (CPL-3/6, base a12c873c)
+
+Lane deliverables (single-intent commits on this lane):
+
+- CPL-3 (feat commit): architecture facts with Ouroboros self-evolution as
+  consumer #1 — `ouroboros/code_intelligence_architecture.py`, a new D05 leaf
+  beside `code_intelligence.py` (the reuse-first survey found the existing
+  module at 801 lines against the 1000-line band floor, so the organ grew a
+  leaf instead of pushing the parent into the band; manifest row added,
+  DOMAIN_MAP regenerated, no new cross-domain direction — D05->D13 was
+  already in the pinned matrix). Five pure queries over data the repo
+  already pins, no LLM / caches / ledgers: `owner_of(path|symbol)` and
+  `domain_dependencies(d)` over `ouroboros/domains.toml` (symbol resolution
+  through the existing code inventory), `facade_consumers(sym)` over the
+  same noqa-F401 top-level re-export convention the generated facade
+  inventory pins (consumers = import statements across the manifest
+  population; attribute access on a plain module import is disclosed
+  out-of-scope), `persistence_entities_written_by(sym)` over the
+  `docs/PERSISTENCE.md` Path|Writer tables (module path, dotted module, or
+  bare writer-function name), `protected_contracts_affected(diff)` over the
+  `runtime_mode_policy` protected inventories plus the generated
+  `docs/v7next/FROZEN_CONTRACTS_INVENTORY.md` rows (unified-diff text or a
+  changed-path list). Suite `tests/test_architecture_facts.py`: every query
+  on real examples (protected diff → the contract is NAMED; facade → its
+  consumers; writer → its entities) plus completeness against each carrier
+  in both directions — every manifest module answers with exactly its
+  pinned domain, the per-domain edges reproduce `[graph].allowed` and
+  `[graph].lazy_only` exactly, the runtime facade scan equals the pinned
+  facade-inventory row set, the persistence parser yields one row per table
+  line with every exact writer span resolving, and every frozen-contract
+  row is reachable from its own owner file.
+- CPL-3 tool-seam DECISION (lane decision, per the lane instruction): the
+  model consumes architecture facts through the EXISTING `query_code` tool —
+  a new `op=architecture` with `query='<fact> <argument>'` — and NO new tool
+  enters the registry. Justification: `query_code` is the established
+  read-only code-intelligence seam, already carried by the main loop and
+  both subagent profiles and already op-vocabulary-shaped; architecture
+  facts are exactly its kind of answer (compact rows over repo structure).
+  The op serves code roots only (`active_workspace`/`system_repo`); any
+  other root is refused typed. Registry/tool_capabilities untouched.
+- CPL-6 (test commit): `tests/test_multiprovider_conformance.py` — the
+  normative shared suite of the two multi-provider seams. Provider half:
+  parametrization DERIVES from the factual registry
+  (`provider_models.PROVIDER_PREFIXES` + the local lane), so a newly
+  registered provider without a conformance driver is structurally red; the
+  shared contract every lane passes: route-resolution form (required target
+  keys, unambiguous per-provider usage_model attribution), `(message,
+  usage)` shape, honest-only cost planes (`cost` always present, None when
+  unknown, `cost_final` never true over an estimate; the local lane's 0.0
+  is its honest free contract), transport failure raises instead of
+  fabricating an answer, typed policy refusal is permanent by class (exactly
+  one physical send on EVERY lane — probed and true uniformly, incl.
+  anthropic/gigachat), HTTP-200 body 429 is a typed `provider_error`
+  rate-limit marker (lanes derived from the route's own
+  `supports_openrouter_extensions` fact, not a hardcoded list),
+  `finish_reason: null` is surfaced observably (key present, null marker)
+  on the choice-shaped family, caller timeout reaches the transport on
+  every lane (payload / request-row / client slot per transport), and one
+  successful send settles exactly one physical-attempt ledger row
+  (reserved→dispatched→settled) attributed to the right provider.
+  Transports are the recording fakes REUSED from
+  `tests/test_llm_provider_golden.py` — the golden suite characterizes each
+  route byte-level; this suite pins the cross-provider norm. Executor half:
+  parametrization derives from `subagents.SUBAGENT_EXECUTORS` (a new axis
+  point without an outcome row = red); the closed rule-table matrix
+  (requested × route state → executor/reason/blocked, reset instant riding
+  along whenever exhaustion is the surfaced fact), typed refusals at the
+  schema seam (`normalize_subagent_executor`) and the tool seam
+  (`delegate_start` → `subagent_selection_required`), stale stored executor
+  degrades to auto, a plain task is exempt from the axis, the native point
+  never contacts the daemon, a started harness run carries run identity
+  with the configured route on the wire, and the durable last-delegation
+  projection keeps requested vs applied facts separate. Native-side task
+  artifacts stay pinned by their own suites — disclosed scope, not a gap.
+
+### CPL-6 findings (observed, NOT fixed in this lane — plan rule)
+
+| id | seam | finding | proposed local fix |
+|---|---|---|---|
+| CPL6-F1 | local provider lane | the local lane stamps the physical-attempt LEDGER with provider=local but leaves the returned usage dict without the `provider`/`resolved_model` provenance keys every remote lane carries — downstream consumers reading usage alone cannot attribute the call; the conformance suite pins today's asymmetry via the driver's `usage_stamped=False` flag instead of hiding it | stamp `usage["provider"]="local"` / `usage["resolved_model"]="local-model"` in the local normalization path (one seam in `llm_local.py`), then drop the driver flag |
+| CPL6-F2 | provider goldens | `tests/test_llm_provider_golden.py::test_golden_covers_every_declared_provider_lane` floors coverage with a HARDCODED lane set, so a new registry provider never turns the golden suite red | now structurally closed by the conformance registry pin; optionally re-derive the golden floor from `PROVIDER_PREFIXES` the same way |
