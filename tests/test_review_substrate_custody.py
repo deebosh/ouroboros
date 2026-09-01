@@ -194,12 +194,17 @@ def test_review_worker_does_not_retry_after_its_logical_deadline(tmp_path):
     from ouroboros.review_custody import _ACTIVE, _ACTIVE_LOCK, _attempt_key
 
     calls = []
+    release = threading.Event()
     first_finished = threading.Event()
 
     class LateTransportFailure:
+        """Holds the paid call open until the test releases it: the caller must
+        observe 'in_flight' deterministically (a fixed 0.05 s sleep let a slow
+        macOS runner settle the worker before the assertion)."""
+
         def chat(self, **_kwargs):
             calls.append(1)
-            time.sleep(0.05)
+            assert release.wait(10), "test never released the gated review call"
             first_finished.set()
             raise TimeoutError("late transport failure")
 
@@ -217,10 +222,11 @@ def test_review_worker_does_not_retry_after_its_logical_deadline(tmp_path):
         llm=LateTransportFailure(), usage_ctx=ctx,
     )
     assert result.actors[0]["operation_state"] == "in_flight"
-    assert first_finished.wait(1.0)
+    release.set()
+    assert first_finished.wait(10.0)
 
     key = _attempt_key(request, slot)
-    deadline = time.monotonic() + 1.0
+    deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         with _ACTIVE_LOCK:
             active = key in _ACTIVE
