@@ -77,6 +77,48 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_reject_promoted_after_attachment_stage", "_relocate_promoted_attachments",
         "_stage_promoted_initial_attachments",
     })),
+    # F2.2 lane rows (4fffefb1), pinned here by the ADOPTION truth wave: the four
+    # queue/worker leaves the F2.2 cancel-organ train landed proof-green but never
+    # entered this table — the f22 ledger entry claimed they were pinned and the
+    # tree did not bear it out, so the three invariants below were not running on
+    # them. Sets are the tool-derived exact read sets on these bytes.
+    "supervisor/queue_snapshot.py": ("supervisor/queue.py", "_queue", frozenset({
+        "ACCEPTANCE_FENCES", "BUDGET_ROOT_FENCES", "DRIVE_ROOT", "PENDING",
+        "QUEUE_SEQ_COUNTER_REF", "QUEUE_SNAPSHOT_PATH", "RUNNING", "_queue_lock",
+        "append_jsonl", "atomic_write_text", "enqueue_task", "parse_iso_to_ts",
+        "persist_queue_snapshot", "restore_invalid_depth_admission", "sort_pending",
+    })),
+    "supervisor/queue_timeouts.py": ("supervisor/queue.py", "_queue", frozenset({
+        "DRIVE_ROOT", "FINALIZATION_GRACE_SEC", "HEARTBEAT_STALE_SEC", "PENDING",
+        "QUEUE_MAX_RETRIES", "RUNNING", "_enforce_task_timeouts_locked",
+        "_ensure_reaper_started", "_has_live_descendant", "_has_pending_descendant",
+        "_is_descendant_of", "_queue_lock", "_reap_queue",
+        "_request_finalization_grace", "_subtree_progressing", "_task_deadline_ts",
+        "_task_drive_for_task", "get_per_call_timeout_ceiling_sec",
+        "get_task_abs_ceiling_sec", "get_task_idle_timeout_sec", "load_state",
+        "persist_queue_snapshot",
+    })),
+    "supervisor/worker_assignment.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "PENDING", "RUNNING", "WORKERS",
+        "_assignment_depth_reservation_admits", "_cancel_unauthorized_evolution",
+        "_drop_assignable_evolution_tasks", "_drop_cancelled_pending",
+        "_emit_task_done_terminal", "_evolution_assignment_error",
+        "_invalid_depth_deferred", "_normalize_pending_task_depth",
+        "_quarantine_invalid_pending_depths",
+        "_retry_terminalization_pending_for_assignment", "_running_subagent_count",
+        "_terminalize_invalid_pending_depth", "append_jsonl", "load_state",
+        "reconstruct_task_cost", "repo_writer_task_allowed", "send_with_budget",
+        "utc_now_iso",
+    })),
+    "supervisor/worker_health.py": ("supervisor/workers.py", "_pool", frozenset({
+        "CRASH_TS", "DRIVE_ROOT", "QUEUE_MAX_RETRIES", "RUNNING", "WORKERS",
+        "_LAST_SPAWN_TIME", "_SPAWN_GRACE_SEC", "_emit_task_done_terminal",
+        "_ensure_workers_healthy_locked", "_reconcile_confirmed_dead_review_owner",
+        "_worker_crash_storm_detected", "append_jsonl", "coerce_chat_identity",
+        "get_event_q", "kill_workers", "load_state", "reconstruct_task_cost",
+        "respawn_worker", "send_with_budget", "terminal_task_metadata",
+        "utc_now_iso",
+    })),
     # D10 lane rows (oracle ouroboros_v7_wip @ 9f691656). git_ops leaves carry
     # the reference's G1 `_go()` sets re-derived on tip bytes (safe_restart and
     # prepare_managed_update stayed facade defs — the gate refuses f-string
