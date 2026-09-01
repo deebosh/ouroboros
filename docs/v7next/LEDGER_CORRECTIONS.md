@@ -3172,3 +3172,117 @@ and owner acceptance of the Q8=B quarantine consequence.
    settings key - now points at Review lanes / OUROBOROS_REVIEWER_SLOTS;
    test_review_owner_facades' facade roster dropped the removed
    ADVISORY_REVIEW_ROUTE_ENV re-export.
+
+## From the F3 adversarial fix-round (base 71e1f13f, 2026-09-01)
+
+Disposition of the 14 findings of the F3.2+F3.3 adversarial wave (sol),
+verified against the code before fixing; every fix landed in the four
+single-intent commits of this round.
+
+1. FIXED (HIGH, rollback fail-open). `rollback_managed_update` read the
+   marker with the permissive `read_update_tx()`, so a FUTURE-schema tx was
+   interpreted, re-phased and destructively reset. It now reads
+   `read_update_tx_strict()` and refuses typed on `future` BEFORE any marker
+   write or reset/checkout/clean (marker byte-identical, worktree and dirty
+   local work untouched); a corrupt-stamp marker now refuses on the empty tx
+   instead of being interpreted (the permissive reader returned the raw dict
+   for a non-integer stamp). RELEASE_INVARIANT surface
+   supervisor/update_merge.py: the delta is sanctioned by this fix-round and
+   minimal (one strict read + one typed refusal). Pin: the future-schema
+   suite now drives the direct rollback entry point (red pre-fix).
+2. FIXED (HIGH, false grandfather PASS). rc_audit now looks review state up
+   by the skill DIRECTORY basename (the runtime identity,
+   skill_loader.load_skill) and verifies the stored PASS hash against the
+   runtime's own `compute_content_hash` over the CURRENT payload bytes
+   (read-only reuse); a mismatch is an INCOMPATIBLE stale review. Fixtures
+   store the real computed hash; the "a"*64 form is now the stale-hash red
+   fixture; a basename-vs-manifest.name divergence pin proves the lookup key.
+3. FIXED (MEDIUM, exit contract). Chosen and documented in the module
+   docstring: an unreadable/unparseable MANDATORY source (manifest, payload
+   under a hash-bound PASS) is a BLOCKING `unauditable-source` finding
+   (exit 1, its own check id, outside the five scope classes — an
+   audit-integrity plane, not an ABI class); traversal OSError and
+   report-write OSError map to exit 2, so a bare Python exit 1 can no longer
+   read as "incompatibilities found". Pins on both planes.
+4. FIXED WITH AN ADAPTED PIN (MEDIUM, bytecode). `sys.dont_write_bytecode =
+   True` is set before any runtime import. The requested "prefix in audited
+   root -> tree untouched" pin is PHYSICALLY unreachable for the naked
+   launcher mode: the interpreter writes ~40 stdlib .pyc files under
+   PYTHONPYCACHEPREFIX during startup, BEFORE the script's first line
+   (measured on this host). The landed contract, both sides pinned: a prefix
+   inside the audited root without startup bytecode suppression is REFUSED
+   loudly (exit 2, the guarantee was already violated by the invoking
+   environment); with PYTHONDONTWRITEBYTECODE=1 (or -B) the audit runs and
+   the audited tree stays byte-for-byte identical.
+5. FIXED (MEDIUM, inventory parity). `_iter_skill_dirs` now yields
+   `skill_loader._walk_skill_packages(data_root/"skills")` — the runtime's
+   own discovery (hidden excluded, `.replaced-`/`.staging-`/`.tmp-` orphans
+   excluded, descent stops at a found package), read-only reuse instead of a
+   parallel-rules mirror. Pin: orphan/hidden dirs with broken manifests in an
+   otherwise clean install stay exit 0.
+6. FIXED (MEDIUM, provenance). `sources.tree` appends `-dirty` when
+   `git status --porcelain --untracked-files=no` is non-empty (tracked
+   scope: untracked files supply no resolved classifier bytes), and
+   REPO_ROOT is moved to the FRONT of sys.path (an earlier checkout later in
+   PYTHONPATH could otherwise supply the classifiers). Pins: monkeypatched
+   dirty/clean `_tree_sha`, sys.path[0] identity.
+7. FIXED AS DISCLOSED HONESTY, BEHAVIOR BYTE-IDENTICAL (MEDIUM, ignored
+   route). PROVEN OLD BEHAVIOR FIRST: on base 3ba9f452 the fallback loop
+   iterated `get_fallback_models` strings and the dispatch lane was the one
+   global USE_LOCAL_FALLBACK env flag — so per-candidate dispatch would be a
+   BEHAVIOR CHANGE the sweep's byte-identical contract forbids (consuming
+   `provider_route == "local"` per candidate would flip dispatch for a
+   `"(local)"-suffixed model with the flag unset). Disposition branch taken:
+   the ladder no longer fabricates the unconsumed fact —
+   `fallback_candidate_targets` leaves `provider_route` the "" sentinel,
+   docstrings on both sides and the loop comment state the lane contract,
+   and an equivalence pin fixes the loop's global-flag read. The finding's
+   mixed-ladder scenarios are therefore the PRE-EXISTING chain semantics,
+   disclosed rather than silently re-engineered inside a typing sweep.
+8. FIXED (MEDIUM, ABI-4 over-claim). ADOPTION row truth-scoped: typed
+   consumers are the fallback ladder, the reviewer slot builders
+   (`resolved_review_model_target` — production consumers in
+   reviewer_slot_config) and the delegated lane; `get_review_targets`/
+   `get_scope_review_targets` are marked typed views WITHOUT production
+   consumers in their docstrings (wiring a whole-list consumer is
+   review-surface work, not byte-identical); NAMED RESIDUAL:
+   plan_review_runtime, review_multi_model and the reviewer parallel vectors
+   keep their string ABI — their migration was NOT performed and review
+   surfaces were not touched.
+9. FIXED (MEDIUM, digest not in tools.jsonl). The DIRECT tools.jsonl record
+   now carries `tool_result_meta` (bounded by the ToolResult contract:
+   <=32 producer keys, <=8KB, JSON-safe — no secret plane), so the ABI-9
+   generation digest survives a failed `persist_call`, exactly as the
+   ADOPTION/ledger claims read. Consumers (memory summarizer, /api/logs
+   tail) read named fields from JSON lines — the key is additive. Pin: the
+   tools.jsonl row of a physical extension call carries
+   `extension_generation` with persist_call forced to fail.
+10. FIXED (MEDIUM, pre-handler stamp). The stamp now keys on a POSITIVE
+    `physical_dispatch` meta fact set only when the handler / child process
+    is actually invoked, replacing the `_UNDISPATCHED_CODES` exclusion list;
+    the calling-convention resolution moved into its own pre-handler try.
+    Pins on all three pre-handler EXTENSION_ERROR paths (runner import,
+    disclosure gate, calling convention) plus a contrast pin that a genuine
+    handler exception with the same code IS stamped.
+11. FIXED (LOW, fallback-reader race). The registry digest is snapshotted
+    BEFORE the handler call. Deterministic barrier pin: the handler itself
+    republishes the extension mid-call; the result carries the pre-call
+    digest while the live digest has moved on.
+12. FIXED (MEDIUM, JS-parity hole). DocumentOutbound and
+    UiPreferencesResponse joined the exact field loop in
+    test_gateway_parity, plus explicit resurrection pins on
+    cost_usd/cost_usd_with_children/telegram_chat_id/project_last_viewed/
+    project_hidden in BOTH mirrors; the stale ABI-3 "JS mirror switch
+    deferred / frozen excused set" ADOPTION claim replaced with the done
+    state (the cleanup landed in the F3.3 comma-sweep tact).
+13. FIXED (LOW, comma-gate evasion). The model/review comma-split scan is
+    AST-level for Python (Attribute call `split`/`rsplit`, first positional
+    or `sep=` keyword constant ",", any spacing/quotes/maxsplit) with a
+    detector self-test on the evasion spellings; non-Python mirrors keep a
+    hardened textual scan (no Python AST exists for them).
+14. FIXED (LOW, shrink-only). The DelegationRoute typed-target bridge
+    relocated to `provider_models.delegated_route_target` (the resolution-
+    seam owner, headroom); ouroboros/subagents.py is back at 1380 lines and
+    ouroboros/tools/delegate.py at 1263 — their 3ba9f452 base sizes.
+    Monotonicity ENFORCEMENT deliberately not built (out of scope per the
+    fix-round brief).
