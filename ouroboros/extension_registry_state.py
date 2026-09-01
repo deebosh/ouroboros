@@ -9,6 +9,8 @@ shares the same objects.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import pathlib
 import threading
 from dataclasses import dataclass, field
@@ -175,6 +177,27 @@ def extension_generation_digest(skill_name: str) -> str:
     with _lock:
         bundle = _extensions.get(str(skill_name or ""))
         return str(bundle.generation_digest or "") if bundle is not None else ""
+
+
+def live_extension_fingerprint() -> str:
+    """Digest of WHAT this process has live, comparable across processes.
+
+    ``generation_digest`` is minted fresh per publication, so it can never be
+    compared between processes: the server and a task worker importing the very
+    same payload mint different digests. What IS identical on both sides is the
+    payload identity each loaded — exactly the triple ``live_loaded`` compares
+    (skill name, content hash, resolved skill dir) — so the fingerprint is taken
+    over that. An EMPTY registry has a definite digest of its own, which is what
+    lets a reader tell "the publisher has nothing live" apart from "nothing was
+    ever published" (the absent-marker case, which reads as ``""``).
+    """
+    with _lock:
+        rows = sorted(
+            (name, str(bundle.content_hash or ""), str(bundle.skill_dir or ""))
+            for name, bundle in _extensions.items()
+        )
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
 def get_tool_with_generation(name: str) -> tuple[Optional[Dict[str, Any]], str]:

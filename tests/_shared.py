@@ -20,7 +20,9 @@ def clean_extension_runtime_state() -> None:
     is already empty, so the superset is safe for every caller.
     """
     from ouroboros import extension_loader
+    from ouroboros.extension_reconcile_queue import _adopted_generations
 
+    _adopted_generations.clear()
     with extension_loader._lock:
         loaded_names = list(extension_loader._extensions.keys())
     for name in loaded_names:

@@ -87,6 +87,35 @@ def _prepare_worker_task_runtime() -> None:
     import supervisor.update_merge  # noqa: F401
 
 
+def _adopt_published_extensions(pool_drive_root: str) -> None:
+    """Catch up with the server's extension generation before the task runs.
+
+    A worker loads extensions ONCE, at spawn, so a skill enabled after that was
+    invisible to every task this process served until the pool respawned: the
+    model calling the fresh tool got "Unknown tool" while /api/extensions
+    truthfully reported it live. This is the natural point to notice — the task
+    is about to materialize its tool catalog — and the steady state costs one
+    small JSON read, with a bounded reload only when the generations differ.
+
+    The root is the POOL's, never the task's: a subagent or headless task
+    carries its own forked ``drive_root``, which has no extension registry of
+    its own and would read as "nothing published". This process loaded its
+    extensions from the pool root at spawn, and the server publishes there, so
+    that is the only root the two generations are comparable in.
+    """
+    try:
+        from ouroboros.config import get_skills_repo_path, load_settings
+        from ouroboros.extension_reconcile_queue import adopt_published_extension_generation
+
+        adopt_published_extension_generation(
+            pathlib.Path(pool_drive_root),
+            load_settings,
+            repo_path=get_skills_repo_path() or None,
+        )
+    except Exception:
+        log.debug("extension generation adoption failed", exc_info=True)
+
+
 def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                 custody_session_id: str = "") -> None:
     import os as _os
@@ -156,6 +185,9 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
             _log_worker_crash(wid, _drive, "init_baseline", None, _tb.format_exc())
         except Exception:
             pass
+    # Guards BOTH extension entry points below: the spawn-time load and the
+    # per-task generation adoption must refuse the same real-data-dir case.
+    extensions_owned = True
     try:
         from ouroboros.config import get_skills_repo_path, load_settings as _load_settings
         from ouroboros.extension_loader import reload_all as _reload_extensions
@@ -166,6 +198,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
             and _drive.resolve(strict=False) == (_pathlib.Path.home() / "Ouroboros" / "data").resolve(strict=False)
         )
         if pytest_default_real_data_dir:
+            extensions_owned = False
             try:
                 from ouroboros.utils import append_jsonl, utc_now_iso
                 append_jsonl(_drive / "logs" / "supervisor.jsonl", {
@@ -209,6 +242,8 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
             if task is None or task.get("type") == "shutdown":
                 break
             task_drive_root = str(task.get("drive_root") or drive_root)
+            if extensions_owned:
+                _adopt_published_extensions(drive_root)
             if task_drive_root != str(drive_root):
                 task_agent = make_agent(
                     repo_dir=repo_dir,

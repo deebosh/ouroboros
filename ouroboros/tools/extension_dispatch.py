@@ -46,6 +46,21 @@ def _extension_dispatch_candidate(
             or getattr(ctx, "drive_root", "")
             or "."
         ).resolve(strict=False)
+        if ext_tool is None:
+            # The SECOND natural staleness point (W3B-F1): the name is a
+            # well-formed extension surface and this process has none — exactly
+            # the "Unknown tool" a worker answered with for a skill enabled
+            # after its own spawn. The per-task probe cannot see an enable that
+            # lands MID-task; this one can, and it is the same bounded adopt, so
+            # a surface no publication can explain (a hallucinated name) costs
+            # one small read here and never a reload.
+            from ouroboros.config import get_skills_repo_path, load_settings
+            from ouroboros.extension_reconcile_queue import adopt_published_extension_generation
+
+            adopt_published_extension_generation(
+                capability_root, load_settings, repo_path=get_skills_repo_path() or None
+            )
+            ext_tool = _ext_get_tool(name)
         if ext_tool and not _ext_is_live(
             str(ext_tool.get("skill") or ""),
             capability_root,

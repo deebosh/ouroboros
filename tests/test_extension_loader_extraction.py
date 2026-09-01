@@ -91,7 +91,7 @@ _MOVED_OWNERS = {
 # ``_stage_out_of_process_surfaces`` moved to the child-catalog leaf it
 # composes; the loader re-exports it.)
 _STAYED = (
-    "__all__", "_publish_out_of_process_registration", "_request_server_reconcile_if_worker",
+    "__all__", "_publish_out_of_process_registration",
     "_run_unload_callback", "_unload_extension_locked",
     "ensure_companions_running", "get_tool", "list_companion_names", "list_routes",
     "list_ws_handlers", "load_extension", "log", "reconcile_extension", "reload_all",

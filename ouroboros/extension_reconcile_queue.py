@@ -1,9 +1,22 @@
-"""File-backed worker->server extension reconcile requests.
+"""File-backed extension coordination across the server/worker process split.
 
-Worker processes have their own in-memory extension registries and cannot own
-the server's companion supervisor. When a worker enables/disables an extension,
-it writes a small durable marker here; the server lifespan task picks it up and
-reconciles the server-side extension surfaces/companions.
+Every process runs its OWN in-memory extension registry, so a change made on
+one side is invisible on the other until something carries it over. Both
+directions are carried by small durable files under ``state/``, and both are
+announced from the same seam (``announce_extension_state_change``):
+
+* worker -> server: a per-request reconcile marker. A worker cannot own the
+  server's companion supervisor or the UI's live surfaces, so it asks; the
+  server lifespan task picks the marker up and reconciles.
+* server -> workers: the published extension GENERATION. Workers load
+  extensions once, at spawn, and a skill enabled after that stayed invisible to
+  every task they served until the pool respawned — the model calling the fresh
+  tool got "Unknown tool" while ``/api/extensions`` truthfully reported it live.
+  The server stamps its live-set fingerprint here; a worker compares its own at
+  two natural points — the start of a task, before its tool catalog
+  materializes, and a dispatch miss on a well-formed extension surface name,
+  which is the only one that can see an enable landing MID-task — and adopts
+  the difference.
 """
 
 from __future__ import annotations
@@ -21,13 +34,140 @@ from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc
 log = logging.getLogger(__name__)
 
 QUEUE_DIR = "extension_reconcile"
+GENERATION_FILENAME = "extension_generation.json"
+GENERATION_SCHEMA = 1
 POLL_INTERVAL_SEC = 3.0
 MAX_ATTEMPTS = 5
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+# Per data root, the published generation THIS process already spent a reload on.
+# Worker-local; the server never fills it (it publishes instead of adopting).
+_adopted_generations: Dict[str, str] = {}
 
 
 def _queue_root(drive_root: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(drive_root) / "state" / QUEUE_DIR
+
+
+def extension_generation_path(drive_root: pathlib.Path) -> pathlib.Path:
+    return pathlib.Path(drive_root) / "state" / GENERATION_FILENAME
+
+
+def published_extension_generation(drive_root: pathlib.Path) -> str:
+    """The generation the server last published, or ``""`` when absent/unreadable.
+
+    Fail-closed for the worker probe: no readable marker is no evidence of
+    divergence, which keeps the pre-existing behaviour (extensions loaded at
+    spawn only) instead of reloading blind against an unreadable registry.
+    """
+    payload = read_json_dict(extension_generation_path(drive_root))
+    return str((payload or {}).get("generation") or "")
+
+
+def publish_extension_generation(drive_root: pathlib.Path) -> str:
+    """Stamp this process's live extension set for running workers to compare with.
+
+    Write-if-changed: an ordinary reconcile pass over an already-live extension
+    publishes nothing new, so the steady state costs one small read.
+    """
+    from ouroboros.extension_registry_state import live_extension_fingerprint
+
+    generation = live_extension_fingerprint()
+    path = extension_generation_path(drive_root)
+    if published_extension_generation(drive_root) == generation:
+        return generation
+    atomic_write_json(path, {
+        "schema_version": GENERATION_SCHEMA,
+        "generation": generation,
+        "published_at": utc_now_iso(),
+    })
+    return generation
+
+
+def announce_extension_state_change(
+    drive_root: pathlib.Path | None,
+    skill_name: str,
+    *,
+    reason: str = "",
+) -> str:
+    """Tell the OTHER side of the process split that extension state changed.
+
+    One seam, two directions (see the module docstring); which one runs is
+    decided by which process is calling, never by the caller. Best-effort by
+    contract: an announcement failure must not fail the reconcile that made the
+    change, so it is logged and swallowed here rather than at every call site.
+    An empty ``skill_name`` announces the WHOLE live set (the end of a
+    ``reload_all``): the server publishes it, and the worker direction has
+    nothing to ask for, since a reconcile request names one skill.
+    """
+    if drive_root is None:
+        return ""
+    from ouroboros.extension_companion import is_server_process
+
+    try:
+        if is_server_process():
+            return f"published:{publish_extension_generation(drive_root)}"
+        if not str(skill_name or "").strip():
+            return "no_skill"
+        request_extension_reconcile(drive_root, skill_name, reason=reason, source="worker")
+        return "requested"
+    except Exception:
+        log.debug("extension state-change announcement failed for %s", skill_name, exc_info=True)
+        return ""
+
+
+def adopt_published_extension_generation(
+    drive_root: pathlib.Path,
+    settings_reader: Callable[[], Dict[str, Any]],
+    *,
+    repo_path: str | None = None,
+) -> Dict[str, Any]:
+    """Worker-side staleness probe: adopt the server's published generation.
+
+    Runs at the natural points (a task is about to materialize its tool
+    catalog; a dispatch found no such surface), never on a timer. The steady
+    state is one small JSON read plus an in-memory digest — measured at 28-63 us
+    across 1-20 live extensions, against a ``reload_all`` of 5.9-42.5 ms. A
+    divergence spends exactly ONE ``reload_all`` per DISTINCT
+    published generation, so a worker that structurally cannot converge — a
+    skill that loads in the server but not here — degrades to the previous
+    behaviour instead of reloading before every task.
+    """
+    from ouroboros.extension_companion import is_server_process
+    from ouroboros.extension_registry_state import live_extension_fingerprint
+
+    if is_server_process():
+        return {"action": "server_process"}
+    root = pathlib.Path(drive_root)
+    published = published_extension_generation(root)
+    if not published:
+        return {"action": "no_published_generation"}
+    local = live_extension_fingerprint()
+    if published == local:
+        _adopted_generations[str(root)] = published
+        return {"action": "in_sync", "generation": published}
+    if _adopted_generations.get(str(root)) == published:
+        return {"action": "already_adopted", "generation": published}
+    _adopted_generations[str(root)] = published
+    from ouroboros.extension_loader import reload_all
+
+    results = reload_all(root, settings_reader, repo_path=repo_path)
+    adopted = live_extension_fingerprint()
+    append_jsonl(root / "logs" / "events.jsonl", {
+        "ts": utc_now_iso(),
+        "type": "extension_generation_adopted",
+        "published_generation": published,
+        "previous_generation": local,
+        "adopted_generation": adopted,
+        "converged": adopted == published,
+        "skills": sorted(str(name) for name in results),
+    })
+    return {
+        "action": "reloaded",
+        "generation": published,
+        "adopted_generation": adopted,
+        "converged": adopted == published,
+        "results": results,
+    }
 
 
 def _marker_name(skill_name: str, request_id: str) -> str:
@@ -251,7 +391,14 @@ async def extension_reconcile_pickup_loop(
 
 __all__ = [
     "QUEUE_DIR",
+    "GENERATION_FILENAME",
+    "GENERATION_SCHEMA",
     "POLL_INTERVAL_SEC",
+    "adopt_published_extension_generation",
+    "announce_extension_state_change",
+    "extension_generation_path",
+    "publish_extension_generation",
+    "published_extension_generation",
     "request_extension_reconcile",
     "list_extension_reconcile_requests",
     "process_extension_reconcile_requests",

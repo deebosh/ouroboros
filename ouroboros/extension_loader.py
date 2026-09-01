@@ -88,6 +88,12 @@ from ouroboros.extension_plugin_api import (
     mint_skill_token,  # noqa: F401
     set_ws_broadcaster,  # noqa: F401
 )
+from ouroboros.extension_reconcile_queue import (
+    # Both directions of the process-split announcement live in the module that
+    # owns the durable carriers: worker -> server reconcile request, server ->
+    # workers published generation. The loader only says WHEN state changed.
+    announce_extension_state_change as _announce_extension_state_change,
+)
 from ouroboros.extension_registry_state import (
     _ExtensionLoadFailure,
     _ExtensionRegistrations,  # noqa: F401 — facade re-export (extraction contract)
@@ -128,23 +134,6 @@ from ouroboros.tools.skill_exec import _scrub_env  # noqa: F401
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso  # noqa: F401
 
 log = logging.getLogger(__name__)
-
-
-def _request_server_reconcile_if_worker(
-    drive_root: pathlib.Path | None,
-    skill_name: str,
-    *,
-    reason: str,
-) -> None:
-    """Signal the server process after a worker-side extension state change."""
-    if drive_root is None or is_server_process():
-        return
-    try:
-        from ouroboros.extension_reconcile_queue import request_extension_reconcile
-
-        request_extension_reconcile(drive_root, skill_name, reason=reason, source="worker")
-    except Exception:
-        log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
 
 
 def _publish_out_of_process_registration(
@@ -321,7 +310,7 @@ def reconcile_extension(
         elif state.get("reason") == "load_error" and not loaded_present:
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="reconcile_load_error")
+            _announce_extension_state_change(drive_root, skill_name, reason="reconcile_load_error")
             return state
         if state.get("reason") == "missing" or state.get("reason") == "not_extension":
             if loaded_present:
@@ -329,7 +318,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason=str(state.get("reason") or "inactive"))
+            _announce_extension_state_change(drive_root, skill_name, reason=str(state.get("reason") or "inactive"))
             return state
 
         if not state.get("desired_live"):
@@ -338,7 +327,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="desired_disabled")
+            _announce_extension_state_change(drive_root, skill_name, reason="desired_disabled")
             return state
 
         if was_live:
@@ -351,7 +340,7 @@ def reconcile_extension(
                     repo_path=repo_path,
                     selected_skill=selected_skill,
                 )
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="already_live")
+            _announce_extension_state_change(drive_root, skill_name, reason="already_live")
             return state
 
         safe_name = _sanitize_skill_name(skill_name)
@@ -359,7 +348,7 @@ def reconcile_extension(
         if loaded is None:
             state["reason"] = "missing"
             state["action"] = "extension_inactive"
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="missing")
+            _announce_extension_state_change(drive_root, skill_name, reason="missing")
             return state
         if loaded_present:
             unload_extension(skill_name)
@@ -385,7 +374,7 @@ def reconcile_extension(
             state["load_error"] = err
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="load_error")
+            _announce_extension_state_change(drive_root, skill_name, reason="load_error")
             return state
         refreshed = runtime_state_for_skill_name(
             skill_name,
@@ -394,7 +383,7 @@ def reconcile_extension(
             skills=peers,
         )
         refreshed["action"] = "extension_loaded"
-        _request_server_reconcile_if_worker(drive_root, skill_name, reason="loaded")
+        _announce_extension_state_change(drive_root, skill_name, reason="loaded")
         return refreshed
 
 
@@ -937,6 +926,9 @@ def reload_all(
             })
         except Exception:
             log.debug("Failed to append extension_regression event", exc_info=True)
+    # Whole-set announcement: the per-skill reconciles above miss the pool the
+    # "gone" sweep unloaded and an install with no extension skills left at all.
+    _announce_extension_state_change(drive_root, "", reason="reload_all")
     return results
 
 
