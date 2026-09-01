@@ -319,6 +319,30 @@ def test_git_ops_declared_and_moved_symbols_prove():
     assert "_go()._has_remote(" in remote
 
 
+@needs_go_corpus
+def test_the_f_string_deferred_git_ops_spans_transplant():
+    """The two G1 rows the f-string gate deferred (ledger D10 entry 2:
+    ``safe_restart`` / ``prepare_managed_update``, whose messages read the
+    rebindable BRANCH_DEV/BRANCH_STABLE inside f-strings). The declared set is
+    the tool's own recalculation, so this pins the report loop too."""
+    result, declared, _preamble, _rounds = _recalculate(
+        GO_UPSTREAM, ["safe_restart"], set(), "_go", "supervisor.git_ops",
+        GO_PREAMBLE)
+    span = _span_text(result.leaf_source, "safe_restart")
+    assert {"BRANCH_DEV", "BRANCH_STABLE"} <= declared
+    assert 'return False, f"Failed checkout {_go().BRANCH_DEV}: {err}"' in span
+    assert 'return True, f"OK: fell back to {_go().BRANCH_STABLE}"' in span
+    assert result.proof["ok"] and result.proof["unread_declared"] == []
+
+    result2, declared2, _p2, _r2 = _recalculate(
+        GO_UPSTREAM, ["prepare_managed_update"], set(), "_go",
+        "supervisor.git_ops", GO_PREAMBLE)
+    span2 = _span_text(result2.leaf_source, "prepare_managed_update")
+    assert "BRANCH_DEV" in declared2
+    assert 'f"Managed updates require the local {_go().BRANCH_DEV!r} branch."' in span2
+    assert result2.proof["ok"] and result2.proof["unread_declared"] == []
+
+
 @needs_ref
 @needs_go_corpus
 def test_git_ops_stable_symbols_match_the_v7_leaf_byte_for_byte():
@@ -484,13 +508,50 @@ def test_import_time_reads_fail_closed():
         assert "import-time read" in excinfo.value.message, symbol
 
 
-def test_fstring_reads_fail_closed():
-    src = SYN + '\ndef show():\n    return f"limit={LIMIT}"\n'
+SYN_FSTR = SYN + '\ndef show():\n    return f"limit={LIMIT}"\n'
+
+
+def test_fstring_reads_of_declared_names_are_rewritten_and_proved():
+    """F5 tool row: a declared name read inside an f-string is an ordinary
+    call-time read. The literal halves — including a nested string subscript
+    that spells the same name — stay byte-identical, and the format spec is
+    an expression like any other."""
+    src = SYN + (
+        '\ndef show(k, d):\n'
+        '    return f"limit={LIMIT} {k!r} {d[\'LIMIT\']} {LIMIT:>{LIMIT}}"\n')
+    result = tp.transplant(src, ["show"], {"LIMIT"}, "_up", parent_module="synmod",
+                           preamble=SYN_PRE)
+    span = _span_text(result.leaf_source, "show")
+    assert ('f"limit={_up().LIMIT} {k!r} {d[\'LIMIT\']} '
+            '{_up().LIMIT:>{_up().LIMIT}}"') in span
+    entry = result.proof["symbols"]["show"]
+    assert entry["ast_equal"] and entry["tokens_equal"] and entry["byte_identical"]
+    assert entry["ast_inverse_equal"]
+    assert result.proof["ok"]
+
+
+def test_fstring_debug_specs_fail_closed():
+    """`f"{X=}"` PRINTS the expression text, which CPython derives from the very
+    bytes the handle rewrite changes: `f"{_up().LIMIT=}"` inverts byte-perfectly
+    while its output silently became `_up().LIMIT=`. Only the tree-level inverse
+    sees that Constant, so it is the check that refuses the span."""
+    src = SYN + '\ndef show():\n    return f"{LIMIT=}"\n'
     with pytest.raises(tp.TransplantError) as excinfo:
         tp.transplant(src, ["show"], {"LIMIT"}, "_up", parent_module="synmod",
                       preamble=SYN_PRE)
-    assert excinfo.value.kind == "violation"
-    assert "f-string" in excinfo.value.message
+    assert excinfo.value.kind == "proof"
+    entry = excinfo.value.details["proof"]["symbols"]["show"]
+    assert entry["byte_identical"] and not entry["ast_inverse_equal"]
+
+
+def test_proof_detects_tampering_inside_an_fstring_literal():
+    result = tp.transplant(SYN_FSTR, ["show"], {"LIMIT"}, "_up",
+                           parent_module="synmod", preamble=SYN_PRE)
+    tampered = result.leaf_source.replace('f"limit=', 'f"cap=')
+    report = tp.verify_transplant(SYN_FSTR, tampered, ["show"], {"LIMIT"}, "_up")
+    assert not report["ok"]
+    entry = report["symbols"]["show"]
+    assert not entry["tokens_equal"] and not entry["byte_identical"]
 
 
 def test_wildcard_imports_fail_closed():

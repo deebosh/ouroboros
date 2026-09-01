@@ -12,14 +12,21 @@ machine-checkable PROOF that nothing else changed:
   original extracted upstream spans;
 * token proof: every token outside the rewritten references is byte-identical
   to its upstream counterpart (comments, strings and whitespace-carrying
-  INDENT tokens included).
+  INDENT tokens included). A pre-3.12 f-string is ONE string token, so a token
+  holding rewritten references is compared after removing exactly as many
+  ``_handle().`` prefixes as it holds reference sites;
+* tree-inverse proof: collapsing ``_handle().NAME`` back to ``NAME`` in the
+  emitted PARSE TREE reproduces the upstream tree. The text inverse cannot see
+  a literal CPython derives from the rewritten bytes — ``f"{X=}"`` prints the
+  expression source, so ``f"{_h().X=}"`` inverts byte-perfectly while its
+  output changed; the tree carries that Constant, so it refuses.
 
 Fail-closed on: names that are neither leaf-local, imported in the leaf,
 declared, nor builtins (reported per symbol — that report is how the declared
 set gets recalculated per leaf); wildcard imports; import-time reads of
 declared names (module level, class bodies, decorators, default arguments);
-f-string reads of declared names; ``global``/``del``/store of declared names;
-symbols the AST cannot round-trip.
+``global``/``del``/store of declared names; symbols the AST cannot round-trip;
+any emitted span that fails one of the three proofs above.
 
 CLI:
   emit : python scripts/v7next_transplant.py --upstream supervisor/queue.py \
@@ -347,7 +354,7 @@ class _Walker:
     def run(self, tree: ast.Module, module_table: "symtable.SymbolTable") -> _Analysis:
         scope = _Scope(module_table)
         for stmt in tree.body:
-            self._visit(stmt, scope, False, False)
+            self._visit(stmt, scope, False)
         return self.out
 
     # -- annotation handling: the leaf requires `from __future__ import
@@ -361,65 +368,65 @@ class _Walker:
             if isinstance(sub, ast.Name):
                 self.out.annotation_names.add(sub.id)
 
-    def _visit(self, node: ast.AST, scope: _Scope, calltime: bool, fstr: bool) -> None:
+    def _visit(self, node: ast.AST, scope: _Scope, calltime: bool) -> None:
         if isinstance(node, ast.Name):
-            self._name(node, scope, calltime, fstr)
+            self._name(node, scope, calltime)
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = node.args
             for d in args.defaults:
-                self._visit(d, scope, calltime, fstr)
+                self._visit(d, scope, calltime)
             for d in args.kw_defaults:
                 if d is not None:
-                    self._visit(d, scope, calltime, fstr)
+                    self._visit(d, scope, calltime)
             for a in (args.posonlyargs + args.args + args.kwonlyargs
                       + ([args.vararg] if args.vararg else [])
                       + ([args.kwarg] if args.kwarg else [])):
                 self._ann(a.annotation)
             self._ann(node.returns)
             for dec in node.decorator_list:
-                self._visit(dec, scope, calltime, fstr)
+                self._visit(dec, scope, calltime)
             inner = scope.enter(node.name, node.lineno)
             for stmt in node.body:
-                self._visit(stmt, inner, True, fstr)
+                self._visit(stmt, inner, True)
             return
         if isinstance(node, ast.Lambda):
             for d in node.args.defaults:
-                self._visit(d, scope, calltime, fstr)
+                self._visit(d, scope, calltime)
             for d in node.args.kw_defaults:
                 if d is not None:
-                    self._visit(d, scope, calltime, fstr)
+                    self._visit(d, scope, calltime)
             inner = scope.enter("lambda", node.lineno)
-            self._visit(node.body, inner, True, fstr)
+            self._visit(node.body, inner, True)
             return
         if isinstance(node, ast.ClassDef):
             for base in node.bases:
-                self._visit(base, scope, calltime, fstr)
+                self._visit(base, scope, calltime)
             for kw in node.keywords:
-                self._visit(kw.value, scope, calltime, fstr)
+                self._visit(kw.value, scope, calltime)
             for dec in node.decorator_list:
-                self._visit(dec, scope, calltime, fstr)
+                self._visit(dec, scope, calltime)
             inner = scope.enter(node.name, node.lineno)
             for stmt in node.body:
-                self._visit(stmt, inner, calltime, fstr)  # class body runs when the stmt runs
+                self._visit(stmt, inner, calltime)  # class body runs when the stmt runs
             return
         if type(node) in _COMP_NAMES:
             gens = node.generators
-            self._visit(gens[0].iter, scope, calltime, fstr)  # outermost iterable: enclosing scope
+            self._visit(gens[0].iter, scope, calltime)  # outermost iterable: enclosing scope
             inner = scope.enter(_COMP_NAMES[type(node)], node.lineno)
-            self._visit(gens[0].target, inner, calltime, fstr)
+            self._visit(gens[0].target, inner, calltime)
             for cond in gens[0].ifs:
-                self._visit(cond, inner, calltime, fstr)
+                self._visit(cond, inner, calltime)
             for gen in gens[1:]:
-                self._visit(gen.iter, inner, calltime, fstr)
-                self._visit(gen.target, inner, calltime, fstr)
+                self._visit(gen.iter, inner, calltime)
+                self._visit(gen.target, inner, calltime)
                 for cond in gen.ifs:
-                    self._visit(cond, inner, calltime, fstr)
+                    self._visit(cond, inner, calltime)
             if isinstance(node, ast.DictComp):
-                self._visit(node.key, inner, calltime, fstr)
-                self._visit(node.value, inner, calltime, fstr)
+                self._visit(node.key, inner, calltime)
+                self._visit(node.value, inner, calltime)
             else:
-                self._visit(node.elt, inner, calltime, fstr)
+                self._visit(node.elt, inner, calltime)
             return
         if isinstance(node, ast.Global):
             label = self.label(node.lineno)
@@ -433,15 +440,11 @@ class _Walker:
                         f"{label}: `global {name}` at line {node.lineno} rebinds module "
                         "state whose defining assignment did not move with the leaf")
             return
-        if isinstance(node, ast.JoinedStr):
-            for value in node.values:
-                self._visit(value, scope, calltime, True)
-            return
         if isinstance(node, ast.AnnAssign):
             self._ann(node.annotation)
             if node.value is not None:
-                self._visit(node.value, scope, calltime, fstr)
-            self._visit(node.target, scope, calltime, fstr)
+                self._visit(node.value, scope, calltime)
+            self._visit(node.target, scope, calltime)
             return
         if isinstance(node, ast.AugAssign):
             if isinstance(node.target, ast.Name):
@@ -455,13 +458,13 @@ class _Walker:
                     elif name not in self.module_bound and name not in _BUILTIN_NAMES:
                         self.out.unresolved.setdefault(label, set()).add(name)
             else:
-                self._visit(node.target, scope, calltime, fstr)
-            self._visit(node.value, scope, calltime, fstr)
+                self._visit(node.target, scope, calltime)
+            self._visit(node.value, scope, calltime)
             return
         for child in ast.iter_child_nodes(node):
-            self._visit(child, scope, calltime, fstr)
+            self._visit(child, scope, calltime)
 
-    def _name(self, node: ast.Name, scope: _Scope, calltime: bool, fstr: bool) -> None:
+    def _name(self, node: ast.Name, scope: _Scope, calltime: bool) -> None:
         name = node.id
         res = scope.resolve(name)
         label = self.label(node.lineno)
@@ -476,11 +479,6 @@ class _Walker:
                             f"{label}: import-time read of declared name {name!r} at line "
                             f"{node.lineno} (module level / class body / decorator / default "
                             "argument) — a call-time handle cannot carry it")
-                    elif fstr:
-                        self.out.violations.append(
-                            f"{label}: declared name {name!r} read inside an f-string at line "
-                            f"{node.lineno}; the token proof cannot cover f-string internals — "
-                            "rewrite manually")
                     else:
                         self.out.rewrites.append(_Site(node.lineno, node.col_offset, name, label))
                 elif name in self.module_bound or name in _BUILTIN_NAMES:
@@ -720,7 +718,14 @@ def _tokens(text: str) -> List[tokenize.TokenInfo]:
 
 def _lockstep_tokens(up_text: str, leaf_text: str, sites: List[ast.Attribute],
                      handle: str) -> Tuple[bool, Optional[str]]:
-    """Byte-compare tokens outside the rewritten references (spec proof #2)."""
+    """Byte-compare tokens outside the rewritten references (spec proof #2).
+
+    Before 3.12 an f-string is a SINGLE string token, so a reference rewritten
+    inside one is not a token of its own: such a token is compared after
+    stripping the ``handle().`` prefixes it carries, and only when it carries
+    exactly as many as it holds reference sites (an upstream literal that
+    already spelled ``handle().`` fails closed rather than being un-spelled).
+    """
     try:
         up, lf = _tokens(up_text), _tokens(leaf_text)
     except (tokenize.TokenError, IndentationError, SyntaxError) as exc:  # pragma: no cover
@@ -745,9 +750,14 @@ def _lockstep_tokens(up_text: str, leaf_text: str, sites: List[ast.Attribute],
             return False, "token streams have different lengths outside rewritten references"
         a, b = up[i], lf[j]
         if a.type != b.type or a.string != b.string:
-            return False, (
-                f"token mismatch outside rewritten references: upstream {a.start} "
-                f"{a.string!r} vs leaf {b.start} {b.string!r}")
+            inner = [s for s in sites if b.start <= (s.lineno, s.col_offset) < b.end]
+            prefix = f"{handle}()."
+            if not (inner and a.type == b.type == tokenize.STRING
+                    and b.string.count(prefix) == len(inner)
+                    and b.string.replace(prefix, "") == a.string):
+                return False, (
+                    f"token mismatch outside rewritten references: upstream {a.start} "
+                    f"{a.string!r} vs leaf {b.start} {b.string!r}")
         i += 1
         j += 1
     return True, None
@@ -758,8 +768,13 @@ def verify_transplant(upstream_source: str, leaf_source: str, symbols: List[str]
                       leaf_owned: Optional[Set[str]] = None) -> Dict[str, Any]:
     """The PROOF: per moved symbol, inverse-normalize the leaf span and require
     (1) AST equality with the upstream span (ast.dump, no attributes),
-    (2) byte-identical tokens outside the rewritten references, AND
-    (3) a byte-identical round trip. Beyond the per-symbol spans it validates the
+    (2) byte-identical tokens outside the rewritten references,
+    (3) a byte-identical round trip, AND (4) tree-inverse equality: collapsing
+    the handle reads in the leaf's own PARSE TREE reproduces the upstream tree.
+    (4) is not implied by (3): the text inverse restores bytes CPython also
+    derived a literal from — ``f"{X=}"`` prints its expression source, so
+    ``f"{_h().X=}"`` inverts byte-perfectly with a changed output; the leaf tree
+    carries that Constant and refuses. Beyond the per-symbol spans it validates the
     WHOLE leaf as a runnable module (F0 phase review, audit 2026-08-30): the
     handle must be defined exactly once with the canonical body, no name may be
     both declared and preamble-bound (ambiguous ownership), every declared name
@@ -774,7 +789,8 @@ def verify_transplant(upstream_source: str, leaf_source: str, symbols: List[str]
     for span in _unique_spans(leaf_spans):
         up = up_spans[span.name]
         entry: Dict[str, Any] = {"ast_equal": False, "tokens_equal": False,
-                                 "byte_identical": False, "handle_reads": [], "detail": None}
+                                 "byte_identical": False, "ast_inverse_equal": False,
+                                 "handle_reads": [], "detail": None}
         report["symbols"][span.name] = entry
         leaf_tree = ast.parse(span.text)
         sites: List[ast.Attribute] = []
@@ -840,13 +856,28 @@ def verify_transplant(upstream_source: str, leaf_source: str, symbols: List[str]
                         "inverse-normalized span is not byte-identical to "
                         "upstream (length differs: "
                         f"{len(recovered)} != {len(up.text)})")
+            class _InverseReads(ast.NodeTransformer):
+                def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+                    self.generic_visit(node)
+                    call = node.value
+                    if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                            and call.func.id == handle and not call.args
+                            and not call.keywords):
+                        return ast.copy_location(ast.Name(id=node.attr, ctx=node.ctx), node)
+                    return node
+
+            inverse_tree = _InverseReads().visit(leaf_tree)
+            entry["ast_inverse_equal"] = (
+                ast.dump(inverse_tree) == ast.dump(ast.parse(up.text)))
+            if not entry["ast_inverse_equal"]:
+                problems.append("inverse-normalized parse tree is not AST-equal to upstream")
         entry["handle_reads"] = sorted({s.attr for s in sites})
         reads.update(s.attr for s in sites)
         if problems:
             entry["detail"] = "; ".join(problems)
             report["ok"] = False
         elif not (entry["ast_equal"] and entry["tokens_equal"]
-                  and entry["byte_identical"]):
+                  and entry["byte_identical"] and entry["ast_inverse_equal"]):
             report["ok"] = False
     report["handle_reads"] = sorted(reads)
     report["unread_declared"] = sorted(declared - reads)
