@@ -3429,3 +3429,68 @@ the base implementation before the fix.
    weakref support) is logged, never dropped. Pins: registration exception
    → stamped; cleanup exception over a marked one → stamp preserved on
    both; a setattr-refusing exception → stamped via the side-table.
+
+## From the F3 adversarial fix-round 4 (final, base 5187fcdc)
+
+Disposition of the 3 defects the fourth adversarial wave (sol) raised
+against the round-3 dispositions above — all MEDIUM, all fixed in this
+round's single-intent commits, every pin proven RED against the base
+implementation before the fix.
+
+1. FIXED (MEDIUM, spawn-marker fallback not identity-safe). The round-3
+   WeakSet side-table depended on the exception being HASHABLE: an
+   unhashable exception raised TypeError on `add` (marker silently lost)
+   AND on the membership check — and the check runs inside the
+   dispatcher's except handler, so the secondary TypeError REPLACED the
+   original tool error; equal-but-distinct exceptions could also borrow
+   the marker through `__eq__`/`__hash__` (false `physical_dispatch`).
+   The side-table is now keyed by `id()` with a weakref finalizer purging
+   the entry (identity-safe, leak-free, no hashability requirement), and
+   `extension_child_was_spawned` is FAIL-CLOSED: any failure of the
+   marker read answers False — a physical call is never claimed on a
+   broken check and the in-flight exception is never masked (a hostile
+   `__getattr__` probe falls through to the side-table, which is exactly
+   where the marker would live for an attribute-refusing object). Pins:
+   unhashable post-spawn → stamped; unmarked unhashable → unstamped
+   without raising; equal-but-distinct twin → no false positive;
+   side-table entry dies with the exception; hostile exception at
+   dispatch level → ORIGINAL error reported unstamped, no masking
+   TypeError.
+2. FIXED (MEDIUM, mandatory-source pre-checks fail-soft). The round-3
+   strict listing/read only helped once the source was ENTERED:
+   `Path.is_dir()`/`is_file()` fold ELOOP and dangling symlinks into
+   plain False, so a symlink loop standing where `task_results` lives (or
+   a broken `state/ui_preferences.json` link) skipped the whole source
+   before the strict reader ran — a false-clean audit. New
+   `_stat_mandatory_source` probes with strict `os.stat`: only TRUE
+   absence (lstat agrees) is a legitimate skip; a loop or dangling link
+   raises to the exit-2 handler. Pins: task_results symlink loop →
+   exit 2; dangling ui_preferences symlink → exit 2; genuinely absent
+   sources still audit clean (contrast).
+3. FIXED (MEDIUM, resolve-error class incompletely closed). Round 3
+   covered the auditor's OWN three resolve points, but
+   `compute_content_hash` resolves manifest-DECLARED entry/script paths
+   unguarded (`skill_loader._add_if_confined`): a symlink loop there
+   raises RuntimeError on supported 3.10 — past the
+   `SkillPayloadUnreadable` clause and the OSError-only top handler into
+   Python's bare exit 1 with no report. Fixed on the AUDITOR side only
+   (skill_loader untouched — runtime semantics unchanged): the
+   compute_content_hash wrapper maps (OSError, RuntimeError) to the same
+   blocking unauditable-source finding as an unreadable payload
+   (per-skill scope, the rest of the install still gets audited —
+   consistent with the neighbouring SkillPayloadUnreadable and
+   skill-dir-resolve dispositions), and the top-level handler extends to
+   (OSError, RuntimeError) → exit 2 as the class backstop for every
+   other resolve the audit or its read-only runtime classifiers perform.
+   Pins: loop in a declared entry → blocking finding, report written, no
+   crash; RuntimeError from the audit walk → exit 2.
+
+CONVERGENCE. Four adversarial waves over the F3 surface: finding profile
+14 → 8 → 5 → 3, severity ceiling HIGH → HIGH → MEDIUM → MEDIUM, with
+every HIGH exhausted by round 3 and round 4 consisting solely of
+narrowing residues of already-dispositioned classes (side-table
+completeness, pre-check strictness, one more resolve seam). The wave-4
+verdict itself confirms fix claims 1–2 CLOSED and 3–5 OPEN only through
+the three findings above — now fixed and pinned. Remaining review
+surface is hygiene-grade; per the bounded-wave contract the adversarial
+cycle is declared CONVERGED at this base.
