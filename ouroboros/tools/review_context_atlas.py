@@ -346,6 +346,26 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
                 facts.score += bonus
                 facts.reasons.append("graph_centrality")
 
+    # Early per-file oversize diagnostic (ibl-f320ce46acb0): a SINGLE
+    # required-in-full artifact that individually exceeds hard_context_tokens
+    # is structurally un-assemblable at any diff size, so the generic
+    # "exceeded the atlas hard budget" reason string leaves callers guessing
+    # WHICH artifact is too big. Record each oversize as a structured note
+    # (path + token_count + hard_context_tokens) on the manifest, and the
+    # selection-loop branch below mirrors the numeric comparison into the
+    # row's `reason` so atlas_assembly_failure_reason surfaces it through
+    # its existing path (reason) renderer. Diagnostics only — selection /
+    # shrink behaviour is unchanged.
+    oversized_required_artifacts: list[dict[str, Any]] = [
+        {
+            "path": facts.rel_path,
+            "token_count": int(facts.token_count),
+            "hard_context_tokens": int(hard_context_tokens),
+        }
+        for facts in facts_by_path.values()
+        if facts.required_in_full and facts.token_count > hard_context_tokens
+    ]
+
     selected_paths: list[str] = []
     used_tokens = 0
 
@@ -377,7 +397,20 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
             # not a smaller pack. The row records artifact + reason (disclosure,
             # P1); the pack status refuses the review.
             facts.disposition = "budget_omitted"
-            facts.reason = "required file exceeded the atlas hard budget"
+            if facts.token_count > hard_context_tokens:
+                # ibl-f320ce46acb0 — per-file oversize diagnostic. The numeric
+                # comparison mirrors manifest["oversized_required_artifacts"]
+                # so callers see WHICH artifact is too big with its actual
+                # token count vs the hard budget, instead of the generic
+                # "exceeded" string. Atlas_assembly_failure_reason reads
+                # the row's `reason`, so the fragment surfaces through its
+                # existing path (reason) renderer without a second carrier.
+                facts.reason = (
+                    f"required file exceeded the atlas hard budget "
+                    f"({facts.token_count:,} tok > {hard_context_tokens:,} hard)"
+                )
+            else:
+                facts.reason = "required file exceeded the atlas hard budget"
         elif facts.required and facts.token_count > hard_context_tokens:
             # A force-included path the diff does NOT touch, individually larger
             # than the whole hard budget: it could not be assembled at ANY diff
@@ -486,7 +519,15 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
 
     text = _render_atlas_text(req, facts_by_path, selected_paths, status_hint=status)
     token_count = estimate_tokens(text)
-    manifest = _build_manifest(req, facts_by_path, selected_paths, token_count, status, unassembled)
+    manifest = _build_manifest(
+        req,
+        facts_by_path,
+        selected_paths,
+        token_count,
+        status,
+        unassembled,
+        oversized_required_artifacts=oversized_required_artifacts,
+    )
     manifest["code_inventory"] = inventory_summary
     selected = tuple(_record_for(facts_by_path[path]) for path in selected_paths)
     omitted = tuple(
@@ -986,6 +1027,7 @@ def _build_manifest(
     token_count: int,
     status: str,
     unassembled: list[_FileFacts],
+    oversized_required_artifacts: list[dict[str, Any]] | None = None,
 ) -> dict:
     counts = Counter(facts.disposition for facts in facts_by_path.values())
     return {
@@ -1007,6 +1049,16 @@ def _build_manifest(
         # for a reader to rediscover among ~900 coverage rows. This dict is the
         # ONE carrier — read it with ``atlas_unassembled_required``.
         "unassembled_required": [_manifest_row(facts) for facts in unassembled],
+        # ibl-f320ce46acb0 — early per-file oversize diagnostic. Lists EACH
+        # required-in-full artifact whose raw token count individually
+        # exceeded hard_context_tokens at assembly time, with its path,
+        # token_count, and hard_context_tokens. An empty list is the normal
+        # case (no oversize); the key is always present so consumers do not
+        # have to special-case absence. Diagnostics only — never blocks or
+        # gates; selection / shrink behaviour remains unchanged.
+        "oversized_required_artifacts": [
+            dict(entry) for entry in (oversized_required_artifacts or [])
+        ],
     }
 
 

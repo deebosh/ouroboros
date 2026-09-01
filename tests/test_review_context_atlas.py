@@ -325,6 +325,129 @@ def test_atlas_required_overflow_is_an_assembly_failure_not_a_smaller_pack(tmp_p
     assert pack.manifest["estimated_total_tokens"] <= 10_000
 
 
+def test_atlas_oversized_required_artifact_names_file_with_counts_in_failure_reason(tmp_path):
+    """ibl-f320ce46acb0: when a SINGLE required_in_full artifact (an anchor /
+    canonical doc) individually exceeds the hard budget, the assembly fails
+    closed. Before this fix, ``atlas_assembly_failure_reason`` returned the
+    generic "required file exceeded the atlas hard budget" string and the
+    caller could not tell WHICH artifact was too big. The diagnostic surfaces
+    the specific file's token_count vs hard_context_tokens both on the manifest
+    (structured) and in the failure reason (so every consumer — scope, plan,
+    deep review — sees the numeric comparison without a second carrier)."""
+    import re
+
+    # BIBLE.md is a canonical-context doc, so it is required_in_full by default.
+    # Budget matches the sibling test_atlas_required_overflow test so the
+    # post-drop manifest fits and the status is pure "required_artifact_omitted"
+    # (not the mixed "budget_exceeded" branch). hard_context_tokens after
+    # fixed+headroom = 10_000 - 100 - 5_000 = 4_900. The BIBLE.md below is
+    # ~11k est-tokens so BIBLE.md alone > hard_context_tokens → the per-file
+    # branch fires, NOT a shrink wave and NOT a mixed overflow.
+    _write(tmp_path / "BIBLE.md", "constitution\n" * 4_000)  # ~11k tokens
+    _write(tmp_path / "small.py", "def f():\n    return 'x'\n" * 30)
+
+    pack = compile_review_context_atlas(
+        ReviewContextAtlasRequest(
+            repo_dir=tmp_path,
+            tracked_paths=(
+                "BIBLE.md",
+                "small.py",
+            ),
+            fixed_prompt_tokens=100,
+            target_total_tokens=4_000,
+            hard_total_tokens=10_000,
+        )
+    )
+
+    # The assembly still fails closed on the per-file oversize (no behaviour
+    # change), and the disclosure now carries the specific file + numeric.
+    assert pack.status == "required_artifact_omitted"
+    assert atlas_assembly_failed(pack)
+
+    # The structured manifest entry names the file with its token_count and
+    # the hard_context_tokens it exceeded.
+    oversized = pack.manifest["oversized_required_artifacts"]
+    assert isinstance(oversized, list), "oversized_required_artifacts must be a list"
+    assert oversized, "expected at least one oversized required artifact"
+    target = next((row for row in oversized if row["path"] == "BIBLE.md"), None)
+    assert target is not None, f"BIBLE.md must be in oversized_required_artifacts: {oversized}"
+    assert isinstance(target["token_count"], int) and target["token_count"] > 0
+    assert isinstance(target["hard_context_tokens"], int) and target["hard_context_tokens"] > 0
+    # The numeric is honest: token_count strictly greater than hard_context_tokens.
+    assert target["token_count"] > target["hard_context_tokens"]
+
+    # atlas_assembly_failure_reason now carries the compact `<path> (<n> tok >
+    # <hard> hard)` fragment: the file name appears (already true), and a "> NN
+    # hard" comparison appears with the hard-context token count.
+    reason = atlas_assembly_failure_reason(pack)
+    assert "BIBLE.md" in reason
+    match = re.search(r">\s*([\d,]+)\s*hard", reason)
+    assert match is not None, f"expected '> NN hard' fragment in reason, got: {reason!r}"
+    # The number after "> " must match the hard_context_tokens recorded on the
+    # manifest entry (with thousands-separator commas stripped).
+    assert (
+        int(match.group(1).replace(",", "")) == target["hard_context_tokens"]
+    ), f"reason fragment number {match.group(1)} != manifest hard_context_tokens {target['hard_context_tokens']}"
+
+    # The same numeric also rides the row's `reason` field — durability check
+    # so a non-Python consumer reading the manifest directly still sees it.
+    # The reason formats the count with thousands-separator commas; check both
+    # the raw and comma-formatted forms so a future formatting tweak doesn't
+    # silently invalidate the diagnostic surface.
+    row = next(
+        r for r in pack.manifest["unassembled_required"] if r["path"] == "BIBLE.md"
+    )
+    formatted_count = f"{int(target['token_count']):,}"
+    assert (
+        str(target["token_count"]) in row["reason"]
+        or formatted_count in row["reason"]
+    ), f"token_count {target['token_count']} (formatted: {formatted_count}) not in row reason: {row['reason']!r}"
+    formatted_hard = f"{int(target['hard_context_tokens']):,}"
+    assert (
+        str(target["hard_context_tokens"]) in row["reason"]
+        or formatted_hard in row["reason"]
+    ), f"hard_context_tokens {target['hard_context_tokens']} (formatted: {formatted_hard}) not in row reason: {row['reason']!r}"
+    assert "hard" in row["reason"]
+    assert "> " in row["reason"]
+
+
+def test_atlas_in_budget_required_artifact_has_no_oversized_required_entry(tmp_path):
+    """Regression for ibl-f320ce46acb0: a normal request where every required
+    artifact fits must NOT carry oversized_required_artifacts entries and must
+    not contain the "<n> tok > <hard> hard" fragment. The new key is diagnostics
+    only — happy-path packs render exactly as before."""
+    # Small BIBLE.md well inside the budget; small module.
+    _write(tmp_path / "BIBLE.md", "constitution\n" * 50)
+    _write(tmp_path / "module.py", "def run():\n    return 42\n")
+
+    pack = compile_review_context_atlas(
+        ReviewContextAtlasRequest(
+            repo_dir=tmp_path,
+            tracked_paths=("BIBLE.md", "module.py"),
+            fixed_prompt_tokens=100,
+            target_total_tokens=10_000,
+            hard_total_tokens=15_000,
+        )
+    )
+
+    # No assembly failure on a healthy request.
+    assert not atlas_assembly_failed(pack)
+    assert pack.status in {"ok", "budget_constrained", "under_target"}
+    # The key is always present but empty when nothing is oversized.
+    oversized = pack.manifest.get("oversized_required_artifacts", [])
+    assert oversized == [], (
+        f"happy-path pack must have empty oversized_required_artifacts, got: {oversized}"
+    )
+    # The unassembled-required list is also empty (nothing required is missing).
+    assert pack.manifest["unassembled_required"] == []
+    # The reason fragment the fix introduced MUST NOT appear when no oversize.
+    # (If a caller ever wires atlas_assembly_failure_reason into a non-failure
+    # path, it renders "" via the empty-rows branch, but the typed "tok > "
+    # compact fragment must never leak into a healthy pack's manifest rows.)
+    for row in pack.manifest["coverage"]:
+        assert "tok >" not in row.get("reason", ""), row
+
+
 def test_atlas_required_removed_by_shrink_wave_is_the_same_assembly_failure(tmp_path):
     """The twin branch: a required artifact that PASSED selection and was then
     dropped by the hard-budget shrink wave is the identical failure — one
