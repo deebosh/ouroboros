@@ -41,7 +41,8 @@ supported-3.10 pathlib raises for a symlink loop). Mandatory scan sources
 (``task_results``, ``state/ui_preferences.json``) are probed with a strict
 ``os.stat``: only TRUE absence skips them — a symlink loop or dangling link
 there is exit 2, never a silent clean. A mandatory source the audit cannot
-read or parse (a skill manifest, a hash-verifiable payload) is NEVER a clean
+read or parse (a skill manifest, a hash-verifiable payload,
+``state/ui_preferences.json``) is NEVER a clean
 exit 0: it becomes a BLOCKING ``unauditable-source`` finding (exit 1) — the
 install is not proven clean until the source is fixed.
 
@@ -678,12 +679,24 @@ def _audit_ui_preferences(data_root: pathlib.Path, findings: List[Dict[str, str]
         return
     try:
         data = _read_json(path)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        # Runtime-tolerated content damage. A read OSError propagates to the
-        # exit-2 traversal handler instead — a scan source the audit cannot
-        # READ never silently audits clean (same class as task_results/skills).
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # A PRESENT mandatory source the audit cannot PARSE is a BLOCKING
+        # ``unauditable-source`` finding (exit 1), never a silent clean — the
+        # same class as an unparseable skill manifest: the stored keys cannot
+        # be judged, so the install is not proven clean (the runtime tolerating
+        # the damage does not make it auditable). A read OSError still
+        # propagates to the exit-2 traversal handler.
+        findings.append(_finding(
+            "unauditable-source", SEV_INCOMPATIBLE, "state/ui_preferences.json",
+            f"file does not parse ({type(exc).__name__}) — its stored keys "
+            "cannot be audited, so the install is NOT proven clean",
+            "fix or delete state/ui_preferences.json, then re-run the audit",
+        ))
         return
     if not isinstance(data, dict):
+        # Parses to a determinate non-object: it holds NO stored keys, so the
+        # legacy-key audit has a truthful clean answer (the runtime drops the
+        # value wholesale on read).
         return
     legacy = [k for k in _UI_PREFERENCES_LEGACY_KEYS if k in data]
     if legacy:

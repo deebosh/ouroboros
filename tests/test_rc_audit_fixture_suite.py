@@ -815,3 +815,35 @@ def test_nminus1_fixtures_are_the_real_previous_minor_byte_forms():
     manifest = parse_skill_manifest_text(manifest_text)
     assert manifest.type == "extension"
     assert manifest.plugin_api is None
+
+
+def test_unparseable_ui_preferences_is_a_blocking_unauditable_source(tmp_path):
+    """External-audit correction lane (base 8827fd2c), item 3: a PRESENT but
+    unparseable ``state/ui_preferences.json`` silently audited clean (bare
+    ``except JSONDecodeError: return``) — the one surviving instance of the
+    pattern the fix-round-1 contract retired: a malformed mandatory source is
+    NEVER a clean exit 0. Now it is a blocking ``unauditable-source`` finding
+    (exit 1), same class as an unparseable skill manifest."""
+    data = _build_clean_70_install(tmp_path / "install")
+    (data / "state").mkdir()
+    (data / "state" / "ui_preferences.json").write_text(
+        "{this is not json", encoding="utf-8")
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    unauditable = [f for f in report["findings"]
+                   if f["check_id"] == "unauditable-source"]
+    assert any("ui_preferences" in f["subject"] and "does not parse" in f["detail"]
+               for f in unauditable), report["findings"]
+
+
+def test_non_object_ui_preferences_still_audits_clean(tmp_path):
+    """Contrast pin: a file that PARSES to a determinate non-object holds no
+    stored keys — the legacy-key audit has a truthful clean answer (the
+    runtime drops the value wholesale), so it must not become a false block."""
+    data = _build_clean_70_install(tmp_path / "install")
+    (data / "state").mkdir()
+    (data / "state" / "ui_preferences.json").write_text("[1, 2]", encoding="utf-8")
+    result = _run(data, isolated_root=tmp_path / "isol")
+    assert result.returncode == 0, result.stdout + result.stderr
