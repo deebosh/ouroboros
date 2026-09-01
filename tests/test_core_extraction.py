@@ -105,7 +105,9 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         "send_photo",
         "send_video",
         "send_file",
+        "send_links",
         "search_code",
+        "escalate",
         "forward_to_worker",
     )
     schema_bytes = json.dumps(
@@ -115,7 +117,7 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "939fd105a5e153348f3001f1ddb6997ad36b76170a6e2edbda7cb675915a5a28"
+        "f330a93f741c666aab47f06a76151dd7e056d489a08a153a225c18183cd5435c"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)
@@ -128,7 +130,9 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         "send_photo": ("ouroboros.tools.core_artifacts", "_send_photo"),
         "send_video": ("ouroboros.tools.core_artifacts", "_send_video"),
         "send_file": ("ouroboros.tools.core_artifacts", "_send_file"),
+        "send_links": ("ouroboros.tools.core_artifacts", "_send_links"),
         "search_code": ("ouroboros.tools.core", "_code_search"),
+        "escalate": ("ouroboros.tools.core_artifacts", "_escalate"),
         "forward_to_worker": ("ouroboros.tools.core", "_forward_to_worker"),
     }
     artifact_names = {

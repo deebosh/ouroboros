@@ -161,10 +161,17 @@ def _run_single(tmp_path, execute, tool="run_command"):
 
     logs = tmp_path / "logs"
     logs.mkdir(exist_ok=True)
+    from ouroboros.tools.tool_result import LegacyTextResultAdapter
+
     tools = SimpleNamespace(
         CODE_TOOLS={tool},
         _ctx=SimpleNamespace(task_metadata={}, drive_root=tmp_path),
         execute=execute,
+        # Campaign dispatch is typed: the loop reads the dispatcher's published
+        # ToolResult; a text-only fake goes through the one legacy adapter.
+        execute_result=lambda name, args: LegacyTextResultAdapter.from_text(
+            name, str(execute(name, args))
+        ),
     )
     return _execute_single_tool(
         tools,
@@ -189,16 +196,21 @@ def test_execute_single_tool_merges_typed_meta_with_precedence(tmp_path):
     assert isinstance(meta["duration_ms"], int)
 
 
-def test_execute_single_tool_regex_fallback_for_legacy_prose(tmp_path):
+def test_execute_single_tool_legacy_prose_forges_no_process_facts(tmp_path):
+    """Campaign D02 contract (supersedes the upstream regex fallback): process
+    facts come ONLY from typed producer publications — prose spelling
+    exit_code/signal inside the result text is producer-controlled and forges
+    nothing. Absence is the honest reading for an untyped legacy record."""
     def execute(_name, _args):
-        # No typed publication (legacy path): the regex harvest still works.
+        # No typed publication (legacy path): nothing is harvested from prose.
         return "⚠️ SHELL_EXIT_ERROR: command exited with exit_code=-9 (signal=SIGKILL, cwd=/x)."
 
     out = _run_single(tmp_path, execute)
     meta = out["result_meta"]
-    assert meta["exit_code"] == -9
-    assert meta["signal"] == "SIGKILL"
+    assert "exit_code" not in meta
+    assert "signal" not in meta
     assert "duration_ms" not in meta  # nothing typed was measured
+    assert meta["status"] == "non_zero_exit"  # the typed CODE still classifies
 
 
 def test_execute_single_tool_drops_stale_thread_facts(tmp_path):

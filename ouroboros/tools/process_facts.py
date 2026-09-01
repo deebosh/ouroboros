@@ -10,9 +10,9 @@ Thread-local, not ctx-scoped, because the tool executor runs each handler in
 its own worker thread — the slot is therefore naturally per-in-flight-call,
 and an ABANDONED (outer-timeout) handler thread that finishes late writes only
 its own thread's slot and can never contaminate a later call's facts. The
-rendered result text is unchanged by this channel; the regex harvest over that
-text (``loop_tool_execution._EXIT_CODE_RE`` / ``_SIGNAL_RE``) remains as the
-read-fallback for records that lack typed meta.
+rendered result text is unchanged by this channel; a record with no typed
+publication carries no process facts at all — under the typed-result organ
+(D02) prose is never harvested into typed fields.
 
 This lives outside ``tools/shell.py`` deliberately: it is a loop↔handler seam
 (``tools/verify.py`` consumes the attested runtime through it too), and keeping it here keeps

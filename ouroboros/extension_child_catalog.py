@@ -182,6 +182,31 @@ def skill_state_path(drive_root: pathlib.Path, name: str) -> pathlib.Path:
     return _skills_state_root(pathlib.Path(drive_root)) / _sanitize_skill_name(name)
 
 
+def companion_manifest_path_override(spec: Dict[str, Any]) -> bool:
+    """An explicit manifest PATH means the author owns the runtime lookup —
+    neither the bundled argv rewrite nor the emergency prepend may shadow it
+    (T14)."""
+    return any(str(key).upper() == "PATH" for key in (spec.get("env") or {}))
+
+
+def companion_node_argv(spec: Dict[str, Any], expected_runtime: str, cmd: list) -> list:
+    """T14 node symmetry with the python->sys.executable rewrite:
+    platform_layer.select_skill_node_runtime owns the bundled-first precedence
+    (health rollback included). npm is never rewritten — the emergency PATH
+    prepend in ``materialize_companion_env`` covers its `#!/usr/bin/env node`
+    shebang. On a healthy PATH argv and env stay byte-identical; an npm
+    launcher rewritten to an ABSOLUTE node shebang ignores PATH and keeps
+    failing honestly (disclosed residual)."""
+    if expected_runtime not in {"node", "npm"} or companion_manifest_path_override(spec):
+        return cmd
+    from ouroboros.platform_layer import select_skill_node_runtime
+
+    selected_node, _node_provenance = select_skill_node_runtime()
+    if selected_node and cmd and cmd[0] == "node":
+        return [selected_node, *cmd[1:]]
+    return cmd
+
+
 def materialize_companion_env(api: "PluginAPIImpl", descriptor: Any, spec: Dict[str, Any], token: str) -> None:
     """Fill one staged companion descriptor's env at publication (fix-round-6).
 
@@ -227,10 +252,7 @@ def materialize_companion_env(api: "PluginAPIImpl", descriptor: Any, spec: Dict[
                 [*site_dirs, existing_pythonpath] if existing_pythonpath else site_dirs
             )
     expected_runtime = str(spec.get("runtime") or "").strip()
-    manifest_path_override = any(
-        str(key).upper() == "PATH" for key in (spec.get("env") or {})
-    )
-    if expected_runtime in {"node", "npm"} and not manifest_path_override:
+    if expected_runtime in {"node", "npm"} and not companion_manifest_path_override(spec):
         # T14 emergency-only PATH prepend (see register_companion_process):
         # descriptor env keys win over the supervisor's `_companion_base_env`
         # merge, so the prepended PATH reaches the child and survives

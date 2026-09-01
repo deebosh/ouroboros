@@ -227,6 +227,16 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "shape:followup_data_root_unresolved": Delta(False, "ok", True, "error", "A.22", "a drive root that could not be resolved wrote no record"),
     "shape:followup_cap_reached": Delta(False, "ok", True, "resource_constraint_blocked", "A.22", "a follow-up beyond the per-task cap was never registered; the cap is the constraint"),
     "shape:followup_persist_failed": Delta(False, "ok", True, "error", "A.22", "a follow-up the table refused to store does not exist"),
+    # A.23 — F6 rolling upstream sync (drift b9f7597f..8d13373b). Upstream's #440
+    # fix-forward added both browser markers to its failure-prefix table; the
+    # typed organ lands the same judgment as exact identifier codes. The golden
+    # tree predates the markers entirely, so its answer is the generic ok.
+    "BROWSER_SESSION_RETIRED": Delta(False, "ok", True, "timeout", "A.23", "an abandoned call's void result is the call's own timeout, never content"),
+    "BROWSER_BACKLOG_RETIRED_SESSIONS": Delta(False, "ok", True, "unavailable", "A.23", "the hung-session backlog refusal is browser unavailability, not a successful page read"),
+    # A.23 — the escalate verb landed with the F6 sync; its route-down refusal
+    # carries the `_UNAVAILABLE` marker, which the typed chain names as the
+    # unavailability it is (the retired pair collapsed it into generic error).
+    "ESCALATE_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.23", "an escalation route that cannot accept the question is an unavailable surface; error hid the retriable class"),
 })
 
 # Deltas the classifier WOULD produce for which no producer exists, recorded so a

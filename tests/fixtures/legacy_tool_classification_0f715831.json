@@ -507,6 +507,14 @@
    "is_error": false,
    "status": "ok"
   },
+  "ident:BROWSER_BACKLOG_RETIRED_SESSIONS:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:BROWSER_BACKLOG_RETIRED_SESSIONS:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
   "ident:BROWSER_EVALUATE_SYNTAX_ERROR:named": {
    "is_error": true,
    "status": "error"
@@ -522,6 +530,14 @@
   "ident:BROWSER_LOCAL_READONLY_BLOCKED:plain": {
    "is_error": true,
    "status": "blocked"
+  },
+  "ident:BROWSER_SESSION_RETIRED:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:BROWSER_SESSION_RETIRED:plain": {
+   "is_error": false,
+   "status": "ok"
   },
   "ident:CANCEL_INTENT_PROJECTION_CORRUPT:named": {
    "is_error": false,
@@ -808,6 +824,30 @@
    "status": "ok"
   },
   "ident:ERROR:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:ESCALATE_PARENT_SETTLED:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:ESCALATE_PARENT_SETTLED:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:ESCALATE_UNAVAILABLE:named": {
+   "is_error": true,
+   "status": "error"
+  },
+  "ident:ESCALATE_UNAVAILABLE:plain": {
+   "is_error": true,
+   "status": "error"
+  },
+  "ident:ESCALATE_UNWRITTEN:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:ESCALATE_UNWRITTEN:plain": {
    "is_error": false,
    "status": "ok"
   },
@@ -2040,6 +2080,14 @@
    "status": "ok"
   },
   "ident:SELF_OVERWRITE_NOTICE:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:SEND_LINKS_NO_CHAT:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:SEND_LINKS_NO_CHAT:plain": {
    "is_error": false,
    "status": "ok"
   },

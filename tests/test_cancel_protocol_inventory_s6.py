@@ -55,6 +55,10 @@ TERMINAL_WRITERS = {
     ('ouroboros/agent.py::OuroborosAgent._handle_task_scoped', 'STATUS_FAILED'): 'terminal',
     ('ouroboros/agent_task_pipeline.py::_store_task_result', 'status'): 'dynamic',
     ('ouroboros/delegate_terminal.py::record_terminal_reconciliation', 'str(existing.get("status") or STATUS_RUNNING)'): 'dynamic',
+    # F6 upstream sync: the cursor/backfill refresh rewrites a stale stored
+    # disclosure without changing the task's terminal status (same preserved
+    # read as its record_terminal_reconciliation sibling).
+    ('ouroboros/delegate_terminal.py::_rewrite_execution_evidence', 'str(existing.get("status") or STATUS_RUNNING)'): 'dynamic',
     ('ouroboros/gateway/tasks.py::_admission_rejection_response', 'STATUS_FAILED'): 'terminal',
     ('ouroboros/gateway/tasks.py::_complete_api_task_admission', '"failed"'): 'terminal',
     ('ouroboros/headless.py::copy_child_task_result', 'child_status'): 'dynamic',

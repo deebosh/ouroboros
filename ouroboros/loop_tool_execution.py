@@ -191,9 +191,9 @@ _PER_CALL_TIMEOUT_TOOLS = ("run_command", "run_script")
 # Process tools whose handler publishes TYPED process facts (exit_code, POSIX
 # signal name, duration_ms — plus resolved_runtime when the interpreter
 # resolver substituted the executable) through the thread-local channel in
-# ouroboros.tools.process_facts. Typed facts take PRECEDENCE over the regex harvest
-# below (_EXIT_CODE_RE/_SIGNAL_RE), which remains as the read-fallback for
-# records that lack typed meta (older traces, prose-only paths).
+# ouroboros.tools.process_facts. Typed facts take PRECEDENCE over the producer-
+# meta copy from the ToolResult; a record with no typed publication carries no
+# process facts at all (D02: prose is never harvested into typed fields).
 _PROCESS_META_TOOLS = frozenset({"run_command", "run_script"})
 # Structural ordering margin: the outer cap sits this far above the requested
 # per-call timeout so the handler's own (cleanly-messaged) subprocess timeout
