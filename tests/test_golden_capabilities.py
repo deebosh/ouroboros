@@ -224,7 +224,7 @@ def test_vcs_restore_directory_with_only_unprotected_dirty_files_restores(repo_c
 
 @pytest.mark.parametrize("component", [(".gitignore",), (".env.example",)])
 def test_declared_dotfile_outputs_are_exportable(component):
-    from ouroboros.tools.output_export_policy import _sensitive_output_component_reason
+    from ouroboros.tools.shell_outputs import _sensitive_output_component_reason
 
     assert _sensitive_output_component_reason(component) == ""
 

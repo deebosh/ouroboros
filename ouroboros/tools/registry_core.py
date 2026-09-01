@@ -1324,10 +1324,7 @@ class ToolRegistry:
             else None
         )
         worktree_before = self._worktree_status_snapshot() if entry.mutates_worktree else None
-        settings_before = (
-            registry_guard_process._owner_settings_snapshot()
-            if name in _PROCESS_COMMAND_TOOLS else None
-        )
+        settings_before = registry_guard_process._owner_settings_snapshot() if name in _PROCESS_COMMAND_TOOLS else None
         if interpreter_resolution is None:  # node: post-gates (A-F4)
             args, interpreter_resolution = _resolve_node_postgates_predispatch(
                 self, name, args, _runtime_mode, effective_constraint, resolved_binding)
@@ -1338,17 +1335,15 @@ class ToolRegistry:
             # Tripwires run on the TOOL_ERROR path too: two early_error returns
             # fire AFTER the process already ran (#447 B2).
             checked = registry_guard_process._run_shell_post_checks(
-                self,
-                early_error if early_error is not None else result,
+                self, early_error if early_error is not None else result,
                 light_repo_before=light_repo_before,
                 workspace_refs_before=workspace_refs_before,
-                settings_before=settings_before,
-                tool_name=name,
+                settings_before=settings_before, tool_name=name,
             )
             if early_error is not None:
                 return checked
             result = checked
-        if early_error is not None:
+        elif early_error is not None:
             return early_error
 
         return _compose_execute_result_result(name, result, _route_note, safety_msg) if _route_note or safety_msg else result

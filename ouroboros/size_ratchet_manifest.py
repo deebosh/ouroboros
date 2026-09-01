@@ -167,7 +167,6 @@ BAND_PATHS = {
     "supervisor/update_merge.py": "Entered the band from above (1593 lines) by extraction: the F2.4 update-engine re-split moved the planner, the clean-plan commit builder and the live materializer \u2014 the carrier engine's three insertion points \u2014 into supervisor/update_merge_plan.py (D34 return, owner answers 5.12-5.14=A); shrink-only.",
     "tests/system_e2e/harness.py": "system_e2e harness: waves 3a+3b grew the one scenario-suite machinery module into the band \u2014 skill-review stub branch, review-organ verdict scripting (ReviewScript), plan-review/native-episode classification markers, the advisory reviewer-slot row and the S11-S17 manifest rows; split when the next wave lands new actors.",
     "tests/system_e2e/test_system_scenarios_w4.py": "system_e2e wave-4 scenario module: six scenarios (S18-S23 - update carrier/conflict/crash variants, chat-lineage cancel, absorb kill-recovery, delegated interactive answer) plus the interactive fake-daemon contract pin; one module per wave is the suite convention - split only if a later wave extends THIS module instead of adding its own.",
-    "tests/test_acting_subagents.py": None,
     "tests/test_advisory_observability.py": None,
     "tests/test_build_scripts.py": None,
     "tests/test_commit_gate.py": None,
@@ -192,6 +191,7 @@ BAND_PATHS = {
     "tests/test_review_fidelity.py": None,
     "tests/test_review_verification_v6544.py": None,
     "tests/test_safety_policy.py": None,
+    "tests/test_services_tool_v2.py": "Entered the band from 980 lines when the service-log races were replaced by an observable-state waiter (_wait_for_service_log) that every long-running-service scenario now polls instead of sleeping; one coherent services-tool surface, split when a second service family lands.",
     "tests/test_skill_review_runner.py": "Skill lifecycle/review terminal-state regression coverage stays one focused suite below the 1500-line band cap.",
     "tests/test_swe_pro_e1v2.py": None,
     "tests/test_telegram_miniapp_lifecycle.py": None,
@@ -225,6 +225,5 @@ BYTE_BASELINE_DEBT = {
 
 BYTE_DEBT = {
     "tests/test_devtools_benchmarks.py": 327883,
-    "web/modules/chat.js": 210935,
-    "tests/test_delegated_subagent_transport.py": 320337,
+    "web/modules/chat.js": 208394,
 }
