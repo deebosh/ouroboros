@@ -76,6 +76,12 @@ SCENARIOS = {
     "S3": ("egress hardening: poisoned parent credentials never reach the server tree", LANE_MOCK),
     "S4": ("typed tools + safety: protected-path denial has zero side effects", LANE_MOCK),
     "S5": ("cost-truth (ABI-3): public task projections carry honest-only cost names", LANE_MOCK),
+    # Ф4 wave 2 (plan §8: subagent-дерево, cancellation, managed update core).
+    "S6": ("subagent tree: lineage truth, wait_tasks quiescence, child-result handoff, root cost rollup", LANE_MOCK),
+    "S7": ("cancellation: live task -> typed cancelled terminal, owed answer, honest cost, drained intents", LANE_MOCK),
+    "S8": ("cancellation cascade: parent+child torn down with no orphan processes in the live tree", LANE_MOCK),
+    "S9": ("managed update ff on a local managed repo: dirty-work stash insurance + honest boot-finalize", LANE_MOCK),
+    "S10": ("managed update rollback: typed future/null-marker refusals + byte-for-byte tree restore", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -228,8 +234,13 @@ def scripted_completion(body: dict, seq: int, script_next, final_answer: str) ->
     """The stub's whole decision function, pure so the default lane can pin it.
 
     ``script_next`` is a callable returning the next scripted tool step (or None when
-    the script is exhausted); it is only consulted on plain agent turns. Returns
-    ``(kind, message)`` where message is the OpenAI-style assistant message.
+    the script is exhausted); it is only consulted on plain agent turns. A step may
+    itself be a CALLABLE ``step(body) -> step-dict`` — the wave-2 dynamic-argument
+    contract: a scenario cannot know a server-minted child task id statically, so the
+    step derives its arguments from the prompt the server actually sent (e.g. parse
+    the ``schedule_subagent`` receipt out of the transcript to build ``wait_tasks``
+    arguments). Returns ``(kind, message)`` where message is the OpenAI-style
+    assistant message.
     """
     kind = classify_call(body)
     canned = canned_review_answer(kind)
@@ -238,8 +249,12 @@ def scripted_completion(body: dict, seq: int, script_next, final_answer: str) ->
     if kind == "finalization":
         return kind, {"role": "assistant", "content": final_answer}
     step = script_next(body) if body.get("tools") else None
+    if callable(step):
+        step = step(body)
     if step is None:
         return "final", {"role": "assistant", "content": final_answer}
+    if "final" in step:
+        return "final", {"role": "assistant", "content": str(step["final"])}
     call = {"name": str(step["tool"]),
             "arguments": json.dumps(step.get("arguments") or {})}
     return "agent", {
@@ -412,6 +427,12 @@ class ReplayModel(LoopbackModelServer):
         {"tool": name, "arguments": {...}}   # scripted tool call
         {"final": "answer text"}             # tool-less final answer
         {"message": {...}}                   # raw OpenAI-style assistant message
+        callable(body) -> one of the above   # dynamic step (server-minted ids)
+
+    A CALLABLE row is the wave-2 dynamic-argument contract shared with the scripted
+    stub: it receives the request body and returns the concrete step, so a fixture
+    can reference values only the server mints at runtime (a child task id, an exact
+    result hash) by parsing them out of the transcript the model was actually shown.
 
     Review-organ and safety calls are answered canned (same branch order as the
     scripted stub, review BEFORE finalization — roast F22) and NEVER consume the
@@ -419,10 +440,15 @@ class ReplayModel(LoopbackModelServer):
     recorded and answered with a loud text (so the server under test cannot hang),
     and ``assert_consumed()`` — which every ReplayModel scenario must call — fails on
     ANY miss and on ANY unconsumed fixture row (недоеденная фикстура = красный).
+
+    ``model_ids`` overrides the /models advertisement for scenarios whose
+    ``slot_binder`` returns compound slot names that are NOT wire model ids (the
+    default derivation would then advertise garbage and omit the real ids the
+    capability-evidence window probe needs).
     """
 
     def __init__(self, fixture, *, lineage_binder=None, slot_binder=None,
-                 latency_sec: float = 0.0) -> None:
+                 latency_sec: float = 0.0, model_ids=None) -> None:
         super().__init__(latency_sec=latency_sec)
         self.fixture = dict(fixture or {})
         for key in self.fixture:
@@ -430,11 +456,14 @@ class ReplayModel(LoopbackModelServer):
                 raise ValueError(f"ReplayModel fixture key must be (lineage, slot, attempt): {key!r}")
         self._lineage_binder = lineage_binder or default_lineage_binder
         self._slot_binder = slot_binder or default_slot_binder
+        self._explicit_model_ids = [str(m) for m in model_ids] if model_ids else None
         self._attempts: dict = {}      # (lineage, slot) -> calls consulted so far
         self.consumed: list = []       # keys served, in order
         self.misses: list = []         # keys asked for but absent from the fixture
 
     def _model_ids(self) -> list[str]:
+        if self._explicit_model_ids is not None:
+            return sorted(set(self._explicit_model_ids) | {"mock-model"})
         # Advertise every slot slug the fixture names (plus the default), so the
         # capability-evidence /models probe confirms a window for each slot route.
         ids = {"mock-model"} | {str(slot) for _, slot, _ in self.fixture}
@@ -459,6 +488,8 @@ class ReplayModel(LoopbackModelServer):
                            "fixture and the server's call pattern disagree.",
             }
         self.consumed.append(key)
+        if callable(step):
+            step = step(body)
         if "message" in step:
             return "replay", dict(step["message"])
         if "final" in step:
@@ -540,6 +571,30 @@ def process_tree_pids(root_pid: int) -> list:
             except (OSError, ValueError):
                 continue
     return pids
+
+
+def pids_with_env_value(value: str) -> list:
+    """Every live pid whose /proc environ carries *value* (readable procs only).
+
+    The no-orphans oracle of the cancellation scenarios: every isolated-server
+    descendant carries the scenario's unique ``OUROBOROS_DATA_DIR`` in its
+    environment, so after a (cascade) cancel every pid this scan finds must still
+    be INSIDE the live server tree — a killed worker's subprocess that survived
+    teardown would show up here reparented outside it. Same-uid procs only by
+    construction (/proc environ of other users is unreadable), which covers the
+    whole tree an isolated server can have spawned.
+    """
+    needle = str(value).encode()
+    found = []
+    for pid_dir in pathlib.Path("/proc").iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        try:
+            if needle in (pid_dir / "environ").read_bytes():
+                found.append(int(pid_dir.name))
+        except OSError:
+            continue
+    return found
 
 
 def secret_values_in_parent_env() -> dict:
@@ -795,11 +850,41 @@ class ArtifactOracle:
         blob = self._json("state/cancel_intents.json")
         return blob.get("intents") if isinstance(blob.get("intents"), dict) else {}
 
+    def terminal_deliveries(self) -> dict:
+        """The owed-answer outbox (state/terminal_deliveries.json): the durable
+        registry a cancel settles AGAINST — an unowed terminal answer is a contract
+        violation, so cancellation scenarios read this file, not the chat."""
+        return self._json("state/terminal_deliveries.json")
+
     def task_result(self, task_id: str) -> dict:
         return self._json(f"task_results/{task_id}.json")
 
     def task_result_bytes(self, task_id: str) -> bytes:
         return (self.data_root / "task_results" / f"{task_id}.json").read_bytes()
+
+    def child_task_ids(self, parent_task_id: str) -> list:
+        """Direct children of *parent_task_id* per the durable task_results rows.
+
+        The parent's own stored row deliberately does NOT list children ids (only a
+        derived swarm rollup), so lineage enumeration reads the children's rows —
+        the same truth ``find_child_tasks`` derives from.
+        """
+        results_dir = self.data_root / "task_results"
+        if not results_dir.is_dir():
+            return []
+        children = []
+        for path in sorted(results_dir.glob("*.json")):
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(row, dict) and str(row.get("parent_task_id") or "") == str(parent_task_id):
+                children.append(str(row.get("task_id") or path.stem))
+        return children
+
+    def tree_blackboard(self, root_task_id: str) -> list:
+        """Rows of the task-tree ledger (task_trees/<root>/blackboard.jsonl)."""
+        return self._jsonl(f"task_trees/{root_task_id}/blackboard.jsonl")
 
     # -- jsonl logs -----------------------------------------------------------
 

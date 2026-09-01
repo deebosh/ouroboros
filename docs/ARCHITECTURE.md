@@ -3204,13 +3204,32 @@ by `(lineage, slot, attempt)`; a miss or an unconsumed row is red via
 `OUROBOROS_REVIEWER_SLOTS` (the retired comma keys are silently dropped by
 `load_settings` — pinning them would fall back to the shipped paid default panel).
 The scenario inventory is DATA (`SCENARIOS` in `harness.py`) with a two-direction
-gen/verify pin: a manifest row without a test is red, and a `test_s<N>_*` test
-without a manifest row is red. Scenario tests carry BOTH `integration` and `serial`
-markers plus the `OUROBOROS_E2E_DEEP=mock` env gate, so neither the default local
-run nor either CI pytest pass executes them; the keyless mock lane is
-`OUROBOROS_E2E_DEEP=mock pytest tests/system_e2e/ -o addopts=""` (~2.5 min).
+gen/verify pin scanning EVERY `test_*.py` module of the package: a manifest row
+without a test is red, and a `test_s<N>_*` test without a manifest row is red.
+Scenario tests carry BOTH `integration` and `serial` markers plus the
+`OUROBOROS_E2E_DEEP=mock` env gate, so neither the default local run nor either CI
+pytest pass executes them; the keyless mock lane is
+`OUROBOROS_E2E_DEEP=mock pytest tests/system_e2e/ -o addopts=""`.
 `FakeClaudexorDaemon` and `PlaywrightUIClient` are interface stubs
 (`tests/system_e2e/interfaces.py`) until their scenario waves land.
+
+Wave 2 (`test_system_scenarios_w2.py`) adds the subagent-tree, cancellation and
+managed-update-core surfaces on the same skeleton: S6 drives
+`schedule_subagent`→`wait_tasks`→exact-hash `tree_note` disposition with the child
+on its OWN stub slot (a fixture step may be `callable(body)→step`, deriving
+server-minted ids from the transcript); S7/S8 assert the typed `cancelled`
+terminal, the owed-answer outbox, honest cost names, drained cancel intents and —
+via a `/proc` environ scan (`pids_with_env_value`) against the live server process
+tree — the absence of orphaned processes after single and cascade teardown; S9
+runs a REAL managed install whose `managed` remote is a local mirror (the official
+update URL redirected through git `url.<mirror>.insteadOf` — install config, not
+patched runtime), applies a dirty-tree fast-forward over the live HTTP surface and
+asserts the stash-first insurance plus honest boot-finalize after the re-exec; S10
+proves the rollback contracts on a second isolated install through a subprocess
+driver (typed future/null-marker refusals with byte-identical marker evidence,
+byte-for-byte worktree restore, `failed-update-*` preservation). The shared
+session clone fixture lives in the package `conftest.py`; scenarios that move HEAD
+or add remotes build private clones.
 
 ### Build scripts
 

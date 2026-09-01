@@ -3917,3 +3917,114 @@ Lane deliverables (single-intent commits on this lane):
 |---|---|---|---|
 | CPL6-F1 | local provider lane | the local lane stamps the physical-attempt LEDGER with provider=local but leaves the returned usage dict without the `provider`/`resolved_model` provenance keys every remote lane carries — downstream consumers reading usage alone cannot attribute the call; the conformance suite pins today's asymmetry via the driver's `usage_stamped=False` flag instead of hiding it | stamp `usage["provider"]="local"` / `usage["resolved_model"]="local-model"` in the local normalization path (one seam in `llm_local.py`), then drop the driver flag |
 | CPL6-F2 | provider goldens | `tests/test_llm_provider_golden.py::test_golden_covers_every_declared_provider_lane` floors coverage with a HARDCODED lane set, so a new registry provider never turns the golden suite red | now structurally closed by the conformance registry pin; optionally re-derive the golden floor from `PROVIDER_PREFIXES` the same way |
+
+## From the F4 wave 2 (subagent/cancel/update, base a12c873c)
+
+Scenario wave on the lane-1 skeleton — three plan-§8 surfaces (subagent tree,
+cancellation, managed-update core), five manifest rows S6-S10, all keyless
+mock-lane, every scenario green on this host.
+
+1. SCENARIOS LANDED (tests/system_e2e/test_system_scenarios_w2.py):
+   - S6 subagent tree (~28s solo): a ReplayModel parent drives
+     schedule_subagent → wait_tasks → exact-hash tree_note
+     child_result_disposition → final. The child runs on its OWN stub slot
+     (roster row routes to `openai-compatible::mock-child`), the slot binder is
+     `model id × tool-bearing shape`, so the supervisor's tool-less semantic
+     duplicate probe (light slot) gets its own deterministic fixture ordinal
+     and parent/child concurrency can never mis-consume a step. Pinned: child
+     row lineage (parent_task_id / root_task_id / delegation_role=subagent /
+     depth_provenance.achieved_depth=1 / configured_subagent snapshot /
+     task_contract.lineage), swarm_fanout receipt in the PARENT's forked
+     drive, child's marker text reaching the parent verbatim through the
+     durable wait_tasks tool row, quiescence (child task_done strictly
+     precedes parent task_done; parent terminal clean, NOT
+     children_unabsorbed), the authoritative disposition row on
+     task_trees/<root>/blackboard.jsonl, root rollup keys
+     (accounted_upper_bound_usd_with_children on the parent's terminal event,
+     honest-only names both rows), and fixture integrity via assert_consumed
+     (the observed call pattern is EXACTLY the scripted tree — the fixture
+     model matched the live server first try).
+   - S7 cancellation single (~11s solo): typed `cancelled` durable terminal
+     with non-empty owed answer, honest cost plane
+     (accounted_upper_bound_usd + cost_accounting_status enum, no retired
+     aliases at top level), self-draining cancel_intents projection, forensic
+     requested→claimed→settled trail (source=http_single, outcome=cancelled),
+     terminal task_done event, and the /proc no-orphans oracle (below).
+   - S8 cancellation cascade (~20s solo): live child (schedule_subagent roster
+     row), cascade=true over the UI's endpoint; both rows cancelled, root
+     intent scope=cascade minted at the ingress and settled only on the
+     "cascade postcondition" detail, descendant carries its own
+     source=cascade_descendant intent naming the root, the durable
+     task_cancel_subtree_snapshot lists the child, both intents drained, both
+     task_done events written, no orphan processes.
+   - S9 managed update ff core (~90s solo, the expensive one — deliberately a
+     single test): a REAL managed install (`.git/ouroboros-managed.json` +
+     `managed` remote onto a LOCAL upstream one ff-commit ahead;
+     OUROBOROS_UPDATE_CHANNEL=development), DIRTY tree (tracked edit +
+     untracked file), preflight → apply(auto_merge) over the live HTTP
+     surface: stash-first insurance (Q1=C) carries the work, the server
+     re-execs, boot-finalize consumes tx + intent markers, writes
+     `managed_update_finalized` with head == target and
+     `managed_update_stash_restored` (context=boot_finalize), the worktree
+     lands exactly on target with the dirty work back as uncommitted content
+     and the durable `rescue-local-<stash12>` pin present.
+   - S10 rollback contracts (~2s solo, subprocess driver on a second real
+     isolated install — the real supervisor code, no live server needed):
+     absent marker → typed "no pre_update_sha" refusal; explicit null stamp →
+     strict `corrupt`, same typed refusal, marker bytes byte-identical;
+     FUTURE-schema stamp → the "newer version" refusal from BOTH
+     rollback_managed_update and finalize_managed_update_on_boot, marker
+     byte-identical (left for the owner); and the restore contract — a
+     half-applied update (target commit + extra dirt + valid pending tx)
+     rolls back to a worktree whose FULL file fingerprint (sha256 of every
+     non-.git file) equals the pre-update snapshot, porcelain empty, failed
+     candidate preserved on `failed-update-<target12>`, tx cleared, durable
+     `managed_update_rolled_back` receipt with the exact pre_update_sha.
+2. HARNESS DELTAS (tests/system_e2e/harness.py): (a) callable steps — a
+   ScriptedStubModel script step or ReplayModel fixture row may be
+   `callable(body) -> step`, deriving arguments the scenario cannot know
+   statically (server-minted child ids, exact result hashes) from the
+   transcript the model was actually shown; default-lane pins cover both.
+   (b) ReplayModel `model_ids=` override for compound slot binders (the
+   default /models advertisement derives from fixture slot names, which are
+   not wire model ids under a compound binder). (c) `pids_with_env_value` —
+   the /proc environ scan behind the no-orphans oracle: every pid carrying
+   the scenario's unique data root must sit INSIDE the live server tree
+   (`process_tree_pids`), re-polled via wait_until so a transiently exiting
+   worker cannot false-positive. (d) ArtifactOracle readers:
+   terminal_deliveries (owed-answer outbox), child_task_ids (lineage
+   enumeration — the parent row deliberately lists no children),
+   tree_blackboard. (e) The manifest gen/verify + marker pins now scan EVERY
+   test module of the package (wave modules stay visible to the discipline);
+   the shared session clone fixture moved to the package conftest.py —
+   scenarios that move HEAD or add remotes (S9/S10) build private clones.
+3. LOCAL MANAGED REPO WITHOUT PATCHING (S9 design decision): the update path
+   hard-pins the managed remote's URL to the OFFICIAL github URL on every
+   fetch (`ensure_official_update_remote`, supervisor/git_ops_updates.py:80,
+   called from plan_managed_update_merge fetch=True), so a live-server local
+   managed repo is reached by redirecting that exact URL through standard git
+   `url.<mirror>.insteadOf` config in the ISOLATED clone — install
+   configuration, byte-identical runtime path (the set-url still happens, the
+   fetch resolves to the local mirror). The pip step of update_restart_smoke
+   was verified a no-op against this venv (`pip install --dry-run -r
+   requirements-runtime.lock` → nothing to install) and belted with
+   PIP_NO_INDEX=1 in the scenario env so an unexpected resolution attempt
+   fails loudly instead of reaching the network.
+4. E2E-находки wave-2 (runtime defects/observations — NOT fixed in this lane,
+   per the lane rule):
+
+   | id | surface | observation | evidence |
+   |---|---|---|---|
+   | W2-F1 | cancel owed-answer / details panel | The `cancel_receipt` block (Q5=A details-panel facts) and the outbox registration exist ONLY for tasks with chat lineage: `build_unreviewed_salvage_event` returns None for a chatless task and the owed answer degrades to the typed `terminal_delivery_handoff` row (reason=no_lineage_chat). Every API-submitted (headless) task therefore never gets the details-panel stop receipt. Contract-conformant per GR2-4, but the panel-facts gap for headless tasks may deserve an owner decision. | supervisor/cancel_publication.py:212-239; supervisor/terminal_delivery.py:1326-1327; observed live in S7 (receipt absent after 60s poll, handoff row present) |
+   | W2-F2 | managed update source | `managed_remote_url` from `.git/ouroboros-managed.json` is honored ONLY by launcher/colab bootstrap (launcher_bootstrap.py:280,323); every update fetch unconditionally retargets the remote to the hardcoded `OFFICIAL_UPDATE_REMOTE_URL` (git_ops_updates.py:86-90). An install bootstrapped from a fork/mirror (colab writes `managed_remote_url=source_url`) is silently retargeted to razzant/ouroboros on its first update check. Air-gapped/fork installs need git insteadOf config (as S9 does) or an owner decision to honor the meta URL. | git_ops_updates.py:80-90; colab_bootstrap.py:369; update_merge_plan.py:161-169 |
+   | W2-F3 | /api/state identity | `/api/state` answers `"sha": ""` and `"branch": null` on a source-mode isolated server even after a completed managed update — the state surface does not carry runtime repo identity here; identity lives in /api/health runtime_version + boot attestation. S9's restart proof therefore rests on the boot-finalize receipt (which only the restarted process can write), not on /api/state. | observed live in S9; devtools/.../server_runner.py current_sha() reads this field |
+   | W2-F4 | "managed" is two different predicates | server.py:144 gates the bootstrap safe_restart on the ENV flag only (`OUROBOROS_MANAGED_BY_LAUNCHER=1`), while the update surface gates on the meta file (`git_ops._is_launcher_managed_repo` accepts either). A meta-managed source install (S9's shape) gets managed UPDATES but no managed bootstrap reset — apparently intentional (source checkouts keep their tree), named here so the asymmetry is a decision, not an accident. | server.py:144,610; supervisor/git_ops.py:110-113 |
+
+5. LANE BUDGET: full mock lane (S1-S10 + default pins, serial) — 31 passed in
+   ~219s (3:38) on this host; the wave added ~78s over lane 1's ~142s, well
+   inside the plan's 10-25 min PR keyless budget and the wave's own 6-8 min
+   target. Solo timings: S6 ~28s, S7 ~11s, S8 ~20s, S9 ~21s, S10 ~2s. The
+   three new default-lane pins add well under 1s to the ordinary battery. Deferred to wave 3 (disclosed): carrier-conflict /
+   assisted-merge / crash-mid-phase update variations, chat-lineage cancel
+   receipt path (the outbox+receipt form of W2-F1), delegated-transport
+   (FakeClaudexorDaemon) and gateway/UI-truth (Playwright) waves.

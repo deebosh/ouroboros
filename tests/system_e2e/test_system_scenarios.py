@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -71,7 +72,6 @@ from tests.system_e2e.harness import (
     ScriptedStubModel,
     assert_settings_keyless,
     classify_call,
-    clone_repo,
     keyless_reviewer_slots,
     keyless_settings,
     proc_environ,
@@ -99,14 +99,32 @@ from tests.system_e2e.harness import (
 _SCENARIO_TEST_RE = re.compile(r"^test_(s\d+)_")
 
 
-def _scenario_test_names() -> list:
-    return [name for name in dir(sys.modules[__name__])
-            if _SCENARIO_TEST_RE.match(name)]
+def _scenario_modules() -> list:
+    """Every scenario module of the suite package — the manifest pins must see the
+    WHOLE package, not this file: a scenario wave landing in its own module (wave 2
+    did) would otherwise be invisible to the gen/verify discipline."""
+    import importlib
+
+    package_dir = pathlib.Path(__file__).resolve().parent
+    return [
+        importlib.import_module(f"tests.system_e2e.{path.stem}")
+        for path in sorted(package_dir.glob("test_*.py"))
+    ]
+
+
+def _scenario_tests() -> list:
+    """``(qualified name, function)`` for every test_s<N>_* test in the package."""
+    found = []
+    for module in _scenario_modules():
+        for name in dir(module):
+            if _SCENARIO_TEST_RE.match(name):
+                found.append((f"{module.__name__}.{name}", name, getattr(module, name)))
+    return found
 
 
 def test_system_manifest_is_covered():
-    """Every S-id in the scenario manifest still has at least one test here."""
-    names = [name for name in dir(sys.modules[__name__]) if name.startswith("test_")]
+    """Every S-id in the scenario manifest still has at least one test in the package."""
+    names = [name for _qual, name, _fn in _scenario_tests()]
     for scenario_id, (title, _lane) in SCENARIOS.items():
         prefix = f"test_{scenario_id.lower()}_"
         assert any(name.startswith(prefix) for name in names), (
@@ -119,10 +137,12 @@ def test_every_scenario_test_is_declared_in_the_manifest():
     ``SCENARIOS`` row is red — an undeclared scenario would be invisible to the lane
     budget and to the retirement discipline."""
     declared = {scenario_id.lower() for scenario_id in SCENARIOS}
-    for name in _scenario_test_names():
+    tests = _scenario_tests()
+    assert tests, "the package-wide scenario scan found no scenario tests at all"
+    for qualified, name, _fn in tests:
         sid = _SCENARIO_TEST_RE.match(name).group(1)
         assert sid in declared, (
-            f"{name} has no SCENARIOS[{sid.upper()!r}] manifest row "
+            f"{qualified} has no SCENARIOS[{sid.upper()!r}] manifest row "
             "(tests/system_e2e/harness.py) — declare the scenario first"
         )
 
@@ -132,11 +152,10 @@ def test_every_scenario_test_carries_integration_and_serial_markers():
     both CI pytest passes, and the CI-shape battery: every scenario test must carry
     ``integration`` AND ``serial``. (The ``OUROBOROS_E2E_DEEP`` env gate is the second
     belt; markers are what the -m expressions see.)"""
-    for name in _scenario_test_names():
-        fn = getattr(sys.modules[__name__], name)
+    for qualified, _name, fn in _scenario_tests():
         marks = {mark.name for mark in getattr(fn, "pytestmark", [])}
         assert {"integration", "serial"} <= marks, (
-            f"{name} must be decorated with @pytest.mark.integration and "
+            f"{qualified} must be decorated with @pytest.mark.integration and "
             f"@pytest.mark.serial (has: {sorted(marks)})"
         )
 
@@ -463,12 +482,7 @@ def test_settings_file_is_created_secret_safe(tmp_path):
 # ===========================================================================
 
 
-@pytest.fixture(scope="session")
-def e2e_clone(tmp_path_factory):
-    """One throwaway clone of the checkout under test, shared by every scenario server."""
-    require_lane(LANE_MOCK)
-    return clone_repo(tmp_path_factory.mktemp("system_e2e_clone"))
-
+# The shared session clone fixture (``e2e_clone``) lives in the package conftest.
 
 S1_SCRIPT = [
     {"tool": "list_files", "arguments": {"path": "."}},
