@@ -4677,3 +4677,86 @@ Cross-cutting disclosures:
   prompts/SYSTEM.md's combined "CRASH ROLLBACK / RESCUE SNAPSHOT" line was
   left untouched (rescue-snapshot half still live; prompts are outside this
   lane's mechanical scope).
+
+## From the C6 usage-ledger compaction lane (1A, base 74a03082)
+
+1. CPL4-C6 LANDED — the excised monetary row of the CPL-4 persistence train
+   (owner batch №8 item 1A: own reviewed lane, monetary authority). Design
+   note ratified BEFORE code: `docs/v7next/DESIGN_USAGE_COMPACTION.md`.
+   Mechanics, one new leaf `ouroboros/usage_compaction.py` (D16):
+   - **Fold scope**: terminal (`settled`/`unresolved`/`released`),
+     review-attribution-free `kind="attempt"` chains only. In-flight chains
+     never fold; idempotency-bearing kinds (`subscription_session`,
+     `external_unmetered`, `legacy_*`) never fold — their replay dedup and
+     conflict checks read the LIVE replay, so folding them would convert an
+     idempotent replay into a silent double charge; review-attributed rows
+     never fold — `skill_review_usage` projects historical waves per-attempt.
+     Unknown future kinds are retained (fail-safe default). All four are the
+     disclosed residual growth terms.
+   - **Baseline block**: one stamped `usage_baseline` header (archive ref,
+     source sha256/size/row-count/seq-range, epoch, counts) + one
+     `usage_baseline_group` row per attribution tuple (state, model, provider,
+     category, source, task/root/parent ids, ttl, cost/bound/pricing-known
+     flags, cost_final) — per-group, not the sketch's single row, because
+     budget enforcement is per-root and `usage_breakdown` groups per axis: a
+     single global row would zero per-root accounting (a budget bypass).
+   - **Decimal exactness rule (fixed)**: group sums are computed as exact
+     `Decimal`s of the literals in the file and carried as exact-decimal JSON
+     strings (`_number` already accepts them at every reader); retained rows
+     are verified Decimal-identical across re-serialization, and a foreign
+     non-round-trippable literal ABORTS the pass instead of approximating.
+   - **Prove-then-swap**: the pass commits only after the candidate bytes
+     re-validate (`_validate_records`) AND the production aggregation
+     (`_summary`, per-root summaries + min limits, `_breakdown_bucket` on all
+     axes) renders EQUAL dicts on before/after finals AND decimal money
+     totals match — any inequality aborts, leaving the ledger byte-identical.
+   - **seq policy**: live file keeps the validator's dense-seq integrity
+     authority by starting a fresh epoch (retained rows renumbered, each
+     carrying `pre_compaction_seq`; originals live forever in the archive
+     segment). Monotonicity/density preserved; nothing durable references
+     rows by seq (cross-refs are attempt ids). `_append_rows_locked`,
+     resume fingerprints and both read caches keep their arithmetic unchanged;
+     cache coherence is structural (atomic swap = new inode = refold).
+   - **Crash-safety**: archive segment (exact source bytes) is written
+     O_EXCL + fsync (file AND directory, best-effort on Windows) BEFORE the
+     atomic ledger swap; a crash at any point leaves a valid ledger; orphan
+     segments are harmless. Quarantine semantics untouched.
+   - **Trigger (config SSOT, no env knob)**: `USAGE_LEDGER_COMPACT_BYTES`
+     (8 MB) + `USAGE_LEDGER_COMPACT_RETRY_GROWTH_BYTES` (1 MB) in
+     `config.py`; `reserve_attempt` calls the guard at the top of its locked
+     section (exactly the path whose lock hold degrades with size), contained
+     — a compaction defect never fails a reservation. The 20 MB
+     `USAGE_LEDGER_WARN_BYTES` stays as the broken-compaction tripwire
+     (warn texts updated in `agent_startup_checks`/`context_budget`).
+   - **CPL-5 join surface**: `archived_attempt_ids` /
+     `usage_attempt_recorded` walk the hash-chained archive (live header
+     pins the newest segment's sha256; each segment's own leading header pins
+     the previous one) with per-process immutable-segment caching. Contract
+     recorded for the CPL-5 lane (not on this base yet): the reverse sweep's
+     `orphan_seal` verdict must consult live ∪ archive, and a corrupt chain
+     is its UNKNOWN/skip-pass state. `legacy-import` needs no lookup — its
+     rows never leave the live file.
+   - **Aggregation**: `_summary`/`_physical_call_count` became baseline-aware
+     in the narrowest way (skip header; group rows: counts × folded weight,
+     sums added once); weight-1 paths byte-equivalent to before.
+   - Measured on this host (isolated env): 24,000-row / 11.9 MB synthetic
+     ledger → 183 KB (65×), 280 groups, 1.16 s single pass under the 45 s
+     monetary lock; global+per-root projections byte-equal, budget refusal
+     thresholds identical.
+   - Pins: `tests/test_usage_compaction.py` (16 tests — exact-money +
+     whole-projection equality incl. skill-review waves; budget/root-budget
+     refusal equality; in-flight survival + post-compaction lifecycle; crash
+     injection between archive and swap; chained-compaction id resolution +
+     tampered-segment detection; subscription/external replay dedup +
+     conflict; legacy import with and without watermark; threshold/throttle
+     policy; verify-abort on a foreign literal; head-only baseline
+     validation; quarantine on a compacted file; archive byte-exactness).
+     Key pins mutation-probed red (weight math, decimal rounding, in-flight
+     folding). ABI-3 alias sweep: one per-site allowlist row for the
+     internal ledger-plane `cost_usd` emission in `_build_candidate`.
+     Persistence inventory: `archive/usage_ledger/*` plane row + scan pin
+     123→124; ADOPTION CPL-4 row updated with the C6 hook.
+2. NOT touched, per the lane scope: folding of
+   subscription/external/legacy/review-attributed rows (future lane behind an
+   archived-identity membership check if their residual growth ever matters),
+   any archive GC (never), CPL-5 sweep implementation, warn threshold values.
