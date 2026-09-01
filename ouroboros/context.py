@@ -1097,10 +1097,32 @@ def build_recent_sections(
             expected_signature = dialogue_meta.get("chat_log_signature")
             current_signature = memory.jsonl_generation_signature("chat.jsonl")
             if not _chat_log_signature_matches(expected_signature, current_signature):
-                log.warning(
-                    "Ignoring dialogue consolidation offset %s because chat log generation signature is missing or stale",
-                    consolidated_offset,
-                )
+                # Recoverable vs. irrecoverable: ask the consolidator's
+                # generation-aware resolver (P1: gap-not-lost). If it can still
+                # locate the stored generation in the archive chain, the next
+                # consolidation pass will re-base — that is INFO. Only a truly
+                # missing generation (manual deletion/corruption) keeps the loud
+                # WARNING, so triage sees real gaps without per-build noise on a
+                # transient `gap_detected == False`.
+                try:
+                    from ouroboros.consolidator import _resolve_generation_segments
+
+                    _segments, _offset, gap_detected = _resolve_generation_segments(
+                        dict(dialogue_meta or {}),
+                        memory.logs_path("chat.jsonl"),
+                    )
+                except Exception:
+                    gap_detected = True  # fall back to WARNING = louder
+                if not gap_detected:
+                    log.info(
+                        "Ignoring dialogue consolidation offset %s because chat log generation signature is missing or stale (recoverable; next consolidation will re-base)",
+                        consolidated_offset,
+                    )
+                else:
+                    log.warning(
+                        "Ignoring dialogue consolidation offset %s because chat log generation signature is missing or stale",
+                        consolidated_offset,
+                    )
                 consolidated_offset = 0
         # Raw recent-dialogue tail: smaller in low context mode only when it cannot
         # silently drop unconsolidated dialogue. If a valid consolidation offset

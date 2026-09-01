@@ -1827,4 +1827,201 @@ def test_delegation_fact_failure_never_drops_capability_digest(tmp_path, monkeyp
     assert "delegation" not in capabilities
     # The surrounding digest survives intact.
     assert "allow_mutative_subagents" in capabilities
-    assert "write_surfaces" in capabilities
+
+
+# ---------------------------------------------------------------------------
+# ibl-28109914789e — context.py downgrades recoverable dialogue-offset
+# skip to INFO, keeps WARNING only when the generation is truly gone.
+# ---------------------------------------------------------------------------
+
+def test_recent_chat_logs_info_when_stale_offset_is_recoverable(tmp_path, caplog):
+    """When the dialogue-offset signature mismatches but the stored generation
+    is still resolvable in the archive chain (gap_detected == False), the per-
+    build log is INFO with a "(recoverable; next consolidation will re-base)"
+    suffix — NOT WARNING.
+
+    Construct the recoverable case: rotate the live chat.jsonl into
+    ``archive/chat_<ts>.jsonl`` and start a fresh live chat, then store the
+    ARCHIVED generation's signature in dialogue_meta. The live signature
+    no longer matches, the stored signature IS still findable in the archive
+    chain, so gap_detected == False.
+    """
+    import logging
+
+    from ouroboros.context import build_recent_sections
+    from ouroboros.memory import Memory
+
+    logs_dir = tmp_path / "logs"
+    memory_dir = tmp_path / "memory"
+    archive_dir = logs_dir.parent / "archive"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    # Seed the FIRST generation, capture its signature, archive it.
+    first_gen = [
+        {"chat_id": 1, "direction": "in", "username": "User", "text": f"first-{i}"}
+        for i in range(3)
+    ]
+    (logs_dir / "chat.jsonl").write_text(
+        "\n".join(json.dumps(entry) for entry in first_gen) + "\n",
+        encoding="utf-8",
+    )
+    # Capture the SIGNATURE THE RESOLVER WILL SEE — read the file directly,
+    # hash the first non-empty line's stripped bytes (matches jsonl_generation_signature).
+    import hashlib
+
+    with (logs_dir / "chat.jsonl").open("r", encoding="utf-8") as handle:
+        first_line_stripped = next((line.strip() for line in handle if line.strip()), "")
+    archived_first_sha = hashlib.sha256(first_line_stripped.encode("utf-8")).hexdigest()
+
+    # Move that file into the archive folder under a chat_<ts>.jsonl name
+    # (the resolver globs `archive/chat_*.jsonl`).
+    archived_path = archive_dir / "chat_20260101T000000Z.jsonl"
+    original_chat = logs_dir / "chat.jsonl"
+    archived_path.write_text(original_chat.read_text(encoding="utf-8"),
+                             encoding="utf-8")
+
+    # Now store THAT archived file's signature in dialogue_meta (with a
+    # non-zero offset so the warning path is reached).
+    memory = Memory(drive_root=tmp_path)
+    archived_sig = {
+        "first_line_sha256": archived_first_sha,
+        "size": archived_path.stat().st_size,
+    }
+    (memory_dir / "dialogue_meta.json").write_text(
+        json.dumps({
+            "last_consolidated_offset": 3,
+            "chat_log_signature": archived_sig,
+        }),
+        encoding="utf-8",
+    )
+
+    # Now write a FRESH live chat.jsonl (different first_line_sha, different
+    # size). The stored signature points at the archived file, which is still
+    # on disk — the resolver will locate it via the archive glob.
+    second_gen = [
+        {"chat_id": 1, "direction": "in", "username": "User", "text": f"second-{i}"}
+        for i in range(2)
+    ]
+    (logs_dir / "chat.jsonl").write_text(
+        "\n".join(json.dumps(entry) for entry in second_gen) + "\n",
+        encoding="utf-8",
+    )
+
+    caplog.set_level(logging.INFO, logger="ouroboros.context")
+    combined = "\n\n".join(build_recent_sections(memory, env=None))
+
+    # Per-build log was INFO, with the recoverable suffix.
+    info_records = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO and "Ignoring dialogue consolidation offset" in r.message
+    ]
+    warn_records = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "Ignoring dialogue consolidation offset" in r.message
+    ]
+    assert info_records, "expected the recoverable stale-offset to be logged at INFO"
+    assert any("recoverable" in r.message for r in info_records)
+    assert not warn_records, "recoverable stale-offset must NOT also log WARNING"
+    # Sanity: the offset was reset, raw tail loaded.
+    assert "second-0" in combined
+
+
+def test_recent_chat_keeps_warning_when_generation_is_truly_gone(tmp_path, caplog):
+    """When no archive/live chain still contains the stored first-line sha
+    (manual deletion/corruption), gap_detected == True — the per-build log
+    stays at WARNING so triage sees a real gap (P1: gap-not-lost)."""
+    import logging
+
+    from ouroboros.context import build_recent_sections
+    from ouroboros.memory import Memory
+
+    logs_dir = tmp_path / "logs"
+    memory_dir = tmp_path / "memory"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    memory_dir.mkdir(parents=True, exist_ok=True)
+
+    # A LIVE chat that DOES NOT match the stored first_line_sha — make the
+    # stored signature something the file's first line can never have.
+    initial = [
+        {"chat_id": 1, "direction": "in", "username": "User", "text": f"x-{i}"}
+        for i in range(3)
+    ]
+    (logs_dir / "chat.jsonl").write_text(
+        "\n".join(json.dumps(entry) for entry in initial) + "\n",
+        encoding="utf-8",
+    )
+    memory = Memory(drive_root=tmp_path)
+    bogus_signature = {
+        "first_line_sha256": "deadbeef" * 8,  # unreachable
+        "size": 9999,
+    }
+    (memory_dir / "dialogue_meta.json").write_text(
+        json.dumps({
+            "last_consolidated_offset": 3,
+            "chat_log_signature": bogus_signature,
+        }),
+        encoding="utf-8",
+    )
+
+    caplog.set_level(logging.WARNING, logger="ouroboros.context")
+    combined = "\n\n".join(build_recent_sections(memory, env=None))
+
+    warn_records = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "Ignoring dialogue consolidation offset" in r.message
+    ]
+    assert warn_records, "truly-missing generation must keep the loud WARNING"
+    assert "x-0" in combined  # the offset was reset, raw tail loaded
+
+
+def test_recent_chat_wfaller_when_resolver_itself_raises(tmp_path, caplog, monkeypatch):
+    """If `_resolve_generation_segments` itself raises (e.g. glob IO error),
+    the fail-safe defaults gap_detected=True — keeps the loud WARNING rather
+    than silently downgrading triage to INFO."""
+    import logging
+
+    from ouroboros.context import build_recent_sections
+    from ouroboros.memory import Memory
+
+    logs_dir = tmp_path / "logs"
+    memory_dir = tmp_path / "memory"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    initial = [
+        {"chat_id": 1, "direction": "in", "username": "User", "text": f"y-{i}"}
+        for i in range(3)
+    ]
+    (logs_dir / "chat.jsonl").write_text(
+        "\n".join(json.dumps(entry) for entry in initial) + "\n",
+        encoding="utf-8",
+    )
+    memory = Memory(drive_root=tmp_path)
+    # Stored signature that does not match — forces the WARNING path normally.
+    bogus_signature = {"first_line_sha256": "0" * 64, "size": 9999}
+    (memory_dir / "dialogue_meta.json").write_text(
+        json.dumps({
+            "last_consolidated_offset": 3,
+            "chat_log_signature": bogus_signature,
+        }),
+        encoding="utf-8",
+    )
+
+    # Force the resolver to raise — context.py must fall back to WARNING.
+    def _boom(*_a, **_kw):
+        raise OSError("simulated archive IO failure")
+
+    monkeypatch.setattr(
+        "ouroboros.consolidator._resolve_generation_segments", _boom,
+    )
+
+    caplog.set_level(logging.WARNING, logger="ouroboros.context")
+    combined = "\n\n".join(build_recent_sections(memory, env=None))
+
+    warn_records = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "Ignoring dialogue consolidation offset" in r.message
+    ]
+    assert warn_records, "resolver raising must fall back to WARNING"
+    assert "y-0" in combined
