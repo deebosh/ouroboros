@@ -42,7 +42,7 @@ import pathlib
 from typing import Any, Dict, List, Optional
 
 from ouroboros.review_cycles import emit_review_cycles_exhausted, review_max_cycles
-from ouroboros.skill_review_history import load_history
+from ouroboros.skill_review_history import iter_history_rows_bounded, load_history
 from ouroboros.skill_review_status import (
     STATUS_BLOCKERS,
     STATUS_CLEAN,
@@ -51,7 +51,7 @@ from ouroboros.skill_review_status import (
     normalize_skill_review_status,
     review_status_grandfatherable,
 )
-from ouroboros.utils import atomic_write_json, iter_jsonl_objects, utc_now_iso
+from ouroboros.utils import atomic_write_json, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -251,11 +251,13 @@ def count_paid_skill_review_cycles(
     for skill_dir in skill_dirs:
         rows: List[Dict[str, Any]] = []
         try:
-            rows = [
-                row
-                for row in iter_jsonl_objects(skill_dir / "review_history.jsonl")
-                if isinstance(row, dict)
-            ]
+            # Bounded like every other history reader (CPL4-C12): this is the
+            # read that walks EVERY skill's log, so a whole-file scan here
+            # multiplies by the number of installed skills. Same disclosed
+            # residual as the rest of the family — a group whose newest
+            # ordinal-bearing row aged past the window under-counts, it never
+            # over-blocks.
+            rows = list(iter_history_rows_bounded(drive_root, skill_dir.name))
         except OSError:
             rows = []
         count += sum(

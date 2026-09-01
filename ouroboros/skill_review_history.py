@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import pathlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 from ouroboros.tools.review_helpers import format_obligation_excerpt
@@ -339,7 +339,10 @@ def load_history(
 
     Every reader is byte-bounded (the ``find_history_job_bounded`` idiom) so a
     growing per-skill log never turns a context build or a wave start into a
-    whole-file scan. Counter authorities stay exact across the bound because
+    whole-file scan — including the cross-skill paid-cycle count, which reads
+    through ``iter_history_rows_bounded`` (it walks every installed skill, so
+    it is the read the bound matters most for). Counter authorities stay exact
+    across the bound because
     lifecycle terminal rows PERSIST their ordinals and ``normalize_history``
     takes ``max(stored, derived)`` — only a group whose newest ordinal-bearing
     row has aged past the window restarts low (disclosed degradation: the
@@ -368,6 +371,25 @@ def load_history(
     if group_id:
         entries = [entry for entry in entries if entry.get("group_id") == group_id]
     return entries[-limit:] if limit > 0 else entries
+
+
+def iter_history_rows_bounded(
+    drive_root: pathlib.Path, skill_name: str,
+) -> Iterator[Dict[str, Any]]:
+    """RAW history rows of one skill inside the same bounded tail window.
+
+    ``load_history`` normalizes and merges dispatch markers; the cross-skill
+    paid-cycle count needs the rows as written and must NOT carry the window
+    size around itself — the bound belongs here, beside the other readers
+    (CPL4-C12). This is the read that walks EVERY skill's log, so it is the one
+    that must never turn into a whole-tree scan (audit #14-6b).
+    """
+    for row in iter_jsonl_objects(
+        review_history_path(pathlib.Path(drive_root), skill_name),
+        tail_bytes=_DETAIL_LOOKUP_MAX_BYTES,
+    ):
+        if isinstance(row, dict):
+            yield row
 
 
 def find_history_job_bounded(
