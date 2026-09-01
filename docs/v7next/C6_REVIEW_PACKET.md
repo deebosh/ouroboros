@@ -6,7 +6,9 @@ lane (monetary authority). Design note ratified before code:
 `docs/v7next/DESIGN_USAGE_COMPACTION.md` (commit `a1063124`); implementation
 + pins in the follow-up commit; this packet + ledger section close the lane.
 Round 2 (§6) is the fix-round for the external adversarial wave against
-`e2801c52`: all nine findings accepted and fixed.
+`e2801c52`. Round 3 (§7) is the fix-round for the second wave, against
+`830aa35a`: five findings were re-opened as still-open (1, 2, 3, 4, 6) and
+all five are fixed here; four (5, 7, 8, 9) the wave confirmed closed.
 
 ## 1. Diff map (what to read, in review order)
 
@@ -22,7 +24,9 @@ Round 2 (§6) is the fix-round for the external adversarial wave against
 | `ouroboros/domains.toml`, `docs/DOMAIN_MAP.md` | new module seated D16; graph regenerated via `check_domains.py --write` | manifest completeness gate |
 | `docs/PERSISTENCE.md` | usage-ledger row rewritten (bounded by compaction); NEW `archive/usage_ledger/segment_*.jsonl` row | inventory truth; scan pin 123→124 in `tests/test_persistence_inventory.py` |
 | `tests/test_gateway_abi3_removals.py` | one per-site allowlist row | `_build_candidate` writes the internal ledger-plane `cost_usd` key (same class as every existing ledger writer row there) |
-| `tests/test_usage_compaction.py` | NEW pin suite (31 tests after round 2) | see §3 and §6 |
+| `tests/test_usage_compaction.py` | NEW pin suite (43 tests after round 3; the suite entered the 1001-1500 size band with a recorded rationale) | see §3, §6 and §7 |
+| `tests/test_lockfile_helpers.py` | +5 lock-ownership pins | the round-3 finding-1 fixes are platform primitives, so they are pinned where those primitives live |
+| `ouroboros/platform_layer.py` | lock ownership: `_lock_identity`, inode-guarded stale eviction and release, ownership-reporting heartbeat | round 3, finding 1 |
 | `ADOPTION_v7next.md` | CPL-4 row: C6 landed + verification hook | adoption gate |
 | `docs/v7next/LEDGER_CORRECTIONS.md` | append-only C6 lane section | provenance |
 
@@ -84,6 +88,13 @@ Round 2 (§6) is the fix-round for the external adversarial wave against
   provenance and counts, bounded archive references, epoch-chain steps,
   segment revalidation, warm-cache integrity, typed corruption of an
   unreadable header, union caching, and decimal precision (§6)
+- round 3 adds sixteen more (five of them in `tests/test_lockfile_helpers.py`)
+  for lock-file ownership on eviction/release/renewal, the pass abandoning a
+  lost hold, heartbeats inside the long span, writer exclusion at the swap and
+  the absence of any unlocked fallback, the post-swap re-read, retry
+  durability of the directory chain, the archive epoch anchor and its orphan
+  tolerance, source-range provenance, the segment-cache windows, and archive
+  symlink bounds (§7)
 
 Mutation-probed red (not just green-once): `_summary` weight math, group-sum
 rounding, folding of dispatched rows — each flips at least one pin.
@@ -130,6 +141,36 @@ rounding, folding of dispatched rows — each flips at least one pin.
    corrupt chain = UNKNOWN/skip) is recorded in the design note §10 for the
    lane that lands it. `model_send_seal`-targeted gates therefore do not
    exist on this base to run.
+6. **Orphan archive segments** (round 2, widened in round 3): a pass that
+   loses the snapshot race, dies at its swap, or is abandoned by a lost lock
+   can leave a written-but-never-referenced segment. It carries no money and
+   no chain authority — readers start at the live header and follow only what
+   it names, and the epoch anchor recognises an orphan of the live generation
+   as legal. Repeated lost races nevertheless accumulate disk: LOW
+   availability / forensic clutter, not correctness. No GC by design (§13 of
+   the note).
+7. **Warm segment-cache window** (round 3): the per-segment cache hit needs a
+   matching fingerprint, an mtime settled for > 2 s and an entry younger than
+   60 s. An in-place same-size rewrite that ALSO restores `mtime_ns` exactly
+   can therefore still be answered from a warm entry for up to a minute.
+   Closing it means re-hashing every segment on every question — the
+   quadratic cost the cache exists to remove — for an attacker who already
+   has write access to the data root and can be caught a minute later, by any
+   other process, and by the chain hash on every segment an answer depends
+   on.
+8. **Ownership is defended, not guaranteed** (round 3): the lock primitives
+   are ownership-exact and the pass heartbeats through its long span, but no
+   claim is made that a pass can never be robbed of the lock — only that it
+   cannot finish while robbed (a lost or unanswerable heartbeat aborts,
+   leaving the ledger byte-identical), and that no writer can append in the
+   compare→replace window, because every writer of this ledger takes the same
+   owner-aware lock and has no unlocked fallback.
+9. **Epoch anchoring reads content, not names** (round 3): a segment whose
+   first row cannot be read (a torn segment from a crashed write) is treated
+   as no evidence of any generation rather than as corruption, so a garbage
+   file dropped into the archive cannot deny service to the whole history.
+   Every segment an answer actually depends on is still fully verified by the
+   chain walk.
 
 ## 6. Round 2 — adversarial wave disposition (fix-round base `e2801c52`)
 
@@ -151,7 +192,7 @@ reruns the suite), and the three pins the wave called weak were rebuilt.
 | 8 | LOW — the join primitive re-unions the whole archived id set per question | **accepted, fixed** | the union is cached by chain identity ((`archive_rel`, sha) per hop); the stat-checked walk still runs, so finding 4's guarantee is not traded for the cache | `test_archived_id_union_is_built_once_per_chain` (H questions → exactly one union build) |
 | 9 | MEDIUM — three pins do not pin what they claim | **accepted, all three rebuilt** | crash pin injects at `os.replace` itself and asserts the segment is already on disk with the exact source bytes (a swap-before-archive reorder now fails it); the threshold pin proves the lock is HELD at the call rather than trusting the call site; the head-only pin contrasts one unmodified baseline block that validates at the head with the same rows rejected purely for position | `test_crash_at_the_ledger_rename_leaves_ledger_intact`; `test_reserve_path_compacts_only_past_config_threshold`; `test_baseline_header_is_rejected_by_POSITION_not_by_shape` |
 
-Not changed by this round, and deliberately so: the fold scope (§3 of the
+Not changed by round 2, and deliberately so: the fold scope (§3 of the
 design note), the per-group baseline shape the wave independently confirmed
 preserves per-root enforcement and all five breakdown axes, the trigger
 thresholds, and the ABI-3 allowlist row the wave found correctly scoped.
@@ -166,3 +207,31 @@ Round-2 code commits (author `ouroboros-agent`, single-intent):
 `9e99eb55` (findings 1, 2, 9-crash, 9-threshold), `0ed2dc2c` (findings 3, 4,
 6, 7, 8, 9-position), `6b03212e` (finding 5 + the ARCHITECTURE ownership
 line).
+
+## 7. Round 3 — second adversarial wave disposition (fix-round base `830aa35a`)
+
+Verdict of the second wave: NEEDS FIXES. It re-read the round-2 fixes and
+judged five of the nine findings still OPEN (1, 2, 3, 4, 6), closing 5, 7, 8
+and 9. **All five accepted and fixed**; nothing was argued away. Each fix carries a pin verified RED against the exact mutation it
+claims to catch, on this base, before the fix landed.
+
+| # | round-2 verdict | what was still open | fix | red-first pin |
+|---|---|---|---|---|
+| 1 | HIGH, OPEN | ownership was never actually proven: stale inspection judged the path and then unlinked the path; release unlinked whatever now occupied the name; the POSIX heartbeat renewed the descriptor and answered success after it had been unlinked; `_beat` ignored the answer; nothing beat during the long build/verify span; and the snapshot compare→replace stayed a TOCTOU window | `platform_layer` now compares descriptor identity with path identity everywhere: the eviction removes only the exact file it judged (re-checked immediately before the unlink), the release removes only the file it still holds, and `refresh_exclusive_file_lock` returns an OWNERSHIP verdict. `_beat` aborts the pass on a lost or unanswerable hold and runs inside both candidate row walks and between every verification stage. The window is closed structurally — every ledger writer takes this same owner-aware lock with no unlocked fallback — and the swap re-reads what landed | `test_stale_eviction_never_removes_a_lock_re_created_under_it`, `test_release_never_unlinks_a_lock_that_was_stolen`, `test_heartbeat_reports_lost_ownership_instead_of_renewing` (+ deleted-lock variant) in `tests/test_lockfile_helpers.py`; `test_a_lost_lock_aborts_the_pass_instead_of_swapping`, `test_the_long_build_and_verification_section_beats_the_lock`, `test_no_writer_can_append_between_the_snapshot_check_and_the_swap`, `test_every_ledger_writer_refuses_when_the_lock_cannot_be_taken`, `test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt` |
+| 2 | HIGH, OPEN | durability was established only for the levels a pass CREATED, so the retry after a pass that died on its own fsync skipped directories that already existed but were not yet durable | `_mkdir_fsync_chain(path, root)` fsyncs the whole chain up to the data root unconditionally, every pass | `test_the_directory_chain_is_re_synced_on_the_retry_after_a_failed_pass` (fails the first pass on the directory fsync, then requires all three inodes fsync'd before the retry's swap) |
+| 3 | HIGH, OPEN | the chain had no trusted live anchor — `compaction_epoch` is as mutable as the rest of the row, so repointing the header at an older genuine segment AND lowering the epoch walked a valid short chain; `pre_compaction_seq` was only required to increase | the archive anchors the stamp: no segment may carry a generation newer than the live one, derived from each segment's embedded header (content, not name), with an uncommitted orphan of the live generation explicitly legal. `pre_compaction_seq` must fall inside the header's declared source range | `test_repointing_the_header_at_an_older_segment_is_corrupt` — the forgery now copies `compaction_epoch` too, which the wave named as the pin's escape hatch; `test_pre_compaction_seq_must_name_a_row_the_named_source_held`; `test_an_orphan_segment_of_the_live_generation_is_not_a_rollback` guards the fix against over-reach |
+| 4 | MEDIUM, OPEN | a fingerprint is not identity: an in-place same-size rewrite inside timestamp granularity, or with the mtime restored, kept the cache hit | a hit also requires an mtime settled for > 2 s and an entry younger than 60 s; past either, the bytes are hashed again. Remaining window disclosed as residual §5.7 | `test_a_rewrite_inside_the_timestamp_window_is_re_hashed_not_recalled`; `test_a_same_size_rewrite_is_caught_once_the_cache_entry_expires` |
+| 6 | MEDIUM, OPEN | a symlink AT `archive/usage_ledger` escaped the resolved-parent bound, because segment and directory resolve through the same link | neither `archive/` nor `archive/usage_ledger` may be a link, the resolved directory must be exactly the resolved root's archive path, and no segment may be a link; the reader calls it corruption, the writer aborts its pass | `test_a_symlinked_archive_path_is_refused_by_writer_and_reader` (both levels, reader and writer) |
+| 5, 7, 8, 9 | CLOSED by the wave | — | unchanged | unchanged |
+
+ARCHITECTURE and the design note carried absolutes the wave was right to
+call out (`never robbed of it`, unqualified `bounded`). Both now state the
+contract with its residuals: ownership is defended and its loss is
+survivable; the archive bound is exact about symlinks; the cache window and
+the orphan segments are named where the mechanism is described (§5.6–5.9).
+
+Round-3 code commits (author `ouroboros-agent`, single-intent): lock
+ownership in `platform_layer` + its pins; the pass consuming ownership
+(heartbeat abort, span checkpoints, post-swap verify); the unconditional
+directory chain; the archive epoch anchor + source-range provenance; the
+segment-cache shelf life; the archive symlink bound.

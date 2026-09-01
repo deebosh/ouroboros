@@ -4837,3 +4837,86 @@ Cross-cutting disclosures:
    orphan archive segment behind (written, never referenced). Orphan segments
    were already disclosed as harmless and the archive is append-only by
    design; the alternative — swapping anyway — is the defect being fixed.
+
+## From the C6 fix-round 3 (base `830aa35a`)
+
+1. A second external adversarial wave re-read the round-2 fixes and returned
+   NEEDS FIXES: five of the nine findings were judged still OPEN (1, 2, 3, 4,
+   6) and four confirmed closed (5, 7, 8, 9). All five were ACCEPTED and fixed
+   in single-intent commits authored by Ouroboros; each fix carries a pin that
+   was verified RED on this base against the exact mutation it claims to
+   catch. Full disposition table: `docs/v7next/C6_REVIEW_PACKET.md` §7.
+   - **Lock ownership (finding 1, HIGH)**: round 2 made the lock owner-aware
+     and heartbeaten, but never proved OWNERSHIP anywhere. Stale inspection
+     judged the path and then unlinked the path, so a release plus a second
+     acquirer landing in that window lost their lock to the evictor; the
+     release unlinked whatever occupied the name; and the POSIX heartbeat
+     renewed the descriptor and answered success even after that descriptor
+     had been unlinked, while `_beat` ignored the answer and nothing beat at
+     all during the long build/verification span. `ouroboros/platform_layer.py`
+     now compares descriptor identity against path identity in all three
+     places — the eviction unlinks only the exact file it judged abandoned
+     (re-checked immediately before the unlink), the release unlinks only the
+     file it still holds, and `refresh_exclusive_file_lock` returns an
+     ownership verdict. The pass consumes that verdict: a `False` or
+     unanswerable heartbeat aborts, and beats now run inside both candidate
+     row walks and between every verification stage. The compare→replace
+     TOCTOU is closed structurally rather than narrowed — every writer of this
+     ledger appends under the same owner-aware lock and there is NO unlocked
+     fallback (a timed-out acquisition raises `UsageAccountingError` and writes
+     nothing), which is now pinned rather than assumed — and after the rename
+     the pass re-reads the path, so a receipt only ever describes bytes that
+     landed.
+   - **Retry durability (finding 2, HIGH)**: round 2 fsync'd the directory
+     levels a pass CREATED. A pass that died on that fsync left the levels
+     present, so the retry skipped them and could complete its swap with the
+     archive it depends on still unnamed on disk. `_mkdir_fsync_chain` now
+     takes the data root and fsyncs the whole chain unconditionally on every
+     pass.
+   - **Chain anchor and provenance range (finding 3, HIGH)**: the epoch
+     step-down rule only proves the chain BELOW the live header, and
+     `compaction_epoch` is as mutable as the rest of that row — so repointing
+     the header at an older genuine segment while lowering its epoch produced
+     a chain that verified and simply ended early. The generations such a
+     forgery orphans are still on disk, so the archive now anchors the stamp:
+     no segment may carry a generation newer than the live one, derived from
+     each segment's own embedded header rather than from its name. The one
+     legal newer case — an uncommitted orphan of the CURRENT generation, whose
+     embedded leading row IS the live header — stays legal and is pinned so
+     the anchor cannot over-reach into the disclosed orphan residual.
+     Separately, `pre_compaction_seq` was only required to increase; it must
+     now fall inside the source range the header declares, so a retained row
+     cannot claim an origin the archived source never held.
+   - **Segment-cache shelf life (finding 4, MEDIUM)**: the
+     `(ino, dev, size, mtime_ns)` fingerprint is not proof of identity — an
+     in-place same-size rewrite within the filesystem's timestamp granularity,
+     or one that restores the mtime, keeps it whole. A hit now also requires an
+     mtime settled for more than 2 s and an entry younger than 60 s. The
+     remaining window (a rewrite that restores `mtime_ns` exactly, answered
+     from a warm entry for up to a minute) is DISCLOSED as a residual with its
+     cost: closing it means re-hashing every segment on every question, which
+     is the quadratic cost the cache exists to remove.
+   - **Archive symlink bound (finding 6, MEDIUM)**: comparing a resolved
+     segment against a resolved archive directory is satisfied for free by a
+     symlink AT `archive/` or `archive/usage_ledger`, because both sides
+     resolve through the same link. Neither level may be a link now, the
+     resolved directory must be exactly the resolved data root's archive path,
+     and no segment may be a link; the reader raises `UsageLedgerCorrupt` and
+     the writer aborts its pass with the ledger byte-identical.
+2. Absolutes removed. `docs/ARCHITECTURE.md` claimed a long pass is "never
+   robbed" of its lock and described the archive references as simply
+   "bounded"; the packet repeated both. The contract is now stated with its
+   limits: ownership is defended and its LOSS is survivable (a robbed pass
+   cannot finish, it aborts), the archive bound is explicit about symlinks and
+   the epoch anchor, and the cache window plus the orphan segments are named
+   where the mechanism is described. Residuals §5.6–5.9 of the packet carry
+   them: orphan segments (LOW availability/forensic clutter, no GC by design),
+   the warm-cache window, "ownership defended, not guaranteed", and the
+   deliberate choice to treat an unreadable segment first row as no evidence
+   of a generation rather than as corruption — so a garbage file dropped into
+   the archive cannot deny service to the whole history, while every segment
+   an answer depends on is still fully verified by the walk.
+3. `tests/test_usage_compaction.py` crossed 1000 lines and entered the
+   1001-1500 size band with a recorded rationale in the same commit; the five
+   lock-primitive pins live in `tests/test_lockfile_helpers.py`, where those
+   primitives live, rather than in the compaction suite.

@@ -170,9 +170,11 @@ thing that decides what a well-formed row IS — checks it:
   carrying the real `baseline_id` — is corrupt. That is the money-injection
   shape the position rule exists to refuse;
 - `pre_compaction_seq` is checked as the provenance claim it is: legal only
-  under a leading header, strictly increasing, and only up to the first
+  under a leading header, strictly increasing, only up to the first
   non-baseline row that carries none (post-compaction appends never carry
-  it, and a re-compaction rewrites the whole file).
+  it, and a re-compaction rewrites the whole file), and **inside the source
+  range the header declares** (`source_first_seq`..`source_last_seq`) — a
+  retained row may not claim to come from bytes nobody archived.
 
 ## 7. Aggregation contract (`_usage_rows`)
 
@@ -197,27 +199,43 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   every read-check-append transaction, invoked from `reserve_attempt`'s
   locked section before its ledger read (§9). No second lock, no new lock
   ordering.
-- **The lock cannot be taken from a live pass.** Every other hold of this
-  lock is milliseconds; a compaction pass over a multi-megabyte ledger can
-  legitimately exceed its 90 s staleness window, and a lock evicted purely by
-  age would put a second writer on the same authority. So `_named_lock`
-  acquires **owner-aware** (a live owner PID is never evicted on age), and
-  the hold yields a **heartbeat** (`platform_layer.refresh_exclusive_file_lock`)
-  that the pass beats at each checkpoint, keeping the lockfile young for any
-  acquirer that is *not* owner-aware. The heartbeat targets the descriptor,
-  so a lock already stolen is never refreshed on the thief's behalf.
-- **The swap re-proves its snapshot.** Because the swap replaces the WHOLE
-  file, the pass re-reads the live ledger under the same held lock
-  immediately before the rename and refuses the swap unless the bytes are
-  still byte-identical to the snapshot it compacted. A row that landed in
-  between survives; the cost of the lost race is one skipped pass, never a
-  charge. (Belt to the lock's braces: it also covers a lock broken by a hand
-  repair or an older build.)
+- **The lock is defended, and its loss is survivable.** Every other hold of
+  this lock is milliseconds; a compaction pass over a multi-megabyte ledger
+  can legitimately exceed its 90 s staleness window, and a lock evicted purely
+  by age would put a second writer on the same authority. So `_named_lock`
+  acquires **owner-aware** (a live owner PID is never evicted on age), and the
+  hold yields a **heartbeat** (`platform_layer.refresh_exclusive_file_lock`)
+  the pass beats at every checkpoint — including *inside* the long span: both
+  row walks of the candidate build and each verification stage, not only their
+  edges. The lock primitives are ownership-exact: a stale eviction unlinks
+  only the exact file it judged abandoned (re-checked against the descriptor
+  it inspected), a release unlinks only the file it still holds, and the
+  heartbeat answers OWNERSHIP rather than success.
+  We do not claim a pass can never be robbed. What we claim is that it cannot
+  finish while robbed: a `False` heartbeat — or one that cannot be answered at
+  all — aborts the pass, leaving the ledger byte-identical.
+- **The swap re-proves its snapshot, before and after.** Because the swap
+  replaces the WHOLE file, the pass re-reads the live ledger under the same
+  held lock immediately before the rename and refuses the swap unless the
+  bytes are still byte-identical to the snapshot it compacted. A row that
+  landed in between survives; the cost of the lost race is one skipped pass,
+  never a charge. (Belt to the lock's braces: it also covers a lock broken by
+  a hand repair or an older build.) The compare→replace window itself is
+  closed structurally, not by narrowness: EVERY writer of this ledger appends
+  under this same owner-aware lock and there is no unlocked fallback — an
+  acquisition that times out raises `UsageAccountingError` and writes nothing.
+  After the rename the pass re-reads what landed and refuses to report a
+  receipt for bytes that are not there.
 - Commit order: (1) build + fully verify the candidate in memory (§5, §6);
   (2) write the archive segment — exact source bytes — via O_EXCL write and
-  `fsync` the file **and every directory entry the chain created**: the
+  `fsync` the file **and every directory in the chain, on every pass**: the
   segment's parent, `archive/`, and the data root, since syncing a directory
-  persists only the entries IT holds. On POSIX a directory-fsync failure
+  persists only the entries IT holds. Unconditional, not only where this pass
+  created a level: an earlier pass may have created one and died before its
+  fsync, so on a retry the directories exist while their durability does not.
+  The archive path must also BE this data root's own — a symlink at
+  `archive/` or `archive/usage_ledger` aborts the pass, because history must
+  never be written through a link. On POSIX a directory-fsync failure
   **aborts the pass** (an unsynced archive directory plus a completed swap is
   exactly the crash that loses history); on Windows there is no directory
   handle to fsync, so it is a disclosed no-op chosen by the platform
@@ -274,10 +292,34 @@ the live replay, so this lane ships the join surface the sweep must use:
     epoch N-1 produced, so this holds by construction — and it is what makes
     re-pointing a live header at an older *genuine* segment (correct hash,
     correct counts) corruption rather than a legitimately shorter history;
+  - **the archive anchors the live stamp.** The step-down rule alone only
+    proves the chain BELOW the header, and `compaction_epoch` is as mutable as
+    the rest of the row, so a forgery that repoints AND lowers the epoch walks
+    a valid, short chain. The generations such a forgery orphans are still on
+    disk: no segment may carry a generation newer than the live stamp, read
+    from each segment's own embedded header rather than from its name. The one
+    legal newer case is an uncommitted orphan of the CURRENT generation (a
+    lost snapshot race, a crash before the swap), recognised because its
+    embedded leading row is the live header itself. A segment whose first row
+    cannot be read is no evidence of any generation and is left to the walk;
+  - the archive directory must be **this data root's own**: neither
+    `archive/` nor `archive/usage_ledger` may be a symlink, the resolved
+    directory must be exactly the resolved root's archive path, and no segment
+    may be a link. Otherwise "the segment resolves next to the archive
+    directory" is a tautology — both sides resolve through the same link;
   - per-segment results are cached by path, but the hit requires the file's
     fingerprint (inode/device/size/mtime_ns) to match, so a segment deleted
     or rewritten after a warm read surfaces as `UsageLedgerCorrupt` instead
-    of keeping an audit's "logged" verdict alive;
+    of keeping an audit's "logged" verdict alive. A fingerprint is not proof
+    of identity, though: an in-place same-size rewrite within the filesystem's
+    timestamp granularity keeps it. So a hit ALSO requires a file whose mtime
+    has settled (> 2 s old) and an entry younger than 60 s — a cached read is
+    evidence with a shelf life. **Residual, disclosed:** a rewrite that
+    restores `mtime_ns` exactly can still be answered from a warm entry for up
+    to that minute. Closing it would mean re-hashing every segment on every
+    question, which is the quadratic cost this cache exists to avoid; the
+    chain hash still binds every segment the answer depends on, and any
+    process that starts, or asks a minute later, re-hashes;
   - the union over a whole chain is cached by the chain's identity
     ((`archive_rel`, sha) per hop), so a bulk reverse sweep of H seals costs
     H cheap stat-checked walks and ONE union, not H unions over the whole
@@ -325,16 +367,20 @@ byte authority.
 3. **Crash-safety**: a failure injected at the ledger rename ITSELF leaves a
    byte-identical, valid, further-usable ledger, with the archive segment
    already on disk holding the exact source bytes; the archive directory
-   chain is fsync'd before the swap, and a POSIX directory-fsync failure
-   aborts with the ledger untouched.
+   chain is fsync'd before the swap — including on the RETRY after a pass that
+   died on that fsync — and a POSIX directory-fsync failure aborts with the
+   ledger untouched.
 4. **Budget sees the same numbers**: root/global enforcement thresholds are
    unchanged across compaction.
 5. **CPL-5 join survives**: every pre-compaction `attempt_id` remains
    resolvable through live ∪ archive, across chained compactions; a tampered
    segment, a re-hashed but structurally broken segment, a deleted segment
-   behind a warm cache, an out-of-archive reference, an epoch-skipping chain
-   and an unreadable leading row are each typed corruption (UNKNOWN/skip),
-   never silent absence; the chain union is built once per chain.
+   behind a warm cache, a same-size rewrite once the cache window closes, an
+   out-of-archive reference, a symlinked archive directory, an epoch-skipping
+   chain, a rollback the archive out-anchors, and an unreadable leading row
+   are each typed corruption (UNKNOWN/skip), never silent absence; an
+   uncommitted orphan segment of the live generation is NOT corruption; the
+   chain union is built once per chain.
 6. **Idempotency survives**: subscription/external replays after compaction
    dedup (no double charge) and still conflict-check; legacy import stays
    correct with and without its watermark.
@@ -348,8 +394,16 @@ byte authority.
    stamp; quarantine/`integrity_degraded` semantics unchanged.
 9. **No pass loses a concurrent charge**: a row appended between snapshot and
    swap aborts the pass and survives byte-for-byte, with money equal to
-   before-plus-that-row; the lock is owner-aware and heartbeaten so a long
-   pass is never evicted by elapsed time.
+   before-plus-that-row; the lock is owner-aware and heartbeaten through the
+   long span, a pass that loses it abandons its work instead of swapping, the
+   monetary lock is provably HELD against every writer at the instant of the
+   swap, a writer that cannot take it refuses in typed form rather than
+   appending without it, and the swap reports a receipt only for bytes it
+   re-read at the path.
+10. **Provenance is bounded**: `pre_compaction_seq` names a row inside the
+    header's declared source range; the archive directory is the data root's
+    own, through no symlink; and no archived segment carries a generation
+    newer than the live stamp (bar an uncommitted orphan of that stamp).
 
 ## 13. Explicitly out of scope
 
