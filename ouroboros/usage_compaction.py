@@ -629,6 +629,10 @@ def compact_usage_ledger_locked(
     # archive/usage_ledger plane (docs/PERSISTENCE.md row).
     try:
         beat()
+        try:
+            _archive_dir_bounded(root)  # never write history through a link
+        except UsageLedgerCorrupt as exc:
+            raise _Abort(str(exc)) from exc
         if not _snapshot_intact(ledger_path, raw):
             log.warning("usage-ledger compaction abandoned before archive: ledger changed under the lock")
             return None
@@ -738,19 +742,40 @@ def _live_baseline_header(root: pathlib.Path) -> Optional[Dict[str, Any]]:
     return row if str(row.get("kind") or "") == "usage_baseline" else None
 
 
+def _archive_dir_bounded(root: pathlib.Path) -> pathlib.Path:
+    """The archive directory, proven to BE inside this data root.
+
+    ``archive/`` and ``archive/usage_ledger`` are ours. A symlink at either
+    level turns "the segment resolves next to the archive directory" into a
+    tautology — both sides resolve through the same link — so the monetary
+    history could be read from, or written into, anywhere on the host.
+    Neither level may be a link, and the resolved directory must be exactly
+    the archive path of the resolved data root.
+    """
+    directory = root / ARCHIVE_SEGMENT_DIR_REL
+    for level in (directory.parent, directory):
+        if level.is_symlink():
+            raise UsageLedgerCorrupt(f"usage archive path is a symlink: {level}")
+    resolved = pathlib.Path(os.path.realpath(directory))
+    if resolved != pathlib.Path(os.path.realpath(root)) / ARCHIVE_SEGMENT_DIR_REL:
+        raise UsageLedgerCorrupt(f"usage archive directory escapes its data root: {directory}")
+    return resolved
+
+
 def _segment_path(root: pathlib.Path, archive_rel: str) -> pathlib.Path:
     """Resolve a header's ``archive_rel`` INSIDE the archive directory or fail.
 
-    Two independent bounds: the textual shape the substrate declares legal,
-    and the RESOLVED location (so a symlink planted in the archive directory
+    Three independent bounds: the textual shape the substrate declares legal,
+    an archive directory that is genuinely this data root's own, and the
+    RESOLVED location of the segment (so a symlink planted in the archive
     cannot make a file elsewhere on the host count as archived history)."""
     if not valid_archive_rel(archive_rel):
         raise UsageLedgerCorrupt(
             f"usage baseline archive reference is not bounded: {archive_rel!r}"
         )
-    archive_dir = (root / ARCHIVE_SEGMENT_DIR_REL).resolve(strict=False)
+    archive_dir = _archive_dir_bounded(root)
     path = (root / archive_rel).resolve(strict=False)
-    if path.parent != archive_dir:
+    if path.parent != archive_dir or (root / archive_rel).is_symlink():
         raise UsageLedgerCorrupt(
             f"usage archive segment escapes the archive directory: {archive_rel!r}"
         )

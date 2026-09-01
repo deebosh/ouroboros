@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import stat
 import time
 from decimal import Decimal
@@ -813,6 +814,31 @@ def test_archive_reference_is_bounded_to_the_archive_directory(data_root):
     _rewrite_header(data_root, {**header, "archive_rel": "../outside.jsonl"})
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
+
+
+@pytest.mark.parametrize("level", ("archive", "archive/usage_ledger"))
+def test_a_symlinked_archive_path_is_refused_by_writer_and_reader(data_root, tmp_path, level):
+    """The archive directory must BE inside the data root, not a door to
+    somewhere else: with a link at either level the segment and the directory
+    resolve THROUGH the same link, so "next to the archive" proves nothing."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    ledger_path = data_root / ua.LEDGER_REL
+    target = data_root / level
+    elsewhere = tmp_path / "elsewhere"
+    shutil.move(str(target), str(elsewhere))  # same segments, same hashes
+    target.symlink_to(elsewhere, target_is_directory=True)
+    uc._SEGMENT_CACHE.clear()
+    uc._CHAIN_UNION_CACHE.clear()
+
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+    _settle(data_root, cost=0.5, cost_final=True, task_id="gen2")
+    before = ledger_path.read_bytes()
+    assert _compact(data_root) is None  # the writer refuses to feed it
+    assert ledger_path.read_bytes() == before
+
 
 
 def test_unreadable_leading_row_is_typed_corruption_not_absence(data_root):
