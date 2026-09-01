@@ -164,7 +164,8 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_list_remotes", "_managed_remote_name", "_managed_update_target",
         "_read_managed_repo_meta", "_resolve_managed_update_target",
         "ensure_official_update_remote", "git_capture", "git_fetch_bounded",
-        "load_state", "managed_branch_defaults", "utc_now_iso",
+        "load_state", "managed_branch_defaults", "managed_update_remote_url",
+        "utc_now_iso",
     })),
     # D07 lane rows (oracle ouroboros_v7_wip @ 9f691656, DEL1 splits re-derived
     # on tip bytes). The custody reconcile set dropped the reference names the

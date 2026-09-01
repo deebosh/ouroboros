@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 
@@ -83,16 +83,34 @@ def list_commits(max_count: int = 30) -> List[Dict[str, Any]]:
     return commits
 
 
+def managed_update_remote_url(meta: Optional[Dict[str, Any]] = None) -> str:
+    """The URL the managed update remote must point at.
+
+    The install's CONFIGURED source wins: ``managed_remote_url`` from the
+    managed-repo metadata (launcher and Colab bootstraps both write it, and a
+    fork/mirror/air-gapped install depends on it). The hardcoded official
+    repository URL is only the DEFAULT for installs that configured no source —
+    it must never silently retarget a configured install on an update fetch
+    (W2-F2, owner sanction 2026-09-01 №4=A).
+    """
+    info = meta if meta is not None else _go()._read_managed_repo_meta()
+    configured = str(info.get("managed_remote_url") or "").strip()
+    return configured or _go().OFFICIAL_UPDATE_REMOTE_URL
+
+
 def ensure_official_update_remote() -> Tuple[bool, str]:
-    """Ensure the managed update remote points at the official Ouroboros repository."""
+    """Ensure the managed update remote points at the install's update source
+    (the configured ``managed_remote_url``, else the official repository)."""
     # Honor the manifest-selected managed remote name (default "managed") so the
     # repaired/added remote matches the one _managed_update_target fetches from.
-    remote_name = _go()._managed_remote_name()
+    meta = _go()._read_managed_repo_meta()
+    remote_name = _go()._managed_remote_name(meta)
+    remote_url = _go().managed_update_remote_url(meta)
     remotes = _go()._list_remotes()
     if remote_name in remotes:
-        rc, _out, err = _go().git_capture(["git", "remote", "set-url", remote_name, _go().OFFICIAL_UPDATE_REMOTE_URL])
+        rc, _out, err = _go().git_capture(["git", "remote", "set-url", remote_name, remote_url])
     else:
-        rc, _out, err = _go().git_capture(["git", "remote", "add", remote_name, _go().OFFICIAL_UPDATE_REMOTE_URL])
+        rc, _out, err = _go().git_capture(["git", "remote", "add", remote_name, remote_url])
     return rc == 0, err
 
 
@@ -169,7 +187,7 @@ def compute_managed_update_status(fetch: bool = False) -> Dict[str, Any]:
     if remote_name:
         url_rc, remote_url, _url_err = _go().git_capture(["git", "remote", "get-url", remote_name])
         state["official_repo_url"] = _public_repo_url(
-            remote_url.strip() if url_rc == 0 and remote_url.strip() else _go().OFFICIAL_UPDATE_REMOTE_URL
+            remote_url.strip() if url_rc == 0 and remote_url.strip() else _go().managed_update_remote_url()
         )
     if not official_remote_ok:
         state["warnings"].append(f"remote_config_error:{official_remote_err or 'unknown error'}")

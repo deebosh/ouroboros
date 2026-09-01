@@ -28,9 +28,10 @@ polling (``wait_until`` over ``ArtifactOracle`` readers), keyless throughout:
   ``cascade_descendant`` intent naming the root, the subtree snapshot row lists the
   child — and the live process tree holds NO orphans (env-value /proc scan).
 * S9 — MANAGED UPDATE (ff core): a REAL isolated install with a LOCAL managed
-  repository (the official update URL redirected to the local mirror through
-  standard git ``url.<mirror>.insteadOf`` config — the air-gapped-install idiom, no
-  runtime code patched) applies a fast-forward update over the real HTTP surface
+  repository (the CONFIGURED update source: ``managed_remote_url`` in the managed
+  metadata names the local mirror — the fork/air-gap install shape the W2-F2 fix
+  honors on every fetch, no runtime code patched) applies a fast-forward update
+  over the real HTTP surface
   with DIRTY local work present: the stash-first insurance carries the work, the
   server re-execs onto the target SHA, and boot-finalize is honest (tx marker and
   update intent consumed, ``managed_update_finalized.head`` == target, dirty work
@@ -538,11 +539,13 @@ S9_PAYLOAD = "docs/notes/system_e2e_update_payload.md"
 
 def _managed_install(root: pathlib.Path):
     """A REAL isolated managed install: a scenario clone whose ``managed`` remote is
-    a LOCAL upstream one ff-commit ahead. The runtime hard-pins the managed remote
-    to the official URL on every fetch (``ensure_official_update_remote``), so the
-    install redirects that exact URL to the local mirror via standard git
-    ``url.<mirror>.insteadOf`` config — the air-gapped mirror idiom: the runtime
-    code path stays byte-identical, only the install's git config differs.
+    a LOCAL upstream one ff-commit ahead. The install CONFIGURES its update source
+    (``managed_remote_url`` in the managed metadata — the fork/mirror/air-gap
+    install shape both bootstraps write), and the runtime honors it on every
+    update fetch (W2-F2 fix, owner №4=A). Belt: the hardcoded official URL is
+    redirected to a non-existent local path via git ``insteadOf`` config, so a
+    REGRESSED repin to the official URL fails loudly in this keyless lane
+    instead of silently reaching the network.
     """
     clone = clone_repo(root)
     upstream = pathlib.Path(root) / "upstream"
@@ -559,9 +562,12 @@ def _managed_install(root: pathlib.Path):
     target_sha = _git(["rev-parse", "HEAD"], upstream)
 
     _git(["remote", "add", "managed", str(upstream)], clone)
-    _git(["config", f"url.{upstream}.insteadOf", OFFICIAL_UPDATE_URL], clone)
+    _git(["config",
+          f"url.{pathlib.Path(root) / 'nonexistent-official-mirror'}.insteadOf",
+          OFFICIAL_UPDATE_URL], clone)
     (clone / ".git" / "ouroboros-managed.json").write_text(json.dumps({
         "managed_remote_name": "managed",
+        "managed_remote_url": str(upstream),
         "managed_remote_branch": "ouroboros",
         "managed_local_branch": "ouroboros",
     }), encoding="utf-8")
@@ -641,6 +647,14 @@ def test_s9_managed_ff_update_applies_with_dirty_stash_and_honest_boot_finalize(
             assert S9_TRACKED_DIRTY in porcelain and S9_UNTRACKED in porcelain, porcelain
             pins = _git(["branch", "--list", "rescue-local-*"], clone)
             assert pins.strip(), "durable rescue-local stash pin is missing"
+
+            # W2-F2 (owner №4=A): the CONFIGURED update source survived the whole
+            # update cycle — every update fetch repins the managed remote to the
+            # install's ``managed_remote_url``, never silently back to the
+            # hardcoded official URL (which this install redirects to a
+            # non-existent path, so a regression fails loudly, not quietly).
+            assert _git(["remote", "get-url", "managed"], clone) == str(
+                pathlib.Path(root) / "upstream"), "configured update source was retargeted"
         finally:
             server.stop()
 

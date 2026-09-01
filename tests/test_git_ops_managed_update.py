@@ -427,3 +427,39 @@ def test_ensure_official_update_remote_uses_manifest_remote_name(monkeypatch):
     ok, _msg = git_ops.ensure_official_update_remote()
     assert ok
     assert ["git", "remote", "add", "official", git_ops.OFFICIAL_UPDATE_REMOTE_URL] in captured
+
+
+def test_ensure_official_update_remote_honors_configured_source_across_cycles(monkeypatch):
+    """W2-F2 (owner №4=A): a configured ``managed_remote_url`` is honored on
+    EVERY update fetch — N repin cycles never retarget a fork/mirror/air-gap
+    install to the hardcoded official URL."""
+    configured = "https://mirror.example.invalid/fork/ouroboros.git"
+    captured = []
+    monkeypatch.setattr(git_ops, "_read_managed_repo_meta", lambda: {
+        "managed_remote_name": "managed",
+        "managed_remote_url": configured,
+    })
+    monkeypatch.setattr(git_ops, "_list_remotes", lambda: ["managed"])
+    monkeypatch.setattr(git_ops, "git_capture", lambda cmd: captured.append(cmd) or (0, "", ""))
+    for _ in range(3):
+        ok, _msg = git_ops.ensure_official_update_remote()
+        assert ok
+    assert captured == [["git", "remote", "set-url", "managed", configured]] * 3
+    assert not any(git_ops.OFFICIAL_UPDATE_REMOTE_URL in cmd for cmd in captured)
+
+
+def test_ensure_official_update_remote_blank_configured_source_defaults(monkeypatch):
+    """No configured source (or a blank one) keeps the former default: the
+    hardcoded official repository URL."""
+    captured = []
+    monkeypatch.setattr(git_ops, "_read_managed_repo_meta", lambda: {"managed_remote_url": "   "})
+    monkeypatch.setattr(git_ops, "_list_remotes", lambda: ["managed"])
+    monkeypatch.setattr(git_ops, "git_capture", lambda cmd: captured.append(cmd) or (0, "", ""))
+    ok, _msg = git_ops.ensure_official_update_remote()
+    assert ok
+    assert captured == [
+        ["git", "remote", "set-url", "managed", git_ops.OFFICIAL_UPDATE_REMOTE_URL]
+    ]
+    assert git_ops.managed_update_remote_url({"managed_remote_url": "   "}) == (
+        git_ops.OFFICIAL_UPDATE_REMOTE_URL)
+    assert git_ops.managed_update_remote_url({}) == git_ops.OFFICIAL_UPDATE_REMOTE_URL

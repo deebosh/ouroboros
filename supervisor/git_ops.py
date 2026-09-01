@@ -815,6 +815,7 @@ from supervisor.git_ops_updates import (  # noqa: E402,F401
     list_commits,
     list_official_update_tags,
     list_versions,
+    managed_update_remote_url,
 )
 
 

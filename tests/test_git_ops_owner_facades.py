@@ -31,6 +31,7 @@ GIT_OPS_LEAF_OWNERS: dict[str, str] = {
     ),
     "git_ops_updates": (
         "list_versions list_commits ensure_official_update_remote "
+        "managed_update_remote_url "
         "list_official_update_tags compute_managed_update_status"
     ),
     "git_ops_reset": (
