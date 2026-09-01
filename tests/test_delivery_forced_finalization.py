@@ -1532,6 +1532,38 @@ def test_forced_finalization_passes_json_through_when_latch_not_armed(tmp_path, 
     assert text.startswith(legitimate)
 
 
+def test_forced_resolver_passes_json_through_without_a_control_episode(tmp_path):
+    """The forced resolver preserves protocol-shaped JSON without history."""
+    loop, registry, limit_ctx, trace = _forced_test_context(tmp_path)
+    loop._replace_delivery_candidate(
+        registry, limit_ctx, trace, "Retained complete answer.", control="candidate",
+    )
+    content = '{"delivery_control":"replace","full_answer":"user data"}'
+
+    text, degraded_reason = loop._resolve_forced_delivery_control(
+        registry._ctx, content,
+    )
+
+    assert text == content
+    assert degraded_reason == ""
+
+
+def test_forced_resolver_decodes_stale_control_after_acceptance_revision(tmp_path, monkeypatch):
+    """A forced rail must also contain a stale host control envelope."""
+    loop, registry, limit_ctx, trace = _forced_test_context(tmp_path)
+    _prepare_acceptance_revision_after_delivery_control(
+        loop, registry, limit_ctx, trace, monkeypatch,
+    )
+    content = '{"delivery_control":"replace","full_answer":"answer\\nwith **markdown**"}'
+
+    text, degraded_reason = loop._resolve_forced_delivery_control(
+        registry._ctx, content,
+    )
+
+    assert text == "answer\nwith **markdown**"
+    assert degraded_reason == ""
+
+
 def test_forced_finalization_degrades_unknown_verb_control_to_retained_candidate(
     tmp_path, monkeypatch,
 ):
@@ -1931,6 +1963,81 @@ def test_nonforced_resolver_passes_mixed_prose_json_when_latch_not_armed(tmp_pat
 
     assert status == "fresh"
     assert text == mixed
+
+
+def _prepare_acceptance_revision_after_delivery_control(
+    loop, registry, limit_ctx, trace, monkeypatch,
+):
+    """Drive the real no-tool acceptance-improvement branch after control."""
+    loop._replace_delivery_candidate(
+        registry, limit_ctx, trace, "Retained complete answer.", control="candidate",
+    )
+    loop._arm_delivery_control(registry, limit_ctx, trace)
+    status, text = loop._resolve_delivery_control(
+        '{"delivery_control":"replace","full_answer":"first answer"}',
+        registry, limit_ctx, trace,
+    )
+    assert status == "resolved"
+    assert text == "first answer"
+
+    monkeypatch.setattr(loop, "_compute_subagent_handoff", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "_maybe_inject_finalization_nudges", lambda *_a, **_k: False)
+    monkeypatch.setattr(loop, "_run_task_acceptance_review_once", lambda **_k: True)
+    assert loop._no_tool_final_answer(
+        "Revised answer draft.",
+        limit_ctx,
+        trace,
+        registry,
+        queue.Queue(),
+        set(),
+        lambda _text: None,
+    ) is None
+    assert registry._ctx._delivery_control_acceptance_revision_pending is True
+
+
+def test_stale_control_envelope_is_decoded_after_acceptance_revision(tmp_path, monkeypatch):
+    """A cleared latch must not leak a prior host control envelope."""
+    loop, registry, limit_ctx, trace = _forced_test_context(tmp_path)
+    _prepare_acceptance_revision_after_delivery_control(
+        loop, registry, limit_ctx, trace, monkeypatch,
+    )
+    content = '{"delivery_control":"replace","full_answer":"answer\\nwith **markdown**"}'
+
+    status, text = loop._resolve_delivery_control(content, registry, limit_ctx, trace)
+
+    assert status == "resolved"
+    assert text == "answer\nwith **markdown**"
+    assert registry._ctx._delivery_control_required is False
+
+
+def test_acceptance_revision_marker_is_consumed_by_ordinary_prose(tmp_path, monkeypatch):
+    """An ordinary revision consumes the stale-control compatibility window."""
+    loop, registry, limit_ctx, trace = _forced_test_context(tmp_path)
+    _prepare_acceptance_revision_after_delivery_control(
+        loop, registry, limit_ctx, trace, monkeypatch,
+    )
+
+    status, text = loop._resolve_delivery_control(
+        "Ordinary revised answer.", registry, limit_ctx, trace,
+    )
+
+    assert status == "fresh"
+    assert text == "Ordinary revised answer."
+    assert registry._ctx._delivery_control_acceptance_revision_pending is False
+
+
+def test_unrelated_json_remains_fresh_without_a_control_episode(tmp_path):
+    """JSON stays user-facing when no host control episode occurred."""
+    loop, registry, limit_ctx, trace = _forced_test_context(tmp_path)
+    loop._replace_delivery_candidate(
+        registry, limit_ctx, trace, "Retained complete answer.", control="candidate",
+    )
+    content = '{"delivery_control":"replace","full_answer":"user data"}'
+
+    status, text = loop._resolve_delivery_control(content, registry, limit_ctx, trace)
+
+    assert status == "fresh"
+    assert text == content
 
 
 def test_forced_rail_truncated_trailing_fragment_is_a_disclosed_residual(

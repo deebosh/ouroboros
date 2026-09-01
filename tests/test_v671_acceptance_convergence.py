@@ -326,3 +326,4 @@ def test_acceptance_revision_round_does_not_arm_delivery_control(tmp_path, monke
     # conflicted with OPEN OBLIGATIONS prose + the periodic self-check and froze
     # the model into identical no-tool resubmits).
     assert not bool(getattr(registry._ctx, "_delivery_control_required", False))
+    assert not bool(getattr(registry._ctx, "_delivery_control_acceptance_revision_pending", False))

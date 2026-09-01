@@ -3479,6 +3479,11 @@ def _arm_delivery_control(
     evidence_revision, evidence_fingerprint = _delivery_evidence_state(tools, ctx, llm_trace)
     candidate.finalization_control = control
     candidate.repair_attempted = False
+    # Keep the causal fact after the transient latch is cleared. Acceptance
+    # improvement rounds are intentionally free-form, but an exact protocol
+    # object emitted while an earlier host control episode is still in the
+    # transcript must not become owner-facing prose.
+    tools._ctx._delivery_control_episode_seen = True
     tools._ctx._delivery_control_required = True
     _append_or_merge_user_message(
         ctx.messages,
@@ -3533,6 +3538,17 @@ def _resolve_delivery_control(
     is_control_intent = duplicate_protocol_key or (
         isinstance(parsed, dict) and "delivery_control" in parsed
     )
+    if not required and bool(
+        getattr(tools._ctx, "_delivery_control_acceptance_revision_pending", False)
+    ):
+        # Acceptance improvement deliberately clears the one-round latch, but
+        # the prior host prompt remains in the transcript. Consume this
+        # one-round compatibility marker: a normal prose answer is free-form,
+        # while a protocol-shaped response still belongs to the stale prompt.
+        tools._ctx._delivery_control_acceptance_revision_pending = False
+        if is_control_intent:
+            required = True
+            tools._ctx._delivery_control_required = True
     if not required:
         if _delivery_replace_required(candidate):
             # A writer/skill action cannot silently turn a short acknowledgement
@@ -4130,6 +4146,8 @@ def _no_tool_final_answer(
         # froze the model into resubmitting the same answer. The next
         # free-form answer re-enters the acceptance panel (blocking not
         # weakened); other lanes still arm where JSON keep/replace is needed.
+        if bool(getattr(tools._ctx, "_delivery_control_episode_seen", False)):
+            tools._ctx._delivery_control_acceptance_revision_pending = True
         return None
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if isinstance(candidate, DeliveryCandidate):
@@ -4622,12 +4640,17 @@ def _resolve_forced_delivery_control(
         return extracted, ""
     candidate = getattr(tools_ctx, "_delivery_candidate", None)
     candidate = candidate if isinstance(candidate, DeliveryCandidate) else None
+    acceptance_revision_pending = bool(
+        getattr(tools_ctx, "_delivery_control_acceptance_revision_pending", False)
+    )
     armed = bool(getattr(tools_ctx, "_delivery_control_required", False)) or (
         candidate is not None and _delivery_replace_required(candidate)
-    )
+    ) or acceptance_revision_pending
     if not armed:
         return extracted, ""
     tools_ctx._delivery_control_required = False
+    if acceptance_revision_pending:
+        tools_ctx._delivery_control_acceptance_revision_pending = False
     parsed, duplicate_protocol_key, embedded_protocol = _parse_delivery_control_body(extracted)
     # Protocol intent: any parsed object with the protocol key (unknown verb =
     # broken control; a trailing prose-embedded object counts), or JSON-looking
@@ -6113,6 +6136,8 @@ def run_llm_loop(
     ctx = tools._ctx
     ctx._delivery_candidate, ctx._delivery_candidate_revision = None, 0
     ctx._delivery_control_required = False
+    ctx._delivery_control_episode_seen = False
+    ctx._delivery_control_acceptance_revision_pending = False
     ctx._delivery_evidence_revision, ctx._delivery_evidence_fingerprint = 0, ""
     _initialize_owner_directives(ctx, messages)
     task_model_override = str(getattr(ctx, "task_model_override", "") or "").strip()
