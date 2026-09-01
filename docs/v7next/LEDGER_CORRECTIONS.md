@@ -4677,3 +4677,165 @@ Cross-cutting disclosures:
   prompts/SYSTEM.md's combined "CRASH ROLLBACK / RESCUE SNAPSHOT" line was
   left untouched (rescue-snapshot half still live; prompts are outside this
   lane's mechanical scope).
+
+## From the F4 wave 4 (update variants + interactive + W2-F2, base 74a03082)
+
+Tail scenario wave on the lane-1/2/3 skeleton — the carried update variations,
+the chat-lineage cancel receipt (the W2-F1 counterpart), the absorb
+kill-recovery remainder and the delegated interactive answer — plus the ONE
+sanctioned runtime fix of the wave, W2-F2. Manifest rows S18-S23, all keyless
+mock-lane, every scenario green on this host. Commits: 68b19a61 (W2-F2),
+4e68526c (scenarios), 0196b3d7 (facade-inventory regen tail).
+
+1. W2-F2 FIXED (owner sanction 2026-09-01 batch 7, №4=A; commit 68b19a61).
+   The update-fetch path unconditionally repinned the managed remote to the
+   hardcoded official URL (`ensure_official_update_remote`), silently
+   retargeting fork/mirror/air-gap installs whose `managed_remote_url` both
+   bootstraps write into `.git/ouroboros-managed.json`. Class fix at the one
+   shared helper: NEW `git_ops_updates.managed_update_remote_url(meta=None)`
+   resolves the configured source (else the official default) and every repin
+   — set-url, add, and `compute_managed_update_status`'s `official_repo_url`
+   fallback — goes through it. No configured source = byte-identical former
+   default. Pins: unit (the configured source survives N repin cycles; blank/
+   absent config keeps the official URL), the module-handle extraction table
+   and the owner-facade identity list extended, and S9 RESHAPED to the
+   fork-install form the fix serves: the local upstream is now CONFIGURED as
+   `managed_remote_url` (the former `url.<mirror>.insteadOf` workaround is
+   gone), the insteadOf config now redirects the OFFICIAL URL to a
+   non-existent path (a REGRESSED repin fails loudly with zero network
+   egress — proven red pre-fix on the base tree), and the scenario asserts
+   `git remote get-url managed` == the configured source AFTER the full
+   update cycle. ARCHITECTURE §8 updated same-commit; the generated
+   FACADE_INVENTORY row followed in the 0196b3d7 tail (caught by the
+   byte-identity pin in the CI battery — the first battery run failed exactly
+   there, 13430/13431 otherwise green).
+2. SCENARIOS LANDED (tests/system_e2e/test_system_scenarios_w4.py):
+   - S18 update carrier path (~22s solo): a diverged fork (local commit
+     pinning VERSION=0.0.1) takes an official VERSION=9.9.9 bump through a
+     configured-source managed install — the merge conflicts EXACTLY inside
+     the declared version-carrier span. Pinned: plan kind=clean with
+     `carrier_resolved_paths == ["VERSION"]` and empty conflict inventories
+     (the carrier engine resolved the span to the official side in the
+     ISOLATED planner), the apply lands a REAL 2-parent merge commit
+     (`HEAD^1` == fork base, `HEAD^2` == official target), boot-finalize is
+     honest (`managed_update_finalized.head` == merge commit, tx consumed),
+     and THE CARRIER TRANSFER: VERSION, pyproject, the README badge and the
+     ARCHITECTURE header all name 9.9.9 and the tree's own
+     `check_worktree_version_sync` reports ZERO desyncs — the Q8 projection
+     moved every mechanical carrier token, none drifted. The W2-F2 configured
+     source survives the cycle.
+   - S19 update conflicting → typed refusal (~16s solo): a genuine code
+     conflict (both sides rewrite Makefile) routes the smart apply to the
+     assisted lane, whose admission refuses TYPED on an exhausted budget —
+     seeded HONESTLY through the tree's own monetary writers
+     (reserve→dispatch→settle at exactly the configured TOTAL_BUDGET=10.0;
+     no forged ledger rows). Pinned: preflight kind=conflicting with
+     code_conflict_paths=["Makefile"] and recommended_strategy=assisted; the
+     409 names the budget and "nothing was changed"; and TREE INTACT as byte
+     truth — the FULL worktree fingerprint (dirty tracked edit + untracked
+     file included) is IDENTICAL before/after, HEAD/branch unmoved, no
+     MERGE_HEAD, no tx marker, no assisted resolver task anywhere in the
+     durable queue, server healthy after the writer fence reopened.
+   - S20 crash mid-apply (~4s solo, subprocess driver on a second real
+     install — the S10 idiom): three honest boot-finalize outcomes. (a) crash
+     between the durable `stashing_local_work` marker and the `stash_sha`
+     write → boot finds the stash BY ATTEMPT ID (`lookup_update_stash`),
+     restores the owner's work UNCOMMITTED, clears the marker, HEAD untouched,
+     one `managed_update_stash_recovered_on_boot` receipt; (b) a half-written
+     `pending_boot_smoke` tx whose merge commit never reached HEAD → honest
+     typed rollback (`managed_update_rollback_after_failed_boot` +
+     `managed_update_rolled_back` naming the exact pre_update_sha, tree clean
+     at pre) — and NO junk `failed-update-*` ref is minted for a non-attempt
+     (the guard that keeps a REPLAYED rollback from clobbering a real
+     preserved attempt, pinned green); (c) merge applied + crash before the
+     restart smoke → boot RUNS the smoke, finalizes
+     (`managed_update_finalized.head` == the applied merge), restores the
+     stashed dirty work, clears the tx — the applied update survives.
+   - S21 chat-lineage cancel (~12s solo): the ONLY input delta vs S7 is
+     `chat_id: 1` on the POST /api/tasks body, and it flips the owed-answer
+     accounting from the `no_lineage_chat` handoff row (asserted ABSENT here)
+     to the real thing: the outbox delivery `cancel:<task>:<request_id>`
+     (the id derived from the intent forensics' own requested row) registered
+     AND drained to `delivered` with NO WS client ever connected, the
+     `cancel_receipt` chat row durably in logs/chat.jsonl
+     (direction=system, chat_id=1, the cancellation text naming the task),
+     and the `cancel_receipt` block on the stored result
+     (settled_status/outcome=cancelled, the exact delivery_id, the salvage
+     disclosure) — same requested→claimed→settled forensic trail as S7.
+   - S22 absorb kill-recovery (~95s solo, Linux-only, three generations): a
+     REAL evolution cycle on a private clone — campaign seeded, the
+     supervisor mints the evolution task itself, the scripted agent lands a
+     reviewed commit through the BLOCKING triad+scope organ (stub panel), the
+     campaign records the receipt and settles into `waiting_for_restart` —
+     then the whole tree is SIGKILLed in that crash window.
+     `OUROBOROS_EVOLUTION_AUTO_RESTART=false` makes the window STABLE and
+     the crash state exact (a real crash between the campaign write and the
+     restart-verify marker leaves precisely this durable shape: commit on
+     HEAD, open transaction, NO marker). Generation B (same clone+data root;
+     the owner's evolution toggle flipped off so no cycle-2 races the
+     assertions — the boot reconcile deliberately ignores that flag) absorbs
+     the cycle through the MARKERLESS dangling-transaction reconciliation:
+     absorbed_cycles_done == 1, the history row carries
+     verified_by=boot_reconciliation and the exact commit_sha, the commit is
+     still on HEAD (no loss), `evolution_tx_reconciled` in events.jsonl,
+     EXACTLY ONE cycle_outcome=absorbed checkpoint row. Generation C boots
+     and re-proves NOTHING absorbs twice: count still 1, single history row
+     for the transaction id, HEAD unmoved, no marker files ever created.
+   - S23 delegated interactive answer (~25s solo): a `[FAKE:ASK]` run pauses
+     on a pending interaction; `delegate_wait` returns IMMEDIATELY as
+     `waiting_on_user` with the full question set; the scripted nanny answers
+     through `delegate_answer` (run/interaction/question ids parsed from the
+     transcript the model actually saw); the run resumes and settles. Pinned:
+     the ORDERED custody chain (STARTED < `delegate_interaction_answered`
+     status=delivered/questions_answered=1 < SETTLED state=succeeded, one run
+     id), NO cancel row (a run that merely asked is never torn down), ONE
+     physical POST /v2/runs across the whole episode, the exact camelCase
+     wire on the exact path
+     (`/v2/runs/<id>/interactions/<iid>/answer`,
+     `{"answers":[{"questionId","selectedLabels","freeText"}]}`), the
+     transcript truth (the pause, the question text, the delivered relay,
+     the terminal result all reached the model), and the honest
+     last-delegation receipt settled exactly once.
+3. HARNESS DELTAS: FakeClaudexorDaemon (tests/system_e2e/interfaces.py) gained
+   the MINIMAL interactive surface — a `[FAKE:ASK]` prompt marker seeds one
+   `ControlPendingInteraction`-shaped row; the run detail surfaces
+   `pendingInteractions` + `summary.waitingOnUser` and STAYS running until the
+   answer verb clears the row (the next poll then flips terminal exactly as
+   before); `POST /v2/runs/:id/interactions/:iid/answer` answers the typed
+   statuses at their real HTTP codes (200 delivered / 409 already_resolved /
+   400 rejected — free contract fidelity: the client accepts a typed status
+   at ANY code). A default-lane pin drives the surface with the REAL
+   ClaudexorGateway (`pending_interactions` normalization reads the row
+   whole; refusals never consume the question; the delivered answer resumes
+   the run; a late duplicate is already_resolved, never a re-run). Manifest
+   rows S18-S23; the new module carries its size-ratchet band rationale.
+4. E2E-находки w4 (runtime defects/observations — NOT fixed in this lane,
+   per the lane rule; W2-F2 was the one sanctioned fix):
+
+   | id | surface | observation | evidence |
+   |---|---|---|---|
+   | W4-F1 | evolution absorb, commit-vs-receipt crash window | A crash between the reviewed `git commit` and `record_evolution_commit` leaves a landed reviewed commit that NO boot path will ever attribute: the markerless reconcile short-circuits on an empty `commit_sha` (it only stamps the generation), and `_preserve_evolution_orphan` runs only on the AUTHORITY-REFUSAL path, never on a crash. The commit sits on HEAD forever — not lost as code, but the cycle never resolves and is never counted. | ouroboros/tools/git.py:1411-1436 (commit → receipt order); ouroboros/tools/git_evolution.py:272-330; ouroboros/agent_startup_checks.py:1130-1142 (`if not commit_sha … return`) |
+   | W4-F2 | absorb outcome ledger atomicity | The campaign absorb write and the `cycle_outcome` checkpoint append are NOT one transaction: the reconcile writes the campaign under `update_json_locked` and appends the checkpoint row AFTER the lock (same shape on the claim path). A crash in between yields a campaign that says `absorbed` with no `cycle_outcome` row — `build_solve_capability_digest` then under-reports the cycle forever, and nothing re-derives the row. | ouroboros/agent_startup_checks.py:1227-1243 (locked `update_json_locked` → post-lock `_append_cycle_outcome_tag`); S22 asserts the row IS written on the clean path |
+   | W4-F3 | evolution restart marker vs manual restarts | `request_evolution_restart` returns BEFORE writing `pending_restart_verify.json` when `OUROBOROS_EVOLUTION_AUTO_RESTART` is off — the exact-claim verify path (campaign∧transaction∧task∧commit authority, `require_claim=True`) is structurally unreachable for installs that restart manually; absorb attribution then rests wholly on the weaker markerless reconciliation. Deliberate-looking (the knob predates the claim machinery), named so the asymmetry is a decision, not an accident. S22 exploits exactly this to make its crash window deterministic. | supervisor/evolution_lifecycle.py:1362-1368 (early return before the marker write) |
+   | W4-F4 | rescue-local ref accumulation | `create_rescue_local_ref` pins every update stash to a durable `rescue-local-<stash12>` branch and NOTHING ever deletes them — a refused/unwound attempt (S19's shape) leaves its ref behind exactly like a successful one. Deliberate durability ("git-gc can never lose the owner's work"); the unbounded per-distinct-stash accumulation is the disclosed cost. | supervisor/update_merge.py:293-304; no deletion call site in the update flow (`rg rescue-local`) |
+
+5. LANE BUDGET + GATE COUNTERS (host 0897-oma, 2026-09-01; every pytest via
+   ~/ouro/venv with isolated OUROBOROS_APP_ROOT/DATA_DIR mktemp roots;
+   `git rev-parse HEAD` re-checked after EVERY pytest; `git diff --check`
+   clean; `ruff check . --select F` clean): full mock lane (S1-S23 + default
+   pins, serial) — 56 passed in ~833s (13:52), inside the wave's ≤18 min
+   budget (wave 4 added ~175s of scenarios over the integrated S1-S17 lane);
+   solo timings S18 ~22s, S19 ~16s, S20 ~4s, S21 ~12s, S22 ~95s, S23 ~25s;
+   the new default-lane pin adds ~1s to the ordinary battery. CI-shape
+   non-serial battery (-n 16 loadscope): first run 13430 passed / 1 failed —
+   the facade-inventory byte-identity pin catching W2-F2's new re-export
+   (fixed by regeneration, 0196b3d7); clean rerun 13431 passed, 3 skipped,
+   EXIT=0. Serial pass: 622 passed, 19 skipped, EXIT=0. size_ratchet lane:
+   5 passed, EXIT=0.
+6. DEFERRED (disclosed): the gateway/UI-truth (Playwright) wave — a separate
+   browser-bearing lane by instruction; the claim-file absorb crash windows
+   (dead-claim reclaim / stale-claim-after-absorb) stay unit-covered by
+   tests/test_evolution_restart_claims.py — the E2E covers the markerless
+   window honestly instead of forging claim files on the real drive;
+   delegated MUTATING-run scenarios (snapshot provisioning +
+   integrate_delegated_patch + containment evidence) carried from wave 3b.
