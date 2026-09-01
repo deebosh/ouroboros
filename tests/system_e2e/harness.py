@@ -82,6 +82,10 @@ SCENARIOS = {
     "S8": ("cancellation cascade: parent+child torn down with no orphan processes in the live tree", LANE_MOCK),
     "S9": ("managed update ff on a local managed repo: dirty-work stash insurance + honest boot-finalize", LANE_MOCK),
     "S10": ("managed update rollback: typed future/null-marker refusals + byte-for-byte tree restore", LANE_MOCK),
+    # Ф4 wave 3b (plan §8: delegated transport + skills lifecycle).
+    "S11": ("delegated transport: full nanny run over FakeClaudexorDaemon, wire/custody truth, typed refusals", LANE_MOCK),
+    "S12": ("delegated no-orphans: SIGKILL mid-run -> restart -> boot custody sweep settles the run, one physical attempt", LANE_MOCK),
+    "S13": ("skills lifecycle E2E: payload -> stub review -> grants -> enable -> dispatch -> disable/delete + Model Experience", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -101,6 +105,7 @@ REVIEWER_SLOT_MARKER = "You are an independent Ouroboros reviewer slot."
 ACCEPTANCE_KEYS_MARKER = "criteria_used (the acceptance criteria you re-derived"
 TRIAD_USER_MARKER = "Review the staged diff and context provided in the instructions above."
 SCOPE_USER_MARKER = "Review the staged change and context above. Output ONLY a JSON array."
+SKILL_REVIEW_MARKER = "You are performing a SKILL review, not a repo-commit review."
 FINALIZATION_MARKERS = ("[OWNER_STOP]", "[FINALIZE_NOW]")
 
 MARKER_SOURCES = {
@@ -108,6 +113,7 @@ MARKER_SOURCES = {
     ACCEPTANCE_KEYS_MARKER: "ouroboros/review_execution.py",
     TRIAD_USER_MARKER: "ouroboros/tools/review.py",
     SCOPE_USER_MARKER: "ouroboros/tools/scope_review.py",
+    SKILL_REVIEW_MARKER: "ouroboros/skill_review_prompt.py",
 }
 
 
@@ -153,8 +159,9 @@ def body_text(body: dict) -> str:
 def classify_call(body: dict) -> str:
     """Name the branch a chat-completion body belongs to.
 
-    Returns one of: ``safety``, ``scope_review``, ``triad_review``, ``acceptance``,
-    ``reviewer_slot``, ``finalization``, ``agent``. ORDER MATTERS (roast F22): every
+    Returns one of: ``safety``, ``skill_review``, ``scope_review``, ``triad_review``,
+    ``acceptance``, ``reviewer_slot``, ``finalization``, ``agent``. ORDER MATTERS
+    (roast F22): every
     review-organ branch is checked BEFORE the finalization-turn check, because a
     review packet may quote a transcript that itself contains a finalization marker —
     a stub that answered such a packet with a final chat answer would silently break
@@ -168,6 +175,11 @@ def classify_call(body: dict) -> str:
         if isinstance(m, dict) and m.get("role") == "user"
     )
     full = body_text(body)
+    # Skill review FIRST among the marker branches: its pack embeds whole
+    # governance docs and the payload under review, either of which could quote
+    # another branch's marker; its own opening sentence is the most specific.
+    if SKILL_REVIEW_MARKER in full:
+        return "skill_review"
     # Scope before triad: both user messages start with "Review the staged".
     if SCOPE_USER_MARKER in user_tail:
         return "scope_review"
@@ -200,6 +212,8 @@ def canned_review_answer(kind: str) -> dict | None:
     if kind == "safety":
         return {"role": "assistant",
                 "content": json.dumps({"status": "SAFE", "reason": "stub"})}
+    if kind == "skill_review":
+        return {"role": "assistant", "content": skill_review_clean_text()}
     if kind == "scope_review":
         return {"role": "assistant", "content": scope_clean_text()}
     if kind == "triad_review":
@@ -207,6 +221,28 @@ def canned_review_answer(kind: str) -> dict | None:
     if kind in ("acceptance", "reviewer_slot"):
         return {"role": "assistant", "content": reviewer_slot_clean_text(kind)}
     return None
+
+
+def skill_review_clean_text() -> str:
+    """All-PASS skill-review verdict over the tree's OWN checklist items.
+
+    The item list is imported from the prompt module (its ``_SKILL_REVIEW_ITEMS``
+    is both the prompt's expected-items contract and the parser's required set),
+    so an upstream checklist change re-derives the canned verdict instead of
+    silently failing coverage. Lazy import: the skill-review module tree is heavy
+    and only skill scenarios pay for it.
+    """
+    from ouroboros.skill_review_prompt import _SKILL_REVIEW_ITEMS
+
+    return json.dumps([
+        {
+            "item": item,
+            "verdict": "PASS",
+            "severity": "advisory",
+            "reason": "Stub skill reviewer: checked and clean for the scripted E2E payload.",
+        }
+        for item in _SKILL_REVIEW_ITEMS
+    ])
 
 
 def scope_clean_text() -> str:

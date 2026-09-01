@@ -458,10 +458,14 @@ def test_replay_model_unconsumed_fixture_or_miss_is_red():
 
 
 def test_interface_stubs_refuse_instantiation_until_their_lanes_land():
+    """FakeClaudexorDaemon LANDED with the wave-3b delegated-transport lane (it
+    constructs a bound loopback socket only on ``start()``); the UI client still
+    refuses until the gateway/UI-truth wave lands."""
     from tests.system_e2e.interfaces import FakeClaudexorDaemon, PlaywrightUIClient
 
-    with pytest.raises(NotImplementedError, match="delegated-transport"):
-        FakeClaudexorDaemon()
+    daemon = FakeClaudexorDaemon()
+    assert daemon.harness_id and daemon.token  # constructible, not yet serving
+    daemon._server.server_close()              # release the bound (never-served) socket
     with pytest.raises(NotImplementedError, match="gateway/UI-truth"):
         PlaywrightUIClient()
 

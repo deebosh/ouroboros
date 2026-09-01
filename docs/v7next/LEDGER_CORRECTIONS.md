@@ -4227,3 +4227,129 @@ coordinator); the amended form is what landed.
 4. NOT touched, per the lane scope: W2-F1 (panel stop-facts for headless tasks
    — product decision), W2-F2 (managed-remote repin — fork policy, owner
    batch), Q-F6-* (sync forks).
+## From the F4 wave 3b (claudexor transport + skills, base 8827fd2c)
+
+Scenario wave on the lane-1/2 skeleton — the plan-§8 delegated-transport
+(+restart recovery, no-orphans) and skills-lifecycle surfaces, manifest rows
+S11-S13, all keyless mock-lane, every scenario green on this host.
+
+1. FakeClaudexorDaemon LANDED (tests/system_e2e/interfaces.py — the wave the
+   lane-1 stub named): a loopback claudexord imitation serving the EXACT
+   client contract of ouroboros/gateways/claudexor.py, derived from the code,
+   not from memory: authenticated protocol-3 handshake (bearer token from the
+   installed descriptor; 401 otherwise), capability catalog
+   (`/v2/agent-capabilities` rows with accessProfilesSupported), harness rows,
+   fail-open empty quota envelope, Idempotency-Key'd project registry
+   (register idempotent per root / find / typed-404 delete), POST /v2/runs
+   with the ENGINE REPLAY CHECK (same key + byte-identical digest → the
+   ORIGINAL handle; same key + different digest → 409 idempotency_conflict;
+   missing key → typed 400), run detail with the summary facts the custody
+   settler consumes (state/model/spendUsd/spendEstimated/tokens/
+   authRoute.profileId/effectiveAccess, untruncated primaryOutput), and the
+   cancel control verb (accepted → terminal `cancelled` on the next read).
+   Per-run behavior is scripted by prompt markers ([FAKE:HANG] never-terminal,
+   [FAKE:REFUSE] typed 400) plus the pinned ghost-profile 409; every request
+   is recorded (method/path/Idempotency-Key/protocol header/body) for wire
+   assertions. TWO load-bearing identity choices: (a) the fake reports the
+   TREE'S OWN claudexor_runtime_pin.json version+sha — `ensure_running`
+   attaches fast-path on exact pin identity, and ANY other version walks into
+   `runtime_manager.ensure()`, whose repair path downloads the pinned archive
+   (network egress the keyless lane must never take); (b) the descriptor is
+   installed at `<data_root>/claudexor/daemon/control-api.json` — the owned
+   (D30) layout — so the server's default discovery prefers it with zero
+   monkeypatching. Default-lane contract pins drive the fake with the REAL
+   ClaudexorGateway (handshake, route_health == ("", ""), registry, replay,
+   both refusal codes, cancel), so fake↔client drift is a named failure.
+2. SCENARIOS LANDED (tests/system_e2e/test_system_scenarios_w3b.py):
+   - S11 delegated transport (~27s solo): a scripted top-level nanny drives
+     delegate_start(subagent_id=cx-scout) → delegate_wait (run id parsed from
+     the transcript by a callable step) → two more intended starts that refuse
+     typed → final. Pinned: the durable custody chain in the canonical
+     events.jsonl — 3× START_REQUESTED (one pre-wire row per POST), exactly
+     one STARTED (route/model/access=readonly/mode=ask/
+     selected_subagent_id=cx-scout), LEDGER_RECORDED, SETTLED
+     (state=succeeded, engine-reported model, cost_usd=0.0 + cost_final=true,
+     applied credential_profile_id) — wire Idempotency-Key == the STARTED
+     row's invocation_id, three DISTINCT invocation ids across the three
+     intended starts (fresh logical invocation per intention); the wire body
+     the derived SHAPE authored (authPreference=subscription, mode=ask,
+     access=readonly, harnesses==[route]==primaryHarness, model pin,
+     maxSeconds>0, non-empty host instructions, project scope; NO execution
+     block on a readonly run); project registration idempotency + the settled
+     run's owned registration retired (DELETE observed); the honest
+     requested-vs-applied last-delegation receipt
+     (state/subagent_last_delegation.json: requested_model=mock-model vs
+     applied_model=mock-model-echo, requested_profile="" vs applied profile);
+     and the transcript truth — FAKE_RUN_RESULT, cost_final, the
+     session_route_resolves_its_own_model capability_delta and the typed
+     refusal code all reached the model. The two refusals land as
+     delegate_run_start_failed rows with definite=true (invocation retired:
+     scripted 400 fake_route_refused + pinned-profile 409
+     credential_profile_unknown — the strict D-U6 pin refused by the ENGINE,
+     $0, after route_health correctly fail-opened on the empty quota).
+   - S12 no-orphans restart recovery (~24s solo, Linux-only): the nanny holds
+     delegate_wait on a [FAKE:HANG] run (durable STARTED row + observed wire
+     GETs), the WHOLE server tree is SIGKILLed (hard crash, no cleanup;
+     /proc scan proves nothing carrying the data root survives), and a new
+     generation on the same clone+data root recovers custody at BOOT
+     (_startup_custody_sweep → reconcile_orphaned_runs with running=∅):
+     cancel control delivered (observed POST /v2/runs/<id>/control),
+     CANCEL_OUTCOME outcome=confirmed (verified terminal read-back), SETTLED
+     state=cancelled, RECONCILED action=cancelled — and EXACTLY ONE physical
+     POST /v2/runs across both generations (recovery adopts custody from the
+     durable rows; it never re-POSTs a run that has a STARTED row — the
+     late-result/custody semantics of delegate_custody_reconcile pinned as a
+     contract), with every pid carrying the data root inside the live gen-B
+     tree.
+   - S13 skills lifecycle E2E (~33s solo, two phases): local extension payload
+     (SKILL.md + plugin.py, plugin_api: "2.0", permissions tool+inject_chat,
+     model_experience prose) written into data/skills/external/ on a LIVE
+     server → POST /api/skills/<s>/review runs the REAL triad panel against
+     the loopback stub (≥3 skill_review-classified packets answered with the
+     canned all-PASS verdict over the tree's own _SKILL_REVIEW_ITEMS) →
+     status=clean, durable review.json carries the all-PASS findings plane
+     (and NO status key — this tree's derived-status contract for
+     verdict-bearing reviews) → POST grants {items:[inject_chat]} →
+     all_granted, durable grants.json → POST toggle enabled=true →
+     live_loaded+dispatch_live TRUE in the server process → RESTART (the
+     product's worker pickup point — finding W3B-F1) → a scripted task
+     dispatches the extension tool: durable tools.jsonl row with the result
+     text and the ABI-9 tool_result_meta.extension_generation digest (smoke
+     over the unit-pinned provenance), CPL-7 Model Experience prose observed
+     in a recorded agent body ("Model experience: E2E-MX-MARKER…" in the
+     Installed Skills context section) → disable (live_loaded/dispatch_live
+     FALSE) → delete (payload dir AND state/skills/<s>/ both removed; listing
+     empty).
+3. HARNESS DELTAS (tests/system_e2e/harness.py): manifest rows S11-S13; the
+   skill-review branch in the stub classifier — SKILL_REVIEW_MARKER ("You are
+   performing a SKILL review, …", pinned to ouroboros/skill_review_prompt.py
+   through the existing MARKER_SOURCES drift pin) classified FIRST among the
+   review branches (its pack embeds whole governance docs that can quote the
+   other markers) and answered with `skill_review_clean_text()` — an all-PASS
+   array derived from the tree's own `_SKILL_REVIEW_ITEMS`, verified by a
+   default-lane pin to aggregate to "clean" under
+   `aggregate_skill_review_status`. The lane-1 interface-stub pin now asserts
+   FakeClaudexorDaemon constructs (and releases its bound socket) while
+   PlaywrightUIClient still refuses.
+4. E2E-находки w3b (runtime defects/observations — NOT fixed in this lane,
+   per the lane rule):
+
+   | id | surface | observation | evidence |
+   |---|---|---|---|
+   | W3B-F1 | skills enable → running workers | Enable-time reconcile loads an extension ONLY in the SERVER process; task WORKERS are separate multiprocessing processes that load extensions once, at worker spawn (supervisor/worker_process.py:161 `reload_all`), and the reconcile queue (`extension_reconcile_queue`) is worker→server only — no server→worker channel exists. A skill enabled through the UI/API after boot is therefore INVISIBLE to every task until the workers respawn: the model calling the freshly enabled tool gets "Unknown tool: …" while /api/extensions truthfully reports live_loaded/dispatch_live TRUE (observed live: the S13 draft's dispatch task; generalizes the runbook's OSWorld lesson «сервер грузит расширения только на reload_all»). The UI likely masks this for chat turns served by the server process, but queued tasks run in workers. Candidate fix classes: a server→worker reconcile signal on the existing queue idiom, or a worker-side staleness probe at toolset materialization. | worker_process.py:161; extension_loader._request_server_reconcile_if_worker (worker→server only); registry_core extension discovery reads the process-local `_ext_tools`; S13 first-draft trace: tools.jsonl "Unknown tool: ext_11_r_e2e_probe_echo" with the base-tool Available list |
+   | W3B-F2 | skill review durable verdict | `SkillReviewState.to_dict` persists a `status` key ONLY for pending/no-verdict reviews; a verdict-bearing review persists the findings plane alone and status re-derives on load. Contract-conformant (the load side re-aggregates), named here because any external reader of `state/skills/<name>/review.json` that greps `status` will misread a CLEAN review as absent. | ouroboros/skill_loader.py `SkillReviewState.to_dict` (has_review_verdicts branch); observed live in S13 |
+   | W3B-F3 | new-extension review admission | A `type: extension` payload WITHOUT `plugin_api` is refused a NEW review PASS by the ABI-1 admission gate (typed plugin_api_admission FAIL, $0, review stays pending) — working as designed (grandfather covers only existing hash-bound PASSes), noted as the one non-obvious install-time requirement for local skill authors: a fresh extension must declare `plugin_api: "2.0"`. | ouroboros/contracts/plugin_api.py:285 extension_new_pass_admission_error; observed live in S13's first draft |
+
+5. LANE BUDGET: full mock lane (S1-S13 + default pins, serial) — 37 passed in
+   ~320s (5:20) on this host; the wave added ~100s over wave 2's ~219s, inside
+   the plan's 10-25 min PR keyless budget. Solo timings: S11 ~27s, S12 ~24s,
+   S13 ~33s. The new default-lane pins (fake-daemon contract ×2 + skill-review
+   verdict) add ~2s to the ordinary battery (loopback HTTP, no server).
+   Deferred (disclosed): the gateway/UI-truth (Playwright) wave; delegated
+   MUTATING-run scenarios (snapshot provisioning + integrate_delegated_patch
+   + containment evidence — needs the fake to serve attempt.yaml applied-fact
+   artifacts); delegate_answer/waiting_on_user interactive flow; the
+   carrier-conflict/assisted-merge/crash-mid-phase update variations carried
+   from wave 2. S-id note for the integrator: a parallel Ф4 wave (gateway/UI
+   truth) may also claim S11+; renumber ONE side's manifest rows at
+   integration if both landed — the gen/verify pins make a collision loud.

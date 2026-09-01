@@ -3209,8 +3209,17 @@ Scenario tests carry BOTH `integration` and `serial` markers plus the
 `OUROBOROS_E2E_DEEP=mock` env gate, so neither the default local run nor either CI
 pytest pass executes them; the keyless mock lane is
 `OUROBOROS_E2E_DEEP=mock pytest tests/system_e2e/ -o addopts=""`.
-`FakeClaudexorDaemon` and `PlaywrightUIClient` are interface stubs
-(`tests/system_e2e/interfaces.py`) until their scenario waves land.
+`FakeClaudexorDaemon` (`tests/system_e2e/interfaces.py`) is a loopback claudexord
+imitation serving the exact `gateways/claudexor.py` client contract — the
+authenticated protocol-3 handshake reporting the TREE'S OWN runtime-pin identity
+(so the owned-daemon manager attaches without touching the managed-runtime install
+path), the capability/quota answers `route_health` reads, Idempotency-Key'd project
+registration, `POST /v2/runs` with the engine replay semantics (same key +
+byte-identical body → the original handle; different digest → 409
+`idempotency_conflict`), run detail summaries and the cancel control — with per-run
+behavior scripted by prompt markers and every wire request recorded for scenario
+assertions. `PlaywrightUIClient` stays an interface stub until the gateway/UI-truth
+wave lands.
 
 Wave 2 (`test_system_scenarios_w2.py`) adds the subagent-tree, cancellation and
 managed-update-core surfaces on the same skeleton: S6 drives
@@ -3229,6 +3238,30 @@ driver (typed future/null-marker refusals with byte-identical marker evidence,
 byte-for-byte worktree restore, `failed-update-*` preservation). The shared
 session clone fixture lives in the package `conftest.py`; scenarios that move HEAD
 or add remotes build private clones.
+
+Wave 3b (`test_system_scenarios_w3b.py`) adds the delegated-transport and
+skills-lifecycle surfaces: S11 drives a full `delegate_start`→`delegate_wait` nanny
+run against the fake daemon and pins the durable custody chain (START_REQUESTED →
+STARTED → LEDGER_RECORDED → SETTLED on one run id, the wire Idempotency-Key equal
+to the durable invocation id, three DISTINCT invocation ids across three intended
+starts), the shape-derived wire body (subscription auth, `mode=ask`,
+`access=readonly`, the pinned one-element `harnesses` pool, no `execution` block),
+the honest requested-vs-applied `state/subagent_last_delegation.json` receipt and
+two typed START refusals landing as definite `delegate_run_start_failed` rows; S12
+SIGKILLs the whole server tree mid-`delegate_wait` and proves the next
+generation's startup custody sweep settles the ownerless run from the durable rows
+alone (cancel delivered and verified, SETTLED `state=cancelled`, RECONCILED
+`action=cancelled`) with exactly ONE physical `POST /v2/runs` across both
+generations and no process carrying the data root outside the live gen-B tree;
+S13 walks the whole skills lifecycle over the same HTTP surface the UI drives —
+local extension payload → real triad review answered by the stub's canned all-PASS
+skill verdict (durable `review.json` findings plane) → owner grant → enable
+(live-loaded in the server process) → restart (the worker pickup point: task
+workers load extensions only at worker spawn) → extension-tool dispatch through a
+live task (durable tools.jsonl row with the ABI-9
+`tool_result_meta.extension_generation` digest) → the CPL-7 Model Experience prose
+observed in a recorded agent body → disable → delete (payload and state dir both
+removed).
 
 ### Build scripts
 
