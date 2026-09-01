@@ -3962,6 +3962,32 @@ Disclosed dispositions (contract-affecting):
 Domain map (`ouroboros/domains.toml`): new rows `credential_shapes.py` (D13),
 `reasoning_artifacts.py` (D02), `gateway/claudexor_quota.py` (D11).
 
+What the merged tree's own battery then found (29 reds, all dispositioned):
+
+- **Three product gaps the sync opened, closed at the cause**: (a) the skill
+  owner-state read-carve was taught to the predicate but never passed at its
+  call site, so `rg review.json` stayed refused with a WRITE-named marker;
+  (b) a post-exec tripwire lost its typed fact whenever the producer returned
+  plain text — with the notes now TRAILING, the marker no longer owns line 1,
+  so a text-only reader could not re-derive the classification; the guard
+  adapts once through the ONE legacy adapter instead; (c) the reasoning-pin
+  ContextVar first landed in `llm_messages`, which imports `llm_attempt`,
+  closing an import cycle the leaf-graph test caught — it moved to
+  `reasoning_artifacts`, beside the fact it carries.
+- **One golden case repaired rather than re-baselined**:
+  `openrouter.payload.or_provider_never_unpins_reasoning` held a READABLE
+  `reasoning: "t"`, which the shape-first classifier never pins, so accepting
+  the recorded flip would have left a case that no longer tested its own
+  contract (the owner preset "cannot lift the pin" with no pin to lift). Its
+  transcript now carries a sealed artifact and the pin holds.
+- **One real classification delta recorded as A.24**: a structured
+  `{"ok": false}` answer behind an appended host note read as SUCCESS under the
+  retired pair, which json.loads()-ed the whole composed text. The same defect
+  class the 329 OSWorld rows measured, on the composition seam.
+- **`echo <owner-state path>` stopped being a denial** in three ordering pins:
+  it is a pure inspection under A2, so those pins are spelled with a real write
+  (`cp payload.json …`) and still assert the ordering they exist for.
+
 Open fork questions for the owner:
 
 - **Q-F6b-1 (upstream `notes` meta vs the bounded host reserve)**: upstream
