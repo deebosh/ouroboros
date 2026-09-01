@@ -166,6 +166,15 @@ def scrub_repo_from_pythonpath(env: dict[str, str], repo_dir: "str | pathlib.Pat
     return out
 
 
+def _lock_identity(target: "int | pathlib.Path") -> tuple:
+    """``(ino, dev, mtime_ns)`` of a lock file by descriptor or path; ``()`` if gone."""
+    try:
+        info = os.fstat(target) if isinstance(target, int) else os.stat(str(target))
+    except OSError:
+        return ()
+    return (info.st_ino, info.st_dev, info.st_mtime_ns)
+
+
 def acquire_exclusive_file_lock(
     lock_path: pathlib.Path,
     *,
@@ -195,22 +204,22 @@ def acquire_exclusive_file_lock(
             return fd
         except (FileExistsError, PermissionError):
             try:
-                age = time.time() - lock_path.stat().st_mtime
-                if age > stale_sec:
-                    if owner_aware_stale:
-                        owner_pid = 0
-                        try:
-                            for field in lock_path.read_text(
-                                encoding="utf-8", errors="replace",
-                            ).split():
-                                if field.startswith("pid="):
-                                    owner_pid = int(field[4:])
-                                    break
-                        except (OSError, ValueError):
-                            owner_pid = 0
-                        if owner_pid > 0 and pid_is_alive(owner_pid):
-                            time.sleep(poll_sec)
-                            continue
+                probe = os.open(str(lock_path), os.O_RDONLY)
+                try:
+                    judged = _lock_identity(probe)
+                    owner_pid = 0
+                    for field in os.read(probe, 512).decode("utf-8", "replace").split():
+                        if field.startswith("pid=") and field[4:].isdigit():
+                            owner_pid = int(field[4:])
+                finally:
+                    os.close(probe)
+                # Evict ONLY the exact file just judged abandoned: between the
+                # judgement and the unlink the owner may release and a third
+                # writer re-create the lock, and removing THAT file would put
+                # two writers on one authority.
+                if judged and (time.time() - judged[2] / 1e9) > stale_sec and not (
+                    owner_aware_stale and owner_pid > 0 and pid_is_alive(owner_pid)
+                ) and _lock_identity(lock_path) == judged:
                     lock_path.unlink()
                     continue
             except Exception:
@@ -223,45 +232,50 @@ def acquire_exclusive_file_lock(
 
 
 def refresh_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int]) -> bool:
-    """Renew a HELD lock's staleness clock; return whether it was renewed.
+    """Renew a HELD lock's staleness clock; report whether it is still OURS.
 
     A critical section that legitimately outlives its holder's ``stale_sec``
     (a monetary-ledger compaction pass over a multi-megabyte file) must keep
     the lockfile young, or any acquirer that does NOT opt into
     ``owner_aware_stale`` deletes it on age alone and a second writer runs
-    concurrently.  The renewal targets the DESCRIPTOR wherever the platform
-    supports it, and otherwise only after proving the path still names the
-    same file, so a lock that was already stolen is never refreshed on the
-    thief's behalf.
+    concurrently.  The return value is an OWNERSHIP verdict, not a courtesy:
+    ``False`` means the path no longer names the descriptor we hold (the lock
+    was evicted, deleted or re-created under us), so the caller's critical
+    section is no longer protected and must abandon its work rather than
+    finish it beside a second writer.  A stolen lock is never refreshed on
+    the thief's behalf.
     """
     if lock_fd is None:
         return False
+    held = _lock_identity(lock_fd)
+    if not held or held[:2] != _lock_identity(lock_path)[:2]:
+        return False
     try:
-        if os.utime in getattr(os, "supports_fd", ()):
-            os.utime(lock_fd)
-            return True
-        held = os.fstat(lock_fd)
-        current = os.stat(lock_path)
-        if (held.st_ino, held.st_dev) != (current.st_ino, current.st_dev):
-            return False
-        os.utime(str(lock_path))
-        return True
+        os.utime(lock_fd if os.utime in getattr(os, "supports_fd", ()) else str(lock_path))
     except OSError:
         log.debug("Failed to refresh lock %s", lock_path, exc_info=True)
         return False
+    return True
 
 
 def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int]) -> None:
-    """Release a lock acquired by :func:`acquire_exclusive_file_lock`."""
+    """Release a lock acquired by :func:`acquire_exclusive_file_lock`.
+
+    The unlink removes OUR lock file or nothing at all: a hold that was
+    already evicted as stale and re-taken by a second acquirer must not delete
+    the new owner's lock on its way out.  Identity is captured from the
+    descriptor BEFORE the close, because Windows cannot unlink an open file.
+    """
     lock_path = pathlib.Path(lock_path)
     if lock_fd is None:
         return
+    held = _lock_identity(lock_fd)[:2]
     try:
         os.close(lock_fd)
     except Exception:
         log.debug("Failed to close lock fd %s for %s", lock_fd, lock_path, exc_info=True)
     try:
-        if lock_path.exists():
+        if held and _lock_identity(lock_path)[:2] == held:
             lock_path.unlink()
     except Exception:
         log.debug("Failed to unlink lock file %s", lock_path, exc_info=True)
