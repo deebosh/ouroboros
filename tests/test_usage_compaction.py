@@ -445,6 +445,111 @@ def test_append_between_snapshot_and_swap_aborts_instead_of_erasing_it(data_root
     assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
 
 
+def test_a_lost_lock_aborts_the_pass_instead_of_swapping(data_root):
+    """A heartbeat is an OWNERSHIP verdict: losing it abandons the pass.
+
+    A pass that keeps building after the lock left it would swap a snapshot
+    over whatever the new owner appended in the meantime."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    before = ledger_path.read_bytes()
+    for heartbeat in (
+        lambda: False,                       # evicted / re-created under us
+        lambda: (_ for _ in ()).throw(OSError("lock unreadable")),
+    ):
+        assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
+        assert ledger_path.read_bytes() == before
+    assert not (data_root / "archive" / "usage_ledger").exists()  # not even an orphan
+
+
+def test_the_long_build_and_verification_section_beats_the_lock(data_root, monkeypatch):
+    """The build/verify span is the long one; it must renew the hold WHILE it
+    runs, not only at its edges."""
+    _seed_mixed_ledger(data_root)
+    beats: list = []
+    seen: dict = {}
+    real_build = uc._build_candidate
+
+    def watched_build(*args, **kwargs):
+        seen["entry"] = len(beats)
+        result = real_build(*args, **kwargs)
+        seen["exit"] = len(beats)
+        return result
+
+    monkeypatch.setattr(uc, "_build_candidate", watched_build)
+    with ua._locked(data_root) as heartbeat:
+        def counting():
+            beats.append(1)
+            return heartbeat()
+
+        assert uc.compact_usage_ledger_locked(data_root, heartbeat=counting) is not None
+    assert seen["exit"] > seen["entry"]   # the build itself renewed the hold
+    assert len(beats) > seen["exit"]      # and so did the verification after it
+
+
+def test_no_writer_can_append_between_the_snapshot_check_and_the_swap(data_root, monkeypatch):
+    """The compare->replace window is closed by the lock, not by luck."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    real_replace = os.replace
+    observed: dict = {}
+
+    def probing_replace(src, dst):
+        if pathlib.Path(dst) == ledger_path:
+            # The legitimate append path IS this acquisition; at the instant of
+            # the swap it must find the monetary lock held.
+            observed["free"] = platform_layer.acquire_exclusive_file_lock(
+                _lock_path(data_root), timeout_sec=0.2, stale_sec=3600.0,
+                poll_sec=0.02, owner_aware_stale=True,
+            )
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", probing_replace)
+    assert _compact(data_root) is not None
+    assert observed["free"] is None
+
+
+def test_every_ledger_writer_refuses_when_the_lock_cannot_be_taken(data_root, monkeypatch):
+    """No unlocked fallback: a lock that cannot be taken is a typed refusal.
+
+    An append that gave up on the lock and wrote anyway is exactly the second
+    writer the compaction snapshot cannot see."""
+    _settle(data_root, cost=1.0, cost_final=True)
+    reserved = ua.reserve_attempt(_request(data_root, task_id="probe"))
+    ledger_path = data_root / ua.LEDGER_REL
+    before = ledger_path.read_bytes()
+    monkeypatch.setattr(
+        platform_layer, "acquire_exclusive_file_lock", lambda *a, **k: None)
+    for write in (
+        lambda: ua.reserve_attempt(_request(data_root)),
+        lambda: ua.mark_dispatched(reserved),
+        lambda: ua.record_unmetered_external_dispatch(
+            "ext-locked", drive_root=data_root, model="m", task_id="t"),
+    ):
+        with pytest.raises(ua.UsageAccountingError):
+            write()
+    assert ledger_path.read_bytes() == before
+
+
+def test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt(data_root, monkeypatch):
+    """Post-verify: the receipt describes the bytes that are actually there."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    real_replace = os.replace
+
+    def lying_replace(src, dst):
+        real_replace(src, dst)
+        if pathlib.Path(dst) == ledger_path:
+            with open(dst, "ab") as handle:
+                handle.write(b'{"kind":"attempt","attempt_id":"late"}\n')
+
+    monkeypatch.setattr(os, "replace", lying_replace)
+    with ua._locked(data_root) as heartbeat:
+        with pytest.raises(UsageLedgerCorrupt):
+            uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
+
+
+
 # --- 5: CPL-5 join surface ---------------------------------------------------
 
 def test_every_attempt_id_stays_resolvable_across_chained_compactions(data_root):

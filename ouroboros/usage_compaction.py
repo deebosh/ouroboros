@@ -189,19 +189,39 @@ def _write_new_file_fsync(path: pathlib.Path, payload: bytes) -> None:
 
 
 def _swap_ledger_fsync(path: pathlib.Path, payload: bytes) -> None:
-    """Atomically replace the live ledger with the verified candidate bytes."""
+    """Atomically replace the live ledger with the verified candidate bytes.
+
+    The receipt this pass returns describes the bytes it approved, so the swap
+    proves they are the bytes now AT the path — a rename that reported success
+    without landing (or that something else immediately wrote over) must not
+    be logged as a completed compaction.
+    """
     _write_bytes_atomic_fsync(path, payload)
     _fsync_dir(path.parent)
+    landed = path.read_bytes()
+    if len(landed) != len(payload) or hashlib.sha256(landed).hexdigest() != hashlib.sha256(
+        payload
+    ).hexdigest():
+        raise UsageLedgerCorrupt(f"usage ledger swap did not land the approved bytes: {path}")
 
 
 def _beat(heartbeat: Optional[Callable[[], bool]]) -> None:
-    """Renew the held monetary lock's age at a pass checkpoint (never raises)."""
+    """Renew the held monetary lock at a checkpoint; ABORT if it is not ours.
+
+    The heartbeat answers ownership, and a pass that keeps working after the
+    lock left it is exactly the pass that swaps its snapshot over a charge the
+    new owner appended. So a ``False`` — or an answer we cannot get at all —
+    abandons the pass. That is never a failed reservation: the caller reads an
+    abort as "not compacted this time" and the ledger stays byte-identical.
+    """
     if heartbeat is None:
         return
     try:
-        heartbeat()
-    except Exception:  # a heartbeat failure must never fail a reservation
-        log.debug("usage-ledger lock heartbeat failed", exc_info=True)
+        owned = heartbeat()
+    except Exception as exc:
+        raise _Abort(f"monetary lock heartbeat failed: {type(exc).__name__}") from exc
+    if not owned:
+        raise _Abort("monetary lock ownership lost mid-pass")
 
 
 def _snapshot_intact(ledger_path: pathlib.Path, raw: bytes) -> bool:
@@ -376,8 +396,15 @@ def _foldable_attempt_ids(records: list) -> set:
 
 
 def _build_candidate(
-    records: list, decimal_records: list, raw: bytes
+    records: list, decimal_records: list, raw: bytes,
+    beat: Callable[[], None] = lambda: None,
 ) -> Tuple[bytes, Dict[str, Any]]:
+    """Fold ``records`` into the candidate bytes + commit receipt.
+
+    ``beat`` renews the held lock at the checkpoints of the two row walks: on
+    a multi-megabyte ledger this loop, not the commit, is where the pass can
+    outlive its own staleness window.
+    """
     foldable = _foldable_attempt_ids(records)
     decimal_finals = _final_rows(decimal_records)
     prior_header = next(
@@ -387,7 +414,9 @@ def _build_candidate(
     groups: Dict[Tuple[Any, ...], _Group] = {}
     folded_row_count = 0
     folded_attempt_count = 0
-    for attempt_id in foldable:
+    for index, attempt_id in enumerate(foldable):
+        if index % 4096 == 0:
+            beat()
         final = decimal_finals[attempt_id]
         if str(final.get("kind") or "") == "usage_baseline":
             continue  # the prior stamp is superseded, not aggregated
@@ -453,7 +482,9 @@ def _build_candidate(
     retained_lines: list = []
     retained_count = 0
     next_seq = 1 + len(group_rows)
-    for float_row, decimal_row in zip(records, decimal_records):
+    for index, (float_row, decimal_row) in enumerate(zip(records, decimal_records)):
+        if index % 4096 == 0:
+            beat()
         attempt_id = str(float_row.get("attempt_id") or "")
         kind = str(float_row.get("kind") or "attempt")
         if attempt_id in foldable or kind == "usage_baseline":
@@ -526,11 +557,11 @@ def compact_usage_ledger_locked(
     appended charge.
 
     Returns the commit receipt, or ``None`` when the pass aborts by policy
-    (nothing foldable, no byte gain, any verification inequality, or a live
-    ledger that changed under us) — an abort leaves the ledger byte-identical.
-    I/O errors during the commit steps propagate; the archive segment is
-    durable BEFORE the live file is touched, so a crash at any point leaves a
-    valid ledger.
+    (nothing foldable, no byte gain, any verification inequality, a live
+    ledger that changed under us, or a lock that stopped being ours) — an
+    abort leaves the ledger byte-identical. I/O errors during the commit steps
+    propagate; the archive segment is durable BEFORE the live file is touched,
+    so a crash at any point leaves a valid ledger.
     """
     root = pathlib.Path(_drive_root(root))
     ledger_path = root / LEDGER_REL
@@ -541,20 +572,27 @@ def compact_usage_ledger_locked(
         raw = ledger_path.read_bytes()
     except OSError:
         return None
+    def beat() -> None:
+        _beat(heartbeat)
+
     try:
         with _exact_money():
+            beat()
             float_rows, decimal_rows = _parse_ledger_lines(raw)
             if len(float_rows) != len(records):
                 raise _Abort("post-read line drift")
-            candidate, receipt = _build_candidate(float_rows, decimal_rows, raw)
+            candidate, receipt = _build_candidate(float_rows, decimal_rows, raw, beat)
             if len(candidate) >= len(raw):
                 raise _Abort("no byte gain")
+            beat()
             candidate_records, candidate_decimals = _parse_ledger_lines(candidate)
             _validate_records(candidate_records)
+            beat()
             finals_before = list(_final_rows(float_rows).values())
             finals_after = list(_final_rows(candidate_records).values())
             if _render_fingerprint(finals_before) != _render_fingerprint(finals_after):
                 raise _Abort("aggregation fingerprint mismatch")
+            beat()
 
             def decimal_totals(rows: list) -> Tuple[Decimal, Decimal]:
                 cost = Decimal(0)
@@ -584,17 +622,21 @@ def compact_usage_ledger_locked(
     # Commit: archive first (durable before the live file is touched). The
     # literal path chain here is the scanner-visible writer of the
     # archive/usage_ledger plane (docs/PERSISTENCE.md row).
-    _beat(heartbeat)
-    if not _snapshot_intact(ledger_path, raw):
-        log.warning("usage-ledger compaction abandoned before archive: ledger changed under the lock")
-        return None
-    segment_name = pathlib.PurePosixPath(receipt["archive_rel"]).name
-    _write_new_file_fsync(root / "archive" / "usage_ledger" / segment_name, raw)
-    _beat(heartbeat)
-    if not _snapshot_intact(ledger_path, raw):
-        # A row landed between the snapshot and here. Swapping now would erase
-        # it; the written segment is an orphan (harmless, never referenced).
-        log.warning("usage-ledger compaction abandoned before swap: ledger changed under the lock")
+    try:
+        beat()
+        if not _snapshot_intact(ledger_path, raw):
+            log.warning("usage-ledger compaction abandoned before archive: ledger changed under the lock")
+            return None
+        segment_name = pathlib.PurePosixPath(receipt["archive_rel"]).name
+        _write_new_file_fsync(root / "archive" / "usage_ledger" / segment_name, raw)
+        beat()
+        if not _snapshot_intact(ledger_path, raw):
+            # A row landed between the snapshot and here. Swapping now would
+            # erase it; the written segment is an orphan (never referenced).
+            log.warning("usage-ledger compaction abandoned before swap: ledger changed under the lock")
+            return None
+    except _Abort as abort:
+        log.info("usage-ledger compaction skipped: %s", abort.reason)
         return None
     _swap_ledger_fsync(ledger_path, candidate)
     try:
