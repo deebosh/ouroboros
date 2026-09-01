@@ -2906,3 +2906,73 @@ points 3/4/5 CLOSED. Dispositions:
    materialization helper and the non-creating path resolver live in
    extension_child_catalog.py (222), `_StagedCompanionSpawn.spec` in
    extension_registry_state.py (182).
+
+## From the F3.1 conformance fix-round-7 (base 267b71bf, 2026-09-01) — FINAL
+
+Round-7 verdict (GPT-5.6 Sol, read-only @ 267b71bf): NEEDS FIXES — ONE MEDIUM
+(the round-6 zero-filesystem-effects claim is still absolute while the
+liveness/grant projection legitimately reads settings/state pre-fence), ONE
+LOW (a transient hash error rotates a live valid token), ONE LOW (pin blind
+zones); verification points 2/3/6/8 CLOSED. This is the FINAL micro-round of
+the Ф3.1 conformance cycle; the cycle is declared converged after it.
+Dispositions:
+
+1. MEDIUM — pre-fence filesystem effects: SCOPED AS CLAIMS, deliberately NOT
+   fixed by rewriting the read layer. The pre-fence reads the verdict names —
+   `health_path` → creating `skill_state_dir` (extension_health.py /
+   skill_loader.py), the creating `skill_state_dir` inside
+   `load_skill_grants`, and `config.load_settings` (settings lock, possible
+   context-mode migration persist) inside `requested_core_setting_keys` — are
+   the RUNTIME-WIDE settings/grant read idiom, used identically by status
+   projections, the loader, skill exec and the UI; recovery merely calls the
+   same projections every other caller uses. Carving a non-creating,
+   non-locking read path through `skill_loader`/`config` for one caller would
+   fork the SSOT read layer (over-engineering for a refusal path whose reads
+   are idempotent infrastructure). Instead the false absolutes were removed:
+   `ExtensionStaleRecoveryError`'s docstring and the ADOPTION ABI-9 row now
+   state the exact contract — before the fence there are NO effects on
+   authorization/token/registries/bundles/companion-env; infrastructure
+   reads (settings lock inside `load_settings`, state-dir mkdir via the
+   grant/health projection) MAY occur, as anywhere in the runtime. The
+   round-6 sections above stay as written (append-only historical record);
+   their "zero effects hold on every filesystem plane" wording is superseded
+   by this scoped contract.
+2. LOW — transient hash error rotates a valid token: FIXED in
+   `mint_skill_token`. "Could not read/compute the hash" (transient) is now
+   DISTINCT from "read fine and mismatched / token file missing or corrupt"
+   (legitimate mint/rotate): on a transient `compute_content_hash` failure
+   the stored token, when it parses, is returned byte-for-byte unrotated
+   (`auth_token.json` untouched — the running companion whose spawn env
+   holds it stays authorized against the file the Host Service rereads per
+   request); with no reusable stored token the mint fails closed with the
+   typed `SkillTokenHashUnavailableError` instead of minting a token bound
+   to an empty hash. Pins:
+   test_transient_hash_error_never_rotates_a_valid_token (red pre-fix: the
+   old code collapsed the error to content_hash="" and rotated) and
+   test_transient_hash_error_without_reusable_token_fails_closed (red
+   pre-fix structurally — the typed error class arrives with the fix).
+   RESIDUAL DISCLOSED (pre-existing, NOT introduced by this cycle, not fixed
+   here): concurrent mints (publication attach / `get_skill_token` /
+   process-runner child env) are read-decide-write over `auth_token.json`
+   with no shared lock or CAS — the last writer can supersede a token just
+   returned to another caller.
+3. LOW — pin blind zones: FIXED by hardening
+   test_stale_recovery_with_env_from_settings_has_zero_filesystem_effects:
+   (a) the tripwire now covers BOTH seams — `skill_exec.load_settings`
+   (`_scrub_env`) and the direct `config.load_settings`
+   (`requested_core_setting_keys` and any other caller) — and measures
+   exactly the window "after the recovery's state-dir resolution, up to the
+   fence" (the counter clears where the interleave snapshot is taken), so
+   the legitimate pre-fence grant/liveness projection calls are not broken;
+   (b) `_data_root_tree` snapshots name + size + mtime_ns (an in-place
+   rewrite is now caught) and the settings lock file is asserted absent in
+   the window, with `SETTINGS_PATH` repointed test-locally so the assertion
+   cannot race a concurrent test process on the shared run-wide path;
+   (c) `EXT_DEMO_VALUE` is actually SET in the settings fixture, granted
+   (custom-secret key) and asserted DELIVERED in the materialized spawn env,
+   alongside the manifest companion env overlay (`EXT_OVERLAY`) and the
+   isolated-dep `PYTHONPATH` (a real `.ouroboros_env` site dir) — the
+   "settings-derived value silently lost" hole is closed.
+4. Size pins: extension_loader.py untouched at 1000/1000;
+   extension_plugin_api.py 1000 (<=1000 extraction pin, 600 <= plugin API
+   respected); extension_child_catalog.py untouched (222).
