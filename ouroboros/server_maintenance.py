@@ -164,22 +164,37 @@ def prune_agent_media_uploads(
     Readers already skip missing files (the eviction placeholder only formats
     a re-view hint), so a pruned screenshot degrades to a stale hint, never
     an error. Fail-soft per file.
+
+    CONTAINED (audit #15-13): the sweep deletes only REGULAR FILES that live
+    inside the real family directory. ``is_file()``/``stat()`` follow symlinks,
+    so a symlinked ``uploads/screenshots`` — or a single symlink inside it —
+    made an age sweep of the drive unlink old files anywhere on the host. Both
+    shapes are now skipped by ``lstat`` and counted, never followed.
     """
+    import stat as stat_module
+
     from ouroboros.retention import age_cutoff, get_gc_retention_days
 
     if retention_days is None:
         retention_days = get_gc_retention_days()
     cutoff = age_cutoff(retention_days, now)
-    report: dict = {"removed": 0, "kept": 0, "errors": 0}
+    report: dict = {"removed": 0, "kept": 0, "skipped": 0, "errors": 0}
     for family in ("screenshots", "views"):
         family_dir = pathlib.Path(drive_root) / "uploads" / family
         try:
-            entries = sorted(p for p in family_dir.iterdir() if p.is_file())
+            if family_dir.is_symlink():
+                report["skipped"] += 1  # the whole family points out of the drive
+                continue
+            entries = sorted(family_dir.iterdir())
         except OSError:
             continue
         for path in entries:
             try:
-                if path.stat().st_mtime >= cutoff:
+                info = path.lstat()
+                if not stat_module.S_ISREG(info.st_mode):
+                    report["skipped"] += 1  # symlink, directory or special file
+                    continue
+                if info.st_mtime >= cutoff:
                     report["kept"] += 1
                     continue
                 path.unlink()
@@ -286,7 +301,11 @@ def _startup_prune_sweeps() -> None:
         # CPL4-C21 (owner 6A): agent screenshots/views follow GC retention;
         # owner attachments in the uploads/ root are never touched.
         media_report = prune_agent_media_uploads(DATA_DIR)
-        if media_report.get("removed") or media_report.get("errors"):
+        if (
+            media_report.get("removed")
+            or media_report.get("skipped")
+            or media_report.get("errors")
+        ):
             append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
                 "type": "agent_media_prune",
