@@ -5246,3 +5246,38 @@ all four `OUROBOROS_*` env vars on a fresh mktemp root, chromium+webkit from
   manifests, the field is preserved as unknown (`plugin_api=None`), `validate()`
   is empty, and 6.113.5 has no PluginAPI negotiation/admission consumer — old
   installs are unaffected beyond the ordinary content-hash bump.
+
+## From the Windows-lane green + daemon-audit #16 fixes (base 196438c9)
+
+CI runs 33555971481 (9a28e58f) and 33563498919 (196438c9) were the first
+3-OS runs on the campaign branch: ubuntu and macos full-test green, the
+Windows full-test lane red on sixteen tests. Dispositions, one per class:
+
+| class | tests | disposition | commit |
+|---|---|---|---|
+| chmod(0) unreadable probes (POSIX-only) | update-tx marker; rc_audit skills/task_results | skip on Windows; `os.geteuid` guarded | tests commit |
+| open file cannot be unlinked (no FILE_SHARE_DELETE) | memory-journal replaced-source | skip on Windows | tests commit |
+| `signal.alarm` POSIX-only | telegram chunker ×2 (upstream-identical file) | pytest-timeout is the Windows guard | tests commit |
+| native separators | abi5 remnant scans ×1, golden credential listing | compare POSIX-relative paths | tests commit |
+| shlex eats backslashes | glued `git -C<path>` predicate pin | POSIX spellings; residual is upstream-owned (`git_shell_policy`), disclosed in the test | tests commit |
+| cp1252 decode/encode | message-bus chat.jsonl reads (upstream-identical file); `rc_audit --scope-only` (U+2261 in the scope text) | explicit utf-8 read; ASCII-escaped scope JSON | tests commit |
+| simulated `O_BINARY` stripped the real bit | byte-exact atomic-write pin `[fsync=True]` | pin the real bit where it exists, simulate only on POSIX | tests commit |
+| byte-exact writer vs `os.linesep` expectation | cybergym applied-settings verification (upstream-identical test; v7next writer contract) | expected bytes = the serialization | devtools commit |
+| `signal.Signals` knows only host signals | process-signal observability ×3 (`SIG9` ≠ `SIGKILL`) | one `platform_layer.posix_signal_name` SSOT; the runner's duplicate table removed | platform commit |
+
+Daemon audit #16 (sol, 22:11Z) — accepted findings landed here:
+- finding 5: `owner_quiz._mutate_projection` lacked the ABI-2 write guard
+  that `owner_hurry` carries → guard + stamp-on-write, red-first pin
+  (`tests/test_quiz_answer.py`);
+- finding 6 (partial): `supervisor.state.atomic_write_text` single
+  `os.write` → delegates to `utils.write_bytes_atomic` (write loop, fsync,
+  guard kept); the `view = view[os.write(fd, view):]` loops in
+  `skill_review_history` / `project_dialogue` were REJECTED — POSIX
+  `write()` returns 0 only for an empty buffer, the loop terminates.
+- finding 4 (C6 after three rounds): owner checkpoint raised in the same
+  batch; round 4 runs as a non-integrating lane until an independent PASS
+  and the owner's choice.
+- process findings 2/3/8/9 (uid-scoped pgrep, env on every python call,
+  separate gate calls, lane pools ≤ healthy profiles, per-delta code check
+  before merge) adopted as operator rules; full text in the coordinator
+  disposition file.
