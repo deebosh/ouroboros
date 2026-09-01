@@ -105,6 +105,42 @@ def _mark_failed(path: pathlib.Path, payload: Dict[str, Any], error: str) -> Non
     atomic_write_json(path, payload)
 
 
+def prune_failed_reconcile_markers(
+    drive_root: pathlib.Path,
+    retention_days: "int | None" = None,
+    *,
+    now: "float | None" = None,
+) -> Dict[str, Any]:
+    """Age-prune permanently failed reconcile markers (CPL4-C15).
+
+    A marker lands in ``failed/`` after ``MAX_ATTEMPTS`` and was kept forever;
+    the failure fact is already durable in events.jsonl, so past GC retention
+    the marker is a dead flag. Age by file mtime (written at the final
+    failure); a refused unlink keeps the file and reports.
+    """
+    from ouroboros.retention import age_cutoff, get_gc_retention_days
+
+    if retention_days is None:
+        retention_days = get_gc_retention_days()
+    cutoff = age_cutoff(retention_days, now)
+    report: Dict[str, Any] = {"removed": [], "kept": 0, "errors": []}
+    failed_root = _queue_root(drive_root) / "failed"
+    try:
+        entries = sorted(p for p in failed_root.glob("*.json") if p.is_file())
+    except OSError:
+        return report
+    for path in entries:
+        try:
+            if path.stat().st_mtime >= cutoff:
+                report["kept"] += 1
+                continue
+            path.unlink()
+            report["removed"].append(path.name)
+        except OSError:
+            report["errors"].append({"entry": path.name, "error": "remove_failed"})
+    return report
+
+
 def process_extension_reconcile_requests(
     drive_root: pathlib.Path,
     settings_reader: Callable[[], Dict[str, Any]],
@@ -190,5 +226,6 @@ __all__ = [
     "request_extension_reconcile",
     "list_extension_reconcile_requests",
     "process_extension_reconcile_requests",
+    "prune_failed_reconcile_markers",
     "extension_reconcile_pickup_loop",
 ]

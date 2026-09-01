@@ -192,6 +192,25 @@ def _startup_prune_sweeps() -> None:
             })
     except Exception:
         log.debug("Uninstalled-skill state sweep failed", exc_info=True)
+    try:
+        # CPL4-C14/C15: pure-cache and dead-marker age prunes (GC retention).
+        from ouroboros.code_intelligence import prune_stale_code_intel_roots
+        from ouroboros.extension_reconcile_queue import prune_failed_reconcile_markers
+
+        intel_report = prune_stale_code_intel_roots(DATA_DIR)
+        failed_report = prune_failed_reconcile_markers(DATA_DIR)
+        if (
+            intel_report.get("removed") or intel_report.get("errors")
+            or failed_report.get("removed") or failed_report.get("errors")
+        ):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "stale_cache_prune",
+                "code_intel": intel_report,
+                "extension_reconcile_failed": failed_report,
+            })
+    except Exception:
+        log.debug("Stale cache prune failed", exc_info=True)
 
 
 def _cursor_refresh_settled_terminals() -> None:

@@ -59,7 +59,9 @@ SUBROOT_ALIASES = {
 # 118 -> 120: the CPL4-C13 sweep enumerates the delegate_recovery /
 # delegate_recovery_transactions / delegate_supervision directories directly
 # (their per-file chains were already pinned; the dir prefixes are new).
-EXPECTED_SCAN_PATHS = 120
+# 120 -> 122: the CPL4-C14/C15 prunes enumerate state/code_intel and
+# state/extension_reconcile/failed the same way.
+EXPECTED_SCAN_PATHS = 122
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
