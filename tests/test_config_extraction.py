@@ -30,6 +30,9 @@ _MOVED_OWNERS = {
     "OWNER_STOP_OUTER_CAP_SEC": settings_defaults,
     "PACING_INTERVAL_DEFAULT_SEC": settings_defaults,
     "RETIRED_SETTING_KEYS": settings_defaults,
+    # ABI 7.0 (ABI-7b): the comma-list classification INSIDE the retirement
+    # SSOT, born in this leaf (not an extraction) for the RC auditor to snap.
+    "RETIRED_COMMA_LIST_SETTING_KEYS": settings_defaults,
     "SETTINGS_DEFAULTS": settings_defaults,
     "SETTINGS_KEYS_NOT_EXPORTED_TO_ENV": settings_defaults,
     "SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC": settings_defaults,

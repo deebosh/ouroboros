@@ -31,6 +31,7 @@ from ouroboros.settings_defaults import (
     OPENROUTER_REVIEW_DEFAULTS,  # noqa: F401
     OWNER_STOP_OUTER_CAP_SEC,  # noqa: F401
     PACING_INTERVAL_DEFAULT_SEC,  # noqa: F401
+    RETIRED_COMMA_LIST_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
     SETTINGS_DEFAULTS,  # noqa: F401
     SETTINGS_KEYS_NOT_EXPORTED_TO_ENV,  # noqa: F401

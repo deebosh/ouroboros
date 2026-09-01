@@ -340,6 +340,23 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
 )
 
 
+# ABI 7.0 (ABI-10) classification INSIDE RETIRED_SETTING_KEYS: the reviewer
+# comma-list / phase-5 route keys whose migration is "move the config to the
+# structured OUROBOROS_REVIEWER_SLOTS BEFORE the upgrade" (an install carrying
+# only comma keys gets the shipped default panel). The RC auditor
+# (scripts/rc_audit.py) snaps this list at execution time instead of hardcoding
+# it; membership in RETIRED_SETTING_KEYS is pinned by the auditor at runtime
+# (fail-closed) and by tests/test_rc_audit_fixture_suite.py.
+RETIRED_COMMA_LIST_SETTING_KEYS: tuple[str, ...] = (
+    "OUROBOROS_REVIEW_MODELS",
+    "OUROBOROS_SCOPE_REVIEW_MODELS",
+    "OUROBOROS_SCOPE_REVIEW_MODEL",
+    "OUROBOROS_REVIEW_ROUTES",
+    "OUROBOROS_SCOPE_REVIEW_ROUTES",
+    "OUROBOROS_ADVISORY_REVIEW_ROUTE",
+)
+
+
 # The same keys from the other side: load_settings overlays env onto disk-ABSENT keys, so without this an
 # ordinary load->save round-trip in a process whose env says low/off would launder that value onto disk
 # unauthorised — or, once the guard reads disk, raise a PermissionError nobody authored. Owner endpoints
