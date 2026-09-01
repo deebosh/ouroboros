@@ -525,7 +525,8 @@ def _children_roster_projection(
     ctx: ToolContext, status_drive_root: Path, *, limit: int = 30,
 ) -> Dict[str, Any]:
     """This parent's DIRECT children in the v6.71.2 compact field set (task_id/
-    status/cost_usd/sha/outcome_axes) — never result envelopes; missing
+    status/accounted_upper_bound_usd/sha/outcome_axes, ABI-3 honest name) —
+    never result envelopes; missing
     accounting projects null, never a confirmed-looking $0. The bound is
     DISCLOSED through the shared ``disclosed_list_projection`` (BIBLE P1): the
     payload carries ``children_roster`` plus ``children_roster_omitted``, the

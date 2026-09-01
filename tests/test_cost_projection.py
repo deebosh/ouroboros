@@ -265,3 +265,42 @@ class TestRestartRecoverySynthesis:
         assert "unknown" in _synthesis_cost_text(unknown)
         # A REAL zero still reads as a zero.
         assert _synthesis_cost_text({"cost": 0.0}) == "$0.00"
+
+
+class TestModelVisibleToolSurfaces:
+    """External-audit correction lane (base 8827fd2c), item 1: the wait_tasks
+    tool DESCRIPTION promised the model a ``cost_usd`` projection key while the
+    producer (control_task_results) emits the ABI-3 honest pair
+    ``accounted_upper_bound_usd`` + ``cost_final``. Model-visible tool text must
+    name the keys the projection actually carries — a description teaching the
+    model a removed alias is a lie the model then acts on."""
+
+    def test_wait_tasks_description_names_the_actual_projection_keys(self, tmp_path):
+        import pathlib
+
+        from ouroboros.tools.registry import ToolRegistry
+
+        repo_dir = pathlib.Path(__file__).resolve().parents[1]
+        registry = ToolRegistry(repo_dir=repo_dir, drive_root=tmp_path)
+        by_name = {t["function"]["name"]: t["function"] for t in registry.schemas()}
+        desc = by_name["wait_tasks"]["description"]
+        assert "cost_usd" not in desc
+        assert "accounted_upper_bound_usd" in desc
+        assert "cost_final" in desc
+
+    def test_no_builtin_tool_schema_teaches_the_removed_alias(self, tmp_path):
+        """Class-wide pin: NO builtin tool description or parameter doc may
+        mention the removed ``cost_usd`` spelling (``accounted_upper_bound_usd``
+        does not contain it, so honest names pass untouched)."""
+        import json as _json
+        import pathlib
+
+        from ouroboros.tools.registry import ToolRegistry
+
+        repo_dir = pathlib.Path(__file__).resolve().parents[1]
+        registry = ToolRegistry(repo_dir=repo_dir, drive_root=tmp_path)
+        offenders = [
+            t["function"]["name"] for t in registry.schemas()
+            if "cost_usd" in _json.dumps(t)
+        ]
+        assert offenders == []
