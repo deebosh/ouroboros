@@ -4839,3 +4839,57 @@ mock-lane, every scenario green on this host. Commits: 68b19a61 (W2-F2),
    window honestly instead of forging claim files on the real drive;
    delegated MUTATING-run scenarios (snapshot provisioning +
    integrate_delegated_patch + containment evidence) carried from wave 3b.
+
+## Q-F6-1 provenance investigation — findings (owner batch 7 №1, 2026-09-01)
+
+Commissioned by the owner («изучи подробнее по чатам тебя и кодекса, отправь
+скаут субагента opus-ов и перепроверь их результаты»). Two opus scouts
+(upstream provenance; transcript provenance) — every load-bearing claim below
+was re-verified by the coordinator against git objects, the GitHub API and the
+plan files.
+
+1. **Origin.** `_EXIT_CODE_RE` / `_SIGNAL_RE` are as old as the repository:
+   present in the initial app-bundle commit `6700358a` (2026-04-22,
+   loop_tool_execution.py:42-43). For four months the regex harvest over the
+   rendered result text was the ONLY source of `exit_code`/`signal` facts.
+   What appeared in the drift window was not the fallback but the TYPED
+   channel (`ouroboros/tools/process_facts.py`, commit `55af051e`, PR #404
+   «node-runtime sprint», merged 2026-08-30 20:01Z), which demoted the regex
+   to a documented fallback («read-fallback for records that lack typed meta»).
+2. **How it passed review — it was BORN of review.** The sprint's plan
+   decision D6 (owner «6. A») said «regex-механика остаётся»; the plan roast
+   reversed it: fable-5 finding #5 MAJOR («D7 classification must not hang on
+   string matching — BIBLE P5») + grok-4.6 #6/#7 MAJOR. Disposition R5 in
+   `~/.claude/plans/node-runtime-sprint/PLAN.md:199`: typed channel for
+   run_command/run_script; «regex остаётся только read-легаси для старых
+   записей». Five later internal waves (triad+scope 12 runs, two delta rounds,
+   full-scope sol) raised no objection to the retained fallback; the
+   adversarial reviewer of stream B caught «false red from prose» → typed facts
+   given precedence over the whole key family (`705ffc51`), fallback kept.
+   GitHub PR #404: 0 reviews, 0 comments; heavy CI jobs skipped — all review
+   authority was internal.
+3. **Two lines that did not know each other.** The v7 lane retired both
+   regexes on 2026-08-19 (`5440e407`, delta id D02: «the exact scrape a
+   producer-controlled stdout line could forge»), eleven days BEFORE PR #404
+   resurrected them as a fallback on mainline. The F6 sync collided the two
+   decisions; owner №1=A keeps the campaign contract (typed facts only).
+4. **Deeper gap the fallback masked.** On the upstream tip the regex ran
+   unconditionally for EVERY tool (a `signal=SIGKILL` inside a read_file
+   result forged a fact), and `run_command` status was recomputed on the
+   regex value BEFORE the typed merge (loop_tool_execution.py:629 vs :771).
+   Typed facts existed for exactly two tools. On this tree (regex gone) the
+   honest remaining «no fact» cases are: extension-child death signals
+   (extension_dispatch stamps typed codes but no exit_code/signal — closed by
+   deletion, not by typing), skill_exec/skill_preflight (preflight synthesizes
+   `-9` on timeout), verify_and_record (renders `exit=`, never stamped into
+   result_meta), timeout/pre-exec failures of run_command (by construction),
+   and Windows kills (structurally invisible to the POSIX signal partition).
+   The node-runtime sprint's unpublished issue drafts (`issue_drafts.md`
+   Issue 1-3) name the same stragglers.
+5. **Disposition.** №1=A stands. The typed-producer gaps in item 4 are a
+   candidate post-release train («typed process facts for extension children,
+   preflight and verify»), to be batched to the owner; the unpublished issue
+   drafts of the node-runtime sprint are surfaced to the owner separately.
+   Lesson recorded for AGENTS (proposal pending owner «ok»): before keeping a
+   legacy mechanism as a fallback, `git log --all -S<identifier>` — a parallel
+   line may already have retired it with a stated reason.
