@@ -38,6 +38,7 @@ import {
     resumeTaskAction,
     taskControlBusy,
 } from './task_control_menu.js';
+import { BoundedDetailMap, createChatLedgers } from './chat_ledgers.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import {
     captureLiveCardPhaseState,
@@ -493,7 +494,7 @@ export function createChatInstance({
     const markReviewAnchor = (r, on = false) => setReviewAnchor(r, on, setLiveCardPhase);
     const explicitCardExpansion = new Map();
     const reviewDisclosureByTask = new Map();
-    const skillReviewDetailStore = new Map();
+    const skillReviewDetailStore = new BoundedDetailMap();
     const reviewHydrator = createReviewHydrator({
         fetchDetail: fetchTaskDetailStrict,
         applyDetail: (id, detail) => !destroyed && attachTaskDetailReviews(id, detail),
@@ -513,7 +514,6 @@ export function createChatInstance({
     // Bounded conclusions block late root typing and stale state snapshots; reusable
     // logical task slots are cleared whenever their cycle settles.
     const concludedDirectActivities = new Map();
-    const CONCLUDED_ACTIVITY_LEDGER_MAX = 200;
     // Retryable queue-loss candidates plus process-local single-flight reads.
     const missingManagedTaskIds = new Set();
     const managedTaskDetailReads = new Set();
@@ -529,27 +529,43 @@ export function createChatInstance({
         }
     }
 
-    function recordConcludedActivity(activityId) {
-        const aid = taskKey(activityId);
-        if (!aid) return;
-        missingManagedTaskIds.delete(aid);
-        concludedDirectActivities.delete(aid);
-        concludedDirectActivities.set(aid, Date.now());
-        while (concludedDirectActivities.size > CONCLUDED_ACTIVITY_LEDGER_MAX) {
-            const oldest = concludedDirectActivities.keys().next().value;
-            concludedDirectActivities.delete(oldest);
-        }
-    }
-    function recordTerminalActivity(taskId) {
-        const id = taskKey(taskId);
-        if (!id) return;
-        activeDirectActivities.delete(id);
-        missingManagedTaskIds.delete(id);
-        if (REUSABLE_TASK_IDS.has(id)) concludedDirectActivities.delete(id);
-        else recordConcludedActivity(id);
-    }
     // Finished task ids hidden from routine syncs until reload/reconnect rebuilds history.
     const retiredTaskIds = new Set();
+    // `cancelable` marker (queue tasks the cancel endpoint can genuinely reach).
+    // Learned from live WS frames and history replay alike, possibly before the
+    // card exists, so it lives beside the card records rather than on them.
+    const cancelableTaskIds = new Set();
+    // Bounded per-task ledger keepers (issue #135), extracted to chat_ledgers.js
+    // at chat.js's shrink-only byte-ratchet boundary; destructuring keeps the
+    // original call names.
+    const subagentChildParents = new Map();
+    const subagentTerminalChildren = new Set();
+    const {
+        recordConcludedActivity, recordTerminalActivity,
+        scheduleTaskUiCleanup, evictFinishedCardsOverCap,
+    } = createChatLedgers({
+        taskKey,
+        liveCardRecords,
+        taskUiStates,
+        retiredTaskIds,
+        explicitCardExpansion,
+        reviewDisclosureByTask,
+        skillReviewDetailStore,
+        pendingSuggestedNames,
+        cancelableTaskIds,
+        concludedDirectActivities,
+        activeDirectActivities,
+        missingManagedTaskIds,
+        subagentChildParents,
+        reviewHydrator,
+    });
+    function runLedgerEviction() {
+        withStableViewport(() => {
+            for (const evictedId of evictFinishedCardsOverCap()) {
+                if (activeLiveGroupId === evictedId) activeLiveGroupId = '';
+            }
+        });
+    }
     // The owner's last main-chat request, handed to the next live card it spawns so a
     // "turn into project" conversion can name the project from it (P1).
     let _pendingCardObjective = '';
@@ -814,19 +830,6 @@ export function createChatInstance({
         return createIfMissing ? createTaskUiState(taskId) : null;
     }
 
-    function scheduleTaskUiCleanup(taskState, delayMs = 120000) {
-        if (!taskState) return;
-        if (taskState.cleanupTimer) clearTimeout(taskState.cleanupTimer);
-        taskState.cleanupTimer = setTimeout(() => {
-            taskUiStates.delete(taskState.taskId);
-            // Keep the finished card interactive, but mark it retired so routine
-            // syncs do not rebuild duplicates. Reload/reconnect clears this set.
-            if (!REUSABLE_TASK_IDS.has(taskState.taskId) && taskState.taskId !== '') {
-                retiredTaskIds.add(taskState.taskId);
-            }
-        }, delayMs);
-    }
-
     function bufferLiveUpdate(taskState, summary, ts, dedupeKey = '', rawTs = '') {
         if (!taskState || !summary) return;
         taskState.bufferedLiveUpdates.push({
@@ -964,11 +967,6 @@ export function createChatInstance({
     }
 
     // v6.82 (P5): task ids whose progress carried the supervisor's host-attested
-    // `cancelable` marker (queue tasks the cancel endpoint can genuinely reach).
-    // Learned from live WS frames and history replay alike, possibly before the
-    // card exists, so it lives beside the card records rather than on them.
-    const cancelableTaskIds = new Set();
-
     function queueTaskLiveUpdate(summary, taskId, ts, dedupeKey = '', rawTs = '') {
         return withStableViewport(() => queueTaskLiveUpdateMutation(
             summary, taskId, ts, dedupeKey, rawTs,
@@ -1240,7 +1238,9 @@ export function createChatInstance({
     // so the main chat is freed — the card stops being a busy red task and
     // recolors to the project fuchsia. Plain wording (no "ack"); click opens the panel.
     function markCardConverted(record, project) {
-        return withStableViewport(() => markCardConvertedMutation(record, project));
+        const result = withStableViewport(() => markCardConvertedMutation(record, project));
+        runLedgerEviction();
+        return result;
     }
 
     function markCardConvertedMutation(record, project) {
@@ -1549,6 +1549,7 @@ export function createChatInstance({
             }
         });
         liveCardRecords.set(normalizedGroupId, record);
+        runLedgerEviction();
         // Cluster B: apply a name that arrived (task_named) before this card existed.
         const _pendingName = pendingSuggestedNames.get(normalizedGroupId);
         if (_pendingName && !record.isSubagent) {
@@ -1869,9 +1870,11 @@ export function createChatInstance({
     }
 
     function applyLiveCardState(summary, groupId, ts, dedupeKey = '', options = {}) {
-        return withStableViewport(() => applyLiveCardStateMutation(
+        const result = withStableViewport(() => applyLiveCardStateMutation(
             summary, groupId, ts, dedupeKey, options,
         ));
+        runLedgerEviction();
+        return result;
     }
 
     function applyLiveCardStateMutation(summary, groupId, ts, dedupeKey = '', { suppressDomInsert = false, rawTs = '' } = {}) {
@@ -2070,7 +2073,11 @@ export function createChatInstance({
     }
 
     function finishLiveCard(groupId = '', phase = '') {
-        return withStableViewport(() => finishLiveCardMutation(groupId, phase));
+        const result = withStableViewport(() => finishLiveCardMutation(groupId, phase));
+        // A settle can push the finished population over the cap without any
+        // new card being created; keep the bound maintained, not edge-triggered.
+        runLedgerEviction();
+        return result;
     }
 
     function finishLiveCardMutation(groupId = '', phase = '') {
@@ -2173,10 +2180,10 @@ export function createChatInstance({
     // child task_id -> { parentId, role }, learned from subagent lifecycle pings.
     // Child cards are mounted under the parent card, but their phase/terminal
     // state is independent so a finished child cannot mark the parent done.
-    const subagentChildParents = new Map();
+
     // Children whose card has reached a terminal phase — late non-lifecycle
     // progress for these must NOT revive it back to "working".
-    const subagentTerminalChildren = new Set();
+
 
     // E2 (v6.39 UI): merge a subagent's parent/role/model, PRESERVING a previously-seen model
     // when a later (model-less) event — e.g. a synthesized terminal — updates the entry, so the

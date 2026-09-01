@@ -214,10 +214,10 @@ BAND_PATHS = {
     "web/modules/harness_accounts.js": None,
     "web/modules/log_events.js": None,
     "web/modules/onboarding_wizard.js": "Shrank INTO the band: the Claude Runtime onboarding card and its /api/claude-code/* polling were deleted with the retired transport (owner-approved Q4); no new content was added.",
-    "web/modules/review_presentation.js": "Review Checkpoint read-side grouping, lifecycle/verdict separation, and keyed disclosure reconciliation remain one pure adapter below the 1500-line band cap.",
     "web/modules/reviewer_slots.js": "Owner-approved 5A editor: per-row Direct model / Configured subagent source picker with read-only derived disclosure replaces the legacy Claude-SDK advisory input in the same module that owns reviewer-row editing.",
     "web/modules/settings.js": None,
     "web/modules/widgets.js": None,
+    "web/tests/chat_instance_dom.test.js": "Entered the band with the issue-135 ledger-eviction integration test: the in-file DOM stub harness is the one place a real createChatInstance can be driven end to end, and the eviction contract (finished cards leave the transcript with their records at the cap) belongs beside the other instance-level DOM pins.",
     "web/tests/harness_login_cards.test.js": "Login-card suite grew past 1000 lines with the name-the-account face cases (agy pickup, issue #232); split when the next face lands.",
     "web/tests/review_presentation.test.js": "Review Checkpoint lifecycle and verdict reconciliation remain covered by one focused presentation suite.",
 }
@@ -235,5 +235,5 @@ BYTE_DEBT = {
     "ouroboros/loop.py": 284435,
     "tests/test_delegated_subagent_transport.py": 320337,
     "tests/test_devtools_benchmarks.py": 328116,
-    "web/modules/chat.js": 208394,
+    "web/modules/chat.js": 208366,
 }

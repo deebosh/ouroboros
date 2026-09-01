@@ -19,7 +19,7 @@ launcher.py (PyWebView)       ← desktop window, release-reviewed outer shell (
 server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (default localhost:8765; Docker/non-loopback supported via OUROBOROS_SERVER_HOST=0.0.0.0)
   │
   ├── web/                     ← Web UI (SPA with ES modules in web/modules/)
-  │   └── modules/review_presentation.js, review_dom_patch.js, and harness_presentation.js ← Review Checkpoint grouping/status, keyed DOM reconciliation, and neutral harness identity presentation; read-side only
+  │   └── modules/review_presentation.js, review_dom_patch.js, and harness_presentation.js ← Review Checkpoint grouping/status, keyed DOM reconciliation, and neutral harness identity presentation; read-side only. modules/chat_ledgers.js ← bounded per-task presentation ledgers for a chat instance (live-card cap with finished-only DOM-and-record eviction, job-keyed review-detail FIFO, terminal-activity keepers) — extracted from chat.js at its shrink-only byte-ratchet boundary
   │
   ├── supervisor/              ← Background thread inside server.py
   │   ├── active_activity.py   ← In-memory thread-safe registry (`DirectActivityRegistry`, `track_direct_activity`) for in-flight direct and ephemeral chat turns; feeds `/api/state` (`active_direct_turns`) and WS typing frames with `activity_id`, `client_message_id`, `phase`, and `kind` without creating supervisor queue records
