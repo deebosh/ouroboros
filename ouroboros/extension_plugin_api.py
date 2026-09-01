@@ -85,13 +85,15 @@ log = logging.getLogger(__name__)
 class ExtensionStaleRecoveryError(ExtensionRegistrationError):
     """Typed refusal of a generation-bound recovery publication (ABI-9).
 
-    Raised BEFORE any mutation when ``require_live_generation`` names a
-    publication that is no longer live (the bundle vanished or was reloaded):
-    the refusal has zero effects — no bundle is created, nothing is staged
-    into the registries, the companion auth token (``auth_token.json``) is
-    neither created nor rotated, no settings read/lock or state directory is
-    materialized (fix-round-6), and nothing may be disposed by the caller.
-    """
+    Raised when ``require_live_generation`` names a publication that is no
+    longer live (the bundle vanished or was reloaded). The refusal has no
+    effects on authorization, registries, bundles, or the companion env: no
+    bundle is created, nothing is staged, ``auth_token.json`` is neither
+    created nor rotated, no companion env is materialized, and nothing may be
+    disposed by the caller. Infrastructure reads on the way to the fence (the
+    settings lock inside ``load_settings``, a state-dir mkdir via the
+    liveness/grant projection) may occur — the same settings/grant read idiom
+    used everywhere in the runtime (fix-round-7 scope)."""
 
 
 def current_execution_mode() -> ExecutionMode:
@@ -121,6 +123,11 @@ def _reject_extension_child_side_effect(capability: str) -> None:
         )
 
 
+class SkillTokenHashUnavailableError(ExtensionRegistrationError):
+    """Fail-closed mint refusal (fix-round-7): the content hash could not be
+    computed and no previously issued token exists to reuse."""
+
+
 def mint_skill_token(state_dir: pathlib.Path, skill_name: str, skill_dir: Optional[pathlib.Path]) -> str:
     """Read or rotate the per-skill Host Service token, bound to the content hash.
 
@@ -128,6 +135,7 @@ def mint_skill_token(state_dir: pathlib.Path, skill_name: str, skill_dir: Option
     child env builder, and the post-fence companion-env materialization inside
     ``_publish_registrations``. This WRITES ``auth_token.json`` when the token
     is missing or hash-stale: a generation-fenced path calls it only post-fence.
+    A transient hash failure never rotates: reuse or fail closed (fix-round-7).
     """
     token_path = pathlib.Path(state_dir) / AUTH_TOKEN_FILENAME
     payload = read_json_dict(token_path) or {}
@@ -136,8 +144,18 @@ def mint_skill_token(state_dir: pathlib.Path, skill_name: str, skill_dir: Option
     if skill_dir is not None:
         try:
             content_hash = compute_content_hash(pathlib.Path(skill_dir))
-        except Exception:
-            content_hash = ""
+        except Exception as exc:
+            # Fix-round-7: "could not read/compute" is DISTINCT from "read fine
+            # and mismatched" (legit rotation) and from a missing/corrupt token
+            # file (legit mint); rotating here would de-authorize a running
+            # companion whose spawn-env token is still valid.
+            if token:
+                log.warning("skill %s content hash unavailable; reusing the existing token unrotated", skill_name, exc_info=True)
+                return token
+            raise SkillTokenHashUnavailableError(
+                f"skill {skill_name!r}: content hash could not be computed and "
+                f"no previously issued token exists; refusing to mint"
+            ) from exc
     if not token or str(payload.get("content_hash") or "") != content_hash:
         token = secrets.token_urlsafe(32)
         atomic_write_json(

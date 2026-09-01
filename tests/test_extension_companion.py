@@ -572,57 +572,96 @@ def test_stale_recovery_does_not_break_live_publication_authorization(
 
 
 def _data_root_tree(root: pathlib.Path) -> list:
-    return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+    # Names AND content identity (size + mtime): a rewrite-in-place of an
+    # existing file is a mutation this snapshot must catch (fix-round-7).
+    out = []
+    for path in sorted(root.rglob("*")):
+        stat = path.stat()
+        out.append((str(path.relative_to(root)), stat.st_size, stat.st_mtime_ns))
+    return out
 
 
 def test_stale_recovery_with_env_from_settings_has_zero_filesystem_effects(
     tmp_path: pathlib.Path, monkeypatch,
 ) -> None:
-    """Ф3.1 fix-round-6 pin (MEDIUM): with an ``env_from_settings`` manifest
-    the pre-fence descriptor build stays purely computational — no
-    ``load_settings`` read (its lock-file create/unlink and possible settings-
-    migration persistence) and no state-directory creation happen before the
-    generation fence, so a stale refusal leaves the data root's file tree
-    identical. The settings-derived env, the state dir and the auth token
-    materialize only in the post-fence attach — proved on the initial
-    publication's spawn env. Pre-fix, ``register_companion_process`` called
-    ``_scrub_env`` (-> ``load_settings``) during descriptor build and the
-    recovery entry resolved the state dir with a creating ``mkdir``."""
+    """Ф3.1 fix-round-6 pin (MEDIUM), hardened in fix-round-7: after the
+    recovery's state-dir resolution and before the generation fence there is
+    no ``load_settings`` read at EITHER seam (``skill_exec.load_settings``
+    used by ``_scrub_env`` and the direct ``config.load_settings`` used by
+    the grant projection — the legitimate pre-fence grant/liveness projection
+    calls land before the tripwire arms), no settings-lock file appears, and
+    the data-root tree is identical by name, size and mtime. The
+    settings-derived value, the manifest companion env overlay, the isolated
+    PYTHONPATH, the state dir and the auth token materialize only in the
+    post-fence attach — proved on the initial publication's spawn env."""
     init_server_process_pid()
-    loaded, repo_root, drive_root = _reviewed_companion_skill(
-        tmp_path, extra_frontmatter="env_from_settings: [EXT_DEMO_VALUE]\n",
-    )
-    fake = _patch_supervisor(monkeypatch)
+    import ouroboros.config as config_mod
     import ouroboros.tools.skill_exec as skill_exec
 
+    # Repoint settings beside this test so the lock-file assertion cannot race
+    # a concurrent test process sharing the run-wide settings path.
+    monkeypatch.setattr(config_mod, "SETTINGS_PATH", tmp_path / "settings.json")
     settings_calls: list = []
-    real_load_settings = skill_exec.load_settings
+    real_load_settings = config_mod.load_settings
 
     def _counted_load_settings():
         settings_calls.append(1)
-        return real_load_settings()
+        settings = dict(real_load_settings())
+        settings["EXT_DEMO_VALUE"] = "demo-from-settings"
+        return settings
 
+    # Both seams: skill_exec's bound reference (_scrub_env) and the direct
+    # config attribute (requested_core_setting_keys and any other caller).
+    monkeypatch.setattr(config_mod, "load_settings", _counted_load_settings)
     monkeypatch.setattr(skill_exec, "load_settings", _counted_load_settings)
+
+    loaded, repo_root, drive_root = _reviewed_companion_skill(
+        tmp_path, extra_frontmatter=(
+            "    env:\n"
+            "      EXT_OVERLAY: from-manifest\n"
+            "env_from_settings: [EXT_DEMO_VALUE]\n"
+        ),
+    )
+    # An isolated-dep site dir so the spawn env must carry PYTHONPATH
+    # (.ouroboros_env is outside the content hash by construction).
+    site_dir = loaded.skill_dir / ".ouroboros_env" / "python" / "lib" / "python3.12" / "site-packages"
+    site_dir.mkdir(parents=True)
+    # EXT_DEMO_VALUE present in settings = custom secret; grant it.
+    from ouroboros.skill_loader import save_skill_grants
+
+    save_skill_grants(
+        drive_root, loaded.name, ["EXT_DEMO_VALUE"],
+        content_hash=loaded.content_hash, requested_keys=["EXT_DEMO_VALUE"],
+    )
+    fake = _patch_supervisor(monkeypatch)
+    lock_path = pathlib.Path(str(config_mod.SETTINGS_PATH) + ".lock")
     try:
         assert extension_loader.load_extension(
             loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
         ) is None
-        # The initial publication DID materialize the env — post-fence.
+        # The initial publication DID materialize the env — post-fence — and
+        # actually DELIVERED every plane: the settings-derived value, the
+        # manifest overlay, the isolated PYTHONPATH and the bridge keys.
         assert settings_calls, "publication must read settings for env_from_settings"
         env = fake.started[0].env
         assert env["OUROBOROS_SKILL_NAME"] == loaded.name
         assert env["HOST_SERVICE_TOKEN"]
         assert env["HOST_SERVICE_URL"].startswith("http://")
+        assert env["EXT_DEMO_VALUE"] == "demo-from-settings"
+        assert env["EXT_OVERLAY"] == "from-manifest"
+        assert str(site_dir.resolve()) in (env.get("PYTHONPATH") or "")
 
         real_state_path = extension_loader.skill_state_path
         snapshot: dict = {}
 
         def _unload_wins_and_snapshots(drive_root_arg, skill_name_arg):
             # Deterministic interleave (as in the round-4 pin), plus the
-            # tripwires armed exactly at the recovery's state-dir resolution.
+            # tripwires armed exactly at the recovery's state-dir resolution:
+            # the measured window is "after this snapshot, up to the fence".
             extension_loader.unload_extension(skill_name_arg)
             settings_calls.clear()
             snapshot["tree"] = _data_root_tree(drive_root_arg)
+            assert not lock_path.exists()
             return real_state_path(drive_root_arg, skill_name_arg)
 
         monkeypatch.setattr(extension_loader, "skill_state_path", _unload_wins_and_snapshots)
@@ -634,12 +673,83 @@ def test_stale_recovery_with_env_from_settings_has_zero_filesystem_effects(
         assert settings_calls == [], (
             "stale recovery read settings pre-fence (lock file / migration hazard)"
         )
+        assert not lock_path.exists(), "settings lock file left behind in the window"
         assert _data_root_tree(drive_root) == snapshot["tree"], (
             "stale recovery mutated the data root at/before its refusal"
         )
     finally:
         extension_loader.unload_extension(loaded.name)
         init_server_process_pid()
+
+
+def test_transient_hash_error_never_rotates_a_valid_token(
+    tmp_path: pathlib.Path, monkeypatch,
+) -> None:
+    """Ф3.1 fix-round-7 pin (LOW): a transient hash/read failure inside
+    ``mint_skill_token`` reuses the stored valid token BYTE-FOR-BYTE instead
+    of rotating it — the running companion whose spawn env holds that token
+    stays authorized end-to-end. Pre-fix, any hash error collapsed to
+    ``content_hash=\"\"``, mismatched the stored hash and rotated the live
+    token, de-authorizing the running companion instantly."""
+    init_server_process_pid()
+    loaded, repo_root, drive_root = _reviewed_companion_skill(tmp_path)
+    fake = _patch_supervisor(monkeypatch)
+    try:
+        assert extension_loader.load_extension(
+            loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
+        ) is None
+        env_token = fake.started[0].env["HOST_SERVICE_TOKEN"]
+        state_dir = extension_loader.skill_state_path(drive_root, loaded.name)
+        token_path = state_dir / host_service.AUTH_TOKEN_FILENAME
+        before = token_path.read_bytes()
+
+        def _transient_failure(*_args, **_kwargs):
+            raise OSError("transient read failure")
+
+        monkeypatch.setattr(
+            extension_plugin_api, "compute_content_hash", _transient_failure,
+        )
+        token = extension_plugin_api.mint_skill_token(
+            state_dir, loaded.name, loaded.skill_dir,
+        )
+        assert token == env_token
+        assert token_path.read_bytes() == before, (
+            "transient hash error rotated a live valid token"
+        )
+        # End-to-end: the running companion's spawn-env token still authorizes.
+        monkeypatch.setattr(
+            host_service, "find_skill",
+            lambda data_dir, name: find_skill(
+                data_dir, name, repo_path=str(repo_root),
+            ),
+        )
+        ctx = host_service.HostServiceContext(data_dir=drive_root)
+        authed_name, payload = ctx.authenticate_token_payload(env_token)
+        assert authed_name == loaded.name
+        assert payload["token"] == env_token
+    finally:
+        extension_loader.unload_extension(loaded.name)
+        init_server_process_pid()
+
+
+def test_transient_hash_error_without_reusable_token_fails_closed(
+    tmp_path: pathlib.Path, monkeypatch,
+) -> None:
+    """Ф3.1 fix-round-7 pin (LOW): with no reusable stored token, a transient
+    hash failure is a typed fail-closed refusal — never a token minted
+    against an empty content hash."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    def _transient_failure(*_args, **_kwargs):
+        raise OSError("transient read failure")
+
+    monkeypatch.setattr(
+        extension_plugin_api, "compute_content_hash", _transient_failure,
+    )
+    with pytest.raises(extension_plugin_api.SkillTokenHashUnavailableError):
+        extension_plugin_api.mint_skill_token(state_dir, "demo", tmp_path / "skill")
+    assert not (state_dir / host_service.AUTH_TOKEN_FILENAME).exists()
 
 
 def test_generation_bound_disposal_skips_a_newer_publication(
