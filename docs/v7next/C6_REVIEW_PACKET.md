@@ -9,6 +9,11 @@ Round 2 (§6) is the fix-round for the external adversarial wave against
 `e2801c52`. Round 3 (§7) is the fix-round for the second wave, against
 `830aa35a`: five findings were re-opened as still-open (1, 2, 3, 4, 6) and
 all five are fixed here; four (5, 7, 8, 9) the wave confirmed closed.
+Round 4 (§8) is the fix-round for the third wave, against `d7b487ab`: the
+lock's exclusion becomes kernel-enforced, ownership is proven adjacent to
+every irreversible decision, the swap re-proves its snapshot inside the
+atomic replace, and the archive symlink bound moves from check-then-use to
+the open itself (dir-fd `O_NOFOLLOW`).
 
 ## 1. Diff map (what to read, in review order)
 
@@ -24,8 +29,8 @@ all five are fixed here; four (5, 7, 8, 9) the wave confirmed closed.
 | `ouroboros/domains.toml`, `docs/DOMAIN_MAP.md` | new module seated D16; graph regenerated via `check_domains.py --write` | manifest completeness gate |
 | `docs/PERSISTENCE.md` | usage-ledger row rewritten (bounded by compaction); NEW `archive/usage_ledger/segment_*.jsonl` row | inventory truth; scan pin 123→124 in `tests/test_persistence_inventory.py` |
 | `tests/test_gateway_abi3_removals.py` | one per-site allowlist row | `_build_candidate` writes the internal ledger-plane `cost_usd` key (same class as every existing ledger writer row there) |
-| `tests/test_usage_compaction.py` | NEW pin suite (43 tests after round 3; the suite entered the 1001-1500 size band with a recorded rationale) | see §3, §6 and §7 |
-| `tests/test_lockfile_helpers.py` | +5 lock-ownership pins | the round-3 finding-1 fixes are platform primitives, so they are pinned where those primitives live |
+| `tests/test_usage_compaction.py` | NEW pin suite (49 tests after round 4 and its verification; the suite entered the 1001-1500 size band with a recorded rationale) | see §3, §6, §7 and §8 |
+| `tests/test_lockfile_helpers.py` | +5 lock-ownership pins in round 3, +2 in round 4 | the finding-1 fixes are platform primitives, so they are pinned where those primitives live |
 | `ouroboros/platform_layer.py` | lock ownership: `_lock_identity`, inode-guarded stale eviction and release, ownership-reporting heartbeat | round 3, finding 1 |
 | `ADOPTION_v7next.md` | CPL-4 row: C6 landed + verification hook | adoption gate |
 | `docs/v7next/LEDGER_CORRECTIONS.md` | append-only C6 lane section | provenance |
@@ -95,6 +100,15 @@ all five are fixed here; four (5, 7, 8, 9) the wave confirmed closed.
   durability of the directory chain, the archive epoch anchor and its orphan
   tolerance, source-range provenance, the segment-cache windows, and archive
   symlink bounds (§7)
+- round 4 and its verification add eight (two of them in
+  `tests/test_lockfile_helpers.py`): two racing reclaimers yield at most one
+  holder, a heartbeat after an atomic replacement of the lock file answers
+  False, an append between the pre-swap re-check and the rename aborts
+  without loss, a hold lost at the archive is seen before the snapshot
+  re-check is even asked, a hold lost after the re-check aborts before the
+  swap, a hold lost WHILE the candidate temp is written refuses the replace
+  (the verification round's panel fix), and a link planted after the bound
+  check can neither receive (writer) nor serve (reader) history (§8)
 
 Mutation-probed red (not just green-once): `_summary` weight math, group-sum
 rounding, folding of dispatched rows — each flips at least one pin.
@@ -171,6 +185,17 @@ rounding, folding of dispatched rows — each flips at least one pin.
    file dropped into the archive cannot deny service to the whole history.
    Every segment an answer actually depends on is still fully verified by the
    chain walk.
+10. **Kernel enforcement has platform tiers** (round 4): on POSIX the lock is
+    flock-held and a live-but-WEDGED holder can no longer be evicted by age —
+    the deliberate trade of an availability incident (the wedged writer must
+    die first) for the correctness incident (age-evicting a live monetary
+    writer). Windows cannot unlink an open file and has no `dir_fd`/
+    `O_DIRECTORY`; filesystems without kernel-lock support (bare NFS) refuse
+    the flock with a typed errno. Both tiers keep the round-3
+    identity-re-check shapes as a best effort chosen by the platform
+    predicate — disclosed here, never an exception swallowed. The epoch
+    anchor's first-line reads (`_no_newer_archived_epoch`) stay path-based:
+    they can only ever ADD a corruption verdict, never serve history.
 
 ## 6. Round 2 — adversarial wave disposition (fix-round base `e2801c52`)
 
@@ -235,3 +260,92 @@ ownership in `platform_layer` + its pins; the pass consuming ownership
 (heartbeat abort, span checkpoints, post-swap verify); the unconditional
 directory chain; the archive epoch anchor + source-range provenance; the
 segment-cache shelf life; the archive symlink bound.
+
+## 8. Round 4 — third adversarial wave disposition (fix-round base `d7b487ab`)
+
+Verdict of the third wave: NEEDS FIXES. It judged the round-3 ownership and
+bound fixes still short of the contract in four ways — the exclusion itself
+was still only a name protocol, ownership was not proven adjacent to the
+decisions it licenses, the recheck→replace gap remained, and the symlink
+bound was still check-then-use. **All four accepted and fixed**; nothing was
+argued away.
+
+| # | what round 3 left open | fix | red-first pin |
+|---|---|---|---|
+| 1 | exclusion rested on the O_EXCL name protocol: the stale eviction re-checked the inode and then unlinked the PATH (a pause between the re-check and the unlink lets a second reclaimer remove the first one's freshly won lock — two writers on one monetary authority), and the release had the same window between its look and its unlink | the lock fd HOLDS a kernel lock (`fcntl.flock`; `LockFileEx` on Windows) from acquisition; a stale lock is evicted only while flock-holding the very fd that was judged, with the path re-checked under that hold, and a release unlinks BEFORE its close, under the still-held flock. Windows (no unlink of an open file) and filesystems without kernel locks keep the re-check-then-unlink shape as a best effort chosen by the platform predicate — disclosed, never an exception swallowed | `test_two_racing_reclaimers_never_yield_two_holders` (both reclaimers herded into the check-to-unlink window; RED on the round-3 code with both returning descriptors); `test_heartbeat_after_an_atomic_swap_of_the_lock_reports_false` (the path never absent, so an existence check would renew; red against the utime-only mutation) — both in `tests/test_lockfile_helpers.py` |
+| 2 | the pre-swap re-check and the rename were separated by the tmp write and fsync: a row appended in that gap was erased by the swap, receipt and all | `_write_bytes_atomic_fsync` takes a `precondition` evaluated after the temp bytes are durable, immediately before `os.replace` — the last instant the replace can still be refused; the compactor passes `_snapshot_intact`, so the pass aborts with the ledger (and the landed row) byte-identical | `test_an_append_between_the_recheck_and_the_replace_aborts_without_loss` (RED on `d7b487ab`: the row was erased and a receipt returned; now the pass returns `None`, the row survives, money = before + that row, no temp residue) |
+| 3 | ownership was beaten through the span but not adjacent to the decisions: nothing proved the hold immediately before the snapshot re-checks, and nothing at all between the final re-check and the swap | `beat()` now runs immediately before EACH snapshot look: a hold lost at the archive write aborts before the post-archive re-check is even asked (its answer would be meaningless), and a hold lost after that re-check aborts before the replace — the proof before the swap was moved INSIDE the atomic replace by the verification pass (panel FIX_FIRST; see the verification block below) | `test_a_hold_lost_at_the_archive_is_seen_before_the_snapshot_is_trusted` (asserts exactly ONE `_snapshot_intact` call; the "remove the beat before the re-check" mutation makes it two — red against that exact mutation); `test_a_hold_lost_after_the_recheck_aborts_before_the_swap` (RED on `d7b487ab`: the swap ran) |
+| 4 | the symlink bound was check-then-use: `_archive_dir_bounded` / `_segment_path` judged paths, then the write and the read re-resolved those paths — a link planted in between received the segment (writer) or served a foreign file (reader) | POSIX opens the chain root→`archive/`→`usage_ledger` `O_DIRECTORY\|O_NOFOLLOW` handle-to-handle and creates/opens the segment `O_NOFOLLOW` via `dir_fd`, fingerprinting and reading from the open fd; directory durability is fsync'd through the same held handles. The path-based checks remain as the early typed abort and as the Windows best effort (no `dir_fd`/`O_DIRECTORY` there), chosen by the platform predicate | `test_a_link_planted_after_the_writer_bound_check_cannot_receive_history` (RED on `d7b487ab`: the segment crossed the link and the swap completed); `test_a_link_planted_after_the_reader_bound_check_is_refused` (byte-identical copy behind the link — the hash cannot object, only refusing the traversal defends; RED on `d7b487ab`) |
+
+Confirmed rather than changed: every writer of this ledger already takes the
+same owner-aware lock with no unlocked fallback (round-3 pin stands; what
+changed is that the lock they all take is now kernel-held), and the
+post-replace re-read stays, now after the in-swap re-proof.
+
+New/updated residuals (also §5): a live-but-WEDGED holder can no longer be
+evicted by age on POSIX — the kernel lock outlives the staleness clock until
+the process dies. That is the deliberate trade: age-evicting a live writer
+was the two-writers defect; a wedged monetary writer is an availability
+incident, not a correctness one. Windows and kernel-lockless filesystems
+(bare NFS and friends) run the round-3 identity-re-check shape as a disclosed
+best effort selected by the platform predicate. `ouroboros/usage_compaction.py`
+entered the 1001-1500 size band with a recorded rationale (the dir-fd
+anchoring and the in-swap re-proof live beside the pass they defend);
+`ouroboros/platform_layer.py` stays inside the band at 1498 lines, paid for
+by prose compression in the same module.
+
+### Round-4 verification (base `d7b487ab`; the round-4 work had shipped unexecuted)
+
+Round 4 was authored in an execution-denied environment, so a dedicated
+verification pass ran every claim for real. One finding of the round-4
+review panel (codex, FIX_FIRST, accepted by the coordinator) was fixed in
+the same pass:
+
+- **The ownership proof stood before the swap, not inside it**: `beat()` ran
+  immediately before `_swap_ledger_fsync`, but the atomic writer can spend
+  arbitrarily long writing and fsyncing the candidate temp before its
+  snapshot look and `os.replace` — a hold lost in that window let a new
+  holder's charge (landing after the in-swap snapshot answer, before the
+  rename) be erased by the swap. The proof of ownership now lives in the
+  precondition of the atomic replace itself: once the temp bytes are
+  durable, immediately before the rename, ownership FIRST and the snapshot
+  compare only under a proven hold (`_swap_ledger_fsync` passes `beat` into
+  `_write_bytes_atomic_fsync`'s precondition). Pin:
+  `test_a_hold_lost_while_the_temp_is_written_refuses_the_replace` — RED on
+  the round-4-as-authored shape (ownership died with the temp on disk; the
+  snapshot-only precondition let the rename run and a receipt returned),
+  green with the fix: the replace is refused and the new holder's charge
+  survives byte-for-byte, money = before + that charge.
+
+Every round-4 red-first claim was then observed, not argued — each pin was
+run against the exact mutation or base it names (mutation applied, pin RED,
+mutation reverted, pin green):
+
+| pin | mutation | red observed |
+|---|---|---|
+| `test_two_racing_reclaimers_never_yield_two_holders` | `platform_layer.py` reverted to `d7b487ab` | both reclaimers returned descriptors: 2 holders |
+| `test_heartbeat_after_an_atomic_swap_of_the_lock_reports_false` | identity comparison removed from `refresh_exclusive_file_lock` (utime-only) | heartbeat answered True for a replaced lock |
+| `test_an_append_between_the_recheck_and_the_replace_aborts_without_loss` | swap precondition removed entirely | receipt returned; the injected row was erased |
+| `test_a_hold_lost_at_the_archive_is_seen_before_the_snapshot_is_trusted` | post-archive `beat()` removed | 2 `_snapshot_intact` calls instead of 1 |
+| `test_a_hold_lost_after_the_recheck_aborts_before_the_swap` | in-swap ownership proof removed (snapshot-only precondition, no outer beat) | the swap ran; a baseline landed |
+| `test_a_hold_lost_while_the_temp_is_written_refuses_the_replace` | round-4-as-authored shape (outer `beat()` + snapshot-only precondition) | receipt returned while robbed |
+| `test_a_link_planted_after_the_writer_bound_check_cannot_receive_history` | `usage_compaction.py` reverted to `d7b487ab` | the segment crossed the link; the swap completed |
+| `test_a_link_planted_after_the_reader_bound_check_is_refused` | `usage_compaction.py` reverted to `d7b487ab` | the byte-identical copy was read through the link (no raise) |
+
+Windows tier: the two new lockfile pins exercise POSIX mechanics (flock-held
+eviction; replacing an open, kernel-locked file), so both carry
+`skipif(IS_WINDOWS)` with the disclosed-best-effort reason; the compaction
+pins are platform-neutral, and the two planted-link pins already skip on
+Windows. `fcntl` is imported only inside `not IS_WINDOWS` branches of the
+`platform_layer` primitives, so the module imports cleanly where `fcntl`
+does not exist.
+
+Round-4 verification gate evidence (this host, isolated env roots, venv
+python 3.10.12 / pytest 9.1.1): recorded in
+`docs/v7next/LEDGER_CORRECTIONS.md` §"From the C6 fix-round 4 verification"
+— targeted usage/lockfile suites green; CI-shape non-serial battery EXIT=0;
+`-m serial` EXIT=0; `-m size_ratchet` green; `ruff check . --select F`
+clean; `scripts/check_domains.py` OK; `scripts/regenerate_inventories.py
+--check` OK; `git diff --check` clean; `git rev-parse HEAD` verified after
+every pytest run. With that run recorded, round 4 is verified, not merely
+code-complete.

@@ -199,33 +199,53 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   every read-check-append transaction, invoked from `reserve_attempt`'s
   locked section before its ledger read (§9). No second lock, no new lock
   ordering.
-- **The lock is defended, and its loss is survivable.** Every other hold of
-  this lock is milliseconds; a compaction pass over a multi-megabyte ledger
-  can legitimately exceed its 90 s staleness window, and a lock evicted purely
-  by age would put a second writer on the same authority. So `_named_lock`
-  acquires **owner-aware** (a live owner PID is never evicted on age), and the
-  hold yields a **heartbeat** (`platform_layer.refresh_exclusive_file_lock`)
-  the pass beats at every checkpoint — including *inside* the long span: both
-  row walks of the candidate build and each verification stage, not only their
-  edges. The lock primitives are ownership-exact: a stale eviction unlinks
-  only the exact file it judged abandoned (re-checked against the descriptor
-  it inspected), a release unlinks only the file it still holds, and the
-  heartbeat answers OWNERSHIP rather than success.
-  We do not claim a pass can never be robbed. What we claim is that it cannot
-  finish while robbed: a `False` heartbeat — or one that cannot be answered at
-  all — aborts the pass, leaving the ledger byte-identical.
-- **The swap re-proves its snapshot, before and after.** Because the swap
-  replaces the WHOLE file, the pass re-reads the live ledger under the same
-  held lock immediately before the rename and refuses the swap unless the
-  bytes are still byte-identical to the snapshot it compacted. A row that
-  landed in between survives; the cost of the lost race is one skipped pass,
-  never a charge. (Belt to the lock's braces: it also covers a lock broken by
-  a hand repair or an older build.) The compare→replace window itself is
-  closed structurally, not by narrowness: EVERY writer of this ledger appends
-  under this same owner-aware lock and there is no unlocked fallback — an
-  acquisition that times out raises `UsageAccountingError` and writes nothing.
-  After the rename the pass re-reads what landed and refuses to report a
-  receipt for bytes that are not there.
+- **The lock is kernel-enforced, defended, and its loss is survivable.**
+  Every other hold of this lock is milliseconds; a compaction pass over a
+  multi-megabyte ledger can legitimately exceed its 90 s staleness window,
+  and a lock evicted purely by age would put a second writer on the same
+  authority. So the acquisition takes a **kernel lock on the lock fd**
+  (`fcntl.flock`; `LockFileEx` on Windows) in addition to the O_EXCL name,
+  `_named_lock` acquires **owner-aware** (a live owner PID is never evicted
+  on age), and the hold yields a **heartbeat**
+  (`platform_layer.refresh_exclusive_file_lock`) the pass beats at every
+  checkpoint — inside the long span (both row walks of the candidate build
+  and each verification stage), then **immediately before each snapshot
+  re-check, including the final one inside the atomic replace** (writing and
+  fsyncing the candidate temp can take arbitrarily long, so the proof of
+  ownership runs once the temp is durable, right before the rename — ownership
+  first, then the snapshot): a re-check answered while the lock already
+  belongs to someone else is a meaningless answer, so the loss must abort the
+  pass before the answer is even asked. The lock primitives
+  are ownership-exact and now kernel-guarded: a stale eviction unlinks only
+  while HOLDING the flock on the very fd it judged abandoned (path re-checked
+  against it), so of two racing reclaimers at most one can evict; a release
+  unlinks before its close, under the still-held flock; the heartbeat answers
+  OWNERSHIP rather than success, including for a lock file replaced
+  atomically (the path never absent). Windows cannot unlink an open file, and
+  a filesystem may lack kernel locks entirely: those keep the
+  re-check-then-unlink shape without the held lock — best effort, chosen by
+  the platform predicate, disclosed. We do not claim a pass can never be
+  robbed. What we claim is that it cannot finish while robbed: a `False`
+  heartbeat — or one that cannot be answered at all — aborts the pass,
+  leaving the ledger byte-identical.
+- **The swap re-proves its snapshot — before, at the last instant, and
+  after.** Because the swap replaces the WHOLE file, the pass re-reads the
+  live ledger under the same held lock before the archive write and again
+  before the rename, and the atomic writer evaluates one more re-proof
+  **inside the swap** — after the candidate temp bytes are durable,
+  immediately before `os.replace`, the last instant the replace can still be
+  refused, with the ownership heartbeat asked FIRST and the snapshot compare
+  only under a proven hold — so a hold lost while the temp was written
+  refuses the replace, and a row that lands after the outer re-check
+  survives too. The
+  cost of any lost race is one skipped pass, never a charge. (Belt to the
+  lock's braces: it also covers a lock broken by a hand repair or an older
+  build.) The compare→replace window is closed structurally as well: EVERY
+  writer of this ledger appends under this same owner-aware kernel-held lock
+  and there is no unlocked fallback — an acquisition that times out raises
+  `UsageAccountingError` and writes nothing. After the rename the pass
+  re-reads what landed and refuses to report a receipt for bytes that are not
+  there.
 - Commit order: (1) build + fully verify the candidate in memory (§5, §6);
   (2) write the archive segment — exact source bytes — via O_EXCL write and
   `fsync` the file **and every directory in the chain, on every pass**: the
@@ -235,12 +255,20 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   fsync, so on a retry the directories exist while their durability does not.
   The archive path must also BE this data root's own — a symlink at
   `archive/` or `archive/usage_ledger` aborts the pass, because history must
-  never be written through a link. On POSIX a directory-fsync failure
-  **aborts the pass** (an unsynced archive directory plus a completed swap is
-  exactly the crash that loses history); on Windows there is no directory
-  handle to fsync, so it is a disclosed no-op chosen by the platform
-  predicate, never by swallowing `OSError`; (3) atomically replace the live
-  ledger (`_write_bytes_atomic_fsync`); (4) emit the
+  never be written through a link — and on POSIX that bound is enforced **at
+  the write itself**, not only at a preceding check: the chain
+  root→`archive/`→`usage_ledger` is opened `O_DIRECTORY|O_NOFOLLOW`
+  handle-to-handle (`dir_fd`), the segment is created `O_NOFOLLOW` relative
+  to the held handle, and file plus every directory HANDLE are fsync'd — so
+  the chain proven durable is the one the bytes actually landed in, and a
+  link planted between check and write is an abort, not a redirect. On POSIX
+  a directory-fsync failure **aborts the pass** (an unsynced archive
+  directory plus a completed swap is exactly the crash that loses history);
+  Windows has no `dir_fd`/`O_DIRECTORY` and no directory handle to fsync, so
+  it keeps the path-based chain as a disclosed best effort chosen by the
+  platform predicate, never by swallowing `OSError`; (3) atomically replace
+  the live ledger (`_write_bytes_atomic_fsync`), which re-proves the snapshot
+  one last time before its `os.replace` (the swap bullet above); (4) emit the
   `usage_ledger_compacted` event. A crash before (3) leaves the ledger
   byte-identical (an orphaned archive segment is harmless and disclosed); a
   crash during (3) leaves either the old or the new file — both valid.
@@ -306,7 +334,14 @@ the live replay, so this lane ships the join surface the sweep must use:
     `archive/` nor `archive/usage_ledger` may be a symlink, the resolved
     directory must be exactly the resolved root's archive path, and no segment
     may be a link. Otherwise "the segment resolves next to the archive
-    directory" is a tautology — both sides resolve through the same link;
+    directory" is a tautology — both sides resolve through the same link. On
+    POSIX the reader enforces this **at the open**: the segment is opened
+    `O_NOFOLLOW` through the same `O_DIRECTORY|O_NOFOLLOW` `dir_fd` handles
+    the writer uses, and is fingerprinted and read from that fd — so a link
+    planted after any path-based look is an open error, never a read through
+    it (a byte-identical copy behind a link hashes perfectly; only refusing
+    the traversal itself defends). Windows keeps the path-based checks, best
+    effort, by the platform predicate;
   - per-segment results are cached by path, but the hit requires the file's
     fingerprint (inode/device/size/mtime_ns) to match, so a segment deleted
     or rewritten after a warm read surfaces as `UsageLedgerCorrupt` instead
@@ -394,16 +429,27 @@ byte authority.
    stamp; quarantine/`integrity_degraded` semantics unchanged.
 9. **No pass loses a concurrent charge**: a row appended between snapshot and
    swap aborts the pass and survives byte-for-byte, with money equal to
-   before-plus-that-row; the lock is owner-aware and heartbeaten through the
-   long span, a pass that loses it abandons its work instead of swapping, the
-   monetary lock is provably HELD against every writer at the instant of the
-   swap, a writer that cannot take it refuses in typed form rather than
-   appending without it, and the swap reports a receipt only for bytes it
-   re-read at the path.
+   before-plus-that-row — including a row that lands between the pre-swap
+   re-check and the rename, refused by the re-proof inside the atomic writer
+   at the last instant; the lock is kernel-held (flock on the lock fd),
+   owner-aware, and heartbeaten through the long span, with ownership proven
+   immediately before each snapshot re-check — including inside the atomic
+   writer, once the temp is durable and right before the rename, ownership
+   first (a loss at the archive aborts before the re-check is even asked; a
+   loss while the temp is written refuses the replace); a pass that loses
+   the hold abandons its work instead of swapping; of two reclaimers racing
+   over a stale lock at most one can evict (eviction only under the held
+   flock on the judged fd); a heartbeat after an atomic replacement of the
+   lock file answers False; a writer that cannot take the lock refuses in
+   typed form rather than appending without it; and the swap reports a
+   receipt only for bytes it re-read at the path.
 10. **Provenance is bounded**: `pre_compaction_seq` names a row inside the
     header's declared source range; the archive directory is the data root's
-    own, through no symlink; and no archived segment carries a generation
-    newer than the live stamp (bar an uncommitted orphan of that stamp).
+    own, through no symlink — enforced on POSIX at the open/create itself via
+    `O_NOFOLLOW` `dir_fd` handles for both writer and reader, so a link
+    planted after any check can neither receive nor serve history; and no
+    archived segment carries a generation newer than the live stamp (bar an
+    uncommitted orphan of that stamp).
 
 ## 13. Explicitly out of scope
 
