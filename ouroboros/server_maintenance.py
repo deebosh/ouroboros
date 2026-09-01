@@ -225,6 +225,20 @@ def _startup_prune_sweeps() -> None:
             })
     except Exception:
         log.debug("Memory journal compaction failed", exc_info=True)
+    try:
+        # CPL4-C18: unlink mailboxes whose task settled off the terminal
+        # dispatch path (fail-closed: no result keeps the mailbox).
+        from ouroboros.owner_mailbox import sweep_settled_owner_mailboxes
+
+        mailbox_report = sweep_settled_owner_mailboxes(DATA_DIR)
+        if mailbox_report.get("removed"):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "owner_mailbox_sweep",
+                "report": mailbox_report,
+            })
+    except Exception:
+        log.debug("Owner mailbox sweep failed", exc_info=True)
 
 
 def _cursor_refresh_settled_terminals() -> None:
