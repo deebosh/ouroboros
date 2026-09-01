@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ouroboros import utils
@@ -151,3 +153,52 @@ def test_fsync_path_survives_short_os_writes(tmp_path, monkeypatch, writer, payl
     writer(target, payload, fsync=True)
     monkeypatch.undo()
     assert read(target) == payload
+
+
+def test_append_jsonl_survives_short_os_writes(tmp_path, monkeypatch):
+    """Audit #15-11/12 corrective lane: ``append_jsonl`` issued ONE bare
+    ``os.write`` and returned success without checking the byte count — the
+    same short-write class the atomic writers already fixed, left in the
+    append SSOT every authority JSONL stream goes through. A torn line here is
+    a lost record, not a truncated file."""
+    import os as _os
+
+    target = tmp_path / "logs" / "events.jsonl"
+    real_write = _os.write
+
+    def one_byte_at_a_time(fd, data):
+        if bytes(data).startswith(b"pid="):
+            return real_write(fd, data)  # the lock primitive's own metadata
+        return real_write(fd, bytes(data)[:1])
+
+    monkeypatch.setattr(utils.os, "write", one_byte_at_a_time)
+    assert utils.append_jsonl(target, {"type": "llm_usage", "cost": 1.5}) is True
+    monkeypatch.undo()
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == {"type": "llm_usage", "cost": 1.5}
+
+
+def test_append_jsonl_reports_failure_and_never_retries_a_torn_record(tmp_path, monkeypatch):
+    """A write that dies MID-record must report False, not retry the whole
+    line: the retry would duplicate the prefix already on disk. Only the open
+    is retried."""
+    import os as _os
+
+    target = tmp_path / "logs" / "events.jsonl"
+    real_write = _os.write
+    calls = {"n": 0}
+
+    def half_then_die(fd, data):
+        if bytes(data).startswith(b"pid="):
+            return real_write(fd, data)  # the lock primitive's own metadata
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_write(fd, bytes(data)[:4])
+        raise OSError("device gone")
+
+    monkeypatch.setattr(utils.os, "write", half_then_die)
+    assert utils.append_jsonl(target, {"type": "task_done"}) is False
+    monkeypatch.undo()
+    assert calls["n"] == 2  # one short write, one failure — no whole-record replay
+    assert target.read_bytes() == b'{"ty'

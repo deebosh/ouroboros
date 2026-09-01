@@ -274,16 +274,20 @@ def _atomic_overwrite(path: pathlib.Path, write_temp: Callable[[pathlib.Path], N
         raise
 
 
-def _write_fd_fully(fd: int, data: bytes, tmp: pathlib.Path) -> None:
-    """``os.write`` until every byte lands: a single call may write SHORT
-    (POSIX permits partial writes — signals, quota edges, some filesystems),
-    and treating its return as done silently truncates the temp file the
-    atomic rename then publishes as the whole document."""
+def _write_fd_fully(fd: int, data: bytes, target: pathlib.Path) -> None:
+    """``os.write`` until every byte lands.
+
+    A single call may write SHORT (POSIX permits partial writes — signals,
+    quota edges, some filesystems), and treating its return as done truncates
+    the record silently: the atomic lanes would publish a half document behind
+    a successful rename, and the append lane a TORN line behind a successful
+    append. One loop for every durable writer in this module.
+    """
     view = memoryview(data)
     while view:
         written = os.write(fd, view)
         if written <= 0:
-            raise OSError(f"short write to {tmp}")
+            raise OSError(f"short write to {target}")
         view = view[written:]
 
 
@@ -517,7 +521,8 @@ def append_jsonl(
     append; it is opt-in so high-volume event logs keep their established path.
     ``require_lock`` is reserved for authority streams that also have atomic
     whole-file reconciliation: unlike high-volume observational logs, they may
-    not fall back to an unlocked append after lock timeout.
+    not fall back to an unlocked append after lock timeout. Both lanes take the
+    shared owner-aware lock primitive, so a live holder is never displaced.
     Returns ``True`` on successful write, ``False`` when all retries
     failed (which is also logged at WARNING). Important events
     (``task_done``, ``llm_round``, escalation messages) need that signal
@@ -531,55 +536,35 @@ def append_jsonl(
     line = json.dumps(obj, ensure_ascii=False)
     data = (line + "\n").encode("utf-8")
 
-    lock_timeout_sec = 2.0
-    lock_stale_sec = 10.0
-    lock_sleep_sec = 0.01
     write_retries = 3
     retry_sleep_base_sec = 0.01
 
+    from ouroboros.platform_layer import (
+        acquire_exclusive_file_lock,
+        release_exclusive_file_lock,
+    )
+
     lock_path = jsonl_append_lock_path(path)
     lock_fd = None
-    lock_acquired = False
     _written = False
 
     try:
-        if require_lock:
-            from ouroboros.platform_layer import acquire_exclusive_file_lock
+        # ONE lock primitive for both lanes. The unlocked lane used to hand-roll
+        # its own O_CREAT|O_EXCL + age-reclaim loop — the duplicate this module's
+        # own contract tells feature code not to write — and the copy was NOT
+        # owner-aware, so a high-volume appender could delete the lock of a LIVE
+        # holder (the memory-journal compactor rewrites a journal under exactly
+        # this lock). Owner-aware everywhere: a live holder is waited out and the
+        # non-required lane then appends unlocked, exactly as before.
+        lock_fd = acquire_exclusive_file_lock(
+            lock_path,
+            timeout_sec=2.0,
+            stale_sec=10.0,
+            poll_sec=0.01,
+            owner_aware_stale=True,
+        )
 
-            lock_fd = acquire_exclusive_file_lock(
-                lock_path,
-                timeout_sec=lock_timeout_sec,
-                stale_sec=lock_stale_sec,
-                poll_sec=lock_sleep_sec,
-                owner_aware_stale=True,
-            )
-            lock_acquired = lock_fd is not None
-        else:
-            start = time.time()
-            while time.time() - start < lock_timeout_sec:
-                try:
-                    lock_fd = os.open(
-                        str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644,
-                    )
-                    lock_acquired = True
-                    break
-                except FileExistsError:
-                    try:
-                        stat = lock_path.stat()
-                        if time.time() - stat.st_mtime > lock_stale_sec:
-                            lock_path.unlink()
-                            continue
-                    except Exception:
-                        log.debug(
-                            "Failed to read lock stat during lock acquisition retry",
-                            exc_info=True,
-                        )
-                    time.sleep(lock_sleep_sec)
-                except Exception:
-                    log.debug("Failed to acquire file lock for jsonl append", exc_info=True)
-                    break
-
-        if require_lock and not lock_acquired:
+        if require_lock and lock_fd is None:
             log.warning("append_jsonl: required lock unavailable for %s", path)
             return False
 
@@ -603,15 +588,27 @@ def append_jsonl(
         for attempt in range(write_retries):
             try:
                 fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-                try:
-                    os.write(fd, append_data)
-                finally:
-                    os.close(fd)
-                _written = True
-                return True
             except Exception:
                 if attempt < write_retries - 1:
                     time.sleep(retry_sleep_base_sec * (2 ** attempt))
+                continue
+            try:
+                # One bare ``os.write`` may land SHORT: trusting its return
+                # published a TORN line as a successful append (the class the
+                # atomic writers already fixed). Share their full-write loop.
+                _write_fd_fully(fd, append_data, path)
+                _written = True
+                return True
+            except Exception:
+                # Bytes of this record may already be in the file; re-appending
+                # the whole line would duplicate that prefix. Report the failure
+                # (the caller owns the fallback) and let the next append's
+                # ``ensure_record_boundary`` start a clean record — a partially
+                # landed record is never retried whole.
+                log.warning("append_jsonl: torn write to %s", path, exc_info=True)
+                return False
+            finally:
+                os.close(fd)
 
         for attempt in range(write_retries):
             try:
@@ -625,18 +622,7 @@ def append_jsonl(
     except Exception:
         log.warning("append_jsonl: all write attempts failed for %s", path, exc_info=True)
     finally:
-        if lock_fd is not None:
-            try:
-                os.close(lock_fd)
-            except Exception:
-                log.debug("Failed to close lock fd after jsonl append", exc_info=True)
-                pass
-        if lock_acquired:
-            try:
-                lock_path.unlink()
-            except Exception:
-                log.debug("Failed to unlink lock file after jsonl append", exc_info=True)
-                pass
+        release_exclusive_file_lock(lock_path, lock_fd)
         # Live-stream only runtime LOG files. chat.jsonl has its own live
         # channel (the chat frame family), and state/memory/receipt jsonl
         # stores are durable data, not a log feed — streaming them made every
