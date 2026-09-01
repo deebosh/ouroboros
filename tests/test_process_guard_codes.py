@@ -125,7 +125,10 @@ def test_process_codes_preserve_loop_error_and_policy_denial(code, loop_status):
             "OWNER_SKILL_ATTESTATION_SELF_CALL_BLOCKED",
         ),
         (
-            "echo state/skills/demo/review.json",
+            # A WRITE shape: since #447 A2 the family read-carve lets a pure
+            # inspection (`echo`/`grep`/`rg`) name skill owner state, so the
+            # ordering pin uses a spelling that actually writes.
+            "cp payload.json state/skills/demo/review.json",
             "SKILL_STATE_WRITE_BLOCKED",
         ),
         (["git", "commit"], "GIT_VIA_SHELL_BLOCKED"),
