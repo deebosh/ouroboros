@@ -3286,3 +3286,79 @@ single-intent commits of this round.
     ouroboros/tools/delegate.py at 1263 — their 3ba9f452 base sizes.
     Monotonicity ENFORCEMENT deliberately not built (out of scope per the
     fix-round brief).
+
+## From the F3 adversarial fix-round 2 (base d1d131df, 2026-09-01)
+
+Disposition of the 8 defects the second adversarial wave (sol) left OPEN
+against the round-1 dispositions above; every fix landed in the
+single-intent commits of this round.
+
+1. FIXED (HIGH, null stamp read as legacy). `read_update_tx_strict` used a
+   plain `.get()`, so an explicit `_schema_version: null` was
+   indistinguishable from the accepted pre-7.0 UNSTAMPED form and read
+   `valid` — rollback would interpret and destructively act on a damaged
+   stamp. A dict-get sentinel now distinguishes key ABSENCE (legacy, valid)
+   from a stored `null` (corrupt, like every other non-integer stamp; no
+   writer ever stamps null). Pin: null-stamped marker reads `("corrupt",
+   {})` and the direct rollback entry point refuses typed — marker
+   byte-identical, HEAD unmoved, dirty owner work untouched; `None` joined
+   the invalid-stamp loop. Protected update_merge.py delta sanctioned by
+   this round and minimal (sentinel + docstring).
+2. FIXED (HIGH, admission-state divergence). The auditor's grandfather
+   judgment trusted raw stored status/content_hash while the runtime admits
+   through `load_review_state` (findings re-aggregation + provenance
+   preconditions: official_hub sidecar, native_seed `.seed-origin`,
+   owner_attested marker). `_review_gate_for` now calls `load_review_state`
+   itself, with the runtime's identity inputs (directory basename, manifest
+   type, module-widget shape, skill_dir). Mutation-free reuse:
+   `load_review_state` now resolves state paths through the new
+   NON-CREATING `skill_state_dir_path` (writers keep the created-on-demand
+   `skill_state_dir`). Pin: native_seed PASS without `.seed-origin` →
+   INCOMPATIBLE, with the marker (native bucket, hash-exempt) →
+   grandfather note; both audits leave the install byte-identical.
+3. FIXED (MEDIUM, both planes). (a) The audit walk no longer stands on the
+   runtime's fail-soft `_safe_listdir`: `_walk_skill_packages` accepts an
+   optional traversal reader (runtime default unchanged) and the auditor
+   passes a strict lister whose OSError propagates to the existing exit-2
+   traversal handler — an unreadable skills subtree can no longer audit
+   clean. (b) `args.json.resolve()` moved under the OSError handler → exit
+   2 (REPORT UNWRITABLE), never Python's bare exit 1. Pins on both.
+4. FIXED (MEDIUM, fail-open provenance). `_tree_sha` with rev-parse OK but
+   `git status` failing/erroring returned the bare SHA as if proven clean.
+   Chosen and documented: the suffix `-unknown-dirty-state` (over the
+   conservative bare `-dirty`, so an auditor can tell proven-dirty from
+   could-not-check); only a zero-exit empty porcelain yields the bare SHA.
+   Pins: status exit 128 and status OSError.
+5. FIXED (MEDIUM, pre-Popen stamp). The OOP branch stamped
+   `physical_dispatch` on EVERY exception from
+   `dispatch_extension_tool_subprocess`, though resolve/load/env/staging and
+   Popen itself fail BEFORE any child exists. Typed mechanism (not
+   text-guessing): `_run_child` stamps a positive child-spawned marker onto
+   every exception crossing the spawn boundary (both the on_spawn
+   disclosure path and the drain/poll/result protocol path);
+   `extension_child_was_spawned(exc)` reads it and the dispatcher's OOP
+   error arm keys `dispatched` on it. Pins: pre-spawn failure → no stamp;
+   marked post-spawn failure → stamp + digest; unit seam — Popen OSError
+   raises unmarked, post-spawn protocol failure raises marked.
+6. FIXED (LOW, pre-snapshot gap). Descriptor and legacy-fallback digest are
+   now read under ONE lock hold: new combined reader
+   `get_tool_with_generation` in `extension_registry_state` (the lock's
+   home — extension_loader/plugin_api stay at their size caps); the
+   dispatch candidate pre-stamps the snapshot digest onto the detached
+   copy, so the separate registry fallback no longer runs on the live path.
+   Pin: republish AFTER the descriptor is taken moves the live digest on
+   while the dispatch result still names the snapshot generation.
+7. FIXED (LOW, detector evasion). The comma-split AST detector now seeks
+   the separator in the first TWO positionals and every `sep=` keyword, so
+   the unbound forms `str.split(raw, sep=",")` / `str.split(raw, ",")` no
+   longer evade; self-test extended with the unbound evasions and the
+   `str.split(raw)` negative. Live allowlist counts unchanged.
+8. FIXED (LOW, stale references). docs/ARCHITECTURE.md line 80 now names
+   the landed bridge `provider_models.delegated_route_target` instead of
+   the removed `DelegationRoute.resolved_model_target`. CORRECTION to the
+   ABI-4 seam-inventory table above (the `subagents.parse_subagent_harness
+   → DelegationRoute` row, written before the round-1 relocation): its
+   migration cell reads `DelegationRoute.resolved_model_target()` — the
+   landed form is the `provider_models.delegated_route_target(route)`
+   bridge (round-1 disposition 14). The table itself stays as written:
+   this ledger is append-only, corrections supersede in place of edits.
