@@ -85,7 +85,10 @@ SCENARIOS = {
     # Ф4 wave 3b (plan §8: delegated transport + skills lifecycle).
     "S11": ("delegated transport: full nanny run over FakeClaudexorDaemon, wire/custody truth, typed refusals", LANE_MOCK),
     "S12": ("delegated no-orphans: SIGKILL mid-run -> restart -> boot custody sweep settles the run, one physical attempt", LANE_MOCK),
-    "S13": ("skills lifecycle E2E: payload -> stub review -> grants -> enable -> dispatch -> disable/delete + Model Experience", LANE_MOCK),
+    # S13 carries TWO tests: the full lifecycle across a restart, and the
+    # hot-adoption variant that removes the restart (W3B-F1) — enable after boot
+    # must reach the workers already running, not only the pool's next generation.
+    "S13": ("skills lifecycle E2E: payload -> stub review -> grants -> enable -> dispatch -> disable/delete + Model Experience; hot-adoption variant: enable after boot dispatches in an ALREADY-SPAWNED worker with no restart", LANE_MOCK),
     # Ф4 wave 3a (plan §8: plan review; commit triad+scope BOTH enforcement
     # classes + stale-rejection; acceptance loop). Renumbered S14-S17 at
     # integration: the parallel wave-3b lane claimed S11-S13 first.

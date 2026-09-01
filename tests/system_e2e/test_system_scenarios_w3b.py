@@ -35,7 +35,12 @@ DURABLE artifact or a recorded WIRE fact (never an HTTP 200 alone):
   ``tool_result_meta.extension_generation`` digest), the CPL-7 Model Experience
   prose is visible in the model's own context (Installed Skills section in a
   recorded agent body), disable unloads the surface, and delete removes payload
-  AND state dir (this tree's uninstall contract).
+  AND state dir (this tree's uninstall contract). Its HOT-ADOPTION variant drops
+  the restart: the worker pool is up and every registry closed before the
+  payload exists, so the tool call can land only by a running worker noticing
+  the server's published extension generation (W3B-F1) — pinned against the
+  supervisor's own durable roster (no process replaced between enable and
+  dispatch) and the adopting worker's own durable event.
 
 The default-lane tests pin the FakeClaudexorDaemon contract WITH THE REAL
 GATEWAY CLIENT (handshake, capability catalog through ``route_health``, project
@@ -532,9 +537,10 @@ def test_s13_skills_lifecycle_review_grants_enable_dispatch_disable_delete(
         finally:
             server.stop()
 
-    # ---- Phase 2: restart (the product's worker pickup point — task workers
-    # load extensions only at worker spawn; see the wave-3b findings table),
-    # then dispatch + Model Experience, then disable and delete.
+    # ---- Phase 2: restart, then dispatch + Model Experience, then disable and
+    # delete. The restart here pins that the ENABLED state survives a reboot; it
+    # is no longer the only way a worker sees the skill — the hot-adoption
+    # variant below removes it (W3B-F1).
     script = [{"tool": surface, "arguments": {"message": "ping-e2e"}}]
     with ScriptedStubModel(script,
                            final_answer=f"{S13_DISPATCH_MARKER}: echo absorbed.") as stub:
@@ -589,5 +595,129 @@ def test_s13_skills_lifecycle_review_grants_enable_dispatch_disable_delete(
             assert not (data_root / "state" / "skills" / S13_SKILL).exists(), (
                 "state dir survived delete")
             assert _skill_entry(server, S13_SKILL) == {}, "deleted skill still listed"
+        finally:
+            server.stop()
+
+
+# ---------------------------------------------------------------------------
+# S13, hot-adoption variant — the SAME lifecycle with the restart removed.
+# ---------------------------------------------------------------------------
+
+S13H_SKILL = "e2e_hot_probe"
+S13H_SKILL_MD = f"""---
+name: {S13H_SKILL}
+description: Loopback E2E probe extension enabled AFTER the worker pool spawned.
+version: 0.1.0
+type: extension
+entry: plugin.py
+plugin_api: "2.0"
+permissions: ["tool"]
+---
+E2E hot-adoption probe extension body.
+"""
+S13H_DISPATCH_MARKER = "S13H_HOT_DISPATCH_DONE_e2e_w3b"
+
+
+def _worker_boot_pids(oracle: ArtifactOracle) -> set:
+    return {int(row.get("pid") or 0) for row in oracle.events("worker_ready")}
+
+
+@pytest.mark.integration
+@pytest.mark.serial
+def test_s13_hot_enable_reaches_an_already_spawned_worker_without_a_restart(
+        e2e_clone, tmp_path_factory):
+    """The W3B-F1 defect, at the product surface: enable AFTER boot must reach the
+    workers that are ALREADY running.
+
+    The lifecycle scenario above proves the same skill dispatches after a
+    restart, which is exactly what made the defect invisible: a task worker
+    loaded extensions once, at spawn, so a skill enabled later stayed unknown to
+    every task that worker went on to serve while ``/api/extensions`` reported
+    it live. Here the pool spawned BEFORE the payload existed and no process is
+    replaced, so the tool call can only succeed by the worker noticing the
+    server's published generation and adopting it.
+    """
+    require_lane(LANE_MOCK)
+    from ouroboros.extension_loader import extension_surface_name
+
+    surface = extension_surface_name(S13H_SKILL, "echo")
+    root = tmp_path_factory.mktemp("s13h")
+    script = [{"tool": surface, "arguments": {"message": "hot-ping"}}]
+    with ScriptedStubModel(script,
+                           final_answer=f"{S13H_DISPATCH_MARKER}: echo absorbed.") as stub:
+        server = start_server(e2e_clone, root, keyless_settings(stub))
+        try:
+            data_root = pathlib.Path(server.data_root)
+            oracle = ArtifactOracle(data_root)
+
+            # The premise: the WHOLE pool is up and every worker has closed its
+            # extension registry before the payload exists. The roster is the
+            # supervisor's own durable one (state/worker_pids.json, written when
+            # the pool is spawned), so "already spawned" is a read fact — a
+            # worker starting after the enable would load the skill the ordinary
+            # way and prove nothing.
+            roster = wait_until(
+                lambda: {int(row.get("pid") or 0)
+                         for row in (oracle._json("state/worker_pids.json").get("workers") or [])},
+                timeout=180)
+            assert roster, "the supervisor recorded no worker pool"
+            assert wait_until(lambda: _worker_boot_pids(oracle) >= roster, timeout=180), (
+                f"pool never fully announced ready: {_worker_boot_pids(oracle)} vs {roster}")
+            boot_workers = _worker_boot_pids(oracle)
+
+            # INSTALL + REVIEW + ENABLE, all after those workers closed their
+            # registries — the same HTTP surface the UI drives.
+            payload_dir = data_root / "skills" / "external" / S13H_SKILL
+            payload_dir.mkdir(parents=True)
+            (payload_dir / "SKILL.md").write_text(S13H_SKILL_MD, encoding="utf-8")
+            (payload_dir / "plugin.py").write_text(S13_PLUGIN, encoding="utf-8")
+            review = _api(server.base_url, "POST",
+                          f"/api/skills/{S13H_SKILL}/review", {}, timeout=600)
+            assert review.get("status") == "clean", review
+            toggled = _api(server.base_url, "POST", f"/api/skills/{S13H_SKILL}/toggle",
+                           {"enabled": True}, timeout=300)
+            assert toggled.get("enabled") is True and not toggled.get("error"), toggled
+            entry = _skill_entry(server, S13H_SKILL)
+            assert entry.get("live_loaded") is True, entry
+
+            # The durable carrier the workers read: the server published its live
+            # set, and the generation is NOT the per-publication ABI-9 digest
+            # (that one is minted fresh per publication and could never compare
+            # across processes) but the content identity of what is loaded.
+            generation = json.loads(
+                (data_root / "state" / "extension_generation.json").read_text(encoding="utf-8"))
+            assert generation.get("generation"), generation
+
+            # DISPATCH into one of those very workers — no restart anywhere.
+            task_id = submit_running(server, "Call the probe echo tool once, then finish.")
+            result = server.wait_task(task_id, timeout=300)
+            assert result.get("status") == "completed", result
+            stored = wait_durable_result(oracle, task_id)
+            assert S13H_DISPATCH_MARKER in str(stored.get("result") or ""), stored
+            assert stub.script_consumed(), "the hot-adoption dispatch script was not consumed"
+            rows = [row for row in oracle.task_drive(task_id).tools_rows()
+                    if str(row.get("tool") or "") == surface]
+            assert rows, "the extension tool call never reached the tools log"
+            assert "echo: hot-ping" in json.dumps(rows), rows
+
+            # ...and it really was an EXISTING worker: no process was replaced
+            # between the enable and the dispatch.
+            assert _worker_boot_pids(oracle) == boot_workers, (
+                "the pool respawned, so this proves nothing about hot adoption")
+            adoptions = [row for row in oracle.events("extension_generation_adopted")
+                         if S13H_SKILL in (row.get("skills") or [])]
+            assert adoptions, "no worker recorded adopting the published generation"
+            assert any(row.get("converged") is True for row in adoptions), adoptions
+
+            # DISABLE symmetry: the owner's disable republishes at once, so the
+            # same channel carries the retraction (a worker adopting it unloads —
+            # pinned directly in tests/test_extension_generation_adoption.py).
+            untoggled = _api(server.base_url, "POST", f"/api/skills/{S13H_SKILL}/toggle",
+                             {"enabled": False}, timeout=300)
+            assert not untoggled.get("error"), untoggled
+            assert _skill_entry(server, S13H_SKILL).get("live_loaded") is False
+            retracted = json.loads(
+                (data_root / "state" / "extension_generation.json").read_text(encoding="utf-8"))
+            assert retracted.get("generation") != generation.get("generation"), retracted
         finally:
             server.stop()
