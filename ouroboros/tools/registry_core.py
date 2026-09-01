@@ -272,8 +272,13 @@ class ToolRegistry:
     def __init__(self, repo_dir: pathlib.Path, drive_root: pathlib.Path):
         self._entries: Dict[str, ToolEntry] = {}
         self._ctx = ToolContext(repo_dir=repo_dir, drive_root=drive_root)
+        # Load-time omissions are FACTS OF THIS PROCESS (a tool module that failed
+        # to import stays missing until restart); schemas() rebuilds start from
+        # them instead of an empty list so the ledger never forgets them (H3).
+        self._module_load_omissions: List[Dict[str, Any]] = []
         self._capability_omissions: List[Dict[str, Any]] = []
         self._base_catalog = self._load_modules()
+        self._capability_omissions = [dict(item) for item in self._module_load_omissions]
         self._entries.update(self._base_catalog.entries)
         self._entry_origins = dict(self._base_catalog.origins)
         self._scoped_entries: Dict[str, ToolEntry] = {}
@@ -312,9 +317,17 @@ class ToolRegistry:
                         catalog_entries.append(
                             (f"ouroboros.tools.{modname}.get_tools[{index}]", entry)
                         )
-            except Exception:
+            except Exception as exc:
                 log.warning(
                     "Failed to load tool module %s", modname, exc_info=True)
+                # A failed module silently omits EVERY tool it exports; record it
+                # in the durable capability ledger, not only the process log (H3).
+                self._module_load_omissions.append({
+                    "surface": "tools",
+                    "reason": "module_load_failed",
+                    "module": modname,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
         # Duplicate detection deliberately happens outside the import-degrade
         # boundary: a first-party name collision is a broken catalog, not an
         # optional module import failure that startup may silently omit.
@@ -642,7 +655,9 @@ class ToolRegistry:
         local_readonly_subagent = self._is_local_readonly_subagent()
         ephemeral_turn = bool(getattr(self._ctx, "is_ephemeral_turn", False))
         disabled_tools = _disabled_tools(self._ctx)
-        self._capability_omissions = []
+        # Rebuild from the load-time facts, never from empty: a rebuilt schema
+        # list must not erase module_load_failed omissions (H3, capinv-447).
+        self._capability_omissions = [dict(item) for item in self._module_load_omissions]
         unavailable_tools = {
             entry.name: detail
             for entry in self._entries.values()
