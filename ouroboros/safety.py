@@ -22,7 +22,6 @@ from ouroboros.llm import LLMClient
 from ouroboros.loop_llm_call import classify_llm_exception, is_rate_limit_text
 from ouroboros.pricing import emit_llm_usage_event, estimate_cost_optional, infer_provider_from_model
 from ouroboros.utils import sanitize_tool_result_for_log, utc_now_iso
-from supervisor.state import update_budget_from_usage
 
 log = logging.getLogger(__name__)
 
@@ -857,6 +856,47 @@ def _safety_unavailable_blocked(
     )
 
 
+def _safety_drive_root(ctx: Optional[Any]) -> pathlib.Path:
+    """Where this safety call's observability records belong.
+
+    The context owns the answer. Without one, the process's configured data root
+    is the SSOT — never the old cwd-relative ``../data``, which names whatever
+    directory happens to sit beside the current working directory and only
+    resolves to the real root by coincidence of the dev layout (a safety call
+    made with ``ctx=None`` — the extension/MCP dispatch shape — wrote its
+    observability rows there). Read late off the module so test isolation and
+    runtime rebinding are honored, the same resolution order the review
+    surfaces already use.
+    """
+    root = getattr(ctx, "drive_root", None) if ctx is not None else None
+    if root:
+        return pathlib.Path(root)
+    from ouroboros import config
+
+    return pathlib.Path(config.DATA_DIR)
+
+
+def _record_safety_usage(ctx: Optional[Any], usage_payload: Dict[str, Any]) -> None:
+    """Charge a safety call that had no event queue to report on.
+
+    The queue is the normal path; this is the fallback. The ledger writer is
+    INJECTED by the context when it has one (the ``update_budget_from_usage``
+    attribute the supervisor event context already carries), so a caller that
+    owns its own accounting is charged where it lives. A context without one
+    falls back to this process's own supervisor state, imported AT CALL TIME so
+    the safety module — which runs inside every worker and on every tool call —
+    keeps no import-time dependency on the supervisor package, exactly as the
+    six sibling call sites of this writer already do.
+    """
+    sink = getattr(ctx, "update_budget_from_usage", None) if ctx is not None else None
+    if callable(sink):
+        sink(usage_payload)
+        return
+    from supervisor.state import update_budget_from_usage
+
+    update_budget_from_usage(usage_payload)
+
+
 def _safety_model_call(
     *, client: Any, ctx: Optional[Any], tool_name: str, light_model: str,
     use_local: bool, call_type: str, user_prompt: str, on_usage: Any,
@@ -899,7 +939,7 @@ def _safety_model_call(
             ):
                 msg, usage = chat_observed(
                     client,
-                    drive_root=pathlib.Path(getattr(ctx, "drive_root", "../data")) if ctx is not None else pathlib.Path("../data"),
+                    drive_root=_safety_drive_root(ctx),
                     task_id=str(getattr(ctx, "task_id", "") or "safety"),
                     call_type=call_type,
                     # This payload is TOOL-FREE and the send-time cache finalizer may only
@@ -1010,7 +1050,7 @@ def _run_llm_check(
                 source="safety_check",
             )
         else:
-            update_budget_from_usage(usage_payload)
+            _record_safety_usage(ctx, usage_payload)
 
     try:
         msg, usage = _safety_model_call(

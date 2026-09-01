@@ -155,10 +155,9 @@ def test_http200_body_rate_limit_blocks_unchecked_after_one_retry(monkeypatch, t
     """THE production shape: HTTP 200, empty content, ``usage['provider_error']``. Nothing
     raises, so an exception-only check would still walk the unparseable-response repair
     path into SAFETY_VIOLATION — this fails with the bug alive even when (a) passes."""
-    import ouroboros.safety as safety
     from ouroboros.safety import check_safety
 
-    monkeypatch.setattr(safety, "update_budget_from_usage", lambda usage: None)
+    monkeypatch.setattr("supervisor.state.update_budget_from_usage", lambda usage: None)
     stub = _ScriptedLLMClient([("", dict(_BODY_RATE_LIMIT_USAGE))])
     _patch_llm_client(monkeypatch, stub)
     ctx = _DriveCtx(tmp_path)
@@ -453,10 +452,9 @@ def test_http200_body_transient_that_is_not_429_still_blocks(monkeypatch, tmp_pa
     """Body lane: only `kind == "rate_limit"` (llm.py assigns it solely to a transient
     body error whose code IS 429) waves through; a body `provider_transient` keeps the
     existing unparseable-response outcome."""
-    import ouroboros.safety as safety
     from ouroboros.safety import check_safety
 
-    monkeypatch.setattr(safety, "update_budget_from_usage", lambda usage: None)
+    monkeypatch.setattr("supervisor.state.update_budget_from_usage", lambda usage: None)
     usage = {"provider_error": {"code": "502", "type": "server_error",
                                 "message": "Bad gateway", "kind": "provider_transient"},
              "prompt_tokens": 5, "completion_tokens": 0, "cost": 0.0}

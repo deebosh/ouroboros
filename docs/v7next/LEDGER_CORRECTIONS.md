@@ -5281,3 +5281,51 @@ Daemon audit #16 (sol, 22:11Z) — accepted findings landed here:
   separate gate calls, lane pools ≤ healthy profiles, per-delta code check
   before merge) adopted as operator rules; full text in the coordinator
   disposition file.
+## From the safety-port + preflight carve-out lane (owner 2B/11A, base bef13f5e)
+
+Two owner decisions from batch №9, landed as two single-intent commits. Both
+are gate-shaped: one moves a host fact into a PROTECTED file, the other
+narrows an admission block that was structurally degrading a whole class of
+commits to the audited bypass.
+
+**2B — ADOPTION D05 ported into the protected `ouroboros/safety.py`.** This
+lane edits a protected surface (AGENTS.md protected-paths list) under an
+EXPLICIT owner sanction («2. B», 2026-09-01); the delta is exactly the two
+facts named there and nothing beside them.
+
+| fact | what the tip did | what it does now |
+|---|---|---|
+| observability root of a safety call | `chat_observed(drive_root=pathlib.Path(getattr(ctx, "drive_root", "../data")) if ctx is not None else pathlib.Path("../data"))` — a CWD-RELATIVE guess. It names whatever directory happens to sit beside the process's current working directory and only resolves to the real data root by coincidence of the dev layout; the `ctx=None` call shape (extension/MCP dispatch, and every direct `check_safety` call) took it unconditionally | `_safety_drive_root(ctx)`: the context when it has one, otherwise `config.DATA_DIR`, read LATE off the module so test isolation and runtime rebinding are honored — the same resolution order the review surfaces already use |
+| who charges a safety call with no event queue | module-top-level `from supervisor.state import update_budget_from_usage` — an IMPORT-TIME edge from the module every worker imports, and which runs on every guarded tool call, into the supervisor package | `_record_safety_usage(ctx, payload)`: the context's own ledger writer when it injects one, else a CALL-TIME import of `supervisor.state` — the idiom the six sibling call sites of this writer in `ouroboros/` (reflection, post_task_synthesis ×3, post_task_evolution, improvement_backlog, semantic_dedup) already use. `ouroboros.safety` was the only module of that family importing it eagerly |
+
+Not a byte copy of the frozen reference: the reference's `_safety_model_call`
+does not exist there in this shape, so both facts were re-seated on tip bytes
+at their tip call sites (`safety.py:942` and the no-queue branch of
+`_emit_safety_usage`). The third fact of the D05 row, `schedule_followup =
+POLICY_SKIP`, needed no port at all — the tip already carries it byte-identical
+(`ouroboros/safety.py:111`); the ADOPTION row now says so instead of claiming
+the tip "does NOT carry these facts".
+
+Pins (`tests/test_safety_policy.py`, the D05 hook): `ctx=None` and a
+context without `drive_root` both resolve to a REBOUND `config.DATA_DIR`
+(late read, never `../data`); a context with `drive_root` wins; a CLEAN
+interpreter importing `ouroboros.safety` leaves `supervisor.state` out of
+`sys.modules`; the injected sink beats supervisor state and its absence falls
+back to it.
+
+**Two monkeypatch seams moved, and why that is not a weakened test.** Three
+tests patched `ouroboros.safety.update_budget_from_usage` — a module global
+that no longer exists once the import is call-time. They now patch
+`supervisor.state.update_budget_from_usage`, which is the SAME function object
+the code reaches, resolved at call time; every assertion they make about the
+fallback is unchanged. Nothing was deleted to make a test pass.
+
+**Residual, disclosed.** `_record_safety_usage`'s injected-sink branch is
+ported with the function, but nothing on this tip provides it on the safety
+path: `ToolContext` has no `update_budget_from_usage` field, and the object
+that does carry that attribute is the supervisor's event context
+(`server.py:781`, consumed at `supervisor/events_budget.py:122`), which never
+reaches `check_safety`. So the branch's only current exerciser is its pin. It
+is kept because it is half of the owner-adopted fact and because the attribute
+name is an EXISTING convention in this codebase rather than an invented
+protocol — not because a caller was found.
