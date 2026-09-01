@@ -49,6 +49,9 @@ _MOVED_OWNERS = {
     "resolve_effort": settings_scales,
     "resolve_prompt_cache_ttl": settings_scales,
     "_LEGACY_SLOT_RENAMES": model_slots,
+    # ABI-4 (F3.2): the typed resolved-model destination lives with the slot
+    # vocabulary leaf (D02-owner seam) and is re-exported by the facade.
+    "ResolvedModelTarget": model_slots,
     "_main_model": model_slots,
     "_parse_model_list": model_slots,
     "get_consciousness_model": model_slots,
@@ -67,6 +70,10 @@ _MOVED_OWNERS = {
     "get_review_enforcement": review_model_routes,
     "get_review_models": review_model_routes,
     "get_scope_review_models": review_model_routes,
+    # ABI-4 (F3.2): typed views over the effective reviewer model lists.
+    "get_review_targets": review_model_routes,
+    "get_scope_review_targets": review_model_routes,
+    "resolved_review_model_target": review_model_routes,
     "DELEGATE_WAIT_CEILING_SEC": runtime_limits,
     "DELEGATE_WAIT_WINDOW_MAX_SEC": runtime_limits,
     "MAX_ACTIVE_SUBAGENTS_HARD_CAP": runtime_limits,

@@ -94,7 +94,7 @@ def _run_cross_model_fallback_chain(
 ) -> tuple:
     """Try fallbacks; unknown dispatch stops the chain."""
     from ouroboros import fallback_cooldown as _fcd
-    from ouroboros.config import get_fallback_models
+    from ouroboros.config import fallback_candidate_targets
     from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS as _cooldown_kinds
 
     def _cooled(model: str, use_local: bool) -> None:
@@ -106,7 +106,11 @@ def _run_cross_model_fallback_chain(
     fallback_use_local = os.environ.get("USE_LOCAL_FALLBACK", "").lower() in ("true", "1")
     attempt_cap = _fcd.attempts_per_model()
     msg = None
-    for fallback_model in get_fallback_models(active_model):
+    # ABI-4: the candidate ladder arrives as typed ResolvedModelTarget values;
+    # `.model_id` is read once here and crosses to strings only at the LLM
+    # transport boundary (the chat API's model parameter).
+    for candidate in fallback_candidate_targets(active_model):
+        fallback_model = candidate.model_id
         if _fcd.is_cooling_down(fallback_model, fallback_use_local):
             continue
         deadline = _loop()._task_deadline_epoch(tools)

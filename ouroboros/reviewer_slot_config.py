@@ -619,17 +619,19 @@ def structured_scope_review_slots() -> Optional[list]:
     """
     if not structured_reviewer_slots_present():
         return None
-    from ouroboros.config import review_model_uses_local
+    from ouroboros.config import resolved_review_model_target
     from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.review_substrate import ReviewSlot
 
+    # ABI-4: the local-route fact is read off the typed target constructed at
+    # the review seam, not re-derived per model string here.
     return [
         ReviewSlot(
             slot_id=row.slot_id,
             model=row.target_id,
             effort=row_effort(row, "scope_review"),
             role_hint="scope reviewer",
-            use_local=review_model_uses_local(row.target_id),
+            use_local=(resolved_review_model_target(row.target_id).provider_route == "local"),
             route=(ReviewRouteKind.AGENT_SESSION if row.is_session
                    else ReviewRouteKind.API_CHAT),
             session_target=row.session_target,
@@ -657,7 +659,7 @@ def reviewer_slots(
     on the API by owner decision (task acceptance — D15) pass NOTHING, which
     pins every row to ``api_chat`` explicitly rather than by accident.
     """
-    from ouroboros.config import get_review_models, review_model_uses_local
+    from ouroboros.config import get_review_models, resolved_review_model_target
     from ouroboros.review_execution import ReviewRouteKind, configured_review_routes
     from ouroboros.review_substrate import SLOT_ID_PREFIX, ReviewSlot, slot_id_for_row
 
@@ -667,9 +669,13 @@ def reviewer_slots(
     routes = configured_review_routes(route_env_key, len(named)) if route_env_key else [
         ReviewRouteKind.API_CHAT
     ] * len(named)
+    # ABI-4: the local-route fact comes off the typed target constructed at the
+    # review seam (one predicate application, at construction) instead of a
+    # per-string predicate call here.
     return [
         ReviewSlot(slot_id=slot_id_for_row(idx + 1, prefix=id_prefix), model=model, effort=effort,
-                   role_hint=role_hint, use_local=review_model_uses_local(model),
+                   role_hint=role_hint,
+                   use_local=(resolved_review_model_target(model).provider_route == "local"),
                    route=routes[idx])
         for idx, model in enumerate(named)
     ]

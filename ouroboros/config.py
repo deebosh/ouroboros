@@ -22,7 +22,7 @@ from ouroboros.context_mode_compat import (
     normalize_and_persist_context_mode_compat, normalize_context_mode, owner_declared_low,
 )
 from ouroboros.platform_layer import pid_lock_acquire as _compat_pid_lock_acquire, pid_lock_release as _compat_pid_lock_release
-from ouroboros.provider_models import compute_direct_review_models_fallback, local_only_review_route_env, migrate_model_value, review_model_uses_local as review_model_uses_local  # noqa: F401
+from ouroboros.provider_models import compute_direct_review_models_fallback, fallback_candidate_targets, local_only_review_route_env, migrate_model_value, resolve_model_target, review_model_uses_local as review_model_uses_local  # noqa: F401
 from ouroboros.secret_masking import strip_masked_secrets
 from ouroboros.settings_defaults import (
     ENDPOINT_AUTHORED_SETTINGS,  # noqa: F401
@@ -55,6 +55,7 @@ from ouroboros.settings_scales import (
 )
 from ouroboros.model_slots import (
     _LEGACY_SLOT_RENAMES,  # noqa: F401
+    ResolvedModelTarget,  # noqa: F401
     _main_model,  # noqa: F401
     _parse_model_list,  # noqa: F401
     get_consciousness_model,  # noqa: F401
@@ -74,7 +75,10 @@ from ouroboros.review_model_routes import (
     direct_provider_review_models_fallback,  # noqa: F401
     get_review_enforcement,  # noqa: F401
     get_review_models,  # noqa: F401
+    get_review_targets,  # noqa: F401
     get_scope_review_models,  # noqa: F401
+    get_scope_review_targets,  # noqa: F401
+    resolved_review_model_target,  # noqa: F401
 )
 from ouroboros.runtime_limits import (
     DELEGATE_WAIT_CEILING_SEC,  # noqa: F401

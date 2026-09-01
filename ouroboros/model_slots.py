@@ -9,9 +9,38 @@ as by ``config``, which is why it holds no settings-file knowledge.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 
 from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ResolvedModelTarget:
+    """One fully RESOLVED model destination — the output of route resolution (ABI-4).
+
+    Constructed ONLY at the existing resolution seams (the cross-model fallback
+    ladder, the reviewer model lists, the delegated-route parse) — see
+    ``provider_models.resolve_model_target`` — and consumed downstream as a
+    value, never re-parsed from a comma/at string. Absent facts are typed
+    sentinels (``""`` / ``0``), never None-vs-missing ambiguity. Deliberately
+    NO pricing fields: cost stays with the provider-route pricing SSOT
+    (hardcoded price tables remain banned).
+    """
+
+    # Exact provider model id, e.g. "anthropic/claude-sonnet-4.6" or "openai::gpt-5.6-sol".
+    model_id: str
+    # Resolved transport lane: "openrouter" | "openai" | ... | "local" for API
+    # routes (``provider_for_model`` vocabulary), or the OPAQUE harness route id
+    # on delegated agent-session lanes (never interpreted — AGENTS.md).
+    provider_route: str
+    # Which configured credential/profile serves the call ("" = the provider default).
+    credential_ref: str = ""
+    # Normalized reasoning-effort label ("" when N/A at this seam).
+    effort: str = ""
+    # Tokens; 0 = unknown (fail-open per the cost-unknown rule — windows stay
+    # Capability Evidence's fact, this seam never probes for one).
+    context_window: int = 0
 
 
 def _parse_model_list(value: str) -> list[str]:

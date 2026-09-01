@@ -13,13 +13,16 @@ review family.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 
-from ouroboros.model_slots import _main_model, _parse_model_list
+from ouroboros.model_slots import ResolvedModelTarget, _main_model, _parse_model_list
 from ouroboros.provider_models import (
     compute_direct_review_models_fallback,
     local_only_review_route_env,
     migrate_model_value,
+    resolve_model_target,
+    review_model_uses_local,
 )
 from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS, SETTINGS_DEFAULTS
 
@@ -100,6 +103,32 @@ def get_review_models() -> list[str]:
         # explicit provider-matching list is honored exactly, duplicates included.
         return direct_provider_review_models_fallback(provider)
     return migrated
+
+
+def resolved_review_model_target(model: str, *, effort: str = "") -> ResolvedModelTarget:
+    """Construct the ABI-4 typed target for ONE resolved reviewer model.
+
+    The review seam's transport predicate is ``review_model_uses_local`` (a
+    local-only Main route pins EVERY review slot to the local lane), so the
+    typed ``provider_route`` says ``"local"`` exactly when that predicate
+    does — downstream slot builders read the dataclass instead of re-asking
+    the predicate per model string. Purely a typed view: the model lists
+    themselves stay ``get_review_models``/``get_scope_review_models``.
+    """
+    target = resolve_model_target(model, effort=effort)
+    if target.provider_route != "local" and review_model_uses_local(target.model_id):
+        target = dataclasses.replace(target, provider_route="local")
+    return target
+
+
+def get_review_targets() -> tuple[ResolvedModelTarget, ...]:
+    """The effective triad list as typed targets (ABI-4), same order/membership."""
+    return tuple(resolved_review_model_target(model) for model in get_review_models())
+
+
+def get_scope_review_targets() -> tuple[ResolvedModelTarget, ...]:
+    """The effective scope list as typed targets (ABI-4), duplicates preserved."""
+    return tuple(resolved_review_model_target(model) for model in get_scope_review_models())
 
 
 def get_review_enforcement() -> str:

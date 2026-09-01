@@ -240,6 +240,10 @@ def _start_request(ctx: ToolContext, route: Any, authority: "DelegatedRunShape",
     whether to recompute them or replay the recorded ones (the retry path never calls
     this function at all — it replays the stored canonical body verbatim).
     """
+    # ABI-4: the run request is assembled from the route's typed target — one
+    # ResolvedModelTarget read, serialized to strings only here, at the engine's
+    # wire boundary (the adapter never re-parses a harness[=model] slug).
+    target = route.resolved_model_target()
     request: Dict[str, Any] = {
         "prompt": text,
         # Built from the SHAPE plus the task contract, so a mutating delegated
@@ -263,8 +267,8 @@ def _start_request(ctx: ToolContext, route: Any, authority: "DelegatedRunShape",
         # explicit one-element `harnesses` pool is the engine's pinning
         # contract (its own MCP surface spells a forced route exactly this
         # way): the child rides THIS route or the start refuses typed.
-        "harnesses": [route.route_id],
-        "primaryHarness": route.route_id,
+        "harnesses": [target.provider_route],
+        "primaryHarness": target.provider_route,
         "access": authority.access,
     }
     if authority.isolation:
@@ -275,13 +279,13 @@ def _start_request(ctx: ToolContext, route: Any, authority: "DelegatedRunShape",
         # containment hole, so neither is assembled separately.
         request["execution"] = {"isolation": authority.isolation, "delegated": authority.delegated,
                                 **({"workspaceRoot": execution_root} if execution_root else {})}
-    if route.model:
-        request["model"] = route.model
-    if route.effort:
-        request["effort"] = route.effort
-    if route.profile_id:
+    if target.model_id:
+        request["model"] = target.model_id
+    if target.effort:
+        request["effort"] = target.effort
+    if target.credential_ref:
         # Account pin (D-U5), reviewer-slot wire contract; strict (D-U6). In the stored canonical body, so a retry_of replay stays byte-identical, pin included.
-        request["credentialProfileId"] = route.profile_id
+        request["credentialProfileId"] = target.credential_ref
     if seconds:
         request["maxSeconds"] = seconds
     return request

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 
-from ouroboros.model_slots import parse_fallback_chain
+from ouroboros.model_slots import ResolvedModelTarget, parse_fallback_chain
 from ouroboros.settings_defaults import OPENROUTER_DEFAULTS, OPENROUTER_REVIEW_DEFAULTS, SETTINGS_DEFAULTS  # noqa: F401
 
 # MiniMax exposes the same OpenAI-compatible API on two regional hosts. Keep the
@@ -115,6 +115,44 @@ def provider_for_model(model: str) -> str:
         if name.startswith(prefix):
             return provider
     return "openrouter"
+
+
+def resolve_model_target(
+    model: str,
+    *,
+    effort: str = "",
+    credential_ref: str = "",
+    context_window: int = 0,
+) -> ResolvedModelTarget:
+    """Construct the ABI-4 typed target at an EXISTING resolution seam.
+
+    Wraps what the resolution already computed (reuse-first): the transport
+    lane comes from ``provider_for_model``, and the optional facts keep their
+    typed sentinels unless the calling seam genuinely resolved them. No
+    parallel resolver, no pricing, no window probing — a context window is
+    Capability Evidence's fact (0 = unknown, fail-open).
+    """
+    model_id = str(model or "").strip()
+    return ResolvedModelTarget(
+        model_id=model_id,
+        provider_route=provider_for_model(model_id),
+        credential_ref=str(credential_ref or "").strip(),
+        effort=str(effort or "").strip(),
+        context_window=max(0, int(context_window or 0)),
+    )
+
+
+def fallback_candidate_targets(active_model: str = "") -> tuple[ResolvedModelTarget, ...]:
+    """The cross-model fallback candidate ladder as typed targets (ABI-4).
+
+    Same membership and order as ``model_slots.get_fallback_models`` — a typed
+    view over the ONE chain SSOT, not a second resolver. Effort stays the ""
+    sentinel: the ladder resolves destinations, the dispatching round owns the
+    active effort.
+    """
+    from ouroboros.model_slots import get_fallback_models
+
+    return tuple(resolve_model_target(model) for model in get_fallback_models(active_model))
 
 
 def provider_has_credentials(provider: str) -> bool:
