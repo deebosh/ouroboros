@@ -79,7 +79,9 @@ def test_root_reads_credential_named_user_file_masked_not_refused(user_files_ctx
 def test_root_lists_and_searches_credential_named_user_files(user_files_ctx):
     ctx, _home = user_files_ctx
     listing = _list_files(ctx, path=".aws", root="user_files")
-    assert ".aws/credentials" in listing.replace("\\", "/")  # not hidden (native separators on Windows)
+    # Not hidden. The listing is JSON text, so a Windows separator arrives
+    # JSON-escaped ("\\\\"): fold that first, then any bare backslash.
+    assert ".aws/credentials" in listing.replace("\\\\", "/").replace("\\", "/")
     found = _code_search(ctx, "aws_secret_access_key", root="user_files", path=".aws")
     assert ".aws/credentials" in found                   # search reaches the file
     assert "wJalrXUtnFEMI" not in found                  # match lines are masked
