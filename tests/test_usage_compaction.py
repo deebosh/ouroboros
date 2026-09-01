@@ -654,6 +654,57 @@ def test_warm_segment_cache_revalidates_the_file_it_cached(data_root):
         uc.archived_attempt_ids(data_root)
 
 
+def _rewrite_segment_in_place(segment, marker):
+    """Same size, same inode, same mtime: the fingerprint a rewrite can keep."""
+    payload = segment.read_bytes()
+    forged = payload.replace(b'"settled"', marker, 1)
+    assert forged != payload and len(forged) == len(payload)
+    info = os.stat(segment)
+    with open(segment, "r+b") as handle:
+        handle.write(forged)
+    os.utime(segment, ns=(info.st_atime_ns, info.st_mtime_ns))
+
+
+def test_a_rewrite_inside_the_timestamp_window_is_re_hashed_not_recalled(data_root):
+    """Filesystem timestamps have granularity; a file touched about NOW cannot
+    prove it is the file that was read, however well the fingerprint matches."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    header = _ledger_rows(data_root)[0]
+    segment = data_root / header["archive_rel"]
+    assert uc.archived_attempt_ids(data_root)  # warms the per-segment cache
+    _rewrite_segment_in_place(segment, b'"sett1ed"')
+    # Deterministically place the file INSIDE the settle window while keeping
+    # the cache's fingerprint exact, so only the window can decide this read.
+    entry = uc._SEGMENT_CACHE[str(segment)]
+    os.utime(segment)
+    info = os.stat(segment)
+    uc._SEGMENT_CACHE[str(segment)] = entry[:3] + (
+        (info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns),
+    ) + entry[4:]
+
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+
+def test_a_same_size_rewrite_is_caught_once_the_cache_entry_expires(data_root):
+    """A verified read is evidence with a shelf life, not a standing answer."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    header = _ledger_rows(data_root)[0]
+    segment = data_root / header["archive_rel"]
+    settled = time.time() - 3600
+    os.utime(segment, (settled, settled))  # well outside the settle window
+    assert uc.archived_attempt_ids(data_root)
+    _rewrite_segment_in_place(segment, b'"sett1ed"')
+    entry = uc._SEGMENT_CACHE[str(segment)]
+    uc._SEGMENT_CACHE[str(segment)] = entry[:4] + (entry[4] - 3600,)
+
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+
+
 # Everything the forger would carry over from the older genuine stamp — the
 # MUTABLE epoch included, because a rollback that leaves the epoch behind is
 # caught by the chain-step rule alone and proves nothing about this one.

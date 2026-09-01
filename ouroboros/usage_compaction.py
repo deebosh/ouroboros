@@ -31,6 +31,7 @@ import logging
 import os
 import pathlib
 import threading
+import time
 import uuid
 from decimal import Decimal, DecimalException, InvalidOperation
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple
@@ -67,12 +68,19 @@ _COMPACT_ATTEMPTS: Dict[str, Tuple[int, int, int]] = {}
 _COMPACT_ATTEMPTS_LOCK = threading.Lock()
 
 # Immutable-segment cache for the history readers: abs path -> (expected
-# sha256, frozen attempt-id set, embedded prior header, file fingerprint).
-# The fingerprint is part of the hit condition, so a segment deleted or
-# rewritten after a warm read re-verifies (and fails) instead of answering
-# from memory.
+# sha256, frozen attempt-id set, embedded prior header, file fingerprint, the
+# moment it was verified). The fingerprint is part of the hit condition, so a
+# segment deleted or rewritten after a warm read re-verifies (and fails)
+# instead of answering from memory — but a fingerprint is not proof of
+# identity: an in-place rewrite of the same size, inside the filesystem's
+# timestamp granularity or with the mtime restored afterwards, keeps it
+# whole. So a hit ALSO requires a file that has been still for a moment and
+# an entry that has not been standing too long: a cached read is evidence
+# with a shelf life, and past it the bytes are hashed again.
+_SEGMENT_MTIME_SETTLE_SEC = 2.0
+_SEGMENT_CACHE_TTL_SEC = 60.0
 _SEGMENT_CACHE: Dict[
-    str, Tuple[str, frozenset, Optional[Dict[str, Any]], Tuple[int, int, int, int]]
+    str, Tuple[str, frozenset, Optional[Dict[str, Any]], Tuple[int, int, int, int], float]
 ] = {}
 
 # The union over one WHOLE chain, keyed by the chain's identity ((archive_rel,
@@ -756,9 +764,9 @@ def _load_segment(
 
     Segments are immutable, so a verified read is cached — but the cache is
     keyed on what the file IS, not merely on what was once read from that
-    path: a deleted or rewritten segment must surface as corruption even in a
-    process that already loaded it, or an audit keeps answering "logged" from
-    history that is no longer there.
+    path, and the hit expires: a deleted or rewritten segment must surface as
+    corruption even in a process that already loaded it, or an audit keeps
+    answering "logged" from history that is no longer there.
     """
     expected_sha256 = str(header.get("source_sha256") or "")
     path = _segment_path(root, str(header.get("archive_rel") or ""))
@@ -768,8 +776,15 @@ def _load_segment(
     except OSError as exc:
         raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
     fingerprint = (info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns)
+    now = time.time()
     cached = _SEGMENT_CACHE.get(key)
-    if cached is not None and cached[0] == expected_sha256 and cached[3] == fingerprint:
+    if (
+        cached is not None
+        and cached[0] == expected_sha256
+        and cached[3] == fingerprint
+        and (now - info.st_mtime) > _SEGMENT_MTIME_SETTLE_SEC
+        and (now - cached[4]) <= _SEGMENT_CACHE_TTL_SEC
+    ):
         return cached[1], cached[2]
     try:
         payload = path.read_bytes()
@@ -793,7 +808,7 @@ def _load_segment(
     ids.discard("")
     prior_header = rows[0] if rows and str(rows[0].get("kind") or "") == "usage_baseline" else None
     frozen = frozenset(ids)
-    _SEGMENT_CACHE[key] = (expected_sha256, frozen, prior_header, fingerprint)
+    _SEGMENT_CACHE[key] = (expected_sha256, frozen, prior_header, fingerprint, now)
     return frozen, prior_header
 
 
