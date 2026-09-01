@@ -2356,8 +2356,10 @@ write-then-rename persistence and `read_json_dict(path)` for dict-shaped JSON
 reads. `write_text_atomic(path, content, fsync=False)` and
 `write_bytes_atomic(path, content, fsync=False)` share one atomic FULL-OVERWRITE
 seam (temp-sibling + `os.replace`, existing permission bits preserved, crash leaves
-the old file intact); the text variant preserves normal platform newline handling
-and the bytes variant uses binary mode for exact bytes. `atomic_write_json` and
+the old file intact); the text variant is the bytes variant plus a UTF-8 encode,
+so both are BYTE-EXACT on every platform — the newlines the caller wrote are the
+newlines on disk, and no Windows CRT translation rewrites a manifest, a hashed
+receipt or an LF source file. `atomic_write_json` and
 `write_text` route through the text variant. Prefer these helpers over bare
 `Path.write_text` / `Path.write_bytes` for full-file overwrites. Appends are
 intentionally NOT atomic (they extend in place). Lockfile acquisition should go through

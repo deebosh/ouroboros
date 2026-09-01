@@ -320,23 +320,22 @@ def write_text_atomic(
     *,
     fsync: bool = False,
 ) -> None:
-    """Atomically overwrite UTF-8 text with platform newline semantics."""
+    """Atomically overwrite ``path`` with ``content`` encoded UTF-8, BYTE-EXACT.
 
-    def _write(tmp: pathlib.Path) -> None:
-        if fsync:
-            # Same full-write loop as write_bytes_atomic (the fd flags stay
-            # this path's own: no O_BINARY, preserving the historical platform
-            # newline semantics of the text lane on Windows).
-            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-            try:
-                _write_fd_fully(fd, content.encode("utf-8"), tmp)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        else:
-            tmp.write_text(content, encoding="utf-8")
+    The file receives exactly ``content.encode("utf-8")`` on every platform:
+    the newlines the caller wrote are the newlines on disk. This is the
+    contract every caller in this tree needs — durable JSON state (through
+    ``atomic_write_json``), receipts, run manifests, projection files, and the
+    agent's own file writes/edits, which round-trip source text that Python
+    reads back with universal newlines.
 
-    _atomic_overwrite(path, _write)
+    It used to be "platform newline semantics": both lanes translated ``\\n``
+    to ``\\r\\n`` on Windows (``Path.write_text`` in text mode, and ``os.open``
+    without ``O_BINARY``). Nothing asked for that translation, while a
+    byte-compared manifest, a hashed receipt and an LF source file the agent
+    merely re-saved were all silently rewritten by it.
+    """
+    write_bytes_atomic(pathlib.Path(path), content.encode("utf-8"), fsync=fsync)
 
 
 def atomic_write_json(

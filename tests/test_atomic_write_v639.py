@@ -202,3 +202,44 @@ def test_append_jsonl_reports_failure_and_never_retries_a_torn_record(tmp_path, 
     monkeypatch.undo()
     assert calls["n"] == 2  # one short write, one failure — no whole-record replay
     assert target.read_bytes() == b'{"ty'
+
+
+@pytest.mark.parametrize("fsync", [False, True])
+def test_write_text_atomic_is_byte_exact_on_every_platform(tmp_path, monkeypatch, fsync):
+    """Audit #14-5: the text lane used to translate newlines on Windows — the
+    non-fsync lane through ``Path.write_text``'s text mode, the fsync lane
+    through an ``os.open`` without ``O_BINARY``. Byte-exact consumers (run
+    manifests, hashed receipts, agent file writes that round-trip LF source)
+    were rewritten silently by it.
+
+    POSIX has no translation to observe, so the flag is simulated: give ``os``
+    an ``O_BINARY`` bit the way Windows has one, pin that the fsync lane passes
+    it, and pin the exact bytes on both lanes."""
+    import os as _os
+
+    fake_o_binary = 1 << 26
+    target = tmp_path / "run_manifest.json"
+    content = '{\n  "seed": "v7next\\r",\n  "lines": "a\\nb"\n}\n'
+    flags_seen: list[int] = []
+    real_open = _os.open
+
+    def spy_open(path, flags, *args, **kwargs):
+        flags_seen.append(flags)
+        return real_open(path, flags & ~fake_o_binary, *args, **kwargs)
+
+    monkeypatch.setattr(_os, "O_BINARY", fake_o_binary, raising=False)
+    monkeypatch.setattr(utils.os, "open", spy_open)
+    write_text_atomic(target, content, fsync=fsync)
+    monkeypatch.undo()
+
+    assert target.read_bytes() == content.encode("utf-8")
+    if fsync:
+        assert flags_seen and all(flags & fake_o_binary for flags in flags_seen)
+
+
+def test_atomic_write_json_lands_exact_bytes(tmp_path):
+    """The JSON SSOT inherits the byte-exact contract: durable state hashes the
+    same on every platform."""
+    target = tmp_path / "state.json"
+    atomic_write_json(target, {"a": [1, 2], "b": "x"}, trailing_newline=True)
+    assert target.read_bytes() == b'{\n  "a": [\n    1,\n    2\n  ],\n  "b": "x"\n}\n'
