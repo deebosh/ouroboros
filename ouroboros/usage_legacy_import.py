@@ -51,12 +51,15 @@ def _legacy_snapshot(root: pathlib.Path) -> Tuple[list[Dict[str, Any]], Dict[str
     # live in archive/events_*.jsonl segments (e.g. a first import attempt
     # failed and rotation ran before the retry). The snapshot is the WHOLE
     # chain, concatenated in chronological order — hashed, archived and
-    # scanned as one source.
+    # scanned as one source. STRICT: this is money. A permission error on a
+    # segment or on archive/ must reach the ``OSError`` below as a typed
+    # incomplete view (``JsonlChainUnreadable``), never silently drop the
+    # rows it hides from the imported baseline.
     try:
         from ouroboros.utils import jsonl_chain_handles
 
         chain_parts: list[bytes] = []
-        with jsonl_chain_handles(events_path) as handles:
+        with jsonl_chain_handles(events_path, strict=True) as handles:
             for _, handle in handles:
                 chain_parts.append(handle.read())
         if chain_parts:

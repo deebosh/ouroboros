@@ -252,12 +252,18 @@ def custody_log_unreadable(drive_root: Any) -> bool:
     existing-but-unreadable means the open-run answer is UNKNOWN. Same probe
     the evidence reader (``task_execution_evidence``) already uses; its own
     semantics are unchanged. Probes the WHOLE rotated chain: an unreadable
-    archive segment hides custody exactly like an unreadable live file.
+    archive segment — or an unreadable archive DIRECTORY, which the lenient
+    enumeration reports as "never rotated" — hides custody exactly like an
+    unreadable live file.
     """
-    from ouroboros.utils import jsonl_archive_segments
+    from ouroboros.utils import JsonlChainUnreadable, jsonl_archive_segments
 
     path = event_log_path(drive_root)
-    for candidate in (*jsonl_archive_segments(path), path):
+    try:
+        segments = jsonl_archive_segments(path, strict=True)
+    except JsonlChainUnreadable:
+        return True
+    for candidate in (*segments, path):
         try:
             if not candidate.exists():
                 continue

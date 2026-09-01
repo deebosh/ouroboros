@@ -145,6 +145,66 @@ def test_unreadable_archive_segment_fails_closed(tmp_path):
     assert custody.custody_log_unreadable(tmp_path) is False
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod-based unreadability needs a non-root POSIX user",
+)
+def test_unreadable_archive_directory_is_typed_not_empty(tmp_path):
+    """Audit #14-6a: ``Path.glob`` SWALLOWS a PermissionError on archive/ and
+    yields nothing, so every chain reader read "this store never rotated" from
+    a directory it could not open. Authority readers must see a TYPED
+    incomplete view instead; fail-soft readers keep the lenient answer."""
+    from ouroboros.delegate_custody_usage import complete_custody_rows
+    from ouroboros.utils import JsonlChainUnreadable, jsonl_archive_segments
+
+    _emit(tmp_path, custody.STARTED, run_id="r1", task_id="t1")
+    _rotate_events(tmp_path)
+    path = custody.event_log_path(tmp_path)
+    archive_dir = tmp_path / "archive"
+    archive_dir.chmod(0)
+    try:
+        assert jsonl_archive_segments(path) == []  # fail-soft: degraded window
+        with pytest.raises(JsonlChainUnreadable):
+            jsonl_archive_segments(path, strict=True)
+        assert complete_custody_rows(path, "delegate_run") is None
+        assert custody.custody_log_unreadable(tmp_path) is True
+    finally:
+        archive_dir.chmod(0o755)
+    assert custody.custody_log_unreadable(tmp_path) is False
+    assert complete_custody_rows(path, "delegate_run") is not None
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod-based unreadability needs a non-root POSIX user",
+)
+@pytest.mark.parametrize("hide", ["segment", "directory"])
+def test_legacy_money_import_fails_closed_on_an_unreadable_chain(tmp_path, hide):
+    """Audit #14-6a: the legacy usage import EXPECTS an OSError and fails
+    closed — but a permission error on a rotated segment (or on archive/)
+    never reached that except, and the hidden ``llm_usage`` rows would have
+    been silently excluded from the imported monetary baseline."""
+    from ouroboros.usage_ledger import UsageAccountingError
+    from ouroboros.usage_legacy_import import _legacy_snapshot
+
+    events_path = tmp_path / "logs" / "events.jsonl"
+    append_jsonl(events_path, {"type": "llm_usage", "model": "m1", "cost": 0.5})
+    _rotate_events(tmp_path)
+    append_jsonl(events_path, {"type": "llm_usage", "model": "m2", "cost": 0.25})
+    hidden = (
+        tmp_path / "archive" if hide == "directory"
+        else sorted((tmp_path / "archive").glob("events_*.jsonl"))[0]
+    )
+    hidden.chmod(0)
+    try:
+        with pytest.raises(UsageAccountingError):
+            _legacy_snapshot(tmp_path)
+    finally:
+        hidden.chmod(0o755 if hide == "directory" else 0o644)
+    rows, _state, _hashes = _legacy_snapshot(tmp_path)
+    assert [row["model"] for row in rows] == ["m1", "m2"]
+
+
 def test_settled_cursor_advances_across_rotation(tmp_path, monkeypatch):
     import ouroboros.delegate_terminal as dt
 

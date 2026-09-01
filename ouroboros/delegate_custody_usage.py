@@ -54,48 +54,18 @@ def complete_custody_rows(path, marker: str, *, started_type: str = ""):
     line-by-line (event logs grow to hundreds of MB). Chain-aware (CPL4-C1):
     reads the rotated ``archive/events_*.jsonl`` segments before the live
     file — live-first open + inode dedup keeps a racing rotation from hiding
-    rows — and an archive segment that exists but cannot be opened is an
-    incomplete view, not an empty one."""
-    import contextlib
+    rows — and anything in the chain that exists but cannot be READ (segment,
+    live file, or the archive directory itself) is an incomplete view, not an
+    empty one: the STRICT chain reader turns each of those into a typed
+    ``JsonlChainUnreadable`` this authority answers with ``None``."""
     import json
-    import os
 
-    from ouroboros.utils import jsonl_archive_segments
+    from ouroboros.utils import JsonlChainUnreadable, jsonl_chain_handles
 
     try:
-        live = path.open("rb")
-    except FileNotFoundError:
-        live = None
-    except OSError:
-        return None
-    handles = []
-    try:
-        live_id = None
-        if live is not None:
-            try:
-                stat = os.fstat(live.fileno())
-                live_id = (stat.st_dev, stat.st_ino)
-            except OSError:
-                return None
-        for segment in jsonl_archive_segments(path):
-            try:
-                seg_stat = segment.stat()
-            except FileNotFoundError:
-                continue
-            except OSError:
-                return None
-            if live_id is not None and (seg_stat.st_dev, seg_stat.st_ino) == live_id:
-                continue  # the open live handle IS this rotated segment
-            try:
-                handles.append(segment.open("rb"))
-            except OSError:
-                return None
-        if live is not None:
-            handles.append(live)
-            live = None  # ownership moved into the list
-        rows = []
-        try:
-            for handle in handles:
+        with jsonl_chain_handles(path, strict=True) as handles:
+            rows = []
+            for _, handle in handles:
                 for raw in handle:
                     if marker.encode("ascii") not in raw:
                         continue
@@ -110,13 +80,6 @@ def complete_custody_rows(path, marker: str, *, started_type: str = ""):
                     if started_type and row.get("type") == started_type and not str(row.get("run_id") or ""):
                         return None
                     rows.append(row)
-        except OSError:
-            return None
-        return rows
-    finally:
-        if live is not None:
-            with contextlib.suppress(Exception):
-                live.close()
-        for handle in handles:
-            with contextlib.suppress(Exception):
-                handle.close()
+            return rows
+    except (JsonlChainUnreadable, OSError):
+        return None

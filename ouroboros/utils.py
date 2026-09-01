@@ -699,7 +699,22 @@ def iter_jsonl_objects(
         return
 
 
-def jsonl_archive_segments(path: pathlib.Path) -> List[pathlib.Path]:
+class JsonlChainUnreadable(OSError):
+    """A rotated JSONL chain could not be enumerated or opened IN FULL.
+
+    Authority readers (money, custody) pass ``strict=True`` so an unreadable
+    ``archive/`` directory or segment is a TYPED incomplete view instead of an
+    empty one — the lenient default answers "this store never rotated" for
+    both, which is how a permission error silently under-counts a ledger.
+    Fail-soft readers (UI tails, context backfill, boot probes) keep the
+    lenient default: a missing segment degrades their window, it decides
+    nothing.
+    """
+
+
+def jsonl_archive_segments(
+    path: pathlib.Path, *, strict: bool = False,
+) -> List[pathlib.Path]:
     """Rotated archive segments for a ``logs/<name>.jsonl`` store, oldest first.
 
     ``rotate_jsonl_log_if_needed`` renames the live file to
@@ -707,18 +722,41 @@ def jsonl_archive_segments(path: pathlib.Path) -> List[pathlib.Path]:
     lexicographic name order is chronological by construction (the rotator's
     ``_<n>`` collision suffix sorts after ``<ts>.jsonl``). A store that never
     rotated yields an empty list.
+
+    Enumeration is an explicit ``scandir``: ``Path.glob`` SWALLOWS a
+    ``PermissionError`` on the archive directory and yields nothing, so the
+    former ``except OSError`` never saw the very failure that matters. With
+    ``strict`` an unreadable directory raises :class:`JsonlChainUnreadable`;
+    an absent one is still positively empty on both paths.
     """
     path = pathlib.Path(path)
     archive_dir = path.parent.parent / "archive"
     stem = path.name[:-len(".jsonl")] if path.name.endswith(".jsonl") else path.stem
+    prefix = f"{stem}_"
     try:
-        return sorted(p for p in archive_dir.glob(f"{stem}_*.jsonl") if p.is_file())
-    except OSError:
+        with os.scandir(archive_dir) as entries:
+            found = [
+                pathlib.Path(entry.path)
+                for entry in entries
+                if entry.name.startswith(prefix)
+                and entry.name.endswith(".jsonl")
+                and entry.is_file()
+            ]
+    except FileNotFoundError:
         return []
+    except OSError as exc:
+        if strict:
+            raise JsonlChainUnreadable(
+                f"cannot enumerate the rotated archive of {path}: {exc}"
+            ) from exc
+        return []
+    return sorted(found)
 
 
 @contextlib.contextmanager
-def jsonl_chain_handles(path: pathlib.Path) -> Iterator[List[Tuple[pathlib.Path, Any]]]:
+def jsonl_chain_handles(
+    path: pathlib.Path, *, strict: bool = False,
+) -> Iterator[List[Tuple[pathlib.Path, Any]]]:
     """Open a rotated JSONL store's whole chain for ONE consistent read.
 
     Yields ``[(path, binary_handle), ...]`` oldest→newest with the live file
@@ -728,8 +766,12 @@ def jsonl_chain_handles(path: pathlib.Path) -> Iterator[List[Tuple[pathlib.Path,
     instant is seen exactly once, in chronological order, whichever side of
     the rename the reader lands on. (On Windows the rotator's ``os.replace``
     fails while the handle is open, so the race cannot occur at all.)
-    Unopenable segments are skipped (the fail-soft readers own their own
-    stricter probes); handles are closed on exit.
+    By default unopenable segments are skipped (fail-soft readers own their
+    own probes). ``strict=True`` raises :class:`JsonlChainUnreadable` instead —
+    an absent live file, or a segment that vanished between enumeration and
+    stat, stays benign (rotation never deletes, so absence is positively
+    empty), but anything UNREADABLE is an incomplete view. Handles are closed
+    on exit.
     """
     path = pathlib.Path(path)
     handles: List[Tuple[pathlib.Path, Any]] = []
@@ -737,25 +779,37 @@ def jsonl_chain_handles(path: pathlib.Path) -> Iterator[List[Tuple[pathlib.Path,
     try:
         try:
             live_handle = path.open("rb")
-        except OSError:
+        except FileNotFoundError:
+            live_handle = None
+        except OSError as exc:
+            if strict:
+                raise JsonlChainUnreadable(f"cannot open {path}: {exc}") from exc
             live_handle = None
         live_id = None
         if live_handle is not None:
             try:
                 stat = os.fstat(live_handle.fileno())
                 live_id = (stat.st_dev, stat.st_ino)
-            except OSError:
+            except OSError as exc:
+                if strict:
+                    raise JsonlChainUnreadable(f"cannot stat {path}: {exc}") from exc
                 live_id = None
-        for segment in jsonl_archive_segments(path):
+        for segment in jsonl_archive_segments(path, strict=strict):
             try:
                 seg_stat = segment.stat()
-            except OSError:
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                if strict:
+                    raise JsonlChainUnreadable(f"cannot stat {segment}: {exc}") from exc
                 continue
             if live_id is not None and (seg_stat.st_dev, seg_stat.st_ino) == live_id:
                 continue  # the open live handle IS this rotated segment
             try:
                 handles.append((segment, segment.open("rb")))
-            except OSError:
+            except OSError as exc:
+                if strict:
+                    raise JsonlChainUnreadable(f"cannot open {segment}: {exc}") from exc
                 continue
         if live_handle is not None:
             handles.append((path, live_handle))
