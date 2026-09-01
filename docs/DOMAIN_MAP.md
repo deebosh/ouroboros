@@ -11,24 +11,24 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D01 | Agent core & main loop | 29 | 2 |
 | D02 | LLM client, routing & providers | 33 | 13 |
 | D03 | Context assembly, fit & compaction | 11 | 1 |
-| D04 | Tool execution: registry, access & typed results | 20 | 0 |
+| D04 | Tool execution: registry, access & typed results | 19 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 24 | 1 |
 | D06 | Review stack | 62 | 17 |
-| D07 | Delegation, subagents & Claudexor | 47 | 17 |
-| D08 | Supervisor: queue, workers, events & runtime control | 41 | 4 |
-| D09 | Cancellation, owner control & process custody | 12 | 0 |
+| D07 | Delegation, subagents & Claudexor | 45 | 17 |
+| D08 | Supervisor: queue, workers, events & runtime control | 40 | 4 |
+| D09 | Cancellation, owner control & process custody | 11 | 0 |
 | D10 | Git, update & release machinery | 28 | 1 |
-| D11 | Gateway, server & Web UI | 45 | 2 |
+| D11 | Gateway, server & Web UI | 42 | 2 |
 | D12 | Settings & configuration | 14 | 1 |
 | D13 | Safety, guards & runtime mode | 8 | 2 |
 | D14 | Skills & extensions | 51 | 8 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 16 | 1 |
 | D16 | Observability, usage accounting & cost | 8 | 0 |
-| D17 | Projects, workspaces & task results | 20 | 1 |
-| D18 | Launcher, packaging, platform & shared substrate | 11 | 0 |
+| D17 | Projects, workspaces & task results | 19 | 1 |
+| D18 | Launcher, packaging, platform & shared substrate | 10 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 9 |
-| **total** | | **499** | **80** |
+| **total** | | **489** | **80** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **93**
+- lazy-only cross-domain pairs: **92**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -127,7 +127,6 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D13->D15
   - D14->D08
   - D14->D13
-  - D14->D17
   - D14->D20
   - D15->D06
   - D15->D07
@@ -263,7 +262,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/tool_policy.py`
 - `ouroboros/tools/__init__.py`
 - `ouroboros/tools/extension_dispatch.py`
-- `ouroboros/tools/process_facts.py`
 - `ouroboros/tools/registry.py`
 - `ouroboros/tools/registry_core.py`
 - `ouroboros/tools/registry_guard_process.py`
@@ -278,9 +276,10 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 - `ouroboros/artifacts.py`
 - `ouroboros/code_intelligence.py`
+- `ouroboros/code_intelligence_architecture.py`
 - `ouroboros/code_search_rg.py`
 - `ouroboros/mcp_client.py`
-- `ouroboros/process_interpreters.py`
+- `ouroboros/python_interpreter.py`
 - `ouroboros/tools/browser.py`
 - `ouroboros/tools/core.py`
 - `ouroboros/tools/core_artifacts.py`
@@ -288,7 +287,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/tools/edit_ops.py`
 - `ouroboros/tools/health.py`
 - `ouroboros/tools/media.py`
-- `ouroboros/tools/owner_delivery.py`
 - `ouroboros/tools/query_code.py`
 - `ouroboros/tools/recent_tasks.py`
 - `ouroboros/tools/search.py`
@@ -382,7 +380,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/delegate_pending.py` *
 - `ouroboros/delegate_progress.py`
 - `ouroboros/delegate_recovery.py` *
-- `ouroboros/delegate_registration_policy.py`
 - `ouroboros/delegate_shared.py`
 - `ouroboros/delegate_source_coverage.py` *
 - `ouroboros/delegate_start_claims.py` *
@@ -411,7 +408,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/tools/delegate_payload_patch.py`
 - `ouroboros/tools/delegate_terminal_evidence.py`
 - `ouroboros/tools/join_ledger.py`
-- `ouroboros/tools/patch_verdict.py`
 - `ouroboros/tools/subagent_integration.py`
 - `ouroboros/tools/subagent_integration_delegated.py`
 - `ouroboros/tools/task_tree.py`
@@ -451,7 +447,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `supervisor/subagent_task_truth.py` *
 - `supervisor/task_admission.py`
 - `supervisor/task_dispatch.py` *
-- `supervisor/telemetry_events.py`
 - `supervisor/worker_assignment.py`
 - `supervisor/worker_chat_lane.py`
 - `supervisor/worker_health.py`
@@ -464,7 +459,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 
 - `ouroboros/cancel_intents.py`
 - `ouroboros/owner_hurry.py`
-- `ouroboros/owner_quiz.py`
 - `ouroboros/process_containment.py`
 - `ouroboros/process_custody.py`
 - `ouroboros/server_control.py`
@@ -514,7 +508,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/claudexor_accounts.py`
 - `ouroboros/gateway/contracts.py`
 - `ouroboros/gateway/control.py`
-- `ouroboros/gateway/endpoint_index.py`
 - `ouroboros/gateway/extensions.py`
 - `ouroboros/gateway/files.py`
 - `ouroboros/gateway/history.py`
@@ -529,13 +522,11 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/gateway/presence_settings.py` *
 - `ouroboros/gateway/projects.py`
 - `ouroboros/gateway/router.py`
-- `ouroboros/gateway/routing_decision.py`
 - `ouroboros/gateway/schedules.py`
 - `ouroboros/gateway/schema.py`
 - `ouroboros/gateway/settings.py`
 - `ouroboros/gateway/skill_publish.py` *
 - `ouroboros/gateway/state.py`
-- `ouroboros/gateway/task_decision.py`
 - `ouroboros/gateway/task_events.py`
 - `ouroboros/gateway/task_hurry.py`
 - `ouroboros/gateway/task_list_scan.py`
@@ -678,7 +669,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/project_sources.py`
 - `ouroboros/projects_registry.py`
 - `ouroboros/retention.py`
-- `ouroboros/routing_wait.py`
 - `ouroboros/task_result_schema.py`
 - `ouroboros/task_results.py`
 - `ouroboros/task_status.py`
@@ -697,7 +687,6 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/launcher_bootstrap.py`
 - `ouroboros/launcher_server_reaper.py`
 - `ouroboros/launcher_windows_runtime.py`
-- `ouroboros/node_runtime.py`
 - `ouroboros/packaged_cli.py`
 - `ouroboros/packaged_cli_install.py`
 - `ouroboros/platform_layer.py`
