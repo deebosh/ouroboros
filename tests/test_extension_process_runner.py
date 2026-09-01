@@ -18,7 +18,18 @@ from ouroboros.skill_loader import (
     find_skill,
     save_skill_grants,
 )
-from ouroboros.tools.result_envelope import result_payload_text as _payload
+
+
+def _payload(result) -> str:
+    """The producer payload before any trailing host note (#447 H1).
+
+    Host notes (safety warning, auto-route note, post-exec tripwires) TRAIL the
+    payload, so a test that pins what the extension itself answered reads the
+    text up to the first appended note."""
+    text = str(result or "")
+    head, sep, _tail = text.partition("\n\n⚠️ ")
+    return head if sep else text
+
 from tests._shared import clean_extension_runtime_state
 from tests.test_extension_loader import (
     _add_fake_native_dep,

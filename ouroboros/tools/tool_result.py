@@ -19,6 +19,9 @@ _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # keeps the single parser from acquiring a blind spot the pair did not have.
 _FIRST_MARKER_RE = re.compile(r"^⚠️ +([A-Z][A-Z0-9_]*)")
 _SAFETY_SEPARATOR = "\n\n---\n"
+# Host notes TRAIL the payload since #447 H1; this is the boundary a text-only
+# reader uses to recover the producer payload the note was appended to.
+_HOST_NOTE_SEPARATOR = "\n\n⚠️ "
 _MCP_RESULT_ENVELOPE_PREFIX = "External MCP tool result from "
 # The registry composes this sentence PRECISELY BECAUSE no provider ran: the name
 # resolved to nothing. It is host text under a dynamic-looking name, which is the
@@ -780,14 +783,28 @@ def _compose_execute_result(result: str, route_note: str, safety_msg: str) -> st
 
 
 def _structured_failure(text: str) -> bool:
+    """Whether a tool's own JSON payload declares the call failed (``ok: false``).
+
+    Deliberately narrow: the payload must be a JSON OBJECT whose top-level ``ok``
+    is exactly False. Since #447 H1 host notes TRAIL the payload, so the whole
+    text is no longer parseable once a note rides along — the pre-note payload is
+    tried as well, which is exactly what a typed producer would have published.
+    """
     stripped = text.lstrip()
     if not stripped.startswith("{") or '"ok"' not in stripped:
         return False
-    try:
-        payload = json.loads(stripped)
-    except Exception:  # The compatibility adapter must never break a legacy result.
-        return False
-    return isinstance(payload, dict) and payload.get("ok") is False
+    candidates = [stripped]
+    head, sep, _tail = stripped.partition(_HOST_NOTE_SEPARATOR)
+    if sep:
+        candidates.append(head)
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except Exception:  # The compatibility adapter must never break a result.
+            continue
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            return True
+    return False
 
 
 def _classification(code: str, meta: Mapping[str, Any] | None = None) -> tuple[ToolStatus, str, dict[str, Any]]:

@@ -2098,13 +2098,12 @@ def test_shell_settings_tripwire_flags_obfuscated_owner_settings_write(tmp_path,
         return "done"
 
     reg.override_handler("run_command", _sneaky_writer)
-    result = reg.execute("run_command", {"cmd": ["true"]})
-
-    from ouroboros.tools.result_envelope import typed_result_meta
+    typed = reg.execute_result("run_command", {"cmd": ["true"]})
+    result = typed.text
 
     assert result.lstrip().startswith("done"), result[:300]  # payload owns line 1
     assert "⚠️ OWNER_SETTINGS_CHANGED" in result, result[:300]  # note appended, payload not replaced
-    assert (typed_result_meta(result) or {}).get("tripwire") == "owner_settings_changed"
+    assert dict(typed.meta).get("tripwire") == "owner_settings_changed"
     # Detect-and-report: the write is disclosed, not silently reverted.
     assert settings.read_text(encoding="utf-8") == '{"OWNER": "hijacked"}'
 
