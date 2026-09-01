@@ -12,7 +12,7 @@
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://ouroboros-agent.ai/install/#linux)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)][download-windows-x64]
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.109.22](https://img.shields.io/badge/version-6.109.22-green.svg)](VERSION)
+[![Version 6.109.23](https://img.shields.io/badge/version-6.109.23-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
@@ -64,13 +64,13 @@ The desktop packages already contain an optional CLI installer. On macOS, after 
 
 </details>
 
-[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.22/Ouroboros-6.109.22.dmg
-[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.22/Ouroboros-6.109.22-windows-x64.zip
-[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.22/ouroboros_6.109.22_amd64.deb
-[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.22/ouroboros-6.109.22-1.x86_64.rpm
-[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.22/ouroboros-6.109.22-1.red80.x86_64.rpm
-[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.22/Ouroboros-6.109.22-linux-x86_64.AppImage
-[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.22/Ouroboros-6.109.22-linux-x86_64.tar.gz
+[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.109.23/Ouroboros-6.109.23.dmg
+[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.109.23/Ouroboros-6.109.23-windows-x64.zip
+[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.109.23/ouroboros_6.109.23_amd64.deb
+[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.23/ouroboros-6.109.23-1.x86_64.rpm
+[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.23/ouroboros-6.109.23-1.red80.x86_64.rpm
+[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.23/Ouroboros-6.109.23-linux-x86_64.AppImage
+[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.109.23/Ouroboros-6.109.23-linux-x86_64.tar.gz
 
 Ouroboros bundles [Claudexor](https://github.com/razzant/claudexor) as its local execution layer for delegated coding and hosted-agent review. Ouroboros owns the task, memory, review, and final integration, while Claudexor runs the selected connected coding harness and returns durable execution evidence. [Explore Claudexor](https://claudexor.ai/).
 
@@ -449,6 +449,7 @@ and the reason.
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 6.109.23 | 2026-09-01 | fix(write_file): narrow the misrelativized-path guard to `root/`+`home/` (>=3 segs) so `tmp/`, `etc/`, `opt/`, `srv/`, `var/` relative writes are no longer over-blocked (closes ibl-ecb690c22be4). |
 | 6.109.22 | 2026-09-01 | fix(tool-execution): lift ⚠️ SHELL_CMD_AUTO_WRAP out of the failure-prefix scan (and the pre-existing same-class ⚠️ SHELL_CMD_AUTO_SPLIT) so successful autocorrected run_command calls are no longer recorded as shell_error and tag status as ok_autocorrected |
 | 6.109.21 | 2026-09-01 | fix(shell): wrap a one-element cmd containing a shell pipe as ["sh","-c",...] instead of refusing it (closes ibl-db9d3608e096) |
 | 6.109.20 | 2026-08-31 | fix(review-evidence): task-scope current_repo.stale_reason/stale_ts so one task no longer reads another's stale-advisory marker (closes ibl-00615dbd1a16). |

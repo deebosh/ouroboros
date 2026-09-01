@@ -1,6 +1,6 @@
 {
   "name": "ouroboros-web",
-  "version": "6.109.22",
+  "version": "6.109.23",
   "private": true,
   "type": "module",
   "description": "Ouroboros browser UI package boundary",

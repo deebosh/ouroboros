@@ -1772,10 +1772,16 @@ def _misrelativized_runtime_path_reason(rel_path: str) -> str:
     if not rel_path or rel_path.startswith("/"):
         return ""
     segments = rel_path.split("/")
-    # Case-insensitive match on the leading-segment vocabulary the spec calls
-    # out — see P1 continuity of misread paths and the test cases below.
-    absolute_root_words = {"root", "home", "opt", "srv", "var", "etc", "usr", "tmp"}
-    if segments and segments[0].lower() in absolute_root_words and len(segments) >= 2:
+    # Only the leading segments that a real repo almost never has as a top-level
+    # directory AND that unmistakably name an absolute mount point: ``root`` /
+    # ``home``. The generic FHS dirs (``opt`` / ``srv`` / ``var`` / ``etc`` /
+    # ``usr`` / ``tmp``) were over-blocking legitimate in-repo relative writes
+    # like ``tmp/scratch.py`` / ``etc/nginx.conf`` (ibl-ecb690c22be4), so they
+    # are no longer flagged. Require >= 3 segments so a hypothetical top-level
+    # ``root/config.py`` still passes while the real footgun
+    # ``root/Ouroboros/data/state/x.json`` is caught.
+    absolute_root_words = {"root", "home"}
+    if segments and segments[0].lower() in absolute_root_words and len(segments) >= 3:
         return "looks like an absolute path written without the leading '/'"
     # The two-segment prefix "Ouroboros/data" / "ouroboros/data" is the
     # canonical runtime-drive layout. A bare "Ouroboros/..." (our own repo

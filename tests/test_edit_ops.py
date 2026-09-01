@@ -410,7 +410,7 @@ def test_repo_write_new_file_has_no_diff_section(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_misrelativized_runtime_path_reason_matches_absolute_root_word():
-    """A leading absolute-root word followed by >=2 segments unmistakably
+    """A leading ``root`` / ``home`` followed by >=2 more segments unmistakably
     spells a runtime/home path written without the leading slash."""
     from ouroboros.tools.git import _misrelativized_runtime_path_reason
 
@@ -419,12 +419,24 @@ def test_misrelativized_runtime_path_reason_matches_absolute_root_word():
         "root/Ouroboros/data/state/x.json"
     )
     assert _misrelativized_runtime_path_reason("home/user/.config/x")
-    assert _misrelativized_runtime_path_reason("opt/ouroboros/repo.py")
-    assert _misrelativized_runtime_path_reason("tmp/scratch.py")
-    assert _misrelativized_runtime_path_reason("srv/data/x.json")
     # Case-insensitive on the leading segment.
     assert _misrelativized_runtime_path_reason("ROOT/foo/bar")
     assert _misrelativized_runtime_path_reason("Home/foo/bar")
+
+
+def test_misrelativized_runtime_path_reason_does_not_over_block_fhs_dirs():
+    """ibl-ecb690c22be4: generic FHS dir names (opt/srv/var/etc/usr/tmp) are
+    common in-repo subdirectories — a relative write to them must NOT trip."""
+    from ouroboros.tools.git import _misrelativized_runtime_path_reason
+
+    assert _misrelativized_runtime_path_reason("tmp/scratch.py") == ""
+    assert _misrelativized_runtime_path_reason("etc/nginx.conf") == ""
+    assert _misrelativized_runtime_path_reason("opt/ouroboros/repo.py") == ""
+    assert _misrelativized_runtime_path_reason("srv/data/x.json") == ""
+    assert _misrelativized_runtime_path_reason("var/cache/x") == ""
+    # `root` / `home` with only two segments also passes (rare top-level dir).
+    assert _misrelativized_runtime_path_reason("root/config.py") == ""
+    assert _misrelativized_runtime_path_reason("home/fixtures.json") == ""
 
 
 def test_misrelativized_runtime_path_reason_matches_ouroboros_data_prefix():
