@@ -4118,3 +4118,112 @@ coordinator); the amended form is what landed.
 - Related batch-7 outcomes recorded for the campaign: №4=A (update remote
   honors the configured source — F6-tail fix), №5=A (headless cancel
   receipts — post-release), №6 confirmed (ABI-8 stays post-release backlog).
+## From the F5 lane D (CPL-5 impl + small fixes, base 8827fd2c, 2026-09-01)
+
+1. CPL-5 LANDED (ratified note `docs/v7next/DESIGN_MODEL_VISIBLE_LOGGED.md`,
+   F15-narrowed to `model_send` at `llm_attempt._candidate_before_dispatch`).
+   Mechanics, all reuse-first (no parallel serializer, plane or scheduler):
+   - **Seal**: `persist_physical_candidate` now finalizes the
+     EXISTING manifest with a `model_send_seal` block (v1; basis
+     `canonical_json_v1`; `pre_redaction_sha256`/`size_bytes` = the existing
+     candidate digests; per-instance exclusion rows). `persist_call` gained the
+     one seam this needs: an optional `finalize_manifest(RedactionResult)`
+     callable, so the seal discloses the exact redaction instances of the CAS
+     write without re-running redaction. The returned `manifest_ref` is stamped
+     `model_send_seal_version`, which lands on the ledger row and is the
+     reverse-sweep join marker (legacy pre-seal rows are structurally excluded
+     — zero false positives by construction). `persist_physical_candidate`
+     itself moved whole into `model_send_seal.py` (its seal-bearing home)
+     because `observability.py` stood 29 lines under the 1500 band ceiling;
+     `observability.persist_physical_candidate` stays as the thin historical
+     compatibility name (llm_attempt's lazy import and existing monkeypatch
+     surfaces unchanged).
+   - **Forward, on the call**: after persist, the seam
+     (`model_send_seal.verify_sealed_candidate`) re-reads the manifest + CAS
+     blob FROM DISK, applies the same exclusion map to the wire-bound candidate
+     (`physical_custody_projection` → `observability_custody_projection` →
+     `redact_projection` → CAS-basis serialize) and compares byte-for-byte,
+     plus digest-compares the seal against the fresh seam identity (reused, not
+     recomputed). Mismatch = typed durable
+     `model_send_invariant_violation` fact written beside the seal
+     (`<attempt>.model_send_violation.json`, write-once dedup latch) AND into
+     `logs/events.jsonl` — per the ratified narrowing this is an OBSERVABILITY
+     invariant: it never blocks dispatch; the pre-existing in-memory identity
+     refusal stays the only blocking authority. Kinds/classes:
+     `content_divergence/sdk_mutation` (durable claim vs wire bytes),
+     `reconstruction_divergence/{seal_unreadable, serializer_basis,
+     undisclosed_exclusion, record_unreadable, record_corrupt, redaction}`.
+     Facts carry digests and the first divergent offset only, never payload
+     bytes.
+   - **Closed exclusion enum** (§4): `secret_redaction` (per-instance rows from
+     the CAS write's RedactionRecords), `provider_native_custody` (per-item
+     rows named by a structural diff against the custody projector's own
+     output — the projector stays SSOT of what leaves the byte domain, with
+     `opaque_sha256` where the projection minted digests), `transport_envelope`
+     and `provider_side_transform` (class-level rows, always disclosed: the
+     SDK adds envelope below the seam on every lane and provider-side
+     transforms are unobservable, so an empty exclusions list would be a false
+     exact-reconstruction claim). An exclusion row with an unknown class is
+     itself a violation (`undisclosed_exclusion`). Delegated harness sessions
+     (`record_subscription_session`) now carry `model_send_seal: "unobserved"`
+     on their ledger rows; opaque SDK attempts remain disclosed by their
+     existing `candidate_measurement_kind: "opaque"`.
+   - **Note boundaries kept literally**: per-rung seals (each ladder rung =
+     new candidate + own seal/attempt id — pinned), versioned serializer basis
+     (a foreign basis is reported, never re-read), single-assembly rule stays a
+     design-level constraint on the response side (non-goal here; the next
+     round's send record covers assembly transitively).
+   - **Reverse sweep** (§3.3): `model_send_seal.reconcile_model_send_seals`
+     rides `server_maintenance._startup_custody_sweep` (no new scheduler);
+     bounded (2000 manifests / 50 facts per pass), fail-soft (unreadable
+     ledger = UNKNOWN state = whole pass skipped; the sweep only writes facts,
+     so there is no destructive conclusion to skip), facts `orphan_seal` /
+     `unlogged_attempt`, never repairs. Manifests promoted from child drives
+     are excluded via a new honest provenance marker
+     (`promoted_call_manifest: true`, stamped by `promote_call_manifest_ref`)
+     — their attempt rows legitimately live in the child ledger.
+   - **Cost, measured** (this host, isolated env, fake transport): on a
+     ~112 KiB canonical candidate the verification adds ~29 ms/call
+     (persist+dispatch path 46 → 75 ms; one read-back + one
+     projection+serialization, dominated by the redaction regex pass — the
+     same order as the persist itself, i.e. the note's budgeted "one
+     read-back and one projection"; sub-1% against a real multi-second
+     provider round-trip). Measured linear in candidate size
+     (~0.3 ms/KiB/projection: 111 KiB → 34 ms, 437 KiB → 152 ms,
+     1.7 MiB → 523 ms), so a full-window candidate pays ~0.5 s — still small
+     against the provider latency of a request that size. Shape pinned by test:
+     verification adds ZERO raw `canonical_json_v1` serializations (seam
+     digests reused; 4 stays 4) and exactly ONE `redact_projection` pass
+     (persist 1 + verify 1 = 2 total per dispatch).
+   - Pins: `tests/test_model_send_seal.py` (19 tests — clean round-trip on an
+     ordinary call; deliberately damaged durable records: corrupted CAS blob,
+     tampered seal digest, dropped seal, smuggled exclusion class, foreign
+     basis → each a typed fact AND dispatch still settles; per-rung seals;
+     every enum class covered incl. custody per-item disclosure and the
+     delegated `unobserved` row; cost-shape; sweep: clean join, synthetic
+     orphan both ways, idempotent dedup, promoted-manifest skip, corrupt-ledger
+     skip, startup-family wiring). ADOPTION CPL-5 → done with that hook.
+2. CPL6-F1 CLOSED (small fix, no owner decision): `llm_local._chat_local` now
+   stamps `usage["provider"]="local"` / `usage["resolved_model"]="local-model"`
+   symmetrically with every remote lane; the conformance driver's
+   `usage_stamped` escape flag is REMOVED (the provenance assertions now run
+   for every lane) and the golden fixture `local.dispatch.tool_call_from_text`
+   re-recorded via the suite's own `--write` (delta = exactly the two new
+   provenance keys).
+3. W2-F3 CLOSED (small fix): `/api/state` no longer answers `sha:""` /
+   `branch:null` on source-mode installs. `gateway/state.py` resolves runtime
+   repo identity as: supervisor-stamped state values win (managed update/reset
+   provenance), else the ACTUAL git checkout at `config.REPO_DIR` read by pure
+   stdlib file reads on the snapshot thread (`.git` dir or worktree pointer,
+   `commondir`, loose then packed refs; detached HEAD = sha with honestly no
+   branch; unreadable layout degrades to unknown, never invented). No
+   subprocess on the poll path, no new dependencies, no contract change
+   (`branch`/`sha` fields keep their shape). Removed alongside: the dead
+   `st.get("current_branch", "ouroboros")` default — `load_state` always seeds
+   the key with None, so the "ouroboros" guess never fired and would have been
+   a lie where it could. Pins: `tests/test_api_state_runtime_identity.py`
+   (checkout reader layouts incl. linked worktree + packed refs; state-wins vs
+   source-mode-gap endpoint parametrization).
+4. NOT touched, per the lane scope: W2-F1 (panel stop-facts for headless tasks
+   — product decision), W2-F2 (managed-remote repin — fork policy, owner
+   batch), Q-F6-* (sync forks).
