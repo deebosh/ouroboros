@@ -4760,3 +4760,80 @@ Cross-cutting disclosures:
    subscription/external/legacy/review-attributed rows (future lane behind an
    archived-identity membership check if their residual growth ever matters),
    any archive GC (never), CPL-5 sweep implementation, warn threshold values.
+
+## From the C6 fix-round (base `e2801c52`)
+
+1. The C6 lane's external adversarial wave returned NEEDS FIXES with nine
+   findings against the landed compaction. All nine were ACCEPTED and fixed —
+   this is the monetary authority, so none was dispositioned as theoretical —
+   in three single-intent commits authored by Ouroboros: `9e99eb55`,
+   `0ed2dc2c`, `6b03212e`. Full disposition table:
+   `docs/v7next/C6_REVIEW_PACKET.md` §6.
+   - **Lock ownership (finding 1, HIGH)**: the pass ran under a lock that was
+     evictable on elapsed time alone, while a pass over a multi-megabyte
+     ledger legitimately outlives the 90 s window — so a second writer could
+     take the lock, fsync a settled row, and have the finishing compactor
+     replace the file with bytes that never contained it. Fixed twice over:
+     `_named_lock` now acquires `owner_aware_stale=True` (a live owner is
+     never evicted by age; this also covers the long `usage_import.lock`
+     hold), the hold yields a heartbeat
+     (`platform_layer.refresh_exclusive_file_lock`, descriptor-targeted so a
+     stolen lock is never refreshed for the thief) that the pass beats at
+     each checkpoint, AND the swap is refused unless the live bytes are still
+     byte-identical to the snapshot, re-read under the same held lock
+     immediately before the rename. A lost race costs one skipped pass.
+   - **Archive durability (finding 2, HIGH)**: `mkdir -p` fsync'd only the
+     segment's own parent and `_fsync_dir` swallowed every error, POSIX
+     included — so a crash could lose the `archive/usage_ledger` directory
+     entry while the swap survived. Now every created directory entry
+     (segment parent, `archive/`, data root) is fsync'd before the swap, and
+     a POSIX fsync failure ABORTS the pass; Windows stays a no-op by the
+     platform predicate, never by a bare `except`.
+   - **Provenance validation (findings 3 + 6, HIGH/MEDIUM)**: the substrate
+     now validates the stamp it stores — positive epoch, bounded
+     `archive_rel` (`valid_archive_rel`: relative, exactly
+     `archive/usage_ledger/<name>`, no traversal/absolute/drive), 64-hex
+     sha, counts that close, and block↔header agreement on `group_count` and
+     summed `folded_attempt_count` — plus `pre_compaction_seq` as a checked
+     claim (only under a stamp, strictly increasing, closed by the first row
+     that lacks it). The archive reader bounds the resolved path to the
+     archive directory, cross-checks size and row count against the naming
+     header, runs each segment through `_validate_records`, and requires the
+     chain's epochs to step down by one to a header-less epoch 1 — which is
+     what makes re-pointing a header at an older GENUINE segment corruption
+     rather than a shorter history.
+   - **Warm-cache integrity (finding 4, MEDIUM)**: the per-segment cache hit
+     requires the file's `(ino, dev, size, mtime_ns)` fingerprint, so a
+     deleted or rewritten segment raises `UsageLedgerCorrupt` even in a
+     process that already read it.
+   - **Decimal precision (finding 5, MEDIUM)**: sums ran in the ambient
+     28-digit context and the self-check rounded the same way, so a rounded
+     total verified against itself (10²⁸ + 1 folded to 10²⁸). Money is now
+     summed under `_exact_money` (`prec=60`, `Inexact` trapped → abort, never
+     approximate); the pin's oracle sums in its own wider context.
+   - **Typed corruption (finding 7, MEDIUM)**: an unreadable live leading row
+     raised nothing and read as "never compacted"; it now raises, so the
+     CPL-5 join reaches UNKNOWN/skip instead of reporting a folded attempt as
+     an orphan seal.
+   - **Join cost (finding 8, LOW)**: the chain union is cached by chain
+     identity, so a reverse sweep of H seals costs H stat-checked walks and
+     ONE union instead of H unions over the whole archived id set. The
+     per-segment stat check still runs, so finding 4 is not traded away.
+   - **Pin quality (finding 9, MEDIUM)**: the three pins the wave called weak
+     were rebuilt — the crash pin injects at `os.replace` itself and asserts
+     the segment is already durable with the exact source bytes (a
+     swap-before-archive reorder now fails it); the threshold pin proves the
+     lock is HELD at the call; the head-only pin contrasts one unmodified
+     baseline block validating at the head against the same rows rejected
+     purely for position. Every new pin in this round was verified RED against
+     the exact mutation it claims to catch before being accepted.
+2. NOT changed by this round, deliberately: the fold scope (design note §3),
+   the per-group baseline shape (the wave independently confirmed it preserves
+   per-root enforcement and all five breakdown axes, and that a single global
+   row would have been a budget bypass), the trigger thresholds, the ABI-3
+   allowlist row, and the disclosed residuals for
+   subscription/external/legacy/review-attributed rows.
+3. NEW residual, disclosed: a pass that loses the snapshot race leaves an
+   orphan archive segment behind (written, never referenced). Orphan segments
+   were already disclosed as harmless and the archive is append-only by
+   design; the alternative — swapping anyway — is the defect being fixed.

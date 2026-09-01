@@ -90,6 +90,16 @@ Monetary equality is defined **on decimals, never on float accumulation**:
 - The compactor parses the source segment with `parse_float=Decimal` and sums
   each group's `cost_usd` / `reservation_upper_bound_usd` as exact `Decimal`s
   of the literals actually stored in the file.
+- Those sums run in an **explicit** decimal context (`_exact_money`:
+  `prec = MONEY_PRECISION = 60`, `Inexact` trapped), never the ambient one.
+  The interpreter default keeps 28 significant digits, which silently rounds
+  a large-magnitude sum — and because the group row and the self-check that
+  approves it are computed the same way, a rounded total verifies against
+  itself while the float projection stays equal on both sides. Sixty digits
+  is far past any real ledger; past even that, the trap turns the loss into
+  an abort instead of an approximation. Decimal *construction* is
+  context-free by language rule, so stored literals are always captured
+  exactly; only arithmetic needs the context.
 - Group sums are stored as exact-decimal **JSON strings** (`"cost_usd":
   "12.3456789"`, `format(dec, "f")`, no exponent). `_number()` — the single
   row-level monetary parser used by validation, `_summary`, and every
@@ -142,6 +152,28 @@ group rows must carry the header's `baseline_id` and a positive
 existing per-attempt transition and numeric checks apply unchanged (monetary
 strings parse through `_number`).
 
+**The stamp's own provenance is validated, not trusted.** The header is the
+only ledger row that points at bytes outside its file, so the substrate — the
+thing that decides what a well-formed row IS — checks it:
+
+- `compaction_epoch` is a positive int; `source_sha256` is 64 hex;
+- `archive_rel` is *bounded* (`usage_ledger.valid_archive_rel`): relative,
+  forward-slash, exactly `archive/usage_ledger/<name>`, no `..`, no absolute
+  path, no drive letter, no separator inside the name. A tampered header can
+  therefore never aim a reader at a file elsewhere on the host;
+- the counts must **close**: `folded_row_count + retained_row_count ==
+  source_row_count`, `source_first_seq == 1`, `source_last_seq ==
+  source_row_count`, and `source_size_bytes ≥ 1`;
+- the block must agree with its header: the number of group rows equals
+  `group_count` and their `folded_attempt_count`s sum to the header's. Once
+  the first non-baseline row closes the block, a later group row — even one
+  carrying the real `baseline_id` — is corrupt. That is the money-injection
+  shape the position rule exists to refuse;
+- `pre_compaction_seq` is checked as the provenance claim it is: legal only
+  under a leading header, strictly increasing, and only up to the first
+  non-baseline row that carries none (post-compaction appends never carry
+  it, and a re-compaction rewrites the whole file).
+
 ## 7. Aggregation contract (`_usage_rows`)
 
 `_summary` and `_physical_call_count`/`_breakdown_bucket` become
@@ -165,10 +197,31 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   every read-check-append transaction, invoked from `reserve_attempt`'s
   locked section before its ledger read (§9). No second lock, no new lock
   ordering.
+- **The lock cannot be taken from a live pass.** Every other hold of this
+  lock is milliseconds; a compaction pass over a multi-megabyte ledger can
+  legitimately exceed its 90 s staleness window, and a lock evicted purely by
+  age would put a second writer on the same authority. So `_named_lock`
+  acquires **owner-aware** (a live owner PID is never evicted on age), and
+  the hold yields a **heartbeat** (`platform_layer.refresh_exclusive_file_lock`)
+  that the pass beats at each checkpoint, keeping the lockfile young for any
+  acquirer that is *not* owner-aware. The heartbeat targets the descriptor,
+  so a lock already stolen is never refreshed on the thief's behalf.
+- **The swap re-proves its snapshot.** Because the swap replaces the WHOLE
+  file, the pass re-reads the live ledger under the same held lock
+  immediately before the rename and refuses the swap unless the bytes are
+  still byte-identical to the snapshot it compacted. A row that landed in
+  between survives; the cost of the lost race is one skipped pass, never a
+  charge. (Belt to the lock's braces: it also covers a lock broken by a hand
+  repair or an older build.)
 - Commit order: (1) build + fully verify the candidate in memory (§5, §6);
-  (2) write the archive segment — exact source bytes — via O_EXCL write,
-  `fsync` the file **and its directory** (directory fsync is best-effort on
-  Windows, guaranteed on POSIX; disclosed); (3) atomically replace the live
+  (2) write the archive segment — exact source bytes — via O_EXCL write and
+  `fsync` the file **and every directory entry the chain created**: the
+  segment's parent, `archive/`, and the data root, since syncing a directory
+  persists only the entries IT holds. On POSIX a directory-fsync failure
+  **aborts the pass** (an unsynced archive directory plus a completed swap is
+  exactly the crash that loses history); on Windows there is no directory
+  handle to fsync, so it is a disclosed no-op chosen by the platform
+  predicate, never by swallowing `OSError`; (3) atomically replace the live
   ledger (`_write_bytes_atomic_fsync`); (4) emit the
   `usage_ledger_compacted` event. A crash before (3) leaves the ledger
   byte-identical (an orphaned archive segment is harmless and disclosed); a
@@ -206,11 +259,37 @@ the live replay, so this lane ships the join surface the sweep must use:
 
 - `usage_compaction.archived_attempt_ids(root)` — the `attempt_id` set of
   every archived segment, walked through the tamper-evident header chain
-  (live header → segment; segment's own embedded header → older segment, …),
-  each segment verified against the recorded `source_sha256` and cached
-  per-process by path+sha (segments are immutable).
+  (live header → segment; segment's own embedded header → older segment, …).
+  Each hop is verified, not trusted:
+  - the reference is bounded twice — by the substrate's textual rule (§6) and
+    by the RESOLVED path having the archive directory as its parent, so a
+    symlink planted in the archive cannot import a foreign file's ids;
+  - the segment must match the naming header's `source_sha256`,
+    `source_size_bytes` and `source_row_count`, and must itself **validate as
+    a ledger** (`_validate_records`: dense seq, legal transitions,
+    well-formed rows). A tamperer who also repairs the hash still has to
+    produce a structurally valid former generation;
+  - **the chain's epochs must step down by exactly one and end at epoch 1
+    with a header-less segment.** The source of epoch N is exactly the file
+    epoch N-1 produced, so this holds by construction — and it is what makes
+    re-pointing a live header at an older *genuine* segment (correct hash,
+    correct counts) corruption rather than a legitimately shorter history;
+  - per-segment results are cached by path, but the hit requires the file's
+    fingerprint (inode/device/size/mtime_ns) to match, so a segment deleted
+    or rewritten after a warm read surfaces as `UsageLedgerCorrupt` instead
+    of keeping an audit's "logged" verdict alive;
+  - the union over a whole chain is cached by the chain's identity
+    ((`archive_rel`, sha) per hop), so a bulk reverse sweep of H seals costs
+    H cheap stat-checked walks and ONE union, not H unions over the whole
+    archived id set.
 - `usage_compaction.usage_attempt_recorded(root, attempt_id, live_ids)` —
   membership in live replay ∪ archive.
+- A live leading row that cannot be **read at all** (bad UTF-8, bad JSON, not
+  an object) raises `UsageLedgerCorrupt` rather than returning "no baseline
+  header". `None` from `_live_baseline_header` means exactly one thing — a
+  readable first row that is not a stamp, i.e. no compaction has happened —
+  because the two states are otherwise indistinguishable to the sweep and the
+  wrong one turns a folded attempt into a reported orphan seal.
 
 Contract for the CPL-5 lane (recorded here and in the review packet): the
 reverse sweep's "no attempt row" verdict (`orphan_seal`) must consult this
@@ -238,23 +317,39 @@ byte authority.
 1. **Byte-exact money**: decimal sums of `cost_usd` /
    `reservation_upper_bound_usd` over finals are identical before/after; the
    full `usage_projection` (global + per-root incl. limits) and
-   `usage_breakdown` (all axes) renders are equal dicts.
+   `usage_breakdown` (all axes) renders are equal dicts. A sum needing more
+   than the ambient 28 digits (10²⁸ + 1) keeps its last digit — pinned by an
+   oracle summing in its own, wider context.
 2. **Unsettled never fold**: reserved/dispatched chains survive verbatim
    (modulo seq) and settle correctly after compaction.
-3. **Crash-safety**: an injected failure between archive write and ledger
-   swap leaves a byte-identical, valid, further-usable ledger.
+3. **Crash-safety**: a failure injected at the ledger rename ITSELF leaves a
+   byte-identical, valid, further-usable ledger, with the archive segment
+   already on disk holding the exact source bytes; the archive directory
+   chain is fsync'd before the swap, and a POSIX directory-fsync failure
+   aborts with the ledger untouched.
 4. **Budget sees the same numbers**: root/global enforcement thresholds are
    unchanged across compaction.
 5. **CPL-5 join survives**: every pre-compaction `attempt_id` remains
    resolvable through live ∪ archive, across chained compactions; a tampered
-   segment is detected.
+   segment, a re-hashed but structurally broken segment, a deleted segment
+   behind a warm cache, an out-of-archive reference, an epoch-skipping chain
+   and an unreadable leading row are each typed corruption (UNKNOWN/skip),
+   never silent absence; the chain union is built once per chain.
 6. **Idempotency survives**: subscription/external replays after compaction
    dedup (no double charge) and still conflict-check; legacy import stays
    correct with and without its watermark.
 7. **Trigger policy**: no compaction below threshold; thrash guard holds;
-   verify-abort leaves the ledger untouched.
-8. **Structure**: baseline rows only at head; tail-appended baseline rows are
-   corrupt; quarantine/`integrity_degraded` semantics unchanged.
+   verify-abort leaves the ledger untouched; the pass is entered with the
+   monetary lock demonstrably HELD.
+8. **Structure**: baseline rows only at head — a header is refused for its
+   POSITION while the identical block validates at the head, and a group row
+   cannot rejoin a closed block; header counts must close and agree with the
+   block; `pre_compaction_seq` is unique, increasing, and legal only under a
+   stamp; quarantine/`integrity_degraded` semantics unchanged.
+9. **No pass loses a concurrent charge**: a row appended between snapshot and
+   swap aborts the pass and survives byte-for-byte, with money equal to
+   before-plus-that-row; the lock is owner-aware and heartbeaten so a long
+   pass is never evicted by elapsed time.
 
 ## 13. Explicitly out of scope
 
