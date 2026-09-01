@@ -236,6 +236,50 @@ def test_fallback_digest_is_snapshotted_before_the_handler_runs(tmp_path, monkey
     assert result.meta.get("extension_generation") == pre_call_digest
 
 
+def test_legacy_descriptor_digest_is_read_atomically_with_the_descriptor(tmp_path, monkeypatch):
+    """Fix-round 2, claim 6: for a descriptor WITHOUT the per-surface stamp
+    the candidate reader takes descriptor and registry digest under ONE lock
+    hold (get_tool_with_generation) — a republish landing between taking the
+    descriptor and dispatching can no longer pair the old handler with the
+    NEW generation's digest."""
+    from ouroboros import extension_registry_state
+    from ouroboros.tools.extension_dispatch import (
+        _dispatch_extension_tool_result,
+        _extension_dispatch_candidate,
+    )
+
+    surface, ctx, _tool, drive_root, loaded = _dispatch_ready(tmp_path, monkeypatch, "atomg")
+    pre_digest = extension_loader.extension_generation_digest("atomg")
+    assert pre_digest
+    # Make the LIVE registry entry a legacy (unstamped) descriptor.
+    with extension_registry_state._lock:
+        extension_registry_state._tools[surface].pop("extension_generation", None)
+
+    ext_tool, unavailable = _extension_dispatch_candidate(ctx, surface)
+    assert ext_tool and not unavailable
+    # The atomic combined read already stamped the snapshot digest on the copy.
+    assert ext_tool.get("extension_generation") == pre_digest
+
+    # Concurrent republish AFTER the descriptor was taken: live digest moves on.
+    extension_loader.unload_extension("atomg")
+    err = extension_loader.load_extension(
+        loaded, lambda: {}, drive_root=drive_root, _force_in_process=True
+    )
+    assert err is None, err
+    post_digest = extension_loader.extension_generation_digest("atomg")
+    assert post_digest and post_digest != pre_digest
+
+    ext_tool = dict(ext_tool)
+    ext_tool["wants_ctx"] = False
+    ext_tool["handler"] = lambda **_kw: "ok"
+    monkeypatch.setattr(
+        "ouroboros.extension_loader.is_extension_live", lambda *_a, **_k: True
+    )
+    result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    assert result.status == "ok"
+    assert result.meta.get("extension_generation") == pre_digest  # not post_digest
+
+
 def test_tools_jsonl_direct_record_carries_the_extension_generation(tmp_path, monkeypatch):
     """Finding 9: the DIRECT tools.jsonl record of a physical extension call
     names the published generation via ``tool_result_meta`` — even when the

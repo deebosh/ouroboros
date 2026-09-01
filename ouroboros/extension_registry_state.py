@@ -177,6 +177,27 @@ def extension_generation_digest(skill_name: str) -> str:
         return str(bundle.generation_digest or "") if bundle is not None else ""
 
 
+def get_tool_with_generation(name: str) -> tuple[Optional[Dict[str, Any]], str]:
+    """Detached tool descriptor plus the generation digest it dispatches
+    against, read under ONE ``_lock`` hold (ABI-9).
+
+    A legacy descriptor that predates the per-surface ``extension_generation``
+    stamp gets the owner bundle's live digest from the SAME registry snapshot
+    — a republish between two separate lock acquisitions could otherwise pair
+    an old unstamped handler with the NEW generation's digest. Returns
+    ``(None, "")`` for an unknown surface."""
+    with _lock:
+        raw = _tools.get(str(name or ""))
+        if not raw:
+            return None, ""
+        tool = dict(raw)
+        digest = str(tool.get("extension_generation") or "")
+        if not digest:
+            bundle = _extensions.get(str(tool.get("skill") or ""))
+            digest = str(bundle.generation_digest or "") if bundle is not None else ""
+        return tool, digest
+
+
 def _record_companion_name(bundle: _ExtensionRegistrations, name: str) -> None:
     if name not in bundle.companion_names:
         bundle.companion_names.append(name)
