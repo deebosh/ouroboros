@@ -1013,13 +1013,18 @@ Before every commit, verify the following:
   projects (`OUROBOROS_SUBAGENT_PROJECTS_ROOT`) and forensic observability blobs
   (kept compressed indefinitely).
 - Review continuations are recovery state, not disposable GC. At Review Continuity
-  context build, move a record to `state/review_continuations/archived/` only when
-  its owner task is settled, it has remained un-resumed for at least the configured
-  seven-day threshold, and none of its recorded obligations remains open. Fresh or
-  actionable records stay live; retirement is a collision-safe move, never delete,
-  the archive has no runtime reader, and any uncertainty or move error leaves the
-  live record intact. This removes closed history from later prompts without losing
-  the recovery trail.
+  context build, move a record to `state/review_continuations/archived/` when its
+  owner task is settled, it has remained un-resumed for at least the configured
+  seven-day threshold, and none of its recorded obligations remains open. A separate
+  missing-result path is provably abandoned only after three times that age floor
+  (21 days by default); `result_missing` is fail-open per record, and open
+  obligations still keep a pointer live. The server also runs a best-effort,
+  approximately six-hour `sweep_stale_continuations(DATA_DIR)` cadence that loads
+  the review ledger before retiring anything, logs retired task ids, and no-ops if
+  the ledger is unreadable. Retirement is a collision-safe move, never delete; the
+  archive has no runtime reader, and any uncertainty or move error leaves the live
+  record intact. This removes closed history from later prompts without losing the
+  recovery trail.
 
 #### Live Subagent Task Constraints
 - Live subagents are scheduled only through the existing `schedule_subagent` tool.

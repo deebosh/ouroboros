@@ -1,4 +1,4 @@
-# Ouroboros v6.109.27 — Architecture & Reference
+# Ouroboros v6.109.28 — Architecture & Reference
 
 This file is NOT a changelog. Version history lives in README.md, git tags, and commit log.
 
@@ -539,7 +539,7 @@ A pre-existing cross-platform residual remains: shutdown admission is not atomic
 │   │   ├── extension_companions.json ← Runtime snapshot for live extension companion processes
 │   │   ├── extension_reconcile/ ← Worker-written extension reconcile markers consumed by the server lifespan pickup task
 │   │   ├── review_continuations/ ← Per-task blocked-review continuation payloads (+ quarantined corrupt files under `corrupt/`)
-│   │   │   └── archived/ ← Durable, runtime-unread retirement for continuations whose task is settled, whose recorded obligations are no longer open, and which remained un-resumed for at least seven days. Retirement is a collision-safe move; fresh or still-actionable records and any move error stay live, while malformed files go to `corrupt/`. Archived records are never deleted.
+│   │   │   └── archived/ ← Durable, runtime-unread retirement for continuations whose task is settled, whose recorded obligations are no longer open, and which remained un-resumed for at least seven days. A separate no-result path is archived only after three times that age floor (21 days by default), provided no recorded obligation is open; `result_missing` is fail-open per record. The server's approximately six-hour periodic sweep invokes `sweep_stale_continuations`, loads the review ledger first, logs retired task ids, and no-ops if the ledger is unreadable. Retirement is a collision-safe move; fresh or still-actionable records and any move error stay live, while malformed files go to `corrupt/`. Archived records are never deleted.
 │   │   ├── workspace_executor_processes/ ← Durable local/docker executor foreground/service cleanup records for panic/shutdown recovery
 │   │   ├── cx/ ← Managed Claudexor runtime store: immutable `<version>-<sha12>/` trees (each with its `managed-runtime.json`), `node/` exact managed Node copies, `cache/` verified archives, `install.lock`
 │   │   └── skills/              ← Phase 3 external-skill state plane (sibling of advisory_review.json, not shared)
