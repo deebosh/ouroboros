@@ -3362,3 +3362,70 @@ single-intent commits of this round.
    landed form is the `provider_models.delegated_route_target(route)`
    bridge (round-1 disposition 14). The table itself stays as written:
    this ledger is append-only, corrections supersede in place of edits.
+
+## From the F3 adversarial fix-round 3 (base 4f894191, 2026-09-01)
+
+Disposition of the 5 defects the third adversarial wave (sol) left OPEN
+against the round-2 dispositions above; every fix landed in the
+single-intent commits of this round, and every pin was proven RED against
+the base implementation before the fix.
+
+1. FIXED (HIGH, grandfather-predicate divergence). The auditor keyed the
+   grandfather on `skill_review_gate`'s `executable_review`, which under
+   the DEFAULT advisory enforcement admits a BLOCKERS verdict — while the
+   real PluginAPI grandfather (`plugin_api_admission_refusal_outcome`)
+   accepts only clean|warnings under every enforcement mode. The predicate
+   is now literally shared: new `review_status_grandfatherable` in
+   `skill_review_status` (clean|warnings only, enforcement-independent) is
+   consumed by BOTH the refusal path and the auditor's
+   `_admission_state_for`; `skill_review_gate` left the auditor entirely.
+   Pin: a hash-matching PASS carrying a critical blocker finding, audited
+   with `OUROBOROS_REVIEW_ENFORCEMENT=advisory`, reports plugin-api
+   INCOMPATIBLE and never the grandfather note.
+2. FIXED (MEDIUM, audit identity ≠ runtime identity). The auditor bound
+   review state to the LEXICAL walk name while the runtime resolves the
+   directory first and derives state/tool identity from the sanitized
+   RESOLVED basename (`load_skill`), refusing identity collisions before
+   any review-state read. `_resolved_skill_identities` now mirrors that:
+   `skill_dir.resolve()` (failure → blocking unauditable-source finding),
+   dedup on the resolved path like the runtime inventory, identity =
+   `_sanitize_skill_name(resolved.name)`; two directories sanitising to
+   one identity emit a blocking collision finding and never reach
+   `load_review_state`. Pins: a symlinked skill grandfathers only on the
+   TARGET-basename state (link-name state → INCOMPATIBLE); a collision
+   pair yields the blocking finding and no plugin-api judgment.
+3. FIXED (MEDIUM, mandatory-source traversal class). `task_results`
+   listing stood on fail-soft `Path.glob`, which on supported Python 3.10
+   suppresses PermissionError — an unreadable directory audited clean.
+   New `_strict_json_files` (same direct-child `*.json` selection, OSError
+   raises to the exit-2 handler); a per-file read OSError now also
+   propagates (exit 2) instead of masquerading as a "malformed →
+   quarantine" verdict, and the `ui_preferences` reader keeps tolerating
+   content damage but no longer swallows read OSError. The class sweep:
+   settings already raised `InstallUnreadable` (exit 2), skills already
+   used the strict lister — task_results and ui_preferences were the
+   remaining fail-soft members. Pin: chmod-0 `task_results` → exit 2
+   ("audit traversal failed"), never exit 0.
+4. FIXED (MEDIUM, resolve-error exits). `data_root.resolve()` and the
+   pycache-prefix resolve ran outside any handler, and the report-path
+   handler caught only OSError — a 3.10 pathlib symlink loop raises
+   RuntimeError, giving Python's bare exit 1 ("incompatibilities found" to
+   automation). All three resolve points now catch (OSError, RuntimeError)
+   and map to exit 2 (INSTALL UNREADABLE / READ-ONLY GUARANTEE UNPROVABLE
+   / REPORT UNWRITABLE). Pins: RuntimeError from the data-root resolve →
+   exit 2; RuntimeError from the report-path resolve → exit 2.
+5. FIXED (MEDIUM, spawn-marker gaps). (a) The process REGISTRATION between
+   Popen and the protected block could raise unmarked: the whole post-Popen
+   span (registration, on_spawn disclosure, protocol body) now lives in ONE
+   try whose handler stamps every BaseException — the separate on_spawn
+   cleanup arm collapsed into the shared finally (same kill/reap/unlink
+   semantics). (b) A cleanup failure in that finally could REPLACE a marked
+   in-flight exception with an unmarked one: the finally's own guard now
+   stamps the replacing exception too (original stays chained as context).
+   (c) `_mark_child_spawned` silently tolerated an unattachable marker: a
+   weak side-table (`_spawned_marker_fallback`, consulted by
+   `extension_child_was_spawned`) now records the fact for exceptions that
+   refuse setattr; the only unmarkable residue (no attributes AND no
+   weakref support) is logged, never dropped. Pins: registration exception
+   → stamped; cleanup exception over a marked one → stamp preserved on
+   both; a setattr-refusing exception → stamped via the side-table.
