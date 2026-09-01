@@ -403,6 +403,32 @@ def make_repo_key(repo_dir: pathlib.Path) -> str:
     return str(discover_repo_root(repo_dir))
 
 
+def advisory_commit_ready(
+    effectively_fresh: bool,
+    open_obligations: Any,
+    open_debts: Any,
+    enforcement: str | None = None,
+) -> bool:
+    """SSOT for every ``repo_commit_ready`` projection (H5, capinv-447).
+
+    Mirrors the real gate (``commit_gate._check_advisory_freshness``): a fresh /
+    bypassed / skipped advisory run is required under every enforcement mode,
+    while open obligations/debt block ``commit_reviewed`` only under
+    ``blocking`` enforcement — under ``advisory`` the debt is disclosed and
+    acknowledged, not gating. Advisory-readiness projection only: triad, scope,
+    custody, and the other commit requirements stay independent.
+    """
+    if not effectively_fresh:
+        return False
+    if open_obligations or open_debts:
+        if enforcement is None:
+            from ouroboros.config import get_review_enforcement
+
+            enforcement = get_review_enforcement()
+        return str(enforcement or "").strip().lower() != "blocking"
+    return True
+
+
 def compute_snapshot_hash(
     repo_dir: pathlib.Path,
     commit_message: str = "",

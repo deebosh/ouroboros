@@ -170,22 +170,31 @@ def _run_chat_task(
         uploads = meta.get("chat_attachment_uploads")
         if uploads:
             from ouroboros.artifacts import (
+                attachment_manifest_all_rejected,
                 attachment_manifest_has_rejections,
-                remove_staged_attachments,
                 stage_task_attachments,
             )
             from ouroboros.gateway.tasks import _render_attachment_lines
 
             manifest = stage_task_attachments(_pool().DRIVE_ROOT, str(task["id"]), uploads)
             rendered = _render_attachment_lines(manifest)
-            if attachment_manifest_has_rejections(manifest):
+            # Partial staging is the default (В25c, capinv-447); a FULLY-rejected
+            # set stays atomic — the task would start with none of its material.
+            if attachment_manifest_all_rejected(manifest):
+                from ouroboros.artifacts import remove_staged_attachments
+
                 remove_staged_attachments(manifest)
                 _pool().send_with_budget(
                     chat_id,
-                    "⚠️ Task was not started because one or more declared attachments "
-                    f"could not be staged.\n{rendered}",
+                    f"⚠️ Task not started: every attachment was rejected.\n{rendered}",
                 )
                 return
+            if attachment_manifest_has_rejections(manifest):
+                _pool().send_with_budget(
+                    chat_id,
+                    "⚠️ Some declared attachments could not be staged; the task "
+                    f"starts with the rest.\n{rendered}",
+                )
             if manifest:
                 manifest = [dict(row) for row in manifest]
                 task["drive_root"] = str(_pool().DRIVE_ROOT)

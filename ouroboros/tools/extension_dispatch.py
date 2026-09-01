@@ -123,7 +123,10 @@ def _extension_completion(result: str, safety_msg: str) -> ToolResult:
     what a self-reported failure is."""
     reported_failure = _structured_failure(result)
     if safety_msg:
-        text = f"{safety_msg}\n\n---\n{result}"
+        # #447 H1: the warning TRAILS the payload — line 1 belongs to the
+        # extension, so a structured {"ok": false} answer (and any first-line
+        # marker) stays readable to every text-only consumer downstream.
+        text = f"{result}\n\n{safety_msg}"
         return _extension_result(
             "error" if reported_failure else "ok",
             "TOOL_REPORTED_FAILURE" if reported_failure else "SAFETY_WARNING",
@@ -231,7 +234,6 @@ def _dispatch_extension_tool_untagged(
         return _extension_result("unavailable", "EXTENSION_UNAVAILABLE", text)
 
     from ouroboros.safety import check_safety as _ext_check_safety
-
     _ext_safe, _ext_safety_msg = _ext_check_safety(
         name,
         call_args,

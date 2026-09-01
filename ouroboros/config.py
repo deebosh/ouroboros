@@ -850,6 +850,10 @@ def get_mcp_tool_timeout_sec() -> int:
     return parsed if parsed > 0 else int(SETTINGS_DEFAULTS["MCP_TOOL_TIMEOUT_SEC"])
 
 
+def get_claudexor_quota_refresh_timeout_sec() -> int:
+    return _clamped_number_setting("OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC", low=1, high=90, cast=int)
+
+
 def get_claudexor_harness_install_timeout_sec() -> int:
     return _clamped_number_setting("OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC", low=1, cast=int)
 

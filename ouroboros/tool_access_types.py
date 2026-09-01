@@ -125,6 +125,12 @@ _TOP_LEVEL_PRINCIPAL_PROFILES: frozenset[str] = frozenset({
 
 
 _READ_OPS = frozenset({"read", "list", "search"})
+# Operations that can MUTATE a root. "vcs" is deliberately not write-like on its
+# own: read-only children carry {read,list,search,vcs} only so their status/diff
+# bindings resolve (the registry tool allowlist exposes no mutating vcs names to
+# them), and every profile that can actually mutate through vcs also holds
+# write/edit/shell on the same root — property-pinned by the projection test.
+_WRITE_LIKE_OPS: frozenset[str] = frozenset({"write", "edit", "shell", "service"})
 
 
 _TOP_LEVEL_PRINCIPAL_POLICY: dict[str, set[str]] = {

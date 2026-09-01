@@ -60,7 +60,7 @@ _MODULE_OWNERS = {
         "normalize_reasoning_effort"
     ),
     llm_routing: "_OR_PROVIDER_PRESETS _resolve_or_provider",
-    llm_messages: "_reasoning_signature_portable_across_or_providers",
+    llm_messages: "_pop_reasoning_pin_note",
     llm_local: (
         "LocalContextTooLargeError _LOCAL_COMPACTION_MODES _compact_local_text "
         "_compact_markdown_sections _estimate_message_chars _split_markdown_sections"
@@ -74,7 +74,7 @@ _MODULE_OWNERS = {
 _MIXIN_OWNERS = {
     (llm_attempt, "_PayloadCachePolicyMixin"): (
         "_MAX_CACHE_BREAKPOINTS _normalize_payload_cache_ttl _payload_cache_breakpoints "
-        "_pop_cache_breakpoint_disclosure"
+        "_stage_reasoning_pin_disclosure"
     ),
     (llm_capability_policy, "_CapabilityPolicyMixin"): (
         "_CAPABILITIES_FETCH_OK _CONTEXT_LENGTH_CACHE _EFFORT_CEILING_CACHE _EFFORT_CEILING_LOADED "
@@ -97,7 +97,7 @@ _MIXIN_OWNERS = {
     ),
     (llm_messages, "_MessageShapingMixin"): (
         "_REASONING_CONTENT_BLOCK_TYPES _content_with_system_notice_marker "
-        "_copy_messages_with_cache_policy _has_openrouter_reasoning_details "
+        "_copy_messages_with_cache_policy "
         "_has_replayed_reasoning_metadata _is_deferrable_image_user_turn _model_family "
         "_normalize_system_message_placement _replace_image_blocks_with_placeholder "
         "_strip_openrouter_roundtrip_metadata sanitize_reasoning_on_model_switch"

@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import pathlib
-import re
 from typing import Any, List
 
 from ouroboros.contracts.skill_payload_policy import (
@@ -18,6 +17,11 @@ from ouroboros.contracts.task_constraint import normalize_task_constraint, resol
 from ouroboros.project_facts import filter_out_project_store as _filter_out_project_store
 from ouroboros.project_facts import project_store_access_block as _project_store_access_block
 from ouroboros.protected_artifacts import block_reason_for_path
+from ouroboros.credential_shapes import (
+    CREDENTIAL_FILE_SUFFIXES,
+    CREDENTIAL_NAME_RE,
+    SUBAGENT_CREDENTIAL_FILE_NAMES as _SUBAGENT_SECRET_FILE_NAMES,
+)
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     UserFilesPathBlockedError,
@@ -173,7 +177,10 @@ def _list_user_files_dir(ctx: ToolContext, root: pathlib.Path, target: pathlib.P
     # A hard iterdir/permission/race failure PROPAGATES to the first-class
     # "⚠️ LIST_FILES_ERROR" path in _list_files (v6.54.3, review round 3).
     for entry in sorted(target.iterdir()):
-        if user_files_path_block_reason(ctx, entry):
+        # operation="list" (capinv-447 / В23=A): the root principal's listing no
+        # longer hides credential-SHAPED names — only control-plane/outside-home
+        # entries stay omitted (and counted in the marker below).
+        if user_files_path_block_reason(ctx, entry, operation="list"):
             hidden += 1
             continue
         if len(items) >= max_entries:
@@ -194,20 +201,6 @@ def _list_user_files_dir(ctx: ToolContext, root: pathlib.Path, target: pathlib.P
     return items
 
 
-_SUBAGENT_SECRET_FILE_NAMES = frozenset({
-    ".env",
-    ".netrc",
-    "auth.json",
-    "credentials",
-    "credentials.json",
-    "keys.json",
-    "secret.json",
-    "secrets.json",
-    "settings.json",
-    "settings.json.lock",
-    "token.json",
-    "tokens.json",
-})
 
 
 def is_restricted_subagent_profile(ctx: ToolContext) -> bool:
@@ -243,9 +236,9 @@ def _is_subagent_secret_data_path(norm: str) -> bool:
         return True
     if name.startswith(".env") or name.endswith(".env") or ".env." in name:
         return True
-    if name.endswith((".key", ".pem", ".p12", ".pfx")):
+    if name.endswith(CREDENTIAL_FILE_SUFFIXES):
         return True
-    return bool(re.search(r"(?:^|[._-])(api[_-]?key|credential|password|secret|token)(?:[._-]|$)", name))
+    return bool(CREDENTIAL_NAME_RE.search(name))
 
 
 def _is_subagent_secret_repo_path(norm: str) -> bool:
@@ -262,9 +255,9 @@ def _is_subagent_secret_repo_path(norm: str) -> bool:
         return True
     if name.startswith(".env") or name.endswith(".env") or ".env." in name:
         return True
-    if name.endswith((".key", ".pem", ".p12", ".pfx")):
+    if name.endswith(CREDENTIAL_FILE_SUFFIXES):
         return True
-    if re.search(r"(?:^|[._-])(api[_-]?key|credential|password|secret|token)(?:[._-]|$)", name):
+    if CREDENTIAL_NAME_RE.search(name):
         suffix = pathlib.PurePosixPath(name).suffix.lower()
         return suffix in {"", ".json", ".env", ".key", ".pem", ".p12", ".pfx", ".toml", ".yaml", ".yml", ".ini", ".cfg", ".conf"}
     return False
@@ -363,6 +356,7 @@ def _repo_read(
     path: str,
     max_lines: int = 2000,
     start_line: int = 1,
+    start_char: int = 0,
     display_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
 ) -> str:
@@ -403,7 +397,8 @@ def _repo_read(
             code="LEGACY_WARNING",
             text=f"⚠️ NOT_FOUND: file does not exist: {target}",
         ))
-    return _render_line_slice(display_path or path, content, max_lines=max_lines, start_line=start_line)
+    return _render_line_slice(display_path or path, content, max_lines=max_lines, start_line=start_line,
+                              start_char=start_char)
 
 
 def _repo_list(
@@ -448,6 +443,7 @@ def _data_read(
     path: str,
     max_lines: int = 2000,
     start_line: int = 1,
+    start_char: int = 0,
     display_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
 ) -> str:
@@ -518,12 +514,15 @@ def _data_read(
     try:
         content = read_text(target)
         start_raw, max_raw = _coerce_line_window(start_line, max_lines)
-        if _is_cognitive_data_path(norm) and start_raw == 1 and max_raw == 2000:
+        # The cognitive full-read shortcut only applies to a DEFAULT read: an explicit
+        # start_char is a sub-line cursor request and must be honored, not swallowed.
+        if _is_cognitive_data_path(norm) and start_raw == 1 and max_raw == 2000 and not _coerce_start_char(start_char):
             if display_path is None:
                 return content
             full_line_count = max(1, len(content.splitlines()))
             return _render_line_slice(display_path, content, max_lines=full_line_count, start_line=1)
-        return _render_line_slice(display_path or norm, content, max_lines=max_raw, start_line=start_raw)
+        return _render_line_slice(display_path or norm, content, max_lines=max_raw, start_line=start_raw,
+                                  start_char=start_char)
     except FileNotFoundError:
         if norm.replace("\\", "/").startswith("memory/"):
             explanation = (
@@ -783,18 +782,20 @@ def _read_file(
             path,
             max_lines=max_lines,
             start_line=start_line,
+            start_char=start_char,
             display_path=display_path,
             _resolved_binding=binding,
-        ))
+        ), start_char=start_char)
     if normalized == "runtime_data":
         return _annotate_reread(ctx, target, start_line, max_lines, _data_read(
             ctx,
             path,
             max_lines=max_lines,
             start_line=start_line,
+            start_char=start_char,
             display_path=_root_display_path(normalized, path),
             _resolved_binding=binding,
-        ))
+        ), start_char=start_char)
     block_msg = _local_readonly_resource_block(
         ctx, normalized, target, binding.base_path, action="READ_FILE"
     )
@@ -806,6 +807,20 @@ def _read_file(
         content = read_text(target)
         rendered = _render_line_slice(_root_display_path(normalized, path), content,
                                       max_lines=max_lines, start_line=start_line, start_char=start_char)
+        if normalized == "user_files":
+            # Egress seam for owner-home reads (#447 X1/В23): the file may be
+            # read, but raw credential bytes never enter model context/history —
+            # the masked form (***) may. Masking happens on the rendered slice;
+            # the search egress applies the same seam to its match lines.
+            from ouroboros.secret_masking import mask_secret_bytes
+
+            rendered, masked = mask_secret_bytes(rendered)
+            if masked:
+                rendered += (
+                    f"\n⚠️ SECRET_BYTES_MASKED: {masked} secret-shaped span(s) in this "
+                    "view were replaced with ***; raw credentials never enter model "
+                    "context. Reference them by location, not value."
+                )
         if normalized == "task_drive":
             # D7 coverage acknowledgement: what counts as read is what the DELIVERY
             # layer will actually hand the model, so the hook receives the rendered

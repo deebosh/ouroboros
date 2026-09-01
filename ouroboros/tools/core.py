@@ -17,6 +17,7 @@ from ouroboros.artifacts import artifact_store_path_block_reason, copy_file_to_t
 from ouroboros.project_facts import filter_out_project_store as _filter_out_project_store  # noqa: F401
 from ouroboros.project_facts import project_store_access_block as _project_store_access_block
 from ouroboros.protected_artifacts import block_reason_for_path
+from ouroboros.secret_masking import mask_secret_bytes
 from ouroboros.tools.registry import ToolContext, ToolEntry, active_repo_dir_for  # noqa: F401
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
@@ -601,7 +602,7 @@ def _write_file(
         from ouroboros.tools.git import _repo_write
 
         return _repo_write(
-            ctx, path=path, content=content, files=files or [], force=force,
+            ctx, path=path, content=content, files=files or [], mode=mode, force=force,
             display_root=normalized, _resolved_binding=bindings,
         )
     if normalized == "runtime_data":
@@ -678,13 +679,21 @@ def _write_file(
                         results.append(f"⚠️ WRITE_FILE_BLOCKED: artifact_store path blocked: {block_reason}")
                         continue
                 target.parent.mkdir(parents=True, exist_ok=True)
-                # Deferral 5: batch items overwrite too — shrink-guard each (parity with the
-                # single-file path), force=true bypasses.
-                if (shrink := _check_data_shrink_guard(target, str(item.get("content") or ""), force)):
-                    results.append(shrink)
-                    continue
-                write_text_atomic(target, str(item.get("content") or ""))  # crash-safe (G)
-                result = f"OK: wrote {_root_display_path(normalized, rel_path)} ({len(str(item.get('content') or ''))} chars)"
+                body = str(item.get("content") or "")
+                if mode == "append":
+                    # Batch items honor the declared mode like the single-file path below:
+                    # silently overwriting here destroyed every prior chunk of a chunked
+                    # large-file write while reporting success (#447 D2).
+                    with target.open("a", encoding="utf-8") as fh:
+                        fh.write(body)  # append is intentionally NOT atomized
+                else:
+                    # Deferral 5: batch items overwrite too — shrink-guard each (parity with the
+                    # single-file path), force=true bypasses.
+                    if (shrink := _check_data_shrink_guard(target, body, force)):
+                        results.append(shrink)
+                        continue
+                    write_text_atomic(target, body)  # crash-safe (G)
+                result = f"OK: wrote {_root_display_path(normalized, rel_path)} ({len(body)} chars)"
                 if normalized == "user_files":
                     record = copy_file_to_task_artifacts(ctx, target, kind="user_file")
                     if record:
@@ -879,7 +888,8 @@ _MAX_SEARCH_RESULTS = 200
 from ouroboros.code_search_rg import (  # noqa: E402
     MAX_SEARCH_FILES_SCANNED as _MAX_SEARCH_FILES_SCANNED,
     _search_wall_clock_sec,
-    is_search_skippable as _is_search_skippable,
+    is_search_skippable as _is_search_skippable,  # noqa: F401 — re-exported for tests/call sites
+    search_skip_reason as _search_skip_reason,
 )
 
 
@@ -937,6 +947,14 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             return block_msg
     root_resolved = root_path.resolve(strict=False)
     _rt_search_root = str(root_resolved) if normalized == "runtime_data" else ""
+    # Filter receipt (D3, capinv-447): every file present under the search root
+    # but excluded before reading is COUNTED by typed reason, so "No matches"
+    # can honestly distinguish a clean empty result from a filtered one.
+    search_drops: dict[str, int] = {}
+
+    def _drop(reason: str) -> bool:
+        search_drops[reason] = search_drops.get(reason, 0) + 1
+        return False
 
     def _path_allowed_for_rg(fp: pathlib.Path) -> bool:
         # Resolve, then CONFINE to the resource root: a path whose resolved target
@@ -945,16 +963,36 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             fp = pathlib.Path(fp).resolve(strict=False)
             rel_parts = fp.relative_to(root_resolved).parts
         except Exception:
-            return False
+            return _drop("escapes_root")
         # runtime_data per-project store is reachable only via scoped knowledge tools.
         if normalized == "runtime_data" and rel_parts and str(rel_parts[0]).casefold() == "projects":
-            return False
-        return not (
-            (subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH"))
-            or (normalized == "user_files" and user_files_path_block_reason(ctx, fp))
-            or block_reason_for_path(ctx, fp, "read_bytes", binding)
-            or _is_search_skippable(fp)
-        )
+            return _drop("project_store_scoped")
+        if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH"):
+            return _drop("restricted_subagent")
+        if normalized == "user_files" and user_files_path_block_reason(ctx, fp, operation="search"):
+            return _drop("user_files_policy")
+        if block_reason_for_path(ctx, fp, "read_bytes", binding):
+            return _drop("protected_artifact")
+        skip = _search_skip_reason(fp)
+        if skip:
+            return _drop(skip)
+        return True
+
+    def _mask_user_files_matches(result_text: str) -> str:
+        # Same egress seam as _read_file (#447 В23): a search over the owner's
+        # home surfaces file CONTENT in the match lines, so raw credential
+        # bytes must be masked here too — on BOTH the rg path and the Python
+        # fallback. Names/paths stay; values become ***.
+        if normalized != "user_files":
+            return result_text
+        masked_text, masked = mask_secret_bytes(result_text)
+        if masked:
+            masked_text += (
+                f"\n⚠️ SECRET_BYTES_MASKED: {masked} secret-shaped span(s) in these "
+                "matches were replaced with ***; raw credentials never enter model "
+                "context. Reference them by location, not value."
+            )
+        return masked_text
 
     # Validate a regex query UP FRONT so the invalid-regex contract holds for BOTH the
     # ripgrep path and the Python fallback. ripgrep accepts some malformed patterns
@@ -980,11 +1018,11 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
                 search_root, query, regex=bool(regex), include=include,
                 max_results=max_results, path_allowed=_path_allowed_for_rg,
             )
-            return format_search_result(
+            return _mask_user_files_matches(format_search_result(
                 display_path=display_search_path, root_name=normalized,
                 root_path=root_path, query=query, regex=bool(regex),
-                max_results=max_results, result=rg_result,
-            )
+                max_results=max_results, result=rg_result, dropped=search_drops,
+            ))
     except (FileNotFoundError, RuntimeError, subprocess.SubprocessError, OSError) as e:
         # Degrade to the policy-aware Python scanner for rg absent/failed/timeout
         # AND OSError (wrong-arch/non-executable bundled rg -> 'Exec format
@@ -1001,7 +1039,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
 
     matches: List[str] = []
     files_searched = 0
-    protected_omitted = 0
+    search_drops.clear()  # the fallback re-walks the tree; drop any partial rg counts
     truncated = False
     files_capped = False
     deadline_hit = False
@@ -1024,19 +1062,32 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         # per-project store (reachable only via the scoped knowledge tools).
         from ouroboros.code_intelligence import SKIP_DIRS
 
+        # SKIP_DIRS pruning is a documented walk convention (parity with rg's
+        # skip of .git/node_modules); POLICY prunes below are counted — a whole
+        # subtree removed by policy must not read as "0 files searched" with no
+        # receipt (#447 D3).
         dirnames[:] = [d for d in sorted(dirnames) if d not in SKIP_DIRS]
         if normalized == "runtime_data" and str(pathlib.Path(dirpath).resolve(strict=False)) == _rt_search_root:
+            for d in dirnames:
+                if d.casefold() == "projects":
+                    _drop("project_store_scoped")
             dirnames[:] = [d for d in dirnames if d.casefold() != "projects"]
         if normalized == "user_files":
-            dirnames[:] = [
-                d for d in dirnames
-                if not user_files_path_block_reason(ctx, pathlib.Path(dirpath) / d)
-            ]
+            kept_dirs = []
+            for d in dirnames:
+                if user_files_path_block_reason(ctx, pathlib.Path(dirpath) / d, operation="search"):
+                    _drop("user_files_policy")
+                else:
+                    kept_dirs.append(d)
+            dirnames[:] = kept_dirs
         if subagent_readonly:
-            dirnames[:] = [
-                d for d in dirnames
-                if not _local_readonly_resource_block(ctx, normalized, pathlib.Path(dirpath) / d, root_path, action="SEARCH")
-            ]
+            kept_dirs = []
+            for d in dirnames:
+                if _local_readonly_resource_block(ctx, normalized, pathlib.Path(dirpath) / d, root_path, action="SEARCH"):
+                    _drop("restricted_subagent")
+                else:
+                    kept_dirs.append(d)
+            dirnames[:] = kept_dirs
 
         for fname in sorted(filenames):
             fp = pathlib.Path(dirpath) / fname
@@ -1045,14 +1096,17 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
                 continue
 
             if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH"):
+                _drop("restricted_subagent")
                 continue
-            if normalized == "user_files" and user_files_path_block_reason(ctx, fp):
+            if normalized == "user_files" and user_files_path_block_reason(ctx, fp, operation="search"):
+                _drop("user_files_policy")
                 continue
             if block_reason_for_path(ctx, fp, "read_bytes", binding):
-                protected_omitted += 1
+                _drop("protected_artifact")
                 continue
 
-            if _is_search_skippable(fp):
+            if _skip := _search_skip_reason(fp):
+                _drop(_skip)
                 continue
 
             # CONFINE to the root before reading (parity with the rg path's _path_allowed_for_rg
@@ -1061,6 +1115,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             try:
                 fp.resolve(strict=False).relative_to(root_resolved)
             except (OSError, ValueError):
+                _drop("escapes_root")
                 continue
 
             if files_searched >= _MAX_SEARCH_FILES_SCANNED:
@@ -1070,6 +1125,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             try:
                 text = fp.read_text(encoding="utf-8", errors="replace")
             except Exception:
+                _drop("read_error")
                 continue
 
             files_searched += 1
@@ -1093,10 +1149,27 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         "may be incomplete; narrow the path or glob, or raise OUROBOROS_SEARCH_CODE_WALL_SEC."
         if deadline_hit else ""
     )
+    # Typed disclosure, not invisibility (capinv-447): a restricted subagent is
+    # TOLD how many secret/control files its search could not see, mirroring the
+    # listing filters' hidden-entries marker.
+    protected_omitted = search_drops.get("protected_artifact", 0)
+    restricted_omitted = search_drops.get("restricted_subagent", 0)
+    restricted_note = (
+        f" {restricted_omitted} secret/control file(s) omitted from this subagent's search."
+        if restricted_omitted else ""
+    )
+    # Filter receipt for the remaining ordinary exclusions (D3): oversized,
+    # symlinks, excluded names, unreadable, policy-scoped — never silent.
+    from ouroboros.code_search_rg import format_dropped_files_note
+
+    other_dropped_note = format_dropped_files_note({
+        key: count for key, count in search_drops.items()
+        if key not in ("protected_artifact", "restricted_subagent")
+    })
     if not matches:
         suffix = f" {protected_omitted} protected artifact file(s) omitted." if protected_omitted else ""
         cap_note = f" Scan stopped after {_MAX_SEARCH_FILES_SCANNED} files — narrow the path or glob." if files_capped else ""
-        return f"No matches found for {'regex' if regex else 'literal'} `{query}` in {display_search_path} ({files_searched} files searched).{suffix}{cap_note}{deadline_note}"
+        return f"No matches found for {'regex' if regex else 'literal'} `{query}` in {display_search_path} ({files_searched} files searched).{suffix}{restricted_note}{other_dropped_note}{cap_note}{deadline_note}"
 
     header = f"Found {len(matches)} match{'es' if len(matches) != 1 else ''} in {display_search_path} ({files_searched} files searched)"
     if files_capped:
@@ -1107,7 +1180,11 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         header += " — stopped at the time budget (results may be incomplete)"
     if protected_omitted:
         header += f" — {protected_omitted} protected artifact file(s) omitted"
-    return header + "\n\n" + "\n".join(matches)
+    if restricted_omitted:
+        header += f" — {restricted_omitted} secret/control file(s) omitted from this subagent's search"
+    if other_dropped_note:
+        header += " —" + other_dropped_note.rstrip(".")
+    return _mask_user_files_matches(header + "\n\n" + "\n".join(matches))
 
 
 def _durable_descendant_of(

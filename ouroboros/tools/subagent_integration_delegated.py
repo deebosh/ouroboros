@@ -439,7 +439,7 @@ def _integrate_delegated_patch(
         return (
             f"🚫 Rejected delegated run {rid}'s captured patch ({len(touched)} file(s) not "
             f"applied); its execution snapshot is released. Verdict: {verdict_path or '(unwritten)'}. "
-            f"Reason: {reason or '(none)'}.{note}"
+            f"Reason: {reason or '(none)'}.{_si()._format_patch_exclusions(manifest)}{note}"
         )
 
     if capture_status != ARTIFACT_STATUS_READY_WITH_CHANGES:
@@ -449,7 +449,8 @@ def _integrate_delegated_patch(
                 return _unwritten_disposition("applied", applied=False)
             return (
                 f"OK: delegated run {rid} changed NOTHING in its execution snapshot; "
-                f"there is no patch to apply and the snapshot is released.{note}"
+                f"there is no patch to apply and the snapshot is released."
+                f"{_si()._format_patch_exclusions(manifest)}{note}"
             )
         return (
             f"⚠️ INTEGRATE_DELEGATED_NO_CAPTURE: run {rid}'s capture status is "
@@ -571,6 +572,7 @@ def _integrate_delegated_patch(
                 "was reversed — your tree is back to its pre-apply state and NOTHING is "
                 "left half-applied. The snapshot and the patch are preserved; fix the "
                 f"index problem, then call this tool again. Verdict: {verdict_path or '(unwritten)'}."
+                f"{_si()._format_patch_exclusions(manifest)}"
             )
         recorded, _ = _dispose("applied", cleanup=False)
         tail = "" if recorded else (
@@ -584,7 +586,7 @@ def _integrate_delegated_patch(
             "changes are already in your working tree and a second apply would double "
             "them. Inspect with vcs_diff, stage what you accept yourself, and note that "
             "the run is recorded as applied. Its execution snapshot is preserved for "
-            f"comparison. Verdict: {verdict_path or '(unwritten)'}.{tail}"
+            f"comparison. Verdict: {verdict_path or '(unwritten)'}.{_si()._format_patch_exclusions(manifest)}{tail}"
         )
 
     if proc.returncode != 0:
@@ -633,7 +635,7 @@ def _integrate_delegated_patch(
         prot_note = f" Includes {len(protected)} protected path(s) (allowed: runtime_mode={runtime_mode})."
     return (
         f"✅ Integrated delegated run {rid}'s patch into {target} ({len(touched)} file(s), staged).{prot_note}\n"
-        f"{diffstat}\n"
+        f"{diffstat}{_si()._format_patch_exclusions(manifest)}\n"
         f"Verdict: {verdict_path or '(unwritten)'}. Its execution snapshot is released.\n"
         "Changes are staged but NOT committed — review them yourself; you are the sole committer."
         f"{note}"

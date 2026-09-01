@@ -121,7 +121,6 @@ from ouroboros.tools.tool_resolution import (  # noqa: F401 — re-exported move
     _binding_items,
     _binding_set_is_light_restricted,
     _binding_set_targets_system_repo,
-    _binding_state_drive_root,
     _build_builtin_target_binding,
     _coerce_real_path,
     _entry_has_public_param_schema,
@@ -161,7 +160,6 @@ from ouroboros.tools.registry_guard_process import (  # noqa: F401 — re-export
     _DETACHED_PROCESS_MARKERS,
     _NESTED_EXECUTION_MARKERS,
     _NESTED_EXECUTION_TOKENS,
-    _READ_ONLY_GIT_SUBCOMMANDS,
     _READ_ONLY_INSPECTION_COMMANDS,
     _SEARCH_TOOL_EXEC_OPTIONS,
     _SKILL_OWNER_STATE_STEMS,
@@ -174,7 +172,7 @@ from ouroboros.tools.registry_guard_process import (  # noqa: F401 — re-export
     _detect_owner_skill_attest_self_call,
     _detect_runtime_mode_elevation,
     _detect_safety_mode_self_lowering,
-    _format_light_repo_write_block,
+    _format_light_repo_write_note,
     _git_ref_snapshot,
     _is_pure_read_inspection,
     _light_repo_snapshot,
@@ -276,8 +274,8 @@ def _owner_control_mention_blocks(text_lower: str, detected: bool, writeish: boo
 # protected-root / workspace-state / light-mode writes) — that pre-exec filter is the
 # security boundary and blocks a forbidden mutation BEFORE the handler runs, so a guarded
 # check cannot mutate protected state and then leave a host-attested PASS receipt. It is
-# deliberately NOT in _PROCESS_COMMAND_TOOLS: those POST-execution checks (owner-file
-# restore, light-repo diff, git-ref tripwire) run AFTER the handler has already written the
+# deliberately NOT in _PROCESS_COMMAND_TOOLS: those POST-execution checks (light-repo
+# diff, git-ref tripwire) run AFTER the handler has already written the
 # receipt, so they would only annotate the returned text, not gate the durable receipt —
 # adding them would give false assurance while the pre-exec guards already do the gating.
 # Path-bearing file tools whose active_workspace/system_repo path arg is normalized

@@ -11,22 +11,23 @@ transform copies before touching.
 
 from __future__ import annotations
 
+import contextvars
 import copy
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ouroboros.anthropic_native_custody import custody_private_key, scrub_native_custody
 from ouroboros.llm_attempt import _VALID_CACHE_TTLS
 from ouroboros.provider_models import normalize_model_identity
 
 
-def _reasoning_signature_portable_across_or_providers(model: str) -> bool:
-    """Whether replay signatures are verified portable across same-model providers."""
-    m = str(model or "").strip().lstrip("~")
-    return (
-        m.startswith("anthropic/")
-        or m.startswith("google/gemini-")
-        or m.startswith("openai/")
-    )
+# Pin disclosure slot: a ContextVar isolates threads AND concurrent asyncio tasks.
+_REASONING_PIN_CVAR = contextvars.ContextVar("ouroboros_reasoning_pin_note", default=None)
+
+
+def _pop_reasoning_pin_note() -> Optional[Dict[str, Any]]:
+    pending = _REASONING_PIN_CVAR.get()
+    _REASONING_PIN_CVAR.set(None)
+    return pending if isinstance(pending, dict) else None
 
 
 class _MessageShapingMixin:
@@ -231,21 +232,16 @@ class _MessageShapingMixin:
         flush_buffered()
         return out
 
-    @staticmethod
-    def _has_openrouter_reasoning_details(messages: List[Dict[str, Any]]) -> bool:
-        for msg in messages:
-            if isinstance(msg, dict) and msg.get("reasoning_details"):
-                return True
-        return False
-
     @classmethod
     def _has_replayed_reasoning_metadata(cls, messages: List[Dict[str, Any]]) -> bool:
-        """True if the transcript carries provider-private reasoning artifacts that
-        a DIFFERENT upstream family cannot validate: assistant ``reasoning``/
-        ``reasoning_details``/``reasoning_content``/``response_id`` keys, or
-        ``thinking``/``reasoning`` CONTENT blocks (or a stray ``signature`` on a
-        content block). Broader than ``_has_openrouter_reasoning_details`` (which
-        only sees the top-level ``reasoning_details`` field)."""
+        """PRESENCE predicate: True if the transcript carries ANY provider-private
+        reasoning round-trip artifact — assistant ``reasoning``/``reasoning_details``/
+        ``reasoning_content``/``response_id`` keys, or ``thinking``/``reasoning``
+        CONTENT blocks (or a stray ``signature`` on a content block). Shape-blind on
+        purpose: it answers "is there anything to strip?" for the REACTIVE paths
+        (400 strip-and-retry, reroute entry). Whether an artifact is actually
+        endpoint-BOUND is the separate SEALED question, answered shape-first by
+        ``transcript_has_sealed_reasoning`` (ouroboros/reasoning_artifacts.py)."""
         for msg in messages:
             if not isinstance(msg, dict):
                 continue

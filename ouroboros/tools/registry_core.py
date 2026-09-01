@@ -60,7 +60,6 @@ from ouroboros.tools.tool_resolution import (
     _GENERIC_VCS_TARGET_TOOLS,
     _binding_set_is_light_restricted,
     _binding_set_targets_system_repo,
-    _binding_state_drive_root,
     _build_builtin_target_binding,
     _target_binding_operation,
     active_repo_dir_for,
@@ -1292,11 +1291,6 @@ class ToolRegistry:
         )
         if not is_safe:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)
-        state_drive_root = _binding_state_drive_root(self._ctx, resolved_binding)
-        owner_snapshot = (
-            registry_guard_process._snapshot_owner_files(self, state_drive_root)
-            if name in _PROCESS_COMMAND_TOOLS else {}
-        )
         light_repo_before = (
             registry_guard_process._light_repo_snapshot(system_repo_dir_for(self._ctx))
             if (
@@ -1315,24 +1309,32 @@ class ToolRegistry:
             else None
         )
         worktree_before = self._worktree_status_snapshot() if entry.mutates_worktree else None
+        settings_before = (
+            registry_guard_process._owner_settings_snapshot()
+            if name in _PROCESS_COMMAND_TOOLS else None
+        )
         if interpreter_resolution is None:  # node: post-gates (A-F4)
             args, interpreter_resolution = _resolve_node_postgates_predispatch(
                 self, name, args, _runtime_mode, effective_constraint, resolved_binding)
         early_error, result = self._invoke_builtin_handler(
             name, entry, args, resolved_binding, interpreter_resolution, worktree_before,
         )
-        if early_error is not None:
-            return early_error
         if name in _PROCESS_COMMAND_TOOLS:
-            result = registry_guard_process._run_shell_post_checks(
+            # Tripwires run on the TOOL_ERROR path too: two early_error returns
+            # fire AFTER the process already ran (#447 B2).
+            checked = registry_guard_process._run_shell_post_checks(
                 self,
-                result,
-                owner_snapshot=owner_snapshot,
-                state_drive_root=state_drive_root,
+                early_error if early_error is not None else result,
                 light_repo_before=light_repo_before,
                 workspace_refs_before=workspace_refs_before,
+                settings_before=settings_before,
                 tool_name=name,
             )
+            if early_error is not None:
+                return checked
+            result = checked
+        if early_error is not None:
+            return early_error
 
         return _compose_execute_result_result(name, result, _route_note, safety_msg) if _route_note or safety_msg else result
 

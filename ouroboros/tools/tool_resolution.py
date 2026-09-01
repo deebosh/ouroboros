@@ -462,13 +462,6 @@ def _binding_set_is_light_restricted(ctx: Any, binding: Any) -> bool:
     )
 
 
-def _binding_state_drive_root(ctx: Any, binding: Any) -> pathlib.Path:
-    items = _binding_items(binding)
-    if items:
-        return pathlib.Path(items[0].state_drive_root)
-    return pathlib.Path(ctx.drive_root)
-
-
 def _light_binding_failure_redirect(name: str, args: dict[str, Any]) -> str:
     """Project an existing light-mode UX redirect after a failed target bind."""
 

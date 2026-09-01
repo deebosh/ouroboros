@@ -32,7 +32,6 @@ def test_registry_core_extraction_preserves_only_proven_facades():
         "_binding_items",
         "_binding_set_is_light_restricted",
         "_binding_set_targets_system_repo",
-        "_binding_state_drive_root",
         "_build_builtin_target_binding",
         "_coerce_real_path",
         "_normalize_dispatch_path_args",

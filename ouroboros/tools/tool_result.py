@@ -31,7 +31,7 @@ _HOST_META_KEYS = frozenset(
     {
         "route_note",
         "safety_warning",
-        "ambiguous_safety_wrapper",
+        "tripwire",
         "owner_state_restored",
         "light_repo_changed",
         "workspace_git_refs_changed",
@@ -651,10 +651,16 @@ def _wrap_run_script_process_result(
     """Republish an inner shell result after the exact run-script text wrapper."""
 
     if str(result).lstrip().startswith("⚠️"):
+        # The result already owns line 1 with its own typed marker, which is what
+        # the failure classifier reads — the nudge appends after it.
         tail = f"\n{audit_note}" if audit_note else ""
         wrapped = f"{result}{tail}\n# script_path={script_path}"
     elif audit_note:
-        wrapped = f"{audit_note}\n# script_path={script_path}"
+        # The nudge used to REPLACE the whole _run_shell payload (a successful
+        # script's answer was gone; re-running was the sole recovery). Marker
+        # first — ARTIFACT_OUTPUT_UNDECLARED is a typed policy-denial surface the
+        # classifier reads off line 1 — payload appended, as in run_command.
+        wrapped = f"{audit_note}\n\n# script_path={script_path}\n{result}"
     else:
         wrapped = f"# script_path={script_path}\n{result}"
     base = _published_tool_result(ctx, None)
@@ -761,16 +767,15 @@ _FAMILY_PREFIX_CODES: tuple[tuple[str, str], ...] = (
 def _compose_execute_result(result: str, route_note: str, safety_msg: str) -> str:
     """Assemble the final tool result.
 
-    The auto-route note TRAILS the result: failure classification
-    (``LegacyTextResultAdapter`` in this module) inspects the FIRST line, so a
-    leading note would mask an underlying tool error on the auto-routed read
-    path (review round 3). The
-    safety warning keeps its historical leading position — its ``---`` separator
-    is an established transcript convention the metadata scan already handles."""
+    ALL host notes TRAIL the result (#447 В12/H1). Failure classification reads
+    the producer's typed result first and the payload's FIRST line as fallback,
+    so neither the auto-route note nor the safety warning may own line 1 — a
+    leading SAFETY_WARNING used to reclassify a failed command (or an
+    extension's ``{"ok": false}`` answer) as ok on every text-only reader."""
     if route_note:
         result = f"{result}\n\n{route_note}"
     if safety_msg:
-        return f"{safety_msg}\n\n---\n{result}"
+        result = f"{result}\n\n{safety_msg}"
     return result
 
 
@@ -932,15 +937,13 @@ def _compose_execute_result_result(
     meta = dict(base_result.meta)
     if route_note:
         meta["route_note"] = True
-    if safety_msg and text.count(_SAFETY_SEPARATOR) > 1:
-        # The composer HOLDS the typed base, so the base's own code is the answer
-        # and a second separator merely means the body contains a markdown rule.
-        # Turning that count into SAFETY_ERROR made an ordinary successful
-        # `run_command` whose stdout printed `---` a safety-provider failure —
-        # a blocking status — which is a delta nobody approved. The ambiguity is
-        # still recorded, as metadata, where a reader can see it without it
-        # deciding the outcome.
-        meta["ambiguous_safety_wrapper"] = True
+    # ``ambiguous_safety_wrapper`` retired with the leading wrapper (#447 H1):
+    # the host no longer inserts a ``---`` separator around the payload, so a
+    # separator in the composed text is the producer's own markdown rule and
+    # carries no ambiguity about who wrapped whom. Which notes rode along stays
+    # disclosed by the existing ``route_note``/``safety_warning`` host facts —
+    # their TEXT is in the result itself and does not enter the bounded host
+    # meta reserve (a full warning would blow the 256-byte ceiling).
     if not safety_msg:
         return ToolResult(
             status=base_result.status,

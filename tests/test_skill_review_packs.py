@@ -178,33 +178,37 @@ def test_review_skill_malformed_reviewer_slots_block_before_any_reviewer(tmp_pat
     assert "not valid JSON" in outcome.error
 
 
-def test_skill_review_hard_blocks_extensionless_binary(tmp_path, monkeypatch):
-    """Phase 3 round 15 regression: ANY non-UTF8 file in the runtime-
-    reachable surface is a hard-block, not just extension-matched
-    loadable formats. An extensionless disguised binary must still
-    raise ``_SkillBinaryPayload`` so raw bytes never reach reviewer
-    models and no PASS verdict ships over an opaque hash."""
-    from ouroboros.skill_review import _read_skill_text, _SkillBinaryPayload
+def test_non_magic_binary_becomes_a_typed_descriptor(tmp_path, monkeypatch):
+    """#447 X4/В21: judgment moved from FILENAME to CONTENT.
+
+    A non-UTF-8 blob that carries no loader magic is no longer a hard block —
+    raw bytes still never reach the reviewer, but the pack carries a typed
+    {path,size,mime_from_name,sha256} descriptor so the reviewer can judge it
+    on the merits instead of the whole skill going pending."""
+    from ouroboros.skill_review import _read_skill_file
 
     skills_root = tmp_path / "skills"
     skill_dir = skills_root / "bin1"
     skill_dir.mkdir(parents=True)
-    # Invalid UTF-8 bytes, no telltale extension (could be a Mach-O or
-    # ELF blob disguised with a misleading ``.dat`` suffix).
     payload = b"\xff\xfeBEGIN CERT leak-me-please\xff\xc0\xc1\xfe\xff"
     (skill_dir / "cert.dat").write_bytes(payload)
 
-    with pytest.raises(_SkillBinaryPayload):
-        _read_skill_text(skill_dir / "cert.dat", relpath="cert.dat")
+    text, digest, descriptor = _read_skill_file(
+        skill_dir / "cert.dat", relpath="cert.dat",
+    )
+    assert text is None and digest
+    assert descriptor is not None
+    assert descriptor["path"] == "cert.dat"
+    assert descriptor["size"] == len(payload)
+    assert len(descriptor["sha256"]) == 64
 
 
 def test_skill_review_blocks_loadable_native_binaries(tmp_path):
-    """Phase 3 round 13 regression: loadable native code
-    (``.so``/``.dylib``/``.pyc``/``.node``/``.wasm``) must hard-block
-    review. The subprocess could otherwise ``ctypes.CDLL`` / import /
-    require the blob and execute never-reviewed code even under a
-    PASS verdict."""
-    from ouroboros.skill_review import _read_skill_text, _SkillBinaryPayload
+    """Phase 3 round 13 regression, re-based on CONTENT (#447 X4): loadable
+    native code must hard-block review whatever its NAME says. The subprocess
+    could otherwise ``ctypes.CDLL`` / import / require the blob and execute
+    never-reviewed code even under a PASS verdict."""
+    from ouroboros.skill_review import _read_skill_file, _SkillBinaryPayload
 
     skills_root = tmp_path / "skills"
     skill_dir = skills_root / "nativelink"
@@ -212,14 +216,20 @@ def test_skill_review_blocks_loadable_native_binaries(tmp_path):
     target = skill_dir / "evil.so"
     target.write_bytes(b"\x7fELF" + b"\x00" * 128)
     with pytest.raises(_SkillBinaryPayload):
-        _read_skill_text(target, relpath="evil.so")
+        _read_skill_file(target, relpath="evil.so")
+
+    # A RENAMED ELF is still blocked: the magic bytes decide, not the suffix.
+    renamed = skill_dir / "notes.txt"
+    renamed.write_bytes(b"\x7fELF" + b"\x00" * 128)
+    with pytest.raises(_SkillBinaryPayload):
+        _read_skill_file(renamed, relpath="notes.txt")
 
 
 def test_review_skill_fails_closed_on_unreadable_payload(tmp_path, monkeypatch):
     """Phase 3 round 18 regression: an unreadable payload file must
     fail review CLOSED (pending + error) instead of letting the
     placeholder slip past the gate. Regression for the old behaviour
-    where ``_read_skill_text`` returned a string on OSError and
+    where ``_read_skill_file``'s predecessor returned a string on OSError and
     ``compute_content_hash`` silently skipped the file."""
     import os, platform
     if platform.system() == "Windows":

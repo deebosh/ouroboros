@@ -41,6 +41,7 @@ from ouroboros.tool_access_types import (  # noqa: F401 — re-exported moved su
     _POLICY,
     _READONLY_RESOURCE_ROOTS,
     _READ_OPS,
+    _WRITE_LIKE_OPS,
     _SUBAGENT_CAPABILITY_TO_OPERATION,
     _TOP_LEVEL_PRINCIPAL_POLICY,
     _TOP_LEVEL_PRINCIPAL_PROFILES,
@@ -70,10 +71,6 @@ from ouroboros.tool_access_roots import (  # noqa: F401 — re-exported moved su
 )
 from ouroboros.tool_access_user_files import (  # noqa: F401 — re-exported moved surface
     UserFilesPathBlockedError,
-    _USER_FILES_ALLOWED_DOTNAMES,
-    _USER_FILES_SECRET_COMPONENTS,
-    _USER_FILES_SECRET_NAMES,
-    _USER_FILES_SECRET_RE,
     _subagent_projects_read_hint,
     resolve_user_file_path,
     user_files_path_block_reason,
@@ -253,11 +250,13 @@ def filesystem_affordance_map(ctx: Any, *, runtime_mode: str = "") -> dict[str, 
 
     profile = active_tool_profile(ctx)
     policy = _POLICY.get(profile, {})
-    write_like = {"write", "edit", "shell", "vcs", "service"}
-    writable_roots = sorted(root for root, ops in policy.items() if ops & write_like)
+    # H2 (capinv-447): a root is writable iff a MUTATING operation is granted on
+    # it. Grouping "vcs" as write-like claimed writable roots for the read-only
+    # child profile (status/diff-only vcs), contradicting summarize_subagent_profile.
+    writable_roots = sorted(root for root, ops in policy.items() if ops & _WRITE_LIKE_OPS)
     readonly_roots = sorted(
         root for root, ops in policy.items()
-        if ops and not (ops & write_like) and ops <= (_READ_OPS | {"review", "delegate"})
+        if ops and not (ops & _WRITE_LIKE_OPS)
     )
     shell_roots = _side_effect_free_process_roots(ctx, "shell")
     service_roots = _side_effect_free_process_roots(ctx, "service")
@@ -568,6 +567,7 @@ def _resolve_target_in_selected_base(
             ctx,
             path,
             allow_protected_descendants=operation in {"list", "search"},
+            operation=operation,
         )
     resolved_base = pathlib.Path(base_path).resolve(strict=False)
     path_text = str(path or ".")

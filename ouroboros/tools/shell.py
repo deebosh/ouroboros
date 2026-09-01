@@ -230,6 +230,47 @@ def _maybe_autocorrect_grep_backslash_pipe(cmd: List[str]) -> tuple[List[str], s
     )
 
 
+def _literal_argv_notes(cmd: List[str]) -> str:
+    """Disclosure notes for shell-syntax-looking bytes in direct argv (#447 A5).
+
+    A commit message naming ``$HOME``, an awk ``|`` field separator, a
+    ``2>/dev/null`` element — no shell runs for direct argv, so these are
+    LITERAL DATA carrying no authority question. They used to be REFUSED as
+    errors, blocking commands that would have worked; the in-file autocorrect
+    precedent applies instead: run the command and DISCLOSE what was passed
+    literally, so a genuinely mistaken spelling still explains its own cryptic
+    program error.
+    """
+    notes: list[str] = []
+    executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
+    if executable_name not in _SHELL_INTERPRETERS:
+        for arg in cmd:
+            match = _ENV_REF_PATTERN.search(arg)
+            if match:
+                notes.append(
+                    f'⚠️ SHELL_LITERAL_ARGV_NOTE: literal env reference "{match.group(0)}" in the cmd '
+                    "array reached the program UNEXPANDED (run_command executes argv directly). "
+                    'Use ["sh", "-c", "..."] if you intended shell expansion.\n'
+                )
+                break
+    if found_ops := _SHELL_OPERATORS.intersection(cmd):
+        notes.append(
+            f'⚠️ SHELL_LITERAL_ARGV_NOTE: shell operator "{sorted(found_ops)[0]}" in the cmd array was '
+            "passed to the program as a LITERAL argument (subprocess interprets no shell syntax). "
+            'Use ["sh", "-c", "cmd1 && cmd2"] for pipes/chaining.\n'
+        )
+    # Glued redirects bypass the standalone-operator set but remain shell-looking.
+    for arg in cmd:
+        if _GLUED_REDIRECT_RE.match(arg):
+            notes.append(
+                f'⚠️ SHELL_LITERAL_ARGV_NOTE: redirect-looking argument "{arg}" in the cmd array was '
+                "passed to the program as a LITERAL argument (subprocess interprets no shell "
+                'syntax). Use ["sh", "-c", "..."] for real redirection.\n'
+            )
+            break
+    return "".join(notes)
+
+
 def _run_shell(
     ctx: ToolContext,
     cmd,
@@ -296,18 +337,6 @@ def _run_shell(
         return "⚠️ SHELL_ARG_ERROR: cmd must be a list of strings."
     cmd = [str(x) for x in cmd]
 
-    executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
-    if executable_name not in _SHELL_INTERPRETERS:
-        for arg in cmd:
-            match = _ENV_REF_PATTERN.search(arg)
-            if match:
-                return (
-                    f'⚠️ SHELL_ENV_ERROR: Found literal env reference "{match.group(0)}" in cmd array. '
-                    "run_command executes argv directly, so shell variables are not expanded. "
-                    'Use ["sh", "-c", "..."] if you intentionally need shell expansion, '
-                    "or read the environment variable inside the called program."
-                )
-
     if cmd and cmd[0] in _SHELL_BUILTINS:
         if cmd[0] == "cd":
             return (
@@ -323,26 +352,7 @@ def _run_shell(
 
     cmd, autocorrect_note = _maybe_autocorrect_grep_backslash_pipe(cmd)
     regex_autocorrected = bool(autocorrect_note)
-
-    found_ops = _SHELL_OPERATORS.intersection(cmd)
-    if found_ops:
-        op = sorted(found_ops)[0]
-        return (
-            f'⚠️ SHELL_CMD_ERROR: Shell operator "{op}" found in cmd array. '
-            'Subprocess does not interpret shell syntax. '
-            'Options: (1) Split into separate run_command calls. '
-            '(2) For pipes/chaining: ["sh", "-c", "cmd1 && cmd2"]'
-        )
-
-    # Glued redirects bypass the standalone-operator set but remain shell syntax.
-    for arg in cmd:
-        if _GLUED_REDIRECT_RE.match(arg):
-            return (
-                f'⚠️ SHELL_CMD_ERROR: Shell redirection "{arg}" found in cmd array. '
-                'Subprocess does not interpret shell syntax, so it reaches the '
-                'program as a literal argument. '
-                'Use ["sh", "-c", "your command with redirects"] for redirection.'
-            )
+    autocorrect_note += _literal_argv_notes(cmd)
 
     try:
         binding = _resolved_binding or build_resolved_resource_binding(

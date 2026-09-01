@@ -75,7 +75,6 @@ from ouroboros.llm_local import (
 )
 from ouroboros.llm_messages import (
     _MessageShapingMixin,  # noqa: F401
-    _reasoning_signature_portable_across_or_providers,  # noqa: F401
 )
 from ouroboros.llm_openai_compatible import (
     _bounded_response_metadata_label,  # noqa: F401

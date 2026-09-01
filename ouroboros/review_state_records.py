@@ -136,7 +136,7 @@ _OBLIGATION_STR_DEFAULTS = {"obligation_id": "", "item": "", "severity": "critic
 _DEBT_STR_DEFAULTS = {"debt_id": "", "category": "", "summary": "", "severity": "warning", "status": "detected", "repo_key": _LEGACY_CURRENT_REPO_KEY, "fingerprint": "", "title": "Commit readiness debt", "source": "review_state", "first_seen_at": "", "last_seen_at": "", "updated_at": "", "verified_at": ""}
 
 
-_RUN_STR_DEFAULTS = {"snapshot_hash": "", "commit_message": "", "status": "stale", "snapshot_summary": "", "raw_result": "", "bypass_reason": "", "bypassed_by_task": "", "repo_key": _LEGACY_CURRENT_REPO_KEY, "tool_name": _DEFAULT_ADVISORY_TOOL_NAME, "phase": "advisory", "model_used": "", "session_id": ""}
+_RUN_STR_DEFAULTS = {"snapshot_hash": "", "commit_message": "", "status": "stale", "snapshot_summary": "", "raw_result": "", "reason_kind": "", "bypass_reason": "", "bypassed_by_task": "", "repo_key": _LEGACY_CURRENT_REPO_KEY, "tool_name": _DEFAULT_ADVISORY_TOOL_NAME, "phase": "advisory", "model_used": "", "session_id": ""}
 
 
 _ATTEMPT_STR_DEFAULTS = {"commit_message": "", "snapshot_hash": "", "block_reason": "", "block_details": "", "task_id": "", "repo_key": _LEGACY_CURRENT_REPO_KEY, "tool_name": _DEFAULT_TOOL_NAME, "pre_review_fingerprint": "", "post_review_fingerprint": "", "fingerprint_status": "", "scope_model": "", "block_class": "", "rebuttal_sha256": "", "review_contract_fingerprint": "", "review_retry_key": "", "root_task_id": "", "review_owner_session_id": ""}
@@ -247,6 +247,11 @@ class AdvisoryRunRecord:
     items: List[Dict[str, Any]] = field(default_factory=list)
     snapshot_summary: str = ""
     raw_result: str = ""
+    # Typed cause for status="preflight_blocked" rows: "syntax" (a staged .py
+    # failed compile) or "release_metadata" (deterministic release preflight).
+    # "" = unknown/legacy — guidance must then point at raw_result instead of
+    # asserting a specific problem class (H4, capinv-447).
+    reason_kind: str = ""
     bypass_reason: str = ""
     bypassed_by_task: str = ""
     snapshot_paths: Optional[List[str]] = field(default=None)

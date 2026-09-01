@@ -391,13 +391,18 @@ class _CapabilityPolicyMixin:
             }
         return applied
 
-    def _pop_effort_clamp_disclosure(self) -> Optional[Dict[str, Any]]:
-        """The pending clamp record for THIS thread's in-flight call, if any."""
-        tls = getattr(self, "_effort_clamp_tls", None)
+    def _pop_thread_disclosure(self, slot: str) -> Optional[Dict[str, Any]]:
+        """Take and clear the disclosure staged in thread-local ``slot`` for THIS
+        thread's call; these slots stage before or at send (pin note: ContextVar)."""
+        tls = getattr(self, slot, None)
         pending = getattr(tls, "pending", None) if tls is not None else None
         if tls is not None:
             tls.pending = None
         return pending if isinstance(pending, dict) else None
+
+    def _pop_effort_clamp_disclosure(self) -> Optional[Dict[str, Any]]:
+        """The pending clamp record for THIS thread's in-flight call, if any."""
+        return self._pop_thread_disclosure("_effort_clamp_tls")
 
     @classmethod
     def _record_effort_ceiling(cls, model_id: str, current_effort: str) -> None:

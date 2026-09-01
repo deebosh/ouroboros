@@ -71,7 +71,7 @@ from ouroboros.skill_review_packs import (  # noqa: F401 — split facade re-exp
     _SkillFileOverBudget,
     _SkillFileUnreadable,
     _build_skill_file_packs,
-    _read_skill_text,
+    _read_skill_file,
     _skill_pack_token_budget,
 )
 from ouroboros.skill_review_rebuttals import (  # noqa: F401 — split facade re-exports
@@ -594,12 +594,10 @@ def review_skill(
             status=STATUS_PENDING,
             content_hash=content_hash,
             error=(
-                f"Skill file {exc.relpath!r} ({exc.size_bytes} bytes) is "
-                "binary / non-UTF-8. Review refuses opaque payloads in the "
-                "executable skill surface — the subprocess could load them "
-                "via ctypes/native addons without reviewer inspection. "
-                "Remove the file from the skill or refactor the skill to "
-                "store such payloads outside the hashed surface."
+                f"Skill file {exc.relpath!r} ({exc.size_bytes} bytes) is a loadable "
+                f"executable ({exc.kind or 'native magic bytes'}); review hard-blocks "
+                "native code the subprocess could load via ctypes/import without "
+                "reviewer inspection. Remove it or store it outside the hashed surface."
             ),
         )
     except (_SkillFileUnreadable, SkillPayloadUnreadable) as exc:
