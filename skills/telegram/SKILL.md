@@ -12,6 +12,9 @@ env_from_settings: [TELEGRAM_BOT_TOKEN]
 subscribe_events: [chat.outbound, chat.typing, chat.photo, chat.video, chat.document]
 conflicts: [telegram-bridge, telegram-miniapp-poc]
 when_to_use: The owner wants to communicate with and control Ouroboros through Telegram.
+model_experience:
+  what_model_sees: No new tools; the skill relays owner messages and photos from Telegram into the normal chat and mirrors replies back, so conversation turns may originate from Telegram without any visible difference.
+  token_effect: Near-zero while idle — no per-round schema cost; incoming Telegram media arrive as ordinary attachments and cost what any chat attachment costs.
 timeout_sec: 60
 companion_processes:
   - name: miniapp_gateway

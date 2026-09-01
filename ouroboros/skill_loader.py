@@ -1473,6 +1473,9 @@ def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
             "name": s.name,
             "description": s.manifest.description,
             "when_to_use": s.manifest.when_to_use,
+            # CPL-7: optional Model Experience prose travels to every
+            # model-visible skill surface (list_skills JSON, context section).
+            "model_experience": s.manifest.model_experience,
             "type": s.manifest.type,
             "version": s.manifest.version,
             "enabled": s.enabled,

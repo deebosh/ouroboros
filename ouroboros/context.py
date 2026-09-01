@@ -1063,6 +1063,15 @@ def _build_installed_skills_section(env: Any, *, max_lines: int = 100) -> str:
         lines.append(f"- {name} ({meta}): {description or 'No description.'}")
         if when:
             lines.append(f"  Trigger: {when}")
+        # CPL-7 Model Experience: bounded prose; absent section renders nothing.
+        experience = skill.get("model_experience")
+        if isinstance(experience, dict):
+            sees = _field(experience.get("what_model_sees"), 220)
+            token_effect = _field(experience.get("token_effect"), 160)
+            if sees:
+                lines.append(f"  Model experience: {sees}")
+            if token_effect:
+                lines.append(f"  Token effect: {token_effect}")
         if surfaces:
             lines.append(f"  Tools: {', '.join(surfaces[:8])}")
         elif skill.get("runnable_via_skill_exec"):
