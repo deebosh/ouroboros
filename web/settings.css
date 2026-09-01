@@ -521,19 +521,22 @@
 .available-subagents-editor {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    margin-top: 12px;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
 }
 
 .available-subagents-toolbar,
+.available-subagent-head,
 .available-subagent-actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
 }
 
-.available-subagents-toolbar .btn-default {
+/* The section's Add and the card's own actions dock right (docs/DESIGN.md §6). */
+.available-subagents-toolbar .btn-default,
+.available-subagent-actions {
     margin-left: auto;
 }
 
@@ -542,39 +545,45 @@
 .available-subagents-diagnostics,
 .available-subagents-empty,
 .available-subagent-meta {
-    color: var(--text-secondary);
+    color: var(--text-meta);
     font-size: var(--type-meta);
     line-height: var(--line-body);
 }
 
-.available-subagents-diagnostics[data-tone="error"] {
+.available-subagents-diagnostics[data-tone="error"],
+.available-subagent-meta[data-tone="error"] {
     color: var(--status-error-fg);
 }
 
 .available-subagents-list {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: var(--space-2);
 }
 
+/* Compact card (docs/DESIGN.md §6 row anatomy): head → Description → route
+   controls → one meta line. Inner rhythm is one space token and the card
+   padding three, so three cards fit a laptop-height Settings body. */
 .available-subagent-row {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 14px;
+    gap: var(--space-1);
+    padding: var(--space-3);
     border: 1px solid var(--surface-border);
-    border-radius: 14px;
+    border-radius: var(--radius);
     background: var(--surface-card-soft);
+}
+
+/* An entry the owner tried to save with an error is emphasised, not dimmed. */
+.available-subagent-row[data-invalid] {
+    border-color: var(--status-error-border);
+    background: var(--status-error-bg);
 }
 
 .available-subagent-route {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-}
-
-.available-subagent-route {
     grid-template-columns: repeat(4, minmax(130px, 1fr));
+    gap: var(--space-2);
 }
 
 .available-subagent-heading {
@@ -584,22 +593,38 @@
     font-weight: 600;
 }
 
+/* Two short words on one line; the full sentence is the status's title. */
+.available-subagent-head .settings-inline-status {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .available-subagent-purpose {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    color: var(--text-secondary);
+    gap: var(--space-1);
+    color: var(--text-meta);
     font-size: var(--type-meta);
 }
 
+/* One line that grows with its text up to four, then scrolls: the browser
+   sizes it (`field-sizing`); a shell without that property keeps the one-line
+   field and manual resize. 22px is the control's own padding and border. */
 .available-subagent-purpose textarea {
     width: 100%;
-    min-height: 64px;
+    field-sizing: content;
+    min-height: calc(var(--type-body) * var(--line-body) + 22px);
+    max-height: calc(4 * var(--type-body) * var(--line-body) + 22px);
+    overflow-y: auto;
     resize: vertical;
 }
 
-.available-subagent-actions {
-    justify-content: flex-end;
+.available-subagent-meta {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .available-subagent-actions .btn-default {
