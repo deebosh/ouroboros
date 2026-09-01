@@ -129,7 +129,10 @@ def _count_comma_split_calls_py(text: str) -> int:
     """AST-level count of ``<expr>.split(",")`` / ``.rsplit(",")`` calls —
     positional or keyword extras (``maxsplit=``), spacing and quote style
     cannot evade it (the setattr-scan lesson: a parser gate scans SYNTAX,
-    not one string spelling)."""
+    not one string spelling). The separator may arrive as EITHER of the
+    first two positionals (bound ``s.split(",")`` / unbound
+    ``str.split(raw, ",")``) or the ``sep=`` keyword regardless of
+    positional count (unbound ``str.split(raw, sep=",")``)."""
     tree = ast.parse(text)
     count = 0
     for node in ast.walk(tree):
@@ -137,9 +140,13 @@ def _count_comma_split_calls_py(text: str) -> int:
             continue
         if node.func.attr not in ("split", "rsplit"):
             continue
-        first = node.args[0] if node.args else next(
-            (kw.value for kw in node.keywords if kw.arg == "sep"), None)
-        if isinstance(first, ast.Constant) and first.value == ",":
+        sep_candidates = list(node.args[:2]) + [
+            kw.value for kw in node.keywords if kw.arg == "sep"
+        ]
+        if any(
+            isinstance(candidate, ast.Constant) and candidate.value == ","
+            for candidate in sep_candidates
+        ):
             count += 1
     return count
 
@@ -172,8 +179,14 @@ def test_comma_split_ast_scan_sees_the_evasion_spellings():
     assert _count_comma_split_calls_py("raw.split( ',' )") == 1
     assert _count_comma_split_calls_py("raw.rsplit(',')") == 1
     assert _count_comma_split_calls_py('raw.split(sep=",")') == 1
+    # Unbound-method evasions (fix-round 2, claim 7): positional args present
+    # AND the separator hiding in sep=, or riding as the second positional.
+    assert _count_comma_split_calls_py('str.split(raw, sep=",")') == 1
+    assert _count_comma_split_calls_py('str.split(raw, ",")') == 1
+    assert _count_comma_split_calls_py('str.rsplit(raw, ",")') == 1
     assert _count_comma_split_calls_py('raw.split(";")') == 0
     assert _count_comma_split_calls_py("raw.split()") == 0
+    assert _count_comma_split_calls_py("str.split(raw)") == 0
 
 
 def test_phase5_route_plumbing_stays_removed():
