@@ -266,6 +266,22 @@ def _startup_custody_sweep() -> None:
         replay_pending_deliveries(DATA_DIR)
     except Exception:
         log.debug("Boot replay of pending terminal deliveries failed", exc_info=True)
+    try:
+        # CPL4-C13: terminal+age sweep of delegate recovery/supervision files —
+        # beside the custody sweep, fail-closed on unreadable custody exactly
+        # like _prune_delegated_snapshots.
+        from ouroboros.delegate_state_sweep import sweep_settled_delegate_state
+        from supervisor.state import append_jsonl
+
+        sweep_report = sweep_settled_delegate_state(DATA_DIR)
+        if sweep_report.get("removed") or sweep_report.get("errors") or sweep_report.get("skipped"):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "delegate_state_sweep",
+                "report": sweep_report,
+            })
+    except Exception:
+        log.debug("Delegate state sweep failed", exc_info=True)
 
 
 def _prune_delegated_snapshots() -> None:

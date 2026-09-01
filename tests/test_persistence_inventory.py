@@ -56,7 +56,10 @@ SUBROOT_ALIASES = {
 
 # The pinned scan-population size. Moving it is deliberate: a new distinct
 # data-relative path requires a PERSISTENCE.md row AND this bump in one diff.
-EXPECTED_SCAN_PATHS = 118
+# 118 -> 120: the CPL4-C13 sweep enumerates the delegate_recovery /
+# delegate_recovery_transactions / delegate_supervision directories directly
+# (their per-file chains were already pinned; the dir prefixes are new).
+EXPECTED_SCAN_PATHS = 120
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
