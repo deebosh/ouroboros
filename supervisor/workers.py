@@ -354,7 +354,7 @@ def _stage_promoted_initial_attachments(
     manifest: list[dict] = []
     try:
         from ouroboros.artifacts import (
-            attachment_manifest_has_rejections,
+            attachment_manifest_all_rejected,
             materialize_inherited_attachment_manifest,
             remove_staged_attachments,
             stage_task_attachments,
@@ -398,7 +398,9 @@ def _stage_promoted_initial_attachments(
             if isinstance(row, dict):
                 row["ordinal"] = ordinal
         rendered = _render_attachment_lines(manifest)
-        if attachment_manifest_has_rejections(manifest):
+        # В25c partial-default; a FULLY-rejected set stays atomic (the task
+        # would start with none of its declared material).
+        if attachment_manifest_all_rejected(manifest):
             remove_staged_attachments(manifest)
             from ouroboros.headless import remove_subagent_task_drive
 

@@ -841,6 +841,8 @@ from ouroboros.loop_delivery import (  # noqa: E402, F401 -- intentional public 
     _hold_delivery_for_skill_action,
     _parse_delivery_control_object,
     _parse_delivery_control_body,
+    _classify_parsed_delivery_control,
+    _resolve_forced_delivery_control_body,
     _resolve_delivery_control,
     _CHILD_ABSORPTION_HOLD_CONTROL,
     _DELIVERY_HOLD_CONTROLS,

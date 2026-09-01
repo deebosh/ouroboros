@@ -471,12 +471,11 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     if raw_project_id:
         from ouroboros.project_facts import explicit_project_id_ok
 
-        # Validate the UNSTRIPPED value so leading/trailing whitespace (which would
-        # collapse two inputs into one store) is rejected, not silently normalized.
+        # Fail closed on the UNSTRIPPED value: an explicit project_id must already
+        # be filesystem-clean. Rejecting (rather than silently normalizing, or
+        # emptying to canonical) keeps two inputs — "p" and " p" — from collapsing
+        # into one store, which would silently defeat isolation.
         if not explicit_project_id_ok(raw_project_id):
-            # Fail closed: an explicit project_id must already be filesystem-clean.
-            # Reject (rather than silently normalize/empty -> canonical), so two
-            # inputs never collapse to one store and isolation is never defeated.
             return json_error(
                 "project_id must be filesystem-safe (alphanumeric/_/-/., no spaces or slashes)", 400)
     from ouroboros.project_facts import resolve_project_id as _resolve_pid
@@ -559,7 +558,6 @@ async def api_tasks_create(request: Request) -> JSONResponse:
         deadline_at = _normalize_deadline_at(body.get("deadline_at") or raw_metadata.get("deadline_at") or "")
     except ValueError as exc:
         return json_error(str(exc), 400)
-    timeout_sec = 0.0
     try:
         timeout_sec = float(body.get("timeout_sec") or body.get("timeout") or 0)
     except (TypeError, ValueError):
@@ -603,7 +601,8 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     effective_drive = child_drive or drive_root
     attachment_manifest, attachment_error = stage_initial_task_attachments(
         effective_drive, task_id, _normalize_attachments(body.get("attachments")),
-        allow_partial=body.get("allow_partial_attachments") is True,
+        # Partial staging is the DEFAULT (В25c); explicit false = atomic admission.
+        allow_partial=body.get("allow_partial_attachments") is not False,
     )
     if attachment_error is not None:
         _cleanup_api_admission_attempt(drive_root, task_id, admission_token, child_drive)

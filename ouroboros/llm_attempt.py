@@ -454,11 +454,19 @@ class _PayloadCachePolicyMixin:
             return "5m"
         return "default" if breakpoints else None
 
-    def _pop_cache_breakpoint_disclosure(self) -> Optional[Dict[str, Any]]:
-        """The pending ≤4-cap reduction record for THIS thread's in-flight call (the
-        finalizer writes the slot before every send, so it never mis-attributes)."""
-        tls = getattr(self, "_cache_breakpoint_tls", None)
-        pending = getattr(tls, "pending", None) if tls is not None else None
-        if tls is not None:
-            tls.pending = None
-        return pending if isinstance(pending, dict) else None
+    def _stage_reasoning_pin_disclosure(self, candidate: Dict[str, Any]) -> None:
+        """Stage the pin fact on send SUCCESS so it describes the TERMINAL sent
+        candidate (the recovery ladder can strip and unpin). Only a wire
+        ``allow_fallbacks=false`` over a genuinely sealed transcript reports; an
+        owner ``repro`` pin on a portable transcript is never laundered in."""
+        from ouroboros.reasoning_artifacts import (
+            _REASONING_PIN_CVAR,
+            sealed_reasoning_pin_fact,
+        )
+
+        extra_body = candidate.get("extra_body")
+        provider = extra_body.get("provider") if isinstance(extra_body, dict) else None
+        pinned = isinstance(provider, dict) and provider.get("allow_fallbacks") is False
+        _REASONING_PIN_CVAR.set(sealed_reasoning_pin_fact(
+            candidate.get("messages") or [], candidate.get("model"),
+        ) if pinned else None)

@@ -237,6 +237,14 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     # carries the `_UNAVAILABLE` marker, which the typed chain names as the
     # unavailability it is (the retired pair collapsed it into generic error).
     "ESCALATE_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.23", "an escalation route that cannot accept the question is an unavailable surface; error hid the retriable class"),
+    # A.24 — F6 rolling upstream sync #2 (drift 8d13373b..f3fbfdbb, #447 H1/В12).
+    # A structured `{"ok": false}` answer behind an appended host note used to
+    # read as SUCCESS: the retired pair json.loads()-ed the WHOLE composed text,
+    # which a trailing note makes unparseable. The composed payload is recovered
+    # before parsing now, so the tool's own self-report is believed again — the
+    # same defect class the 329 OSWorld rows measured, on the composition seam.
+    "compose:reported:route": Delta(False, "ok", True, "tool_reported_failure", "A.24", "a tool that reported its own failure is a failure, even behind an appended host note"),
+    "compose:reported:route+safety": Delta(False, "ok", True, "tool_reported_failure", "A.24", "a tool that reported its own failure is a failure, even behind two appended host notes"),
 })
 
 # Deltas the classifier WOULD produce for which no producer exists, recorded so a

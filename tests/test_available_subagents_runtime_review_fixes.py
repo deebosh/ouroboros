@@ -396,7 +396,11 @@ def test_delegate_start_recipes_match_the_fresh_start_schema():
         "prompts/SYSTEM.md",
         "docs/ARCHITECTURE.md",
         "docs/DEVELOPMENT.md",
-        "docs/CHECKLISTS.md",
+        # #447 stage 3: the standing disclosures (which carry the delegate_start
+        # recipe) moved to the binding archive; its recipes must stay
+        # schema-valid too. The live checklist has none TODAY, so it is scanned
+        # tolerantly below rather than dropped from coverage.
+        "docs/CHECKLISTS_ARCHIVE.md",
         # v7 D01 split: the dispatch-note pair (and its delegate_start recipe
         # strings) moved to the agent_dispatch leaf; sdn re-exports the pair.
         "ouroboros/agent_dispatch.py",
@@ -404,10 +408,15 @@ def test_delegate_start_recipes_match_the_fresh_start_schema():
         "ouroboros/tools/delegate.py",
         "ouroboros/tools/delegate_integration.py",
     )
-    for relative in recipe_paths:
+    # The live checklist may legitimately have zero recipes (they moved to the
+    # archive), but any it GAINS must stay schema-valid.
+    tolerant = {"docs/CHECKLISTS.md"}
+    for relative in (*recipe_paths, "docs/CHECKLISTS.md"):
         text = (repo / relative).read_text(encoding="utf-8")
         recipes = re.findall(r"\bdelegate_start\(([^)]*)\)", text, flags=re.DOTALL)
-        assert recipes, f"expected at least one delegate_start recipe in {relative}"
+        assert recipes or relative in tolerant, (
+            f"expected at least one delegate_start recipe in {relative}"
+        )
         for recipe in recipes:
             assert re.search(r"\bprompt\s*=", recipe), (relative, recipe)
             if not re.search(r"\bretry_of\s*=", recipe):

@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
-import re
 import subprocess
 
 from ouroboros.contracts.skill_payload_policy import SKILL_OWNER_STATE_STEMS
 
 import ouroboros.tools.registry_guards as registry_guards
-from ouroboros.tools.tool_result import ToolResult, _replace_tool_result
+from ouroboros.tools.tool_result import (
+    LegacyTextResultAdapter,
+    ToolResult,
+    _replace_tool_result,
+)
 
 from typing import TYPE_CHECKING
 
@@ -139,10 +142,9 @@ _COMMAND_HEAD_WRAPPERS = frozenset({
 })
 
 
-_READ_ONLY_GIT_SUBCOMMANDS = frozenset({
-    "grep", "log", "show", "diff", "blame", "cat-file", "ls-files", "ls-tree",
-    "rev-parse", "status", "describe",
-})
+# ``git`` read-only classification: the git_shell_policy SSOT
+# (``_git_subcommand_is_readonly``), shared with the shell git guards and the
+# affordance map — two divergent allowlists disagreed on the same line (#447 A7).
 
 
 _SEARCH_TOOL_EXEC_OPTIONS = frozenset({"--pre", "--pre-glob", "--hostname-bin", "--pager"})
@@ -254,8 +256,17 @@ def _is_pure_read_inspection(text_lower: str) -> bool:
             return False  # leading env assignment: never silently discarded
         head = _trusted_read_head(tokens[0])
         if head == "git":
-            if len(tokens) < 2 or tokens[1] not in _READ_ONLY_GIT_SUBCOMMANDS:
+            from ouroboros.git_shell_policy import (
+                _git_output_file_args,
+                _git_subcommand_and_args,
+                _git_subcommand_is_readonly,
+            )
+
+            subcmd, sub_args = _git_subcommand_and_args(tokens)
+            if not subcmd or not _git_subcommand_is_readonly(subcmd, sub_args):
                 return False
+            if _git_output_file_args(sub_args):
+                return False  # `git log --output=<file>` truncates and writes <file>
         elif not head or head not in _READ_ONLY_INSPECTION_COMMANDS:
             return False
         denied = _DENIED_READ_OPTIONS.get(head)
@@ -318,15 +329,19 @@ _SKILL_OWNER_STATE_STEMS = SKILL_OWNER_STATE_STEMS
 _DETACHED_PROCESS_MARKERS = ("start_new_session", "new_session", "setsid", "preexec_fn", "nohup")
 
 
-def _mentions_skill_owner_state(text_lower: str) -> bool:
+def _mentions_skill_owner_state(text_lower: str, *, writeish: bool = True) -> bool:
+    """Skill owner-state mention, with the family read-carve (#447 A2): the file
+    plane explicitly allows reading review.json (core.py review-carve), so a pure
+    read inspection naming it must not be refused here with a WRITE-named marker.
+    Any write shape or non-inspection head still blocks, fail-closed."""
     if "state" not in text_lower or "skills" not in text_lower:
         return False
+    detected = False
     for stem in _SKILL_OWNER_STATE_STEMS:
-        if f"{stem}.json" in text_lower:
-            return True
-        if stem in text_lower and ".json" in text_lower:
-            return True
-    return False
+        if f"{stem}.json" in text_lower or (stem in text_lower and ".json" in text_lower):
+            detected = True
+            break
+    return _registry()._owner_control_mention_blocks(text_lower, detected, writeish)
 
 
 def _mentions_detached_process(text_lower: str) -> bool:
@@ -370,7 +385,8 @@ def _light_repo_snapshot(repo_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _format_light_repo_write_block(before: Dict[str, Any], after: Dict[str, Any], result: str, tool_name: str = "run_command") -> str:
+def _format_light_repo_write_note(before: Dict[str, Any], after: Dict[str, Any], tool_name: str = "run_command") -> str:
+    """The light-lane tripwire NOTE, appended after the command payload (#447 В12)."""
     before_paths = set(before.get("paths") or [])
     after_paths = set(after.get("paths") or [])
     touched = sorted(after_paths | before_paths)
@@ -382,9 +398,7 @@ def _format_light_repo_write_block(before: Dict[str, Any], after: Dict[str, Any]
         f"a mutation of the Ouroboros repository after {tool_name}. "
         "The command result is blocked and no automatic rollback was attempted "
         "to avoid overwriting concurrent human edits. "
-        f"Affected/dirty paths: {listed}. Switch to advanced/pro for repo writes.\n\n"
-        "Original command output:\n"
-        f"{result}"
+        f"Affected/dirty paths: {listed}. Switch to advanced/pro for repo writes."
     )
 
 
@@ -446,7 +460,7 @@ def _run_shell_safety_check(
     acting_self_worktree = self._acting_self_worktree()
     acting_subagent = self._is_acting_subagent()
     argv = _registry().strip_leading_env_assignments(_registry().unwrap_env_argv(_registry().shell_argv(raw_cmd)))
-    if _registry().sudo_noninteractive_violation(argv):
+    if _registry().sudo_noninteractive_violation(raw_cmd):
         return ToolResult(
             status="blocked",
             code="SUDO_INTERACTIVE_BLOCKED",
@@ -595,7 +609,7 @@ def _run_shell_safety_check(
         return ToolResult(status="blocked", code="ELEVATION_BLOCKED", text="⚠️ ELEVATION_BLOCKED: OUROBOROS_ALLOW_MUTATIVE_SUBAGENTS is owner-controlled (it grants subagents write power against the live body). Change it by stopping the agent and editing settings.json directly, then restart — the agent must not self-enable mutative subagents.")
     if _detect_evolution_owner_control_self_change(cmd_lower, writeish=writeish):
         return ToolResult(status="blocked", code="ELEVATION_BLOCKED", text="⚠️ ELEVATION_BLOCKED: the self-evolution controls (OUROBOROS_POST_TASK_EVOLUTION and OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE) are owner-controlled — they enable or steer self-modification cycles. Change them via the owner Settings UI, or stop the agent and edit settings.json directly — the agent must not self-set evolution controls.")
-    if _mentions_skill_owner_state(cmd_lower):
+    if _mentions_skill_owner_state(cmd_lower, writeish=writeish):
         return ToolResult(
             status="blocked",
             code="SKILL_STATE_WRITE_BLOCKED",
@@ -603,7 +617,8 @@ def _run_shell_safety_check(
                 "⚠️ SKILL_STATE_WRITE_BLOCKED: skill review, enablement, "
                 "grants, and marketplace provenance are owner/review "
                 "controlled state. Use skill_review, toggle_skill/the Skills "
-                "UI, or the desktop launcher confirmation flow."
+                "UI, or the desktop launcher confirmation flow. Pure read-only "
+                "inspection (grep/rg/cat/jq) of these names is allowed."
             ),
         )
     if "state" in cmd_lower and "skills" in cmd_lower and _mentions_detached_process(cmd_lower):
@@ -694,12 +709,11 @@ def _run_shell_safety_check(
     ):
         return protected_shell
 
-    # GitHub repo create/delete/auth.
-    cmd_words = re.sub(r"\s+", " ", cmd_lower)
-    if "gh repo create" in cmd_words or "gh repo delete" in cmd_words:
-        return ToolResult(status="blocked", code="SAFETY_VIOLATION", text="⚠️ SAFETY_VIOLATION: Creating/deleting GitHub repositories requires admin approval.")
-    if "gh auth" in cmd_words:
-        return ToolResult(status="blocked", code="SAFETY_VIOLATION", text="⚠️ SAFETY_VIOLATION: Modifying GitHub authentication is not permitted.")
+    # GitHub repo create/delete/auth — argv-positional, never substring (#447 A7).
+    from ouroboros.git_shell_policy import gh_shell_block_reason
+
+    if gh_block := gh_shell_block_reason(raw_cmd):
+        return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=gh_block)
 
     return registry_guards._shell_git_and_runtime_block(
         self, raw_cmd, args, cmd_path_lower, workspace_mode,
@@ -707,100 +721,75 @@ def _run_shell_safety_check(
     )
 
 
-def _snapshot_owner_files(
-    self, state_drive_root: pathlib.Path | None = None,
-) -> Dict[pathlib.Path, Optional[str]]:
+def _owner_settings_snapshot() -> Optional[str]:
+    """Text of the live settings.json, "" if absent, None if UNREADABLE.
+
+    None disarms the tripwire below: the deleted restore recorded an OSError as
+    "file absent" and could unlink the live settings.json — a baseline is either
+    read successfully or not used at all."""
     from ouroboros import config as _cfg
-    out: Dict[pathlib.Path, Optional[str]] = {}
-    settings_path = pathlib.Path(_cfg.SETTINGS_PATH)
+
+    path = pathlib.Path(_cfg.SETTINGS_PATH)
     try:
-        out[settings_path] = settings_path.read_text(encoding="utf-8") if settings_path.is_file() else None
+        return path.read_text(encoding="utf-8") if path.is_file() else ""
     except OSError:
-        out[settings_path] = None
-    root = pathlib.Path(state_drive_root or self._ctx.drive_root) / "state" / "skills"
-    if not root.is_dir():
-        return out
-    for path in root.glob("*/*"):
-        if path.name.lower() not in _registry().SKILL_OWNER_STATE_FILENAMES:
-            continue
-        try:
-            out[path] = path.read_text(encoding="utf-8")
-        except OSError:
-            out[path] = None
-    return out
-
-
-def _restore_owner_files(
-    self,
-    before: Dict[pathlib.Path, Optional[str]],
-    state_drive_root: pathlib.Path | None = None,
-) -> bool:
-    from ouroboros import config as _cfg
-    root = pathlib.Path(state_drive_root or self._ctx.drive_root) / "state" / "skills"
-    current = set()
-    if root.is_dir():
-        current.update(
-            path for path in root.glob("*/*")
-            if path.name.lower() in _registry().SKILL_OWNER_STATE_FILENAMES
-        )
-    settings_path = pathlib.Path(_cfg.SETTINGS_PATH)
-    current.add(settings_path)
-    changed = False
-    for path in current - set(before):
-        try:
-            path.unlink()
-            changed = True
-        except OSError:
-            pass
-    for path, content in before.items():
-        try:
-            if content is None:
-                if path.exists():
-                    path.unlink()
-                    changed = True
-                continue
-            if not path.exists() or path.read_text(encoding="utf-8") != content:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, encoding="utf-8")
-                changed = True
-        except OSError:
-            pass
-    return changed
+        return None
 
 
 def _run_shell_post_checks(
     self,
     result: str | ToolResult,
     *,
-    owner_snapshot: Dict[pathlib.Path, Optional[str]],
-    state_drive_root: pathlib.Path,
     light_repo_before: Optional[Dict[str, Any]],
     workspace_refs_before: Optional[Dict[str, str]],
+    settings_before: Optional[str] = None,
     tool_name: str = "run_command",
 ) -> str | ToolResult:
-    import time
+    """Post-execution tripwires. They ANNOTATE, they never roll back.
 
+    The owner-state snapshot/restore (OWNER_STATE_RESTORED) that used to run here
+    was DELETED (issue #447, owner decision): it reverted ANY post-command
+    difference without proving the command caused it, so a concurrent owner edit
+    (Settings UI, grant click) was silently rolled back and blamed on the command;
+    and its snapshot recorded an OSError while reading as "file absent", so the
+    restore could UNLINK the live settings.json after a transient read error. The
+    light-lane guard below refuses auto-rollback for exactly this reason. Pre-exec
+    guards keep skill owner state (SKILL_STATE_WRITE_BLOCKED on any writeish /
+    non-inspection mention — pure read inspection is carved, #447 A2); the
+    settings.json mention-gates are lexical, so an obfuscated argument-level
+    writer (``S=settings; cat > data/$S.json``) can pass them — the tripwire below
+    makes that LOUD (a typed ``tripwire`` fact plus an appended note) without
+    re-introducing the unsound rollback. Disclosed residual: the write itself is
+    not reverted; the owner surface is the remedy. Every note TRAILS the payload
+    (#447 В12/H1) so line 1 stays with the command's own outcome."""
     text = result.text if isinstance(result, ToolResult) else result
     typed = result if isinstance(result, ToolResult) else None
 
-    restored_owner_state = False
-    for _ in range(4):
-        time.sleep(0.3)
-        restored_owner_state = (
-            _restore_owner_files(self, owner_snapshot, state_drive_root)
-            or restored_owner_state
-        )
-    if restored_owner_state:
-        text = (
-            f"{text}\n\n⚠️ OWNER_STATE_RESTORED: run_command attempted to "
-            "change owner-only settings or skill trust state; protected files were restored."
-        )
-        if typed is not None:
+    def _typed_base() -> ToolResult:
+        # A tripwire fact must survive even when the producer returned plain
+        # text: since the notes TRAIL the payload (#447 H1), the marker no
+        # longer owns line 1, so a text-only reader could not re-derive the
+        # classification. Adapt once, through the ONE legacy adapter, so the
+        # fact is carried typed instead of being lost in prose.
+        nonlocal typed
+        if typed is None:
+            typed = LegacyTextResultAdapter.from_text(tool_name, text)
+        return typed
+
+    if settings_before is not None:
+        settings_after = _owner_settings_snapshot()
+        if settings_after is not None and settings_after != settings_before:
+            text = (
+                f"{text}\n\n⚠️ OWNER_SETTINGS_CHANGED: data/settings.json changed while "
+                "this command ran. Owner settings change only through save_settings / "
+                "the Settings UI; this write was NOT auto-reverted (a post-hoc rollback "
+                "can clobber a concurrent legitimate owner edit) — the owner surface is "
+                "the place to verify and restore."
+            )
             typed = _replace_tool_result(
-                typed,
+                _typed_base(),
                 text=text,
-                code="OWNER_STATE_RESTORED" if typed.status == "ok" else typed.code,
-                meta_updates={"owner_state_restored": True},
+                meta_updates={"tripwire": "owner_settings_changed"},
             )
     if light_repo_before is not None:
         light_repo_after = _light_repo_snapshot(_registry().system_repo_dir_for(self._ctx))
@@ -808,19 +797,18 @@ def _run_shell_post_checks(
             light_repo_after is not None
             and light_repo_after.get("digest") != light_repo_before.get("digest")
         ):
-            text = _format_light_repo_write_block(
-                light_repo_before,
-                light_repo_after,
-                text,
-                tool_name=tool_name,
-            )
-            if typed is not None:
-                typed = _replace_tool_result(
-                    typed,
-                    text=text,
-                    code="LIGHT_MODE_REPO_WRITE_BLOCKED",
-                    meta_updates={"light_repo_changed": True},
+            text = (
+                f"{text}\n\n"
+                + _format_light_repo_write_note(
+                    light_repo_before, light_repo_after, tool_name=tool_name
                 )
+            )
+            typed = _replace_tool_result(
+                _typed_base(),
+                text=text,
+                code="LIGHT_MODE_REPO_WRITE_BLOCKED",
+                meta_updates={"light_repo_changed": True},
+            )
     if workspace_refs_before is not None:
         workspace_refs_after = _git_ref_snapshot(_registry().active_repo_dir_for(self._ctx))
         if (
@@ -828,17 +816,15 @@ def _run_shell_post_checks(
             and workspace_refs_after.get("digest") != workspace_refs_before.get("digest")
         ):
             text = (
+                f"{text}\n\n"
                 "⚠️ WORKSPACE_GIT_REF_CHANGED: run_command changed git HEAD or refs "
                 "inside the external workspace. External workspace runs must leave "
-                "changes as files/patch artifacts, not commits/tags/resets.\n\n"
-                "Original command output:\n"
-                f"{text}"
+                "changes as files/patch artifacts, not commits/tags/resets."
             )
-            if typed is not None:
-                typed = _replace_tool_result(
-                    typed,
-                    text=text,
-                    code="WORKSPACE_GIT_REF_CHANGED",
-                    meta_updates={"workspace_git_refs_changed": True},
-                )
+            typed = _replace_tool_result(
+                _typed_base(),
+                text=text,
+                code="WORKSPACE_GIT_REF_CHANGED",
+                meta_updates={"workspace_git_refs_changed": True},
+            )
     return typed if typed is not None else text

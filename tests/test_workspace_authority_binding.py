@@ -497,7 +497,6 @@ def test_registry_tool_resolution_owner_facades_preserve_identity():
         "_binding_items",
         "_binding_set_targets_system_repo",
         "_binding_set_is_light_restricted",
-        "_binding_state_drive_root",
     )
     for name in names:
         assert getattr(registry, name) is getattr(tool_resolution, name)
@@ -512,7 +511,6 @@ def test_registry_tool_resolution_owner_facades_preserve_identity():
         "_binding_items": "(binding: 'Any') -> 'tuple[Any, ...]'",
         "_binding_set_targets_system_repo": "(ctx: 'Any', binding: 'Any') -> 'bool'",
         "_binding_set_is_light_restricted": "(ctx: 'Any', binding: 'Any') -> 'bool'",
-        "_binding_state_drive_root": "(ctx: 'Any', binding: 'Any') -> 'pathlib.Path'",
     }
     assert {
         name: str(inspect.signature(getattr(tool_resolution, name)))

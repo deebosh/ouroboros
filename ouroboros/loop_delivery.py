@@ -56,6 +56,11 @@ class DeliveryCandidate:
     degraded: bool = False
     degraded_reason: str = ""
     model_text: str = ""
+    # Sticky loop-local provenance that this lineage has SEEN a host-issued
+    # delivery-control episode (#447/issue-449): every replacement inherits it,
+    # including ordinary acceptance improvements, so a later control-shaped
+    # answer under a lost latch is still read as protocol rather than prose.
+    control_episode_seen: bool = False
 
 
 # Action-gate holds: a gate closable ONLY by a tool call (skill lifecycle
@@ -302,6 +307,7 @@ def _publish_delivery_candidate(
         "evidence_current": candidate.evidence_fingerprint == current_fp,
         "acceptance_binding": dict(candidate.acceptance_binding),
         "finalization_control": candidate.finalization_control,
+        "control_episode_seen": candidate.control_episode_seen,
         "degraded": candidate.degraded,
         "degraded_reason": candidate.degraded_reason,
     }
@@ -341,6 +347,9 @@ def _replace_delivery_candidate(
         acceptance_binding=_unaccepted_delivery_binding(tools, content_hash),
         finalization_control=control,
         model_text=model_text,
+        control_episode_seen=bool(
+            getattr(previous_candidate, "control_episode_seen", False)
+        ),
     )
     tools._ctx._delivery_candidate = candidate
     tools._ctx._delivery_control_required = False
@@ -517,6 +526,7 @@ def _arm_delivery_control(
             ),
         ),
     )
+    candidate.control_episode_seen = True
     _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
 
 
@@ -541,25 +551,34 @@ def _hold_delivery_for_skill_action(
     _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
 
 
+class _ParsedObject(dict):
+    """A parsed JSON object that remembers which of its keys were duplicated."""
+
+    duplicate_keys: set
+    has_duplicate_keys: bool
+
+
 def _parse_delivery_control_object(
     raw: str,
 ) -> tuple[Optional[Dict[str, Any]], bool]:
-    """Parse a delivery-control object while rejecting duplicate JSON keys.
+    """Parse a body while rejecting duplicates in a control envelope.
 
-    The boolean preserves protocol intent for the repair path when a duplicate
-    ``delivery_control`` or ``full_answer`` key made the object invalid.
+    The boolean preserves top-level protocol intent when duplicate keys made a
+    recognizable control envelope invalid. Per-object metadata supports the
+    stronger armed/action rails; an aggregate duplicate marker restores the
+    forced armed malformed-body rule without widening history-gated parsing.
     """
 
-    duplicate_protocol_key = False
+    has_duplicate_keys = False
 
-    def _unique_object(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
-        nonlocal duplicate_protocol_key
-        result: Dict[str, Any] = {}
+    def _unique_object(pairs: List[Tuple[str, Any]]) -> "_ParsedObject":
+        nonlocal has_duplicate_keys
+        result = _ParsedObject()
+        result.duplicate_keys = set()
         for key, value in pairs:
             if key in result:
-                if key in {"delivery_control", "full_answer"}:
-                    duplicate_protocol_key = True
-                raise ValueError(f"duplicate key: {key}")
+                result.duplicate_keys.add(key)
+                has_duplicate_keys = True
             result[key] = value
         return result
 
@@ -568,10 +587,95 @@ def _parse_delivery_control_object(
     except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
         # RecursionError: a degenerate deeply-nested blob (repetition-loop
         # model output) must classify as not-a-control, not crash the round.
-        return None, duplicate_protocol_key
+        return None, False
     if not isinstance(payload, dict):
         return None, False
-    return payload, False
+    payload.has_duplicate_keys = has_duplicate_keys
+    duplicate_keys = getattr(payload, "duplicate_keys", set())
+    if duplicate_keys:
+        if "delivery_control" in payload:
+            return None, True
+        # Keep per-object duplicate metadata for stronger control rails while
+        # stopping _parse_delivery_control_body from rescanning this whole body.
+        return payload, False
+    return payload if has_duplicate_keys else dict(payload), False
+
+
+def _classify_parsed_delivery_control(
+    parsed: Optional[Dict[str, Any]],
+    duplicate_protocol_key: bool,
+    embedded: bool,
+) -> Tuple[str, str, str]:
+    """Return ``(kind, replacement, error)`` for a parsed control body."""
+
+    exact_error = "control must be one exact JSON object"
+    if embedded:
+        # A trailing prose-embedded object is a protocol ATTEMPT, never a valid
+        # control: honoring it would leak the raw object or drop the prose half.
+        return "embedded", "", exact_error
+    if duplicate_protocol_key:
+        return "invalid", "", exact_error
+    if (
+        isinstance(parsed, dict)
+        and "full_answer" in getattr(parsed, "duplicate_keys", set())
+    ):
+        # Without a top-level verb this is not historical protocol, but an
+        # already armed/action rail must retain the base malformed-control rule.
+        return "rail_invalid", "", exact_error
+    if not isinstance(parsed, dict) or "delivery_control" not in parsed:
+        return "none", "", exact_error
+    selected = str(parsed.get("delivery_control") or "")
+    if selected == "keep" and set(parsed) == {"delivery_control"}:
+        return "keep", "", ""
+    if selected == "replace" and set(parsed) == {"delivery_control", "full_answer"}:
+        replacement = parsed.get("full_answer")
+        if isinstance(replacement, str) and replacement.strip():
+            return "replace", replacement, ""
+        return "invalid", "", "replace requires a non-empty complete full_answer"
+    return "invalid", "", exact_error
+
+
+def _resolve_forced_delivery_control_body(
+    raw: str,
+    candidate: Optional[DeliveryCandidate],
+    *,
+    armed: bool,
+) -> Tuple[str, bool, bool, bool, bool]:
+    """Return text plus retained/degraded/consumed/replaced facts."""
+
+    if not isinstance(candidate, _loop().DeliveryCandidate):
+        candidate = None
+    parsed, duplicate_protocol_key, embedded_protocol = _parse_delivery_control_body(raw)
+    control_kind, replacement, _error = _classify_parsed_delivery_control(
+        parsed, duplicate_protocol_key, embedded_protocol,
+    )
+    historical = bool(
+        not armed
+        and candidate is not None
+        and candidate.control_episode_seen
+        and control_kind in {"keep", "replace", "invalid"}
+    )
+    if not armed and not historical:
+        return raw, False, False, False, False
+    if control_kind == "replace":
+        return replacement, False, False, True, True
+    if control_kind == "keep" and candidate is not None:
+        return candidate.full_text, True, False, True, False
+    if historical:
+        return candidate.full_text, True, False, True, False
+    from ouroboros.observability import strip_protocol_fence
+
+    protocol_intent = (
+        control_kind != "none"
+        or (parsed is None and strip_protocol_fence(raw).startswith("{"))
+        or bool(getattr(parsed, "has_duplicate_keys", False))
+    )
+    if not protocol_intent:
+        # Ordinary prose under an armed latch stands (a control object quoted
+        # MID-prose is the disclosed residual).
+        return raw, False, False, True, False
+    retained = candidate is not None
+    return candidate.full_text if retained else "", retained, True, True, False
 
 
 def _parse_delivery_control_body(
@@ -624,12 +728,14 @@ def _resolve_delivery_control(
         return "fresh", _loop()._extract_plain_text_from_content(content)
     raw = _loop()._extract_plain_text_from_content(content).strip()
     parsed, duplicate_protocol_key, embedded_protocol = _parse_delivery_control_body(raw)
+    control_kind, replacement, error = _classify_parsed_delivery_control(
+        parsed, duplicate_protocol_key, embedded_protocol,
+    )
     # ANY parsed object carrying the protocol key is control intent, whatever
     # the verb or placement — a mangled protocol attempt is never prose (raw
     # JSON leaked to chat); validity judged below.
-    is_control_intent = duplicate_protocol_key or (
-        isinstance(parsed, dict) and "delivery_control" in parsed
-    )
+    is_control_intent = control_kind != "none"
+    historical_control = False
     if not required:
         if _loop()._delivery_replace_required(candidate):
             # A writer/skill action cannot silently turn a short acknowledgement
@@ -648,40 +754,32 @@ def _resolve_delivery_control(
             candidate.finalization_control = "skill_revision_required"
             required = True
             tools._ctx._delivery_control_required = True
+        elif (
+            candidate.finalization_control == "owner_revision_required"
+            and is_control_intent
+        ):
+            # Honor a prior typed instruction during this substantive revision.
+            tools._ctx._delivery_control_required = True
+        elif (
+            candidate.control_episode_seen
+            and control_kind in {"keep", "replace", "invalid"}
+        ):
+            # The latch is gone but this lineage HAS been under host control, and
+            # the body is protocol-shaped: reading it as prose would publish the
+            # raw JSON as the answer (#447/issue-449).
+            historical_control = True
         else:
             # An owner revision starts an ordinary substantive answer round.
-            # If the model still follows the prior typed instruction, honor
-            # that control structurally; service/effect/skill rounds are
-            # handled by the replace-required branch above.
-            if not (
-                candidate.finalization_control == "owner_revision_required"
-                and is_control_intent
-            ):
-                return "fresh", _loop()._extract_plain_text_from_content(content)
-            tools._ctx._delivery_control_required = True
+            return "fresh", _loop()._extract_plain_text_from_content(content)
     evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
-    error = "control must be one exact JSON object"
-    selected = str(parsed.get("delivery_control") or "") if isinstance(parsed, dict) else ""
-    valid = False
-    replacement = ""
-    if embedded_protocol:
-        # A trailing prose-embedded object is a protocol ATTEMPT, never a
-        # valid control: honoring it would leak the raw object or drop the
-        # prose half (the default error states the exact-object rule).
-        pass
-    elif selected == "keep" and set(parsed) == {"delivery_control"}:
+    valid = control_kind == "replace"
+    if control_kind == "keep":
         valid = _delivery_keep_allowed(
             candidate, evidence_revision, evidence_fingerprint,
         )
         error = "keep cannot bind changed evidence; send replace with the complete answer"
-    elif selected == "replace" and set(parsed) == {"delivery_control", "full_answer"}:
-        replacement_value = parsed.get("full_answer")
-        if isinstance(replacement_value, str):
-            replacement = replacement_value
-        valid = isinstance(replacement_value, str) and bool(replacement.strip())
-        error = "replace requires a non-empty complete full_answer"
 
-    if valid and selected == "keep":
+    if valid and control_kind == "keep":
         tools._ctx._delivery_control_required = False
         candidate.finalization_control = "keep"
         candidate.acceptance_binding = _delivery_acceptance_binding(
@@ -689,11 +787,15 @@ def _resolve_delivery_control(
         )
         _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
         return "resolved", candidate.full_text
-    if valid and selected == "replace":
+    if valid and control_kind == "replace":
         updated = _loop()._replace_delivery_candidate(
             tools, ctx, llm_trace, replacement, control="replace",
         )
         return "resolved", updated.full_text
+    if historical_control:
+        # No latch to repair against: keep the retained answer rather than
+        # re-arming a control round the host never opened this turn.
+        return "resolved", candidate.full_text
 
     if not candidate.repair_attempted:
         candidate.repair_attempted = True
@@ -714,6 +816,7 @@ def _resolve_delivery_control(
                 ),
             ),
         )
+        candidate.control_episode_seen = True
         _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
         return "retry", ""
 

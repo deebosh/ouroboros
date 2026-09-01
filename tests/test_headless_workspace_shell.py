@@ -385,7 +385,9 @@ def test_workspace_run_shell_allows_absolute_cwd_under_workspace_and_child_drive
             {"cmd": [sys.executable, "-c", "import os; print(os.getcwd())"], "cwd": str(path)},
         )
         assert "exit_code=0" in output
-        cwd_output = output.rsplit("STDOUT:\n", 1)[-1].strip()
+        # #447 H1: host notes (SAFETY_WARNING and siblings) trail the payload
+        # now — take the first line after STDOUT, not the whole tail.
+        cwd_output = output.rsplit("STDOUT:\n", 1)[-1].strip().splitlines()[0].strip()
         assert pathlib.Path(cwd_output).resolve() == path.resolve()
 
     assert_python_cwd(workspace)
@@ -457,8 +459,14 @@ def test_workspace_shell_sudo_and_pro_passthrough_policy(tmp_path):
     assert "SUDO_INTERACTIVE_BLOCKED" in _shell_guard_text(registry, {"cmd": ["sudo", "-nS", "true"]}, "pro")
     assert "SUDO_INTERACTIVE_BLOCKED" in _shell_guard_text(registry, {"cmd": ["sudoedit", "/etc/hosts"]}, "pro")
     assert _shell_guard_text(registry, {"cmd": ["sudo", "-n", "python", "-S", "-c", "print(1)"]}, "pro") is None
-    assert "SAFETY_VIOLATION" in _shell_guard_text(registry, {"cmd": ["sh", "-c", "gh\nrepo\ncreate x"]}, "pro")
-    assert "SAFETY_VIOLATION" in _shell_guard_text(registry, {"cmd": ["sh", "-c", "gh\nauth\nlogin"]}, "pro")
+    assert "SAFETY_VIOLATION" in _shell_guard_text(registry, {"cmd": ["sh", "-c", "gh repo create x"]}, "pro")
+    assert "SAFETY_VIOLATION" in _shell_guard_text(registry, {"cmd": ["sh", "-c", "gh auth login"]}, "pro")
+    # Line-continuation still spells ONE gh invocation and stays blocked...
+    assert "SAFETY_VIOLATION" in _shell_guard_text(registry, {"cmd": ["sh", "-c", "gh \\\nrepo create x"]}, "pro")
+    # ...while bare newlines run `gh`, `repo`, `create x` as three separate
+    # commands that create nothing — that spelling was only ever a text
+    # mention, not an invocation (#447 A7 argv-positional gh policy).
+    assert _shell_guard_text(registry, {"cmd": ["sh", "-c", "gh\nrepo\ncreate x"]}, "pro") is None
     outside_write = {"cmd": ["python", "-c", "open('/tmp/ouroboros-pro.txt','w').write('x')"]}
     assert "WORKSPACE_SHELL_BLOCKED" in _shell_guard_text(registry, outside_write, "advanced")
     assert _shell_guard_text(registry, outside_write, "pro") is None

@@ -421,7 +421,7 @@ def _maybe_coop_noop_verdict(
         f"coop tree {target} (verified read-only against its patch; nothing to apply). "
         f"The tree is checkpoint-committed by the host when this task tree finalizes. "
         f"Touched files: {', '.join(touched[:10]) or '(none listed)'}. "
-        f"Verdict: {verdict_path or '(unwritten)'}.{disposition_warning}"
+        f"Verdict: {verdict_path or '(unwritten)'}.{_format_patch_exclusions(manifest)}{disposition_warning}"
     )
 
 
@@ -570,7 +570,7 @@ def _handle_external_workspace_integration(
         return (
             f"✅ Verified external_workspace child {child_task_id}: {len(authoritative_touched)} file(s) are already "
             f"present in the shared workspace {target}. No patch was re-applied. "
-            f"Verdict: {verdict_path or '(unwritten)'}.{disposition_warning}"
+            f"Verdict: {verdict_path or '(unwritten)'}.{_format_patch_exclusions(manifest)}{disposition_warning}"
         )
     if missing:
         return (
@@ -649,7 +649,7 @@ def _integrate_subagent_patch(
         return (
             f"🚫 Rejected subagent patch from {child_task_id} ({len(touched)} file(s) not applied). "
             f"Verdict: {verdict_path or '(unwritten)'}. Reason: {reason or '(none)'}."
-            f"{disposition_warning}"
+            f"{_format_patch_exclusions(manifest)}{disposition_warning}"
         )
 
     status = str(manifest.get("status") or "")
@@ -657,6 +657,7 @@ def _integrate_subagent_patch(
         return (
             f"⚠️ INTEGRATE_NO_CHANGES: child {child_task_id} workspace patch status={status!r}; "
             "nothing to apply."
+            f"{_format_patch_exclusions(manifest)}"
         )
     if not patch_path.exists():
         return f"⚠️ INTEGRATE_PATCH_MISSING: workspace.patch for {child_task_id} not found at {patch_path}."
@@ -812,7 +813,7 @@ def _integrate_subagent_patch(
     )
     return (
         f"✅ Integrated subagent patch from {child_task_id} into {target} ({len(touched)} file(s), staged).{note}\n"
-        f"{diffstat}\n"
+        f"{diffstat}{_format_patch_exclusions(manifest)}\n"
         f"Verdict: {verdict_path or '(unwritten)'}.\n"
         "Changes are staged but NOT committed — review and run commit_reviewed yourself (you are the sole committer)."
         f"{disposition_warning}"
@@ -869,7 +870,7 @@ def _compare_subagent_patches(ctx: ToolContext, task_ids: Any = None) -> str:
             f"\n## {cid}\n"
             f"- patch status: {status or '(none)'} | child result status: {result_status or '(unknown)'}\n"
             f"- tracked changed: {len(tracked)} | untracked included: {len(untracked)}\n"
-            f"- diffstat: {diffstat or '(none)'}\n"
+            f"- diffstat: {diffstat or '(none)'}{_format_patch_exclusions(manifest)}\n"
             + (f"- child summary: {result_summary}\n" if result_summary else "")
             + (f"\n```diff\n{body}\n```\n" if body else "- (no patch body; nothing to apply)\n")
         )
@@ -878,6 +879,11 @@ def _compare_subagent_patches(ctx: ToolContext, task_ids: Any = None) -> str:
         "or synthesize across candidates yourself (you are the sole committer). Comparison is read-only."
     )
     return "\n".join(parts)
+
+
+from ouroboros.workspace_patch_rules import (  # noqa: E402 — patch-rule SSOT
+    format_patch_exclusions as _format_patch_exclusions,
+)
 
 
 def get_tools() -> List[ToolEntry]:

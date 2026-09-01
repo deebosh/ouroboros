@@ -25,11 +25,21 @@ from tests._git_review_pipeline_shared import (
 # pass; otherwise an iterable of substrings every one of which must appear in
 # the returned blocker text.
 _PREFLIGHT_CASES = [
+    # Regression (#447): the commit-message version-reference heuristic was
+    # removed — a version-shaped message no longer demands VERSION staged.
     (
-        "missing_version",
+        "version_ref_message_without_version_passes",
         "v3.24.0: big change",
         "ouroboros/tools/git.py\nREADME.md",
-        ("PREFLIGHT_BLOCKED", "VERSION"),
+        None,
+    ),
+    # Regression (#447): the old "version" substring test matched "conversion"
+    # and told an unrelated commit to bump VERSION.
+    (
+        "conversion_message_does_not_demand_version",
+        "add unit conversion helper",
+        "M  ouroboros/units.py",
+        None,
     ),
     (
         "missing_readme",
@@ -49,23 +59,20 @@ _PREFLIGHT_CASES = [
         "M  docs/ARCHITECTURE.md",
         None,
     ),
+    # Regression (#447): the tests-required predicate was removed — a .py
+    # change under ouroboros/ (e.g. comment-only) without staged tests is no
+    # longer refused; CHECKLISTS.md item 6 (tests_affected) owns coverage.
     (
-        "logic_changed_without_tests_blocked",
+        "logic_without_tests_passes",
         "fix something",
         "M  ouroboros/tools/shell.py\nM  VERSION\nM  README.md",
-        ("PREFLIGHT_BLOCKED", "tests/"),
-    ),
-    (
-        "logic_changed_with_tests_passes",
-        "fix something",
-        "M  ouroboros/tools/shell.py\nM  tests/test_shell_run_shell.py\nM  VERSION\nM  README.md",
         None,
     ),
     (
-        "supervisor_logic_without_tests_blocked",
+        "supervisor_logic_without_tests_passes",
         "update supervisor",
         "M  supervisor/workers.py",
-        ("PREFLIGHT_BLOCKED",),
+        None,
     ),
     (
         "docs_only_change_no_tests_required",
@@ -278,7 +285,6 @@ class TestPreflightCheck7P9Limits:
             return ""  # README absent from staged index
 
         monkeypatch.setattr(review, "_git_show_staged", _fake_git_show)
-        # Tests staged to pass check 3; ARCHITECTURE.md for check 4.
         result = review._preflight_check(
             "v4.99.0 bump", "M  VERSION\nM  tests/test_foo.py", "/repo"
         )

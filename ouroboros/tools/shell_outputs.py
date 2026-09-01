@@ -11,6 +11,8 @@ stay with ``tools/shell.py``.
 
 from __future__ import annotations
 
+import logging
+
 import hashlib
 from hashlib import sha256
 import os
@@ -60,6 +62,8 @@ def _shell():
     return shell
 
 
+log = logging.getLogger(__name__)
+
 _OUTPUT_DIR_MAX_FILES = 1000
 
 
@@ -86,14 +90,14 @@ def _protected_output_source_reason(
     except Exception:
         pass
 
-    name_lower = source.name.lower()
-    if (
-        source.name.startswith(".")
-        or name_lower in _SENSITIVE_OUTPUT_NAMES
-        or name_lower.endswith(_SENSITIVE_OUTPUT_SUFFIXES)
-        or any(marker in name_lower for marker in _SENSITIVE_OUTPUT_MARKERS)
-    ):
-        return f"credential-like output {source.name} is not a deliverable artifact"
+    # D4 (capinv-447): the credential-shape judgment is the workspace-patch SSOT
+    # (permits .env.example and ordinary dotfiles like .gitignore); the exporter
+    # previously blanket-blocked every dotfile and disagreed with patch policy.
+    from ouroboros.workspace_patch_rules import _sensitive_untracked_reason
+
+    sensitive_reason = _sensitive_untracked_reason(source.name)
+    if sensitive_reason:
+        return f"credential-like output {source.name} is not a deliverable artifact ({sensitive_reason})"
 
     try:
         system_repo = pathlib.Path(getattr(ctx, "system_repo_dir", None) or getattr(ctx, "repo_dir")).resolve(strict=False)
@@ -342,40 +346,51 @@ def _scan_directory_output_members(
     label: str,
     changed_paths: set[str],
     binding: ResolvedResourceBinding | None = None,
-) -> tuple[list[pathlib.Path], int, str]:
+) -> tuple[list[pathlib.Path], int, str, list[str]]:
+    """Return ``(members, dir_size, whole_dir_block_reason, skipped_receipts)``.
+
+    D4 (capinv-447): a policy-rejected MEMBER is skipped with a receipt instead
+    of failing the whole declared directory (one ``.env`` no longer discards an
+    otherwise-successful export). Structural failures — size/count caps and an
+    unreadable tree — still refuse the directory as a whole.
+    """
     root = pathlib.Path(source).resolve(strict=False)
     members: list[pathlib.Path] = []
+    skipped: list[str] = []
     dir_size = 0
     try:
         for child in root.rglob("*"):
             if child.is_symlink():
+                skipped.append(f"{child}: symlink members are not followed")
                 continue
             if not child.is_file():
                 continue
-            members.append(child)
-            try:
-                dir_size += child.stat().st_size
-            except OSError:
-                pass
             try:
                 rel_parts = child.resolve(strict=False).relative_to(root).parts
             except ValueError:
                 rel_parts = child.parts
             component_reason = _sensitive_output_component_reason(rel_parts)
             if component_reason:
-                return [], dir_size, f"{child}: {component_reason}"
+                skipped.append(f"{child}: {component_reason}")
+                continue
             reason = _protected_output_source_reason(
                 ctx, child.resolve(strict=False), label, changed_paths, binding,
             )
             if reason:
-                return [], dir_size, f"{child}: {reason}"
+                skipped.append(f"{child}: {reason}")
+                continue
+            members.append(child)
+            try:
+                dir_size += child.stat().st_size
+            except OSError:
+                pass
             if len(members) > _OUTPUT_DIR_MAX_FILES:
-                return [], dir_size, f"{source}: directory output has more than {_OUTPUT_DIR_MAX_FILES} files"
+                return [], dir_size, f"{source}: directory output has more than {_OUTPUT_DIR_MAX_FILES} files", skipped
             if dir_size > _OUTPUT_DIR_MAX_BYTES:
-                return [], dir_size, f"{source}: directory output exceeds {_OUTPUT_DIR_MAX_BYTES} bytes"
+                return [], dir_size, f"{source}: directory output exceeds {_OUTPUT_DIR_MAX_BYTES} bytes", skipped
     except OSError as exc:
-        return [], dir_size, f"{source}: {type(exc).__name__}: {exc}"
-    return sorted(members, key=lambda item: item.as_posix()), dir_size, ""
+        return [], dir_size, f"{source}: {type(exc).__name__}: {exc}", skipped
+    return sorted(members, key=lambda item: item.as_posix()), dir_size, "", skipped
 
 
 def _register_process_outputs(
@@ -443,15 +458,38 @@ def _register_process_outputs(
                 notes.append(f"failed output copy {text}: source is not a regular file")
                 failed = True
         elif source.is_dir():
-            dir_members, _dir_size, blocked_member = _scan_directory_output_members(
+            dir_members, _dir_size, blocked_member, skipped_members = _scan_directory_output_members(
                 ctx,
                 source,
                 label=str(cwd_root or "cwd"),
                 changed_paths=changed_paths or set(),
                 binding=binding,
             )
+            if skipped_members:
+                # Per-member receipt (D4): the export is PARTIAL, never silently
+                # so. The rendered note is bounded; the COMPLETE list goes to
+                # the task log so the omission stays resolvable (#447 P1).
+                shown = "; ".join(skipped_members[:5])
+                more = (
+                    f" (+{len(skipped_members) - 5} more; full list in server.log,"
+                    f" task {getattr(ctx, 'task_id', '') or '?'})"
+                    if len(skipped_members) > 5 else ""
+                )
+                if len(skipped_members) > 5:
+                    log.info(
+                        "task %s: directory output %s: full export skip list (%d): %s",
+                        getattr(ctx, "task_id", "") or "?",
+                        text, len(skipped_members), "; ".join(skipped_members),
+                    )
+                notes.append(
+                    f"skipped {len(skipped_members)} member(s) of directory output {text}: {shown}{more}"
+                )
             if blocked_member:
                 notes.append(f"blocked directory output: {blocked_member}")
+                failed = True
+                continue
+            if not dir_members:
+                notes.append(f"failed directory output copy {text}: no exportable members")
                 failed = True
                 continue
             try:
@@ -501,13 +539,20 @@ _SENSITIVE_OUTPUT_COMPONENT_NAMES = _SENSITIVE_OUTPUT_NAMES | frozenset({"secret
 
 
 def _sensitive_output_component_reason(parts: tuple[str, ...]) -> str:
+    """Credential-shape check for every relative path component of an export.
+
+    D4 (capinv-447): reuses the workspace-patch SSOT (`_sensitive_untracked_reason`)
+    per component — a plain dotfile like `.gitignore` or `.github/...` is an
+    ordinary deliverable, while `.env`, `id_rsa`, or `secrets.json` anywhere in
+    the path still refuses with the exact rule that fired.
+    """
+    from ouroboros.workspace_patch_rules import _sensitive_untracked_reason
+
     for part in parts:
         text = str(part or "")
         if not text:
             continue
-        low = text.lower()
-        if text.startswith("."):
-            return f"hidden/control output path component {text} is not a deliverable artifact"
-        if low in _SENSITIVE_OUTPUT_COMPONENT_NAMES or low.endswith(_SENSITIVE_OUTPUT_SUFFIXES) or any(marker in low for marker in _SENSITIVE_OUTPUT_MARKERS):
-            return f"credential-like output path component {text} is not a deliverable artifact"
+        reason = _sensitive_untracked_reason(text)
+        if reason:
+            return f"credential-like output path component {text} is not a deliverable artifact ({reason})"
     return ""

@@ -30,7 +30,7 @@ _MOVED_OWNERS = {
     "_SkillFileOverBudget": skill_review_packs,
     "_SkillFileUnreadable": skill_review_packs,
     "_build_skill_file_packs": skill_review_packs,
-    "_read_skill_text": skill_review_packs,
+    "_read_skill_file": skill_review_packs,
     "_skill_pack_token_budget": skill_review_packs,
     "_build_skill_review_history_section": skill_review_rebuttals,
     "_convergence_hint": skill_review_rebuttals,

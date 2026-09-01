@@ -28,7 +28,10 @@ from ouroboros.llm_attempt import (
     _is_structured_context_overflow_exception,
     _physical_candidate,
 )
-from ouroboros.llm_messages import _reasoning_signature_portable_across_or_providers
+from ouroboros.reasoning_artifacts import (
+    pop_reasoning_pin_note,
+    transcript_has_sealed_reasoning,
+)
 from ouroboros.request_wire_recovery import (
     note_wire_send_failed,
     note_wire_send_succeeded,
@@ -173,14 +176,16 @@ class _RecoveryLadderMixin:
         present (nothing to strip / no continuity pin to drop — default routing can
         already fall back across endpoints). NEVER switches model — only endpoint.
 
-        ``allow_portable_reasoning`` (set ONLY by the transient body-error path): for a
-        family whose reasoning signature is cross-provider portable
-        (``_reasoning_signature_portable_across_or_providers``) the replayed signature
-        survives the same-model sibling-provider switch, so PRESERVE it (retry the same
-        payload and let OpenRouter route to a healthy endpoint) rather than needlessly
-        dropping continuity on the very rate-limit path the failover exists for. The 400
-        signature-REJECTION path never sets this: a 400 means the signature WAS rejected,
-        so it must strip regardless of family."""
+        ``allow_portable_reasoning`` (set ONLY by the transient body-error path): when the
+        replayed artifact is NOT sealed (``transcript_has_sealed_reasoning`` — readable
+        text/summary, or an opaque form vouched by the signed-portable roster) it survives
+        the same-model sibling-provider switch, so PRESERVE it (retry the same payload and
+        let OpenRouter route to a healthy endpoint) rather than needlessly dropping
+        continuity on the very rate-limit path the failover exists for. The 400
+        signature-REJECTION path never sets this: a 400 means the artifact WAS rejected,
+        so it must strip regardless of shape. This is the SAME predicate as the proactive
+        dispatch pin — one artifact-shape truth for both directions (the pre-#468
+        openai/* carve-out here is now absorbed by the roster, which excludes openai/*)."""
         if not target.get("supports_openrouter_extensions"):
             return None
         messages = kwargs.get("messages")
@@ -189,17 +194,7 @@ class _RecoveryLadderMixin:
         model_id = str(kwargs.get("model") or "").strip().lstrip("~")
         preserve_reasoning = (
             allow_portable_reasoning
-            and _reasoning_signature_portable_across_or_providers(model_id)
-            # OpenAI encrypted-reasoning items are NOT reliably portable across
-            # OpenRouter sibling upstreams in the field (2026-07, gpt-5.6-sol on
-            # 3x OpenAI + 2x Azure endpoints: "The encrypted content for item
-            # rs_... could not be ..." 400s after 429-reroutes killed whole
-            # benchmark runs; the 2026-06 replay probe did not cover this mix).
-            # openai/* therefore strips on reroute as it did before v6.49.0;
-            # preserve stays for Anthropic/Gemini whose signatures verified
-            # portable. The proactive continuity pin at dispatch (other callers
-            # of the predicate) is intentionally unchanged.
-            and not model_id.startswith("openai/")
+            and not transcript_has_sealed_reasoning(messages, model_id)
         )
         if preserve_reasoning:
             retry_kwargs = copy.deepcopy(kwargs)
@@ -268,7 +263,7 @@ class _RecoveryLadderMixin:
     ) -> Optional[Dict[str, Any]]:
         """If an HTTP-200 response actually carries a TRANSIENT provider
         body-error, return same-model reroute kwargs (provider unpinned; reasoning
-        continuity preserved for cross-provider-portable families, dropped
+        continuity preserved when the replayed artifact is not sealed, dropped
         otherwise); None when not applicable."""
         try:
             resp_dict = resp.model_dump()
@@ -355,6 +350,9 @@ class _RecoveryLadderMixin:
         kwargs: Dict[str, Any],
         target: Dict[str, Any],
     ) -> Any:
+        # Discard a prior aborted ladder's pin note.
+        pop_reasoning_pin_note()
+
         def _send(candidate: Dict[str, Any]) -> Any:
             candidate = _physical_candidate(candidate)
             candidate = prepare_wire_payload_for_send(
@@ -368,6 +366,7 @@ class _RecoveryLadderMixin:
                     _candidate_before_dispatch(candidate, request),
                 )
                 note_wire_send_succeeded(last_physical_attempt_capture())
+                self._stage_reasoning_pin_disclosure(candidate)
                 return result
             except UsageAccountingError:
                 # Admission failure cannot leave its disclosure for a later call.
@@ -499,6 +498,9 @@ class _RecoveryLadderMixin:
         kwargs: Dict[str, Any],
         target: Dict[str, Any],
     ) -> Any:
+        # Discard a prior aborted ladder's pin note.
+        pop_reasoning_pin_note()
+
         async def _send(candidate: Dict[str, Any]) -> Any:
             candidate = _physical_candidate(candidate)
             candidate = prepare_wire_payload_for_send(
@@ -512,6 +514,7 @@ class _RecoveryLadderMixin:
                     _candidate_before_dispatch(candidate, request),
                 )
                 note_wire_send_succeeded(last_physical_attempt_capture())
+                self._stage_reasoning_pin_disclosure(candidate)
                 return result
             except UsageAccountingError:
                 # Sync-driver parity: central UAE discard (triad r4).

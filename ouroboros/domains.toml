@@ -151,6 +151,7 @@ D20 = "Presence"
 "ouroboros/gateway/__init__.py" = "D11"
 "ouroboros/gateway/_helpers.py" = "D11"
 "ouroboros/gateway/claudexor_accounts.py" = "D11"
+"ouroboros/gateway/claudexor_quota.py" = "D11"
 "ouroboros/gateway/contracts.py" = "D11"
 "ouroboros/gateway/control.py" = "D11"
 "ouroboros/gateway/extensions.py" = "D11"
@@ -196,6 +197,7 @@ D20 = "Presence"
 "ouroboros/llm_gigachat.py" = "D02"
 "ouroboros/llm_local.py" = "D02"
 "ouroboros/llm_messages.py" = "D02"
+"ouroboros/reasoning_artifacts.py" = "D02"
 "ouroboros/llm_openai_compatible.py" = "D02"
 "ouroboros/llm_pricing.py" = "D02"
 "ouroboros/llm_routing.py" = "D02"
@@ -314,6 +316,7 @@ D20 = "Presence"
 "ouroboros/safety.py" = "D13"
 "ouroboros/schedule_contract.py" = "D08"
 "ouroboros/secret_masking.py" = "D12"
+"ouroboros/credential_shapes.py" = "D13"
 "ouroboros/semantic_dedup.py" = "D15"
 "ouroboros/server_auth.py" = "D11"
 "ouroboros/server_control.py" = "D09"
@@ -802,6 +805,7 @@ allowed = [
   "D15->D19",
   "D16->D02",
   "D16->D06",
+  "D16->D12",
   "D16->D14",
   "D16->D18",
   "D17->D01",
@@ -901,7 +905,6 @@ lazy_only = [
   "D15->D17",
   "D16->D03",
   "D16->D05",
-  "D16->D12",
   "D16->D17",
   "D17->D02",
   "D17->D03",

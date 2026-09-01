@@ -60,7 +60,6 @@ _MODULE_OWNERS = {
         "normalize_reasoning_effort"
     ),
     llm_routing: "_OR_PROVIDER_PRESETS _resolve_or_provider",
-    llm_messages: "_reasoning_signature_portable_across_or_providers",
     llm_local: (
         "LocalContextTooLargeError _LOCAL_COMPACTION_MODES _compact_local_text "
         "_compact_markdown_sections _estimate_message_chars _split_markdown_sections"
@@ -74,7 +73,7 @@ _MODULE_OWNERS = {
 _MIXIN_OWNERS = {
     (llm_attempt, "_PayloadCachePolicyMixin"): (
         "_MAX_CACHE_BREAKPOINTS _normalize_payload_cache_ttl _payload_cache_breakpoints "
-        "_pop_cache_breakpoint_disclosure"
+        "_stage_reasoning_pin_disclosure"
     ),
     (llm_capability_policy, "_CapabilityPolicyMixin"): (
         "_CAPABILITIES_FETCH_OK _CONTEXT_LENGTH_CACHE _EFFORT_CEILING_CACHE _EFFORT_CEILING_LOADED "
@@ -84,7 +83,7 @@ _MIXIN_OWNERS = {
         "_clamp_effort_for_model _effort_ceiling_for _effort_floor_for "
         "_fetch_openrouter_capabilities _get_supported_parameters _known_rejected_params "
         "_mandatory_value_rejection _parameter_rejection_error _payload_effort "
-        "_pop_effort_clamp_disclosure _record_effort_ceiling _record_effort_floor "
+        "_pop_effort_clamp_disclosure _pop_thread_disclosure _record_effort_ceiling _record_effort_floor "
         "_remember_rejected_params _retry_without_optional_sampling _set_payload_effort "
         "clamp_effort_for_route metadata_fetch_attempted_and_failed openrouter_context_length"
     ),
@@ -97,7 +96,7 @@ _MIXIN_OWNERS = {
     ),
     (llm_messages, "_MessageShapingMixin"): (
         "_REASONING_CONTENT_BLOCK_TYPES _content_with_system_notice_marker "
-        "_copy_messages_with_cache_policy _has_openrouter_reasoning_details "
+        "_copy_messages_with_cache_policy "
         "_has_replayed_reasoning_metadata _is_deferrable_image_user_turn _model_family "
         "_normalize_system_message_placement _replace_image_blocks_with_placeholder "
         "_strip_openrouter_roundtrip_metadata sanitize_reasoning_on_model_switch"
@@ -192,18 +191,25 @@ def test_llm_client_members_resolve_to_their_mixin_owners():
 def test_llm_client_member_inventory_is_unchanged():
     """The composed class exposes exactly the member set of the tree it was split from.
 
-    The digest moved once, deliberately: the final upstream cutoff (PR #257) added three
-    methods to ``LLMClient`` in the base — ``_new_remote_client``, ``probe_provider_readiness``
-    and ``_new_gigachat_client`` — and the adopting merge re-homed them into the leaves that
-    own their siblings. Three genuinely new base members is the only sanctioned reason this
-    pin may move; anything else is a member appearing or vanishing without provenance.
+    The digest has moved twice, each time with named provenance. (1) The final upstream
+    cutoff (PR #257) added three methods to ``LLMClient`` in the base —
+    ``_new_remote_client``, ``probe_provider_readiness`` and ``_new_gigachat_client`` —
+    and the adopting merge re-homed them into the leaves that own their siblings.
+    (2) The F6 sync #2 (upstream f3fbfdbb, issue #468) replaced
+    ``_pop_cache_breakpoint_disclosure`` with the generalized
+    ``_pop_thread_disclosure`` (one slot reader for every thread-local disclosure),
+    retired ``_has_openrouter_reasoning_details`` (the shape-first classifier in
+    ``reasoning_artifacts`` answers the sealed question the broad presence predicate
+    could not), and added ``_stage_reasoning_pin_disclosure`` beside the payload it
+    describes. A member appearing or vanishing without that kind of provenance is
+    what this pin exists to catch.
     """
     assert _defined_members(pathlib.Path(llm.__file__), "LLMClient") == _PARENT_MEMBERS
     moved = {name for names in _MIXIN_OWNERS.values() for name in names.split()}
     composed = sorted(moved | _PARENT_MEMBERS)
     assert hashlib.sha256(
         json.dumps(composed, separators=(",", ":")).encode()
-    ).hexdigest() == "84006da5cb3e40f04b19b559630e4767ef016f01af99c5269b6a81aeea35199f"
+    ).hexdigest() == "b94b8df2ee22094d90ba7c8f63942ad12210bcba107c245387c5fe2a11018194"
     for name in composed:
         assert hasattr(LLMClient, name), name
 

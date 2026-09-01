@@ -506,7 +506,9 @@ def test_task_api_preserves_top_level_actor_id_after_metadata_sanitization(tmp_p
     assert "forged-metadata" not in json.dumps(result)
 
 
-def test_task_api_attachment_admission_is_atomic_by_default(tmp_path, monkeypatch):
+def test_task_api_attachment_admission_atomic_on_explicit_optout(tmp_path, monkeypatch):
+    """В25c (capinv-447): partial staging is the default; explicit
+    ``allow_partial_attachments=false`` keeps the old atomic admission."""
     import supervisor.queue as queue
     from ouroboros.task_results import load_task_result
 
@@ -528,6 +530,7 @@ def test_task_api_attachment_admission_is_atomic_by_default(tmp_path, monkeypatc
         json={
             "task_id": "atomic-attachments",
             "description": "needs both",
+            "allow_partial_attachments": False,
             "attachments": [
                 {"path": str(good), "label": "good"},
                 {"path": str(tmp_path / "missing.txt"), "label": "missing"},
@@ -544,6 +547,42 @@ def test_task_api_attachment_admission_is_atomic_by_default(tmp_path, monkeypatc
     assert load_task_result(data, "atomic-attachments") is None
     assert "atomic-attachments" not in queue.ADMISSION_RESERVATIONS
     assert not task_artifacts_dir(data, "atomic-attachments", create=False).exists()
+
+
+def test_task_api_attachment_admission_partial_by_default(tmp_path, monkeypatch):
+    """В25c (capinv-447): omitting allow_partial_attachments stages the good
+    rows and schedules the task with the rejected ones disclosed."""
+    import supervisor.queue as queue
+
+    data = tmp_path / "data"
+    repo = tmp_path / "repo"
+    data.mkdir()
+    repo.mkdir()
+    good = tmp_path / "good.txt"
+    good.write_text("ok", encoding="utf-8")
+    captured = []
+    monkeypatch.setattr(queue, "enqueue_task", lambda task: captured.append(task) or task)
+    monkeypatch.setattr(queue, "persist_queue_snapshot", lambda reason="": True)
+    app = Starlette(routes=[Route("/api/tasks", endpoint=api_tasks_create, methods=["POST"])])
+    app.state.drive_root = data
+    app.state.repo_dir = repo
+
+    response = TestClient(app).post(
+        "/api/tasks",
+        json={
+            "task_id": "default-partial-attachments",
+            "description": "work with what arrived",
+            "attachments": [
+                {"path": str(good), "label": "good"},
+                {"path": str(tmp_path / "missing.txt"), "label": "missing"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    manifest = response.json()["attachment_manifest"]
+    assert [row["status"] for row in manifest] == ["staged", "rejected"]
+    assert captured and captured[0]["attachments"] == manifest
 
 
 def test_task_api_explicit_partial_attachments_reaches_caller_contract_and_actor(

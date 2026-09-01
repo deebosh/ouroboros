@@ -365,7 +365,7 @@ class _AnthropicLaneMixin:
         _clamp_note = self._pop_effort_clamp_disclosure()
         if _clamp_note:
             usage["reasoning_effort_clamped"] = _clamp_note
-        _cache_note = self._pop_cache_breakpoint_disclosure()
+        _cache_note = self._pop_thread_disclosure("_cache_breakpoint_tls")
         if _cache_note:
             usage["prompt_cache_breakpoints_reduced"] = _cache_note
 

@@ -36,15 +36,14 @@ _FUNCTION_SIGNATURES = {
     "_is_pure_read_inspection": "(text_lower: 'str') -> 'bool'",
     "_detect_safety_mode_self_lowering": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
     "_detect_owner_skill_attest_self_call": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
-    "_mentions_skill_owner_state": "(text_lower: 'str') -> 'bool'",
+    "_mentions_skill_owner_state": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
     "_mentions_detached_process": "(text_lower: 'str') -> 'bool'",
     "_run_shell_safety_check": "(self, args: 'Dict[str, Any]', runtime_mode: 'str', binding: 'Any' = None) -> 'ToolResult | None'",
     "_light_repo_snapshot": "(repo_dir: 'pathlib.Path') -> 'Optional[Dict[str, Any]]'",
-    "_format_light_repo_write_block": "(before: 'Dict[str, Any]', after: 'Dict[str, Any]', result: 'str', tool_name: 'str' = 'run_command') -> 'str'",
+    "_format_light_repo_write_note": "(before: 'Dict[str, Any]', after: 'Dict[str, Any]', tool_name: 'str' = 'run_command') -> 'str'",
     "_git_ref_snapshot": "(repo_dir: 'pathlib.Path') -> 'Optional[Dict[str, str]]'",
-    "_snapshot_owner_files": "(self, state_drive_root: 'pathlib.Path | None' = None) -> 'Dict[pathlib.Path, Optional[str]]'",
-    "_restore_owner_files": "(self, before: 'Dict[pathlib.Path, Optional[str]]', state_drive_root: 'pathlib.Path | None' = None) -> 'bool'",
-    "_run_shell_post_checks": "(self, result: 'str | ToolResult', *, owner_snapshot: 'Dict[pathlib.Path, Optional[str]]', state_drive_root: 'pathlib.Path', light_repo_before: 'Optional[Dict[str, Any]]', workspace_refs_before: 'Optional[Dict[str, str]]', tool_name: 'str' = 'run_command') -> 'str | ToolResult'",
+    "_owner_settings_snapshot": "() -> 'Optional[str]'",
+    "_run_shell_post_checks": "(self, result: 'str | ToolResult', *, light_repo_before: 'Optional[Dict[str, Any]]', workspace_refs_before: 'Optional[Dict[str, str]]', settings_before: 'Optional[str]' = None, tool_name: 'str' = 'run_command') -> 'str | ToolResult'",
 }
 
 _REGISTRY_GUARD_SIGNATURES = {
@@ -66,7 +65,6 @@ _CONSTANT_CARDINALITIES = {
     "_SUBAGENT_SHELL_SECRET_MARKERS": 18,
     "_READ_ONLY_INSPECTION_COMMANDS": 41,
     "_COMMAND_HEAD_WRAPPERS": 11,
-    "_READ_ONLY_GIT_SUBCOMMANDS": 11,
     "_SEARCH_TOOL_EXEC_OPTIONS": 4,
     "_DENIED_READ_OPTIONS": 12,
     "_TRUSTED_EXECUTABLE_DIRS": 6,
@@ -109,9 +107,11 @@ def test_process_guard_owner_surface_is_exact_and_retired_from_registry():
     # pinned. _RETIRED_REGISTRY_DEPENDENCIES stays as the moved-name inventory.
     assert _RETIRED_REGISTRY_DEPENDENCIES
     assert not hasattr(ToolRegistry, "_run_shell_safety_check")
-    assert not hasattr(ToolRegistry, "_snapshot_owner_files")
-    assert not hasattr(ToolRegistry, "_restore_owner_files")
     assert not hasattr(ToolRegistry, "_run_shell_post_checks")
+    # The post-hoc owner-state snapshot/restore organ was DELETED (#447); no
+    # module owns it any more, on the registry or on this leaf.
+    assert not hasattr(process_guard, "_snapshot_owner_files")
+    assert not hasattr(process_guard, "_restore_owner_files")
 
 
 def test_registry_shell_guard_owner_surface_is_exact_and_retired_from_registry():
@@ -310,61 +310,49 @@ def test_git_protected_roots_preserve_order_and_duplicate_semantics(tmp_path):
     ]
 
 
-def test_run_shell_restores_obfuscated_self_authored_state_marker(tmp_path, monkeypatch):
+def test_owner_settings_snapshot_distinguishes_absent_from_unreadable(tmp_path, monkeypatch):
+    """The tripwire BASELINE is honest about not being able to read (#447).
+
+    The deleted restore recorded an OSError as "file absent" and could then
+    unlink the live settings.json; the replacement returns None, which disarms
+    the tripwire instead of arming it against a phantom baseline."""
     from ouroboros import config
 
-    state_root = tmp_path / "bound-drive"
-    skill_state = state_root / "state" / "skills" / "alpha"
-    skill_state.mkdir(parents=True)
     settings_path = tmp_path / "settings.json"
-    settings_path.write_text('{"owner":"before"}', encoding="utf-8")
     monkeypatch.setattr(config, "SETTINGS_PATH", settings_path)
+    assert process_guard._owner_settings_snapshot() == ""
 
-    existing = skill_state / "review.json"
-    existing.write_text('{"status":"clean"}', encoding="utf-8")
-    unrelated = skill_state / "payload.txt"
-    unrelated.write_text("before", encoding="utf-8")
-    marker = skill_state / "self_authored.json"
-    stub = _RegistryStub(tmp_path / "fallback-drive")
+    settings_path.write_text('{"owner":"before"}', encoding="utf-8")
+    assert process_guard._owner_settings_snapshot() == '{"owner":"before"}'
 
-    before = process_guard._snapshot_owner_files(stub, state_root)
-    settings_path.write_text('{"owner":"changed"}', encoding="utf-8")
-    existing.write_text('{"status":"changed"}', encoding="utf-8")
-    marker.write_text('{"origin":"self_authored"}', encoding="utf-8")
-    unrelated.write_text("changed", encoding="utf-8")
+    def boom(*_args, **_kwargs):
+        raise OSError("transient")
 
-    assert process_guard._restore_owner_files(stub, before, state_root) is True
-    assert settings_path.read_text(encoding="utf-8") == '{"owner":"before"}'
-    assert existing.read_text(encoding="utf-8") == '{"status":"clean"}'
-    assert not marker.exists()
-    assert unrelated.read_text(encoding="utf-8") == "changed"
-    assert process_guard._restore_owner_files(stub, before, state_root) is False
+    monkeypatch.setattr(pathlib.Path, "read_text", boom)
+    assert process_guard._owner_settings_snapshot() is None
 
 
 def test_light_repo_formatter_preserves_sorted_bounded_path_disclosure():
-    result = process_guard._format_light_repo_write_block(
+    note = process_guard._format_light_repo_write_note(
         {"paths": ["z.py", "b.py"]},
         {"paths": ["a.py", "b.py"]},
-        "handler output",
         tool_name="run_script",
     )
-    assert result == (
+    assert note == (
         "⚠️ LIGHT_MODE_REPO_WRITE_BLOCKED: runtime_mode=light detected a mutation of the "
         "Ouroboros repository after run_script. The command result is blocked and no "
         "automatic rollback was attempted to avoid overwriting concurrent human edits. "
-        "Affected/dirty paths: a.py, b.py, z.py. Switch to advanced/pro for repo writes.\n\n"
-        "Original command output:\nhandler output"
+        "Affected/dirty paths: a.py, b.py, z.py. Switch to advanced/pro for repo writes."
     )
 
-    crowded = process_guard._format_light_repo_write_block(
+    crowded = process_guard._format_light_repo_write_note(
         {"paths": [f"p{index:02d}" for index in range(31)]},
         {"paths": []},
-        "out",
     )
     assert "p29, ... (+1 more)" in crowded
     assert "p30" not in crowded
     assert "Affected/dirty paths: (status changed; no paths parsed)." in (
-        process_guard._format_light_repo_write_block({}, {}, "out")
+        process_guard._format_light_repo_write_note({}, {})
     )
 
 
@@ -392,26 +380,16 @@ def test_git_ref_snapshot_detects_a_ref_only_change(tmp_path):
     assert before["digest"] != after["digest"]
 
 
-def test_process_post_checks_preserve_polling_restore_and_wrapper_order(
+def test_process_post_checks_append_every_tripwire_note_after_the_payload(
     tmp_path, monkeypatch,
 ):
-    import time
+    """Every tripwire ANNOTATES and none rolls back (#447 В12/H1).
 
+    Line 1 stays with the command payload, so the failure classifier still reads
+    the producer's own first line; the settings tripwire is a typed fact, not a
+    status change, because the host never proved the command caused the write."""
     stub = _RegistryStub(tmp_path)
     events: list[str] = []
-    restore_results = iter((True, False, False, False))
-    monkeypatch.setattr(
-        time,
-        "sleep",
-        lambda seconds: events.append(f"sleep:{seconds}"),
-    )
-
-    def restore(owner, before, state_drive_root=None):
-        assert owner is stub
-        assert before == {tmp_path / "owner.json": "before"}
-        assert state_drive_root == tmp_path
-        events.append("restore")
-        return next(restore_results)
 
     def light_snapshot(repo_dir):
         assert repo_dir == tmp_path
@@ -423,7 +401,11 @@ def test_process_post_checks_preserve_polling_restore_and_wrapper_order(
         events.append("ref_snapshot")
         return {"head": "same", "digest": "refs-after"}
 
-    monkeypatch.setattr(process_guard, "_restore_owner_files", restore)
+    def settings_snapshot():
+        events.append("settings_snapshot")
+        return '{"owner":"after"}'
+
+    monkeypatch.setattr(process_guard, "_owner_settings_snapshot", settings_snapshot)
     monkeypatch.setattr(process_guard, "_light_repo_snapshot", light_snapshot)
     monkeypatch.setattr(process_guard, "_git_ref_snapshot", ref_snapshot)
     monkeypatch.setattr(registry_module, "system_repo_dir_for", lambda _ctx: tmp_path)
@@ -437,53 +419,44 @@ def test_process_post_checks_preserve_polling_restore_and_wrapper_order(
             text="handler output",
             meta={"exit_code": 1},
         ),
-        owner_snapshot={tmp_path / "owner.json": "before"},
-        state_drive_root=tmp_path,
         light_repo_before={"digest": "light-before", "paths": []},
         workspace_refs_before={"head": "same", "digest": "refs-before"},
+        settings_before='{"owner":"before"}',
         tool_name="run_script",
     )
 
-    assert events == [
-        "sleep:0.3", "restore",
-        "sleep:0.3", "restore",
-        "sleep:0.3", "restore",
-        "sleep:0.3", "restore",
-        "light_snapshot", "ref_snapshot",
-    ]
+    assert events == ["settings_snapshot", "light_snapshot", "ref_snapshot"]
     assert isinstance(result, ToolResult)
+    assert result.text.splitlines()[0] == "handler output"
     assert result.text == (
-        "⚠️ WORKSPACE_GIT_REF_CHANGED: run_command changed git HEAD or refs inside the "
-        "external workspace. External workspace runs must leave changes as files/patch "
-        "artifacts, not commits/tags/resets.\n\nOriginal command output:\n"
+        "handler output\n\n"
+        "⚠️ OWNER_SETTINGS_CHANGED: data/settings.json changed while this command ran. "
+        "Owner settings change only through save_settings / the Settings UI; this write "
+        "was NOT auto-reverted (a post-hoc rollback can clobber a concurrent legitimate "
+        "owner edit) — the owner surface is the place to verify and restore.\n\n"
         "⚠️ LIGHT_MODE_REPO_WRITE_BLOCKED: runtime_mode=light detected a mutation of the "
         "Ouroboros repository after run_script. The command result is blocked and no "
         "automatic rollback was attempted to avoid overwriting concurrent human edits. "
         "Affected/dirty paths: changed.py. Switch to advanced/pro for repo writes.\n\n"
-        "Original command output:\nhandler output\n\n⚠️ OWNER_STATE_RESTORED: run_command "
-        "attempted to change owner-only settings or skill trust state; protected files "
-        "were restored."
+        "⚠️ WORKSPACE_GIT_REF_CHANGED: run_command changed git HEAD or refs inside the "
+        "external workspace. External workspace runs must leave changes as files/patch "
+        "artifacts, not commits/tags/resets."
     )
     assert (result.status, result.code) == ("blocked", "WORKSPACE_GIT_REF_CHANGED")
     assert dict(result.meta) == {
         "exit_code": 1,
-        "owner_state_restored": True,
+        "tripwire": "owner_settings_changed",
         "light_repo_changed": True,
         "workspace_git_refs_changed": True,
     }
 
 
-def test_owner_restore_is_warning_primary_only_without_stronger_result(
+def test_settings_tripwire_annotates_without_changing_the_command_outcome(
     tmp_path, monkeypatch,
 ):
-    import time
-
     stub = _RegistryStub(tmp_path)
-    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
-        process_guard,
-        "_restore_owner_files",
-        lambda *_args, **_kwargs: True,
+        process_guard, "_owner_settings_snapshot", lambda: '{"owner":"after"}',
     )
 
     success = process_guard._run_shell_post_checks(
@@ -494,10 +467,9 @@ def test_owner_restore_is_warning_primary_only_without_stronger_result(
             text="exit_code=0\nSTDOUT:\nok",
             meta={"exit_code": 0},
         ),
-        owner_snapshot={},
-        state_drive_root=tmp_path,
         light_repo_before=None,
         workspace_refs_before=None,
+        settings_before='{"owner":"before"}',
     )
     failure = process_guard._run_shell_post_checks(
         stub,
@@ -507,24 +479,40 @@ def test_owner_restore_is_warning_primary_only_without_stronger_result(
             text="⚠️ SHELL_EXIT_ERROR: failed",
             meta={"exit_code": 2},
         ),
-        owner_snapshot={},
-        state_drive_root=tmp_path,
         light_repo_before=None,
         workspace_refs_before=None,
+        settings_before='{"owner":"before"}',
     )
 
     assert isinstance(success, ToolResult)
-    assert (success.status, success.code) == ("ok", "OWNER_STATE_RESTORED")
+    assert (success.status, success.code) == ("ok", "OK")
     assert dict(success.meta) == {
         "exit_code": 0,
-        "owner_state_restored": True,
+        "tripwire": "owner_settings_changed",
     }
     assert isinstance(failure, ToolResult)
     assert (failure.status, failure.code) == ("error", "SHELL_EXIT_ERROR")
     assert dict(failure.meta) == {
         "exit_code": 2,
-        "owner_state_restored": True,
+        "tripwire": "owner_settings_changed",
     }
+    assert failure.text.splitlines()[0] == "⚠️ SHELL_EXIT_ERROR: failed"
+
+
+def test_unreadable_settings_baseline_disarms_the_tripwire(tmp_path, monkeypatch):
+    stub = _RegistryStub(tmp_path)
+    monkeypatch.setattr(process_guard, "_owner_settings_snapshot", lambda: None)
+
+    result = process_guard._run_shell_post_checks(
+        stub,
+        ToolResult(status="ok", code="OK", text="out", meta={}),
+        light_repo_before=None,
+        workspace_refs_before=None,
+        settings_before='{"owner":"before"}',
+    )
+    assert isinstance(result, ToolResult)
+    assert result.text == "out"
+    assert dict(result.meta) == {}
 
 
 def test_registry_dispatch_calls_process_post_owner_once_after_handler(
@@ -549,11 +537,9 @@ def test_registry_dispatch_calls_process_post_owner_once_after_handler(
         calls.append("safety")
         return True, ""
 
-    def snapshot(owner, state_drive_root=None):
-        assert owner is registry
-        assert state_drive_root == data
+    def snapshot():
         calls.append("snapshot")
-        return {}
+        return '{"owner":"before"}'
 
     def handler(_ctx, cmd, _resolved_binding=None, **_kwargs):
         assert cmd == ["echo", "ok"]
@@ -565,10 +551,9 @@ def test_registry_dispatch_calls_process_post_owner_once_after_handler(
         assert owner is registry
         assert result == "handler output"
         assert kwargs == {
-            "owner_snapshot": {},
-            "state_drive_root": data,
             "light_repo_before": None,
             "workspace_refs_before": None,
+            "settings_before": '{"owner":"before"}',
             "tool_name": "run_command",
         }
         calls.append("post")
@@ -581,7 +566,7 @@ def test_registry_dispatch_calls_process_post_owner_once_after_handler(
         return original_adapter(tool_name, text)
 
     monkeypatch.setattr(process_guard, "_run_shell_safety_check", pre_guard)
-    monkeypatch.setattr(process_guard, "_snapshot_owner_files", snapshot)
+    monkeypatch.setattr(process_guard, "_owner_settings_snapshot", snapshot)
     monkeypatch.setattr(process_guard, "_run_shell_post_checks", post)
     monkeypatch.setattr(safety, "check_safety", check_safety)
     monkeypatch.setattr(LegacyTextResultAdapter, "from_text", adapt)
@@ -612,7 +597,7 @@ def test_custom_handler_cannot_reuse_stale_builtin_result_sidecar(
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     monkeypatch.setattr(safety, "check_safety", lambda *_args, **_kwargs: (True, ""))
     monkeypatch.setattr(process_guard, "_run_shell_safety_check", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(process_guard, "_snapshot_owner_files", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(process_guard, "_owner_settings_snapshot", lambda: "")
     monkeypatch.setattr(
         process_guard,
         "_run_shell_post_checks",
@@ -757,11 +742,15 @@ def test_process_guard_denials_preserve_exact_text(tmp_path, monkeypatch):
             "agent and edit settings.json directly — the agent must not self-set evolution controls.",
         ),
         (
-            "echo state/skills/alpha/review.json",
+            # A WRITE shape: since #447 A2 the family read-carve lets a pure
+            # inspection (`echo`/`grep`/`rg`) name these files, so the denial is
+            # pinned on a spelling that actually writes.
+            "cp payload.json state/skills/alpha/review.json",
             "SKILL_STATE_WRITE_BLOCKED",
             "⚠️ SKILL_STATE_WRITE_BLOCKED: skill review, enablement, grants, and marketplace "
             "provenance are owner/review controlled state. Use skill_review, toggle_skill/the "
-            "Skills UI, or the desktop launcher confirmation flow.",
+            "Skills UI, or the desktop launcher confirmation flow. Pure read-only inspection "
+            "(grep/rg/cat/jq) of these names is allowed.",
         ),
         (
             "nohup echo state/skills/alpha/unknown.json",
@@ -777,7 +766,10 @@ def test_process_guard_denials_preserve_exact_text(tmp_path, monkeypatch):
         (
             "gh auth login",
             "SAFETY_VIOLATION",
-            "⚠️ SAFETY_VIOLATION: Modifying GitHub authentication is not permitted.",
+            # #447 A7: the argv-positional gh resolver names the read-only
+            # subcommands that stay available instead of a bare refusal.
+            "⚠️ SAFETY_VIOLATION: Modifying GitHub authentication is not permitted. "
+            "Read-only `gh auth status` / `gh auth token` are allowed.",
         ),
     )
     for command, code, expected in cases:

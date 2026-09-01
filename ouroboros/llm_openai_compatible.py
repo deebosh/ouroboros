@@ -20,7 +20,7 @@ from ouroboros.llm_capability_policy import (
     _OPTIONAL_DROPPABLE_PARAMS,
     normalize_reasoning_effort,
 )
-from ouroboros.llm_messages import _reasoning_signature_portable_across_or_providers
+from ouroboros.reasoning_artifacts import transcript_has_sealed_reasoning
 from ouroboros.llm_routing import _resolve_or_provider
 from ouroboros.request_wire_recovery import (
     finalize_wire_response,
@@ -102,8 +102,12 @@ class _OpenAICompatibleLaneMixin:
         # direct branch (which returns early below) is covered too — mirrors the
         # local/GigaChat lanes; the VLM tool lane already routes vision to a capable
         # slot. supports_vision() is a no-op for vision-capable models.
+        # The lookup MUST use the qualified identity (usage_model): the stripped
+        # resolved_model has lost its "<provider>::" namespace, matched no
+        # normalized vision prefix, and blinded every direct-provider install —
+        # same identity contract as the browser-screenshot call site (E1).
         from ouroboros.provider_models import supports_vision
-        if not supports_vision(resolved_model):
+        if not supports_vision(str(target.get("usage_model") or resolved_model)):
             messages = self._replace_image_blocks_with_placeholder(messages)
         # Official direct OpenAI Chat uses the current completion-token carrier:
         # provider-wide; model names are not capability authority across routes.
@@ -185,29 +189,21 @@ class _OpenAICompatibleLaneMixin:
             extra_body["provider"] = {
                 "require_parameters": True,
             }
-        # Replayed reasoning is endpoint-bound ONLY for families whose thought-block
-        # signatures do not survive a same-model cross-provider switch. Anthropic, Gemini
-        # and OpenAI reasoning signatures ARE cross-provider portable on OpenRouter
-        # (Anthropic across Anthropic/Bedrock/Vertex/Azure; Gemini across Vertex/AI-Studio;
-        # OpenAI encrypted items across OpenAI/Azure — live same-model replay probe, 2026-06:
-        # each minted signature validated 200 on its sibling providers), so they must stay
-        # failover-eligible. Pinning them would defeat OpenRouter's same-model provider
-        # resilience and surface one upstream's rate-limit when a healthy sibling endpoint
-        # could serve the turn. OpenRouter routing is sticky (the same provider serves the
-        # happy path), so the prompt cache stays warm on the primary and only a real
-        # outage triggers the cross-provider failover — no throughput hopping. Unverified
-        # families (e.g. z-ai/glm, deepseek) keep the conservative pin; the reactive 400
-        # strip-and-retry (_openrouter_signature_retry_kwargs) is the safety net for all.
-        # The trigger is the BROAD replay-artifact contract (_has_replayed_reasoning_metadata
-        # — assistant reasoning/reasoning_content/response_id OR a signed reasoning/thinking
-        # CONTENT block), matching the reactive strip path, so an unverified signed block
-        # cannot slip past the pin via a non-`reasoning_details` artifact.
-        if self._has_replayed_reasoning_metadata(messages) and not _reasoning_signature_portable_across_or_providers(cache_model):
+        # Replayed reasoning is endpoint-bound only when the artifact itself is SEALED
+        # (opaque or signed, and not vouched by the signed-portable roster) — see
+        # transcript_has_sealed_reasoning. Readable text/summary artifacts replay fine on
+        # any sibling endpoint of the same model, so they must stay failover-eligible:
+        # pinning them surfaces one upstream's rate-limit while healthy siblings idle
+        # (issue #468). Routing is sticky, so the prompt cache stays warm on the primary
+        # and only a real outage triggers the cross-provider failover. The reactive 400
+        # strip-and-retry (_openrouter_signature_retry_kwargs) remains the safety net for a
+        # misclassification in either direction.
+        if transcript_has_sealed_reasoning(messages, cache_model):
             provider_body = extra_body.setdefault("provider", {})
             if isinstance(provider_body, dict):
                 provider_body["allow_fallbacks"] = False
         # Owner-configured OpenRouter provider routing (resilience/repro). Gap-merge:
-        # NEVER override the anthropic require_parameters pin or the (unverified-family)
+        # NEVER override the anthropic require_parameters pin or the (sealed-artifact)
         # reasoning-continuity allow_fallbacks=False pin set above. Affects same-model
         # provider routing only — it never changes the MODEL, so the P3 reviewer context
         # floor is untouched.
@@ -292,6 +288,8 @@ class _OpenAICompatibleLaneMixin:
             # provider usage extensions must not spoof their provenance.
             usage.pop("response_finish_reason", None)
             usage.pop("response_provider", None)
+            usage.pop("reasoning_pin", None)
+            usage.pop("provider_error", None)
         # An HTTP-200 that carried a provider body-error (OpenRouter passes
         # 429/5xx through the body) reaches here only when a same-model reroute
         # was unavailable or also errored. Surface it as a typed marker so the
@@ -429,9 +427,16 @@ class _OpenAICompatibleLaneMixin:
         if _clamp_note:
             usage["reasoning_effort_clamped"] = _clamp_note
         # Same disclosure norm for a ≤4-cap cache-marker reduction (v6.77.0): never silent.
-        _cache_note = self._pop_cache_breakpoint_disclosure()
+        _cache_note = self._pop_thread_disclosure("_cache_breakpoint_tls")
         if _cache_note:
             usage["prompt_cache_breakpoints_reduced"] = _cache_note
+        # Why same-model provider failover was withheld on THIS call (issue #468):
+        # typed, bounded, and read off the terminal sent candidate — never a guess.
+        from ouroboros.reasoning_artifacts import pop_reasoning_pin_note
+
+        _pin_note = pop_reasoning_pin_note()
+        if _pin_note:
+            usage["reasoning_pin"] = _pin_note
         from ouroboros.openai_chat_dispatch import normalize_direct_openai_completion
 
         msg, usage = normalize_direct_openai_completion(msg, usage, wire_completion)
