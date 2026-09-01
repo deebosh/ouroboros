@@ -404,8 +404,8 @@ def wizard_authors_safety_light() -> bool:
 
     Key absence alone is deliberately NOT the test: an older install re-entering the
     wizard (or one whose file is unreadable) would then be silently moved off the
-    fail-closed ``full``. This predicate is HOST-AGNOSTIC by design and is called by
-    the desktop launcher ONLY (`launcher.py::_run_first_run_wizard`) — the shared
+    fail-closed ``full``. This predicate is HOST-AGNOSTIC by design and its one
+    caller is the onboarding gateway (`gateway/onboarding.py`) — the shared
     validator must not author it, because web/Docker onboarding posts the same
     payload through generic `/api/settings`, which is a non-owner path. The persist
     seam re-proves freshness under the settings lock, so this is the caller-side

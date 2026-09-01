@@ -217,7 +217,10 @@ def infer_api_key_type(model: str, provider: Optional[str] = None) -> str:
 def infer_provider_from_model(model: str) -> str:
     """Derive the billing provider string from a model identifier.
 
-    Rules (same prefix logic as infer_api_key_type, returns canonical provider name):
+    Rules (same prefix logic as infer_api_key_type, returns canonical provider name;
+    the registry drives it, so every direct prefix — anthropic::, openai::,
+    openai-compatible::, cloudru::, gigachat::, minimax::, deepseek:: — maps to
+    its provider):
       anthropic::*          → "anthropic"
       openai::*             → "openai"
       openai-compatible::*  → "openai-compatible"

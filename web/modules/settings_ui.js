@@ -324,7 +324,7 @@ export function renderSettingsPage() {
                     <details class="settings-more-providers" id="settings-more-providers">
                         <summary>
                             <span class="settings-provider-title"><span>More providers</span></span>
-                            <span class="settings-provider-hint">Cloud.ru Foundation Models, MiniMax, and GigaChat</span>
+                            <span class="settings-provider-hint">Cloud.ru Foundation Models, MiniMax, DeepSeek, and GigaChat</span>
                         </summary>
                         <div class="settings-more-providers-body">
                             ${PROVIDER_CARDS.filter((card) => card.advanced).map(providerSettingsCard).join('')}
