@@ -423,6 +423,62 @@ def test_unreadable_skills_tree_is_an_audit_failure_exit_2_not_clean(tmp_path):
     assert "audit traversal failed" in result.stderr
 
 
+def test_unreadable_task_results_dir_is_an_audit_failure_exit_2_not_clean(tmp_path):
+    """Adversarial fix-round 3, finding 3: task_results is a mandatory audit
+    source of the same class as the skills tree — Path.glob would suppress a
+    PermissionError on supported Python 3.10 and the unreadable directory
+    would audit clean; the strict lister maps it to exit 2."""
+    if os.geteuid() == 0:
+        import pytest
+        pytest.skip("permission probes are meaningless as root")
+    data = _build_clean_70_install(tmp_path / "install")
+    locked = data / "task_results"
+    locked.chmod(0)
+    try:
+        result = _run(data, isolated_root=tmp_path / "isol")
+    finally:
+        locked.chmod(0o755)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "audit traversal failed" in result.stderr
+
+
+def test_data_root_resolve_symlink_loop_exits_2(tmp_path, monkeypatch, capsys):
+    """Adversarial fix-round 3, finding 4: a symlink loop under the data-root
+    argument raises RuntimeError from the 3.10 pathlib resolver — that must
+    map to exit 2 (INSTALL UNREADABLE), never Python's bare exit 1."""
+    module = _load_module()
+    real_resolve = pathlib.Path.resolve
+
+    def _resolve(self, *args, **kwargs):
+        if self.name == "loop-data":
+            raise RuntimeError("Symlink loop from 'loop-data'")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", _resolve)
+    rc = module.main([str(tmp_path / "loop-data")])
+    assert rc == 2
+    assert "data root does not resolve" in capsys.readouterr().err
+
+
+def test_report_path_resolve_symlink_loop_exits_2(tmp_path, monkeypatch, capsys):
+    """Adversarial fix-round 3, finding 4: the report-path resolve must catch
+    RuntimeError (3.10 pathlib symlink-loop detector) exactly like OSError —
+    exit 2 (REPORT UNWRITABLE), never a bare Python exit 1."""
+    module = _load_module()
+    data = _build_clean_70_install(tmp_path / "install")
+    real_resolve = pathlib.Path.resolve
+
+    def _resolve(self, *args, **kwargs):
+        if self.name == "loop-report.json":
+            raise RuntimeError("Symlink loop from 'loop-report.json'")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", _resolve)
+    rc = module.main([str(data), "--json", str(tmp_path / "loop-report.json")])
+    assert rc == 2
+    assert "REPORT UNWRITABLE" in capsys.readouterr().err
+
+
 def test_report_path_resolve_failure_exits_2_not_python_exit_1(tmp_path, monkeypatch, capsys):
     """Adversarial fix-round 2, claim 3b: an OSError from resolving the
     report path itself maps to exit 2 (REPORT UNWRITABLE), never Python's

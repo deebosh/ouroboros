@@ -106,7 +106,6 @@ from ouroboros.skill_loader import (  # noqa: E402
 )
 from ouroboros.skill_review_status import review_status_grandfatherable  # noqa: E402
 from ouroboros.task_result_schema import (  # noqa: E402
-    TASK_RESULT_QUARANTINE_DIR,
     TASK_RESULT_SCHEMA_VERSION,
     task_result_schema_refusal,
 )
@@ -576,19 +575,32 @@ def _audit_one_skill(
         ))
 
 
+def _strict_json_files(root: pathlib.Path) -> List[pathlib.Path]:
+    """Strict file lister for a mandatory audit source: the same direct-child
+    ``*.json`` selection the fail-soft ``Path.glob(\"*.json\")`` gave, but a
+    traversal ``OSError`` RAISES (mapped to exit 2 in ``main``) — on supported
+    Python 3.10 ``Path.glob`` suppresses ``PermissionError`` and an unreadable
+    directory would audit clean."""
+    return sorted(p for p in root.iterdir()
+                  if p.name.endswith(".json") and p.is_file())
+
+
 def _audit_task_results(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> None:
     results_dir = data_root / "task_results"
     if not results_dir.is_dir():
         return
     reasons: Dict[str, List[str]] = {}
     stored_alias_examples: List[str] = []
-    for path in sorted(results_dir.glob("*.json")):
-        if path.parent.name == TASK_RESULT_QUARANTINE_DIR:
-            continue
+    # Direct children only: rows already under the quarantine subdirectory
+    # (task_result_schema.TASK_RESULT_QUARANTINE_DIR) are structurally
+    # excluded from the listing.
+    for path in _strict_json_files(results_dir):
         try:
             data = _read_json(path)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeDecodeError, json.JSONDecodeError):
             data = None  # classifier maps a non-dict to "malformed"
+        # A read OSError propagates: an unreadable mandatory-source file is an
+        # audit failure (exit 2), never a "malformed → quarantine" verdict.
         refusal = task_result_schema_refusal(data)
         if refusal:
             reasons.setdefault(refusal, []).append(path.name)
@@ -621,7 +633,10 @@ def _audit_ui_preferences(data_root: pathlib.Path, findings: List[Dict[str, str]
         return
     try:
         data = _read_json(path)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        # Runtime-tolerated content damage. A read OSError propagates to the
+        # exit-2 traversal handler instead — a scan source the audit cannot
+        # READ never silently audits clean (same class as task_results/skills).
         return
     if not isinstance(data, dict):
         return
@@ -703,7 +718,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(build_scope(), ensure_ascii=False, indent=2))
         return 0
 
-    data_root = args.data_root.resolve()
+    try:
+        # resolve() raises OSError (dead cwd, ELOOP) or RuntimeError (the
+        # 3.10 pathlib symlink-loop detector) — either way the install's real
+        # location is unprovable: an audit failure (exit 2), never Python's
+        # bare exit 1 that automation reads as "incompatibilities found".
+        data_root = args.data_root.resolve()
+    except (OSError, RuntimeError) as exc:
+        print(f"INSTALL UNREADABLE: data root does not resolve: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     # The dont_write_bytecode flag above stops every post-startup write, but the
     # INTERPRETER already compiled stdlib bytecode under PYTHONPYCACHEPREFIX
     # before this script's first line ran. A prefix inside the audited install
@@ -711,7 +735,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     # refuse loudly instead of printing a false "read-only" report over it.
     prefix = getattr(sys, "pycache_prefix", None)
     if prefix and not _STARTUP_DONT_WRITE_BYTECODE:
-        prefix_path = pathlib.Path(prefix).resolve()
+        try:
+            prefix_path = pathlib.Path(prefix).resolve()
+        except (OSError, RuntimeError) as exc:
+            # An unresolvable prefix cannot be PROVEN outside the audited
+            # root — fail closed on the read-only guarantee.
+            print(f"READ-ONLY GUARANTEE UNPROVABLE: PYTHONPYCACHEPREFIX does "
+                  f"not resolve: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
         if prefix_path == data_root or data_root in prefix_path.parents:
             print("READ-ONLY GUARANTEE VIOLATED: PYTHONPYCACHEPREFIX points inside "
                   "the audited install; interpreter startup already wrote bytecode "
@@ -732,11 +763,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.json is not None:
         try:
-            # resolve() itself can raise OSError (dead cwd, symlink loop) —
-            # a report-path failure is an audit failure (exit 2), never a
+            # resolve() itself can raise OSError (dead cwd, ELOOP) or
+            # RuntimeError (3.10 pathlib symlink-loop detector) — a
+            # report-path failure is an audit failure (exit 2), never a
             # bare Python exit 1 that reads as "incompatibilities found".
             out = args.json.resolve()
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             print(f"REPORT UNWRITABLE: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
             return 2
