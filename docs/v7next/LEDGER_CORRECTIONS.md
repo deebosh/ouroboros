@@ -5744,3 +5744,65 @@ merely resolved — 74 hook files, green.
   the non-`done` rows: an owed suite is described in `what`, never spelled as a
   path in the hook cell, because a path nobody wrote reads as a hook and proves
   nothing.
+## From the W3B-F1 lane (owner 8A, base bef13f5e)
+
+**STATUS: LANDED AND GATED** by the continuation session (base bef13f5e,
+unchanged). The first attempt at this lane ran under a harness policy that
+permitted only a read-only command allowlist — `python`, `python -m pytest`,
+`mktemp`, `ruff`, `bash -c`, `git status` and `git diff --check` were all
+refused — so it could run NOT ONE gate and committed nothing; its findings are
+kept below verbatim because the first row invalidates part of the lane's own
+written instruction. The continuation session had full command access, ran
+every gate for real, and observed the pins red before they were green. The
+"work this lane did NOT complete" list at the end of the section is answered
+row by row in the closing table.
+
+| finding | disposition | mechanism |
+|---|---|---|
+| The lane instruction's prescribed digest CANNOT carry this fix | CORRECTION to the instruction, disclosed | W3B-F1 was specified as "compare the ABI-9 per-publication digest (`extension_registry_state.extension_generation_digest`)" between worker and server. That digest is `uuid.uuid4().hex`, minted fresh at every publication (`extension_plugin_api.py:801`) and re-stamped on every already-published descriptor in the same lock hold. Two processes importing the BYTE-IDENTICAL payload therefore mint different digests, and a worker comparing its own against the server's would see permanent divergence — a reload before every task, which is exactly the unbounded behaviour the lane forbids. The digest is a within-process dispatch-provenance fact and is correct at that job; it is not a cross-process identity. The inherited WIP had already reached this independently and substituted `live_extension_fingerprint()` — a sha256 over the sorted `(skill name, content hash, skill dir)` triple, i.e. the SAME identity `live_loaded` already compares — which is genuinely equal across processes that loaded the same payload. That substitution is endorsed; the instruction's pointer is wrong |
+| Durable carrier: none existed, one was added | Inherited WIP, endorsed by inspection | The lane said "find the durable carrier". There is none: `state/skills/<name>/enabled.json` and `.../health.json` are per-skill owner/health state, and `state/extension_companions.json` is a companion snapshot — none publishes the server's live extension SET. The WIP adds `state/extension_generation.json` (schema 1) written by the server and read by workers. Deriving the desired set from durable sources instead would have meant a `discover_skills` sweep per task, defeating the O(stat/read of a small file) budget the lane fixes as a requirement |
+| No publish/adopt feedback loop — and the guard is load-bearing | Verified by inspection, NOT by test | A worker that adopts runs `reload_all`, whose per-skill `reconcile_extension` calls announce worker→server reconcile requests; the server then reconciles and re-announces. The cycle terminates only because `publish_extension_generation` is write-if-changed: the server's live fingerprint is unchanged by reconciling an already-live extension, so no new generation is published and the worker's next probe reads in-sync. This is the property most worth a red-first pin and it does not have one |
+| A worker-side adopt cannot globally disable a skill | Verified by inspection, NOT by test | The risk is real in shape: adopting calls `reload_all`, and a skill that loads in the server but not in a worker takes the load-error branch, which can call `_revert_enabled_after_load_error` → `save_enabled(..., False)` — a worker's local failure demoting a globally healthy skill. It does not fire: `revert_enabled_on_error` defaults `False` (`extension_loader.py:273`) and `reload_all` never passes it, so the revert is reachable only from the enable paths that own it. Structural divergence instead degrades to the pre-fix behaviour, bounded by the one-reload-per-distinct-generation guard |
+| Spawned workers correctly report non-server | Verified by inspection, NOT by test | The whole direction switch is `is_server_process()`. Had it been `os.getpid()` captured at import, a SPAWNED worker (macOS/Windows) would re-import the module, adopt its own pid as the server pid, and publish its own generation over the server's — inverting the fix. It reads `OUROBOROS_SERVER_PROCESS_PID` from the inherited environment (`extension_companion.py:23`), which the spawned child inherits, so the worker resolves to non-server on both start methods |
+| `extension_loader.py` line pin | Inherited WIP, respected | The lane pinned the file at 1000/1000 with nothing to be added inside. The WIP took it to 992 by REMOVING `_request_server_reconcile_if_worker` and rerouting its call sites to `announce_extension_state_change` in the module that owns the durable carriers — a relocation to the owning leaf, not a helper split to buy room. `TARGET_MODULE_LINES` is 1000 and the ratchet transition is shrink-only, so the direction is safe; unverified, because `-m size_ratchet` could not be run |
+
+Work the FIRST session did not complete (every item closed by the
+continuation; the closing table below records how):
+
+- **The third natural point is missing.** The WIP adopts only at task start
+  (`worker_process.worker_main`, before `handle_task`), which does cover the
+  tool-catalog build because the catalog materializes inside `handle_task`.
+  The lane also required the first `Unknown tool` for a name in the durable
+  registry. The clean seam is `_extension_dispatch_candidate`
+  (`ouroboros/tools/extension_dispatch.py:20`), where
+  `parse_extension_surface_name(name)` succeeds — the name IS structurally an
+  extension surface — but `get_tool(name)` returns `None`, meaning this
+  process has no such surface. A probe there is already bounded by the
+  one-reload-per-distinct-generation guard, so a bogus `ext_`-prefixed name
+  cannot buy repeated reloads.
+- **Every pin is missing.** No unit pin (a worker with a stale digest loading
+  a skill enabled after its spawn, before dispatch); no disable/uninstall
+  symmetry pin; no pin on the write-if-changed loop guard above. Nothing was
+  ever observed red, which is the point of red-first.
+- **The S13 E2E variant is missing.** `tests/system_e2e/test_system_scenarios_w3b.py`
+  currently encodes the DEFECT as intended behaviour: its phase 2 restarts the
+  server and comments "the product's worker pickup point — task workers load
+  extensions only at worker spawn". The variant must enable after boot and
+  dispatch into an EXISTING worker with no restart, and the scenario manifest
+  (`tests/system_e2e/harness.py`, `SCENARIOS`) needs the matching row — the
+  harness pins that a new `test_s<N>_*` without a manifest row is red.
+- **The overhead was never measured**, as the lane required.
+- **ARCHITECTURE same-commit** rows for the new durable carrier were not written.
+
+### Continuation session — dispositions
+
+| item | disposition | mechanism |
+|---|---|---|
+| The inherited WIP adopted against the WRONG root | DEFECT IN THE WIP, fixed | `worker_main` called `_adopt_published_extensions(task_drive_root)`, i.e. `task["drive_root"] or drive_root`. A subagent or headless task carries its OWN forked root, which has no extension registry and no published marker, so the probe read "nothing published" and returned without doing anything. This was not a theory: the S13 hot-adoption E2E written for this lane went RED against the WIP with `"result_preview": "⚠️ Unknown tool: ext_15_r_e2e_hot_probe_echo"`, `"status": "unknown_tool"`, and ZERO `extension_generation_adopted` rows in the events log — the original defect, reproduced end to end through the WIP's own mechanism. The worker now adopts against the POOL root it loaded from at spawn, which is the only root the two generations are comparable in, and the same E2E is green |
+| The second natural point (the dispatch miss) | ADDED | `_extension_dispatch_candidate` (`ouroboros/tools/extension_dispatch.py`) now runs the same bounded adopt when `parse_extension_surface_name` succeeds and `get_tool` returns `None`, then re-reads. That is the enable landing MID-task, which the task-start point structurally cannot see. No new predicate was needed to keep a hallucinated `ext_`-prefixed name from buying reloads: the one-reload-per-distinct-generation guard already bounds it, so such a name costs one 131-byte read. (The lane's third listed point, the tool-catalog build, is the same event as task start — the catalog materializes inside `handle_task`, after the probe.) The pin is behavioural and was observed red with the carrier PRESENT and only the two seams at base: `AssertionError: the dispatch miss answered Unknown tool without probing` |
+| The pins | WRITTEN, observed red first | `tests/test_extension_generation_adoption.py` (10 tests): the defect at both natural points, the disable direction, write-if-changed publication, one-reload-per-generation with `load_enabled` still True after a worker-local load failure, fail-closed on absent/unparseable/empty markers, the steady-state probe reloading nothing, and the server never adopting its own publication. Red was observed twice: once with the whole carrier reverted to base (import error — honest for a new mechanism, but weak) and once with the carrier present and only the consumption seams at base, which is the behavioural red quoted above. Both generation values the disable pin replays are genuine `publish_extension_generation` outputs, not literals |
+| The S13 E2E variant | WRITTEN | `test_s13_hot_enable_reaches_an_already_spawned_worker_without_a_restart`. It keeps the scenario id (so the lane's own target command, `-k s13`, selects both tests) and the manifest row was rewritten to declare both. "Already spawned" is READ, not assumed: the premise waits for the supervisor's durable roster (`state/worker_pids.json`) and for every pid on it to have announced `worker_ready`, all before the payload exists; the no-restart claim is that same roster unchanged across the enable and the dispatch, because a respawned pool would satisfy the dispatch assertion while proving nothing. The old phase-2 comment, which recorded the DEFECT as the product's contract ("task workers load extensions only at worker spawn"), was rewritten to say what that restart actually pins — that the enabled state survives a reboot |
+| Overhead | MEASURED | Steady state (published == local, the case every task pays): **27.6 µs at 1 live extension, 51.7 µs at 5, 62.9 µs at 20**, against a `reload_all` of 5.9 ms / 17.2 ms / 42.5 ms — **212× to 676× cheaper**, and the marker is a fixed **131 bytes** at every registry size. Method: 2000 in-sync probes per point, one temp data root per point, `n=20` for the reload baseline. The growth with registry size is the in-memory fingerprint, not I/O; the file read is constant |
+| ARCHITECTURE | WRITTEN same-commit | The `extension_reconcile_queue.py` module row now carries both directions and all three bounding properties, `extension_registry_state.py` gains `live_extension_fingerprint` beside the digest it is deliberately not, `state/extension_generation.json` is in the data-layout inventory, and the companion-catalog prose names the reverse direction |
+| Disable/uninstall symmetry | PINNED | Unit: `test_a_worker_adopts_the_disable_direction_too` — the surface LEAVES a worker that already had it live, converging on the real empty-set generation. E2E: the hot variant asserts the owner's disable republishes a DIFFERENT generation at once (the carrier evidence that running workers will retract), and the pre-existing S13 keeps the uninstall contract (payload + state dir removed, skill delisted) |
+| `extension_loader.py` line pin | HELD at 992/1000 | Unchanged from the WIP's relocation; `-m size_ratchet` was run for real this time and is green, so the shrink-only transition is verified rather than assumed. Nothing was added inside the file: the dispatch-miss probe went to `ouroboros/tools/extension_dispatch.py`, which owns dispatch, and no helper was created to buy room anywhere |
