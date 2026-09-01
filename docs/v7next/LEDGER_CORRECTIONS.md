@@ -4098,3 +4098,23 @@ coordinator); the amended form is what landed.
    checklist row. No `chat_delivery_events` mention existed in
    ARCHITECTURE.md. `regenerate_inventories.py` reruns byte-identical (§11.1
    untouched); `check_domains` green.
+
+## Owner closures for the F6-sync forks (2026-09-01, batch 7 + re-ask)
+
+- **Q-F6-1 CLOSED (owner №1=A)**: typed process facts come only from
+  structured records; the upstream prose-regex fallback stays out. The owner
+  additionally commissioned a provenance investigation (how the fallback was
+  born and passed review, and whether the underlying gap — delegated runs
+  lacking typed exit facts — is deeper); its findings land as a separate
+  ledger section when verified.
+- **Q-F6-2 CLOSED (owner «ок, A» on the re-asked plain-language question)**:
+  the `A.23` classification row is RATIFIED as-is (the three reclassifications
+  BROWSER_SESSION_RETIRED ok→timeout/error, BROWSER_BACKLOG_RETIRED_SESSIONS
+  ok→unavailable/error, ESCALATE_UNAVAILABLE error→unavailable under
+  upstream #440 semantics).
+- **Q-F6-3 acknowledged (owner «ок»)**: the FINALIZE_NOW drain calling
+  `owner_stop.handle_finalize_now_entry` directly is accepted; the loop
+  re-export stays.
+- Related batch-7 outcomes recorded for the campaign: №4=A (update remote
+  honors the configured source — F6-tail fix), №5=A (headless cancel
+  receipts — post-release), №6 confirmed (ABI-8 stays post-release backlog).
