@@ -125,6 +125,9 @@ py-modules = ["server"]
 include = ["ouroboros*", "supervisor*", "web*"]
 
 [tool.setuptools.package-data]
+ouroboros = [
+    "domains.toml",
+]
 web = [
     "*.html",
     "*.js",

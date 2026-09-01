@@ -2500,6 +2500,26 @@ against justified byte thresholds in `ouroboros/context_budget.py` and emits a
 WARNING with a remediation pointer; explicitly sentinel-marked isolated devtool roots suppress it because their
 external reader owns the bounded run-local stores.
 
+`ouroboros/domains.toml` is the production domain manifest (v7next CPL-1): the
+1:1 module→domain assignment for every tracked runtime module (`ouroboros/`,
+`supervisor/`, `server.py`, `launcher.py`) across the twenty D01–D20 domains,
+with human sections (`[domains]`/`[modules]`/`[classification]`) and generated
+baseline sections (`[graph]`/`[duplicates]`) that pin today's FACTUAL
+cross-domain dependency data: the strict direction matrix (`allowed`), the
+strict-quotient cycle ceiling (`cycle_groups`, target `[]`), the lazy/dynamic
+hidden-coupling classification, and the cross-domain literal-copy baseline
+(currently empty — copying a function body across a domain boundary instead of
+importing its owner turns the gate red). Like the size ratchet, the baseline is
+current reality, never an aspiration; tightening is a separate owner decision
+made visible as a manifest diff. `scripts/domain_graph.py` is the shared
+import-graph core (strict/lazy/guarded/TYPE_CHECKING/dynamic classification,
+domain quotient, SCC, literal-copy scan); `scripts/check_domains.py` is the
+gate and the `--write` regenerator (it also renders `docs/DOMAIN_MAP.md` from
+the manifest alone); `tests/test_domain_manifest.py` is the CI verify half —
+completeness (a tracked module without a row = red), baseline exactness, and
+DOMAIN_MAP byte-identity; `scripts/v7next_domain_report.py` stays the
+report-only witness-level companion (`docs/v7next/DOMAIN_QUOTIENT_REPORT.md`).
+
 The shared hard prompt-size SSOT is `REVIEW_PROMPT_TOKEN_BUDGET = 920_000` in
 `ouroboros/tools/review_helpers.py`. `review_context_atlas.py` targets 850K
 estimated total prompt tokens for scope review and deep self-review, then leaves

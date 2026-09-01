@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""Report-only domain quotient graph for the v7next integration tree (Ф0).
+"""Report-only domain quotient graph for the v7next integration tree.
 
-Reads ``scripts/v7next_domains.toml`` (module -> domain, 1:1), computes the
-import graph of THIS tree, collapses modules to domain nodes and REPORTS:
+Reads ``ouroboros/domains.toml`` (module -> domain, 1:1; the production
+manifest — the Ф0 stage lived at scripts/v7next_domains.toml), computes the
+import graph of THIS tree through the shared ``scripts/domain_graph.py`` core,
+collapses modules to domain nodes and REPORTS:
 
 - domain-level edges of the strict graph (unconditional module-level imports),
 - cycles on the domain quotient, each with its exact module-edge witnesses,
 - a dependency direction table,
-- lazy / dynamic / TYPE_CHECKING imports, classified separately and excluded
-  from the strict graph.
+- lazy / guarded / dynamic / TYPE_CHECKING imports, classified separately and
+  excluded from the strict graph.
 
-Per plan §7.1 and roast disposition F17 this tool NEVER gates: cycles are
-owner-batch material (regroup vs split vs allowed-edge), so the exit code is 0
-whenever the report was produced, regardless of findings.  Exit 2 only when
-the report itself cannot be trusted (unreadable/unparseable source, missing
-manifest) — a silent skip would falsify the graph.
+This tool NEVER gates (roast F17 discipline): the GATE over the same data is
+``scripts/check_domains.py`` + ``tests/test_domain_manifest.py``, which pin
+the manifest's generated baseline sections. The report stays the witness-level
+companion: exit code is 0 whenever the report was produced, regardless of
+findings. Exit 2 only when the report itself cannot be trusted
+(unreadable/unparseable source, missing manifest) — a silent skip would
+falsify the graph.
 
 Output: ``docs/v7next/DOMAIN_QUOTIENT_REPORT.md`` (generated; header names the
 generator and the input SHAs).
 """
 from __future__ import annotations
 
-import ast
 import hashlib
 import pathlib
 import subprocess
@@ -29,183 +32,33 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-try:  # Python 3.11+
-    import tomllib
-except ImportError:  # pragma: no cover - the 3.10 venv ships tomli
-    import tomli as tomllib
-
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-MANIFEST = REPO_ROOT / "scripts" / "v7next_domains.toml"
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.domain_graph import (  # noqa: E402
+    DYNAMIC,
+    GUARDED,
+    LAZY,
+    MANIFEST_PATH,
+    STRICT,
+    TYPE_ONLY,
+    build_import_graph,
+    cycle_groups_of,
+    load_manifest,
+    tracked_population,
+)
+
 REPORT = REPO_ROOT / "docs" / "v7next" / "DOMAIN_QUOTIENT_REPORT.md"
-
-STRICT, TYPE_ONLY, LAZY, DYNAMIC = "strict", "type_checking", "lazy", "dynamic"
-# Executed at import time but failure-tolerant / entrypoint-only (F0 review F4):
-# a `try: import x except ImportError/Exception` or an import under
-# `if __name__ == "__main__"` must not stand as a strict cycle witness.
-GUARDED = "guarded"
-
-
-def module_name(path: str) -> str:
-    parts = path[:-3].split("/")  # drop .py
-    if parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join(parts)
-
-
-def is_type_checking_test(test: ast.expr) -> bool:
-    if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
-        return True
-    if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
-        return True
-    return False
-
-
-def is_main_guard_test(test: ast.expr) -> bool:
-    """`if __name__ == "__main__":` — the body never runs on import."""
-    if not (isinstance(test, ast.Compare) and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.Eq) and len(test.comparators) == 1):
-        return False
-    sides = (test.left, test.comparators[0])
-    has_name = any(isinstance(s, ast.Name) and s.id == "__name__" for s in sides)
-    has_main = any(isinstance(s, ast.Constant) and s.value == "__main__" for s in sides)
-    return has_name and has_main
-
-
-_SWALLOWING = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
-
-
-def try_swallows_import_failure(node: ast.Try) -> bool:
-    """True when at least one handler catches import failure (or everything)
-    AND does not re-raise. A handler whose body contains a top-level ``raise``
-    may propagate the failure (``except ImportError: raise``), so it is not a
-    swallow — misclassifying it as guarded would hide a strict cycle witness
-    (F0 review round 2). A conditional re-raise nested in an ``if`` still
-    counts as re-raising here: erring toward STRICT is the safe direction."""
-    for h in node.handlers:
-        reraises = any(isinstance(s, ast.Raise) for s in ast.walk(h))
-        if reraises:
-            continue
-        if h.type is None:  # bare except
-            return True
-        types = h.type.elts if isinstance(h.type, ast.Tuple) else [h.type]
-        for t in types:
-            if isinstance(t, ast.Name) and t.id in _SWALLOWING:
-                return True
-            if isinstance(t, ast.Attribute) and t.attr in _SWALLOWING:
-                return True
-    return False
-
-
-class ImportCollector(ast.NodeVisitor):
-    """Collect (kind, raw dotted target or ImportFrom base+names, lineno)."""
-
-    def __init__(self) -> None:
-        self.records: list[tuple[str, str, tuple[str, ...], int]] = []
-        # each record: (kind, base_or_module, aliases (() for plain import), lineno)
-        self._depth = 0  # function nesting depth
-        self._tc = 0     # TYPE_CHECKING nesting depth
-        self._guard = 0  # __main__-guard / failure-swallowing-try nesting depth
-
-    def _kind(self) -> str:
-        if self._tc:
-            return TYPE_ONLY
-        if self._depth:
-            return LAZY
-        if self._guard:
-            return GUARDED
-        return STRICT
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._depth += 1
-        self.generic_visit(node)
-        self._depth -= 1
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._depth += 1
-        self.generic_visit(node)
-        self._depth -= 1
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._depth += 1
-        self.generic_visit(node)
-        self._depth -= 1
-
-    def visit_If(self, node: ast.If) -> None:
-        tc = is_type_checking_test(node.test)
-        mg = is_main_guard_test(node.test)
-        if tc:
-            self._tc += 1
-        if mg:
-            self._guard += 1
-        for child in node.body:
-            self.visit(child)
-        if tc:
-            self._tc -= 1
-        if mg:
-            self._guard -= 1
-        for child in node.orelse:
-            self.visit(child)
-
-    def visit_Try(self, node: ast.Try) -> None:
-        swallows = try_swallows_import_failure(node)
-        if swallows:
-            self._guard += 1
-        for child in node.body:
-            self.visit(child)
-        if swallows:
-            self._guard -= 1
-        for part in (node.handlers, node.orelse, node.finalbody):
-            for child in part:
-                self.visit(child)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            self.records.append((self._kind(), alias.name, (), node.lineno))
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        names = tuple(a.name for a in node.names)
-        base = ("." * node.level) + (node.module or "")
-        self.records.append((self._kind(), base, names, node.lineno))
-
-    def visit_Call(self, node: ast.Call) -> None:
-        target = None
-        f = node.func
-        if isinstance(f, ast.Attribute) and f.attr == "import_module":
-            target = "?"
-        elif isinstance(f, ast.Name) and f.id == "__import__":
-            target = "?"
-        if target is not None:
-            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                target = node.args[0].value
-            else:
-                target = "<unresolved>"
-            self.records.append((DYNAMIC, target, (), node.lineno))
-        self.generic_visit(node)
-
-
-def resolve_relative(base: str, importer: str, is_pkg: bool) -> str:
-    level = len(base) - len(base.lstrip("."))
-    tail = base[level:]
-    parts = importer.split(".")
-    if not is_pkg:
-        parts = parts[:-1]
-    if level > 1:
-        parts = parts[: len(parts) - (level - 1)]
-    prefix = ".".join(parts)
-    return f"{prefix}.{tail}" if tail else prefix
 
 
 def main() -> int:
-    if not MANIFEST.is_file():
-        print(f"missing manifest: {MANIFEST}", file=sys.stderr)
+    if not MANIFEST_PATH.is_file():
+        print(f"missing manifest: {MANIFEST_PATH}", file=sys.stderr)
         return 2
-    manifest_bytes = MANIFEST.read_bytes()
-    data = tomllib.loads(manifest_bytes.decode("utf-8"))
-    modules: dict[str, str] = data["modules"]
-    domains: dict[str, str] = data["domains"]
-    proposed = set(data.get("classification", {}).get("proposed", []))
-    split_pending = set(data.get("split_pending", {}))
-    meta = data.get("meta", {})
+    manifest = load_manifest()
+    modules = manifest.modules
+    domains = manifest.domains
+    proposed = manifest.proposed
 
     bad_domains = sorted({d for d in modules.values() if d not in domains})
     if bad_domains:
@@ -215,12 +68,7 @@ def main() -> int:
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
     ).stdout.strip()
-    tracked = subprocess.run(
-        ["git", "ls-files", "ouroboros/**/*.py", "ouroboros/*.py",
-         "supervisor/*.py", "supervisor/**/*.py", "server.py", "launcher.py"],
-        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout.split()
-    tracked_set = set(tracked)
+    tracked_set = tracked_population(REPO_ROOT)
     # Content fingerprint of the actual analyzed inputs (working-tree bytes,
     # not the HEAD claim): the report is often generated pre-commit, so HEAD
     # alone cannot bind it to a SHA (F0 review round 2, F3). Verification
@@ -237,105 +85,21 @@ def main() -> int:
     drift_missing = sorted(tracked_set - set(modules))   # in tree, not in manifest
     drift_stale = sorted(set(modules) - tracked_set)     # in manifest, not in tree
 
-    mod_by_name = {module_name(p): p for p in modules}
-    dom_of_path = modules
+    try:
+        graph = build_import_graph(manifest, REPO_ROOT, population=tracked_set)
+    except (OSError, SyntaxError) as exc:
+        print(f"cannot parse: {exc}", file=sys.stderr)
+        return 2
+    edges = graph.edges
+    dom_of_path = graph.dom_of_path
+    dynamic_unresolved = graph.dynamic_unresolved
 
-    def resolve(dotted: str) -> str | None:
-        """Longest population module matching the dotted name."""
-        parts = dotted.split(".")
-        for i in range(len(parts), 0, -1):
-            cand = ".".join(parts[:i])
-            if cand in mod_by_name:
-                return mod_by_name[cand]
-        return None
-
-    # kind -> {(src_path, dst_path): [linenos]}
-    edges: dict[str, dict[tuple[str, str], list[int]]] = {
-        STRICT: defaultdict(list), TYPE_ONLY: defaultdict(list),
-        LAZY: defaultdict(list), DYNAMIC: defaultdict(list),
-        GUARDED: defaultdict(list),
-    }
-    dynamic_unresolved: list[tuple[str, int]] = []
-
-    for path in sorted(set(modules) & tracked_set):
-        src = REPO_ROOT / path
-        try:
-            tree = ast.parse(src.read_text(encoding="utf-8"), filename=path)
-        except (OSError, SyntaxError) as exc:
-            print(f"cannot parse {path}: {exc}", file=sys.stderr)
-            return 2
-        importer = module_name(path)
-        is_pkg = path.endswith("__init__.py")
-        col = ImportCollector()
-        col.visit(tree)
-        for kind, base, names, lineno in col.records:
-            if kind == DYNAMIC and base == "<unresolved>":
-                dynamic_unresolved.append((path, lineno))
-                continue
-            base_abs = resolve_relative(base, importer, is_pkg) if base.startswith(".") else base
-            targets = []
-            if names:
-                for name in names:
-                    if name == "*":
-                        targets.append(base_abs)
-                        continue
-                    sub = f"{base_abs}.{name}" if base_abs else name
-                    targets.append(sub if resolve(sub) else base_abs)
-            else:
-                targets.append(base_abs)
-            for dotted in targets:
-                dst = resolve(dotted)
-                if dst is None or dst == path:
-                    continue
-                edges[kind][(path, dst)].append(lineno)
-
-    # ---- quotient (strict only) ---------------------------------------------
-    dom_edges: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
-    for (src, dst) in sorted(edges[STRICT]):
-        d1, d2 = dom_of_path[src], dom_of_path[dst]
-        if d1 != d2:
-            dom_edges[(d1, d2)].append((src, dst))
-
-    # Tarjan SCC over domain nodes
-    graph: dict[str, set[str]] = defaultdict(set)
-    for (d1, d2) in dom_edges:
-        graph[d1].add(d2)
-    index: dict[str, int] = {}
-    low: dict[str, int] = {}
-    on_stack: set[str] = set()
-    stack: list[str] = []
-    sccs: list[list[str]] = []
-    counter = [0]
-
-    def strongconnect(v: str) -> None:
-        index[v] = low[v] = counter[0]
-        counter[0] += 1
-        stack.append(v)
-        on_stack.add(v)
-        for w in sorted(graph.get(v, ())):
-            if w not in index:
-                strongconnect(w)
-                low[v] = min(low[v], low[w])
-            elif w in on_stack:
-                low[v] = min(low[v], index[w])
-        if low[v] == index[v]:
-            comp = []
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                comp.append(w)
-                if w == v:
-                    break
-            sccs.append(sorted(comp))
-
-    for v in sorted(domains):
-        if v not in index:
-            strongconnect(v)
-    cycles = [c for c in sccs if len(c) > 1]
+    dom_edges = graph.quotient(STRICT)
+    cycles = cycle_groups_of(sorted(domains), dom_edges)
 
     # ---- render ---------------------------------------------------------------
     used_domains = sorted({d for pair in dom_edges for d in pair} | set(Counter(dom_of_path.values())))
-    manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_sha = manifest.sha256
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     dom_counts = Counter(dom_of_path.values())
 
@@ -350,10 +114,11 @@ def main() -> int:
     L.append(f"- analyzed-inputs content fingerprint: sha256 `{content_fingerprint}` "
              "(sorted tracked runtime files, path+bytes; regenerate on any tree and "
              "compare to verify freshness)")
-    L.append(f"- manifest: `scripts/v7next_domains.toml` sha256 `{manifest_sha}`")
-    L.append(f"- reference (domain vocabulary): {meta.get('reference_tree', 'unknown')}")
-    L.append("- discipline: plan §7.1 / roast F17 — this is a REPORT; cycles are owner-batch")
-    L.append("  items (regroup vs split vs allowed-edge), the checker never dictates.")
+    L.append(f"- manifest: `ouroboros/domains.toml` sha256 `{manifest_sha}`")
+    L.append(f"- reference (domain vocabulary): {manifest.meta.get('reference_tree', 'unknown')}")
+    L.append("- discipline: this is a REPORT with witness-level detail; the GATE over the")
+    L.append("  same data is `scripts/check_domains.py` (+ `tests/test_domain_manifest.py`),")
+    L.append("  which pins the manifest's `[graph]`/`[duplicates]` baseline sections.")
     L.append("")
     L.append("## Population")
     L.append("")
@@ -388,22 +153,15 @@ def main() -> int:
         L.append("None. The strict domain quotient is acyclic.")
     for i, comp in enumerate(cycles, 1):
         comp_set = set(comp)
-        n_split_wit = sum(
-            1 for (d1, d2), wit in dom_edges.items()
-            if d1 in comp_set and d2 in comp_set
-            for (src, dst) in wit if src in split_pending or dst in split_pending
-        )
         n_all_wit = sum(
             len(wit) for (d1, d2), wit in dom_edges.items()
             if d1 in comp_set and d2 in comp_set
         )
         L.append(f"### Cycle group {i}: {' ⇄ '.join(comp)}")
         L.append("")
-        L.append(f"{len(comp)} domains form one strongly connected component. Every edge below")
-        L.append("needs an owner disposition (regroup / split / allowed-edge).")
-        L.append(f"{n_split_wit} of the {n_all_wit} module-edge witnesses touch a `[split_pending]`")
-        L.append("monolith (marked †): those edges are expected to move or dissolve when the")
-        L.append("ledger-derived leaves are transplanted (Ф1 recipe, plan §5.3).")
+        L.append(f"{len(comp)} domains form one strongly connected component with "
+                 f"{n_all_wit} module-edge witnesses. Every edge below needs an owner "
+                 "disposition (regroup / split / allowed-edge).")
         L.append("")
         for (d1, d2) in sorted(dom_edges):
             if d1 in comp_set and d2 in comp_set:
@@ -411,18 +169,15 @@ def main() -> int:
                 L.append(f"- **{d1} → {d2}** ({len(wit)} module edges)")
                 for (src, dst) in wit:
                     lines = ",".join(str(n) for n in sorted(set(edges[STRICT][(src, dst)]))[:4])
-                    mark = " †" if src in split_pending or dst in split_pending else ""
-                    L.append(f"  - `{src}` → `{dst}` (line {lines}){mark}")
+                    L.append(f"  - `{src}` → `{dst}` (line {lines})")
         L.append("")
 
     L.append("## Domain-level edges (strict)")
     L.append("")
     L.append("| from | to | module edges | in a cycle group |")
     L.append("|---|---|---:|:---:|")
-    cyc_nodes = {d for comp in cycles for d in comp}
     for (d1, d2) in sorted(dom_edges):
-        incyc = "yes" if d1 in cyc_nodes and d2 in cyc_nodes and any(
-            d1 in c and d2 in c for c in map(set, cycles)) else ""
+        incyc = "yes" if any(d1 in c and d2 in c for c in map(set, cycles)) else ""
         L.append(f"| {d1} | {d2} | {len(dom_edges[(d1, d2)])} | {incyc} |")
     L.append("")
 
