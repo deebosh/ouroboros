@@ -331,6 +331,27 @@ def _drain(pipe: Any, cap: int, out: bytearray, overflow: Dict[str, bool], label
         return
 
 
+_CHILD_SPAWNED_ATTR = "_ouroboros_extension_child_spawned"
+
+
+def extension_child_was_spawned(exc: BaseException) -> bool:
+    """ABI-9 typed post-Popen fact: True only when the extension child process
+    was actually started before ``exc`` was raised. ``_run_child`` stamps the
+    marker on every exception that crosses the spawn boundary; a pre-spawn
+    failure — payload staging, dispatch resolve/load/env, the ``Popen`` call
+    itself — carries no marker, so dispatch provenance never records a
+    ``physical_dispatch`` for a child that never existed."""
+    return bool(getattr(exc, _CHILD_SPAWNED_ATTR, False))
+
+
+def _mark_child_spawned(exc: BaseException) -> BaseException:
+    try:
+        setattr(exc, _CHILD_SPAWNED_ATTR, True)
+    except Exception:  # exceptions with __slots__ cannot carry the marker
+        pass
+    return exc
+
+
 def _run_child(
     payload: Dict[str, Any],
     *,
@@ -371,9 +392,10 @@ def _run_child(
     try:
         if on_spawn is not None:
             on_spawn()
-    except BaseException:
+    except BaseException as spawn_exc:
         # Popen has already dispatched the child.  A failed durable disclosure
         # must stop it rather than leave an untracked external execution.
+        _mark_child_spawned(spawn_exc)
         try:
             _kill_process_group(proc)
             proc.wait(timeout=2)
@@ -397,15 +419,15 @@ def _run_child(
             pass
         shutil.rmtree(import_root_base, ignore_errors=True)
         raise
-    stdout = bytearray()
-    stderr = bytearray()
-    overflow = {"stdout": False, "stderr": False}
-    out_thread = threading.Thread(target=_drain, args=(proc.stdout, _STDOUT_CAP, stdout, overflow, "stdout"), daemon=True)
-    err_thread = threading.Thread(target=_drain, args=(proc.stderr, _STDERR_CAP, stderr, overflow, "stderr"), daemon=True)
-    out_thread.start()
-    err_thread.start()
-    deadline = time.monotonic() + max(1, int(timeout_sec))
     try:
+        stdout = bytearray()
+        stderr = bytearray()
+        overflow = {"stdout": False, "stderr": False}
+        out_thread = threading.Thread(target=_drain, args=(proc.stdout, _STDOUT_CAP, stdout, overflow, "stdout"), daemon=True)
+        err_thread = threading.Thread(target=_drain, args=(proc.stderr, _STDERR_CAP, stderr, overflow, "stderr"), daemon=True)
+        out_thread.start()
+        err_thread.start()
+        deadline = time.monotonic() + max(1, int(timeout_sec))
         while proc.poll() is None:
             if overflow["stdout"] or overflow["stderr"]:
                 _kill_process_group(proc)
@@ -436,6 +458,10 @@ def _run_child(
         if not result.get("ok", False):
             raise ExtensionProcessError(str(result.get("error") or "extension child failed"))
         return dict(result)
+    except BaseException as exc:
+        # Everything in this block runs AFTER Popen: the typed marker lets the
+        # dispatcher stamp physical_dispatch on real post-spawn failures only.
+        raise _mark_child_spawned(exc)
     finally:
         try:
             if proc.poll() is None:

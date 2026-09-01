@@ -106,6 +106,105 @@ def test_pre_handler_calling_convention_failure_is_never_stamped(tmp_path, monke
     )
 
 
+def test_oop_pre_spawn_failure_is_never_stamped(tmp_path, monkeypatch):
+    """Fix-round 2, claim 5: an exception from dispatch_extension_tool_subprocess
+    raised BEFORE Popen (resolve/load/env/payload staging) carries no typed
+    spawn marker — the OOP branch must not stamp physical_dispatch for a
+    child that never existed."""
+    from ouroboros import extension_process_runner
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+
+    surface, ctx, ext_tool, _root, _loaded = _dispatch_ready(tmp_path, monkeypatch, "oopa")
+    ext_tool = dict(ext_tool)
+    ext_tool["out_of_process"] = True
+
+    def _pre_spawn_boom(*_a, **_k):
+        raise RuntimeError("env resolution exploded before Popen")
+
+    monkeypatch.setattr(
+        extension_process_runner, "dispatch_extension_tool_subprocess", _pre_spawn_boom
+    )
+    result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    assert (result.status, result.code) == ("error", "EXTENSION_ERROR")
+    assert "physical_dispatch" not in result.meta
+    assert "extension_generation" not in result.meta
+
+
+def test_oop_post_spawn_failure_is_stamped(tmp_path, monkeypatch):
+    """Fix-round 2, claim 5 contrast: an exception carrying the process
+    runner's typed spawn marker (raised after Popen) IS a physical dispatch
+    and carries the generation digest."""
+    from ouroboros import extension_process_runner
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+
+    surface, ctx, ext_tool, _root, _loaded = _dispatch_ready(tmp_path, monkeypatch, "oopb")
+    ext_tool = dict(ext_tool)
+    ext_tool["out_of_process"] = True
+
+    def _post_spawn_boom(*_a, **_k):
+        raise extension_process_runner._mark_child_spawned(
+            extension_process_runner.ExtensionProcessError("child exited abnormally")
+        )
+
+    monkeypatch.setattr(
+        extension_process_runner, "dispatch_extension_tool_subprocess", _post_spawn_boom
+    )
+    result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    assert (result.status, result.code) == ("error", "EXTENSION_ERROR")
+    assert result.meta.get("physical_dispatch") is True
+    assert result.meta.get("extension_generation") == (
+        extension_loader.extension_generation_digest("oopb")
+    )
+
+
+def test_run_child_marks_only_post_popen_exceptions(tmp_path, monkeypatch):
+    """The marker's OWN seam in _run_child: a Popen failure raises UNMARKED
+    (no child existed); once a process object exists, a post-spawn protocol
+    failure raises MARKED."""
+    import io
+
+    from ouroboros import extension_process_runner
+
+    payload = {"skill_name": "marker-probe"}
+    kwargs = dict(
+        skill_dir=tmp_path, drive_root=tmp_path, repo_dir=tmp_path,
+        env={}, timeout_sec=2,
+    )
+
+    def _popen_boom(*_a, **_k):
+        raise OSError("exec format error")
+
+    monkeypatch.setattr(extension_process_runner.subprocess, "Popen", _popen_boom)
+    try:
+        extension_process_runner._run_child(dict(payload), **kwargs)
+        raise AssertionError("Popen failure must raise")
+    except OSError as exc:
+        assert extension_process_runner.extension_child_was_spawned(exc) is False
+
+    class _FakeProc:
+        pid = 4242
+        returncode = 0
+        stdout = io.BytesIO(b"")
+        stderr = io.BytesIO(b"")
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(
+        extension_process_runner.subprocess, "Popen", lambda *_a, **_k: _FakeProc()
+    )
+    monkeypatch.setattr(extension_process_runner, "_kill_process_group", lambda _p: None)
+    try:
+        extension_process_runner._run_child(dict(payload), **kwargs)
+        raise AssertionError("missing protocol result must raise")
+    except extension_process_runner.ExtensionProcessError as exc:
+        assert "did not write protocol result" in str(exc)
+        assert extension_process_runner.extension_child_was_spawned(exc) is True
+
+
 def test_fallback_digest_is_snapshotted_before_the_handler_runs(tmp_path, monkeypatch):
     """Finding 11: for a descriptor predating the per-surface stamp the
     registry digest is read BEFORE the handler, so a publication that lands

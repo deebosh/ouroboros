@@ -237,6 +237,7 @@ def _dispatch_extension_tool_untagged(
             from ouroboros.extension_process_runner import (
                 ExtensionProcessError,
                 dispatch_extension_tool_subprocess,
+                extension_child_was_spawned,
             )
         except Exception as exc:
             text = f"⚠️ TOOL_ERROR ({name}): extension child process failed: {type(exc).__name__}: {exc}"
@@ -254,7 +255,10 @@ def _dispatch_extension_tool_untagged(
                 "EXTENSION_TIMEOUT" if timed_out else "EXTENSION_ERROR",
                 text,
                 timeout_sec=max(1, int(ext_tool.get("timeout_sec") or 60)) if timed_out else None,
-                dispatched=True,  # the child process dispatch was attempted
+                # POSITIVE spawn fact from the process runner (ABI-9): a
+                # pre-Popen failure (resolve/load/env/payload staging) never
+                # stamps physical_dispatch — the child never existed.
+                dispatched=extension_child_was_spawned(exc),
             )
         return _extension_completion(result_str, _ext_safety_msg)
 
