@@ -359,3 +359,129 @@ def compute_managed_update_status(fetch: bool = False) -> Dict[str, Any]:
     except Exception:
         log.debug("managed update status cache save failed", exc_info=True)
     return state
+
+
+def prepare_managed_update(
+    strategy: str = "replace",
+    *,
+    expected_base_sha: str = "",
+    expected_target_sha: str = "",
+    arm_intent: bool = True,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Prepare the explicit hard-reset recovery path against an exact disclosure."""
+    strategy = str(strategy or "").strip().lower()
+    if strategy != "replace":
+        return False, {"error": f"Unsupported recovery strategy: {strategy or 'missing'}"}
+    if not expected_base_sha or not expected_target_sha:
+        return False, {
+            "error": "Recovery requires the exact base and target SHA from a fresh preflight.",
+            "reason": "missing_update_pins",
+        }
+    if not _go()._read_managed_repo_meta():
+        return False, {"error": "Managed updates are unavailable for this checkout."}
+    remote_name, remote_branch, branch_ref = _go()._managed_update_target()
+    from ouroboros.update_channels import get_update_channel
+
+    update_channel = get_update_channel()
+    target_ref, target_sha, target_error = _go()._resolve_managed_update_target(
+        remote_name, remote_branch, branch_ref, update_channel
+    )
+    rc_b, current_branch, _ = _go().git_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    rc_h, current_sha, _ = _go().git_capture(["git", "rev-parse", "--verify", "HEAD"])
+    if not target_ref or not target_sha:
+        return False, {
+            "error": target_error or "Managed update target is unavailable.",
+            "reason": "target_unavailable",
+        }
+    if rc_b != 0 or current_branch != _go().BRANCH_DEV:
+        return False, {
+            "error": f"Managed updates require the local {_go().BRANCH_DEV!r} branch.",
+            "reason": "wrong_local_branch",
+        }
+    for label, expected, actual in (
+        ("base", expected_base_sha, current_sha if rc_h == 0 else ""),
+        ("target", expected_target_sha, target_sha),
+    ):
+        if expected != actual:
+            return False, {
+                "error": (
+                    f"Managed update {label} moved from {expected[:12]} to "
+                    f"{actual[:12] or 'unknown'}; rerun preflight."
+                ),
+                "reason": "release_moved",
+            }
+    repo_state = _go()._collect_repo_sync_state()
+    recovery_needed = target_sha != current_sha or bool(repo_state.get("dirty_lines"))
+    status = {
+        "managed": True,
+        "remote": remote_name,
+        "remote_branch": remote_branch,
+        "target_ref": target_ref,
+        "update_channel": update_channel,
+        "current_branch": current_branch,
+        "current_sha": current_sha,
+        "latest_sha": target_sha,
+        "available": recovery_needed,
+    }
+    if not status["available"]:
+        return False, {"error": "No managed update is available.", "status": status}
+
+    rescue_info: Dict[str, Any] = {}
+    try:
+        rescue_info = _go()._create_rescue_snapshot(
+            branch=str(repo_state.get("current_branch") or _go().BRANCH_DEV),
+            reason=f"ui_update_{strategy}",
+            repo_state=repo_state,
+        )
+    except Exception as exc:
+        return False, {"error": f"Rescue snapshot failed: {exc!r}", "status": status}
+    if rescue_info.get("diff_error"):
+        return False, {"error": f"Rescue diff capture failed: {rescue_info.get('diff_error')}", "status": status}
+    incomplete = _go()._rescue_untracked_incomplete(rescue_info)
+    if incomplete:
+        return False, {"error": f"Untracked-file rescue incomplete: {incomplete}", "status": status}
+
+    target_sha = str(status.get("latest_sha") or "").strip()
+    if not target_sha:
+        return False, {"error": "Managed update target SHA is missing.", "status": status}
+    keep_branch = ""
+    count_ok, ahead, count_error = _go()._compute_ref_ahead_count(_go().BRANCH_DEV, target_sha)
+    if not count_ok:
+        return False, {
+            "error": f"Could not compare local branch with managed update target: {count_error}",
+            "status": status,
+        }
+    if ahead > 0:
+        ok, keep_branch_or_error = _go().preserve_local_ref_branch(_go().BRANCH_DEV)
+        if not ok:
+            return False, {"error": f"Could not preserve local branch: {keep_branch_or_error}", "status": status}
+        keep_branch = keep_branch_or_error
+    update_intent = {
+        "schema_version": 1,
+        "branch": _go().BRANCH_DEV,
+        "target_sha": target_sha,
+        "target_ref": status.get("target_ref") or "",
+        "strategy": strategy,
+        "keep_branch": keep_branch,
+        "requested_at": _go().utc_now_iso(),
+    }
+    if arm_intent:
+        _go()._write_update_intent(update_intent)
+
+    _go().append_jsonl(
+        _go().current_drive_root() / "logs" / "supervisor.jsonl",
+        {
+            "ts": _go().utc_now_iso(),
+            "type": "ui_update_requested",
+            "strategy": strategy,
+            "status": status,
+            "rescue": rescue_info,
+            "keep_branch": keep_branch,
+        },
+    )
+    return True, {
+        "status": status,
+        "rescue": rescue_info,
+        "keep_branch": keep_branch,
+        "update_intent": update_intent,
+    }

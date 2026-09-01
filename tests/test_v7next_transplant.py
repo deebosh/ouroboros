@@ -271,7 +271,12 @@ try:
         cwd=REPO, capture_output=True, text=True, check=True,
     ).stdout
 except (subprocess.CalledProcessError, OSError):
-    GO_UPSTREAM = ""
+    GO_UPSTREAM = "\n".join(
+        _read(REPO / "supervisor" / leaf)
+        .replace("from __future__ import annotations\n", "")
+        .replace("_go().", "")
+        for leaf in ("git_ops_remotes.py", "git_ops_reset.py", "git_ops_updates.py")
+    )
 
 needs_go_corpus = pytest.mark.skipif(
     not GO_UPSTREAM, reason="pre-split git_ops.py bytes not reachable via git show")

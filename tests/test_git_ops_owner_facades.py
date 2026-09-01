@@ -14,9 +14,9 @@ v7next transplant note: the reference (ouroboros_v7_wip @ 9f691656) derives
 both inventories from one ``GIT_OPS_FAMILY_PATHS`` list inside
 runtime_mode_policy.py. On this tree the closure is strictly ADDITIVE literal
 entries in the protected file (the D04 registry-leaf precedent); the derived
-re-cut stays with the oracle delta. ``prepare_managed_update`` and
-``safe_restart`` stayed facade defs (the transplant gate refuses f-string
-reads of rebindable parent globals), so they appear in no leaf owner map.
+re-cut stays with the oracle delta. D35 extends the transplant proof through
+f-string expressions, so ``prepare_managed_update`` and ``safe_restart`` now
+sit with their semantic leaf owners too.
 """
 
 from __future__ import annotations
@@ -32,13 +32,13 @@ GIT_OPS_LEAF_OWNERS: dict[str, str] = {
     "git_ops_updates": (
         "list_versions list_commits ensure_official_update_remote "
         "managed_update_remote_url "
-        "list_official_update_tags compute_managed_update_status"
+        "list_official_update_tags compute_managed_update_status prepare_managed_update"
     ),
     "git_ops_reset": (
         "_compute_ref_ahead_count _ref_points_at_ref preserve_local_ref_branch "
         "_preserve_branch_for_official_reset _run_git_resilient "
         "_admission_gate_for_unsynced_tree checkout_and_reset "
-        "sync_runtime_dependencies import_test"
+        "sync_runtime_dependencies import_test safe_restart"
     ),
     "git_ops_rescue": (
         "_collect_repo_sync_state _copy_untracked_for_rescue _atomic_write_bytes "
@@ -57,13 +57,12 @@ def test_git_ops_owner_facade_preserves_identity():
             assert getattr(git_ops, name) is getattr(module, name), f"{leaf}.{name}"
 
 
-def test_the_facade_still_owns_the_deferred_update_and_restart_entry_points():
-    """The two spans the byte-preserving gate refused to move (f-string reads
-    of rebindable BRANCH_DEV/BRANCH_STABLE) stay facade DEFS, not re-exports."""
+def test_the_facade_reexports_the_fstring_update_and_restart_entry_points():
+    """D35 moves the last two G1 spans without changing facade identity."""
     import supervisor.git_ops as git_ops
 
-    for name in ("prepare_managed_update", "safe_restart"):
-        assert getattr(git_ops, name).__module__ == "supervisor.git_ops", name
+    assert git_ops.prepare_managed_update.__module__ == "supervisor.git_ops_updates"
+    assert git_ops.safe_restart.__module__ == "supervisor.git_ops_reset"
 
 
 def test_every_git_ops_leaf_is_protected_exactly_like_the_parent():

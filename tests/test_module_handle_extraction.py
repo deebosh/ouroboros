@@ -123,6 +123,10 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     # the reference's G1 `_go()` sets re-derived on tip bytes (safe_restart and
     # prepare_managed_update stayed facade defs — the gate refuses f-string
     # reads of rebindable globals — so their reads left the sets). The tools/
+    # D10/D35 lane rows (oracle ouroboros_v7_wip @ 9f691656). git_ops leaves
+    # carry the reference's G1 `_go()` sets re-derived on tip bytes; D35 teaches
+    # the proof to treat f-string reads like ordinary call-time reads and moves
+    # the final safe_restart/prepare_managed_update spans. The tools/
     # git leaves declare EVERY parent-scope name their spans read at call time
     # (the reference cut them with plain leaf imports, but the tip monolith's
     # test surface monkeypatches those names on the parent — the module-global
@@ -190,7 +194,8 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "rescue_git_capture", "utc_now_iso",
     })),
     "supervisor/git_ops_reset.py": ("supervisor/git_ops.py", "_go", frozenset({
-        "BRANCH_DEV", "DRIVE_ROOT", "REPO_DIR", "_admission_gate_for_unsynced_tree",
+        "BRANCH_DEV", "BRANCH_STABLE", "DRIVE_ROOT", "REPO_DIR",
+        "_admission_gate_for_unsynced_tree",
         "_clear_bootstrap_pin_marker", "_clear_update_intent",
         "_collect_repo_sync_state", "_compute_ref_ahead_count",
         "_create_rescue_snapshot", "_git_dir", "_guard_live_repo_destructive_git",
@@ -198,16 +203,20 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_preserve_branch_for_official_reset", "_read_managed_repo_meta",
         "_read_update_intent", "_ref_points_at_ref", "_rescue_untracked_incomplete",
         "_run_git_resilient", "_update_source", "append_jsonl", "git_capture",
-        "load_state", "preserve_local_ref_branch", "rescue_git_capture",
-        "save_state", "utc_now_iso",
+        "checkout_and_reset", "current_drive_root", "import_test", "load_state",
+        "preserve_local_ref_branch", "rescue_git_capture", "save_state",
+        "sync_runtime_dependencies", "utc_now_iso",
     })),
     "supervisor/git_ops_updates.py": ("supervisor/git_ops.py", "_go", frozenset({
-        "OFFICIAL_UPDATE_REMOTE_URL", "_git_network_bounded", "_has_remote",
-        "_list_remotes", "_managed_remote_name", "_managed_update_target",
-        "_read_managed_repo_meta", "_resolve_managed_update_target",
-        "ensure_official_update_remote", "git_capture", "git_fetch_bounded",
-        "load_state", "managed_branch_defaults", "managed_update_remote_url",
-        "utc_now_iso",
+        "BRANCH_DEV", "OFFICIAL_UPDATE_REMOTE_URL", "_collect_repo_sync_state",
+        "_compute_ref_ahead_count", "_create_rescue_snapshot", "_git_network_bounded",
+        "_has_remote", "_list_remotes", "_managed_remote_name",
+        "_managed_update_target", "_read_managed_repo_meta",
+        "_rescue_untracked_incomplete", "_resolve_managed_update_target",
+        "_write_update_intent", "append_jsonl", "current_drive_root",
+        "ensure_official_update_remote", "git_capture", "git_fetch_bounded", "load_state",
+        "managed_branch_defaults", "managed_update_remote_url",
+        "preserve_local_ref_branch", "utc_now_iso",
     })),
     # D07 lane rows (oracle ouroboros_v7_wip @ 9f691656, DEL1 splits re-derived
     # on tip bytes). The custody reconcile set dropped the reference names the

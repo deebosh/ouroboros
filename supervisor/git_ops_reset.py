@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -542,3 +543,75 @@ def import_test() -> Dict[str, Any]:
     )
     return {"ok": (r.returncode == 0), "stdout": r.stdout, "stderr": r.stderr,
             "returncode": r.returncode}
+
+
+def safe_restart(
+    reason: str,
+    unsynced_policy: str = "rescue_and_reset",
+) -> Tuple[bool, str]:
+    """Checkout dev, sync deps, import-test, then fall back to stable if needed.
+
+    ``OUROBOROS_DISABLE_MANAGED_UPDATES=1`` is the stand lever: it keeps the deps
+    sync and the import test but skips the checkout, so a stand pinned to one sha
+    stays on it. This is the choke point EVERY unrequested tree move goes through
+    (bootstrap, owner restart, agent restart) — the local-dev bootstrap branch in
+    server.py only covered the first of the three. An explicit owner version
+    change (Update / Rollback) calls ``checkout_and_reset`` directly and is
+    deliberately still honoured: that one the operator asked for.
+    """
+    if str(os.environ.get("OUROBOROS_DISABLE_MANAGED_UPDATES", "") or "").strip() == "1":
+        _go().append_jsonl(
+            _go().current_drive_root() / "logs" / "supervisor.jsonl",
+            {"ts": _go().utc_now_iso(), "type": "managed_checkout_disabled",
+             "reason": reason, "target_branch": _go().BRANCH_DEV},
+        )
+        deps_ok, deps_msg = _go().sync_runtime_dependencies(reason=reason)
+        if not deps_ok:
+            return False, f"Failed deps with managed checkout disabled: {deps_msg}"
+        t = _go().import_test()
+        if t["ok"]:
+            return True, "OK: managed checkout disabled — staying on the current checkout"
+        return False, f"Import test failed with managed checkout disabled (rc={t.get('returncode', -1)})"
+
+    ok, err = _go().checkout_and_reset(_go().BRANCH_DEV, reason=reason, unsynced_policy=unsynced_policy)
+    if not ok:
+        return False, f"Failed checkout {_go().BRANCH_DEV}: {err}"
+
+    deps_ok, deps_msg = _go().sync_runtime_dependencies(reason=reason)
+    if not deps_ok:
+        return False, f"Failed deps for {_go().BRANCH_DEV}: {deps_msg}"
+
+    t = _go().import_test()
+    if t["ok"]:
+        return True, f"OK: {_go().BRANCH_DEV}"
+
+    _go().append_jsonl(
+        _go().current_drive_root() / "logs" / "supervisor.jsonl",
+        {
+            "ts": _go().utc_now_iso(),
+            "type": "safe_restart_dev_import_failed",
+            "reason": reason,
+            "branch": _go().BRANCH_DEV,
+            "stdout": t.get("stdout", ""),
+            "stderr": t.get("stderr", ""),
+            "returncode": t.get("returncode", -1),
+        },
+    )
+
+    ok_s, err_s = _go().checkout_and_reset(
+        _go().BRANCH_STABLE,
+        reason=f"{reason}_fallback_stable",
+        unsynced_policy="rescue_and_reset",
+    )
+    if not ok_s:
+        return False, f"Failed checkout {_go().BRANCH_STABLE}: {err_s}"
+
+    deps_ok_s, deps_msg_s = _go().sync_runtime_dependencies(reason=f"{reason}_fallback_stable")
+    if not deps_ok_s:
+        return False, f"Failed deps for {_go().BRANCH_STABLE}: {deps_msg_s}"
+
+    t2 = _go().import_test()
+    if t2["ok"]:
+        return True, f"OK: fell back to {_go().BRANCH_STABLE}"
+
+    return False, "Both branches failed import (dev and stable)"

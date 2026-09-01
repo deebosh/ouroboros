@@ -5806,3 +5806,26 @@ continuation; the closing table below records how):
 | ARCHITECTURE | WRITTEN same-commit | The `extension_reconcile_queue.py` module row now carries both directions and all three bounding properties, `extension_registry_state.py` gains `live_extension_fingerprint` beside the digest it is deliberately not, `state/extension_generation.json` is in the data-layout inventory, and the companion-catalog prose names the reverse direction |
 | Disable/uninstall symmetry | PINNED | Unit: `test_a_worker_adopts_the_disable_direction_too` — the surface LEAVES a worker that already had it live, converging on the real empty-set generation. E2E: the hot variant asserts the owner's disable republishes a DIFFERENT generation at once (the carrier evidence that running workers will retract), and the pre-existing S13 keeps the uninstall contract (payload + state dir removed, skill delisted) |
 | `extension_loader.py` line pin | HELD at 992/1000 | Unchanged from the WIP's relocation; `-m size_ratchet` was run for real this time and is green, so the shrink-only transition is verified rather than assumed. Nothing was added inside the file: the dispatch-miss probe went to `ouroboros/tools/extension_dispatch.py`, which owns dispatch, and no helper was created to buy room anywhere |
+## From the D35 f-string transplant lane (owner 13B, base bef13f5e)
+
+1. **F-string reads are ordinary declared reads.** The transplant walk now
+   records `ast.Name` loads under `ast.JoinedStr` / `ast.FormattedValue` and
+   rewrites them to the same call-time `HANDLE().NAME` form as every other
+   function-body load. The token proof accounts for pre-3.12's single STRING
+   token without weakening literal-byte comparison. A fourth, parse-tree
+   inverse proof catches the one semantic exception: debug expressions such
+   as `f"{X=}"`, where CPython derives a displayed Constant from the expression
+   spelling, fail closed after a handle rewrite.
+2. **The last G1 spans reached their semantic owners.** The stock tool
+   re-derived and proved `safe_restart` into `supervisor/git_ops_reset.py`
+   (8 declared parent names, 24 rewrite sites) and
+   `prepare_managed_update` into `supervisor/git_ops_updates.py` (14 names,
+   21 sites). `supervisor/git_ops.py` re-exports both objects. Every mutable
+   branch/helper/root read remains behind `_go()` at call time; the pre-init
+   data root continues through `current_drive_root()` and the parent's
+   per-call config resolution, so importing a leaf cannot capture a live root.
+3. **Inventories and disposition.** The module-handle exact-read sets and G1
+   facade-owner map include the two spans. No path was added, so the derived
+   `GIT_OPS_FAMILY_PATHS` set is unchanged and remains wholly absorbed by
+   `RELEASE_INVARIANT_PATHS` and the contributor release inventory. D35 is
+   `done`; its adoption hooks are the module-handle and owner-facade suites.
