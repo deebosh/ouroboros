@@ -6,6 +6,7 @@ import hashlib
 import os
 import pathlib
 import re
+import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List
 
@@ -162,6 +163,7 @@ _ENTRY_KEYS = (
     "requires_plan_review",
     "fingerprint",
     "closed_at",
+    "referent_status",
     "summary",
     "evidence",
     "context",
@@ -193,6 +195,163 @@ def _count_of(item: Dict[str, Any]) -> int:
         return max(1, int(item.get("count") or 1))
     except (TypeError, ValueError):
         return 1
+
+
+# --- Code-referent probe (ibl-74bd59bab040) -----------------------------------
+# Phantom IBLs: reflection-nominated backlog items whose summary/evidence/
+# proposed_next_step name a file/test/function that DOES NOT EXIST burn worker
+# rounds chasing ghosts. We tag each NEW entry with `referent_status` so the
+# downstream pipeline can skip / deprioritize unverified items without dropping
+# them entirely (tag, never drop). Recurrence bumps preserve the existing tag.
+
+_REFERENT_CAP = 12
+_REFERENT_RESOLVE_DEADLINE_SEC = 3.0
+_REFERENT_RESOLVE_FILE_CAP = 5000
+_REFERENT_SKIP_DIRS = frozenset({
+    ".git", "node_modules", ".venv", "venv", "__pycache__", "data",
+    "archive", ".ouroboros", "dist", "build", ".tox", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", "site-packages", "node_modules",
+})
+
+_REFERENT_PATH_RE = re.compile(r"(?:[\w./-]+/)?[\w./-]+\.(?:py|js|ts|md|json|toml|sh)\b")
+# Two identifier forms (ibl-74bd59bab040 spec): `def <name>` (declaration) AND
+# `<name>(` (call site). A single regex is awkward because the call form requires
+# `(` and the def form requires a word boundary, so we run them separately.
+_REFERENT_DEF_FORM_RE = re.compile(r"\bdef\s+([A-Za-z_]\w{3,})\b")
+_REFERENT_CALL_FORM_RE = re.compile(r"\b([A-Za-z_]\w{3,})\s*\(")
+_REFERENT_TEST_PATH_RE = re.compile(r"\b(?:tests/test_\w+)\b")
+# Capture just the `test_X` name (with or without the `tests/` prefix); ``\w+``
+# (not ``\w{4,}``) so a 1-char suffix like ``test_x`` is still a valid referent —
+# the ``test_`` prefix already enforces len>=4 on the identifier name.
+_REFERENT_TEST_NAME_RE = re.compile(r"(?:\btests/)?\b(test_\w+)\b")
+
+
+def _extract_code_referents(text: str) -> List[str]:
+    """Pull code-shaped referents (paths, def names, test names) from a blob.
+    Dedup and cap at ``_REFERENT_CAP``; bare ``x.py`` without a path separator
+    is treated as too noisy unless the basename starts with ``test_``."""
+    if not text:
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        if token and token not in seen:
+            seen.add(token)
+            out.append(token)
+
+    # (a) Paths with a code extension
+    for m in _REFERENT_PATH_RE.finditer(text):
+        s = m.group(0).rstrip("/")
+        if "/" not in s and not s.startswith("test_"):
+            continue
+        _add(s)
+
+    # (b) Function-call-style identifiers: `def <name>` (declaration) AND
+    # `<name>(` (call site). Both forms qualify as a code referent.
+    for m in _REFERENT_DEF_FORM_RE.finditer(text):
+        _add(m.group(1))
+    for m in _REFERENT_CALL_FORM_RE.finditer(text):
+        _add(m.group(1))
+
+    # (c) test names — `tests/test_X` paths first (preferred for the test module)
+    # then plain `test_X` for the test-function name.
+    for m in _REFERENT_TEST_PATH_RE.finditer(text):
+        _add(m.group(0))
+    for m in _REFERENT_TEST_NAME_RE.finditer(text):
+        _add(m.group(1))
+
+    return out[:_REFERENT_CAP]
+
+
+def _identifier_exists_in_repo(name: str, repo_dir: pathlib.Path, repo_is_dir: bool) -> bool:
+    """Bounded substring scan for ``name`` across ``.py/.js/.ts/.md`` files under
+    ``repo_dir``. Walk is time- and file-capped; any exception or incompletion
+    resolves the referent (fail-open: never fabricate a phantom flag from a
+    probe error — the spec's safety default)."""
+    if not repo_is_dir:
+        return True
+    deadline = time.monotonic() + _REFERENT_RESOLVE_DEADLINE_SEC
+    try:
+        file_count = 0
+        incomplete = False
+        for root, dirs, files in os.walk(str(repo_dir)):
+            if time.monotonic() > deadline:
+                incomplete = True
+                break
+            dirs[:] = sorted(d for d in dirs if d not in _REFERENT_SKIP_DIRS)
+            for fn in files:
+                if time.monotonic() > deadline:
+                    incomplete = True
+                    break
+                if not fn.endswith((".py", ".js", ".ts", ".md")):
+                    continue
+                file_count += 1
+                if file_count > _REFERENT_RESOLVE_FILE_CAP:
+                    incomplete = True
+                    break
+                p = pathlib.Path(root) / fn
+                try:
+                    with open(p, "r", encoding="utf-8", errors="ignore") as fh:
+                        if name in fh.read():
+                            return True
+                except Exception:
+                    continue
+            if file_count > _REFERENT_RESOLVE_FILE_CAP:
+                incomplete = True
+                break
+        if incomplete:
+            return True  # inconclusive walk -> fail-open resolved
+        return False
+    except Exception:
+        return True  # probe error -> fail-open resolved
+
+
+def _referents_resolve(referents: List[str], repo_dir: Any) -> tuple[int, int]:
+    """For every extracted referent decide whether it actually exists in the
+    repo. Returns ``(resolved, total)`` and is fail-open at the probe level:
+    any exception resolving a single referent marks THAT referent as resolved,
+    so a transient probe error never produces a phantom ``unverified`` flag."""
+    total = len(referents)
+    if total == 0:
+        return (0, 0)
+    try:
+        repo_path = pathlib.Path(repo_dir) if not isinstance(repo_dir, pathlib.Path) else repo_dir
+    except Exception:
+        return (total, total)  # cannot construct a Path -> fail-open for everyone
+    try:
+        repo_is_dir = repo_path.is_dir()
+    except Exception:
+        repo_is_dir = False
+
+    resolved = 0
+    for ref in referents:
+        try:
+            if "/" in ref or ref.endswith((".py", ".js", ".ts", ".md", ".json", ".toml", ".sh")):
+                if repo_is_dir and (repo_path / ref).exists():
+                    resolved += 1
+                elif not repo_is_dir:
+                    resolved += 1  # probe error (broken repo_dir) -> fail-open
+                # else: legitimate miss -> do not increment
+            else:
+                if _identifier_exists_in_repo(ref, repo_path, repo_is_dir):
+                    resolved += 1
+        except Exception:
+            # Per-referent probe error -> fail-open resolved
+            resolved += 1
+    return (resolved, total)
+
+
+def _classify_referent_status(resolved: int, total: int) -> str | None:
+    """Map a referent probe to ``referent_status`` per the ibl-74bd59bab040 spec.
+    Returns ``None`` when there is nothing to classify (total == 0)."""
+    if total == 0:
+        return "none"
+    if resolved == 0:
+        return "unverified"
+    if resolved < total:
+        return "partial"
+    return "verified"
 
 
 def _serialize_item(entry: Dict[str, Any]) -> str:
@@ -308,12 +467,23 @@ def _semantic_redirect_fingerprints(
     return out
 
 
-def append_backlog_items(drive_root: Any, items: List[Dict[str, Any]]) -> int:
+def append_backlog_items(
+    drive_root: Any,
+    items: List[Dict[str, Any]],
+    repo_dir: Any = None,
+) -> int:
     """Add/refresh backlog items. Recurrence (A): a repeat of an existing item is
     NOT dropped — its ``count`` and ``last_seen`` are bumped in place (and a
     previously-closed item re-opens). Priority/kind (B/D) are persisted. A reworded
     restatement that misses the exact fingerprint is caught by the semantic dedup
-    pre-pass (C9.2) and folded into the item it duplicates."""
+    pre-pass (C9.2) and folded into the item it duplicates.
+
+    Optional ``repo_dir`` enables the ibl-74bd59bab040 phantom-referent tag: when
+    provided, each NEW entry is probed for code-shaped referents in its
+    summary/evidence/proposed_next_step, tagged ``verified|unverified|partial|none``,
+    and a high-priority unverified entry is downgraded to ``med``. Recurrence bumps
+    preserve the original tag — the count never re-probes. ``None`` (default) keeps
+    the prior behaviour: every existing caller's tag-free legacy path is intact."""
     if not items:
         return 0
 
@@ -352,11 +522,15 @@ def append_backlog_items(drive_root: Any, items: List[Dict[str, Any]]) -> int:
                 if str(ex.get("status") or "").lower() == "done":
                     ex["status"] = "open"
                     ex.pop("closed_at", None)
+                # NOTE: a recurrence bump NEVER recomputes referent_status — once
+                # tagged it stays tagged (phantom-grade items stay phantom-grade, and
+                # a real referent stays verified) until the groom / close path
+                # explicitly retags.
                 ex.pop("_raw", None)  # modified -> re-serialize canonically
                 changed += 1
                 continue
             created = _sanitize(item.get("created_at", now), 40)
-            entry = {
+            entry: Dict[str, Any] = {
                 "id": str(item.get("id") or f"ibl-{fingerprint}"),
                 "status": _sanitize(item.get("status", "open"), 40) or "open",
                 "priority": _priority(item.get("priority")),
@@ -374,6 +548,29 @@ def append_backlog_items(drive_root: Any, items: List[Dict[str, Any]]) -> int:
                 "context": _sanitize(item.get("context", ""), 400),
                 "proposed_next_step": _sanitize(item.get("proposed_next_step", ""), 260),
             }
+
+            # ibl-74bd59bab040 phantom-referent tag — keeps the item (tag, do NOT
+            # drop) and downgrades a high-priority unverified item to ``med`` so
+            # downstream workers don't burn 30-84 rounds on a no-such-referent.
+            if repo_dir is not None:
+                blob = " ".join(
+                    [
+                        str(entry.get("summary") or ""),
+                        str(entry.get("evidence") or ""),
+                        str(entry.get("proposed_next_step") or ""),
+                    ]
+                )
+                referents = _extract_code_referents(blob)
+                resolved, total = _referents_resolve(referents, repo_dir)
+                status = _classify_referent_status(resolved, total)
+                if status is not None:
+                    entry["referent_status"] = status
+                # A phantom-suspect is not high priority — drop one notch. Lower-
+                # priority items also stay at their level (med stays med, low
+                # stays low): the spec only downgrades high.
+                if status == "unverified" and entry.get("priority") == "high":
+                    entry["priority"] = "med"
+
             by_key[fingerprint] = entry
             order.append(fingerprint)
             fp_to_key[fingerprint] = fingerprint
@@ -392,14 +589,18 @@ def append_backlog_items(drive_root: Any, items: List[Dict[str, Any]]) -> int:
     return changed
 
 
-def merge_backlog_text(drive_root: Any, text: str) -> int:
+def merge_backlog_text(drive_root: Any, text: str, repo_dir: Any = None) -> int:
     """Non-destructively merge backlog items parsed from ``text`` into the ONE
     global backlog (C10.1 Fix A). Routes through ``append_backlog_items`` so the
     write is a UNION (existing items preserved, new items added, reworded restatements
     folded by the dedup pre-pass) — never a truncating overwrite that could wipe the
     immune backlog. Returns the number of items merged, or ``-1`` (fail-closed) when
     ``text`` carries no parseable item — an unparseable overwrite must leave the
-    backlog intact, even if the model believes it wrote something. Never raises."""
+    backlog intact, even if the model believes it wrote something. Never raises.
+
+    ``repo_dir`` is forwarded to the underlying ``append_backlog_items`` so a
+    non-``None`` value triggers the ibl-74bd59bab040 phantom-referent tag for
+    NEW items; ``None`` preserves the legacy tag-free behaviour."""
     try:
         items = [
             it for it in _parse_backlog_items(text or "")
@@ -434,7 +635,7 @@ def merge_backlog_text(drive_root: Any, text: str) -> int:
         fresh.append(it)
     if not fresh:
         return 0  # everything already present — backlog intact, no inflation
-    return append_backlog_items(drive_root, fresh)
+    return append_backlog_items(drive_root, fresh, repo_dir=repo_dir)
 
 
 def close_backlog_items(drive_root: Any, *, task_id: Any = None, ids: Any = None) -> int:

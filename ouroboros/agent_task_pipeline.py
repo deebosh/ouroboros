@@ -160,7 +160,13 @@ def _update_improvement_backlog(
         candidates = list((reflection_entry or {}).get("backlog_candidates") or [])
         if not candidates:
             return 0
-        added = append_backlog_items(env.drive_root, candidates)
+        # ibl-74bd59bab040 phantom-referent tag: thread the system repo through so
+        # each NEW entry is probed for code-shaped referents and a high-priority
+        # unverified item is downgraded to ``med`` (tag, never drop). Falls back
+        # to the legacy tag-free path when the env doesn't expose a repo_dir
+        # (older env shapes, tests, future scopes).
+        repo_dir = getattr(env, "repo_dir", None)
+        added = append_backlog_items(env.drive_root, candidates, repo_dir=repo_dir)
         try:
             from ouroboros.improvement_backlog import groom_backlog
 

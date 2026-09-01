@@ -404,3 +404,160 @@ def test_groom_cap_default_is_raised_and_env_configurable(monkeypatch):
     finally:
         monkeypatch.delenv("OUROBOROS_BACKLOG_GROOM_CAP", raising=False)
         importlib.reload(ib)
+
+
+# ---------------------------------------------------------------------------
+# referent_status tagging (ibl-74bd59bab040) — phantom IBLs must NOT burn
+# worker rounds. The pipeline tags a NEW entry with referent_status in
+# {verified, unverified, partial, none} and downgrades a high-priority
+# unverified item to ``med``. Existing tag-free callers keep the prior shape.
+# ---------------------------------------------------------------------------
+
+
+def test_extract_code_referents_returns_paths_defs_and_tests():
+    """The three referent kinds must all come out, dedup applied."""
+    from ouroboros.improvement_backlog import _extract_code_referents
+
+    refs = _extract_code_referents(
+        "fix ouroboros/tools/git.py:42 and def _foo_bar_baz and tests/test_x"
+    )
+    assert "ouroboros/tools/git.py" in refs
+    assert "_foo_bar_baz" in refs
+    assert "test_x" in refs
+
+
+def test_append_backlog_items_with_resolvable_path_marks_verified(tmp_path):
+    """A new entry naming a real repo-relative path -> referent_status=verified."""
+    repo = tmp_path / "repo"
+    (repo / "ouroboros").mkdir(parents=True)
+    (repo / "ouroboros" / "real.py").write_text("# exists\n", encoding="utf-8")
+
+    append_backlog_items(tmp_path, [{
+        "summary": "patch ouroboros/real.py:42",
+        "category": "process",
+        "source": "execution_reflection",
+        "task_id": "task-r",
+        "evidence": "we need to update ouroboros/real.py",
+        "proposed_next_step": "edit real.py",
+    }], repo_dir=repo)
+
+    items = load_backlog_items(tmp_path)
+    assert len(items) == 1
+    assert items[0]["referent_status"] == "verified"
+
+
+def test_append_backlog_items_with_phantom_referents_marks_unverified_and_downgrades(tmp_path):
+    """A high-priority new entry whose only referents do NOT exist -> unverified;
+    the priority is dropped one notch to ``med`` (spec). The item is NOT
+    rejected — tagged and kept."""
+    repo = tmp_path / "repo"
+    (repo / "ouroboros").mkdir(parents=True)
+    # Empty repo: nothing matches.
+
+    append_backlog_items(tmp_path, [{
+        "summary": "wrap ouroboros/does_not_exist_zzz.py and def totally_made_up_symbol_xyz",
+        "category": "process",
+        "source": "execution_reflection",
+        "task_id": "task-phantom",
+        "evidence": "we should fix totally_made_up_symbol_xyz",
+        "priority": "high",
+        "proposed_next_step": "update does_not_exist_zzz.py and totally_made_up_symbol_xyz",
+    }], repo_dir=repo)
+
+    items = load_backlog_items(tmp_path)
+    assert len(items) == 1
+    assert items[0]["referent_status"] == "unverified"
+    assert items[0]["priority"] == "med"
+
+
+def test_append_backlog_items_with_no_referents_marks_none_and_preserves_priority(tmp_path):
+    """Prose-only items (no path, def, or test tokens) -> none, priority untouched."""
+    repo = tmp_path / "repo"
+    (repo / "ouroboros").mkdir(parents=True)
+
+    append_backlog_items(tmp_path, [{
+        "summary": "recurring task friction around REVIEW_BLOCKED",
+        "category": "process",
+        "source": "execution_reflection",
+        "task_id": "task-none",
+        "evidence": "REVIEW_BLOCKED persists across cycles",
+        "priority": "high",
+        "proposed_next_step": "look at the dispatch pipeline",
+    }], repo_dir=repo)
+
+    items = load_backlog_items(tmp_path)
+    assert len(items) == 1
+    assert items[0]["referent_status"] == "none"
+    assert items[0]["priority"] == "high"
+
+
+def test_append_backlog_items_without_repo_dir_keeps_legacy_shape(tmp_path):
+    """Existing callers pass no repo_dir; behaviour is identical and no
+    referent_status key is written."""
+    append_backlog_items(tmp_path, [{
+        "summary": "patch ouroboros/no_such_thing.py",
+        "category": "process",
+        "source": "execution_reflection",
+        "task_id": "task-legacy",
+        "evidence": "we should fix ouroboros/no_such_thing.py",
+    }])  # NOTE: no repo_dir kwarg
+
+    items = load_backlog_items(tmp_path)
+    assert len(items) == 1
+    assert "referent_status" not in items[0]
+
+
+def test_append_backlog_items_recurrence_preserves_referent_status(tmp_path):
+    """A recurrence bump must NOT recompute or overwrite the original tag."""
+    repo = tmp_path / "repo"
+    (repo / "ouroboros").mkdir(parents=True)
+    (repo / "ouroboros" / "real.py").write_text("# exists\n", encoding="utf-8")
+
+    item = {
+        "summary": "patch ouroboros/real.py:42",
+        "category": "process",
+        "source": "execution_reflection",
+        "task_id": "task-rec",
+        "evidence": "we need to update real.py",
+        "proposed_next_step": "edit real.py",
+    }
+
+    # First append: path exists -> verified.
+    assert append_backlog_items(tmp_path, [item], repo_dir=repo) == 1
+    items = load_backlog_items(tmp_path)
+    assert items[0]["referent_status"] == "verified"
+    assert int(items[0]["count"]) == 1
+
+    # Now physically REMOVE the file so a re-probe would have classified the
+    # item as unverified; a buggy implementation would have flipped the tag.
+    (repo / "ouroboros" / "real.py").unlink()
+
+    # Second append: same fingerprint => recurrence, NOT a new entry. The tag
+    # must remain ``verified`` — once tagged, stays tagged until groom / close.
+    assert append_backlog_items(tmp_path, [item], repo_dir=repo) == 1
+    items = load_backlog_items(tmp_path)
+    assert len(items) == 1
+    assert items[0]["referent_status"] == "verified"
+    assert int(items[0]["count"]) == 2
+
+
+def test_append_backlog_items_fail_open_on_repo_dir_probe_error(tmp_path):
+    """A non-dir repo_dir must NOT crash and must not invent a phantom flag —
+    fail-open resolves every referent, so the classification is either
+    ``verified`` (probe error on identifier scan -> all resolved) or ``none``
+    (item carries no code-shaped referents)."""
+    not_a_dir = tmp_path / "not-a-dir"
+    not_a_dir.write_text("this is a regular file, not a directory\n", encoding="utf-8")
+
+    append_backlog_items(tmp_path, [{
+        "summary": "noop — prose only, no code referent",
+        "category": "process",
+        "source": "execution_reflection",
+        "task_id": "task-probe-error",
+        "evidence": "general prose observation about the world",
+    }], repo_dir=not_a_dir)
+
+    items = load_backlog_items(tmp_path)
+    assert len(items) == 1
+    assert items[0]["referent_status"] in {"verified", "none"}
+    assert items[0]["priority"] in {"high", "med", "low"}
