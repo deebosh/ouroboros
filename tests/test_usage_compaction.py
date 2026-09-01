@@ -1,0 +1,463 @@
+"""CPL4-C6 pins: seq-preserving compaction of the monetary usage ledger.
+
+Design contract: docs/v7next/DESIGN_USAGE_COMPACTION.md. The invariants
+pinned here are monetary-authority invariants (owner sanction 1A):
+
+1. decimal-exact money before/after; the production projections render EQUAL;
+2. in-flight (unsettled) rows never fold and stay transitionable;
+3. crash between archive write and ledger swap leaves the ledger byte-identical;
+4. budget enforcement sees the same numbers across compaction;
+5. every pre-compaction attempt_id stays resolvable (live ∪ archive) — the
+   CPL-5 reverse-sweep join surface — across chained compactions, with
+   tamper-evident segments;
+6. idempotent kinds (subscription/external/legacy) are never folded, so their
+   replay dedup keeps working;
+7. trigger policy: config SSOT threshold, thrash guard, verify-abort = no-op;
+8. baseline rows are legal only as the leading block.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from decimal import Decimal
+
+import pytest
+
+from ouroboros import usage_accounting as ua
+from ouroboros import usage_compaction as uc
+from ouroboros.usage_ledger import UsageLedgerCorrupt, _validate_records
+
+
+@pytest.fixture
+def data_root(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
+    monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
+    monkeypatch.setenv("TOTAL_BUDGET", "100")
+    (root / "state").mkdir(parents=True)
+    (root / ua.IMPORT_REL).parent.mkdir(parents=True, exist_ok=True)
+    (root / ua.IMPORT_REL).write_text(
+        json.dumps({"completed": True}), encoding="utf-8"
+    )
+    return root
+
+
+def _request(data_root, **overrides):
+    values = {
+        "model": "openai/gpt-5.2",
+        "provider": "openai",
+        "reservation_usd": 1.0,
+        "drive_root": data_root,
+        "task_id": "child",
+        "root_task_id": "root",
+        "source": "test",
+    }
+    values.update(overrides)
+    return ua.AttemptRequest(**values)
+
+
+def _ledger_lines(data_root):
+    path = data_root / ua.LEDGER_REL
+    if not path.exists():
+        return []
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _ledger_rows(data_root):
+    return [json.loads(line) for line in _ledger_lines(data_root)]
+
+
+def _settle(data_root, *, cost=None, usage=None, cost_final=False, **request_overrides):
+    reservation = ua.reserve_attempt(_request(data_root, **request_overrides))
+    ua.mark_dispatched(reservation)
+    ua.settle_attempt(reservation, usage or {"prompt_tokens": 10, "completion_tokens": 5},
+                      cost_usd=cost, cost_final=cost_final)
+    return reservation
+
+
+def _seed_mixed_ledger(data_root):
+    """A realistic ledger: settled (weird floats, unknown costs), unresolved,
+    released, in-flight, sessions, external, review-attributed."""
+    _settle(data_root, cost=0.123456789012345, cost_final=True)
+    _settle(data_root, cost=1.1, task_id="t2", root_task_id="root2",
+            root_limit_usd=50.0)
+    _settle(data_root, cost=2.2, task_id="t2", root_task_id="root2",
+            root_limit_usd=40.0)
+    _settle(data_root, cost=None, usage={}, model="openai/gpt-5.2-mini")
+    reservation = ua.reserve_attempt(_request(data_root, task_id="t3"))
+    ua.mark_dispatched(reservation)
+    ua.mark_unresolved(reservation, "provider went dark")
+    reservation = ua.reserve_attempt(_request(data_root, task_id="t4"))
+    ua.release_attempt(reservation, "not_dispatched")
+    ua.record_subscription_session(
+        "sess-1", drive_root=data_root, route="claudexor:claude", model="fable",
+        task_id="t5", root_task_id="root", spend_usd=0.5, reset_at="2026-09-02T00:00:00Z",
+    )
+    ua.record_unmetered_external_dispatch(
+        "ext-1", drive_root=data_root, model="ext-model", task_id="t6",
+        prompt_tokens=7, completion_tokens=3,
+    )
+    with ua.usage_scope(ua.UsageScope(
+        drive_root=data_root, task_id="rv", root_task_id="root",
+        review_skill="skill-x", review_wave_id="w1", review_slot_id="s1",
+    )):
+        _settle(data_root, cost=3.5, cost_final=True)
+    # In-flight chains that MUST survive: one reserved, one dispatched.
+    reserved = ua.reserve_attempt(_request(data_root, task_id="open-r"))
+    dispatched = ua.reserve_attempt(_request(data_root, task_id="open-d"))
+    ua.mark_dispatched(dispatched)
+    return reserved, dispatched
+
+
+def _decimal_money(rows):
+    """Exact decimal (cost, bound) totals over FINAL rows, strings included."""
+    finals = {}
+    for row in rows:
+        finals[str(row.get("attempt_id"))] = row
+    cost = Decimal(0)
+    bound = Decimal(0)
+    for row in finals.values():
+        if str(row.get("kind") or "") == "usage_baseline":
+            continue
+        value = row.get("cost_usd")
+        if value is not None and str(row.get("state") or "") == "settled":
+            cost += Decimal(str(value))
+        upper = row.get("reservation_upper_bound_usd")
+        if upper is not None:
+            bound += Decimal(str(upper))
+    return cost, bound
+
+
+def _compact(data_root):
+    with ua._locked(data_root):
+        return uc.compact_usage_ledger_locked(data_root)
+
+
+def _projection_snapshot(data_root):
+    return (
+        ua.usage_projection(data_root),
+        ua.usage_projection(data_root, root_task_id="root"),
+        ua.usage_projection(data_root, root_task_id="root2"),
+        ua.usage_breakdown(data_root),
+        ua.usage_breakdown(data_root, root_task_id="root"),
+        ua.usage_breakdown(data_root, task_id="t2"),
+    )
+
+
+# --- 1 + 4: monetary exactness and budget equality ---------------------------
+
+def test_compaction_preserves_money_and_projections_exactly(data_root):
+    _seed_mixed_ledger(data_root)
+    before_rows = _ledger_rows(data_root)
+    before_money = _decimal_money(before_rows)
+    before_projection = _projection_snapshot(data_root)
+    before_review = ua.skill_review_usage(
+        data_root, review_skill="skill-x", review_wave_id="w1")
+
+    receipt = _compact(data_root)
+    assert receipt is not None
+    assert receipt["folded_row_count"] > 0
+
+    after_rows = _ledger_rows(data_root)
+    assert len(after_rows) < len(before_rows)
+    assert _decimal_money(after_rows) == before_money
+    assert _projection_snapshot(data_root) == before_projection
+    # Review-attributed attempts are retained: the per-attempt wave projection
+    # is unchanged, attempt ids included.
+    after_review = ua.skill_review_usage(
+        data_root, review_skill="skill-x", review_wave_id="w1")
+    assert after_review == before_review
+    assert after_review["attempt_ids"]
+
+    # Baseline block structure: one header first, groups after, dense seq.
+    header = after_rows[0]
+    assert header["kind"] == "usage_baseline"
+    assert header["seq"] == 1
+    assert header["source_sha256"]
+    assert [row["seq"] for row in after_rows] == list(range(1, len(after_rows) + 1))
+    group_kinds = {row["kind"] for row in after_rows[1:]}
+    assert "usage_baseline" not in group_kinds
+    # Money on group rows is carried as exact-decimal strings.
+    groups = [row for row in after_rows if row["kind"] == "usage_baseline_group"]
+    assert groups
+    assert all(isinstance(row.get("cost_usd"), str)
+               for row in groups if row.get("cost_usd") is not None)
+
+
+def test_budget_enforcement_sees_identical_numbers(data_root, monkeypatch):
+    monkeypatch.setenv("TOTAL_BUDGET", "10")
+    _settle(data_root, cost=4.0, cost_final=True, reservation_usd=4.0)
+    _settle(data_root, cost=4.0, cost_final=True, reservation_usd=4.0)
+    before = ua.usage_projection(data_root)
+    assert _compact(data_root) is not None
+    assert ua.usage_projection(data_root) == before
+    # Remaining ≈ 2: a 1.5 reservation fits, a 3.0 reservation does not —
+    # exactly as before compaction.
+    reservation = ua.reserve_attempt(_request(data_root, reservation_usd=1.5))
+    ua.release_attempt(reservation, "probe")
+    with pytest.raises(ua.BudgetExceeded):
+        ua.reserve_attempt(_request(data_root, reservation_usd=3.0))
+
+
+def test_root_budget_enforcement_survives_compaction(data_root):
+    _settle(data_root, cost=8.0, cost_final=True, reservation_usd=8.0,
+            task_id="rt", root_task_id="rooted", root_limit_usd=10.0)
+    assert _compact(data_root) is not None
+    with pytest.raises(ua.BudgetExceeded) as excinfo:
+        ua.reserve_attempt(_request(
+            data_root, reservation_usd=5.0, task_id="rt2",
+            root_task_id="rooted", root_limit_usd=10.0,
+        ))
+    assert excinfo.value.limit_scope == "root"
+    projection = ua.usage_projection(data_root, root_task_id="rooted")
+    assert projection["limit_usd"] == 10.0
+    assert projection["settled_usd"] == 8.0
+
+
+# --- 2: in-flight rows never fold -------------------------------------------
+
+def test_unsettled_rows_survive_and_stay_transitionable(data_root):
+    reserved, dispatched = _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    states = {
+        str(row.get("attempt_id")): str(row.get("state"))
+        for row in _ledger_rows(data_root)
+    }
+    assert states[reserved.attempt_id] == "reserved"
+    assert states[dispatched.attempt_id] == "dispatched"
+    # Their lifecycle continues over the compacted file.
+    ua.settle_attempt(dispatched, {"prompt_tokens": 3, "completion_tokens": 1},
+                      cost_usd=0.25, cost_final=True)
+    ua.release_attempt(reserved, "not_dispatched")
+    finals = {
+        str(row.get("attempt_id")): str(row.get("state"))
+        for row in _ledger_rows(data_root)
+    }
+    assert finals[dispatched.attempt_id] == "settled"
+    assert finals[reserved.attempt_id] == "released"
+
+
+# --- 3: crash-safety ---------------------------------------------------------
+
+def test_crash_between_archive_and_swap_leaves_ledger_intact(data_root, monkeypatch):
+    _seed_mixed_ledger(data_root)
+    before_bytes = (data_root / ua.LEDGER_REL).read_bytes()
+    original_swap = uc._swap_ledger_fsync
+
+    def boom(path, payload):
+        raise OSError("injected crash before ledger swap")
+
+    monkeypatch.setattr(uc, "_swap_ledger_fsync", boom)
+    with ua._locked(data_root):
+        with pytest.raises(OSError):
+            uc.compact_usage_ledger_locked(data_root)
+    assert (data_root / ua.LEDGER_REL).read_bytes() == before_bytes
+    # The orphaned archive segment is tolerated; the ledger keeps working and a
+    # retry (without the injection) compacts.
+    monkeypatch.setattr(uc, "_swap_ledger_fsync", original_swap)
+    _settle(data_root, cost=0.5, cost_final=True)
+    assert _compact(data_root) is not None
+
+
+# --- 5: CPL-5 join surface ---------------------------------------------------
+
+def test_every_attempt_id_stays_resolvable_across_chained_compactions(data_root):
+    _seed_mixed_ledger(data_root)
+    first_ids = {str(row["attempt_id"]) for row in _ledger_rows(data_root)}
+    assert _compact(data_root) is not None
+    # Second generation of traffic, second compaction.
+    _settle(data_root, cost=0.75, cost_final=True, task_id="gen2")
+    second_ids = {str(row["attempt_id"]) for row in _ledger_rows(data_root)}
+    assert _compact(data_root) is not None
+
+    live_ids = {str(row["attempt_id"]) for row in _ledger_rows(data_root)}
+    archived = uc.archived_attempt_ids(data_root)
+    for attempt_id in first_ids | second_ids:
+        assert attempt_id in live_ids or attempt_id in archived
+        assert uc.usage_attempt_recorded(data_root, attempt_id)
+    assert not uc.usage_attempt_recorded(data_root, "never-recorded")
+
+
+def test_tampered_archive_segment_is_detected(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    header = _ledger_rows(data_root)[0]
+    segment = data_root / header["archive_rel"]
+    payload = segment.read_bytes()
+    segment.write_bytes(payload.replace(b'"settled"', b'"sett1ed"', 1))
+    uc._SEGMENT_CACHE.clear()
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+
+# --- 6: idempotent kinds never fold ------------------------------------------
+
+def test_subscription_replay_still_dedups_after_compaction(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    before = len(_ledger_rows(data_root))
+    attempt_id = ua.record_subscription_session(
+        "sess-1", drive_root=data_root, route="claudexor:claude", model="fable",
+        task_id="t5", root_task_id="root", spend_usd=0.5, reset_at="2026-09-02T00:00:00Z",
+    )
+    assert attempt_id.startswith("session-")
+    assert len(_ledger_rows(data_root)) == before  # no duplicate row
+    with pytest.raises(ua.UsageAccountingError):
+        ua.record_subscription_session(
+            "sess-1", drive_root=data_root, route="other-route", model="fable",
+            task_id="t5", root_task_id="root", spend_usd=0.5,
+        )
+    before = len(_ledger_rows(data_root))
+    ua.record_unmetered_external_dispatch(
+        "ext-1", drive_root=data_root, model="ext-model", task_id="t6",
+        prompt_tokens=7, completion_tokens=3,
+    )
+    assert len(_ledger_rows(data_root)) == before
+
+
+def test_legacy_import_rows_are_retained_and_reimport_dedups(data_root):
+    events = data_root / "logs" / "events.jsonl"
+    events.parent.mkdir(parents=True, exist_ok=True)
+    events.write_text(json.dumps({
+        "type": "llm_usage", "model": "m", "provider": "openai", "cost": 0.7,
+        "prompt_tokens": 5, "completion_tokens": 2, "task_id": "lt",
+    }) + "\n", encoding="utf-8")
+    (data_root / ua.IMPORT_REL).unlink()
+    ua.ensure_legacy_imported(data_root)
+    legacy_ids = {
+        str(row["attempt_id"]) for row in _ledger_rows(data_root)
+        if str(row.get("kind", "")).startswith("legacy_")
+    }
+    assert legacy_ids
+    _settle(data_root, cost=0.9, cost_final=True)
+    assert _compact(data_root) is not None
+    live_ids = {str(row["attempt_id"]) for row in _ledger_rows(data_root)}
+    assert legacy_ids <= live_ids  # never folded
+    # Watermark loss: the resumable import replays against the LIVE ledger and
+    # appends nothing new.
+    before = len(_ledger_rows(data_root))
+    (data_root / ua.IMPORT_REL).unlink()
+    result = ua.ensure_legacy_imported(data_root)
+    assert result["rows_appended"] == 0
+    assert len(_ledger_rows(data_root)) == before
+
+
+# --- 7: trigger policy -------------------------------------------------------
+
+def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch):
+    _seed_mixed_ledger(data_root)
+    size = (data_root / ua.LEDGER_REL).stat().st_size
+    monkeypatch.setattr("ouroboros.config.USAGE_LEDGER_COMPACT_BYTES", size * 10)
+    uc._COMPACT_ATTEMPTS.clear()
+    _settle(data_root, cost=0.1, cost_final=True)
+    assert not any(row.get("kind") == "usage_baseline" for row in _ledger_rows(data_root))
+    monkeypatch.setattr("ouroboros.config.USAGE_LEDGER_COMPACT_BYTES", 1)
+    _settle(data_root, cost=0.1, cost_final=True)
+    assert any(row.get("kind") == "usage_baseline" for row in _ledger_rows(data_root))
+
+
+def test_unprofitable_pass_is_throttled(data_root, monkeypatch):
+    # Only in-flight rows: nothing foldable, compaction must not thrash.
+    for task in ("a", "b"):
+        reservation = ua.reserve_attempt(_request(data_root, task_id=task))
+        ua.mark_dispatched(reservation)
+    monkeypatch.setattr("ouroboros.config.USAGE_LEDGER_COMPACT_BYTES", 1)
+    monkeypatch.setattr(
+        "ouroboros.config.USAGE_LEDGER_COMPACT_RETRY_GROWTH_BYTES", 10_000_000)
+    uc._COMPACT_ATTEMPTS.clear()
+    calls = []
+    original = uc.compact_usage_ledger_locked
+
+    def counting(root):
+        calls.append(1)
+        return original(root)
+
+    monkeypatch.setattr(uc, "compact_usage_ledger_locked", counting)
+    before = _ledger_lines(data_root)
+    with ua._locked(data_root):
+        assert uc.maybe_compact_usage_ledger_locked(data_root) is False
+    assert _ledger_lines(data_root) == before  # nothing foldable -> no-op
+    with ua._locked(data_root):
+        assert uc.maybe_compact_usage_ledger_locked(data_root) is False
+    assert len(calls) == 1  # second call throttled by the growth guard
+
+
+def test_verify_abort_on_foreign_noncanonical_literal(data_root):
+    _settle(data_root, cost=1.0, cost_final=True)
+    ua.record_subscription_session(
+        "sess-nc", drive_root=data_root, route="claudexor:claude", model="fable",
+        task_id="t", root_task_id="root", spend_usd=0.5,
+    )
+    path = data_root / ua.LEDGER_REL
+    lines = _ledger_lines(data_root)
+    # A RETAINED row (subscription kind never folds) whose monetary literal is
+    # NOT double-round-trippable: a foreign writer's long literal. Its value
+    # survives as a double, but the exact decimal cannot be re-serialized, so
+    # the pass must abort and leave the ledger untouched. (Folded rows are
+    # immune by construction: their decimals are carried as exact strings.)
+    doctored = lines[-1].replace(
+        '"cost_usd":0.5', '"cost_usd":0.50000000000000002775557561563')
+    assert doctored != lines[-1]
+    path.write_text("\n".join(lines[:-1] + [doctored]) + "\n", encoding="utf-8")
+    before_bytes = path.read_bytes()
+    assert _compact(data_root) is None
+    assert path.read_bytes() == before_bytes
+
+
+# --- 8: structural validation ------------------------------------------------
+
+def test_baseline_rows_are_rejected_outside_the_leading_block(data_root):
+    _settle(data_root, cost=1.0, cost_final=True)
+    rows = _ledger_rows(data_root)
+    smuggled = {
+        "kind": "usage_baseline_group", "attempt_id": "baseline-x-g0001",
+        "state": "settled", "seq": len(rows) + 1, "ts": "2026-09-01T00:00:00Z",
+        "baseline_id": "x", "folded_attempt_count": 2, "model": "m",
+        "provider": "p", "category": "task", "source": "llm", "task_id": "t",
+        "root_task_id": "t", "parent_task_id": "", "cost_usd": "1.0",
+        "cost_final": True,
+    }
+    with pytest.raises(UsageLedgerCorrupt):
+        _validate_records([*rows, smuggled])
+
+
+def test_group_rows_require_a_leading_header(data_root):
+    group = {
+        "kind": "usage_baseline_group", "attempt_id": "baseline-x-g0001",
+        "state": "settled", "seq": 1, "baseline_id": "x",
+        "folded_attempt_count": 1, "cost_usd": "1.0", "cost_final": True,
+    }
+    with pytest.raises(UsageLedgerCorrupt):
+        _validate_records([group])
+
+
+def test_compacted_ledger_revalidates_and_quarantine_semantics_hold(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    rows = _ledger_rows(data_root)
+    _validate_records(rows)  # full-file validation accepts the baseline block
+    # Torn tail on the compacted file still quarantines exactly as before.
+    path = data_root / ua.LEDGER_REL
+    with path.open("ab") as handle:
+        handle.write(b'{"torn": ')
+    projection = ua.usage_projection(data_root)
+    assert projection["integrity_degraded"] is True
+    assert (data_root / ua.QUARANTINE_REL).is_file()
+
+
+def test_archive_segment_holds_exact_source_bytes(data_root):
+    _seed_mixed_ledger(data_root)
+    source = (data_root / ua.LEDGER_REL).read_bytes()
+    receipt = _compact(data_root)
+    segment = data_root / receipt["archive_rel"]
+    payload = segment.read_bytes()
+    assert payload == source
+    assert hashlib.sha256(payload).hexdigest() == receipt["source_sha256"]
+    header = _ledger_rows(data_root)[0]
+    assert header["archive_rel"] == receipt["archive_rel"]
+    assert header["source_sha256"] == receipt["source_sha256"]
+    # Retained rows carry their pre-compaction seq for provenance.
+    retained = [row for row in _ledger_rows(data_root)
+                if row["kind"] not in {"usage_baseline", "usage_baseline_group"}]
+    assert retained
+    assert all(isinstance(row.get("pre_compaction_seq"), int) for row in retained)

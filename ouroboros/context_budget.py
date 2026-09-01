@@ -220,7 +220,10 @@ SCRATCHPAD_CONSOLIDATION_THRESHOLD_CHARS = 30_000
 # Ledger: measured evidence in ouroboros/usage_ledger.py::_locked — a ~20MB
 # usage_attempts.jsonl costs ~0.5s per full re-read UNDER THE MONETARY LOCK,
 # starving concurrent workers (the 2026-07-23 lock-timeout incident). Warn at
-# exactly that measured degradation point.
+# exactly that measured degradation point. Since CPL4-C6, size-triggered
+# compaction (config.USAGE_LEDGER_COMPACT_BYTES, usage_compaction.py) should
+# hold the file far below this — like the rotation-log warns, this fires only
+# if compaction is broken or the unfoldable residue itself grows this large.
 USAGE_LEDGER_WARN_BYTES = 20_000_000
 # events/tools/supervisor/task_reflections logs are ROTATION-BOUNDED since the
 # CPL4-C1..C4 rotation train (same 800KB rotator and supervisor tick as

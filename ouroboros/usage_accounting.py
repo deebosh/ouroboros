@@ -697,6 +697,11 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
     pricing_known = bound is not None
     attempt_id = uuid.uuid4().hex
     with _locked(root):
+        # CPL4-C6: opportunistic size-triggered compaction on exactly the path
+        # whose lock hold the ledger size degrades (contained; never raises).
+        from ouroboros.usage_compaction import maybe_compact_usage_ledger_locked
+
+        maybe_compact_usage_ledger_locked(root)
         records = _read_records_locked_cached(root)
         finals = list(_final_rows(records).values())
         global_summary = _summary(finals)

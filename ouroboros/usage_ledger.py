@@ -238,7 +238,16 @@ def _validate_records(
     expected sequence number and the prefix's per-attempt last-state map (which
     is mutated in place as the tail validates). Defaults reproduce the historic
     whole-ledger behavior exactly.
+
+    Baseline rows (CPL4-C6 compaction, docs/v7next/DESIGN_USAGE_COMPACTION.md)
+    are legal ONLY as the leading block of a from-scratch validation: exactly
+    one ``usage_baseline`` header at seq 1, ``usage_baseline_group`` rows
+    joined to it by ``baseline_id``. The compactor rewrites the whole file
+    atomically and never appends, so a baseline row in an incremental tail (or
+    after any non-baseline row) is corruption.
     """
+    baseline_allowed = int(start_seq) == 1 and not states
+    baseline_id: Optional[str] = None
     states = {} if states is None else states
     expected = int(start_seq)
     for row in records:
@@ -278,6 +287,32 @@ def _validate_records(
                     f"invalid {token_field} in usage row seq={sequence}"
                 )
         previous = states.get(attempt_id)
+        if kind in {"usage_baseline", "usage_baseline_group"}:
+            if not baseline_allowed or previous is not None:
+                raise UsageLedgerCorrupt(
+                    f"baseline row outside the leading block at seq={sequence}"
+                )
+            if kind == "usage_baseline":
+                identity = row.get("baseline_id")
+                if baseline_id is not None or sequence != 1 or state != "settled" or not (
+                    isinstance(identity, str) and identity
+                ):
+                    raise UsageLedgerCorrupt(f"invalid usage baseline header seq={sequence}")
+                baseline_id = identity
+            else:
+                count = row.get("folded_attempt_count")
+                if (
+                    baseline_id is None
+                    or row.get("baseline_id") != baseline_id
+                    or isinstance(count, bool)
+                    or not isinstance(count, int)
+                    or count < 1
+                    or state not in _TERMINAL
+                ):
+                    raise UsageLedgerCorrupt(f"invalid usage baseline group seq={sequence}")
+            states[attempt_id] = state
+            continue
+        baseline_allowed = False
         if kind.startswith("legacy_") or kind in {"external_unmetered", "subscription_session"}:
             if previous is not None or state not in {"settled", "unresolved"}:
                 raise UsageLedgerCorrupt(f"invalid legacy usage row seq={row.get('seq')}")
