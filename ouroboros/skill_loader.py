@@ -171,14 +171,20 @@ def _skills_state_root(drive_root: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(drive_root) / "state" / "skills"
 
 
-def skill_state_dir(drive_root: pathlib.Path, name: str) -> pathlib.Path:
-    """Return ``~/Ouroboros/data/state/skills/<name>/`` (created on demand).
+def skill_state_dir_path(drive_root: pathlib.Path, name: str) -> pathlib.Path:
+    """The skill's state dir path WITHOUT creating it — for read-only
+    consumers (``load_review_state``, the RC auditor's admission reuse):
+    reading state must never mutate the root it reads from.
 
     The name is normalized to its alnum-dashes shape before joining so a
     malicious manifest ``name: ../foo`` cannot escape the state root.
     """
-    safe = _sanitize_skill_name(name)
-    path = _skills_state_root(drive_root) / safe
+    return _skills_state_root(drive_root) / _sanitize_skill_name(name)
+
+
+def skill_state_dir(drive_root: pathlib.Path, name: str) -> pathlib.Path:
+    """Return ``~/Ouroboros/data/state/skills/<name>/`` (created on demand)."""
+    path = skill_state_dir_path(drive_root, name)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -507,7 +513,9 @@ def load_review_state(
     is_module_widget: bool = False,
     skill_dir: Optional[pathlib.Path] = None,
 ) -> SkillReviewState:
-    data = read_json_dict(skill_state_dir(drive_root, name) / "review.json")
+    # Read-only over the state root (skill_state_dir_path, never mkdir): the
+    # RC auditor reuses this admission read over a root it must not mutate.
+    data = read_json_dict(skill_state_dir_path(drive_root, name) / "review.json")
     if not isinstance(data, dict):
         return SkillReviewState()
     raw_status = str(data.get("status") or "").lower()
@@ -541,7 +549,7 @@ def load_review_state(
     # the skill drops back to pending), exactly like native_seed provenance. Content edits
     # still stale the verdict through the normal content_hash check.
     if review_profile == "owner_attested":
-        if not (skill_state_dir(drive_root, name) / "owner_attestation.json").is_file():
+        if not (skill_state_dir_path(drive_root, name) / "owner_attestation.json").is_file():
             return SkillReviewState()
     has_review_verdicts = any(
         str(f.get("verdict") or "").upper() in {"PASS", "FAIL"}

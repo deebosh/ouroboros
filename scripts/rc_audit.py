@@ -44,8 +44,10 @@ is NEVER a clean exit 0: it becomes a BLOCKING ``unauditable-source`` finding
 Reuse-first: the classifiers are the runtime's own, consumed read-only —
 ``task_result_schema_refusal`` (pure), ``parse_skill_manifest_text``,
 ``extension_new_pass_admission_error``, ``skill_review_gate``,
-``skill_loader._walk_skill_packages`` / ``compute_content_hash`` (the
-runtime's own skill discovery and review-staleness hash),
+``skill_loader._walk_skill_packages`` / ``compute_content_hash`` /
+``load_review_state`` (the runtime's own skill discovery, review-staleness
+hash and admission-state read — provenance-gated exactly like the runtime,
+resolving state paths without creating them),
 ``RETIRED_SETTING_KEYS`` / ``RETIRED_COMMA_LIST_SETTING_KEYS``. None of the
 imported modules touches config paths at import time. Review-exempt dev/ops
 tool: not part of the runtime gate.
@@ -85,7 +87,6 @@ from ouroboros.contracts.plugin_api import (  # noqa: E402
 from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY  # noqa: E402
 from ouroboros.contracts.skill_manifest import (  # noqa: E402
     SkillManifestError,
-    canonical_skill_name,
     parse_skill_manifest_text,
 )
 from ouroboros.settings_defaults import (  # noqa: E402
@@ -96,6 +97,7 @@ from ouroboros.skill_loader import (  # noqa: E402
     SkillPayloadUnreadable,
     _walk_skill_packages,
     compute_content_hash,
+    load_review_state,
 )
 from ouroboros.skill_review_status import skill_review_gate  # noqa: E402
 from ouroboros.task_result_schema import (  # noqa: E402
@@ -340,18 +342,31 @@ def _iter_skill_dirs(data_root: pathlib.Path):
     yield from _walk_skill_packages(data_root / "skills")
 
 
-def _review_gate_for(data_root: pathlib.Path, name: str) -> Dict[str, Any]:
-    safe = canonical_skill_name(name)
-    review_path = data_root / "state" / "skills" / safe / "review.json"
-    try:
-        data = _read_json(review_path) if review_path.is_file() else {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    status = str(data.get("status") or "")
-    gate = skill_review_gate(status)
-    gate["content_hash"] = str(data.get("content_hash") or "")
+def _review_gate_for(
+    data_root: pathlib.Path,
+    name: str,
+    *,
+    skill_type: str,
+    is_module_widget: bool,
+    skill_dir: pathlib.Path,
+) -> Dict[str, Any]:
+    """The RUNTIME's own admission state, consumed read-only (no parallel
+    rules): ``load_review_state`` re-aggregates persisted findings and
+    enforces the provenance preconditions — an ``official_hub`` profile
+    without its sidecar, a ``native_seed`` verdict without ``.seed-origin``,
+    an ``owner_attested`` verdict without its owner marker all demote to
+    pending — so a stored PASS the runtime would refuse can never grandfather
+    here. State paths resolve WITHOUT being created
+    (``skill_state_dir_path``), preserving the read-only guarantee."""
+    state = load_review_state(
+        data_root,
+        name,
+        skill_type=skill_type,
+        is_module_widget=is_module_widget,
+        skill_dir=skill_dir,
+    )
+    gate = skill_review_gate(state.status)
+    gate["content_hash"] = str(state.content_hash or "")
     return gate
 
 
@@ -394,7 +409,18 @@ def _audit_skills(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> No
             continue
         # Runtime/state identity is the DIRECTORY BASENAME (skill_loader.load_skill);
         # manifest.name is display metadata and may point at another state dir.
-        gate = _review_gate_for(data_root, skill_dir.name)
+        is_module_widget = (
+            isinstance(getattr(manifest, "ui_tab", None), dict)
+            and str(((manifest.ui_tab or {}).get("render") or {}).get("kind") or "")
+            == "module"
+        )
+        gate = _review_gate_for(
+            data_root,
+            skill_dir.name,
+            skill_type=str(getattr(manifest, "type", "") or ""),
+            is_module_widget=is_module_widget,
+            skill_dir=skill_dir,
+        )
         declared = manifest_plugin_api_field(manifest) is not None
         stored_hash = str(gate.get("content_hash") or "")
         grandfathered = False

@@ -150,11 +150,13 @@ def _real_content_hash(skill_dir: pathlib.Path) -> str:
         skill_dir, manifest_entry=manifest.entry, manifest_scripts=manifest.scripts)
 
 
-def _write_review_pass(data: pathlib.Path, state_name: str, content_hash: str) -> None:
+def _write_review_pass(data: pathlib.Path, state_name: str, content_hash: str,
+                       **extra) -> None:
     review_dir = data / "state" / "skills" / state_name
     review_dir.mkdir(parents=True)
     (review_dir / "review.json").write_text(
-        json.dumps({"status": "pass", "content_hash": content_hash}), encoding="utf-8")
+        json.dumps({"status": "pass", "content_hash": content_hash, **extra}),
+        encoding="utf-8")
 
 
 def test_grandfathered_hash_bound_pass_downgrades_plugin_api_to_a_note(tmp_path):
@@ -214,6 +216,47 @@ def test_review_state_lookup_uses_the_directory_basename_not_manifest_name(tmp_p
     plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
     assert plugin_findings
     assert all(f["severity"] == "note" for f in plugin_findings)
+
+
+def test_native_seed_pass_without_seed_origin_is_not_grandfathered(tmp_path):
+    """Adversarial fix-round 2, claim 2: the auditor judges admission through
+    the runtime's own ``load_review_state`` — a ``native_seed`` PASS whose
+    ``.seed-origin`` launcher-provenance marker is gone demotes to pending at
+    runtime, so the audit must report an incompatibility, never the
+    grandfather note. With the marker present the SAME state grandfathers."""
+    data = _build_nminus1_install(tmp_path / "install")
+    # native_seed provenance lives in the NATIVE bucket (only there is the
+    # top-level .seed-origin marker hash-exempt payload).
+    (data / "skills" / "native").mkdir()
+    skill_dir = data / "skills" / "native" / "telegram"
+    (data / "skills" / "external" / "telegram").rename(skill_dir)
+    _write_review_pass(data, "telegram", _real_content_hash(skill_dir),
+                       review_profile="native_seed")
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 1
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
+    assert plugin_findings
+    assert all(f["severity"] == "incompatible" for f in plugin_findings)
+
+    # The admission read is READ-ONLY: no state dir may be created as a side
+    # effect of judging admission (skill_state_dir_path, never mkdir).
+    assert not (data / "state" / "skills" / "telegram" / "extension_calls").exists()
+    before = _tree_snapshot(data)
+
+    # Contrast: with launcher provenance intact (.seed-origin is hash-exempt)
+    # the runtime serves the PASS and the audit grandfathers it again.
+    (skill_dir / ".seed-origin").write_text("native\n", encoding="utf-8")
+    result = _run(data, "--json", str(tmp_path / "report2.json"),
+                  isolated_root=tmp_path / "isol")
+    report = json.loads((tmp_path / "report2.json").read_text(encoding="utf-8"))
+    plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
+    assert plugin_findings
+    assert all(f["severity"] == "note" for f in plugin_findings)
+    assert any("GRANDFATHERED" in f["detail"] for f in plugin_findings)
+    after = {k: v for k, v in _tree_snapshot(data).items() if ".seed-origin" not in k}
+    assert after == before  # the two audits wrote nothing into the install
 
 
 # ----------------------------------------------------------- clean install
