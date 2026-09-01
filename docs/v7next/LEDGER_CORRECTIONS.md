@@ -2976,3 +2976,48 @@ Dispositions:
 4. Size pins: extension_loader.py untouched at 1000/1000;
    extension_plugin_api.py 1000 (<=1000 extraction pin, 600 <= plugin API
    respected); extension_child_catalog.py untouched (222).
+
+## From the F3.2 lane A (ResolvedModelTarget, base 3ba9f452)
+
+ABI-4 consumer sweep per docs/v7next/DESIGN_RESOLVED_MODEL_TARGET.md
+(greenfield §6-design; zero occurrences on base — NOT a transplant).
+
+Seam inventory (rg over comma/at model-string parsing beside resolution
+seams) and dispositions:
+
+| seam | prior output | consumers | migration |
+| --- | --- | --- | --- |
+| `model_slots.get_fallback_models` (cross-model ladder) | `list[str]` | `loop_model_call._run_cross_model_fallback_chain`; `tools/control_runtime` membership check | `provider_models.fallback_candidate_targets()` → `tuple[ResolvedModelTarget, ...]` (typed view over the ONE chain SSOT); the loop chain iterates typed candidates, `.model_id` crosses to a string only at the chat-API transport boundary |
+| `review_model_routes.get_review_models` / `get_scope_review_models` | `list[str]` | reviewer slot builders (`reviewer_slots`, `structured_scope_review_slots`), review surfaces | typed views `get_review_targets` / `get_scope_review_targets` / `resolved_review_model_target` at the SAME seam; `review_model_uses_local` is applied ONCE at construction (`provider_route == "local"` ⇔ the predicate), and the slot builders read that fact off the dataclass instead of re-asking per string. MODELS UNCHANGED: purely typization, byte-identical per configuration class (structured, default panel, local-only route, exclusive-direct-provider rewrite) |
+| `subagents.parse_subagent_harness` → `DelegationRoute` | typed route (already constructed at the parse seam) | `tools/delegate` run-request assembly | `DelegationRoute.resolved_model_target()` bridge; `_build_delegated_run_request` assembles harness pin, model, effort and credential pin from ONE typed target read |
+
+Contract facts: frozen+slots, value equality/hash, ""/0 sentinels (no
+Optional/None-vs-missing), NO pricing fields; `context_window` stays 0 at
+these seams (windows remain Capability Evidence's fact, fail-open).
+Home: `model_slots.py` (dataclass) + `provider_models.resolve_model_target`
+(constructor) — the D02-owner seam; `config.py` facade re-exports every new
+name (`test_config_extraction` owner inventory extended accordingly).
+
+Verification hook: tests/test_resolved_model_target.py (name fixed by the
+design note) — frozen-ness, value identity, construction at each seam,
+consumer-sweep grep pins (no comma/at parsing in the swept consumers).
+ADOPTION ABI-4 row: hook updated, status done.
+
+DISCLOSED RESIDUAL (typed up to the transport boundary, per the lane note —
+transports NOT rebuilt):
+
+1. The Claudexor wire body serializes the typed target back to strings
+   (`model`/`effort`/`credentialProfileId`/`harnesses`) — the engine's JSON
+   contract; the adapter no longer re-parses a `harness[=model]` slug, the
+   parse seam (`parse_subagent_harness`) remains the one string reader.
+2. Reviewer agent_session rows keep their OPAQUE `harness[=model]` spec
+   (RouteSpec/ReviewSlot vocabulary): a session spec is not an API model
+   destination, so it is not forced into `ResolvedModelTarget`; the shared
+   dataclass covers API-routed model destinations plus the delegated bridge.
+3. `tools/control_runtime.py` still consumes `get_fallback_models()` as an id
+   membership check (no parsing, no route facts) — left on the string list
+   deliberately; `resolve_credentialed_model`/`vision` candidate walks are
+   internal to the provider seam itself.
+4. `ReviewSlot`/`commit_triad_delivery` keep their existing parallel-vector
+   ABI (models/routes/efforts) — the sweep types the route-fact derivation,
+   not the review delivery contract (review models/behaviour byte-identical).
