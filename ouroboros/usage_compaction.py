@@ -23,6 +23,8 @@ under the held monetary lock; the substrate never imports it.
 
 from __future__ import annotations
 
+import contextlib
+import decimal
 import hashlib
 import json
 import logging
@@ -30,8 +32,8 @@ import os
 import pathlib
 import threading
 import uuid
-from decimal import Decimal, InvalidOperation
-from typing import Any, Callable, Dict, Optional, Tuple
+from decimal import Decimal, DecimalException, InvalidOperation
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from ouroboros._usage_rows import _breakdown_bucket, _summary
 from ouroboros.usage_ledger import (
@@ -80,8 +82,29 @@ _SEGMENT_CACHE: Dict[
 _CHAIN_UNION_CACHE: Dict[Tuple[Tuple[str, str], ...], frozenset] = {}
 
 
+# Money is summed in an EXPLICIT context, never the ambient one. The default
+# 28-digit precision silently rounds a large-magnitude sum, and both the group
+# row and the self-check that approves it are computed the same way — so a
+# rounded total verifies against itself and the lost cent commits. Sixty
+# digits is far past any real ledger; ``Inexact`` is trapped so that even past
+# it the pass ABORTS instead of writing an approximation.
+MONEY_PRECISION = 60
+
+
+@contextlib.contextmanager
+def _exact_money() -> Iterator[None]:
+    """Decimal arithmetic that cannot silently lose a digit of money."""
+    with decimal.localcontext() as context:
+        context.prec = MONEY_PRECISION
+        context.traps[decimal.Inexact] = True
+        yield
+
+
 def _decimal_of(value: Any) -> Decimal:
-    """Exact decimal of a ledger monetary value (Decimal, int, or string)."""
+    """Exact decimal of a ledger monetary value (Decimal, int, or string).
+
+    Construction is context-free by language rule, so the literal is captured
+    exactly; only the arithmetic over these values needs ``_exact_money``."""
     if isinstance(value, bool):
         raise InvalidOperation
     if isinstance(value, Decimal):
@@ -519,40 +542,41 @@ def compact_usage_ledger_locked(
     except OSError:
         return None
     try:
-        float_rows, decimal_rows = _parse_ledger_lines(raw)
-        if len(float_rows) != len(records):
-            raise _Abort("post-read line drift")
-        candidate, receipt = _build_candidate(float_rows, decimal_rows, raw)
-        if len(candidate) >= len(raw):
-            raise _Abort("no byte gain")
-        candidate_records, candidate_decimals = _parse_ledger_lines(candidate)
-        _validate_records(candidate_records)
-        finals_before = list(_final_rows(float_rows).values())
-        finals_after = list(_final_rows(candidate_records).values())
-        if _render_fingerprint(finals_before) != _render_fingerprint(finals_after):
-            raise _Abort("aggregation fingerprint mismatch")
+        with _exact_money():
+            float_rows, decimal_rows = _parse_ledger_lines(raw)
+            if len(float_rows) != len(records):
+                raise _Abort("post-read line drift")
+            candidate, receipt = _build_candidate(float_rows, decimal_rows, raw)
+            if len(candidate) >= len(raw):
+                raise _Abort("no byte gain")
+            candidate_records, candidate_decimals = _parse_ledger_lines(candidate)
+            _validate_records(candidate_records)
+            finals_before = list(_final_rows(float_rows).values())
+            finals_after = list(_final_rows(candidate_records).values())
+            if _render_fingerprint(finals_before) != _render_fingerprint(finals_after):
+                raise _Abort("aggregation fingerprint mismatch")
 
-        def decimal_totals(rows: list) -> Tuple[Decimal, Decimal]:
-            cost = Decimal(0)
-            bound = Decimal(0)
-            for row in _final_rows(rows).values():
-                if str(row.get("kind") or "") == "usage_baseline":
-                    continue
-                value = row.get("cost_usd")
-                if value is not None and str(row.get("state") or "") == "settled":
-                    cost += _decimal_of(value)
-                upper = row.get("reservation_upper_bound_usd")
-                if upper is not None:
-                    bound += _decimal_of(upper)
-            return cost, bound
+            def decimal_totals(rows: list) -> Tuple[Decimal, Decimal]:
+                cost = Decimal(0)
+                bound = Decimal(0)
+                for row in _final_rows(rows).values():
+                    if str(row.get("kind") or "") == "usage_baseline":
+                        continue
+                    value = row.get("cost_usd")
+                    if value is not None and str(row.get("state") or "") == "settled":
+                        cost += _decimal_of(value)
+                    upper = row.get("reservation_upper_bound_usd")
+                    if upper is not None:
+                        bound += _decimal_of(upper)
+                return cost, bound
 
-        if decimal_totals(decimal_rows) != decimal_totals(candidate_decimals):
-            raise _Abort("decimal money totals mismatch")
+            if decimal_totals(decimal_rows) != decimal_totals(candidate_decimals):
+                raise _Abort("decimal money totals mismatch")
         _beat(heartbeat)
     except _Abort as abort:
         log.info("usage-ledger compaction skipped: %s", abort.reason)
         return None
-    except (UsageLedgerCorrupt, InvalidOperation, ValueError, TypeError, KeyError) as exc:
+    except (UsageLedgerCorrupt, DecimalException, ValueError, TypeError, KeyError) as exc:
         # Never let a compaction defect become a monetary failure: abort clean.
         log.warning("usage-ledger compaction aborted: %s: %s", type(exc).__name__, exc)
         return None

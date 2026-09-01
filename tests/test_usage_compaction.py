@@ -17,6 +17,7 @@ pinned here are monetary-authority invariants (owner sanction 1A):
 """
 from __future__ import annotations
 
+import decimal
 import errno
 import hashlib
 import json
@@ -116,21 +117,27 @@ def _seed_mixed_ledger(data_root):
 
 
 def _decimal_money(rows):
-    """Exact decimal (cost, bound) totals over FINAL rows, strings included."""
+    """Exact decimal (cost, bound) totals over FINAL rows, strings included.
+
+    Summed under an INDEPENDENT wide context — wider than the compactor's own
+    — so this oracle stays an oracle: a helper that rounds the same way the
+    code under test rounds cannot see the code under test round."""
     finals = {}
     for row in rows:
         finals[str(row.get("attempt_id"))] = row
-    cost = Decimal(0)
-    bound = Decimal(0)
-    for row in finals.values():
-        if str(row.get("kind") or "") == "usage_baseline":
-            continue
-        value = row.get("cost_usd")
-        if value is not None and str(row.get("state") or "") == "settled":
-            cost += Decimal(str(value))
-        upper = row.get("reservation_upper_bound_usd")
-        if upper is not None:
-            bound += Decimal(str(upper))
+    with decimal.localcontext() as context:
+        context.prec = 200
+        cost = Decimal(0)
+        bound = Decimal(0)
+        for row in finals.values():
+            if str(row.get("kind") or "") == "usage_baseline":
+                continue
+            value = row.get("cost_usd")
+            if value is not None and str(row.get("state") or "") == "settled":
+                cost += Decimal(str(value))
+            upper = row.get("reservation_upper_bound_usd")
+            if upper is not None:
+                bound += Decimal(str(upper))
     return cost, bound
 
 
@@ -226,6 +233,22 @@ def test_compaction_preserves_money_and_projections_exactly(data_root):
     assert groups
     assert all(isinstance(row.get("cost_usd"), str)
                for row in groups if row.get("cost_usd") is not None)
+
+
+def test_group_sums_survive_beyond_the_default_decimal_precision(data_root, monkeypatch):
+    """10**28 + 1 is 29 digits: the ambient 28-digit context loses the 1."""
+    monkeypatch.setenv("TOTAL_BUDGET", "1e40")
+    exact = Decimal("10000000000000000000000000001")
+    _settle(data_root, cost=1e28, cost_final=True)
+    _settle(data_root, cost=1.0, cost_final=True)
+    before = _decimal_money(_ledger_rows(data_root))
+    assert before[0] == exact
+    assert _compact(data_root) is not None
+    rows = _ledger_rows(data_root)
+    groups = [row for row in rows if row["kind"] == "usage_baseline_group"]
+    assert len(groups) == 1
+    assert Decimal(groups[0]["cost_usd"]) == exact
+    assert _decimal_money(rows) == before
 
 
 def test_budget_enforcement_sees_identical_numbers(data_root, monkeypatch):
