@@ -146,7 +146,7 @@ const INTENT = {
 const TONE_RANK = { ok: 0, neutral: 1, warn: 2, error: 3 };
 const worseTone = (a, b) => (TONE_RANK[b] > TONE_RANK[a] ? b : a);
 
-export function intentAxis(state) {
+function intentAxis(state) {
     return INTENT[state.dirty ? 'draft' : state.baseline] || INTENT.saved;
 }
 
