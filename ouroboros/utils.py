@@ -471,6 +471,31 @@ def jsonl_append_lock_path(path: pathlib.Path) -> pathlib.Path:
     return path.parent / f".append_jsonl_{path_hash}.lock"
 
 
+def assert_test_data_path(path: pathlib.Path) -> None:
+    """Fail closed when pytest resolves a writer into the live data tree.
+
+    Lives here (the no-ouroboros-imports leaf) so BOTH durable-write helpers
+    guard the same roots: supervisor.state.atomic_write_text and append_jsonl
+    below — the jsonl side was the unguarded half that let the issue #455
+    supervisor.jsonl leak land silently. Outside pytest this is one env read.
+    """
+    if os.environ.get("OUROBOROS_PYTEST_ACTIVE") != "1":
+        return
+    if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") == "1":
+        return
+    roots = {pathlib.Path.home() / "Ouroboros" / "data"}
+    configured = str(os.environ.get("OUROBOROS_TEST_LIVE_DATA_ROOT") or "").strip()
+    if configured:
+        roots.add(pathlib.Path(configured))
+    target = pathlib.Path(path).resolve(strict=False)
+    for root in roots:
+        try:
+            target.relative_to(root.resolve(strict=False))
+        except ValueError:
+            continue
+        raise RuntimeError(f"PYTEST_LIVE_DATA_WRITE_BLOCKED: {target}")
+
+
 def append_jsonl(
     path: pathlib.Path, obj: Dict[str, Any], *, ensure_record_boundary: bool = False,
     require_lock: bool = False,
@@ -490,6 +515,7 @@ def append_jsonl(
     """
     if not isinstance(path, pathlib.Path):
         raise TypeError(f"append_jsonl: path must be pathlib.Path, got {type(path).__name__}")
+    assert_test_data_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(obj, ensure_ascii=False)
     data = (line + "\n").encode("utf-8")

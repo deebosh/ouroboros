@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from ouroboros.config import DATA_DIR
 from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
-from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.utils import append_jsonl, assert_test_data_path, utc_now_iso  # noqa: F401 -- assert_test_data_path re-exported: the guard moved to the utils leaf so append_jsonl shares it; state.assert_test_data_path callers keep working
 
 log = logging.getLogger(__name__)
 
@@ -35,25 +35,6 @@ QUEUE_SNAPSHOT_PATH: pathlib.Path = DRIVE_ROOT / "state" / "queue_snapshot.json"
 # has it, so reset_per_task_budget can refuse on it regardless of how the path resolves —
 # closing the budget-reset guard for custom-data-root installs (BIBLE P8).
 ISOLATED_BENCHMARK_SENTINEL = ".ouroboros_isolated_benchmark"
-
-
-def assert_test_data_path(path: pathlib.Path) -> None:
-    """Fail closed when pytest resolves a writer into the live data tree."""
-    if os.environ.get("OUROBOROS_PYTEST_ACTIVE") != "1":
-        return
-    if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") == "1":
-        return
-    roots = {pathlib.Path.home() / "Ouroboros" / "data"}
-    configured = str(os.environ.get("OUROBOROS_TEST_LIVE_DATA_ROOT") or "").strip()
-    if configured:
-        roots.add(pathlib.Path(configured))
-    target = pathlib.Path(path).resolve(strict=False)
-    for root in roots:
-        try:
-            target.relative_to(root.resolve(strict=False))
-        except ValueError:
-            continue
-        raise RuntimeError(f"PYTEST_LIVE_DATA_WRITE_BLOCKED: {target}")
 
 
 def init(drive_root: pathlib.Path, total_budget_limit: float = 0.0) -> None:
