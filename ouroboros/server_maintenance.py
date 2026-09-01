@@ -178,6 +178,20 @@ def _startup_prune_sweeps() -> None:
             })
     except Exception:
         log.debug("Headless task drive prune failed", exc_info=True)
+    try:
+        # CPL4-C11 (owner batch 3A): clear owner state of tombstoned-uninstalled
+        # skills; grants survive as owner authority, reinstalls self-heal.
+        from ouroboros.skill_uninstall_state import sweep_uninstalled_skill_state
+
+        tombstone_report = sweep_uninstalled_skill_state(DATA_DIR)
+        if any(tombstone_report.get(key) for key in ("swept", "restored", "errors")):
+            append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "skill_uninstall_state_sweep",
+                "report": tombstone_report,
+            })
+    except Exception:
+        log.debug("Uninstalled-skill state sweep failed", exc_info=True)
 
 
 def _cursor_refresh_settled_terminals() -> None:

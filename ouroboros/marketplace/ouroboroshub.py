@@ -463,6 +463,11 @@ def uninstall(sanitized_name: str) -> HubInstallResult:
         (skill_state_dir(target_root.parent.parent, name) / DEPS_STATE_FILENAME).unlink(missing_ok=True)
     except Exception:
         pass
+    # CPL4-C11: mark payload-gone so the startup sweep clears the rest of the
+    # owner state (grants preserved as owner authority).
+    from ouroboros.skill_uninstall_state import write_uninstall_tombstone
+
+    write_uninstall_tombstone(target_root.parent.parent, name, source="ouroboroshub")
     return HubInstallResult(True, name, target_dir=target)
 
 
