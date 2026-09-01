@@ -11,6 +11,7 @@ import asyncio
 import base64
 import inspect
 import json
+import logging
 import os
 import pathlib
 import re
@@ -21,6 +22,7 @@ import sys
 import threading
 import time
 import uuid
+import weakref
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
@@ -35,6 +37,8 @@ from ouroboros.tools.shell import _active_subprocesses, _kill_process_group, _su
 from ouroboros.tools.skill_exec import _scrub_env
 from ouroboros.usage_accounting import current_usage_scope, record_unmetered_external_dispatch
 from ouroboros.utils import sanitize_tool_result_for_log
+
+log = logging.getLogger(__name__)
 
 _NATIVE_SUFFIXES = {".so", ".pyd", ".dylib", ".dll"}
 _STDOUT_CAP = 512 * 1024
@@ -333,6 +337,15 @@ def _drain(pipe: Any, cap: int, out: bytearray, overflow: Dict[str, bool], label
 
 _CHILD_SPAWNED_ATTR = "_ouroboros_extension_child_spawned"
 
+# Fallback registry for exception objects that refuse the attribute (e.g. an
+# overriding __setattr__): the spawn fact must be recorded once the child
+# exists, so the marker read consults this weak side-table too (weak, so
+# marked exceptions never leak). BaseException subclasses always expose
+# __dict__, so the attribute path covers every ordinary exception; an object
+# that ALSO lacks __weakref__ support cannot carry the fact at all — that
+# theoretical residue is logged, never silently dropped.
+_spawned_marker_fallback: "weakref.WeakSet[BaseException]" = weakref.WeakSet()
+
 
 def extension_child_was_spawned(exc: BaseException) -> bool:
     """ABI-9 typed post-Popen fact: True only when the extension child process
@@ -341,14 +354,22 @@ def extension_child_was_spawned(exc: BaseException) -> bool:
     failure — payload staging, dispatch resolve/load/env, the ``Popen`` call
     itself — carries no marker, so dispatch provenance never records a
     ``physical_dispatch`` for a child that never existed."""
-    return bool(getattr(exc, _CHILD_SPAWNED_ATTR, False))
+    if bool(getattr(exc, _CHILD_SPAWNED_ATTR, False)):
+        return True
+    return exc in _spawned_marker_fallback
 
 
 def _mark_child_spawned(exc: BaseException) -> BaseException:
     try:
         setattr(exc, _CHILD_SPAWNED_ATTR, True)
-    except Exception:  # exceptions with __slots__ cannot carry the marker
-        pass
+    except Exception:  # attribute refused: use the weak side-table
+        try:
+            _spawned_marker_fallback.add(exc)
+        except TypeError:
+            log.warning(
+                "extension spawn marker could not be attached to %s",
+                type(exc).__name__,
+            )
     return exc
 
 
@@ -387,39 +408,19 @@ def _run_child(
     }
     kwargs.update(subprocess_new_group_kwargs())
     proc = subprocess.Popen(cmd, **merge_hidden_kwargs(kwargs))  # noqa: S603 - argv is host-constructed
-    with _subprocess_lock:
-        _active_subprocesses.add(proc)
+    # ABI-9 spawn boundary: from here on the child EXISTS. Every exception
+    # leaving this function — process registration, the on_spawn durable
+    # disclosure, the drain/poll/result protocol, even a cleanup failure in
+    # the finally block — must carry the spawned marker, or dispatch
+    # provenance would record no physical_dispatch for a child that ran.
     try:
-        if on_spawn is not None:
-            on_spawn()
-    except BaseException as spawn_exc:
-        # Popen has already dispatched the child.  A failed durable disclosure
-        # must stop it rather than leave an untracked external execution.
-        _mark_child_spawned(spawn_exc)
-        try:
-            _kill_process_group(proc)
-            proc.wait(timeout=2)
-        except Exception:
-            pass
         with _subprocess_lock:
-            _active_subprocesses.discard(proc)
-        for pipe in (proc.stdout, proc.stderr):
-            try:
-                if pipe:
-                    pipe.close()
-            except OSError:
-                pass
-        try:
-            input_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        try:
-            result_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        shutil.rmtree(import_root_base, ignore_errors=True)
-        raise
-    try:
+            _active_subprocesses.add(proc)
+        if on_spawn is not None:
+            # Popen has already dispatched the child.  A failed durable
+            # disclosure must stop it rather than leave an untracked external
+            # execution: the finally block below kills and reaps the child.
+            on_spawn()
         stdout = bytearray()
         stderr = bytearray()
         overflow = {"stdout": False, "stderr": False}
@@ -464,28 +465,35 @@ def _run_child(
         raise _mark_child_spawned(exc)
     finally:
         try:
-            if proc.poll() is None:
-                _kill_process_group(proc)
-            proc.wait(timeout=2)
-        except Exception:
-            pass
-        with _subprocess_lock:
-            _active_subprocesses.discard(proc)
-        try:
-            input_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        try:
-            result_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        shutil.rmtree(import_root_base, ignore_errors=True)
-        for pipe in (proc.stdout, proc.stderr):
             try:
-                if pipe:
-                    pipe.close()
+                if proc.poll() is None:
+                    _kill_process_group(proc)
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            with _subprocess_lock:
+                _active_subprocesses.discard(proc)
+            try:
+                input_path.unlink(missing_ok=True)
             except OSError:
                 pass
+            try:
+                result_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            shutil.rmtree(import_root_base, ignore_errors=True)
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    if pipe:
+                        pipe.close()
+                except OSError:
+                    pass
+        except BaseException as cleanup_exc:
+            # A cleanup failure must never REPLACE a marked in-flight
+            # exception with an unmarked one (nor itself escape unmarked on
+            # the success path): the replacing exception carries the marker
+            # too — the child really did run.
+            raise _mark_child_spawned(cleanup_exc)
 
 
 def _record_extension_dispatch(

@@ -205,6 +205,107 @@ def test_run_child_marks_only_post_popen_exceptions(tmp_path, monkeypatch):
         assert extension_process_runner.extension_child_was_spawned(exc) is True
 
 
+def _fake_proc_cls():
+    import io
+
+    class _FakeProc:
+        pid = 4243
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = io.BytesIO(b"")
+            self.stderr = io.BytesIO(b"")
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    return _FakeProc
+
+
+def test_run_child_marks_registration_exceptions(tmp_path, monkeypatch):
+    """Fix-round 3, finding 5a: the process REGISTRATION between Popen and
+    the protocol body is inside the marked span — an exception there is
+    raised strictly after a successful Popen, so it must carry the marker."""
+    from ouroboros import extension_process_runner
+
+    monkeypatch.setattr(
+        extension_process_runner.subprocess, "Popen",
+        lambda *_a, **_k: _fake_proc_cls()(),
+    )
+    monkeypatch.setattr(extension_process_runner, "_kill_process_group", lambda _p: None)
+
+    class _BoomSet:
+        def add(self, _proc):
+            raise RuntimeError("registration exploded")
+
+        def discard(self, _proc):
+            pass
+
+    monkeypatch.setattr(extension_process_runner, "_active_subprocesses", _BoomSet())
+    try:
+        extension_process_runner._run_child(
+            {"skill_name": "marker-reg"}, skill_dir=tmp_path, drive_root=tmp_path,
+            repo_dir=tmp_path, env={}, timeout_sec=2,
+        )
+        raise AssertionError("registration failure must raise")
+    except RuntimeError as exc:
+        assert "registration exploded" in str(exc)
+        assert extension_process_runner.extension_child_was_spawned(exc) is True
+
+
+def test_run_child_cleanup_exception_over_a_marked_one_stays_marked(tmp_path, monkeypatch):
+    """Fix-round 3, finding 5b: a cleanup failure in the finally block
+    REPLACES the in-flight marked exception — the replacing exception must
+    carry the marker too (the child really did run), with the original
+    marked exception chained as its context."""
+    from ouroboros import extension_process_runner
+
+    monkeypatch.setattr(
+        extension_process_runner.subprocess, "Popen",
+        lambda *_a, **_k: _fake_proc_cls()(),
+    )
+    monkeypatch.setattr(extension_process_runner, "_kill_process_group", lambda _p: None)
+
+    def _rmtree_boom(*_a, **_k):
+        raise OSError("cleanup exploded")
+
+    monkeypatch.setattr(extension_process_runner.shutil, "rmtree", _rmtree_boom)
+    try:
+        extension_process_runner._run_child(
+            {"skill_name": "marker-clean"}, skill_dir=tmp_path, drive_root=tmp_path,
+            repo_dir=tmp_path, env={}, timeout_sec=2,
+        )
+        raise AssertionError("cleanup failure must raise")
+    except OSError as exc:
+        assert "cleanup exploded" in str(exc)
+        assert extension_process_runner.extension_child_was_spawned(exc) is True
+        # The original post-spawn protocol failure (missing result) was marked
+        # and stays chained underneath the replacing cleanup exception.
+        ctx = exc.__context__
+        assert isinstance(ctx, extension_process_runner.ExtensionProcessError)
+        assert extension_process_runner.extension_child_was_spawned(ctx) is True
+
+
+def test_spawn_marker_attaches_even_when_the_exception_refuses_attributes():
+    """Fix-round 3, finding 5c: _mark_child_spawned must record the fact even
+    for an exception object that refuses setattr — the weak side-table serves
+    the read, so the dispatcher still sees the positive spawn fact."""
+    from ouroboros import extension_process_runner
+
+    class _Rigid(Exception):
+        def __setattr__(self, _key, _value):
+            raise AttributeError("frozen exception")
+
+    exc = _Rigid("no attributes here")
+    assert extension_process_runner.extension_child_was_spawned(exc) is False
+    marked = extension_process_runner._mark_child_spawned(exc)
+    assert marked is exc
+    assert extension_process_runner.extension_child_was_spawned(exc) is True
+
+
 def test_fallback_digest_is_snapshotted_before_the_handler_runs(tmp_path, monkeypatch):
     """Finding 11: for a descriptor predating the per-surface stamp the
     registry digest is read BEFORE the handler, so a publication that lands
