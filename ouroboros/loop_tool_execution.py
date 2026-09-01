@@ -635,6 +635,11 @@ def _execute_single_tool(
         "result_preview": sanitize_tool_result_for_log(truncate_for_log(result, 2000)),
         "is_error": is_error,
         "status": result_meta.get("status"),
+        # Typed producer meta rides the DIRECT record too (bounded by the
+        # ToolResult contract: <=32 keys, <=8KB, JSON-safe) so durable
+        # provenance facts — the ABI-9 extension_generation digest included —
+        # survive even when persist_call fails.
+        "tool_result_meta": result_meta.get("tool_result_meta") or {},
         "args_ref": (trace_ref.get("manifest_ref") or {}).get("path") if trace_ref else None,
         "result_ref": trace_ref.get("manifest_ref") if trace_ref else None,
     }, correlation, tool_call_id=tool_call_id))

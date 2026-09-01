@@ -1,0 +1,182 @@
+"""ABI-9 dispatch-provenance pins (v7next F3 adversarial fix-round).
+
+The generation stamp is a POSITIVE handler-reached fact, never an error-code
+exclusion: the three pre-handler EXTENSION_ERROR paths (subprocess-runner
+import failure, disclosure gate, calling-convention resolution) are never
+stamped; the registry-fallback digest is snapshotted BEFORE the handler runs;
+and the DIRECT tools.jsonl record carries the digest via ``tool_result_meta``
+even when the detailed ``persist_call`` payload is lost.
+"""
+
+from __future__ import annotations
+
+from ouroboros import extension_loader
+
+from tests.test_extension_registration_atomicity import (  # noqa: F401  (autouse fixture applies on import)
+    _clear_loader_state,
+    _load_dispatch_extension,
+)
+
+
+def _dispatch_ready(tmp_path, monkeypatch, name):
+    from ouroboros.extension_surface_names import extension_surface_name
+    from ouroboros.tools.tool_context import ToolContext
+
+    loaded, drive_root = _load_dispatch_extension(tmp_path, name)
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *_a, **_k: (True, ""))
+    monkeypatch.setattr("ouroboros.extension_loader.is_extension_live", lambda *_a, **_k: True)
+    surface = extension_surface_name(name, "t1")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=drive_root, task_id="prov-task")
+    return surface, ctx, extension_loader.get_tool(surface), drive_root, loaded
+
+
+def test_pre_handler_runner_import_failure_is_never_stamped(tmp_path, monkeypatch):
+    """Finding 10, path 1: an out-of-process descriptor whose subprocess runner
+    cannot even import fails BEFORE any child dispatch — no digest, no
+    physical_dispatch fact."""
+    import sys as _sys
+
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+
+    surface, ctx, ext_tool, _root, _loaded = _dispatch_ready(tmp_path, monkeypatch, "prei")
+    ext_tool = dict(ext_tool)
+    ext_tool["out_of_process"] = True
+    monkeypatch.setitem(_sys.modules, "ouroboros.extension_process_runner", None)
+    result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    assert (result.status, result.code) == ("error", "EXTENSION_ERROR")
+    assert "extension_generation" not in result.meta
+    assert "physical_dispatch" not in result.meta
+
+
+def test_pre_handler_disclosure_gate_failure_is_never_stamped(tmp_path, monkeypatch):
+    """Finding 10, path 2: a failing model-cost disclosure gate refuses BEFORE
+    the handler — no digest, no physical_dispatch fact."""
+    from ouroboros import extension_process_runner
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+
+    surface, ctx, ext_tool, _root, _loaded = _dispatch_ready(tmp_path, monkeypatch, "pred")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("disclosure exploded")
+
+    monkeypatch.setattr(
+        extension_process_runner, "disclose_inprocess_extension_dispatch", _boom
+    )
+    result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    assert (result.status, result.code) == ("error", "EXTENSION_ERROR")
+    assert "disclosure failed" in result.text
+    assert "extension_generation" not in result.meta
+    assert "physical_dispatch" not in result.meta
+
+
+def test_pre_handler_calling_convention_failure_is_never_stamped(tmp_path, monkeypatch):
+    """Finding 10, path 3: a calling-convention resolution failure happens
+    BEFORE the handler is invoked — no digest, no physical_dispatch fact —
+    while a genuine handler exception (same code, same text shape) IS a
+    physical dispatch and carries the digest."""
+    from ouroboros import extension_process_runner
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+
+    surface, ctx, ext_tool, _root, _loaded = _dispatch_ready(tmp_path, monkeypatch, "prec")
+    ext_tool = dict(ext_tool)
+    ext_tool.pop("wants_ctx", None)
+
+    def _boom(_handler):
+        raise RuntimeError("convention resolution exploded")
+
+    monkeypatch.setattr(extension_process_runner, "_handler_wants_ctx", _boom)
+    result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    assert (result.status, result.code) == ("error", "EXTENSION_ERROR")
+    assert "extension_generation" not in result.meta
+    assert "physical_dispatch" not in result.meta
+
+    # Contrast pin: the SAME code from a real handler exception IS stamped.
+    failing = dict(extension_loader.get_tool(surface))
+    failing["wants_ctx"] = False
+
+    def _handler_raises(**_kw):
+        raise RuntimeError("handler exploded")
+
+    failing["handler"] = _handler_raises
+    result = _dispatch_extension_tool_result(ctx, surface, failing, {})
+    assert (result.status, result.code) == ("error", "EXTENSION_ERROR")
+    assert result.meta.get("physical_dispatch") is True
+    assert result.meta.get("extension_generation") == (
+        extension_loader.extension_generation_digest("prec")
+    )
+
+
+def test_fallback_digest_is_snapshotted_before_the_handler_runs(tmp_path, monkeypatch):
+    """Finding 11: for a descriptor predating the per-surface stamp the
+    registry digest is read BEFORE the handler, so a publication that lands
+    DURING the handler (deterministic barrier: the handler itself republishes)
+    cannot be misattributed to this call's result."""
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+
+    surface, ctx, ext_tool, drive_root, loaded = _dispatch_ready(tmp_path, monkeypatch, "presnap")
+    pre_call_digest = extension_loader.extension_generation_digest("presnap")
+    assert pre_call_digest
+
+    ext_tool = dict(ext_tool)
+    ext_tool.pop("extension_generation", None)  # force the registry-reader path
+    ext_tool["wants_ctx"] = False
+
+    def _republishing_handler(**_kw):
+        extension_loader.unload_extension("presnap")
+        err = extension_loader.load_extension(
+            loaded, lambda: {}, drive_root=drive_root, _force_in_process=True
+        )
+        assert err is None, err
+        return "ok"
+
+    ext_tool["handler"] = _republishing_handler
+    result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    post_call_digest = extension_loader.extension_generation_digest("presnap")
+    assert result.status == "ok"
+    assert post_call_digest and post_call_digest != pre_call_digest
+    assert result.meta.get("extension_generation") == pre_call_digest
+
+
+def test_tools_jsonl_direct_record_carries_the_extension_generation(tmp_path, monkeypatch):
+    """Finding 9: the DIRECT tools.jsonl record of a physical extension call
+    names the published generation via ``tool_result_meta`` — even when the
+    detailed persist_call payload is lost."""
+    import json as _json
+
+    import ouroboros.loop_tool_execution as execution
+    from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+
+    surface, ctx, ext_tool, _root, _loaded = _dispatch_ready(tmp_path, monkeypatch, "provlog")
+    typed = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
+    digest = extension_loader.extension_generation_digest("provlog")
+    assert typed.meta.get("extension_generation") == digest
+
+    class FakeRegistry:
+        CODE_TOOLS = frozenset()
+        _ctx = None
+
+        def execute_result(self, _name, _args):
+            return typed
+
+    drive_logs = tmp_path / "logs"
+    drive_logs.mkdir()
+
+    def _persist_fails(*_a, **_k):
+        raise OSError("observability store down")
+
+    monkeypatch.setattr(execution, "persist_call", _persist_fails)
+    execution._execute_single_tool(
+        FakeRegistry(),
+        {"id": "call-gen", "function": {"name": surface, "arguments": "{}"}},
+        drive_logs,
+        "task-gen",
+    )
+    rows = [
+        _json.loads(line)
+        for line in (drive_logs / "tools.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows
+    meta = rows[-1].get("tool_result_meta")
+    assert isinstance(meta, dict)
+    assert meta.get("extension_generation") == digest
+    assert meta.get("physical_dispatch") is True

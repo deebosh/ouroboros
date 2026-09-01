@@ -92,12 +92,19 @@ def _extension_result(
     *,
     safety_warning: bool = False,
     timeout_sec: int | None = None,
+    dispatched: bool = False,
 ) -> ToolResult:
     meta: Dict[str, Any] = {"dynamic_provider": True}
     if safety_warning:
         meta["safety_warning"] = True
     if timeout_sec is not None:
         meta["timeout_sec"] = timeout_sec
+    if dispatched:
+        # POSITIVE dispatch fact (ABI-9): the handler / child process was
+        # actually invoked — the generation stamp keys on this, never on an
+        # error-code exclusion list (pre-handler failures share codes with
+        # post-handler ones).
+        meta["physical_dispatch"] = True
     return ToolResult(status=status, code=code, text=text, meta=meta)
 
 
@@ -118,17 +125,11 @@ def _extension_completion(result: str, safety_msg: str) -> ToolResult:
             "TOOL_REPORTED_FAILURE" if reported_failure else "SAFETY_WARNING",
             text,
             safety_warning=True,
+            dispatched=True,
         )
     if reported_failure:
-        return _extension_result("error", "TOOL_REPORTED_FAILURE", result)
-    return _extension_result("ok", "OK", result)
-
-
-# Typed refusals issued BEFORE any physical dispatch attempt: the liveness
-# refusal and the safety block never reached the handler, so the ABI-9
-# generation stamp below does not apply to them (their typed shape stays
-# byte-identical to the pre-seam behavior).
-_UNDISPATCHED_CODES = frozenset({"EXTENSION_UNAVAILABLE", "SAFETY_VIOLATION"})
+        return _extension_result("error", "TOOL_REPORTED_FAILURE", result, dispatched=True)
+    return _extension_result("ok", "OK", result, dispatched=True)
 
 
 def _generation_digest_for(ext_tool: Dict[str, Any]) -> str:
@@ -162,12 +163,21 @@ def _dispatch_extension_tool_result(
     The model-facing text and the typed status/code are exactly the inner
     dispatcher's; the only addition is the ``extension_generation`` meta fact
     on outcomes of a physical dispatch attempt, which the loop projects into
-    the tools.jsonl ``tool_result_meta`` provenance record."""
-    result = _dispatch_extension_tool_untagged(ctx, name, ext_tool, args)
-    if not isinstance(result, ToolResult) or result.code in _UNDISPATCHED_CODES:
-        return result
+    the tools.jsonl ``tool_result_meta`` provenance record.
+
+    The digest is snapshotted BEFORE the call (a registry-fallback read taken
+    after the handler could name a generation published DURING it), and the
+    stamp keys on the inner dispatcher's positive ``physical_dispatch`` meta
+    fact — set only once the handler / child process is actually invoked —
+    so a pre-handler refusal or failure (liveness, safety, runner import,
+    disclosure gate, calling-convention resolution) is never stamped."""
     digest = _generation_digest_for(ext_tool)
-    if not digest:
+    result = _dispatch_extension_tool_untagged(ctx, name, ext_tool, args)
+    if (
+        not isinstance(result, ToolResult)
+        or not result.meta.get("physical_dispatch")
+        or not digest
+    ):
         return result
     return ToolResult(
         status=result.status,
@@ -244,6 +254,7 @@ def _dispatch_extension_tool_untagged(
                 "EXTENSION_TIMEOUT" if timed_out else "EXTENSION_ERROR",
                 text,
                 timeout_sec=max(1, int(ext_tool.get("timeout_sec") or 60)) if timed_out else None,
+                dispatched=True,  # the child process dispatch was attempted
             )
         return _extension_completion(result_str, _ext_safety_msg)
 
@@ -266,18 +277,24 @@ def _dispatch_extension_tool_untagged(
         # at register time); the runtime wrapper is (*args, **kwargs) so inspecting
         # it here would always force a ctx-first call. Fall back to inspecting the
         # unwrapped handler for any tool registered before this flag existed.
+        # A failure HERE is pre-handler: same code/text, but never stamped as a
+        # physical dispatch (the handler was not reached).
         from ouroboros.extension_process_runner import _handler_wants_ctx
 
         _wants = ext_tool.get("wants_ctx")
         if _wants is None:
             _wants = _handler_wants_ctx(inspect.unwrap(handler))
+    except Exception as exc:
+        text = f"⚠️ TOOL_ERROR ({name}): extension tool failed: {type(exc).__name__}: {exc}"
+        return _extension_result("error", "EXTENSION_ERROR", text)
+    try:
         if _wants:
             result = handler(ctx, **call_args)
         else:
             result = handler(**call_args)
     except Exception as exc:
         text = f"⚠️ TOOL_ERROR ({name}): extension tool failed: {type(exc).__name__}: {exc}"
-        return _extension_result("error", "EXTENSION_ERROR", text)
+        return _extension_result("error", "EXTENSION_ERROR", text, dispatched=True)
 
     if inspect.iscoroutine(result):
         box: Dict[str, Any] = {}
@@ -316,6 +333,7 @@ def _dispatch_extension_tool_untagged(
                 "EXTENSION_TIMEOUT",
                 text,
                 timeout_sec=timeout,
+                dispatched=True,
             )
         if box.get("host_timeout"):
             text = f"⚠️ TOOL_ERROR ({name}): extension async handler failed: TimeoutError: "
@@ -324,11 +342,12 @@ def _dispatch_extension_tool_untagged(
                 "EXTENSION_TIMEOUT",
                 text,
                 timeout_sec=timeout,
+                dispatched=True,
             )
         if "error" in box:
             exc = box["error"]
             text = f"⚠️ TOOL_ERROR ({name}): extension async handler failed: {type(exc).__name__}: {exc}"
-            return _extension_result("error", "EXTENSION_ERROR", text)
+            return _extension_result("error", "EXTENSION_ERROR", text, dispatched=True)
         result = box.get("value", "")
 
     result_str = result if isinstance(result, str) else str(result)
