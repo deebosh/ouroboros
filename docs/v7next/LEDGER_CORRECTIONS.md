@@ -3494,3 +3494,60 @@ verdict itself confirms fix claims 1–2 CLOSED and 3–5 OPEN only through
 the three findings above — now fixed and pinned. Remaining review
 surface is hygiene-grade; per the bounded-wave contract the adversarial
 cycle is declared CONVERGED at this base.
+
+## From the F5 lane A (CPL-1/2, base 5187fcdc)
+
+1. CPL-1 LANDED. The Ф0 evidence manifest scripts/v7next_domains.toml is
+   promoted to the production manifest `ouroboros/domains.toml` (ships as
+   package data): module→domain 1:1 over all 488 tracked runtime modules,
+   D01–D20, [classification].proposed carried unchanged (80 rows, still
+   owner-review pending). New generated sections pin today's FACTUAL
+   dependency data as baseline: `[graph].allowed` (164 strict cross-domain
+   directions), `[graph].cycle_groups` (the single 20-domain strict-quotient
+   SCC as the ceiling; target `[]`), `[graph].lazy_only` (92 hidden-coupling
+   pairs), `[graph].dynamic_pairs` (empty), `[duplicates].allowed` (EMPTY —
+   zero cross-domain literal-copy bodies ≥10 normalized lines exist today, so
+   the literal-copy ban starts strict). Gate: scripts/check_domains.py
+   (--write regenerates the generated sections + docs/DOMAIN_MAP.md); verify:
+   tests/test_domain_manifest.py (completeness = red on drift, baseline
+   exactness, DOMAIN_MAP byte-identity, synthetic red-branch pins for every
+   detector). Shared core scripts/domain_graph.py extracted from the Ф0
+   report generator; scripts/v7next_domain_report.py now consumes it and
+   stays report-only.
+2. Plan §7.1 "циклы=0 на domain-нодах" honesty note: the live strict quotient
+   is ONE 20-domain SCC (921+ module-edge witnesses at Ф0, 164 domain pairs
+   now), so a flat cycles=0 assert would be red on the campaign's own tree.
+   Per the Ф5 baseline discipline (current reality = baseline, tightening =
+   separate owner decisions) the gate pins the SCC as a data ceiling: growth
+   (a new cycle group, a domain joining the SCC, a new direction) is red;
+   shrinkage must be banked by regeneration; `cycle_groups = []` is the
+   terminal state at which the gate becomes the literal cycles=0 check.
+3. Ф0 report drift note: the Ф0 quotient report (generated at 1633b54f)
+   counted 163 strict domain pairs; the tree at 5187fcdc has 164 — ordinary
+   inter-phase drift, no population change (488 modules unchanged). The
+   report was regenerated on the shared core alongside the manifest move.
+4. CPL-2 LANDED as three gen/verify pairs (generator
+   scripts/regenerate_inventories.py with --check; verify
+   tests/test_generated_inventories.py; staleness = red):
+   docs/v7next/FROZEN_CONTRACTS_INVENTORY.md (ARCHITECTURE §11.1 machine
+   extraction — 20 rows, all owner/anchor paths resolve),
+   docs/v7next/DATA_LAYOUT_INVENTORY.md (111 entries of the §1 Data-layout
+   tree, all probed: 91 code-ref, 17 repo paths/dirs, 3 placeholders, 0
+   unresolved), docs/v7next/FACADE_INVENTORY.md (49 facades, 2175 marked
+   noqa:F401 re-export bindings, 121 cross-domain facade→leaf pairs).
+5. PERSISTENCE_OWNERS carrier finding (CPL-2 spec said "найди фактический
+   носитель"): the reference tree ouroboros_v7_wip @ 9f691656 carries
+   docs/PERSISTENCE_OWNERS.md (hand-derived writer/reader/lifecycle rows) and
+   docs/FACADE_CONSUMERS.md; NEITHER exists in this tree. The factual
+   data-layout carrier here is the ARCHITECTURE §1 "Data layout
+   (`~/Ouroboros/`)" tree, and the inventory generator binds to it. Porting
+   the reference's full per-row writer/reader/lifecycle derivation is the
+   CPL-4 persistence pass, not this lane.
+6. §11.1 package-coverage finding, now pinned as data: two
+   `ouroboros/contracts/` modules are documented in the §1 tree but have no
+   §11.1 frozen-table row — contracts/task_constraint.py and
+   contracts/skill_payload_policy.py. The inventory lists them as the exact
+   known gap and the verify test pins the set, so a THIRD uncovered frozen-
+   package module turns red even after regeneration; retiring the two-row gap
+   itself (writing their §11.1 rows) is an owner-visible follow-up, not
+   silently done here.
