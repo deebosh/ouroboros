@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from ouroboros.config import DATA_DIR
 from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
-from ouroboros.utils import append_jsonl, assert_test_data_path, utc_now_iso  # noqa: F401 -- assert_test_data_path re-exported: the guard moved to the utils leaf so append_jsonl shares it; state.assert_test_data_path callers keep working
+from ouroboros.utils import append_jsonl, assert_test_data_path, utc_now_iso, write_bytes_atomic  # noqa: F401 -- assert_test_data_path re-exported: the guard moved to the utils leaf so append_jsonl shares it; state.assert_test_data_path callers keep working
 
 log = logging.getLogger(__name__)
 
@@ -48,17 +48,14 @@ def init(drive_root: pathlib.Path, total_budget_limit: float = 0.0) -> None:
 
 
 def atomic_write_text(path: pathlib.Path, content: str) -> None:
+    """Durable state write: byte-exact, fsync'd, every byte landed.
+
+    Rides the utils atomic SSOT — its write loop survives a short ``os.write``
+    (the old single call could publish a truncated ``state.json`` behind a
+    successful rename) — with the pytest live-data guard kept in front.
+    """
     assert_test_data_path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp.{uuid.uuid4().hex}")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-    try:
-        data = content.encode("utf-8")
-        os.write(fd, data)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(str(tmp), str(path))
+    write_bytes_atomic(path, content.encode("utf-8"), fsync=True)
 
 
 def json_load_file(path: pathlib.Path) -> Optional[Dict[str, Any]]:

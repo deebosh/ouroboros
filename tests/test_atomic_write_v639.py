@@ -248,3 +248,19 @@ def test_atomic_write_json_lands_exact_bytes(tmp_path):
     target = tmp_path / "state.json"
     atomic_write_json(target, {"a": [1, 2], "b": "x"}, trailing_newline=True)
     assert target.read_bytes() == b'{\n  "a": [\n    1,\n    2\n  ],\n  "b": "x"\n}\n'
+
+
+def test_supervisor_state_atomic_write_text_lands_every_byte_on_short_writes(tmp_path, monkeypatch):
+    """Audit #16-6: ``supervisor.state.atomic_write_text`` used to publish one
+    ``os.write`` behind the rename — a short write became a truncated
+    ``state.json``. It rides the utils write loop now."""
+    import os
+
+    from supervisor import state as sup_state
+
+    real_write = os.write
+    monkeypatch.setattr(utils.os, "write", lambda fd, data: real_write(fd, bytes(data[:1])))
+    target = tmp_path / "state.json"
+    payload = '{"a": 1, "b": "' + "x" * 300 + '"}\n'
+    sup_state.atomic_write_text(target, payload)
+    assert target.read_bytes() == payload.encode("utf-8")
