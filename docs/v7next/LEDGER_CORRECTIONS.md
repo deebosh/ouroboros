@@ -2829,3 +2829,80 @@ the strength of the round-4 test pins; verification points 2 and 5 CLOSED
 4. Size pins: extension_loader.py untouched (998); extension_plugin_api.py
    998 after comment condensation (both within the <=1000 extraction pin,
    600 <= plugin API respected).
+
+## From the F3.1 conformance fix-round-6 (base 1aae9868, 2026-08-31)
+
+Round-6 verdict (GPT-5.6 Sol, read-only @ 1aae9868): NEEDS FIXES — ONE MEDIUM
+(pre-fence filesystem side writes remained: the round-5 "pure computation"
+claim was still false for `env_from_settings` manifests and the recovery
+entry's state-dir mkdir) plus ONE LOW (a token rotation can strand an
+already-running companion on its old spawn-env token); no HIGH; verification
+points 3/4/5 CLOSED. Dispositions:
+
+1. MEDIUM — pre-fence side writes: FIXED by extending the round-5 post-fence
+   materialization to the WHOLE companion env. The defect:
+   `register_companion_process` called `_scrub_env` during descriptor build,
+   and for a manifest with `env_from_settings` that invokes
+   `load_settings()` — which creates/unlinks the settings lock file
+   (`config._acquire_settings_lock`) and can PERSIST a context-mode
+   settings migration (`config.load_settings_lock_held` →
+   `normalize_and_persist_context_mode_compat`) — before the generation
+   fence in `_publish_registrations`; additionally `ensure_companions_running`
+   resolved the state dir via the creating `skill_state_dir()` before the
+   fence. The fix: the staged spawn now carries the manifest companion spec
+   (`_StagedCompanionSpawn.spec`) and the descriptor is built with an EMPTY
+   env; `extension_child_catalog.materialize_companion_env` fills it —
+   settings-derived values, manifest env overlay, host bridge URL,
+   isolated-dep PYTHONPATH and the auth token — only inside the post-swap
+   attach, after `require_live_generation` admitted the publication, in the
+   same registry-lock hold where the state dir is now created
+   (`mkdir(parents=True, exist_ok=True)`) and the token is minted; the
+   recovery entry resolves its path via the new non-creating
+   `skill_state_path`. Env precedence is preserved (settings-derived base,
+   then manifest overlay, then reserved bridge keys). Pin:
+   test_stale_recovery_with_env_from_settings_has_zero_filesystem_effects —
+   an `env_from_settings` manifest recovery losing the race to an unload is
+   a typed refusal with ZERO `load_settings` calls from `_scrub_env` (the
+   lock-file/migration hazard) and an unchanged data-root file tree; the
+   same test proves the post-fence path still delivers the materialized env
+   (skill name, token, bridge URL) to the publication's spawns.
+   DISCLOSURE: the pin's semantic red-pre-fix content is the
+   `load_settings` tripwire (pre-fix, descriptor build called `_scrub_env`);
+   the test as written cannot execute verbatim on the pre-fix tree because
+   its interleave seam (`skill_state_path`) is introduced by the fix itself
+   — the round-4/5 interleave tests were migrated to the same seam.
+2. LOW — stale spawn-env token after an accepted rotation: RESIDUAL BY
+   DESIGN, no code change (proportionality: no degradation case exists).
+   Preconditions analysis: `mint_skill_token` rotates ONLY when the stored
+   token file is missing, carries no token (corrupt), or its bound
+   content_hash mismatches the live recompute. The Host Service
+   authenticates EVERY request against the file (token equality) AND
+   against a freshly computed on-disk content hash
+   (`authenticate_token_payload` + `_assert_active_token` →
+   `find_skill().content_hash`), so in every rotation precondition the
+   already-running companion's spawn-env token was ALREADY non-authorizing
+   BEFORE the mint: missing/corrupt file fails the token compare;
+   hash-stale file fails the "token is stale" check. Rotation therefore
+   restores authorization for the publication's own spawns and can never
+   revoke a still-valid token. Residual: recovery stages only MISSING
+   companion names, and a supervisor auto-restart can re-spawn an old
+   descriptor whose publication's start then reports success without
+   replacing it — such a companion, de-authorized by a content change, is
+   not healed by companion recovery (same dead-token state as before the
+   recovery); the heal path is the ordinary unload/reload, which stops and
+   re-spawns every companion with the fresh env.
+3. Docs truth: with item 1 landed, the absolute claims are now factual and
+   were tightened rather than weakened —
+   `ExtensionStaleRecoveryError`'s docstring adds "no settings read/lock or
+   state directory is materialized", `_publish_registrations` describes the
+   whole-env post-fence materialization, the ARCHITECTURE
+   extension_plugin_api row and the ADOPTION ABI-9 row carry the
+   fix-round-6 clause plus the item-2 residual disclosure. The round-5
+   ledger section above stays as written (append-only historical record);
+   its "descriptor build stays pure" wording described the token plane only
+   and is superseded by this section for the settings/state-dir planes.
+4. Size pins: extension_plugin_api.py 982 and extension_loader.py 1000
+   (<=1000 extraction pin, 600 <= plugin API respected); the env
+   materialization helper and the non-creating path resolver live in
+   extension_child_catalog.py (222), `_StagedCompanionSpawn.spec` in
+   extension_registry_state.py (182).
