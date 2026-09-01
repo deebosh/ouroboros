@@ -4956,3 +4956,87 @@ Cross-cutting notes:
   simplification available inside this lane's scope, and buying the room by
   deleting contract-bearing docstrings or by exporting a fragment to a
   neighbour module would have been the forbidden kind of paydown.
+
+## From the ui-smoke seed-stamp lane (base bef13f5e, 2026-09-01)
+
+The CI `ui-smoke` job (`pytest tests/ -m ui_browser`, gated to tag and
+workflow_dispatch, so it never ran on the campaign's commit tier) carried 7
+campaign-born failures with ONE cause, proven by an HTTP probe against a live
+seeded server plus a control run on this base: ABI-2 admission
+(`ouroboros/task_result_schema.py::task_result_schema_refusal`) QUARANTINES a
+durable task-result row that carries no `_schema_version`, reason
+`unstamped_pre_7_0`. The browser lane's hand-written `task_results/<id>.json`
+seeds are exactly such rows, so every seeded card was read as "no result": the
+cards never reached finished state, and the assertions on finished/cancelled
+state, cost, chronology and the review checkpoint all timed out waiting for a
+card that could never close. Commit 9c4bf0b5 (the ABI-2 stamp — see "From the
+f31c lane") had already stamped the hand-written fixtures of 9 test files, but
+it did not reach the `ui_browser` lane, whose gate its commit tier does not
+run.
+
+Fix: the six hand-written seeds carry the same single additive key the writers
+emit (`stamp_task_result_schema`). No production code, no assertion and no
+test contract changed — the seeds now represent what a CURRENT-version writer
+produces, which is what they always meant to represent.
+
+| file | seeded `task_results` row | before | after |
+|---|---|---|---|
+| `tests/test_subagent_final_lineage_ui.py` :32 | `child-final-only.json` | no stamp -> quarantined | `"_schema_version": 1` |
+| `tests/test_ui_smoke_liveness.py` :67 | `swarm-root.json` | no stamp -> quarantined | `"_schema_version": 1` |
+| `tests/test_ui_smoke_playwright.py` :999 | `named-act.json` | no stamp -> quarantined | `"_schema_version": 1` |
+| `tests/test_ui_smoke_playwright.py` :1460 | `chronology-progress-only.json` | no stamp -> quarantined | `"_schema_version": 1` |
+| `tests/test_ui_smoke_playwright.py` :3662 | `gone-root.json` | no stamp -> quarantined | `"_schema_version": 1` |
+| `tests/test_ui_smoke_review_checkpoint.py` :158 | `review-no-summary.json` | no stamp -> quarantined | `"_schema_version": 1` |
+
+CLASS SWEEP, not instance. Every hand-written write into a `task_results` path
+across the whole of `tests/` was enumerated by source scan (97 write sites),
+then filtered to the lanes whose fixtures the classifier can bite
+(`ui_browser`, `integration`, `serial`):
+
+- `ui_browser` — 14 marked files, 58 collected tests: exactly the six rows
+  above. The other twelve marked files seed no task-result row at all
+  (`tests/ui_media_delivery_smoke.py` writes only media blobs under
+  `task_results/artifacts/`, which no admission classifier reads).
+- `serial` — no unstamped current-writer seed exists. Every serial file that
+  stores a row goes through `write_task_result`, which stamps. The two
+  hand-written exceptions are deliberately unstamped and must STAY that way:
+  `test_e2e_cancellation_scenarios.py:508` seeds a pre-redesign
+  `cancel_requested` latch whose whole point is the legacy shape, and
+  `test_promote_event_transport.py:757/784/801` seed malformed/empty bytes for
+  the fail-closed lookup pins.
+- `integration` — `tests/test_provider_integration.py` touches no task result.
+- Also left alone on purpose: the quarantine suite's own fixtures
+  (`test_tasks_list_slice.py` `unstamped.json`/`future.json`,
+  `test_task_result_schema_quarantine.py`). Those rows ARE the contract.
+
+DISCLOSED, NOT FIXED HERE:
+`tests/test_ui_browser_smoke.py::test_gateway_frontend_uses_api_client_boundary`
+stays red in the same CI job. It is upstream-born, not campaign-born:
+`web/modules/chat_media.js:185` calls raw `fetch(` outside the api_client
+boundary. Upstream already fixed it in 619d6177, which arrives with sync #2;
+editing the file here would collide with that sync for no gain.
+
+GATES (host 0897-oma, base bef13f5e plus this commit; every pytest run with
+all four `OUROBOROS_*` env vars on a fresh mktemp root, chromium+webkit from
+`~/.cache/ms-playwright`; live `~/ouro/data` untouched —
+`find ~/ouro/data -newermt <start>` empty):
+
+- before (control on a `git archive` copy of bef13f5e, the three cheap files):
+  `-m ui_browser test_subagent_final_lineage_ui.py test_ui_smoke_liveness.py
+  test_ui_smoke_review_checkpoint.py` -> **3 failed, 1 passed in 96.51s**,
+  each failure a Playwright timeout waiting for the card the quarantine
+  prevented from ever finishing.
+- after (the lane gate, all four seed-bearing files):
+  `-m ui_browser test_subagent_final_lineage_ui.py test_ui_smoke_liveness.py
+  test_ui_smoke_review_checkpoint.py test_ui_smoke_playwright.py -q` ->
+  **35 passed, 1 deselected in 282.80s**, exit 0.
+- rest of the lane (the ten remaining `ui_browser` files, so that the two runs
+  together cover the CI job's full 58-test collection): **1 failed, 22 passed
+  in 187.38s** — the single failure is the upstream-born boundary test above
+  (`assert ['chat_media.js'] == []`). Whole job after this commit: 57 passed,
+  1 failed, and that one arrives fixed with sync #2.
+- `ruff check . --select F` -> All checks passed. `git diff --check` clean.
+  `scripts/regenerate_size_ratchet.py --check` green (manifest byte-identical;
+  `test_ui_smoke_playwright.py` is a GIANT_PATHS entry and grew by 3 lines,
+  which the path-set manifest does not measure). `git rev-parse HEAD`
+  unchanged (bef13f5e) after every pytest.
