@@ -393,6 +393,50 @@ def test_posix_directory_fsync_failure_aborts_before_the_swap(data_root, monkeyp
     assert ledger_path.read_bytes() == before_bytes
 
 
+def test_the_directory_chain_is_re_synced_on_the_retry_after_a_failed_pass(data_root, monkeypatch):
+    """A pass that died on the directory fsync leaves the directories PRESENT
+    but not durable; the retry must sync them again rather than skip them for
+    existing, or a crash after its swap loses the archive the swap relies on."""
+    _seed_mixed_ledger(data_root)
+    archive_dir = data_root / "archive" / "usage_ledger"
+    real_fsync = os.fsync
+
+    def failing_dir_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "injected directory fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_dir_fsync)
+    with ua._locked(data_root) as heartbeat:
+        with pytest.raises(OSError):
+            uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
+    assert archive_dir.is_dir()  # present after the failure, durability unknown
+
+    synced: list = []
+    swapped: list = []
+
+    def recording_fsync(fd):
+        info = os.fstat(fd)
+        synced.append((info.st_dev, info.st_ino))
+        return real_fsync(fd)
+
+    real_swap = uc._swap_ledger_fsync
+
+    def watched_swap(path, payload):
+        swapped.append(len(synced))
+        return real_swap(path, payload)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(uc, "_swap_ledger_fsync", watched_swap)
+    assert _compact(data_root) is not None
+    assert swapped, "the swap never ran"
+    before_swap = set(synced[: swapped[0]])
+    for directory in (archive_dir, archive_dir.parent, data_root):
+        info = directory.stat()
+        assert (info.st_dev, info.st_ino) in before_swap, directory
+
+
+
 # --- 1b: the lock the pass runs under ----------------------------------------
 
 def test_monetary_lock_is_owner_aware_and_the_pass_heartbeats_it(data_root, monkeypatch):
@@ -423,7 +467,7 @@ def test_append_between_snapshot_and_swap_aborts_instead_of_erasing_it(data_root
     original_write = uc._write_new_file_fsync
     injected: dict = {}
 
-    def racing_write(path, payload):
+    def racing_write(path, payload, root):
         # A writer that got the lock (age-broken lock, foreign repair) lands a
         # settled charge AFTER the compactor snapshotted the file.
         injected.update(_append_raw_row(data_root, {
@@ -433,7 +477,7 @@ def test_append_between_snapshot_and_swap_aborts_instead_of_erasing_it(data_root
             "provider": "claudexor", "category": "task", "source": "subscription",
             "task_id": "t", "root_task_id": "root", "parent_task_id": "",
         }))
-        original_write(path, payload)
+        original_write(path, payload, root)
 
     monkeypatch.setattr(uc, "_write_new_file_fsync", racing_write)
     assert _compact(data_root) is None  # refused the swap

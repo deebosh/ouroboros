@@ -147,32 +147,29 @@ def _fsync_dir(path: pathlib.Path) -> None:
         os.close(fd)
 
 
-def _mkdir_fsync_chain(path: pathlib.Path) -> None:
-    """``mkdir -p`` whose every CREATED directory entry is made durable.
+def _mkdir_fsync_chain(path: pathlib.Path, root: pathlib.Path) -> None:
+    """``mkdir -p`` whose WHOLE chain down from ``root`` is durable each pass.
 
-    Syncing a directory persists the entries IT holds, so one
-    ``mkdir(parents=True)`` needs a pass over each new level AND over the
-    pre-existing ancestor that now carries the shallowest new entry. Syncing
-    only the deepest level (the segment's own parent) leaves
-    ``archive/usage_ledger`` itself unnamed on disk after a crash, while the
-    swapped ledger survives — exactly the loss the archive-first order exists
-    to prevent.
+    Syncing a directory persists the entries IT holds, so the segment's name
+    lives in its own parent, that parent's name lives in ``archive/``, and
+    ``archive/``'s name lives in the data root. Syncing only the levels THIS
+    pass created is not enough: an earlier pass may have created a level and
+    then died before its fsync, so on the retry the directories are present
+    but their durability is unknown — and a crash after that retry's swap
+    would lose the archive the swap depends on. Three fsyncs are cheap;
+    unconditional is the only state a pass can actually prove.
     """
-    created: list = []
-    probe = path
-    while not probe.exists():
-        created.append(probe)
-        if probe.parent == probe:
-            break
-        probe = probe.parent
     path.mkdir(parents=True, exist_ok=True)
-    for directory in (*created, probe):
+    levels = [path]
+    while levels[-1] != root and levels[-1].parent != levels[-1]:
+        levels.append(levels[-1].parent)
+    for directory in levels:
         _fsync_dir(directory)
 
 
-def _write_new_file_fsync(path: pathlib.Path, payload: bytes) -> None:
+def _write_new_file_fsync(path: pathlib.Path, payload: bytes, root: pathlib.Path) -> None:
     """Create-exclusive write + fsync of file AND directory (archive segments)."""
-    _mkdir_fsync_chain(path.parent)
+    _mkdir_fsync_chain(path.parent, root)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     fd = os.open(str(path), flags, 0o600)
     try:
@@ -628,7 +625,7 @@ def compact_usage_ledger_locked(
             log.warning("usage-ledger compaction abandoned before archive: ledger changed under the lock")
             return None
         segment_name = pathlib.PurePosixPath(receipt["archive_rel"]).name
-        _write_new_file_fsync(root / "archive" / "usage_ledger" / segment_name, raw)
+        _write_new_file_fsync(root / "archive" / "usage_ledger" / segment_name, raw, root)
         beat()
         if not _snapshot_intact(ledger_path, raw):
             # A row landed between the snapshot and here. Swapping now would
