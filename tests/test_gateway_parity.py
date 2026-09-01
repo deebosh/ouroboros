@@ -241,17 +241,8 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
                 ClaudexorStatusReads, ClaudexorStatusResponse):
         expected = set(get_type_hints(cls, include_extras=True))
         actual = _js_typedef_fields(text, cls.__name__)
-        # ABI 7.0 (ABI-3): these aliases were removed from the Python contract;
-        # their stale JSDoc lines are HOT-DEFERRED with the rest of the web/
-        # mirror (docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md). Only the exact
-        # frozen set is excused — anything else is real drift. Delete this
-        # subtraction when the web lane lands the typedef cleanup.
-        _abi3_deferred_js_extras = {
-            "ChatOutbound": {"cost_usd", "cost_usd_with_children", "telegram_chat_id"},
-            "PhotoOutbound": {"telegram_chat_id"},
-            "VideoOutbound": {"telegram_chat_id"},
-        }.get(cls.__name__, set())
-        actual = actual - _abi3_deferred_js_extras
+        # ABI 7.0 (ABI-3): the alias JSDoc lines were cleaned up in the F3.3
+        # comma-sweep tact — the browser mirror is exact again, no excuse set.
         assert actual == expected, f"{cls.__name__} JSDoc fields drifted: missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
     # Field-set parity alone would accept an optional marker on the two
     # discriminators. Pin the browser mirror's requiredness as well as names.

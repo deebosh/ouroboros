@@ -45,7 +45,7 @@ advisory, and skill review follow their configured delivery rows.
 Malformed configuration RAISES: mapping a typo to ``api_chat`` would silently
 spend the API money the owner configured the row to move off of, and mapping
 it to ``agent_session`` would silently delegate a row the owner never
-delegated (same posture as ``configured_review_routes``).
+delegated.
 """
 
 from __future__ import annotations
@@ -648,27 +648,25 @@ def reviewer_slots(
     effort: str = "medium",
     role_hint: str = "",
     id_prefix: str = "",
-    route_env_key: str = "",
 ) -> List[Any]:
-    """The configured reviewer rows, each carrying its DELIVERY route.
+    """The configured reviewer rows, every one pinned ``api_chat``.
 
     Moved here from ``review_substrate`` for module altitude (P7); the
-    substrate re-exports it. ``route_env_key`` names the surface's per-row
-    route list (plan 5.1): the commit triad and scope pass theirs, so a row
-    can be an api_chat call or a delegated agent session. Surfaces that stay
-    on the API by owner decision (task acceptance — D15) pass NOTHING, which
-    pins every row to ``api_chat`` explicitly rather than by accident.
+    substrate re-exports it. Per-row delegated delivery is a structured-SSOT
+    fact (``OUROBOROS_REVIEWER_SLOTS`` rows — D14/6.1): the phase-5 per-row
+    route envs are RETIRED settings keys (ABI-10) and are ignored here, so a
+    row built from a plain model list is an api_chat call explicitly rather
+    than by accident (task acceptance stays API-only by owner decision — D15;
+    the scope caller that fans out a delegated row overrides the route
+    itself).
     """
     from ouroboros.config import get_review_models, resolved_review_model_target
-    from ouroboros.review_execution import ReviewRouteKind, configured_review_routes
+    from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.review_substrate import SLOT_ID_PREFIX, ReviewSlot, slot_id_for_row
 
     id_prefix = id_prefix or SLOT_ID_PREFIX
     raw_models = models if models is not None else get_review_models()
     named = [str(model) for model in (raw_models or []) if str(model or "").strip()]
-    routes = configured_review_routes(route_env_key, len(named)) if route_env_key else [
-        ReviewRouteKind.API_CHAT
-    ] * len(named)
     # ABI-4: the local-route fact comes off the typed target constructed at the
     # review seam (one predicate application, at construction) instead of a
     # per-string predicate call here.
@@ -676,7 +674,7 @@ def reviewer_slots(
         ReviewSlot(slot_id=slot_id_for_row(idx + 1, prefix=id_prefix), model=model, effort=effort,
                    role_hint=role_hint,
                    use_local=(resolved_review_model_target(model).provider_route == "local"),
-                   route=routes[idx])
+                   route=ReviewRouteKind.API_CHAT)
         for idx, model in enumerate(named)
     ]
 

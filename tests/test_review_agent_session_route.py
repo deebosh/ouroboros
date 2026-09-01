@@ -16,11 +16,8 @@ from ouroboros import delegate_custody as custody
 
 from ouroboros.review_execution import (
     REVIEW_SESSION_ROUTE_ENV,
-    SCOPE_REVIEW_ROUTES_ENV,
-    TRIAD_REVIEW_ROUTES_ENV,
     ReviewRouteKind,
     canonicalize_session_verdict,
-    configured_review_routes,
 )
 from ouroboros.review_substrate import (
     ReviewSlot,
@@ -454,22 +451,20 @@ def test_mixed_panel_failed_agent_slot_does_not_shrink_n(tmp_path, fake_route, m
     assert len(llm.calls) == 1  # the api row; the agent row never touched chat
 
 
-def test_configured_review_routes_parsing(monkeypatch):
-    monkeypatch.setenv(TRIAD_REVIEW_ROUTES_ENV, "api_chat, agent_session")
-    routes = configured_review_routes(TRIAD_REVIEW_ROUTES_ENV, 3)
-    assert routes == [ReviewRouteKind.API_CHAT, ReviewRouteKind.AGENT_SESSION,
-                      ReviewRouteKind.API_CHAT]
-    monkeypatch.setenv(TRIAD_REVIEW_ROUTES_ENV, "codex")
-    with pytest.raises(ValueError):
-        configured_review_routes(TRIAD_REVIEW_ROUTES_ENV, 1)
+def test_retired_route_envs_are_ignored(monkeypatch):
+    """ABI-10: the phase-5 per-row route envs are RETIRED and IGNORED.
 
-
-def test_scope_rows_carry_their_configured_routes(monkeypatch):
-    monkeypatch.setenv(SCOPE_REVIEW_ROUTES_ENV, "agent_session")
+    A row built from a plain model list is pinned api_chat even when a stale
+    environment still exports the retired spellings; delegated delivery is a
+    structured-SSOT fact (``OUROBOROS_REVIEWER_SLOTS`` rows) only.
+    """
+    monkeypatch.setenv("OUROBOROS_REVIEW_ROUTES", "agent_session,agent_session")
+    monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_ROUTES", "agent_session")
     rows = scope_reviewer_slots(["m1", "m2"])
-    assert rows[0].route is ReviewRouteKind.AGENT_SESSION
-    assert rows[1].route is ReviewRouteKind.API_CHAT
+    assert all(row.route is ReviewRouteKind.API_CHAT for row in rows)
     assert rows[0].slot_id == "scope_slot_1" and rows[1].slot_id == "scope_slot_2"
+    assert all(row.route is ReviewRouteKind.API_CHAT
+               for row in reviewer_slots(["m1", "m2"], role_hint="commit review"))
 
 
 def test_scope_rows_default_to_the_configured_scope_review_effort(monkeypatch):
@@ -478,7 +473,6 @@ def test_scope_rows_default_to_the_configured_scope_review_effort(monkeypatch):
     OUROBOROS_EFFORT_SCOPE_REVIEW — the BLOCKING constitutional scope reviewer
     silently ran below its configured reasoning strength on every stock install."""
     monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
-    monkeypatch.delenv(SCOPE_REVIEW_ROUTES_ENV, raising=False)
     monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_MODELS", "some/model")
     monkeypatch.delenv("OUROBOROS_EFFORT_SCOPE_REVIEW", raising=False)
     assert [row.effort for row in scope_reviewer_slots()] == ["high"]  # config default
@@ -541,9 +535,9 @@ def test_delegated_transcript_survives_canonicalization_durably(
 
 def test_acceptance_rows_stay_api_even_when_triad_routes_delegate(monkeypatch):
     """D15: task acceptance is pinned to the API (plan review follows each configured
-    row's delivery since the spec-gate redesign). The triad's route list must not
-    leak into surfaces that pass no route_env_key."""
-    monkeypatch.setenv(TRIAD_REVIEW_ROUTES_ENV, "agent_session,agent_session,agent_session")
+    row's delivery since the spec-gate redesign). A stale retired route env must not
+    leak into the acceptance rows (ABI-10: it is ignored everywhere)."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_ROUTES", "agent_session,agent_session,agent_session")
     rows = reviewer_slots(["m1", "m2"], effort="high", role_hint="task acceptance")
     assert all(row.route is ReviewRouteKind.API_CHAT for row in rows)
 

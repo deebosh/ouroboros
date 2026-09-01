@@ -14,7 +14,6 @@ import pytest
 
 from ouroboros.review_execution import (
     REVIEW_SESSION_ROUTE_ENV,
-    SCOPE_REVIEW_ROUTES_ENV,
 )
 from ouroboros.review_substrate import (
     scope_reviewer_slots,
@@ -63,14 +62,26 @@ def test_mixed_scope_fanout_sends_each_row_over_its_own_route(tmp_path, monkeypa
     configured with.
 
     `_call_scope_llm` rebuilt its slot from `scope_reviewer_slots([model])`, and a
-    one-element list always re-reads ROUTES **row 1** — so with
-    `agent_session,api_chat` the configured api row inherited agent_session while
-    its request carried the api pack and no session task: a deterministic
-    ReviewRouteUnavailable error actor that failed the blocking scope gate.
+    one-element rebuild historically re-derived ROUTES **row 1** — so on a mixed
+    panel the configured api row inherited agent_session while its request
+    carried the api pack and no session task: a deterministic
+    ReviewRouteUnavailable error actor that failed the blocking scope gate. The
+    mixed panel now comes from the structured SSOT (ABI-10: the phase-5 route
+    envs are retired) and the caller's fanned-out route stays authoritative.
     """
     import ouroboros.tools.scope_review as scope_mod
 
-    monkeypatch.setenv(SCOPE_REVIEW_ROUTES_ENV, "agent_session,api_chat")
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+        "triad": [
+            {"slot_id": "t_api", "route": {"kind": "api_chat", "target_id": "m/api"}},
+        ],
+        "scope": [
+            {"slot_id": "scope_slot_1",
+             "route": {"kind": "agent_session", "target_id": "m/session"}},
+            {"slot_id": "scope_slot_2",
+             "route": {"kind": "api_chat", "target_id": "m/api"}},
+        ],
+    }))
     dispatched: list = []
 
     def _capture(request, *, slots, drive_root, llm, usage_ctx=None):
@@ -90,7 +101,7 @@ def test_mixed_scope_fanout_sends_each_row_over_its_own_route(tmp_path, monkeypa
                         lambda *_a, **_k: scope_mod.ReviewerWindow(
                             window_tokens=1_000_000, status="confirmed"))
 
-    for slot in scope_reviewer_slots(["m/session", "m/api"]):
+    for slot in scope_reviewer_slots():
         scope_mod.run_scope_review(
             _scope_ctx(tmp_path), "mixed route fan-out",
             scope_model=slot.model, slot_id=slot.slot_id, route=slot.route,

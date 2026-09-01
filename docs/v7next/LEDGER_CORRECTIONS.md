@@ -3112,3 +3112,63 @@ aliases), external automation treating the retired comma-list env spellings
 as a settings surface, out-of-tree extension authors declaring plugin_api
 "2.0" before new PASSes, reliance on fail_tasks / the removed pacing knobs,
 and owner acceptance of the Q8=B quarantine consequence.
+
+## From the F3.3 comma-sweep (base 1bd342b1, 2026-09-01)
+
+1. The phase CI gate landed as tests/test_comma_list_remnant_sweep.py
+   (named in the ABI-10 hook column beside the F3.1 sweep): retired-key
+   mentions over ouroboros/ + web/ + supervisor/ snapped DYNAMICALLY from
+   RETIRED_COMMA_LIST_SETTING_KEYS, comma-split parsing in model/review
+   modules, phase-5 plumbing absence, and a retired-envs-are-ignored
+   runtime pin - all count-anchored per site with reasons (the
+   test_gateway_abi3_removals.py allowlist discipline).
+2. Residual inventory matrix (remnant | live/dead | action | reason):
+   - review_substrate.scope_reviewer_slots route_env_key plumbing
+     (configured_review_routes + TRIAD/SCOPE_REVIEW_ROUTES_ENV in
+     review_execution.py) | DEAD post-ABI-10 | REMOVED | the only
+     production explicit-models caller (tools/scope_review.py:345)
+     overrides the route itself ("the caller's fanned-out route is
+     authoritative"); the models=None path reaches the env read only on a
+     structured-config-less install exporting a RETIRED spelling - exactly
+     the class ABI-10 retired. Rows built from plain model lists are now
+     pinned api_chat; retired-envs-are-ignored pinned in the sweep and in
+     test_review_agent_session_route.py (the phase-5 env-parsing clauses
+     were replaced, not deleted silently: test_configured_review_routes_
+     parsing / test_scope_rows_carry_their_configured_routes asserted the
+     retired behavior). test_review_session_scope_wiring's mixed fan-out
+     now builds its mixed panel from a structured OUROBOROS_REVIEWER_SLOTS
+     payload.
+   - OUROBOROS_ADVISORY_REVIEW_ROUTE (preflight_review_run.py constant +
+     prose, claude_advisory_review.py messages) | DEAD (no os.environ read
+     anywhere; advisory_review_route() reads only the structured SSOT) |
+     prose/constant REMOVED | operator guidance now names the
+     OUROBOROS_REVIEWER_SLOTS advisory row; vestigial setenv/delenv lines
+     dropped from 4 test files (they were no-ops - nothing read the env).
+   - JS typedef cleanup (web/modules/api_types.js) | stale | REMOVED | the
+     8 HOT-DEFERRED JSDoc lines from the ABI-3 inventory (ChatOutbound
+     cost_usd/cost_usd_with_children/telegram_chat_id, Photo/Video/
+     DocumentOutbound telegram_chat_id, UiPreferencesResponse
+     project_last_viewed/project_hidden); the _abi3_deferred_js_extras
+     excuse set in tests/test_gateway_parity.py deleted - the browser
+     mirror is exact again. api_types.js only shrank (ratchet-safe);
+     chat.js untouched (BYTE_DEBT ceiling). node --test: 695/695 pass.
+   - GATEWAY_CONTRACT_VERSION carrier switch (api_types.js '6.113.4' ->
+     mirror of gateway.schema.GATEWAY_ABI_VERSION '7.0') | DEFERRED to the
+     release tact | NOT executed | it rewrites a release version carrier
+     and the test_gateway_parity pin that ties the JS constant to the
+     VERSION file - version carriers move synchronously in release
+     mechanics only.
+   - Allowlisted-with-reason remnants (live, NOT removed): settings_
+     defaults retirement SSOT; the derived env plane (reviewer_slot_config
+     projection + review_model_routes/scope_review_budget readers);
+     server_runtime raw-dict retired-model default refresh; provider_
+     models declared-model surface; gateway/settings changed-key warning
+     triggers; retirement prose in review_execution/preflight_review_run/
+     web settings.js.
+3. Same-commit collateral: ARCHITECTURE.md review-substrate paragraph now
+   states per-row delivery comes from the structured OUROBOROS_REVIEWER_
+   SLOTS rows (retired phase-5 envs ignored); plan_review's
+   "Set OUROBOROS_REVIEW_MODELS in settings" operator error - a retired
+   settings key - now points at Review lanes / OUROBOROS_REVIEWER_SLOTS;
+   test_review_owner_facades' facade roster dropped the removed
+   ADVISORY_REVIEW_ROUTE_ENV re-export.

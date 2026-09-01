@@ -194,9 +194,6 @@ def _check_expected_items(items: list, expected_items: Optional[List[str]]) -> t
     )
 
 
-ADVISORY_REVIEW_ROUTE_ENV = "OUROBOROS_ADVISORY_REVIEW_ROUTE"
-
-
 _ADVISORY_SESSION_MAX_SECONDS = 900  # the nanny's time cap replaces the SDK budget kill
 
 
@@ -208,8 +205,8 @@ def advisory_review_route() -> str:
     raises — a typo must fail loudly, never silently pick a transport.
 
     Reads the reviewer-slot SSOT (6.1): the structured advisory row when the
-    owner saved one, the legacy ``OUROBOROS_ADVISORY_REVIEW_ROUTE`` env
-    otherwise (the SSOT's own migration read)."""
+    owner saved one, the shipped default row otherwise (ABI-10: the legacy
+    ``OUROBOROS_ADVISORY_REVIEW_ROUTE`` env is retired and ignored)."""
     from ouroboros.reviewer_slot_config import ROUTE_KIND_SESSION, advisory_slot_config
 
     return (

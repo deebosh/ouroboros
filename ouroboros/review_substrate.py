@@ -44,7 +44,6 @@ from ouroboros.review_execution import (  # noqa: F401  (compat re-exports)
     _request_messages,
     _review_route_executor,
     assert_cache_breakpoint_cap,
-    configured_review_routes,
 )
 from ouroboros.review_custody import (
     _ReviewAttemptHistory, _review_exception_projection,
@@ -153,7 +152,10 @@ def scope_reviewer_slots(
 
     With no explicit ``models`` the rows come from the reviewer-slot SSOT
     (6.1): stable owner ids, per-row route/target/effort. An explicit list
-    keeps the historical positional behavior for callers that rebuild one row.
+    keeps the historical positional behavior for callers that rebuild one row;
+    such rows are pinned ``api_chat`` (the caller that fans out a delegated
+    row overrides the route itself — the phase-5 per-row route envs are
+    retired, ABI-10).
 
     An omitted ``effort`` resolves to the configured scope-review effort: the
     legacy path used to take this parameter's old literal default instead,
@@ -174,11 +176,8 @@ def scope_reviewer_slots(
         from ouroboros.config import get_scope_review_models
 
         models = get_scope_review_models()
-    from ouroboros.review_execution import SCOPE_REVIEW_ROUTES_ENV
-
     return reviewer_slots(
         models, effort=effort, role_hint="scope reviewer", id_prefix=SCOPE_SLOT_ID_PREFIX,
-        route_env_key=SCOPE_REVIEW_ROUTES_ENV,
     )
 
 

@@ -69,7 +69,6 @@ _DOC_MARKERS = (
 def api_env(monkeypatch):
     # Native (routed) advisory delivery: credentials follow the routed model.
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
-    monkeypatch.delenv(advisory.ADVISORY_REVIEW_ROUTE_ENV, raising=False)
     monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
 
 

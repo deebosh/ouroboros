@@ -620,9 +620,10 @@ def _record_bypass(ctx: ToolContext, state: "AdvisoryReviewState", snapshot_hash
             "⚠️ ANTHROPIC_API_KEY is not set — advisory review skipped automatically "
             "because the configured advisory route (api) requires it. "
             "Bypass has been durably audited in events.jsonl. "
-            "Set ANTHROPIC_API_KEY in Settings, or switch the advisory to the "
-            "delegated subscription route (OUROBOROS_ADVISORY_REVIEW_ROUTE="
-            "agent_session), which needs no API key."
+            "Set ANTHROPIC_API_KEY in Settings, or switch the advisory row to "
+            "the delegated subscription route (Review lanes on the Agents tab "
+            "— OUROBOROS_REVIEWER_SLOTS advisory kind agent_session), which "
+            "needs no API key."
         )
     else:
         msg = "Advisory review bypassed. Bypass has been durably audited."
@@ -1045,7 +1046,7 @@ def _handle_advisory_pre_review(
             "snapshot_hash": snapshot_hash,
             "error": f"⚠️ ADVISORY_ERROR: {exc}",
             "message": "Fix the advisory reviewer configuration "
-                       "(OUROBOROS_REVIEWER_SLOTS / OUROBOROS_ADVISORY_REVIEW_ROUTE) and retry.",
+                       "(OUROBOROS_REVIEWER_SLOTS advisory row) and retry.",
         })
     if not _advisory_enabled:
         # The owner switched the advisory slot off (6.2) — or the legacy
@@ -1413,7 +1414,6 @@ from ouroboros.tools.preflight_review_prompt import (  # noqa: E402, F401 -- int
     _get_staged_diff,
 )
 from ouroboros.tools.preflight_review_run import (  # noqa: E402, F401 -- intentional public re-exports
-    ADVISORY_REVIEW_ROUTE_ENV,
     _ADVISORY_EXTRACT_CONTRACT,
     _ADVISORY_PROMPT_MAX_CHARS,
     _ADVISORY_SESSION_MAX_SECONDS,

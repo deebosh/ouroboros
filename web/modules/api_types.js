@@ -280,16 +280,14 @@
  * @property {boolean=} cancelable
  *   v6.82 (P5): host-attested — this frame's task is a supervisor-queue task that
  *   POST /api/tasks/{id}/cancel can force-cancel (never set for direct-chat turns).
- * @property {?number=} cost_usd
  * @property {?number=} accounted_upper_bound_usd
- *   C2: the additive HONEST name for cost_usd — an accounted upper bound, not a
- *   settled receipt. Same value as the deprecated alias, null when unknown.
+ *   C2: an accounted upper bound, not a settled receipt; null when unknown.
+ *   (ABI-3: the deprecated `cost_usd` alias is removed from the contract.)
  * @property {?number=} accounted_upper_bound_usd_with_children
- *   C2: honest name for cost_usd_with_children (same value, null when unknown).
+ *   C2: subtree upper bound (formerly aliased `cost_usd_with_children`); null when unknown.
  * @property {"available"|"unavailable"=} cost_accounting_status
  * @property {string=} cost_accounting_error
  * @property {boolean=} cost_final
- * @property {?number=} cost_usd_with_children
  * @property {boolean=} cost_with_children_partial
  * @property {?number=} reserved_usd
  * @property {?number=} unresolved_upper_bound_usd
@@ -330,7 +328,6 @@
  * @property {string=} sender_session_id
  * @property {string=} client_message_id
  * @property {Object=} transport
- * @property {number=} telegram_chat_id
  * @property {string=} system_type
  * @property {string=} target_label
  * @property {string=} project_id
@@ -367,7 +364,6 @@
  * @property {Object=} transport
  * @property {number=} chat_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
- * @property {number=} telegram_chat_id
  */
 
 /**
@@ -386,7 +382,6 @@
  * @property {Object=} transport
  * @property {number=} chat_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
- * @property {number=} telegram_chat_id
  */
 
 /**
@@ -407,7 +402,6 @@
  * @property {Object=} transport
  * @property {number=} chat_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
- * @property {number=} telegram_chat_id
  */
 
 /**
@@ -1014,8 +1008,6 @@
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default
  * @property {Object.<string,number>} project_seen_revision  // monotonic paint ACK
- * @property {Object.<string,string>} project_last_viewed  // deprecated accepted no-op
- * @property {Object.<string,boolean>} project_hidden  // deprecated accepted no-op
  * @property {boolean=} ok
  */
 

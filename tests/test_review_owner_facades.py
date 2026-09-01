@@ -40,7 +40,7 @@ REVIEW_LEAF_OWNERS: dict[str, dict[str, str]] = {
             "_build_blocking_history_section _build_advisory_prompt"
         ),
         "ouroboros.tools.preflight_review_run": (
-            "ADVISORY_REVIEW_ROUTE_ENV _ADVISORY_PROMPT_MAX_CHARS "
+            "_ADVISORY_PROMPT_MAX_CHARS "
             "_ADVISORY_EXTRACT_CONTRACT _ADVISORY_SESSION_MAX_SECONDS "
             "_resolve_fallback_model _llm_extract_advisory_items "
             "_check_expected_items advisory_review_route advisory_slot_enabled "

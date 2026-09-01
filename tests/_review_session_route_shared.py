@@ -16,8 +16,6 @@ import pytest
 from ouroboros import delegate_custody as custody
 from ouroboros.review_execution import (
     REVIEW_SESSION_ROUTE_ENV,
-    SCOPE_REVIEW_ROUTES_ENV,
-    TRIAD_REVIEW_ROUTES_ENV,
     ReviewRouteKind,
 )
 from ouroboros.review_substrate import (
@@ -182,8 +180,8 @@ def fake_route(monkeypatch):
     FakeGateway.reset()
     monkeypatch.setattr("ouroboros.gateways.claudexor.ClaudexorGateway", FakeGateway)
     monkeypatch.setenv(REVIEW_SESSION_ROUTE_ENV, "fake-review=fake-small:low")
-    monkeypatch.delenv(TRIAD_REVIEW_ROUTES_ENV, raising=False)
-    monkeypatch.delenv(SCOPE_REVIEW_ROUTES_ENV, raising=False)
+    # ABI-10: the phase-5 per-row route envs are retired and IGNORED; nothing
+    # to clear — rows built from plain model lists are pinned api_chat.
     # Custody memoization is process-local; a stale entry from another test's
     # run-1 would confuse ownership replay.
     custody._CUSTODY.clear()
