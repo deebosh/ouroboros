@@ -4028,3 +4028,73 @@ mock-lane, every scenario green on this host.
    assisted-merge / crash-mid-phase update variations, chat-lineage cancel
    receipt path (the outbox+receipt form of W2-F1), delegated-transport
    (FakeClaudexorDaemon) and gateway/UI-truth (Playwright) waves.
+
+## From the external-audit correction lane (base 8827fd2c)
+
+Five externally-audited items, re-verified by the coordinator, fixed as five
+single-intent commits on `ouroboros_v7next` (no push — P-LANE pause). Item 4
+was amended mid-lane by owner answers №8=A / №9=A (2026-09-01, relayed by the
+coordinator); the amended form is what landed.
+
+1. **wait_tasks description vs producer (ABI-3 honesty)** — FIXED (d3db6424).
+   `tools/control.py` promised the model a `cost_usd` projection key while the
+   producer (`control_task_results` batch projection) emits
+   `accounted_upper_bound_usd` + `cost_final`. Description now names the
+   actual keys. Class sweep: no other builtin tool description and no
+   prompts/ text mentions the removed alias; the `_children_roster_projection`
+   docstring lied with the same legacy name and was aligned to the fields the
+   roster actually emits (`accounted_upper_bound_usd` only — no `cost_final`
+   there). Pins: `tests/test_cost_projection.py`
+   (`TestModelVisibleToolSurfaces`) — wait_tasks description carries the
+   actual keys and no legacy spelling, plus a class-wide registry sweep over
+   every builtin tool schema.
+2. **write_text_atomic(fsync=True) short write** — FIXED (f772717c). The
+   fsync lane issued one bare `os.write` and trusted its return; a POSIX
+   partial write published a truncated file behind the successful atomic
+   rename. Both fsync lanes now share `_write_fd_fully` (the loop
+   `write_bytes_atomic` already had), each keeping its own open flags (no
+   `O_BINARY` on the text lane — historical platform newline semantics
+   unchanged). Pins: `tests/test_atomic_write_v639.py` — one-byte-at-a-time
+   `os.write` mock, both lanes, full content on disk.
+3. **rc_audit: present-but-unparseable ui_preferences.json audited clean** —
+   FIXED (b0960407). The bare `except JSONDecodeError: return` violated the
+   fix-round-1 contract («a malformed mandatory source is never a clean
+   exit 0»); it is now a blocking `unauditable-source` finding (exit 1), same
+   class as an unparseable skill manifest; a read OSError still propagates to
+   exit 2. Class sweep of every `_audit_*` source: settings raises
+   InstallUnreadable (exit 2), skills raise `unauditable-source`,
+   task_results map parse damage to the blocking schema-stamp quarantine
+   finding — ui_preferences was the one surviving instance. A parsed
+   non-object still audits clean (it holds no keys; the legacy-key audit has
+   a truthful answer). Pins both ways in
+   `tests/test_rc_audit_fixture_suite.py`.
+4. **ADOPTION_v7next.md status truth** — FIXED (1e9915ac), amended per owner:
+   CPL-1 stays `done` WITH SANCTION — owner №8=A (2026-09-01): the
+   all-20-domain strict-quotient SCC ceiling is accepted for v7.0
+   (shrink-only gate, target empty; true cycles=0 = post-release campaign);
+   open residual disclosed: 80 `[classification].proposed` new-upstream
+   placements await owner review. CPL-4 `done` → `in-progress`: inventory +
+   verify hook done, 23 candidate code fixes (CPL4-C1..C23) deliberately not
+   touched; owner №9=A routes the mechanical fixes (rotation train +
+   retention knob + orphans) into v7.0 as a separate lane, the 7
+   owner-decision rows into one pre-release batch. TRAIN-F6-8d13373b row
+   added (the header's promised train row for the post-cutoff upstream lane):
+   121 upstream commits b9f7597f..8d13373b, merge 0aa74e9f, done, phase F6,
+   hook = this ledger's F6 sync section + the merge + the full batteries.
+   Validator: `ID_RE` already admits TRAIN- ids and phase F6; plain run OK
+   (37 rows); `--release` red AS EXPECTED — current count: rc=1,
+   31 findings over 21 rows (18 pending + 3 in-progress status rows, 4
+   pending-decision dispositions, 4 missing-hook-file + 3 prose-only-hook
+   findings among them).
+5. **ARCHITECTURE.md stale after the F6 sync** — FIXED (b652bd15). Removed
+   the `/api/owner/scope-review-floor` endpoint-table row and corrected the
+   owner-endpoint count to four (the gateway mounts exactly
+   runtime-mode/auto-grant/context-mode/safety-mode); retargeted
+   `delivery_protocol.parse_delivery_control_body` →
+   `loop_delivery._parse_delivery_control_body` and
+   `acceptance_dialogue._set_acceptance_decision` →
+   `loop_acceptance._set_acceptance_decision` (both verified still
+   re-exported from `loop`); same-class fix in DEVELOPMENT.md's acceptance
+   checklist row. No `chat_delivery_events` mention existed in
+   ARCHITECTURE.md. `regenerate_inventories.py` reruns byte-identical (§11.1
+   untouched); `check_domains` green.
