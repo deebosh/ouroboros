@@ -222,6 +222,35 @@ def acquire_exclusive_file_lock(
     return None
 
 
+def refresh_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int]) -> bool:
+    """Renew a HELD lock's staleness clock; return whether it was renewed.
+
+    A critical section that legitimately outlives its holder's ``stale_sec``
+    (a monetary-ledger compaction pass over a multi-megabyte file) must keep
+    the lockfile young, or any acquirer that does NOT opt into
+    ``owner_aware_stale`` deletes it on age alone and a second writer runs
+    concurrently.  The renewal targets the DESCRIPTOR wherever the platform
+    supports it, and otherwise only after proving the path still names the
+    same file, so a lock that was already stolen is never refreshed on the
+    thief's behalf.
+    """
+    if lock_fd is None:
+        return False
+    try:
+        if os.utime in getattr(os, "supports_fd", ()):
+            os.utime(lock_fd)
+            return True
+        held = os.fstat(lock_fd)
+        current = os.stat(lock_path)
+        if (held.st_ino, held.st_dev) != (current.st_ino, current.st_dev):
+            return False
+        os.utime(str(lock_path))
+        return True
+    except OSError:
+        log.debug("Failed to refresh lock %s", lock_path, exc_info=True)
+        return False
+
+
 def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int]) -> None:
     """Release a lock acquired by :func:`acquire_exclusive_file_lock`."""
     lock_path = pathlib.Path(lock_path)

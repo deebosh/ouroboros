@@ -31,7 +31,7 @@ import pathlib
 import threading
 import uuid
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from ouroboros._usage_rows import _breakdown_bucket, _summary
 from ouroboros.usage_ledger import (
@@ -87,22 +87,58 @@ class _Abort(Exception):
 
 
 def _fsync_dir(path: pathlib.Path) -> None:
-    """Best-effort directory fsync (guaranteed on POSIX; no-op on Windows)."""
+    """fsync a directory so entries created in it survive a power loss.
+
+    On POSIX this is MANDATORY and its failure is fatal to the pass: an
+    unsynced directory means the archive segment's name may not exist after a
+    crash, and the swap that follows would then be the only surviving copy of
+    a history whose raw rows just vanished. Windows has no directory handle to
+    fsync (``os.open`` on a directory fails), so there it is a disclosed
+    no-op — selected by the platform predicate, never by swallowing OSError.
+    """
+    from ouroboros.platform_layer import IS_WINDOWS
+
     try:
         fd = os.open(str(path), os.O_RDONLY)
     except OSError:
-        return
+        if IS_WINDOWS:
+            return
+        raise
     try:
         os.fsync(fd)
     except OSError:
-        pass
+        if not IS_WINDOWS:
+            raise
     finally:
         os.close(fd)
 
 
+def _mkdir_fsync_chain(path: pathlib.Path) -> None:
+    """``mkdir -p`` whose every CREATED directory entry is made durable.
+
+    Syncing a directory persists the entries IT holds, so one
+    ``mkdir(parents=True)`` needs a pass over each new level AND over the
+    pre-existing ancestor that now carries the shallowest new entry. Syncing
+    only the deepest level (the segment's own parent) leaves
+    ``archive/usage_ledger`` itself unnamed on disk after a crash, while the
+    swapped ledger survives — exactly the loss the archive-first order exists
+    to prevent.
+    """
+    created: list = []
+    probe = path
+    while not probe.exists():
+        created.append(probe)
+        if probe.parent == probe:
+            break
+        probe = probe.parent
+    path.mkdir(parents=True, exist_ok=True)
+    for directory in (*created, probe):
+        _fsync_dir(directory)
+
+
 def _write_new_file_fsync(path: pathlib.Path, payload: bytes) -> None:
     """Create-exclusive write + fsync of file AND directory (archive segments)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _mkdir_fsync_chain(path.parent)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     fd = os.open(str(path), flags, 0o600)
     try:
@@ -122,6 +158,35 @@ def _swap_ledger_fsync(path: pathlib.Path, payload: bytes) -> None:
     """Atomically replace the live ledger with the verified candidate bytes."""
     _write_bytes_atomic_fsync(path, payload)
     _fsync_dir(path.parent)
+
+
+def _beat(heartbeat: Optional[Callable[[], bool]]) -> None:
+    """Renew the held monetary lock's age at a pass checkpoint (never raises)."""
+    if heartbeat is None:
+        return
+    try:
+        heartbeat()
+    except Exception:  # a heartbeat failure must never fail a reservation
+        log.debug("usage-ledger lock heartbeat failed", exc_info=True)
+
+
+def _snapshot_intact(ledger_path: pathlib.Path, raw: bytes) -> bool:
+    """Whether the live ledger is still EXACTLY the snapshot being compacted.
+
+    The swap replaces the WHOLE file, so any row appended after the snapshot
+    would be silently dropped — a settled charge erased, a budget under-count,
+    a replayable double charge. The lock makes that impossible in the normal
+    case; this makes it impossible in the abnormal one (a lock broken by age,
+    a foreign writer, a manual repair). Re-read under the same held lock and
+    refuse the swap on ANY difference: the price of a lost race is a skipped
+    compaction pass, never a lost row.
+    """
+    try:
+        if os.stat(ledger_path).st_size != len(raw):
+            return False
+        return ledger_path.read_bytes() == raw
+    except OSError:
+        return False
 
 
 def _dumps_row(row: Dict[str, Any]) -> str:
@@ -414,14 +479,24 @@ def _build_candidate(
     return candidate, receipt
 
 
-def compact_usage_ledger_locked(root: pathlib.Path | str) -> Optional[Dict[str, Any]]:
+def compact_usage_ledger_locked(
+    root: pathlib.Path | str,
+    *,
+    heartbeat: Optional[Callable[[], bool]] = None,
+) -> Optional[Dict[str, Any]]:
     """One compaction pass. MUST be called under the held monetary ledger lock.
 
+    ``heartbeat`` is the lock renewal yielded by ``usage_ledger._locked``: a
+    pass over a multi-megabyte ledger can outlive the lock's staleness window,
+    and a lock stolen mid-pass is the one way a swap could drop a concurrently
+    appended charge.
+
     Returns the commit receipt, or ``None`` when the pass aborts by policy
-    (nothing foldable, no byte gain, any verification inequality) — an abort
-    leaves the ledger byte-identical. I/O errors during the commit steps
-    propagate; the archive segment is durable BEFORE the live file is touched,
-    so a crash at any point leaves a valid ledger.
+    (nothing foldable, no byte gain, any verification inequality, or a live
+    ledger that changed under us) — an abort leaves the ledger byte-identical.
+    I/O errors during the commit steps propagate; the archive segment is
+    durable BEFORE the live file is touched, so a crash at any point leaves a
+    valid ledger.
     """
     root = pathlib.Path(_drive_root(root))
     ledger_path = root / LEDGER_REL
@@ -462,6 +537,7 @@ def compact_usage_ledger_locked(root: pathlib.Path | str) -> Optional[Dict[str, 
 
         if decimal_totals(decimal_rows) != decimal_totals(candidate_decimals):
             raise _Abort("decimal money totals mismatch")
+        _beat(heartbeat)
     except _Abort as abort:
         log.info("usage-ledger compaction skipped: %s", abort.reason)
         return None
@@ -473,8 +549,18 @@ def compact_usage_ledger_locked(root: pathlib.Path | str) -> Optional[Dict[str, 
     # Commit: archive first (durable before the live file is touched). The
     # literal path chain here is the scanner-visible writer of the
     # archive/usage_ledger plane (docs/PERSISTENCE.md row).
+    _beat(heartbeat)
+    if not _snapshot_intact(ledger_path, raw):
+        log.warning("usage-ledger compaction abandoned before archive: ledger changed under the lock")
+        return None
     segment_name = pathlib.PurePosixPath(receipt["archive_rel"]).name
     _write_new_file_fsync(root / "archive" / "usage_ledger" / segment_name, raw)
+    _beat(heartbeat)
+    if not _snapshot_intact(ledger_path, raw):
+        # A row landed between the snapshot and here. Swapping now would erase
+        # it; the written segment is an orphan (harmless, never referenced).
+        log.warning("usage-ledger compaction abandoned before swap: ledger changed under the lock")
+        return None
     _swap_ledger_fsync(ledger_path, candidate)
     try:
         append_jsonl(
@@ -492,7 +578,11 @@ def compact_usage_ledger_locked(root: pathlib.Path | str) -> Optional[Dict[str, 
     return receipt
 
 
-def maybe_compact_usage_ledger_locked(root: pathlib.Path | str) -> bool:
+def maybe_compact_usage_ledger_locked(
+    root: pathlib.Path | str,
+    *,
+    heartbeat: Optional[Callable[[], bool]] = None,
+) -> bool:
     """Opportunistic trigger on the monetary write path (under the held lock).
 
     ``os.stat`` fast-path below ``config.USAGE_LEDGER_COMPACT_BYTES``; a
@@ -521,7 +611,7 @@ def maybe_compact_usage_ledger_locked(root: pathlib.Path | str) -> bool:
         return False
     receipt: Optional[Dict[str, Any]] = None
     try:
-        receipt = compact_usage_ledger_locked(root)
+        receipt = compact_usage_ledger_locked(root, heartbeat=heartbeat)
     except Exception:
         log.exception("usage-ledger compaction failed; reservation continues uncompacted")
     if receipt is not None:

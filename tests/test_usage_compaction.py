@@ -17,12 +17,18 @@ pinned here are monetary-authority invariants (owner sanction 1A):
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
+import pathlib
+import stat
+import time
 from decimal import Decimal
 
 import pytest
 
+from ouroboros import platform_layer
 from ouroboros import usage_accounting as ua
 from ouroboros import usage_compaction as uc
 from ouroboros.usage_ledger import UsageLedgerCorrupt, _validate_records
@@ -129,8 +135,36 @@ def _decimal_money(rows):
 
 
 def _compact(data_root):
-    with ua._locked(data_root):
-        return uc.compact_usage_ledger_locked(data_root)
+    with ua._locked(data_root) as heartbeat:
+        return uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
+
+
+def _lock_path(data_root):
+    return data_root / "state" / "usage_attempts.lock"
+
+
+def _lock_is_held(data_root):
+    """Whether the monetary lock is held RIGHT NOW by someone else."""
+    path = _lock_path(data_root)
+    if not path.exists():
+        return False
+    fd = platform_layer.acquire_exclusive_file_lock(
+        path, timeout_sec=0.05, stale_sec=3600.0, poll_sec=0.01,
+        owner_aware_stale=True,
+    )
+    if fd is None:
+        return True
+    platform_layer.release_exclusive_file_lock(path, fd)
+    return False
+
+
+def _append_raw_row(data_root, row):
+    """Append one already-legal row straight to the live ledger bytes."""
+    path = data_root / ua.LEDGER_REL
+    row = {**row, "seq": len(_ledger_lines(data_root)) + 1}
+    with path.open("ab") as handle:
+        handle.write((json.dumps(row, sort_keys=True) + "\n").encode("utf-8"))
+    return row
 
 
 def _projection_snapshot(data_root):
@@ -239,24 +273,143 @@ def test_unsettled_rows_survive_and_stay_transitionable(data_root):
 
 # --- 3: crash-safety ---------------------------------------------------------
 
-def test_crash_between_archive_and_swap_leaves_ledger_intact(data_root, monkeypatch):
+def test_crash_at_the_ledger_rename_leaves_ledger_intact(data_root, monkeypatch):
     _seed_mixed_ledger(data_root)
-    before_bytes = (data_root / ua.LEDGER_REL).read_bytes()
-    original_swap = uc._swap_ledger_fsync
+    ledger_path = data_root / ua.LEDGER_REL
+    archive_dir = data_root / "archive" / "usage_ledger"
+    before_bytes = ledger_path.read_bytes()
+    real_replace = os.replace
+    observed: dict = {}
 
-    def boom(path, payload):
-        raise OSError("injected crash before ledger swap")
+    def crashing_replace(src, dst):
+        if pathlib.Path(dst) != ledger_path:
+            return real_replace(src, dst)
+        # The power cut lands ON the rename itself. By contract the archive
+        # segment is already durable at this instant and holds the exact source
+        # bytes: a swap that happened first would find no segment here.
+        observed["segments"] = [
+            path.read_bytes() for path in sorted(archive_dir.glob("segment_*.jsonl"))
+        ]
+        raise OSError(errno.EIO, "injected power loss at the ledger rename")
 
-    monkeypatch.setattr(uc, "_swap_ledger_fsync", boom)
-    with ua._locked(data_root):
+    monkeypatch.setattr(os, "replace", crashing_replace)
+    with ua._locked(data_root) as heartbeat:
         with pytest.raises(OSError):
-            uc.compact_usage_ledger_locked(data_root)
-    assert (data_root / ua.LEDGER_REL).read_bytes() == before_bytes
+            uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
+    assert observed["segments"] == [before_bytes]
+    assert ledger_path.read_bytes() == before_bytes
+    _validate_records(_ledger_rows(data_root))
+    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
     # The orphaned archive segment is tolerated; the ledger keeps working and a
     # retry (without the injection) compacts.
-    monkeypatch.setattr(uc, "_swap_ledger_fsync", original_swap)
+    monkeypatch.setattr(os, "replace", real_replace)
     _settle(data_root, cost=0.5, cost_final=True)
     assert _compact(data_root) is not None
+
+
+def test_archive_directory_chain_is_durable_before_the_swap(data_root, monkeypatch):
+    _seed_mixed_ledger(data_root)
+    archive_dir = data_root / "archive" / "usage_ledger"
+    real_fsync = os.fsync
+    synced: list = []
+    swapped: list = []
+
+    def recording_fsync(fd):
+        try:
+            info = os.fstat(fd)
+            synced.append((info.st_dev, info.st_ino))
+        except OSError:  # pragma: no cover - fstat on a live fd
+            pass
+        return real_fsync(fd)
+
+    real_swap = uc._swap_ledger_fsync
+
+    def watched_swap(path, payload):
+        swapped.append(len(synced))
+        return real_swap(path, payload)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(uc, "_swap_ledger_fsync", watched_swap)
+    assert _compact(data_root) is not None
+    assert swapped, "the swap never ran"
+    before_swap = set(synced[: swapped[0]])
+    # Every directory whose entry the archive chain created must be durable
+    # BEFORE the live ledger is replaced — not just the segment's own parent.
+    for directory in (archive_dir, archive_dir.parent, data_root):
+        info = directory.stat()
+        assert (info.st_dev, info.st_ino) in before_swap, directory
+
+
+def test_posix_directory_fsync_failure_aborts_before_the_swap(data_root, monkeypatch):
+    if platform_layer.IS_WINDOWS:  # pragma: no cover - platform predicate
+        pytest.skip("directory fsync is a disclosed no-op on Windows")
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    before_bytes = ledger_path.read_bytes()
+    real_fsync = os.fsync
+
+    def failing_fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "injected directory fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with ua._locked(data_root) as heartbeat:
+        with pytest.raises(OSError):
+            uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
+    assert ledger_path.read_bytes() == before_bytes
+
+
+# --- 1b: the lock the pass runs under ----------------------------------------
+
+def test_monetary_lock_is_owner_aware_and_the_pass_heartbeats_it(data_root, monkeypatch):
+    _seed_mixed_ledger(data_root)
+    requested: dict = {}
+    real_acquire = platform_layer.acquire_exclusive_file_lock
+
+    def spy(path, **kwargs):
+        requested.update(kwargs)
+        return real_acquire(path, **kwargs)
+
+    monkeypatch.setattr(platform_layer, "acquire_exclusive_file_lock", spy)
+    lock_path = _lock_path(data_root)
+    with ua._locked(data_root) as heartbeat:
+        # A LIVE owner is never evicted on elapsed time alone: a stolen monetary
+        # lock means two writers rewriting the same authority.
+        assert requested.get("owner_aware_stale") is True
+        # A pass that outlives the staleness window keeps its lockfile young
+        # for acquirers that judge by age only.
+        os.utime(lock_path, (0.0, 0.0))
+        assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is not None
+        assert lock_path.stat().st_mtime > time.time() - 60
+
+
+def test_append_between_snapshot_and_swap_aborts_instead_of_erasing_it(data_root, monkeypatch):
+    _seed_mixed_ledger(data_root)
+    before_money = _decimal_money(_ledger_rows(data_root))
+    original_write = uc._write_new_file_fsync
+    injected: dict = {}
+
+    def racing_write(path, payload):
+        # A writer that got the lock (age-broken lock, foreign repair) lands a
+        # settled charge AFTER the compactor snapshotted the file.
+        injected.update(_append_raw_row(data_root, {
+            "kind": "subscription_session", "attempt_id": "sess-raced",
+            "state": "settled", "ts": "2026-09-01T00:00:00+00:00",
+            "cost_usd": 0.25, "cost_final": True, "model": "fable",
+            "provider": "claudexor", "category": "task", "source": "subscription",
+            "task_id": "t", "root_task_id": "root", "parent_task_id": "",
+        }))
+        original_write(path, payload)
+
+    monkeypatch.setattr(uc, "_write_new_file_fsync", racing_write)
+    assert _compact(data_root) is None  # refused the swap
+    rows = _ledger_rows(data_root)
+    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
+    assert not any(row.get("kind") == "usage_baseline" for row in rows)
+    _validate_records(rows)
+    cost, bound = _decimal_money(rows)
+    assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
 
 
 # --- 5: CPL-5 join surface ---------------------------------------------------
@@ -346,14 +499,27 @@ def test_legacy_import_rows_are_retained_and_reimport_dedups(data_root):
 
 def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch):
     _seed_mixed_ledger(data_root)
+    # The pass rewrites the whole monetary authority, so it is correct ONLY
+    # while the ledger lock is held: prove the hold at the moment of the call
+    # rather than trusting where the call site sits.
+    holds: list = []
+    original = uc.compact_usage_ledger_locked
+
+    def observing(root, **kwargs):
+        holds.append(_lock_is_held(data_root))
+        return original(root, **kwargs)
+
+    monkeypatch.setattr(uc, "compact_usage_ledger_locked", observing)
     size = (data_root / ua.LEDGER_REL).stat().st_size
     monkeypatch.setattr("ouroboros.config.USAGE_LEDGER_COMPACT_BYTES", size * 10)
     uc._COMPACT_ATTEMPTS.clear()
     _settle(data_root, cost=0.1, cost_final=True)
     assert not any(row.get("kind") == "usage_baseline" for row in _ledger_rows(data_root))
+    assert holds == []  # below threshold: the stat fast-path never enters the pass
     monkeypatch.setattr("ouroboros.config.USAGE_LEDGER_COMPACT_BYTES", 1)
     _settle(data_root, cost=0.1, cost_final=True)
     assert any(row.get("kind") == "usage_baseline" for row in _ledger_rows(data_root))
+    assert holds == [True]
 
 
 def test_unprofitable_pass_is_throttled(data_root, monkeypatch):
@@ -368,9 +534,9 @@ def test_unprofitable_pass_is_throttled(data_root, monkeypatch):
     calls = []
     original = uc.compact_usage_ledger_locked
 
-    def counting(root):
+    def counting(root, **kwargs):
         calls.append(1)
-        return original(root)
+        return original(root, **kwargs)
 
     monkeypatch.setattr(uc, "compact_usage_ledger_locked", counting)
     before = _ledger_lines(data_root)

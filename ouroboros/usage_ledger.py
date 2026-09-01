@@ -23,7 +23,7 @@ import re
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
 
 from ouroboros.utils import append_jsonl, replace_atomic, utc_now_iso
 
@@ -126,30 +126,42 @@ def _named_lock(
     *,
     timeout_sec: float,
     stale_sec: float,
-) -> Iterator[None]:
+) -> Iterator[Callable[[], bool]]:
+    """Hold a named monetary lock; yields a heartbeat that renews its age.
+
+    Acquisition is OWNER-AWARE: elapsed time alone never evicts a lock whose
+    writing process is still alive, because a stolen monetary lock means two
+    writers rewriting the same authority.  The yielded callable additionally
+    keeps the lockfile young for acquirers that are not owner-aware (an older
+    build, a foreign helper), and is a no-op cost for holds that never
+    approach ``stale_sec``.
+    """
     from ouroboros.platform_layer import (
         acquire_exclusive_file_lock,
+        refresh_exclusive_file_lock,
         release_exclusive_file_lock,
     )
 
     path = root / "state" / filename
-    fd = acquire_exclusive_file_lock(path, timeout_sec=timeout_sec, stale_sec=stale_sec)
+    fd = acquire_exclusive_file_lock(
+        path, timeout_sec=timeout_sec, stale_sec=stale_sec, owner_aware_stale=True,
+    )
     if fd is None:
         raise UsageAccountingError(f"usage accounting lock unavailable: {path}")
     try:
-        yield
+        yield lambda: refresh_exclusive_file_lock(path, fd)
     finally:
         release_exclusive_file_lock(path, fd)
 
 
 @contextlib.contextmanager
-def _locked(root: pathlib.Path) -> Iterator[None]:
+def _locked(root: pathlib.Path) -> Iterator[Callable[[], bool]]:
     # Operator fix 2026-07-23: 4.0s starves under a grown ledger (reserve_attempt
     # re-reads the whole usage_attempts.jsonl under this lock — ~0.5s hold at 20MB),
     # failing healthy tasks with UsageAccountingError at >=10 concurrent workers.
     # Waiting longer is always correct here; the transaction itself stays atomic.
-    with _named_lock(root, "usage_attempts.lock", timeout_sec=45.0, stale_sec=90.0):
-        yield
+    with _named_lock(root, "usage_attempts.lock", timeout_sec=45.0, stale_sec=90.0) as heartbeat:
+        yield heartbeat
 
 
 def _append_bytes_fsync(path: pathlib.Path, payload: bytes) -> None:
