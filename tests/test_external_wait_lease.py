@@ -447,17 +447,23 @@ def test_timed_out_tool_closes_its_cognitive_lease_when_worker_settles(tmp_path,
         task_id="tool-task",
     )
     assert result["is_error"] is True
-    time.sleep(0.1)
+    # The worker settles on its own schedule (a loaded macOS runner took more
+    # than the old fixed 0.1 s): drain until the terminal row lands, bounded.
     rows = []
-    while not events.empty():
-        rows.append(events.get_nowait())
-    terminal = [
-        row for row in rows
-        if row.get("type") == "cognitive_operation"
-        and row.get("operation_id") == "tool-1"
-        and row.get("phase") == "finished"
-    ]
-    assert terminal
+    terminal = []
+    deadline = time.monotonic() + 10.0
+    while not terminal and time.monotonic() < deadline:
+        while not events.empty():
+            rows.append(events.get_nowait())
+        terminal = [
+            row for row in rows
+            if row.get("type") == "cognitive_operation"
+            and row.get("operation_id") == "tool-1"
+            and row.get("phase") == "finished"
+        ]
+        if not terminal:
+            time.sleep(0.02)
+    assert terminal, rows
 
 
 def _llm_call_event(phase, **overrides):
