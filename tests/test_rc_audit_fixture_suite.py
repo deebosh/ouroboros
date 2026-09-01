@@ -139,12 +139,30 @@ def test_nminus1_fixture_install_exits_1_with_the_expected_checks(tmp_path):
     assert any("fail_tasks" in note for note in report["prose_notes"])
 
 
-def test_grandfathered_hash_bound_pass_downgrades_plugin_api_to_a_note(tmp_path):
-    data = _build_nminus1_install(tmp_path / "install")
-    review_dir = data / "state" / "skills" / "telegram"
+def _real_content_hash(skill_dir: pathlib.Path) -> str:
+    """The runtime's own review-staleness hash over the fixture payload."""
+    from ouroboros.contracts.skill_manifest import parse_skill_manifest_text
+    from ouroboros.skill_loader import compute_content_hash
+
+    manifest = parse_skill_manifest_text(
+        (skill_dir / "SKILL.md").read_text(encoding="utf-8"))
+    return compute_content_hash(
+        skill_dir, manifest_entry=manifest.entry, manifest_scripts=manifest.scripts)
+
+
+def _write_review_pass(data: pathlib.Path, state_name: str, content_hash: str) -> None:
+    review_dir = data / "state" / "skills" / state_name
     review_dir.mkdir(parents=True)
     (review_dir / "review.json").write_text(
-        json.dumps({"status": "pass", "content_hash": "a" * 64}), encoding="utf-8")
+        json.dumps({"status": "pass", "content_hash": content_hash}), encoding="utf-8")
+
+
+def test_grandfathered_hash_bound_pass_downgrades_plugin_api_to_a_note(tmp_path):
+    """The grandfather note requires a PASS bound to the payload's CURRENT
+    bytes — the fixture stores the REAL computed hash, exactly as review did."""
+    data = _build_nminus1_install(tmp_path / "install")
+    skill_dir = data / "skills" / "external" / "telegram"
+    _write_review_pass(data, "telegram", _real_content_hash(skill_dir))
     result = _run(data, "--json", str(tmp_path / "report.json"),
                   isolated_root=tmp_path / "isol")
     assert result.returncode == 1  # other incompatibilities remain
@@ -153,6 +171,49 @@ def test_grandfathered_hash_bound_pass_downgrades_plugin_api_to_a_note(tmp_path)
     assert plugin_findings
     assert all(f["severity"] == "note" for f in plugin_findings)
     assert any("GRANDFATHERED" in f["detail"] for f in plugin_findings)
+
+
+def test_stale_hash_bound_pass_is_incompatible_not_a_grandfather_note(tmp_path):
+    """A stored PASS whose hash does not match the current payload bytes is a
+    STALE review: the runtime refuses to load it, so the audit must report an
+    incompatibility, never the grandfather note (adversarial finding 2)."""
+    data = _build_nminus1_install(tmp_path / "install")
+    _write_review_pass(data, "telegram", "a" * 64)  # not the payload's hash
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 1
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
+    assert plugin_findings
+    assert all(f["severity"] == "incompatible" for f in plugin_findings)
+    assert any("STALE" in f["detail"] for f in plugin_findings)
+
+
+def test_review_state_lookup_uses_the_directory_basename_not_manifest_name(tmp_path):
+    """Runtime/state identity is the skill DIRECTORY basename
+    (skill_loader.load_skill); a PASS stored under the manifest's display name
+    for a differently-named directory must NOT grandfather the skill."""
+    data = _build_nminus1_install(tmp_path / "install")
+    skill_dir = data / "skills" / "external" / "telegram"
+    renamed = skill_dir.with_name("telegram_fork")
+    skill_dir.rename(renamed)
+    # manifest.name stays "telegram": state under that name is the WRONG dir.
+    _write_review_pass(data, "telegram", _real_content_hash(renamed))
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 1
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
+    assert plugin_findings
+    assert all(f["severity"] == "incompatible" for f in plugin_findings)
+    # Stored under the basename, the same PASS grandfathers again.
+    _write_review_pass(data, "telegram_fork", _real_content_hash(renamed))
+    result = _run(data, "--json", str(tmp_path / "report2.json"),
+                  isolated_root=tmp_path / "isol")
+    report = json.loads((tmp_path / "report2.json").read_text(encoding="utf-8"))
+    plugin_findings = [f for f in report["findings"] if f["check_id"] == "plugin-api"]
+    assert plugin_findings
+    assert all(f["severity"] == "note" for f in plugin_findings)
 
 
 # ----------------------------------------------------------- clean install
@@ -191,6 +252,136 @@ def test_data_root_without_settings_exits_2(tmp_path):
     data.mkdir(parents=True)
     result = _run(data, isolated_root=tmp_path / "isol")
     assert result.returncode == 2
+
+
+# ------------------------------------------------- exit contract (finding 3)
+
+
+def test_malformed_manifest_is_a_blocking_unauditable_source_never_exit_0(tmp_path):
+    """A mandatory source the audit cannot parse must never yield exit 0: the
+    otherwise-clean install carries one malformed skill manifest and the audit
+    reports it as a blocking ``unauditable-source`` finding (exit 1)."""
+    data = _build_clean_70_install(tmp_path / "install")
+    broken = data / "skills" / "external" / "broken_skill"
+    broken.mkdir(parents=True)
+    (broken / "skill.json").write_text("{not a manifest", encoding="utf-8")
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    findings = [f for f in report["findings"] if f["check_id"] == "unauditable-source"]
+    assert findings and all(f["severity"] == "incompatible" for f in findings)
+
+
+def test_report_write_failure_exits_2_not_1(tmp_path):
+    """A report-write OSError is an audit failure (exit 2) — a bare Python
+    exit 1 would read as "incompatibilities found" to automation."""
+    data = _build_clean_70_install(tmp_path / "install")
+    result = _run(data, "--json", str(tmp_path / "no" / "such" / "dir" / "r.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 2
+    assert "REPORT UNWRITABLE" in result.stderr
+
+
+# ------------------------------------------- runtime-parity discovery (finding 5)
+
+
+def test_orphan_and_hidden_skill_dirs_are_ignored_like_the_runtime(tmp_path):
+    """Crash leftovers (.replaced-/.staging-/.tmp-) and hidden directories are
+    never loaded by the runtime, so they must not become audit findings."""
+    data = _build_clean_70_install(tmp_path / "install")
+    for name in ("telegram.replaced-20260901", "x.staging-1", "y.tmp-2", ".hidden"):
+        orphan = data / "skills" / "external" / name
+        orphan.mkdir(parents=True)
+        (orphan / "skill.json").write_text("{not a manifest", encoding="utf-8")
+    result = _run(data, "--json", str(tmp_path / "report.json"),
+                  isolated_root=tmp_path / "isol")
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert report["summary"]["incompatible"] == 0
+
+
+# ------------------------------------------------ bytecode plane (finding 4)
+
+
+def test_pycache_prefix_inside_the_audited_root_is_refused_loudly(tmp_path):
+    """Interpreter startup writes stdlib bytecode under PYTHONPYCACHEPREFIX
+    BEFORE the script's first line, so a prefix inside the audited install
+    cannot be silently tolerated: the audit refuses (exit 2) instead of
+    printing a false read-only report over the already-touched tree."""
+    data = _build_nminus1_install(tmp_path / "install")
+    env_extra = {"PYTHONPYCACHEPREFIX": str(data / "state" / "pycache")}
+    env = dict(os.environ)
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env.update(env_extra)
+    isolated = tmp_path / "isol"
+    env.update({
+        "OUROBOROS_APP_ROOT": str(isolated),
+        "OUROBOROS_REPO_DIR": str(isolated / "repo"),
+        "OUROBOROS_DATA_DIR": str(isolated / "data"),
+        "OUROBOROS_SETTINGS_PATH": str(isolated / "data" / "settings.json"),
+    })
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(data)],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert result.returncode == 2
+    assert "READ-ONLY GUARANTEE VIOLATED" in result.stderr
+
+
+def test_pycache_prefix_with_dont_write_bytecode_leaves_the_tree_untouched(tmp_path):
+    """The launcher mode that IS safe: PYTHONDONTWRITEBYTECODE suppresses the
+    startup writes and the script's own flag covers everything after — the
+    audit runs and the audited tree stays byte-for-byte identical."""
+    data = _build_nminus1_install(tmp_path / "install")
+    before = _tree_snapshot(data)
+    env = dict(os.environ)
+    isolated = tmp_path / "isol"
+    env.update({
+        "PYTHONPYCACHEPREFIX": str(data / "state" / "pycache"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "OUROBOROS_APP_ROOT": str(isolated),
+        "OUROBOROS_REPO_DIR": str(isolated / "repo"),
+        "OUROBOROS_DATA_DIR": str(isolated / "data"),
+        "OUROBOROS_SETTINGS_PATH": str(isolated / "data" / "settings.json"),
+    })
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(data)],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert not (data / "state" / "pycache").exists()
+    assert _tree_snapshot(data) == before
+
+
+# --------------------------------------------- source provenance (finding 6)
+
+
+def test_tree_sha_appends_dirty_suffix_for_tracked_changes(monkeypatch):
+    module = _load_module()
+
+    class _Out:
+        def __init__(self, stdout):
+            self.returncode = 0
+            self.stdout = stdout
+
+    state = {"dirty": True}
+
+    def _fake_run(cmd, **kwargs):
+        if "rev-parse" in cmd:
+            return _Out("f" * 40 + "\n")
+        assert "--untracked-files=no" in cmd  # tracked-scope dirty check
+        return _Out(" M ouroboros/config.py\n" if state["dirty"] else "")
+
+    monkeypatch.setattr(module.subprocess, "run", _fake_run)
+    assert module._tree_sha() == "f" * 40 + "-dirty"
+    state["dirty"] = False
+    assert module._tree_sha() == "f" * 40
+
+
+def test_repo_root_wins_the_import_resolution():
+    module = _load_module()
+    assert sys.path[0] == str(module.REPO_ROOT)
 
 
 # --------------------------------------------------------------- read-only

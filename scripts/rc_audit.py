@@ -35,27 +35,46 @@ were frozen at), and ``checks[]`` of exactly five classes:
 Everything not machine-checkable is an OWNER ATTESTATION list the auditor
 prints verbatim (F13: no pretend-coverage).
 
-Exit codes: 0 = clean, 1 = incompatibilities found, 2 = install unreadable.
+Exit codes: 0 = clean, 1 = incompatibilities found, 2 = install unreadable or
+the audit itself failed (traversal/report-write OSError). A mandatory source
+the audit cannot read or parse (a skill manifest, a hash-verifiable payload)
+is NEVER a clean exit 0: it becomes a BLOCKING ``unauditable-source`` finding
+(exit 1) — the install is not proven clean until the source is fixed.
 
 Reuse-first: the classifiers are the runtime's own, consumed read-only —
 ``task_result_schema_refusal`` (pure), ``parse_skill_manifest_text``,
 ``extension_new_pass_admission_error``, ``skill_review_gate``,
+``skill_loader._walk_skill_packages`` / ``compute_content_hash`` (the
+runtime's own skill discovery and review-staleness hash),
 ``RETIRED_SETTING_KEYS`` / ``RETIRED_COMMA_LIST_SETTING_KEYS``. None of the
 imported modules touches config paths at import time. Review-exempt dev/ops
 tool: not part of the runtime gate.
 """
 from __future__ import annotations
 
-import argparse
-import json
-import pathlib
-import subprocess
 import sys
-from typing import Any, Dict, List, Optional
 
+# READ-ONLY guarantee, before ANY further import: a packaged launcher may point
+# PYTHONPYCACHEPREFIX inside the audited install, and the runtime imports below
+# would then write .pyc trees into it before the audit even starts. The startup
+# value is captured first: if the interpreter itself was allowed to write
+# bytecode (no -B / PYTHONDONTWRITEBYTECODE), stdlib .pyc files landed under the
+# prefix BEFORE this line — main() refuses such a prefix inside the audited root.
+_STARTUP_DONT_WRITE_BYTECODE = bool(sys.dont_write_bytecode)
+sys.dont_write_bytecode = True
+
+import argparse  # noqa: E402
+import json  # noqa: E402
+import pathlib  # noqa: E402
+import subprocess  # noqa: E402
+from typing import Any, Dict, List, Optional  # noqa: E402
+
+# This checkout must WIN the import resolution: an earlier checkout already on
+# sys.path would otherwise supply the classifiers while sources.tree names ours.
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT) in sys.path:
+    sys.path.remove(str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 from ouroboros.contracts.plugin_api import (  # noqa: E402
     LEGACY_PLUGIN_API_GENERATION,
@@ -72,6 +91,11 @@ from ouroboros.contracts.skill_manifest import (  # noqa: E402
 from ouroboros.settings_defaults import (  # noqa: E402
     RETIRED_COMMA_LIST_SETTING_KEYS,
     RETIRED_SETTING_KEYS,
+)
+from ouroboros.skill_loader import (  # noqa: E402
+    SkillPayloadUnreadable,
+    _walk_skill_packages,
+    compute_content_hash,
 )
 from ouroboros.skill_review_status import skill_review_gate  # noqa: E402
 from ouroboros.task_result_schema import (  # noqa: E402
@@ -175,6 +199,9 @@ OWNER_ATTESTATION: List[str] = [
 
 
 def _tree_sha() -> str:
+    """Provenance of the classifier BYTES actually used, not just of HEAD:
+    uncommitted tracked changes append the ``-dirty`` suffix (untracked files
+    do not ship classifiers this run resolved — the sweep is tracked-scope)."""
     try:
         out = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
@@ -182,6 +209,13 @@ def _tree_sha() -> str:
         )
         sha = (out.stdout or "").strip()
         if out.returncode == 0 and sha:
+            st = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "status", "--porcelain",
+                 "--untracked-files=no"],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            if st.returncode == 0 and (st.stdout or "").strip():
+                return f"{sha}-dirty"
             return sha
     except (OSError, subprocess.SubprocessError):
         pass
@@ -299,19 +333,11 @@ def _audit_settings(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> 
 
 
 def _iter_skill_dirs(data_root: pathlib.Path):
-    skills_root = data_root / "skills"
-    if not skills_root.is_dir():
-        return
-    seen = set()
-    candidates = []
-    for bucket in sorted(p for p in skills_root.iterdir() if p.is_dir()):
-        candidates.append(bucket)  # a skill directly under skills/ (permissive)
-        candidates.extend(sorted(p for p in bucket.iterdir() if p.is_dir()))
-    for skill_dir in candidates:
-        if any((skill_dir / name).is_file() for name in _MANIFEST_NAMES):
-            if skill_dir not in seen:
-                seen.add(skill_dir)
-                yield skill_dir
+    """The RUNTIME's own discovery walk, consumed read-only (no parallel rules):
+    hidden and ``.replaced-``/``.staging-``/``.tmp-`` orphan names are excluded
+    and descent stops at a found package, exactly as ``skill_loader`` loads —
+    a crash leftover the runtime never loads must not become an audit finding."""
+    yield from _walk_skill_packages(data_root / "skills")
 
 
 def _review_gate_for(data_root: pathlib.Path, name: str) -> Dict[str, Any]:
@@ -338,10 +364,13 @@ def _audit_skills(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> No
                 try:
                     manifest_text = mf.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError) as exc:
+                    # A mandatory source the audit cannot read is a BLOCKING
+                    # audit-integrity finding (exit 1), never a clean exit 0.
                     findings.append(_finding(
-                        "plugin-api", SEV_NOTE, str(mf.relative_to(data_root)),
-                        f"manifest unreadable ({type(exc).__name__}) — cannot audit "
-                        "this skill",
+                        "unauditable-source", SEV_INCOMPATIBLE,
+                        str(mf.relative_to(data_root)),
+                        f"manifest unreadable ({type(exc).__name__}) — this skill "
+                        "cannot be audited, so the install is NOT proven clean",
                         "fix the manifest file, then re-run the audit",
                     ))
                 break
@@ -352,8 +381,9 @@ def _audit_skills(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> No
             manifest = parse_skill_manifest_text(manifest_text)
         except SkillManifestError as exc:
             findings.append(_finding(
-                "plugin-api", SEV_NOTE, rel,
-                f"manifest does not parse ({exc}) — cannot audit this skill",
+                "unauditable-source", SEV_INCOMPATIBLE, rel,
+                f"manifest does not parse ({exc}) — this skill cannot be "
+                "audited, so the install is NOT proven clean",
                 "fix the manifest, then re-run the audit",
             ))
             continue
@@ -362,14 +392,48 @@ def _audit_skills(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> No
         admission_error = extension_new_pass_admission_error(manifest)
         if not admission_error:
             continue
-        gate = _review_gate_for(data_root, manifest.name or skill_dir.name)
+        # Runtime/state identity is the DIRECTORY BASENAME (skill_loader.load_skill);
+        # manifest.name is display metadata and may point at another state dir.
+        gate = _review_gate_for(data_root, skill_dir.name)
         declared = manifest_plugin_api_field(manifest) is not None
-        if not declared and gate.get("executable_review") and gate.get("content_hash"):
+        stored_hash = str(gate.get("content_hash") or "")
+        grandfathered = False
+        if not declared and gate.get("executable_review") and stored_hash:
+            # A PASS is HASH-BOUND: only a PASS over the payload's CURRENT bytes
+            # keeps loading. The hash is the runtime's own (read-only reuse).
+            try:
+                current_hash = compute_content_hash(
+                    skill_dir,
+                    manifest_entry=manifest.entry,
+                    manifest_scripts=manifest.scripts,
+                )
+            except SkillPayloadUnreadable as exc:
+                findings.append(_finding(
+                    "unauditable-source", SEV_INCOMPATIBLE, rel,
+                    f"skill payload unreadable ({exc}) — the hash-bound review "
+                    "PASS cannot be verified against the current bytes",
+                    "fix the payload files, then re-run the audit",
+                ))
+                continue
+            if stored_hash == current_hash:
+                grandfathered = True
+            else:
+                findings.append(_finding(
+                    "plugin-api", SEV_INCOMPATIBLE, rel,
+                    "extension manifest declares no plugin_api field and its "
+                    "stored review PASS is STALE (payload bytes changed since "
+                    "the PASS): the runtime will not load it and a NEW PASS "
+                    "will be refused",
+                    admission_error,
+                ))
+                continue
+        if grandfathered:
             findings.append(_finding(
                 "plugin-api", SEV_NOTE, rel,
                 "extension manifest declares no plugin_api field but holds a "
-                "hash-bound review PASS: it keeps loading GRANDFATHERED on that "
-                "PASS; any edit invalidates it and a NEW PASS will be refused",
+                "hash-bound review PASS over its CURRENT bytes: it keeps loading "
+                "GRANDFATHERED on that PASS; any edit invalidates it and a NEW "
+                "PASS will be refused",
                 admission_error,
             ))
         else:
@@ -510,10 +574,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     data_root = args.data_root.resolve()
+    # The dont_write_bytecode flag above stops every post-startup write, but the
+    # INTERPRETER already compiled stdlib bytecode under PYTHONPYCACHEPREFIX
+    # before this script's first line ran. A prefix inside the audited install
+    # means the read-only guarantee was violated by the invoking environment —
+    # refuse loudly instead of printing a false "read-only" report over it.
+    prefix = getattr(sys, "pycache_prefix", None)
+    if prefix and not _STARTUP_DONT_WRITE_BYTECODE:
+        prefix_path = pathlib.Path(prefix).resolve()
+        if prefix_path == data_root or data_root in prefix_path.parents:
+            print("READ-ONLY GUARANTEE VIOLATED: PYTHONPYCACHEPREFIX points inside "
+                  "the audited install; interpreter startup already wrote bytecode "
+                  "there. Re-run with PYTHONDONTWRITEBYTECODE=1 (or python -B) or "
+                  "an outside prefix.", file=sys.stderr)
+            return 2
     try:
         report = audit(data_root)
     except InstallUnreadable as exc:
         print(f"INSTALL UNREADABLE: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        # Traversal failure is an AUDIT failure (exit 2), never Python's exit 1
+        # — that code means "incompatibilities found" to automation.
+        print(f"INSTALL UNREADABLE: audit traversal failed: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
     if args.json is not None:
@@ -522,8 +606,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("refusing to write the report inside the audited install "
                   "(read-only guarantee)", file=sys.stderr)
             return 2
-        out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-                       encoding="utf-8")
+        try:
+            out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                           encoding="utf-8")
+        except OSError as exc:
+            print(f"REPORT UNWRITABLE: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return 2
     print(render(report))
     return int(report["exit_code"])
 
