@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import pathlib
@@ -38,11 +39,8 @@ def executable_name_candidates(name: str) -> List[str]:
 
 
 def local_zoneinfo():
-    """Best-effort DST-aware local timezone.
-
-    ``astimezone().tzinfo`` is a *fixed* offset that drifts across DST; resolve the IANA
-    zone (``TZ`` or ``/etc/localtime``), falling back to the fixed offset.
-    """
+    """Best-effort DST-aware local timezone: the IANA zone from ``TZ`` or
+    ``/etc/localtime``, else the fixed offset (which drifts across DST)."""
     import datetime
     from zoneinfo import ZoneInfo
 
@@ -82,17 +80,14 @@ def bootstrap_process_path() -> list[str]:
     candidates: list[pathlib.Path] = []
     home = pathlib.Path.home()
     if IS_MACOS or IS_LINUX:
-        candidates.extend([
-            pathlib.Path("/opt/homebrew/bin"),
-            pathlib.Path("/opt/homebrew/sbin"),
-            pathlib.Path("/usr/local/bin"),
-            pathlib.Path("/usr/local/sbin"),
-            pathlib.Path("/opt/local/bin"),
-            home / ".local" / "bin",
-            home / ".cargo" / "bin",
-            home / ".npm-global" / "bin",
-            home / "go" / "bin",
-        ])
+        candidates.extend(pathlib.Path(p) for p in (
+            "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+            "/usr/local/sbin", "/opt/local/bin",
+        ))
+        candidates.extend((
+            home / ".local" / "bin", home / ".cargo" / "bin",
+            home / ".npm-global" / "bin", home / "go" / "bin",
+        ))
     if IS_WINDOWS:
         def _env_path(name: str, default: str = "") -> pathlib.Path | None:
             text = os.environ.get(name, default)
@@ -135,12 +130,11 @@ def bootstrap_process_path() -> list[str]:
 
 
 def scrub_repo_from_pythonpath(env: dict[str, str], repo_dir: "str | pathlib.Path | None") -> dict[str, str]:
-    """Return a copy of *env* with any ``PYTHONPATH`` entry resolving to the Ouroboros
-    system repo dir removed.
+    """Copy of *env* without ``PYTHONPATH`` entries resolving to the system repo.
 
-    An EXTERNAL-workspace command inherits the worker's ``PYTHONPATH`` repo entry, which
-    makes the target's ``import web``/``server``/``ouroboros`` resolve to OUROBOROS's modules.
-    Dropping ONLY the repo entry isolates the target; no-op without one."""
+    An EXTERNAL-workspace command inheriting that entry resolves its own
+    ``import web``/``server``/``ouroboros`` to OUROBOROS's modules; dropping
+    ONLY the repo entry isolates the target (no-op without one)."""
     out = dict(env)
     raw = out.get("PYTHONPATH", "")
     if not raw or not repo_dir:
@@ -175,6 +169,12 @@ def _lock_identity(target: "int | pathlib.Path") -> tuple:
     return (info.st_ino, info.st_dev, info.st_mtime_ns)
 
 
+# Kernel answers meaning "the lock is HELD by someone", as opposed to "this
+# filesystem cannot take kernel locks at all" (bare NFS and friends), which
+# degrades to the name-protocol best effort instead of refusing forever.
+_LOCK_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK})
+
+
 def acquire_exclusive_file_lock(
     lock_path: pathlib.Path,
     *,
@@ -184,11 +184,18 @@ def acquire_exclusive_file_lock(
     poll_sec: float = 0.05,
     owner_aware_stale: bool = False,
 ) -> Optional[int]:
-    """Acquire a portable lockfile using O_EXCL and return its file descriptor.
+    """Acquire a portable lockfile; the returned descriptor also HOLDS a
+    kernel lock (flock / LockFileEx), so exclusion is kernel-enforced on the
+    fd rather than resting on the O_EXCL name protocol alone.
 
-    Authority streams opt into ``owner_aware_stale`` so elapsed time alone can
-    never steal a lock from a live writer.  A dead/malformed legacy owner still
-    recovers through the existing stale-age path.
+    Authority streams opt into ``owner_aware_stale`` so elapsed time alone
+    never steals a lock from a live writer; a dead/malformed legacy owner
+    still recovers through the stale-age path.  POSIX evicts a stale lock
+    only UNDER a held flock on the very fd it judged, re-checking that the
+    path still names that inode: of two racing reclaimers at most one can
+    evict.  Windows cannot unlink an open file (and a filesystem may lack
+    kernel locks); those keep the re-check-then-unlink shape without the held
+    lock — best effort, chosen by the platform predicate, disclosed.
     """
     lock_path = pathlib.Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,12 +204,21 @@ def acquire_exclusive_file_lock(
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
             try:
+                file_lock_exclusive_nb(fd)
+            except OSError as exc:
+                if exc.errno in _LOCK_HELD_ERRNOS:
+                    os.close(fd)  # a racing evictor's probe kernel-locked the
+                    time.sleep(poll_sec)  # file we created: the name alone is
+                    continue  # not ownership — stand down and re-contend
+                log.debug("No kernel lock support at %s", lock_path, exc_info=True)
+            try:
                 text = metadata or f"pid={os.getpid()} ts={time.time()}\n"
                 os.write(fd, text.encode("utf-8"))
             except Exception:
                 log.debug("Failed to write lock metadata to %s", lock_path, exc_info=True)
             return fd
         except (FileExistsError, PermissionError):
+            stale = evict_flockless = False
             try:
                 probe = os.open(str(lock_path), os.O_RDONLY)
                 try:
@@ -211,15 +227,30 @@ def acquire_exclusive_file_lock(
                     for field in os.read(probe, 512).decode("utf-8", "replace").split():
                         if field.startswith("pid=") and field[4:].isdigit():
                             owner_pid = int(field[4:])
+                    stale = bool(judged) and (time.time() - judged[2] / 1e9) > stale_sec and not (
+                        owner_aware_stale and owner_pid > 0 and pid_is_alive(owner_pid)
+                    )
+                    # Evict ONLY the exact file just judged abandoned, and only
+                    # while flock-holding it: between judgement and unlink the
+                    # owner may release and a third writer re-create the lock —
+                    # removing THAT file puts two writers on one authority.
+                    if stale and not IS_WINDOWS:
+                        try:
+                            file_lock_exclusive_nb(probe)
+                        except OSError as exc:
+                            if exc.errno in _LOCK_HELD_ERRNOS:
+                                stale = False  # a live kernel hold: not abandoned
+                            else:
+                                evict_flockless = True
+                        else:
+                            if _lock_identity(lock_path) == judged:
+                                os.unlink(str(lock_path))  # under the held flock
+                            continue
                 finally:
                     os.close(probe)
-                # Evict ONLY the exact file just judged abandoned: between the
-                # judgement and the unlink the owner may release and a third
-                # writer re-create the lock, and removing THAT file would put
-                # two writers on one authority.
-                if judged and (time.time() - judged[2] / 1e9) > stale_sec and not (
-                    owner_aware_stale and owner_pid > 0 and pid_is_alive(owner_pid)
-                ) and _lock_identity(lock_path) == judged:
+                if stale and (IS_WINDOWS or evict_flockless) and _lock_identity(
+                    lock_path
+                ) == judged:
                     lock_path.unlink()
                     continue
             except Exception:
@@ -234,16 +265,13 @@ def acquire_exclusive_file_lock(
 def refresh_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int]) -> bool:
     """Renew a HELD lock's staleness clock; report whether it is still OURS.
 
-    A critical section that legitimately outlives its holder's ``stale_sec``
-    (a monetary-ledger compaction pass over a multi-megabyte file) must keep
-    the lockfile young, or any acquirer that does NOT opt into
-    ``owner_aware_stale`` deletes it on age alone and a second writer runs
-    concurrently.  The return value is an OWNERSHIP verdict, not a courtesy:
-    ``False`` means the path no longer names the descriptor we hold (the lock
-    was evicted, deleted or re-created under us), so the caller's critical
-    section is no longer protected and must abandon its work rather than
-    finish it beside a second writer.  A stolen lock is never refreshed on
-    the thief's behalf.
+    A critical section that legitimately outlives ``stale_sec`` (a monetary
+    compaction pass) must keep the lockfile young for acquirers that judge by
+    age alone.  The return value is an OWNERSHIP verdict, not a courtesy:
+    ``False`` means the path no longer names the descriptor we hold (evicted,
+    deleted, replaced — however atomically), so the caller must abandon its
+    work rather than finish beside a second writer.  A stolen lock is never
+    refreshed on the thief's behalf.
     """
     if lock_fd is None:
         return False
@@ -259,26 +287,34 @@ def refresh_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int])
 
 
 def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int]) -> None:
-    """Release a lock acquired by :func:`acquire_exclusive_file_lock`.
-
-    The unlink removes OUR lock file or nothing at all: a hold that was
-    already evicted as stale and re-taken by a second acquirer must not delete
-    the new owner's lock on its way out.  Identity is captured from the
-    descriptor BEFORE the close, because Windows cannot unlink an open file.
+    """Release a lock acquired by :func:`acquire_exclusive_file_lock`: unlink
+    OUR lock file or nothing at all (a hold evicted as stale and re-taken must
+    not delete the new owner's lock on its way out).  POSIX unlinks BEFORE the
+    close — under the still-held kernel lock, so no reclaimer can be evicting
+    the same file between the re-check and the unlink.  Windows cannot unlink
+    an open file: it re-checks the path after the close, best effort, by the
+    platform predicate.
     """
     lock_path = pathlib.Path(lock_path)
     if lock_fd is None:
         return
     held = _lock_identity(lock_fd)[:2]
+
+    def unlink_ours() -> None:
+        try:
+            if held and _lock_identity(lock_path)[:2] == held:
+                os.unlink(str(lock_path))
+        except Exception:
+            log.debug("Failed to unlink lock file %s", lock_path, exc_info=True)
+
+    if not IS_WINDOWS:
+        unlink_ours()
     try:
         os.close(lock_fd)
     except Exception:
         log.debug("Failed to close lock fd %s for %s", lock_fd, lock_path, exc_info=True)
-    try:
-        if held and _lock_identity(lock_path)[:2] == held:
-            lock_path.unlink()
-    except Exception:
-        log.debug("Failed to unlink lock file %s", lock_path, exc_info=True)
+    if IS_WINDOWS:
+        unlink_ours()
 
 
 def unlink_lockfile(lock_path: pathlib.Path) -> None:
@@ -307,12 +343,7 @@ def is_unstable_macos_app_path(path: pathlib.Path) -> bool:
     """Return whether a macOS app path is likely a DMG/AppTranslocation mount."""
     raw = str(path).replace("\\", "/")
     resolved = str(path.resolve()).replace("\\", "/")
-    return (
-        "AppTranslocation" in raw
-        or "AppTranslocation" in resolved
-        or raw.startswith("/Volumes/")
-        or resolved.startswith("/Volumes/")
-    )
+    return any("AppTranslocation" in p or p.startswith("/Volumes/") for p in (raw, resolved))
 
 
 def ensure_windows_user_path(path: pathlib.Path) -> None:
@@ -461,11 +492,8 @@ def pid_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if IS_WINDOWS:
-        # os.kill(pid, 0) is WRONG on Windows: signal 0 is CTRL_C_EVENT, so
-        # os.kill sends Ctrl+C to the target pid's CONSOLE PROCESS GROUP instead
-        # of probing liveness — when the pid shares this process's console (e.g.
-        # our own pid, or a sibling under the same runner console) it delivers a
-        # KeyboardInterrupt to the whole group. Probe with OpenProcess +
+        # os.kill(pid, 0) is WRONG here: signal 0 is CTRL_C_EVENT, delivered to
+        # the pid's whole console group. Probe with OpenProcess +
         # GetExitCodeProcess, which never signals anything.
         import ctypes
         from ctypes import wintypes
@@ -519,8 +547,7 @@ def pid_provably_gone(pid: int) -> bool:
     return False
 
 
-# Windows file locking via LockFileEx/UnlockFileEx; unlike msvcrt.locking(),
-# this works on empty files by locking a range beyond current size.
+# Windows locking via LockFileEx: unlike msvcrt.locking(), works on empty files.
 
 # Per-fd OVERLAPPED storage for unlock.
 _win32_overlapped: dict = {}
@@ -615,11 +642,9 @@ def _win32_unlock(fd: int) -> None:
 def kill_process_tree(proc: subprocess.Popen) -> None:
     """Force-kill a subprocess and its entire process tree.
 
-    On POSIX the immediate process group is SIGKILLed first, then descendants that
-    escaped into their own session/group are swept by PID — without that sweep a
-    cancelled child which spawned grandchildren in new groups leaks orphans.
-    Descendants are collected BEFORE the kill: once the parent dies its children are
-    reparented and the ppid links disappear.
+    POSIX SIGKILLs the process group first, then sweeps by PID descendants
+    that escaped into their own session/group — collected BEFORE the kill,
+    because a dead parent's children are reparented and the ppid links vanish.
     """
     pid = proc.pid
     if IS_WINDOWS:
@@ -909,15 +934,12 @@ def kill_processes_referencing(marker: str) -> None:
 def tcp_keepalive_socket_options() -> List[tuple]:
     """Cross-platform TCP keepalive options for long-lived remote sockets.
 
-    A NAT/VPN gateway that silently drops an idle connection's mapping leaves
-    the local socket half-open: without keepalive probes the process only
-    learns at the (deliberately long) transport read timeout. Kernel probes
-    detect the dead peer within minutes instead.
-
-    Every platform gets ``SO_KEEPALIVE``; the probe-tuning constants are set
-    only where the platform exposes them (Linux spells the idle threshold
-    ``TCP_KEEPIDLE``, Darwin spells it ``TCP_KEEPALIVE``), each behind a
-    ``hasattr`` guard so an older interpreter still gets the safe minimum.
+    A NAT/VPN gateway that silently drops an idle mapping leaves the socket
+    half-open until the (deliberately long) transport read timeout; kernel
+    probes detect the dead peer within minutes instead.  Every platform gets
+    ``SO_KEEPALIVE``; probe tuning is set only where the platform names the
+    constant (Linux ``TCP_KEEPIDLE``, Darwin ``TCP_KEEPALIVE``), each behind
+    a ``hasattr`` guard so an older interpreter keeps the safe minimum.
     """
     import socket
 
@@ -928,24 +950,16 @@ def tcp_keepalive_socket_options() -> List[tuple]:
     )
 
     options: List[tuple] = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
-    if IS_LINUX:
-        if hasattr(socket, "TCP_KEEPIDLE"):
-            options.append(
-                (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPALIVE_IDLE_SEC)
-            )
-        if hasattr(socket, "TCP_KEEPINTVL"):
-            options.append(
-                (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPALIVE_INTERVAL_SEC)
-            )
-        if hasattr(socket, "TCP_KEEPCNT"):
-            options.append(
-                (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPALIVE_PROBE_COUNT)
-            )
-    elif IS_MACOS:
-        if hasattr(socket, "TCP_KEEPALIVE"):
-            options.append(
-                (socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, TCP_KEEPALIVE_IDLE_SEC)
-            )
+    tuning = (
+        (("TCP_KEEPIDLE", TCP_KEEPALIVE_IDLE_SEC),
+         ("TCP_KEEPINTVL", TCP_KEEPALIVE_INTERVAL_SEC),
+         ("TCP_KEEPCNT", TCP_KEEPALIVE_PROBE_COUNT)) if IS_LINUX
+        else (("TCP_KEEPALIVE", TCP_KEEPALIVE_IDLE_SEC),) if IS_MACOS
+        else ()
+    )
+    for name, value in tuning:
+        if hasattr(socket, name):
+            options.append((socket.IPPROTO_TCP, getattr(socket, name), value))
     return options
 
 
@@ -971,12 +985,10 @@ def kill_process_on_port(port: int) -> None:
                         except (ValueError, ProcessLookupError, PermissionError):
                             pass
         else:
-            # -sTCP:LISTEN scopes the sweep to the listener, mirroring the
-            # Windows branch's LISTENING filter: a bare tcp:PORT selector also
-            # matches ESTABLISHED client sockets, so on browser-mode installs
-            # the sweep would SIGKILL the owner's own browser mid-session.
-            # -nP skips host/port name resolution so a slow resolver cannot
-            # eat the 5s timeout.
+            # -sTCP:LISTEN scopes the sweep to the listener (a bare tcp:PORT
+            # selector also matches ESTABLISHED client sockets — on browser
+            # installs that would SIGKILL the owner's browser mid-session);
+            # -nP skips name resolution so a slow resolver can't eat the 5s.
             res = subprocess.run(
                 ["lsof", "-nP", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
                 capture_output=True, text=True, timeout=5,
@@ -996,15 +1008,10 @@ def kill_process_on_port(port: int) -> None:
 
 def embedded_python_candidates(base_dir: pathlib.Path) -> List[pathlib.Path]:
     """Return candidate embedded python-build-standalone paths."""
+    root = base_dir / "python-standalone"
     if IS_WINDOWS:
-        return [
-            base_dir / "python-standalone" / "python.exe",
-            base_dir / "python-standalone" / "python3.exe",
-        ]
-    return [
-        base_dir / "python-standalone" / "bin" / "python3",
-        base_dir / "python-standalone" / "bin" / "python",
-    ]
+        return [root / "python.exe", root / "python3.exe"]
+    return [root / "bin" / "python3", root / "bin" / "python"]
 
 
 EMBEDDED_PYTHON_DIR_NAME = "python-standalone"
@@ -1021,14 +1028,10 @@ def interpreter_is_embedded(interpreter: str) -> bool:
 def pip_install_target_args(interpreter: str) -> List[str]:
     """Extra pip flags so an install never writes INSIDE the packaged bundle.
 
-    The embedded interpreter lives in the signed bundle, so its own
-    ``site-packages`` is the wrong install target: writing there breaks the code
-    signature and fails outright on a read-only install. ``--user`` redirects to
-    the user site under ``PYTHONUSERBASE`` (set by
-    ``launcher_bootstrap.embedded_python_env`` for every process that runs the
-    embedded interpreter). A non-embedded interpreter — a dev venv, a system
-    python — gets NO flag: ``--user`` is refused inside a virtualenv, so a blanket
-    flag would trade one broken install for another.
+    The embedded interpreter's own ``site-packages`` would break the code
+    signature (and a read-only install outright): ``--user`` redirects to the
+    ``PYTHONUSERBASE`` user site set by ``launcher_bootstrap``.  A dev venv or
+    system python gets NO flag — ``--user`` is refused inside a virtualenv.
     """
     return ["--user"] if interpreter_is_embedded(interpreter) else []
 
