@@ -51,28 +51,72 @@ def complete_custody_rows(path, marker: str, *, started_type: str = ""):
     fail closed: a marker-bearing line that cannot decode as strict UTF-8 or
     parse as a row, or a STARTED row missing its run identity, means a
     sibling's state may be invisible - no complete view exists. Streamed
-    line-by-line (event logs grow to hundreds of MB)."""
+    line-by-line (event logs grow to hundreds of MB). Chain-aware (CPL4-C1):
+    reads the rotated ``archive/events_*.jsonl`` segments before the live
+    file — live-first open + inode dedup keeps a racing rotation from hiding
+    rows — and an archive segment that exists but cannot be opened is an
+    incomplete view, not an empty one."""
+    import contextlib
     import json
+    import os
 
-    rows = []
+    from ouroboros.utils import jsonl_archive_segments
+
     try:
-        with path.open("rb") as handle:
-            for raw in handle:
-                if marker.encode("ascii") not in raw:
-                    continue
-                try:
-                    row = json.loads(raw.decode("utf-8", errors="strict"))
-                except (ValueError, UnicodeDecodeError):
-                    return None
-                if not isinstance(row, dict):
-                    return None
-                if not str(row.get("type") or "").startswith(marker):
-                    continue  # a valid row of another event family
-                if started_type and row.get("type") == started_type and not str(row.get("run_id") or ""):
-                    return None
-                rows.append(row)
+        live = path.open("rb")
     except FileNotFoundError:
-        return rows
+        live = None
     except OSError:
         return None
-    return rows
+    handles = []
+    try:
+        live_id = None
+        if live is not None:
+            try:
+                stat = os.fstat(live.fileno())
+                live_id = (stat.st_dev, stat.st_ino)
+            except OSError:
+                return None
+        for segment in jsonl_archive_segments(path):
+            try:
+                seg_stat = segment.stat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return None
+            if live_id is not None and (seg_stat.st_dev, seg_stat.st_ino) == live_id:
+                continue  # the open live handle IS this rotated segment
+            try:
+                handles.append(segment.open("rb"))
+            except OSError:
+                return None
+        if live is not None:
+            handles.append(live)
+            live = None  # ownership moved into the list
+        rows = []
+        try:
+            for handle in handles:
+                for raw in handle:
+                    if marker.encode("ascii") not in raw:
+                        continue
+                    try:
+                        row = json.loads(raw.decode("utf-8", errors="strict"))
+                    except (ValueError, UnicodeDecodeError):
+                        return None
+                    if not isinstance(row, dict):
+                        return None
+                    if not str(row.get("type") or "").startswith(marker):
+                        continue  # a valid row of another event family
+                    if started_type and row.get("type") == started_type and not str(row.get("run_id") or ""):
+                        return None
+                    rows.append(row)
+        except OSError:
+            return None
+        return rows
+    finally:
+        if live is not None:
+            with contextlib.suppress(Exception):
+                live.close()
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                handle.close()

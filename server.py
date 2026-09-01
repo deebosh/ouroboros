@@ -818,6 +818,18 @@ def _run_supervisor(settings: dict) -> None:
             # readers (history backfill, SSE replay, api_logs_tail, TB ATIF) are
             # archive-chain-aware.
             rotate_jsonl_log_if_needed(DATA_DIR, "progress.jsonl", "progress")
+            # CPL4-C1..C4 rotation train: the remaining unbounded hot logs rotate
+            # on the same tick with the same rotator. events.jsonl went LAST
+            # behind chain-aware custody readers (delegate_custody replay + fault
+            # scan, complete_custody_rows, the settled-terminal chain cursor,
+            # legacy usage import, swarm rollup, worker boot verify) — rows keep
+            # replaying from archive/events_*.jsonl; tools/supervisor/
+            # task_reflections readers are tail-bounded and archive-backfilled
+            # (memory.read_jsonl_tail, api_logs_tail).
+            rotate_jsonl_log_if_needed(DATA_DIR, "events.jsonl", "events")
+            rotate_jsonl_log_if_needed(DATA_DIR, "tools.jsonl", "tools")
+            rotate_jsonl_log_if_needed(DATA_DIR, "supervisor.jsonl", "supervisor")
+            rotate_jsonl_log_if_needed(DATA_DIR, "task_reflections.jsonl", "task_reflections")
             ensure_workers_healthy()
 
             event_q = get_event_q()

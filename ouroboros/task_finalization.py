@@ -335,7 +335,7 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     swarm_intent = metadata.get("force_plan_source") == "swarm"
     try:
-        from ouroboros.utils import iter_jsonl_objects
+        from ouroboros.utils import iter_jsonl_chain_objects
 
         drive_root = getattr(env, "drive_root", None)
         if drive_root is None:
@@ -350,7 +350,9 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
         # events can occur EARLY in a long fan-out task, so a bounded tail would
         # silently undercount waves/children (P1 no-silent-loss). This runs once at
         # finalization (not a hot path), for fan-out and Swarm-intent tasks.
-        for ev in iter_jsonl_objects(events_path):
+        # Chain-aware (CPL4-C1): early fan-out events may already have rotated
+        # into archive/events_*.jsonl by finalization time.
+        for ev in iter_jsonl_chain_objects(events_path):
             if ev.get("type") != "swarm_fanout":
                 continue
             if str(ev.get("parent_task_id") or ev.get("task_id") or "") != task_id:

@@ -713,13 +713,16 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         BG_OBSERVATIONS_WARN_BYTES,
         PROGRESS_LOG_WARN_BYTES,
         SCHEDULED_TASKS_WARN_BYTES,
+        SUPERVISOR_LOG_WARN_BYTES,
+        TASK_REFLECTIONS_LOG_WARN_BYTES,
         TOOLS_LOG_WARN_BYTES,
         USAGE_LEDGER_WARN_BYTES,
     )
 
-    no_rotation = (
-        "This store has no rotation; readers that replay it degrade with size. "
-        "Rotation/archival is the remediation (tracked as a GitHub issue)."
+    rotation_expected = (
+        "This log is expected to be rotation-bounded far below this "
+        "threshold; rotation is broken or missing — investigate the "
+        "supervisor rotation tick (rotate_chat_log_if_needed pattern)."
     )
     return (
         (
@@ -736,8 +739,10 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
             "(~0.5s hold at 20MB — see usage_ledger.py); ledger compaction is "
             "the remediation (tracked as a GitHub issue).",
         ),
-        ("logs/events.jsonl", EVENTS_LOG_WARN_BYTES, no_rotation),
-        ("logs/tools.jsonl", TOOLS_LOG_WARN_BYTES, no_rotation),
+        ("logs/events.jsonl", EVENTS_LOG_WARN_BYTES, rotation_expected),
+        ("logs/tools.jsonl", TOOLS_LOG_WARN_BYTES, rotation_expected),
+        ("logs/supervisor.jsonl", SUPERVISOR_LOG_WARN_BYTES, rotation_expected),
+        ("logs/task_reflections.jsonl", TASK_REFLECTIONS_LOG_WARN_BYTES, rotation_expected),
         (
             "logs/progress.jsonl",
             PROGRESS_LOG_WARN_BYTES,
@@ -749,8 +754,9 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
             "state/scheduled_tasks.json",
             SCHEDULED_TASKS_WARN_BYTES,
             "The scheduler parses and rewrites this whole document on every tick "
-            "under the queue lock, and consumed one-shot follow-ups are retained "
-            "as durable receipts; pruning old consumed receipts is the remediation.",
+            "under the queue lock; consumed one-shot receipts age out past GC "
+            "retention on the same tick — growth past this size means the prune "
+            "is broken or the live schedule set itself is this large.",
         ),
     )
 
@@ -799,6 +805,28 @@ def hot_store_growth_notes(env: Any) -> list:
             f"{CHAT_ARCHIVE_SCAN_WARN_BYTES // 1_000_000} MB). Ordinary context reads "
             "the consolidation-owned suffix; explicit chat_history replay scans this chain. "
             "Investigate archive indexing/compaction without shortening the memory horizon."
+        )
+    # Custody replay walks the whole events chain (live + rotated segments), so
+    # the pre-rotation 100MB replay-degradation signal now watches the chain.
+    try:
+        events_chain_size = sum(
+            path.stat().st_size for path in (drive_root / "archive").glob("events_*.jsonl")
+            if path.is_file()
+        )
+    except OSError:
+        events_chain_size = 0
+    try:
+        events_chain_size += (drive_root / "logs" / "events.jsonl").stat().st_size
+    except OSError:
+        pass
+    from ouroboros.context_budget import EVENTS_ARCHIVE_SCAN_WARN_BYTES
+    if events_chain_size > EVENTS_ARCHIVE_SCAN_WARN_BYTES:
+        notes.append(
+            "WARNING: HOT STORE GROWTH — the events chain (logs/events.jsonl + "
+            f"archive/events_*.jsonl) totals {events_chain_size / 1_000_000:.1f} MB "
+            f"(threshold {EVENTS_ARCHIVE_SCAN_WARN_BYTES // 1_000_000} MB). Custody "
+            "replay scans this chain on ownership questions. Investigate chain "
+            "indexing/compaction; archives are durable history and are never deleted."
         )
     return notes
 

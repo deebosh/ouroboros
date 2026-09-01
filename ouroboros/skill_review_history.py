@@ -335,8 +335,21 @@ def load_history(
     *,
     group_id: str = "",
 ) -> List[Dict[str, Any]]:
+    """History rows inside the bounded tail window (CPL4-C12).
+
+    Every reader is byte-bounded (the ``find_history_job_bounded`` idiom) so a
+    growing per-skill log never turns a context build or a wave start into a
+    whole-file scan. Counter authorities stay exact across the bound because
+    lifecycle terminal rows PERSIST their ordinals and ``normalize_history``
+    takes ``max(stored, derived)`` — only a group whose newest ordinal-bearing
+    row has aged past the window restarts low (disclosed degradation: the
+    review-cycle ceiling under-counts, it never over-blocks).
+    """
     try:
-        raw_entries = list(iter_jsonl_objects(review_history_path(drive_root, skill_name)))
+        raw_entries = list(iter_jsonl_objects(
+            review_history_path(drive_root, skill_name),
+            tail_bytes=_DETAIL_LOOKUP_MAX_BYTES,
+        ))
         markers = {
             str(marker.get("wave_id") or ""): marker
             for marker in load_dispatch_markers(drive_root, skill_name)
@@ -550,8 +563,15 @@ def append_history_once(
         return False
     try:
         try:
+            # Same bounded window as every other reader (CPL4-C12): an
+            # idempotent retry lands within its wave's lifetime, far inside
+            # the tail — never a whole-file scan per terminal write.
             existing = next(
-                (row for row in iter_jsonl_objects(path) if str(row.get("job_id") or "") == job_id),
+                (
+                    row
+                    for row in iter_jsonl_objects(path, tail_bytes=_DETAIL_LOOKUP_MAX_BYTES)
+                    if str(row.get("job_id") or "") == job_id
+                ),
                 None,
             )
             marker = load_dispatch_marker_for_wave(drive_root, skill_name, job_id)

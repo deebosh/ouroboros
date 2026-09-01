@@ -116,22 +116,36 @@ def _write_failure_result(
 def _first_worker_event_since(
     offset_bytes: int, event_type: str = "worker_boot"
 ) -> Optional[Dict[str, Any]]:
-    """Read the first event of one worker lifecycle type after a file offset."""
+    """Read the first event of one worker lifecycle type after a file offset.
+
+    The event log rotates (CPL4-C1): a rotation between the offset capture and
+    this read shrinks the live file below the offset and may move the sought
+    event into the newest ``archive/events_*.jsonl`` segment — on that reset the
+    newest segment is scanned too, so a boot event cannot vanish into the
+    archive mid-verification.
+    """
     path = _pool().DRIVE_ROOT / "logs" / "events.jsonl"
     if not path.exists():
         return None
+    chunks: list[str] = []
     try:
         with path.open("rb") as f:
             f.seek(0, 2)
             size = f.tell()
-            safe_offset = offset_bytes if 0 <= offset_bytes <= size else 0
-            f.seek(safe_offset)
-            data = f.read().decode("utf-8", errors="replace")
+            rotated_under_offset = not 0 <= offset_bytes <= size
+            f.seek(0 if rotated_under_offset else offset_bytes)
+            chunks.append(f.read().decode("utf-8", errors="replace"))
+        if rotated_under_offset:
+            from ouroboros.utils import jsonl_archive_segments
+
+            segments = jsonl_archive_segments(path)
+            if segments:
+                chunks.insert(0, segments[-1].read_bytes().decode("utf-8", errors="replace"))
     except Exception:
         log.debug("Suppressed exception", exc_info=True)
         return None
 
-    for line in data.splitlines():
+    for line in "".join(chunks).splitlines():
         raw = line.strip()
         if not raw:
             continue

@@ -439,15 +439,51 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
     _write_server_process_record(proc, port=port, server_py=server_py)
 
     def _stream_output() -> None:
+        # Size-capped copy (CPL4-C5): same bound as the server.log stdlib
+        # handler (2 MB live + numbered backups). Rotation failure must never
+        # kill the copy thread — worst case the live file keeps growing, which
+        # is exactly the pre-cap behavior.
+        max_bytes = 2 * 1024 * 1024
+        backups = 3
+
+        def _rotate(log_path: pathlib.Path) -> None:
+            try:
+                for index in range(backups - 1, 0, -1):
+                    older = log_path.with_name(f"{log_path.name}.{index}")
+                    if older.exists():
+                        os.replace(older, log_path.with_name(f"{log_path.name}.{index + 1}"))
+                if log_path.exists():
+                    os.replace(log_path, log_path.with_name(f"{log_path.name}.1"))
+            except OSError:
+                pass
+
         log_path = DATA_DIR / "logs" / "agent_stdout.log"
         try:
-            with open(log_path, "a", encoding="utf-8") as handle:
-                for line in iter(proc.stdout.readline, b""):
-                    decoded = line.decode("utf-8", errors="replace")
-                    handle.write(decoded)
-                    handle.flush()
+            written = log_path.stat().st_size if log_path.exists() else 0
+        except OSError:
+            written = 0
+        handle = None
+        try:
+            handle = open(log_path, "a", encoding="utf-8")
+            for line in iter(proc.stdout.readline, b""):
+                decoded = line.decode("utf-8", errors="replace")
+                if written + len(decoded) > max_bytes:
+                    handle.close()
+                    handle = None
+                    _rotate(log_path)
+                    handle = open(log_path, "a", encoding="utf-8")
+                    written = 0
+                handle.write(decoded)
+                handle.flush()
+                written += len(decoded)
         except Exception:
             pass
+        finally:
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:
+                    pass
 
     threading.Thread(target=_stream_output, daemon=True).start()
     return proc

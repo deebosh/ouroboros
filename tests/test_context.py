@@ -238,17 +238,49 @@ class TestHotStoreGrowthInvariant:
         assert "state/usage_attempts.jsonl" in result
         assert "monetary lock" in result
 
-    def test_events_and_tools_thresholds_are_generous_but_live(self, tmp_path):
-        from ouroboros.context_budget import EVENTS_LOG_WARN_BYTES, TOOLS_LOG_WARN_BYTES
+    def test_rotated_log_thresholds_are_regression_tripwires(self, tmp_path):
+        """events/tools/supervisor/task_reflections rotate on the supervisor
+        tick (CPL4-C1..C4); their thresholds fire only when rotation is broken."""
+        from ouroboros.context_budget import (
+            EVENTS_LOG_WARN_BYTES,
+            SUPERVISOR_LOG_WARN_BYTES,
+            TASK_REFLECTIONS_LOG_WARN_BYTES,
+            TOOLS_LOG_WARN_BYTES,
+        )
 
         env = _make_health_env(tmp_path)
         _grow_file(tmp_path / "logs" / "events.jsonl", EVENTS_LOG_WARN_BYTES + 1)
         _grow_file(tmp_path / "logs" / "tools.jsonl", TOOLS_LOG_WARN_BYTES + 1)
+        _grow_file(tmp_path / "logs" / "supervisor.jsonl", SUPERVISOR_LOG_WARN_BYTES + 1)
+        _grow_file(
+            tmp_path / "logs" / "task_reflections.jsonl",
+            TASK_REFLECTIONS_LOG_WARN_BYTES + 1,
+        )
 
         result = build_health_invariants(env)
-        assert result.count("HOT STORE GROWTH") == 2
+        assert result.count("HOT STORE GROWTH") == 4
         assert "logs/events.jsonl" in result
         assert "logs/tools.jsonl" in result
+        assert "logs/supervisor.jsonl" in result
+        assert "logs/task_reflections.jsonl" in result
+        assert "rotation is broken or missing" in result
+
+    def test_events_archive_chain_growth_warns(self, tmp_path):
+        """Custody replay walks the whole events chain; the pre-rotation 100MB
+        replay-degradation signal now watches live + archive segments."""
+        from ouroboros.context_budget import EVENTS_ARCHIVE_SCAN_WARN_BYTES
+
+        env = _make_health_env(tmp_path)
+        segment = tmp_path / "archive" / "events_20260101T000000.jsonl"
+        segment.parent.mkdir(parents=True, exist_ok=True)
+        with segment.open("wb") as fh:  # sparse: size matters, bytes do not
+            fh.seek(EVENTS_ARCHIVE_SCAN_WARN_BYTES)
+            fh.write(b"x")
+
+        result = build_health_invariants(env)
+        assert "HOT STORE GROWTH" in result
+        assert "events chain" in result
+        assert "never deleted" in result
 
     def test_isolated_benchmark_sentinel_suppresses_warnings(self, tmp_path):
         from supervisor.state import ISOLATED_BENCHMARK_SENTINEL

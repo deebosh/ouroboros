@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import pathlib
 import uuid
 from contextlib import contextmanager
@@ -250,16 +251,20 @@ def custody_log_unreadable(drive_root: Any) -> bool:
     established empty state (no custody row could exist), while
     existing-but-unreadable means the open-run answer is UNKNOWN. Same probe
     the evidence reader (``task_execution_evidence``) already uses; its own
-    semantics are unchanged.
+    semantics are unchanged. Probes the WHOLE rotated chain: an unreadable
+    archive segment hides custody exactly like an unreadable live file.
     """
+    from ouroboros.utils import jsonl_archive_segments
+
     path = event_log_path(drive_root)
-    try:
-        if not path.exists():
-            return False
-        with path.open("rb"):
-            pass
-    except OSError:
-        return True
+    for candidate in (*jsonl_archive_segments(path), path):
+        try:
+            if not candidate.exists():
+                continue
+            with candidate.open("rb"):
+                pass
+        except OSError:
+            return True
     return False
 
 
@@ -293,23 +298,52 @@ def actor_decision_lock(drive_root: Any, task_id: str) -> Iterator[None]:
         release_exclusive_file_lock(lock_path, fd)
 
 def _iter_rows(path: pathlib.Path, tail_bytes: Optional[int] = None) -> Iterator[Dict[str, Any]]:
-    try:
-        with path.open("rb") as handle:
-            size = path.stat().st_size
-            if tail_bytes is not None and size > tail_bytes:
-                handle.seek(size - tail_bytes)
-                handle.readline()          # drop the partial first line
-            for raw in handle:
-                if _ROW_MARKER.encode("ascii") not in raw:
-                    continue
+    """Custody rows across the ROTATED CHAIN (archive segments + live file).
+
+    The event log rotates like chat/progress (CPL4-C1), so a full replay must
+    read ``archive/events_*.jsonl`` before the live file or a rotation would
+    silently amputate every older run's custody. ``tail_bytes`` bounds the read
+    to the newest bytes OF THE CHAIN — a freshly rotated live file no longer
+    empties the fault-scan window. ``jsonl_chain_handles`` makes the traversal
+    rotation-race-safe (open-live-first + inode dedup).
+    """
+    from ouroboros.utils import jsonl_chain_handles
+
+    with jsonl_chain_handles(path) as handles:
+        skip = 0
+        if tail_bytes is not None:
+            sizes = []
+            for _, handle in handles:
                 try:
-                    row = json.loads(raw.decode("utf-8", errors="replace"))
-                except ValueError:
-                    continue
-                if isinstance(row, dict) and str(row.get("type") or "").startswith(_ROW_MARKER):
-                    yield row
-    except OSError:
-        return
+                    sizes.append(os.fstat(handle.fileno()).st_size)
+                except OSError:
+                    sizes.append(0)
+            excess = sum(sizes) - tail_bytes
+            start = 0
+            while excess > 0 and start < len(handles):
+                if sizes[start] <= excess:
+                    excess -= sizes[start]
+                    start += 1
+                else:
+                    skip = excess
+                    excess = 0
+            handles = handles[start:]
+        for index, (_, handle) in enumerate(handles):
+            try:
+                if index == 0 and skip:
+                    handle.seek(skip)
+                    handle.readline()          # drop the partial first line
+                for raw in handle:
+                    if _ROW_MARKER.encode("ascii") not in raw:
+                        continue
+                    try:
+                        row = json.loads(raw.decode("utf-8", errors="replace"))
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and str(row.get("type") or "").startswith(_ROW_MARKER):
+                        yield row
+            except OSError:
+                continue
 
 
 from ouroboros.delegate_registration_policy import (

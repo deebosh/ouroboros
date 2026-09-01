@@ -47,13 +47,28 @@ def _legacy_snapshot(root: pathlib.Path) -> Tuple[list[Dict[str, Any]], Dict[str
     settings_path = pathlib.Path(os.environ.get("OUROBOROS_SETTINGS_PATH") or root / "settings.json")
     sources = {"events.jsonl": events_path, "state.json": state_path}
     snapshots: Dict[str, bytes] = {}
-    for name, path in sources.items():
-        try:
-            snapshots[name] = path.read_bytes()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise UsageAccountingError(f"cannot snapshot legacy usage source {path}: {exc}") from exc
+    # The event log rotates (CPL4-C1): legacy ``llm_usage`` rows may already
+    # live in archive/events_*.jsonl segments (e.g. a first import attempt
+    # failed and rotation ran before the retry). The snapshot is the WHOLE
+    # chain, concatenated in chronological order — hashed, archived and
+    # scanned as one source.
+    try:
+        from ouroboros.utils import jsonl_chain_handles
+
+        chain_parts: list[bytes] = []
+        with jsonl_chain_handles(events_path) as handles:
+            for _, handle in handles:
+                chain_parts.append(handle.read())
+        if chain_parts:
+            snapshots["events.jsonl"] = b"".join(chain_parts)
+    except OSError as exc:
+        raise UsageAccountingError(f"cannot snapshot legacy usage source {events_path}: {exc}") from exc
+    try:
+        snapshots["state.json"] = state_path.read_bytes()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise UsageAccountingError(f"cannot snapshot legacy usage source {state_path}: {exc}") from exc
     hashes = {name: hashlib.sha256(snapshots[name]).hexdigest() if name in snapshots else "" for name in sources}
     # Settings are owner-secret state: prove non-mutation by hash, never copy contents.
     try:

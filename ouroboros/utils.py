@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import hashlib
 import json
@@ -16,7 +17,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Iterator
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -701,6 +702,101 @@ def iter_jsonl_objects(
                     gap_reasons.add("invalid_jsonl_row")
     except FileNotFoundError:
         return
+
+
+def jsonl_archive_segments(path: pathlib.Path) -> List[pathlib.Path]:
+    """Rotated archive segments for a ``logs/<name>.jsonl`` store, oldest first.
+
+    ``rotate_jsonl_log_if_needed`` renames the live file to
+    ``archive/<stem>_<ts>[_<n>].jsonl`` beside the ``logs/`` directory;
+    lexicographic name order is chronological by construction (the rotator's
+    ``_<n>`` collision suffix sorts after ``<ts>.jsonl``). A store that never
+    rotated yields an empty list.
+    """
+    path = pathlib.Path(path)
+    archive_dir = path.parent.parent / "archive"
+    stem = path.name[:-len(".jsonl")] if path.name.endswith(".jsonl") else path.stem
+    try:
+        return sorted(p for p in archive_dir.glob(f"{stem}_*.jsonl") if p.is_file())
+    except OSError:
+        return []
+
+
+@contextlib.contextmanager
+def jsonl_chain_handles(path: pathlib.Path) -> Iterator[List[Tuple[pathlib.Path, Any]]]:
+    """Open a rotated JSONL store's whole chain for ONE consistent read.
+
+    Yields ``[(path, binary_handle), ...]`` oldest→newest with the live file
+    last. The live file is opened FIRST, then the archive is enumerated: a
+    rotation racing this read renames the just-opened file into the archive,
+    where inode identity dedups it — so every durable row as of the open
+    instant is seen exactly once, in chronological order, whichever side of
+    the rename the reader lands on. (On Windows the rotator's ``os.replace``
+    fails while the handle is open, so the race cannot occur at all.)
+    Unopenable segments are skipped (the fail-soft readers own their own
+    stricter probes); handles are closed on exit.
+    """
+    path = pathlib.Path(path)
+    handles: List[Tuple[pathlib.Path, Any]] = []
+    live_handle = None
+    try:
+        try:
+            live_handle = path.open("rb")
+        except OSError:
+            live_handle = None
+        live_id = None
+        if live_handle is not None:
+            try:
+                stat = os.fstat(live_handle.fileno())
+                live_id = (stat.st_dev, stat.st_ino)
+            except OSError:
+                live_id = None
+        for segment in jsonl_archive_segments(path):
+            try:
+                seg_stat = segment.stat()
+            except OSError:
+                continue
+            if live_id is not None and (seg_stat.st_dev, seg_stat.st_ino) == live_id:
+                continue  # the open live handle IS this rotated segment
+            try:
+                handles.append((segment, segment.open("rb")))
+            except OSError:
+                continue
+        if live_handle is not None:
+            handles.append((path, live_handle))
+            live_handle = None  # ownership moved into the list
+        yield handles
+    finally:
+        if live_handle is not None:
+            with contextlib.suppress(Exception):
+                live_handle.close()
+        for _, handle in handles:
+            with contextlib.suppress(Exception):
+                handle.close()
+
+
+def iter_jsonl_chain_objects(
+    path: pathlib.Path,
+    dict_only: bool = True,
+) -> Iterator[Any]:
+    """``iter_jsonl_objects`` across the rotated archive chain + live file.
+
+    Full-history readers that must not lose early rows to rotation use this
+    instead of a single-file read; bounded/tail readers keep their own
+    windows.
+    """
+    with jsonl_chain_handles(pathlib.Path(path)) as handles:
+        for _, handle in handles:
+            for raw in handle:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not dict_only or isinstance(entry, dict):
+                    yield entry
 
 
 def iter_llm_usage_events(
