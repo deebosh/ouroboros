@@ -3551,3 +3551,79 @@ cycle is declared CONVERGED at this base.
    package module turns red even after regeneration; retiring the two-row gap
    itself (writing their §11.1 rows) is an owner-visible follow-up, not
    silently done here.
+
+## From the F4 lane 1 (system_e2e skeleton, base 5187fcdc)
+
+1. FIXED (HIGH, ABI-10 drift in the Ф0 harness). The keyless lane pinned the
+   RETIRED comma-list reviewer keys (`OUROBOROS_REVIEW_MODELS` /
+   `OUROBOROS_SCOPE_REVIEW_MODELS` / `OUROBOROS_SCOPE_REVIEW_MODEL`) in the
+   isolated settings.json; `load_settings` drops retired keys, so the review
+   organ fell back to the shipped OpenRouter default panel. Observed live on
+   the base SHA: S2's triad ledger named gemini-3.7-flash/gpt-5.6-terra/
+   claude-opus-5, keyless, and commit_reviewed blocked deterministically at
+   scope-pack assembly ($0 spent; the keyless design failed CLOSED, which is
+   why Ф0's smoke run never caught it — the failure only shows in the mock
+   lane). `keyless_settings` now pins the STRUCTURED `OUROBOROS_REVIEWER_SLOTS`
+   (three api_chat triad rows + one scope row onto the stub slug), and a
+   default-lane pin feeds that value to the tree's own `parse_reviewer_slots`.
+   S2 green again (67s solo).
+2. EGRESS HARDENING FIRST (plan §8: the ANTHROPIC_API_KEY hole). Two layers on
+   top of the Ф0 strip list: (a) a default-lane CLASS pin scans the runtime
+   tree (`ouroboros/**`, `supervisor/**`, `server.py`) for every
+   credential-shaped env key it actually reads (`os.environ[...]`/`.get`/
+   `os.getenv`) and requires each to be covered by
+   `STRIPPED_PROVIDER_ENV_KEYS` ∪ secret-shape sanitizer ∪
+   `STALE_INHERITED_ENV_KEYS` — a provider credential added upstream fails by
+   name; (b) scenario S3 boots a REAL server with poisoned fake credentials in
+   the parent env, completes a scripted task keyless, and probes
+   `/proc/<pid>/environ` of the WHOLE live process tree (server + workers):
+   no planted or real credential VALUE (values, not names — a rename cannot
+   hide one) and no stripped provider key NAME (stub pair exempt: the server
+   legitimately projects the loopback-only pair from its settings) is visible
+   to any child. Linux-only probe by construction, skipif elsewhere.
+3. NEW SURFACES on the skeleton (plan §8 first wave): S1 extended with the
+   WS-chat answer over the real `/ws` ingress (assistant reply frame + durable
+   chat.jsonl row) and port-file honesty (`state/server_port` == the port the
+   driver talks to); S4 — typed tools + safety: `write_file` onto
+   `prompts/SAFETY.md` under runtime_mode=advanced answers the typed
+   `CORE_PROTECTION_BLOCKED` refusal, the task still completes, and the clone
+   fingerprint (HEAD + porcelain + exact bytes of SAFETY.md/BIBLE.md) is
+   IDENTICAL before/after — zero side effects, not "still clean"; S5 —
+   cost-truth (ABI-3) on a live server: task detail and list projections are
+   deep-scanned for the retired `cost_usd[_with_children]` spellings (keys
+   derived from `COST_ALIAS_PAIRS`, never literals) and must be clean, the
+   honest `accounted_upper_bound_usd` is present at the detail top level, and
+   the durable stored row is honest-only at the top level (internal evidence
+   planes keep their own schemas by ABI-3 design, so the stored-row pin stays
+   top-level).
+4. ReplayModel landed per the plan matrix: deterministic fixtures bound by
+   `(lineage, slot, attempt)` — slot = the wire's `model` field (scenarios pin
+   distinct stub slugs per model slot), lineage = the LAST `[E2E-LINEAGE:*]`
+   tag in the prompt text (default `root`), attempt = 1-based per-(lineage,
+   slot) ordinal of fixture-consulted calls. Review-organ/safety calls are
+   answered canned BEFORE the finalization check (shared `canned_review_answer`
+   with the scripted stub — one HTTP base class, so wire shape and window
+   evidence cannot drift between the two models) and never touch the fixture.
+   A miss answers loudly (`REPLAY_MISS`, the server cannot hang) and
+   `assert_consumed()` is red on ANY miss and ANY unconsumed row
+   (недоеденная фикстура = красный). Default-lane pins cover binding, ordinal
+   attempts, last-tag-wins, review-no-consume, and both red paths.
+5. DEFERRED BY DESIGN (disclosed, plan §8 says later lanes): FakeClaudexorDaemon
+   (delegated-transport wave) and PlaywrightUIClient (gateway/UI-truth wave)
+   are interface STUBS in `tests/system_e2e/interfaces.py` that raise
+   NotImplementedError naming their lane — a default-lane pin asserts they
+   refuse instantiation, so nothing can silently pretend they exist.
+6. LANE/MARKER DECISION: every scenario test carries `integration` AND `serial`
+   markers PLUS the `OUROBOROS_E2E_DEEP=mock` env gate. Both CI pytest passes
+   AND-exclude `integration`, the default local addopts excludes it, and the
+   CI-shape battery's serial pass (`-m "serial and not integration ..."`)
+   excludes it too — the suite cannot slow any existing lane. The manifest is
+   data with a two-direction gen/verify pin (manifest row without a test = red;
+   `test_s<N>_*` without a manifest row = red) plus a marker-discipline pin
+   (scenario test without both markers = red). pyproject's `integration`
+   marker description and DEVELOPMENT's marker-lanes section now name the
+   keyless system_e2e lane; ARCHITECTURE gained the "System E2E suite"
+   subsection (same commit as the structural surface).
+7. Suite time (this host, mock lane, serial): 23 tests in ~142s wall — inside
+   the plan's 10-25min PR keyless budget with room for the next scenario
+   waves; the default-lane pins add ~2.4s to the ordinary non-serial battery.

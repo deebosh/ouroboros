@@ -2551,6 +2551,10 @@ explicitly:
   Secretless deterministic request-wire and Anthropic-custody contracts remain
   in ordinary pull-request tests; do not move provider secrets into PR jobs or
   edit the workflow merely to duplicate this existing trusted lane.
+  The KEYLESS `tests/system_e2e/` scenario lane also rides this marker (plus
+  `serial` and the `OUROBOROS_E2E_DEEP=mock` env gate): real isolated servers,
+  no provider keys — see the "System E2E suite" section of
+  `docs/ARCHITECTURE.md`.
 - `browser` launches real Playwright Chromium/WebKit for agent browser tools.
 - `ui_browser` launches the host-side web UI under Playwright.
 - `ui_browser_docker` talks to an `ouroboros-web:test` container and must

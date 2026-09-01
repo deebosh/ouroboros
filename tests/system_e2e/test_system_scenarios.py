@@ -1,31 +1,46 @@
-"""S1-S2 — the Ф0 smokes of the deep-integration suite (v7next plan §8, roast F22).
+"""S1-S5 — the deep-integration suite scenarios (v7next plan §8, roast F22).
 
-WHAT THIS FILE IS. The harness skeleton (``tests/system_e2e/harness.py``) lands in Ф0;
-the full scenario matrix (subagents, delegation, update engine, cancellation E-suite,
-skills, UI truth, …) lands WITH its phases. The two scenarios here exist to prove the
-skeleton itself on the CURRENT upstream-shaped tree, and must survive the domain
-transplants unchanged:
+WHAT THIS FILE IS. The harness skeleton (``tests/system_e2e/harness.py``) landed in
+Ф0; Ф4 lane 1 adds the first mandatory surfaces. The remaining scenario matrix
+(subagents, delegation, update engine, cancellation E-suite, skills, UI truth, …)
+lands WITH its phases and must survive the domain transplants unchanged:
 
-* S1 — boot / identity / task contract: a real ``server.py`` on an isolated clone +
-  data root boots to the frozen readiness contract, attests its identity against its
-  own checkout, runs one scripted stub task to completion, and leaves a sane durable
-  ``task_results/<id>.json`` behind.
+* S1 — boot / identity / WS / port-file / task contract: a real ``server.py`` on an
+  isolated clone + data root boots to the frozen readiness contract, attests its
+  identity against its own checkout, publishes an honest ``state/server_port``,
+  answers a WS chat frame with an assistant reply, runs one scripted stub task to
+  completion, and leaves a sane durable ``task_results/<id>.json`` behind.
 * S2 — review organ: a scripted task drives ``commit_reviewed`` over a doc-only diff
   with the advisory pre-review explicitly skipped (audited bypass) and BLOCKING
   enforcement, the stub answers the triad packet and the scope-matrix packet with
   all-clean verdicts, and the commit lands in the isolated clone. Landing under
   ``blocking`` makes the git log itself the proof that both review organs ran and
   passed — under advisory a failed review would still commit.
+* S3 — egress hardening (plan: "дыра ANTHROPIC_API_KEY — закрыть в Ф4 первой"): a
+  poisoned parent env, a live keyless server tree, and a /proc environ probe of every
+  process in it — no planted or real credential value is visible to any child.
+* S4 — typed tools + safety: a protected-path write is denied with the typed
+  ``CORE_PROTECTION_BLOCKED`` refusal and ZERO side effects (tree snapshot equality).
+* S5 — cost-truth smoke (ABI-3): a completed task's public projections carry
+  honest-only cost names; the retired aliases appear nowhere in the outbound bytes.
 
 LANES. Default (always-on) tests pin the harness's own contracts with no server and no
-sockets: the scenario manifest, the stub's branch classification (review-organ branch
-BEFORE the finalization check), the prompt-marker literals against the tree's source,
-and the keyless/egress hardening (roast F21). The ``mock`` lane spawns real isolated
-servers: opt in with ``OUROBOROS_E2E_DEEP=mock``; both scenarios are ``serial`` (real
-ports, real process trees). No paid lane exists in Ф0.
+sockets: the scenario manifest (gen/verify in BOTH directions), the stub's branch
+classification (review-organ branch BEFORE the finalization check), the prompt-marker
+literals against the tree's source, the ReplayModel binding/consumption contract, and
+the keyless/egress hardening (roast F21). The ``mock`` lane spawns real isolated
+servers; every scenario test carries BOTH ``integration`` and ``serial`` markers (so
+neither the default local run, nor either CI pytest pass, nor the CI-shape battery
+picks it up) AND the ``OUROBOROS_E2E_DEEP=mock`` env gate. Run it with::
+
+    OUROBOROS_E2E_DEEP=mock pytest tests/system_e2e/ -o addopts="" -q
+
+No paid lane exists yet.
 
 Every scenario asserts durable artifacts — never an HTTP 200 on its own and never a
-harness exit code (AGENTS.md: the exit code is not the run status).
+harness exit code (AGENTS.md: the exit code is not the run status). Fail-injection /
+completion synchronization is durable-event polling (``wait_until`` over oracle
+readers), never bare sleeps.
 """
 
 from __future__ import annotations
@@ -34,6 +49,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -51,19 +67,28 @@ from tests.system_e2e.harness import (
     TRIAD_USER_MARKER,
     ArtifactOracle,
     KeylessIsolatedServer,
+    ReplayModel,
     ScriptedStubModel,
     assert_settings_keyless,
     classify_call,
     clone_repo,
+    keyless_reviewer_slots,
     keyless_settings,
+    proc_environ,
+    process_tree_pids,
+    repo_tree_fingerprint,
     require_lane,
+    retired_cost_alias_paths,
+    runtime_credential_env_key_reads,
     scripted_completion,
+    secret_values_in_parent_env,
     start_server,
     submit_running,
     supervisor_state_is_ready,
     wait_durable_result,
     wait_until,
     write_settings_file,
+    ws_url,
 )
 
 # ===========================================================================
@@ -71,15 +96,48 @@ from tests.system_e2e.harness import (
 # ===========================================================================
 
 
+_SCENARIO_TEST_RE = re.compile(r"^test_(s\d+)_")
+
+
+def _scenario_test_names() -> list:
+    return [name for name in dir(sys.modules[__name__])
+            if _SCENARIO_TEST_RE.match(name)]
+
+
 def test_system_manifest_is_covered():
     """Every S-id in the scenario manifest still has at least one test here."""
-    import sys
-
     names = [name for name in dir(sys.modules[__name__]) if name.startswith("test_")]
     for scenario_id, (title, _lane) in SCENARIOS.items():
         prefix = f"test_{scenario_id.lower()}_"
         assert any(name.startswith(prefix) for name in names), (
             f"scenario {scenario_id} ({title}) has no {prefix}* test"
+        )
+
+
+def test_every_scenario_test_is_declared_in_the_manifest():
+    """The verify direction of the manifest pin: a NEW ``test_s<N>_*`` test without a
+    ``SCENARIOS`` row is red — an undeclared scenario would be invisible to the lane
+    budget and to the retirement discipline."""
+    declared = {scenario_id.lower() for scenario_id in SCENARIOS}
+    for name in _scenario_test_names():
+        sid = _SCENARIO_TEST_RE.match(name).group(1)
+        assert sid in declared, (
+            f"{name} has no SCENARIOS[{sid.upper()!r}] manifest row "
+            "(tests/system_e2e/harness.py) — declare the scenario first"
+        )
+
+
+def test_every_scenario_test_carries_integration_and_serial_markers():
+    """The marker discipline that keeps the suite OUT of the default non-serial run,
+    both CI pytest passes, and the CI-shape battery: every scenario test must carry
+    ``integration`` AND ``serial``. (The ``OUROBOROS_E2E_DEEP`` env gate is the second
+    belt; markers are what the -m expressions see.)"""
+    for name in _scenario_test_names():
+        fn = getattr(sys.modules[__name__], name)
+        marks = {mark.name for mark in getattr(fn, "pytestmark", [])}
+        assert {"integration", "serial"} <= marks, (
+            f"{name} must be decorated with @pytest.mark.integration and "
+            f"@pytest.mark.serial (has: {sorted(marks)})"
         )
 
 
@@ -251,6 +309,144 @@ def test_f21_keyless_settings_pin_every_slot_and_refuse_credentials():
         assert_settings_keyless({**cfg, "OPENAI_COMPATIBLE_BASE_URL": "https://api.example.com/v1"})
 
 
+def test_keyless_reviewer_slots_parse_under_the_trees_own_parser():
+    """ABI 7.0 (ABI-10): the comma-list reviewer keys are RETIRED settings — pinning
+    them in the isolated settings.json is a silent no-op and the review organ falls
+    back to the shipped OpenRouter default panel (the exact failure observed live:
+    S2's triad dispatched gemini/terra/opus keyless and blocked at pack assembly).
+    The keyless lane therefore pins the STRUCTURED surface, and this test feeds it to
+    the tree's own strict parser: every configured row must be an api_chat route onto
+    the stub slug."""
+    from ouroboros.reviewer_slot_config import parse_reviewer_slots
+
+    config = parse_reviewer_slots(keyless_reviewer_slots())
+    assert config.source == "structured"
+    assert len(config.triad) >= 1 and len(config.scope) >= 1
+    for row in (*config.triad, *config.scope):
+        assert row.kind == "api_chat", row
+        assert row.target_id == MOCK_SLUG, row
+
+
+def test_f21_every_runtime_credential_env_read_is_stripped_from_the_keyless_child():
+    """The CLASS pin behind the strip list: scan the runtime tree for every
+    credential-shaped env key it actually reads (os.environ[...] / .get / os.getenv)
+    and require each to be unreachable in a keyless child — stripped as a provider
+    credential, stripped by the base secret-shape sanitizer, or stripped as a stale
+    inherited runtime key. A provider credential added upstream tomorrow fails HERE
+    by name instead of silently reaching a keyless server."""
+    from devtools.benchmarks.common.server_runner import (
+        STALE_INHERITED_ENV_KEYS,
+        _is_secret_env_key,
+    )
+
+    observed = runtime_credential_env_key_reads()
+    # The scan must actually see the canonical provider keys — an empty or blind scan
+    # would vacuously pass; ANTHROPIC_API_KEY is the exact hole the plan names.
+    assert {"ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"} <= observed, observed
+    uncovered = sorted(
+        key for key in observed
+        if key not in STRIPPED_PROVIDER_ENV_KEYS
+        and key not in STALE_INHERITED_ENV_KEYS
+        and not _is_secret_env_key(key)
+    )
+    assert not uncovered, (
+        "credential-shaped env keys the runtime reads but the keyless lane does not "
+        f"strip: {uncovered} — extend STRIPPED_PROVIDER_ENV_KEYS / the sanitizer"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ReplayModel contract pins (plan §8): binding by (lineage, slot, attempt); the
+# fixture must be consumed WHOLE — a leftover row or a miss is red.
+# ---------------------------------------------------------------------------
+
+
+def _replay(fixture) -> ReplayModel:
+    return ReplayModel(fixture)
+
+
+def test_replay_model_binds_by_lineage_slot_and_ordinal_attempt():
+    model = _replay({
+        ("root", "mock-model", 1): {"tool": "list_files", "arguments": {"path": "."}},
+        ("root", "mock-model", 2): {"final": "root done"},
+        ("child-a", "mock-model", 1): {"final": "child done"},
+    })
+    body_root = {"messages": [{"role": "user", "content": "work [E2E-LINEAGE:root]"}],
+                 "tools": [{"type": "function", "function": {"name": "list_files"}}],
+                 "model": "mock-model"}
+    kind1, msg1 = model._answer(body_root, 1)
+    assert kind1 == "replay" and msg1["tool_calls"][0]["function"]["name"] == "list_files"
+    kind2, msg2 = model._answer(body_root, 2)
+    assert (kind2, msg2["content"]) == ("replay_final", "root done")
+    body_child = {"messages": [{"role": "user", "content": "go [E2E-LINEAGE:child-a]"}],
+                  "model": "mock-model"}
+    kind3, msg3 = model._answer(body_child, 3)
+    assert (kind3, msg3["content"]) == ("replay_final", "child done")
+    model.assert_consumed()
+
+
+def test_replay_model_untagged_prompt_binds_to_root_and_last_tag_wins():
+    model = _replay({
+        ("root", "mock-model", 1): {"final": "untagged is root"},
+        ("leaf", "mock-model", 1): {"final": "leaf"},
+    })
+    _, msg = model._answer({"messages": [{"role": "user", "content": "no tag"}],
+                            "model": "mock-model"}, 1)
+    assert msg["content"] == "untagged is root"
+    # A child prompt quoting the parent's tag: the LAST tag wins.
+    _, msg = model._answer({"messages": [
+        {"role": "system", "content": "parent said [E2E-LINEAGE:root] earlier"},
+        {"role": "user", "content": "you are [E2E-LINEAGE:leaf]"},
+    ], "model": "mock-model"}, 2)
+    assert msg["content"] == "leaf"
+    model.assert_consumed()
+
+
+def test_replay_model_review_calls_never_consume_the_fixture():
+    model = _replay({("root", "mock-model", 1): {"final": "done"}})
+    kind, _ = model._answer({"messages": [{"role": "user", "content": SCOPE_USER_MARKER}],
+                             "model": "mock-model"}, 1)
+    assert kind == "scope_review"
+    kind, _ = model._answer({"messages": [{"role": "user", "content": "x"}],
+                             "response_format": {"type": "json_object"},
+                             "model": "mock-model"}, 2)
+    assert kind == "safety"
+    assert model.consumed == [] and model.misses == []
+    _, msg = model._answer({"messages": [{"role": "user", "content": "go"}],
+                            "model": "mock-model"}, 3)
+    assert msg["content"] == "done"
+    model.assert_consumed()
+
+
+def test_replay_model_unconsumed_fixture_or_miss_is_red():
+    model = _replay({
+        ("root", "mock-model", 1): {"final": "served"},
+        ("root", "mock-model", 2): {"final": "never asked for"},
+    })
+    model._answer({"messages": [{"role": "user", "content": "go"}], "model": "mock-model"}, 1)
+    with pytest.raises(AssertionError, match="unconsumed fixture rows"):
+        model.assert_consumed()
+
+    empty = _replay({})
+    kind, msg = empty._answer({"messages": [{"role": "user", "content": "go"}],
+                               "model": "mock-model"}, 1)
+    assert kind == "replay_miss" and "REPLAY_MISS" in msg["content"]
+    with pytest.raises(AssertionError, match="missed keys"):
+        empty.assert_consumed()
+
+    with pytest.raises(ValueError, match="lineage, slot, attempt"):
+        ReplayModel({"not-a-tuple": {"final": "x"}})
+
+
+def test_interface_stubs_refuse_instantiation_until_their_lanes_land():
+    from tests.system_e2e.interfaces import FakeClaudexorDaemon, PlaywrightUIClient
+
+    with pytest.raises(NotImplementedError, match="delegated-transport"):
+        FakeClaudexorDaemon()
+    with pytest.raises(NotImplementedError, match="gateway/UI-truth"):
+        PlaywrightUIClient()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits are meaningless on Windows")
 def test_settings_file_is_created_secret_safe(tmp_path):
     """0600-before-content (carried over from the v7_wip cancellation harness)."""
@@ -302,8 +498,9 @@ S2_SCRIPT = [
 ]
 
 
+@pytest.mark.integration
 @pytest.mark.serial
-def test_s1_boot_identity_and_task_contract(e2e_clone, tmp_path_factory):
+def test_s1_boot_identity_ws_chat_and_task_contract(e2e_clone, tmp_path_factory):
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s1")
     with ScriptedStubModel(S1_SCRIPT) as stub:
@@ -318,6 +515,13 @@ def test_s1_boot_identity_and_task_contract(e2e_clone, tmp_path_factory):
             assert re.fullmatch(r"[0-9a-f]{40}", str(attestation.get("repo_head") or "")), attestation
             assert attestation.get("runtime_version") == attestation.get("repo_version")
 
+            # Port-file honesty: the DURABLE port claim (state/server_port) names the
+            # port this driver is actually talking to — the CLI attach contract.
+            oracle = ArtifactOracle(server.data_root)
+            assert wait_until(lambda: oracle.server_port() == server.port, 30), (
+                f"state/server_port says {oracle.server_port()}, driver talks to {server.port}"
+            )
+
             # Contract: one scripted task to completion over the same HTTP surface the
             # UI posts to.
             task_id = submit_running(server, "List the repository root and finish.")
@@ -325,7 +529,6 @@ def test_s1_boot_identity_and_task_contract(e2e_clone, tmp_path_factory):
             assert result.get("status") == "completed", result
 
             # Durable truth, not the HTTP answer: task_results/<id>.json.
-            oracle = ArtifactOracle(server.data_root)
             stored = wait_durable_result(oracle, task_id)
             assert stored.get("task_id") == task_id, stored
             assert stored.get("status") == "completed", stored
@@ -338,10 +541,37 @@ def test_s1_boot_identity_and_task_contract(e2e_clone, tmp_path_factory):
             assert "agent" in kinds and "final" in kinds, kinds
             assert stub.script_consumed(), "S1 script was not fully consumed"
             assert oracle.events(), "events.jsonl is empty after a completed task"
+
+            # WS chat: the SAME /ws surface the SPA opens answers a chat frame with an
+            # assistant reply (script exhausted -> the stub's final answer), and the
+            # exchange lands durably in chat.jsonl. Runs AFTER the task so the direct
+            # turn cannot race the task for the script's tool step.
+            from websockets.sync.client import connect as ws_connect
+
+            probe = "E2E WS chat probe s1"
+            with ws_connect(ws_url(server), open_timeout=30) as ws:
+                ws.send(json.dumps({"type": "chat", "content": probe, "chat_id": 1}))
+                reply = ""
+                deadline_frames = 240  # bounded frame reads, each with its own timeout
+                for _ in range(deadline_frames):
+                    try:
+                        frame = json.loads(ws.recv(timeout=1.0))
+                    except TimeoutError:
+                        continue
+                    if (isinstance(frame, dict) and frame.get("type") == "chat"
+                            and frame.get("role") == "assistant"
+                            and str(frame.get("content") or "").strip()):
+                        reply = str(frame["content"])
+                        break
+                assert reply, "no assistant chat frame arrived over /ws"
+            assert wait_until(lambda: probe.encode() in oracle.chat_bytes(), 60), (
+                "the WS chat exchange never landed in chat.jsonl"
+            )
         finally:
             server.stop()
 
 
+@pytest.mark.integration
 @pytest.mark.serial
 def test_s2_commit_reviewed_triad_and_scope_pass_on_doc_only_diff(e2e_clone, tmp_path_factory):
     require_lane(LANE_MOCK)
@@ -398,5 +628,181 @@ def test_s2_commit_reviewed_triad_and_scope_pass_on_doc_only_diff(e2e_clone, tmp
             assert bypassed[0].get("commit_message") == S2_COMMIT_MESSAGE, bypassed[0]
             assert task_oracle.events("advisory_review_bypassed"), "bypass event missing"
             assert task_oracle.events("scope_review_complete"), "scope completion event missing"
+        finally:
+            server.stop()
+
+
+# ---------------------------------------------------------------------------
+# S3 — egress hardening (plan §8: "дыра ANTHROPIC_API_KEY — закрыть в Ф4 первой").
+# The default-lane F21 tests pin the strip LIST; this scenario pins the LIVE FACT:
+# a poisoned parent environment, a REAL server tree, and a /proc environ probe of
+# every process in it.
+# ---------------------------------------------------------------------------
+
+S3_PLANTED = {
+    "ANTHROPIC_API_KEY": "sk-ant-e2e-planted-must-not-leak-0001",
+    "OPENROUTER_API_KEY": "sk-or-e2e-planted-must-not-leak-0001",
+    "OPENAI_API_KEY": "sk-e2e-planted-must-not-leak-0001",
+    "CLOUDRU_FOUNDATION_MODELS_API_KEY": "e2e-planted-must-not-leak-0001",
+    "GIGACHAT_CREDENTIALS": "e2e-planted-must-not-leak-0001",
+    "GITHUB_TOKEN": "ghp-e2e-planted-must-not-leak-0001",
+}
+
+
+@pytest.mark.integration
+@pytest.mark.serial
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc environ probe is Linux-only")
+def test_s3_poisoned_parent_credentials_never_reach_the_server_tree(
+        e2e_clone, tmp_path_factory, monkeypatch):
+    require_lane(LANE_MOCK)
+    for key, value in S3_PLANTED.items():
+        monkeypatch.setenv(key, value)
+    # Everything that must be invisible to the child tree: the planted fakes PLUS
+    # every real credential-shaped value the operator shell happens to carry.
+    must_not_appear = set(S3_PLANTED.values()) | set(secret_values_in_parent_env().values())
+    root = tmp_path_factory.mktemp("s3")
+    with ScriptedStubModel(S1_SCRIPT) as stub:
+        server = start_server(e2e_clone, root, keyless_settings(stub))
+        try:
+            # The server BOOTED and WORKS with the poisoned parent env: one scripted
+            # task runs to durable completion, keyless.
+            task_id = submit_running(server, "List the repository root and finish.")
+            result = server.wait_task(task_id, timeout=300)
+            assert result.get("status") == "completed", result
+            wait_durable_result(ArtifactOracle(server.data_root), task_id)
+
+            # /proc probe of the WHOLE live server tree (server + supervisor workers):
+            # no planted or real credential VALUE is visible in any child environ —
+            # values, not names, so a smuggling rename cannot hide one.
+            pids = process_tree_pids(server.proc.pid)
+            assert len(pids) >= 2, f"expected server + workers in the tree, saw {pids}"
+            for pid in pids:
+                try:
+                    child_env = proc_environ(pid)
+                except OSError:
+                    continue  # a worker exited between the walk and the read
+                child_values = set(child_env.values())
+                leaked = sorted(
+                    key for key, value in S3_PLANTED.items() if value in child_values
+                ) + sorted(
+                    {value for value in must_not_appear if value in child_values}
+                    - set(S3_PLANTED.values())
+                )
+                assert not leaked, f"credential values visible in pid {pid} environ: {leaked}"
+                # And by NAME: the stripped provider family is absent — except the
+                # stub pair, which the server itself legitimately projects from the
+                # isolated settings.json into its children (it only ever names the
+                # loopback stub; assert_settings_keyless pins that).
+                named = sorted(
+                    (STRIPPED_PROVIDER_ENV_KEYS
+                     - {"OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_BASE_URL"})
+                    & set(child_env)
+                )
+                assert not named, f"provider env keys present in pid {pid}: {named}"
+        finally:
+            server.stop()
+
+
+# ---------------------------------------------------------------------------
+# S4 — typed tools + safety: a protected-path write denial leaves ZERO side effects
+# (tree snapshot before/after), while the task itself still completes.
+# ---------------------------------------------------------------------------
+
+S4_PROTECTED_PATH = "prompts/SAFETY.md"
+S4_SCRIPT = [
+    {"tool": "write_file", "arguments": {
+        "root": "system_repo",
+        "path": S4_PROTECTED_PATH,
+        "content": "E2E S4: this write must be DENIED, not landed.\n",
+    }},
+]
+S4_SNAPSHOT_PATHS = (S4_PROTECTED_PATH, "BIBLE.md")
+
+
+@pytest.mark.integration
+@pytest.mark.serial
+def test_s4_protected_path_write_denial_has_zero_side_effects(e2e_clone, tmp_path_factory):
+    require_lane(LANE_MOCK)
+    root = tmp_path_factory.mktemp("s4")
+    with ScriptedStubModel(S4_SCRIPT) as stub:
+        settings = keyless_settings(
+            stub,
+            # advanced (not pro): the mode where the protected-path policy DENIES the
+            # write; light would refuse repo writes wholesale and prove nothing about
+            # the protected-surface guard specifically.
+            OUROBOROS_RUNTIME_MODE="advanced",
+        )
+        server = start_server(e2e_clone, root, settings)
+        try:
+            before = repo_tree_fingerprint(e2e_clone, S4_SNAPSHOT_PATHS)
+            task_id = submit_running(
+                server, "Try to update the safety prompt file, then finish.")
+            result = server.wait_task(task_id, timeout=300)
+            # The DENIAL must not kill the task: the agent gets the typed refusal and
+            # finishes normally.
+            assert result.get("status") == "completed", result
+            oracle = ArtifactOracle(server.data_root)
+            wait_durable_result(oracle, task_id)
+            assert stub.script_consumed(), "S4 script was not fully consumed"
+
+            # The durable tool log carries the typed denial.
+            task_oracle = oracle.task_drive(task_id)
+            rows = [row for row in task_oracle.tools_rows()
+                    if str(row.get("tool") or row.get("name") or "") == "write_file"]
+            assert rows, "write_file call missing from the task tools log"
+            denial = json.dumps(rows)
+            assert "CORE_PROTECTION_BLOCKED" in denial, rows
+            assert S4_PROTECTED_PATH in denial, rows
+
+            # ZERO side effects: HEAD, porcelain status and the protected bytes are
+            # IDENTICAL — not "still clean", identical.
+            after = repo_tree_fingerprint(e2e_clone, S4_SNAPSHOT_PATHS)
+            assert after == before, {"before": before, "after": after}
+        finally:
+            server.stop()
+
+
+# ---------------------------------------------------------------------------
+# S5 — cost-truth smoke (ABI-3 on a LIVE server): a completed task's PUBLIC
+# projections carry honest-only cost names; the retired aliases appear nowhere in
+# the outbound bytes.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.serial
+def test_s5_public_task_projections_carry_honest_only_cost_names(e2e_clone, tmp_path_factory):
+    require_lane(LANE_MOCK)
+    root = tmp_path_factory.mktemp("s5")
+    with ScriptedStubModel(S1_SCRIPT) as stub:
+        server = start_server(e2e_clone, root, keyless_settings(stub))
+        try:
+            task_id = submit_running(server, "List the repository root and finish.")
+            result = server.wait_task(task_id, timeout=300)
+            assert result.get("status") == "completed", result
+            oracle = ArtifactOracle(server.data_root)
+            stored = wait_durable_result(oracle, task_id)
+
+            # The task DETAIL projection (the same GET the UI drives): deep-scanned —
+            # no retired alias key anywhere in the outbound bytes, and the honest
+            # top-level name is present (None is honest; a fabricated $0 is not).
+            from devtools.benchmarks.common.server_runner import _api
+
+            detail = _api(server.base_url, "GET", f"/api/tasks/{task_id}", timeout=30)
+            assert retired_cost_alias_paths(detail) == [], detail
+            assert "accounted_upper_bound_usd" in detail, sorted(detail)
+
+            # The task LIST projection: every row deep-clean.
+            listing = _api(server.base_url, "GET", "/api/tasks", timeout=30)
+            assert retired_cost_alias_paths(listing) == [], listing
+
+            # The durable stored row: the write seam normalizes the TOP LEVEL and the
+            # known public planes to honest-only (internal evidence planes keep their
+            # own schemas by design, so the stored-row pin stays top-level).
+            top_level_aliases = [
+                path for path in retired_cost_alias_paths(stored)
+                if path.count(".") == 1  # "$.<key>" only
+            ]
+            assert top_level_aliases == [], stored
         finally:
             server.stop()

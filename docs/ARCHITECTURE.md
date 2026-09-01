@@ -3112,6 +3112,32 @@ The separate Scorecard workflow runs on `main` pushes and weekly. It pins every 
 
 The dependency snapshot workflow reads the managed Claudexor version from `ouroboros/claudexor_runtime_pin.json` and submits that direct runtime relationship to GitHub's dependency graph. It runs on `main` and `ouroboros` only when the pin or workflow changes, plus manual dispatch, and needs only `contents: write` for the dependency-submission API. The repository dependency-graph setting must be enabled before submission; a manual dispatch backfills the current pin after that owner setting changes. The snapshot describes the exact bundled runtime relationship without presenting Claudexor as a Python or Node package dependency.
 
+### System E2E suite (`tests/system_e2e/`)
+
+The deep-integration suite drives a REAL `server.py` per scenario — an isolated repo
+clone + data root + free loopback port through `KeylessIsolatedServer` (an
+`IsolatedServer` whose child env can never carry a provider credential: the base
+class deliberately keeps provider keys for benchmark servers, which is exactly the
+`ANTHROPIC_API_KEY` hole the keyless lane closes) — and asserts DURABLE artifacts
+through `ArtifactOracle` readers (`task_results/`, `logs/*.jsonl`, `state/*`), never
+an HTTP 200 or a harness exit code. Synchronization is durable-event polling
+(`wait_until` over oracle readers), never bare sleeps. Two loopback models share one
+HTTP base: `ScriptedStubModel` (an ordered per-scenario tool script; review-organ
+calls are classified by prompt markers and answered with canned parse-clean verdicts
+BEFORE the finalization-turn check) and `ReplayModel` (deterministic fixtures bound
+by `(lineage, slot, attempt)`; a miss or an unconsumed row is red via
+`assert_consumed`). Reviewer routing is pinned through the structured
+`OUROBOROS_REVIEWER_SLOTS` (the retired comma keys are silently dropped by
+`load_settings` — pinning them would fall back to the shipped paid default panel).
+The scenario inventory is DATA (`SCENARIOS` in `harness.py`) with a two-direction
+gen/verify pin: a manifest row without a test is red, and a `test_s<N>_*` test
+without a manifest row is red. Scenario tests carry BOTH `integration` and `serial`
+markers plus the `OUROBOROS_E2E_DEEP=mock` env gate, so neither the default local
+run nor either CI pytest pass executes them; the keyless mock lane is
+`OUROBOROS_E2E_DEEP=mock pytest tests/system_e2e/ -o addopts=""` (~2.5 min).
+`FakeClaudexorDaemon` and `PlaywrightUIClient` are interface stubs
+(`tests/system_e2e/interfaces.py`) until their scenario waves land.
+
 ### Build scripts
 
 `build.sh`, `build_linux.sh`, `scripts/build_appimage.sh`, `scripts/build_linux_packages.sh`, `scripts/smoke_linux_packages.sh`, `build_windows.ps1`, and `scripts/build_repo_bundle.py` are release-invariant owners. Linux PyInstaller runs under the same pinned portable Python shipped in the payload, so its bundled libpython keeps the payload's glibc floor instead of inheriting the release runner's newer ABI. The AppImage builder wraps that payload with digest-pinned tool and runtime bytes; the native Linux builder wraps the same x86_64 payload without replacing its runtime. Native package metadata declares the external Git required by bootstrap, while the bundled Python, Node, and browser remain under `/opt/ouroboros`. The native packages also install the opt-in user unit at `/usr/lib/systemd/user/ouroboros.service`; they contain no activation scriptlet. The builder prefers hardlinks in an output-local stage and falls back to one payload copy when hardlinking is unavailable. The release-gating smoke installs through `apt` or `dnf`, proves Git resolution, the desktop files, the installed user unit and its launcher/cgroup/no-restart contract, the real packaged CLI, and a bounded desktop-launcher start on Ubuntu 22.04/Fedora 42; Astra Linux and RED OS vendor-image runs remain explicit informational evidence because third-party registry availability cannot block publication. The macOS image keeps the explicit app, Applications symlink, and optional CLI installer layout; final-image verification checks the real symlink target. Release tag prerequisite: `scripts/build_repo_bundle.py` is the release-tag SSOT and verifies the annotated `v$(cat VERSION)` tag points at `HEAD` before packaging.

@@ -31,9 +31,11 @@ Full egress interception (socket-level deny + evidence) is Ф4 scope, not Ф0.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import threading
@@ -49,6 +51,7 @@ if str(REPO_ROOT) not in sys.path:
 from devtools.benchmarks.common.server_runner import (  # noqa: E402
     IsolatedServer,
     _PROVIDER_ENV_KEYS,
+    _is_secret_env_key,
     supervisor_state_is_ready,  # noqa: F401 (re-export: THE readiness contract)
 )
 from ouroboros.provider_models import (  # noqa: E402
@@ -60,13 +63,19 @@ from ouroboros.tools.scope_review_contract import SCOPE_REQUIRED_ITEMS  # noqa: 
 
 LANE_MOCK = "mock"
 
-# The scenario inventory of this suite (plan §8). The scenario test module fails if an
-# id loses its test — a scenario must be retired deliberately, not by deletion.
-# Scenarios land WITH their phases (roast F22); Ф0 carries only the two smokes that
-# prove the skeleton itself.
+# The scenario inventory of this suite (plan §8) — the manifest is DATA and the pin
+# is a gen/verify pair: an id losing its test is red (a scenario must be retired
+# deliberately, not by deletion), and a NEW ``test_s<N>_*`` test without a manifest
+# row is red too (an undeclared scenario is invisible to the lane budget).
+# Scenarios land WITH their phases (roast F22); Ф0 carried S1-S2, Ф4 lane 1 adds the
+# first mandatory surfaces (plan §8: boot/identity/WS, egress hardening first,
+# typed tools + safety, cost-truth).
 SCENARIOS = {
-    "S1": ("boot / identity / task contract smoke", LANE_MOCK),
+    "S1": ("boot / identity / WS chat / port-file / task contract smoke", LANE_MOCK),
     "S2": ("review-organ smoke: commit_reviewed triad+scope on a doc-only diff", LANE_MOCK),
+    "S3": ("egress hardening: poisoned parent credentials never reach the server tree", LANE_MOCK),
+    "S4": ("typed tools + safety: protected-path denial has zero side effects", LANE_MOCK),
+    "S5": ("cost-truth (ABI-3): public task projections carry honest-only cost names", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -175,6 +184,25 @@ def classify_call(body: dict) -> str:
 TRIAD_CLEAN_TEXT = "[]\nNO_FINDINGS"
 
 
+def canned_review_answer(kind: str) -> dict | None:
+    """The canned assistant message for a review-organ/safety ``kind``, else None.
+
+    ONE derivation shared by ``ScriptedStubModel`` (via ``scripted_completion``) and
+    ``ReplayModel``: both models must answer the review organ identically, and the
+    review-organ branch must sit BEFORE any script/fixture consultation (roast F22).
+    """
+    if kind == "safety":
+        return {"role": "assistant",
+                "content": json.dumps({"status": "SAFE", "reason": "stub"})}
+    if kind == "scope_review":
+        return {"role": "assistant", "content": scope_clean_text()}
+    if kind == "triad_review":
+        return {"role": "assistant", "content": TRIAD_CLEAN_TEXT}
+    if kind in ("acceptance", "reviewer_slot"):
+        return {"role": "assistant", "content": reviewer_slot_clean_text(kind)}
+    return None
+
+
 def scope_clean_text() -> str:
     return json.dumps([
         {
@@ -204,15 +232,9 @@ def scripted_completion(body: dict, seq: int, script_next, final_answer: str) ->
     ``(kind, message)`` where message is the OpenAI-style assistant message.
     """
     kind = classify_call(body)
-    if kind == "safety":
-        return kind, {"role": "assistant",
-                      "content": json.dumps({"status": "SAFE", "reason": "stub"})}
-    if kind == "scope_review":
-        return kind, {"role": "assistant", "content": scope_clean_text()}
-    if kind == "triad_review":
-        return kind, {"role": "assistant", "content": TRIAD_CLEAN_TEXT}
-    if kind in ("acceptance", "reviewer_slot"):
-        return kind, {"role": "assistant", "content": reviewer_slot_clean_text(kind)}
+    canned = canned_review_answer(kind)
+    if canned is not None:
+        return kind, canned
     if kind == "finalization":
         return kind, {"role": "assistant", "content": final_answer}
     step = script_next(body) if body.get("tools") else None
@@ -226,29 +248,18 @@ def scripted_completion(body: dict, seq: int, script_next, final_answer: str) ->
     }
 
 
-class ScriptedStubModel:
-    """Keep-alive OpenAI-compatible stub model with an ordered per-scenario script.
+class LoopbackModelServer:
+    """Shared HTTP plumbing of the loopback OpenAI-compatible model servers.
 
-    Extends the ``StubModelServer`` idiom of the cancellation harness: instead of one
-    fixed keepalive tool, a scenario hands the stub an ORDERED list of tool steps
-    (``{"tool": name, "arguments": {...}}``); each plain agent turn consumes one step,
-    and an exhausted script yields the tool-less final answer. Review-organ calls
-    (triad / scope / reviewer-slot / acceptance) NEVER consume script steps — they are
-    classified by prompt markers and answered with canned all-clean verdicts, and that
-    classification runs BEFORE the finalization-turn check (roast F22). Safety
-    supervisor calls (json_object response_format) always get a SAFE verdict.
-
-    Every call is recorded as ``(kind, body)`` in ``self.calls``; ``self.kinds()``
-    gives the observed branch sequence a scenario asserts against.
+    Subclasses implement ``_answer(body, seq) -> (kind, message)``; this base owns the
+    socket, the /models capability answer, the call ledger and the completion
+    envelope. One base, two models (``ScriptedStubModel`` / ``ReplayModel``), so the
+    wire shape and the window evidence can never drift between them.
     """
 
-    def __init__(self, script=None, *, final_answer: str = "Final answer: scripted scenario complete.",
-                 latency_sec: float = 0.0) -> None:
-        self.script = list(script or [])
-        self.final_answer = final_answer
+    def __init__(self, *, latency_sec: float = 0.0) -> None:
         self.latency_sec = latency_sec
         self.calls: list = []          # (kind, body) in arrival order
-        self._script_index = 0
         self._lock = threading.Lock()
         outer = self
 
@@ -262,7 +273,10 @@ class ScriptedStubModel:
                     # governance pack, blocking every commit_reviewed before
                     # dispatch), and (b) satisfies the BIBLE P3 >=1M floor that
                     # scope review's BLOCKING authority requires.
-                    return self._send({"data": [{"id": "mock-model", "max_model_len": 2_000_000}]})
+                    return self._send({"data": [
+                        {"id": model_id, "max_model_len": 2_000_000}
+                        for model_id in outer._model_ids()
+                    ]})
                 self.send_error(404)
 
             def do_POST(self):  # noqa: N802 - stdlib callback name
@@ -291,17 +305,16 @@ class ScriptedStubModel:
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
-    def _next_step(self, _body) -> dict | None:
-        if self._script_index >= len(self.script):
-            return None
-        step = self.script[self._script_index]
-        self._script_index += 1
-        return step
+    def _model_ids(self) -> list[str]:
+        return ["mock-model"]
+
+    def _answer(self, body: dict, seq: int) -> tuple[str, dict]:
+        raise NotImplementedError
 
     def _completion(self, body: dict) -> dict:
         with self._lock:
             seq = len(self.calls) + 1
-            kind, message = scripted_completion(body, seq, self._next_step, self.final_answer)
+            kind, message = self._answer(body, seq)
             self.calls.append((kind, body))
         return {
             "id": f"stub-{seq}",
@@ -315,21 +328,277 @@ class ScriptedStubModel:
         with self._lock:
             return [kind for kind, _ in self.calls]
 
-    def script_consumed(self) -> bool:
-        with self._lock:
-            return self._script_index >= len(self.script)
-
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._server.server_address[1]}/v1"
 
-    def __enter__(self) -> "ScriptedStubModel":
+    def __enter__(self):
         self._thread.start()
         return self
 
     def __exit__(self, *_exc) -> None:
         self._server.shutdown()
         self._server.server_close()
+
+
+class ScriptedStubModel(LoopbackModelServer):
+    """Keep-alive OpenAI-compatible stub model with an ordered per-scenario script.
+
+    Extends the ``StubModelServer`` idiom of the cancellation harness: instead of one
+    fixed keepalive tool, a scenario hands the stub an ORDERED list of tool steps
+    (``{"tool": name, "arguments": {...}}``); each plain agent turn consumes one step,
+    and an exhausted script yields the tool-less final answer. Review-organ calls
+    (triad / scope / reviewer-slot / acceptance) NEVER consume script steps — they are
+    classified by prompt markers and answered with canned all-clean verdicts, and that
+    classification runs BEFORE the finalization-turn check (roast F22). Safety
+    supervisor calls (json_object response_format) always get a SAFE verdict.
+
+    Every call is recorded as ``(kind, body)`` in ``self.calls``; ``self.kinds()``
+    gives the observed branch sequence a scenario asserts against.
+    """
+
+    def __init__(self, script=None, *, final_answer: str = "Final answer: scripted scenario complete.",
+                 latency_sec: float = 0.0) -> None:
+        super().__init__(latency_sec=latency_sec)
+        self.script = list(script or [])
+        self.final_answer = final_answer
+        self._script_index = 0
+
+    def _next_step(self, _body) -> dict | None:
+        if self._script_index >= len(self.script):
+            return None
+        step = self.script[self._script_index]
+        self._script_index += 1
+        return step
+
+    def _answer(self, body: dict, seq: int) -> tuple[str, dict]:
+        return scripted_completion(body, seq, self._next_step, self.final_answer)
+
+    def script_consumed(self) -> bool:
+        with self._lock:
+            return self._script_index >= len(self.script)
+
+
+# ---------------------------------------------------------------------------
+# ReplayModel — deterministic (lineage, slot, attempt)-bound fixtures (plan §8).
+# ---------------------------------------------------------------------------
+
+# Scenario prompts plant the lineage tag in the text the model sees (a task
+# description flows into the agent prompt verbatim); the LAST occurrence wins so a
+# child task's own tag beats a parent transcript quoting it.
+LINEAGE_TAG_RE = re.compile(r"\[E2E-LINEAGE:([A-Za-z0-9_.-]+)\]")
+REPLAY_ROOT_LINEAGE = "root"
+
+
+def default_lineage_binder(body: dict) -> str:
+    matches = LINEAGE_TAG_RE.findall(body_text(body))
+    return matches[-1] if matches else REPLAY_ROOT_LINEAGE
+
+
+def default_slot_binder(body: dict) -> str:
+    """The slot identity is the requested model id — scenarios pin DISTINCT stub
+    slugs per model slot in settings, so the wire's ``model`` field names the slot
+    that made the call (no guessing from prompt shape)."""
+    return str(body.get("model") or "")
+
+
+class ReplayModel(LoopbackModelServer):
+    """Loopback model whose every non-review answer is BOUND to (lineage, slot, attempt).
+
+    The fixture is a mapping ``{(lineage, slot, attempt): step}`` where ``attempt`` is
+    the 1-based ordinal of the fixture-consulted call for that (lineage, slot) pair,
+    and ``step`` is one of::
+
+        {"tool": name, "arguments": {...}}   # scripted tool call
+        {"final": "answer text"}             # tool-less final answer
+        {"message": {...}}                   # raw OpenAI-style assistant message
+
+    Review-organ and safety calls are answered canned (same branch order as the
+    scripted stub, review BEFORE finalization — roast F22) and NEVER consume the
+    fixture or advance attempt counters. A call with no fixture row is a MISS: it is
+    recorded and answered with a loud text (so the server under test cannot hang),
+    and ``assert_consumed()`` — which every ReplayModel scenario must call — fails on
+    ANY miss and on ANY unconsumed fixture row (недоеденная фикстура = красный).
+    """
+
+    def __init__(self, fixture, *, lineage_binder=None, slot_binder=None,
+                 latency_sec: float = 0.0) -> None:
+        super().__init__(latency_sec=latency_sec)
+        self.fixture = dict(fixture or {})
+        for key in self.fixture:
+            if not (isinstance(key, tuple) and len(key) == 3 and isinstance(key[2], int)):
+                raise ValueError(f"ReplayModel fixture key must be (lineage, slot, attempt): {key!r}")
+        self._lineage_binder = lineage_binder or default_lineage_binder
+        self._slot_binder = slot_binder or default_slot_binder
+        self._attempts: dict = {}      # (lineage, slot) -> calls consulted so far
+        self.consumed: list = []       # keys served, in order
+        self.misses: list = []         # keys asked for but absent from the fixture
+
+    def _model_ids(self) -> list[str]:
+        # Advertise every slot slug the fixture names (plus the default), so the
+        # capability-evidence /models probe confirms a window for each slot route.
+        ids = {"mock-model"} | {str(slot) for _, slot, _ in self.fixture}
+        return sorted(ids)
+
+    def _answer(self, body: dict, seq: int) -> tuple[str, dict]:
+        kind = classify_call(body)
+        canned = canned_review_answer(kind)
+        if canned is not None:
+            return kind, canned
+        lineage = str(self._lineage_binder(body))
+        slot = str(self._slot_binder(body))
+        attempt = self._attempts.get((lineage, slot), 0) + 1
+        self._attempts[(lineage, slot)] = attempt
+        key = (lineage, slot, attempt)
+        step = self.fixture.get(key)
+        if step is None:
+            self.misses.append(key)
+            return "replay_miss", {
+                "role": "assistant",
+                "content": f"REPLAY_MISS: no fixture row for {key!r} — the scenario "
+                           "fixture and the server's call pattern disagree.",
+            }
+        self.consumed.append(key)
+        if "message" in step:
+            return "replay", dict(step["message"])
+        if "final" in step:
+            return "replay_final", {"role": "assistant", "content": str(step["final"])}
+        call = {"name": str(step["tool"]),
+                "arguments": json.dumps(step.get("arguments") or {})}
+        return "replay", {
+            "role": "assistant", "content": "still working",
+            "tool_calls": [{"id": f"call_{seq}", "type": "function", "function": call}],
+        }
+
+    def assert_consumed(self) -> None:
+        """The fixture-integrity gate every ReplayModel scenario must end with."""
+        with self._lock:
+            leftover = sorted(set(self.fixture) - set(self.consumed))
+            misses = list(self.misses)
+        problems = []
+        if misses:
+            problems.append(f"missed keys (no fixture row): {misses}")
+        if leftover:
+            problems.append(f"unconsumed fixture rows: {leftover}")
+        assert not problems, "ReplayModel fixture mismatch: " + "; ".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# Egress-hardening probes (Ф4: the mock lane must PROVE, not assume, that no
+# provider credential reaches the child server process).
+# ---------------------------------------------------------------------------
+
+# Every way the runtime tree reads an environment variable by literal name.
+_ENV_READ_RE = re.compile(
+    r"""os\.(?:environ(?:\.get)?[\[(]|getenv\()\s*["']([A-Z0-9_]+)["']"""
+)
+_CREDENTIAL_SHAPE_RE = re.compile(r"(API_KEY|CREDENTIALS|TOKEN|SECRET|PASSWORD)")
+RUNTIME_TREE_GLOBS = ("ouroboros/**/*.py", "supervisor/**/*.py", "server.py")
+
+
+def runtime_credential_env_key_reads() -> set:
+    """Every credential-shaped env key the RUNTIME TREE actually reads.
+
+    Built from the source (not from a hand-kept list), so a provider credential
+    added upstream tomorrow lands in the strip-coverage pin automatically instead of
+    silently reaching a keyless child. Includes reads through ``os.environ[...]``,
+    ``os.environ.get`` and ``os.getenv``.
+    """
+    keys: set = set()
+    for pattern in RUNTIME_TREE_GLOBS:
+        for path in sorted(REPO_ROOT.glob(pattern)):
+            try:
+                source = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for name in _ENV_READ_RE.findall(source):
+                if _CREDENTIAL_SHAPE_RE.search(name):
+                    keys.add(name)
+    return keys
+
+
+def proc_environ(pid: int) -> dict:
+    """The live environment of a running process (Linux /proc; POSIX-only probe)."""
+    raw = pathlib.Path(f"/proc/{pid}/environ").read_bytes()
+    env: dict = {}
+    for chunk in raw.split(b"\x00"):
+        if b"=" in chunk:
+            key, _, value = chunk.partition(b"=")
+            env[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return env
+
+
+def process_tree_pids(root_pid: int) -> list:
+    """``root_pid`` plus every live descendant (Linux /proc children walk)."""
+    pids, queue = [], [int(root_pid)]
+    while queue:
+        pid = queue.pop()
+        pids.append(pid)
+        for children_file in pathlib.Path(f"/proc/{pid}/task").glob("*/children"):
+            try:
+                queue.extend(int(child) for child in children_file.read_text().split())
+            except (OSError, ValueError):
+                continue
+    return pids
+
+
+def secret_values_in_parent_env() -> dict:
+    """{env key: value} for every non-trivial credential-shaped value the PARENT
+    (pytest) environment currently carries — the values that must never be observed
+    in a keyless child, regardless of what variable name they might travel under."""
+    out = {}
+    for key, value in os.environ.items():
+        if not _CREDENTIAL_SHAPE_RE.search(key):
+            continue
+        if key in STRIPPED_PROVIDER_ENV_KEYS or _is_secret_env_key(key):
+            if len(str(value or "").strip()) >= 8:  # too-short values collide by chance
+                out[key] = str(value)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Zero-side-effects snapshots (typed tools + safety surface)
+# ---------------------------------------------------------------------------
+
+def repo_tree_fingerprint(clone: pathlib.Path, tracked_paths: tuple = ()) -> dict:
+    """A comparable snapshot of an isolated clone: HEAD, porcelain status, and the
+    exact bytes-hash of every named tracked path. Denial-of-write scenarios take it
+    before and after and require EQUALITY — zero side effects, not "looks clean"."""
+    clone = pathlib.Path(clone)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(clone),
+                          check=True, capture_output=True, text=True).stdout.strip()
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=str(clone),
+                            check=True, capture_output=True, text=True).stdout
+    hashes = {
+        rel: hashlib.sha256((clone / rel).read_bytes()).hexdigest()
+        for rel in tracked_paths
+    }
+    return {"head": head, "status": status, "hashes": hashes}
+
+
+# ---------------------------------------------------------------------------
+# Cost-truth (ABI-3): deep scan for the retired alias spellings in a PUBLIC
+# projection. Keys come from the tree's own COST_ALIAS_PAIRS, never a literal.
+# ---------------------------------------------------------------------------
+
+def retired_cost_alias_paths(payload) -> list:
+    from ouroboros.cost_projection import COST_ALIAS_PAIRS
+
+    retired = {legacy for _honest, legacy in COST_ALIAS_PAIRS}
+    found: list = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in retired:
+                    found.append(f"{path}.{key}")
+                walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{path}[{index}]")
+
+    walk(payload, "$")
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -363,16 +632,37 @@ class KeylessIsolatedServer(IsolatedServer):
         return env
 
 
+def keyless_reviewer_slots() -> str:
+    """The structured ``OUROBOROS_REVIEWER_SLOTS`` value pinning every reviewer row
+    to the loopback stub.
+
+    ABI 7.0 (ABI-10): the comma-list reviewer settings keys are RETIRED —
+    ``load_settings`` drops them from the file, so pinning them there is a silent
+    no-op and the review organ falls back to the shipped OpenRouter default panel
+    (observed live on this tree: S2's triad dispatched gemini/terra/opus with no
+    credential and deterministically blocked at pack assembly). The structured key
+    is the ONE configuration surface, so the keyless lane pins THAT.
+    """
+    row = {"kind": "api_chat", "target_id": MOCK_SLUG}
+    return json.dumps({
+        "triad": [{"slot_id": f"t{i}", "route": dict(row)} for i in (1, 2, 3)],
+        "scope": [{"slot_id": "s1", "route": dict(row)}],
+    })
+
+
 def keyless_settings(stub: ScriptedStubModel, **overrides) -> dict:
     """The isolated settings.json for a keyless scenario server.
 
     Every model-slot key the TREE declares is pinned — un-listed keys default to the
-    empty string (slot disabled / no fallback), the live loop + review slots to the
-    stub slug. Deriving the slot list from ``provider_models`` (instead of an
-    enumerated literal, as the cancellation-harness precedent did) means an upstream
-    slot added tomorrow is pinned by construction rather than silently defaulting to
-    a live OpenRouter route. Overrides carrying a real provider credential are a
-    scenario bug and are refused loudly.
+    empty string (slot disabled / no fallback), the live loop slots to the stub slug,
+    and the review organ through the structured ``OUROBOROS_REVIEWER_SLOTS`` (the one
+    ABI-10 configuration surface; the retired comma keys in the ACTIVE list are pinned
+    empty for hygiene but are dropped by ``load_settings`` either way). Deriving the
+    slot list from ``provider_models`` (instead of an enumerated literal, as the
+    cancellation-harness precedent did) means an upstream slot added tomorrow is
+    pinned by construction rather than silently defaulting to a live OpenRouter
+    route. Overrides carrying a real provider credential are a scenario bug and are
+    refused loudly.
     """
     stub_pair = {"OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_BASE_URL"}
     forbidden = (set(ALL_PROVIDER_CREDENTIAL_KEYS) - stub_pair) & set(overrides)
@@ -394,10 +684,9 @@ def keyless_settings(stub: ScriptedStubModel, **overrides) -> dict:
         "OUROBOROS_PER_TASK_COST_USD": 10.0,
         "OPENAI_COMPATIBLE_BASE_URL": stub.base_url,
         "OPENAI_COMPATIBLE_API_KEY": "stub-key-not-a-credential",
+        "OUROBOROS_REVIEWER_SLOTS": keyless_reviewer_slots(),
     })
-    for slot in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT",
-                 "OUROBOROS_REVIEW_MODELS", "OUROBOROS_SCOPE_REVIEW_MODELS",
-                 "OUROBOROS_SCOPE_REVIEW_MODEL"):
+    for slot in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT"):
         cfg[slot] = MOCK_SLUG
     cfg.update(overrides)
     return cfg
@@ -554,6 +843,25 @@ class ArtifactOracle:
             for row in (self.queue_snapshot().get("running") or [])
             if isinstance(row, dict)
         }
+
+    # -- boot surface ---------------------------------------------------------
+
+    def server_port(self) -> int:
+        """The loopback port the server DURABLY claims (state/server_port).
+
+        The port-file honesty check: this must equal the port the driver actually
+        talks to — a stale or absent file strands every ``ouroboros`` CLI attach.
+        """
+        path = self.data_root / "state" / "server_port"
+        try:
+            return int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return 0
+
+
+def ws_url(server: IsolatedServer) -> str:
+    """The WS chat endpoint of an isolated server (the SAME surface the SPA opens)."""
+    return f"ws://{server.host}:{server.port}/ws"
 
 
 # ---------------------------------------------------------------------------
