@@ -2520,6 +2520,18 @@ completeness (a tracked module without a row = red), baseline exactness, and
 DOMAIN_MAP byte-identity; `scripts/v7next_domain_report.py` stays the
 report-only witness-level companion (`docs/v7next/DOMAIN_QUOTIENT_REPORT.md`).
 
+Three further gen/verify inventories ride the same discipline (v7next CPL-2;
+generator `scripts/regenerate_inventories.py`, verify
+`tests/test_generated_inventories.py`, staleness = red): the frozen-contracts
+inventory (`docs/v7next/FROZEN_CONTRACTS_INVENTORY.md`, a machine extraction of
+§11.1 with every owner/anchor path resolved against the tree and the
+`ouroboros/contracts/` package-coverage gap pinned), the data-layout inventory
+(`docs/v7next/DATA_LAYOUT_INVENTORY.md`, every entry of the §1 "Data layout"
+tree probed as a tracked repo path or a runtime-source literal, so a durable
+file renamed in code while its tree row survives turns red), and the facade
+inventory (`docs/v7next/FACADE_INVENTORY.md`, the AST-derived `noqa: F401`
+re-export facade surface with per-leaf domains from the manifest).
+
 The shared hard prompt-size SSOT is `REVIEW_PROMPT_TOKEN_BUDGET = 920_000` in
 `ouroboros/tools/review_helpers.py`. `review_context_atlas.py` targets 850K
 estimated total prompt tokens for scope review and deep self-review, then leaves
