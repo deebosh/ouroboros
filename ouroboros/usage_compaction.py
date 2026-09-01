@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from ouroboros._usage_rows import _breakdown_bucket, _summary
 from ouroboros.usage_ledger import (
+    ARCHIVE_SEGMENT_DIR_REL,
     LEDGER_REL,
     UsageLedgerCorrupt,
     _drive_root,
@@ -43,12 +44,11 @@ from ouroboros.usage_ledger import (
     _read_records_locked,
     _validate_records,
     _write_bytes_atomic_fsync,
+    valid_archive_rel,
 )
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
-
-ARCHIVE_DIR_REL = pathlib.Path("archive/usage_ledger")
 
 # States a folded attempt chain may terminate in. In-flight (reserved/
 # dispatched) finals keep their WHOLE chain in the live file.
@@ -64,9 +64,20 @@ _TOKEN_SUM_FIELDS = (
 _COMPACT_ATTEMPTS: Dict[str, Tuple[int, int, int]] = {}
 _COMPACT_ATTEMPTS_LOCK = threading.Lock()
 
-# Immutable-segment cache for the history readers:
-# abs path -> (expected sha256, frozen attempt-id set, embedded prior header).
-_SEGMENT_CACHE: Dict[str, Tuple[str, frozenset, Optional[Dict[str, Any]]]] = {}
+# Immutable-segment cache for the history readers: abs path -> (expected
+# sha256, frozen attempt-id set, embedded prior header, file fingerprint).
+# The fingerprint is part of the hit condition, so a segment deleted or
+# rewritten after a warm read re-verifies (and fails) instead of answering
+# from memory.
+_SEGMENT_CACHE: Dict[
+    str, Tuple[str, frozenset, Optional[Dict[str, Any]], Tuple[int, int, int, int]]
+] = {}
+
+# The union over one WHOLE chain, keyed by the chain's identity ((archive_rel,
+# sha) per hop). A reverse sweep asks the join primitive once per seal; the
+# per-segment sets are cached, but re-unioning them per question is the work
+# that made a bulk reconcile quadratic.
+_CHAIN_UNION_CACHE: Dict[Tuple[Tuple[str, str], ...], frozenset] = {}
 
 
 def _decimal_of(value: Any) -> Decimal:
@@ -372,7 +383,7 @@ def _build_candidate(
     now = utc_now_iso()
     stamp = now.replace("-", "").replace(":", "").replace("+00:00", "Z")
     archive_rel = str(
-        ARCHIVE_DIR_REL / f"segment_ep{epoch:04d}_{stamp}_{uuid.uuid4().hex[:8]}.jsonl"
+        ARCHIVE_SEGMENT_DIR_REL / f"segment_ep{epoch:04d}_{stamp}_{uuid.uuid4().hex[:8]}.jsonl"
     ).replace(os.sep, "/")
     source_sha256 = hashlib.sha256(raw).hexdigest()
 
@@ -631,60 +642,103 @@ def _live_baseline_header(root: pathlib.Path) -> Optional[Dict[str, Any]]:
 
     Lock-free by design: appends never touch line 1 and the compactor swaps
     the file atomically, so the first line is always a complete row of either
-    generation."""
+    generation. ``None`` therefore means exactly one thing — a readable
+    leading row that is not a baseline stamp, i.e. no compaction has happened.
+    A row that cannot be read AT ALL is corruption and says so: reporting it
+    as "not compacted" would hand the CPL-5 sweep an empty archive and let it
+    call a folded attempt an orphan seal.
+    """
     try:
         with open(root / LEDGER_REL, "rb") as handle:
             first = handle.readline()
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise UsageLedgerCorrupt(f"usage ledger unreadable: {root / LEDGER_REL}") from exc
     line = first.strip(b"\r\n").strip()
     if not line:
         return None
     try:
         row = json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if isinstance(row, dict) and str(row.get("kind") or "") == "usage_baseline":
-        return row
-    return None
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UsageLedgerCorrupt("unreadable leading usage ledger row") from exc
+    if not isinstance(row, dict):
+        raise UsageLedgerCorrupt("leading usage ledger row is not an object")
+    return row if str(row.get("kind") or "") == "usage_baseline" else None
+
+
+def _segment_path(root: pathlib.Path, archive_rel: str) -> pathlib.Path:
+    """Resolve a header's ``archive_rel`` INSIDE the archive directory or fail.
+
+    Two independent bounds: the textual shape the substrate declares legal,
+    and the RESOLVED location (so a symlink planted in the archive directory
+    cannot make a file elsewhere on the host count as archived history)."""
+    if not valid_archive_rel(archive_rel):
+        raise UsageLedgerCorrupt(
+            f"usage baseline archive reference is not bounded: {archive_rel!r}"
+        )
+    archive_dir = (root / ARCHIVE_SEGMENT_DIR_REL).resolve(strict=False)
+    path = (root / archive_rel).resolve(strict=False)
+    if path.parent != archive_dir:
+        raise UsageLedgerCorrupt(
+            f"usage archive segment escapes the archive directory: {archive_rel!r}"
+        )
+    return path
 
 
 def _load_segment(
-    root: pathlib.Path, archive_rel: str, expected_sha256: str
+    root: pathlib.Path, header: Dict[str, Any]
 ) -> Tuple[frozenset, Optional[Dict[str, Any]]]:
-    path = root / archive_rel
+    """Read one archived segment named (and fully described) by ``header``.
+
+    Segments are immutable, so a verified read is cached — but the cache is
+    keyed on what the file IS, not merely on what was once read from that
+    path: a deleted or rewritten segment must surface as corruption even in a
+    process that already loaded it, or an audit keeps answering "logged" from
+    history that is no longer there.
+    """
+    expected_sha256 = str(header.get("source_sha256") or "")
+    path = _segment_path(root, str(header.get("archive_rel") or ""))
     key = str(path)
+    try:
+        info = os.stat(path)
+    except OSError as exc:
+        raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
+    fingerprint = (info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns)
     cached = _SEGMENT_CACHE.get(key)
-    if cached is not None and cached[0] == expected_sha256:
+    if cached is not None and cached[0] == expected_sha256 and cached[3] == fingerprint:
         return cached[1], cached[2]
     try:
         payload = path.read_bytes()
     except OSError as exc:
         raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
-    digest = hashlib.sha256(payload).hexdigest()
-    if digest != expected_sha256:
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise UsageLedgerCorrupt(f"usage archive segment hash mismatch: {path}")
-    ids: set = set()
-    prior_header: Optional[Dict[str, Any]] = None
-    first_row = True
-    for chunk in payload.splitlines():
-        line = chunk.strip(b"\r").strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise UsageLedgerCorrupt(f"corrupt usage archive segment row: {path}") from exc
-        if isinstance(row, dict):
-            attempt_id = str(row.get("attempt_id") or "")
-            if attempt_id:
-                ids.add(attempt_id)
-            if first_row and str(row.get("kind") or "") == "usage_baseline":
-                prior_header = row
-        first_row = False
+    if len(payload) != int(header.get("source_size_bytes") or -1):
+        raise UsageLedgerCorrupt(f"usage archive segment size disagrees with its header: {path}")
+    try:
+        rows, _ = _parse_ledger_lines(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise UsageLedgerCorrupt(f"corrupt usage archive segment row: {path}") from exc
+    if len(rows) != int(header.get("source_row_count") or -1):
+        raise UsageLedgerCorrupt(f"usage archive segment row count disagrees with its header: {path}")
+    # A segment IS a former generation of the ledger: hold it to the same
+    # structural authority (dense seq, legal transitions, well-formed rows)
+    # instead of scraping any JSON object that carries an ``attempt_id``.
+    _validate_records(rows)
+    ids = {str(row.get("attempt_id") or "") for row in rows}
+    ids.discard("")
+    prior_header = rows[0] if rows and str(rows[0].get("kind") or "") == "usage_baseline" else None
     frozen = frozenset(ids)
-    _SEGMENT_CACHE[key] = (expected_sha256, frozen, prior_header)
+    _SEGMENT_CACHE[key] = (expected_sha256, frozen, prior_header, fingerprint)
     return frozen, prior_header
+
+
+def _union_segment_ids(segment_ids: list) -> frozenset:
+    ids: set = set()
+    for chunk in segment_ids:
+        ids |= chunk
+    return frozenset(ids)
 
 
 def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
@@ -692,25 +746,51 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
 
     Walks the tamper-evident chain: the live header names (and hash-pins) the
     newest segment; each segment's own leading header names the one before it.
-    Segments are immutable, so results are cached per (path, sha). An
-    unreadable, hash-mismatched, or cyclic chain raises ``UsageLedgerCorrupt``
-    — the CPL-5 reverse sweep must treat that as its existing UNKNOWN /
-    skip-pass state, never as evidence of an orphan."""
+    Because the source of epoch N is exactly the file epoch N-1 produced, the
+    chain's epochs must step down by one and end at epoch 1 with a segment
+    that embeds no header — so re-pointing a live header at an older genuine
+    segment (dropping the epochs between) is corruption, not a shorter
+    history. Segments are immutable, so per-segment reads and the union over a
+    given chain are cached. An unreadable, hash-mismatched, mis-stepped, or
+    cyclic chain raises ``UsageLedgerCorrupt`` — the CPL-5 reverse sweep must
+    treat that as its existing UNKNOWN / skip-pass state, never as evidence of
+    an orphan."""
     root = pathlib.Path(_drive_root(root))
-    ids: set = set()
     header = _live_baseline_header(root)
+    chain: list = []
+    segments: list = []
     seen: set = set()
+    expected_epoch: Optional[int] = None
     while header is not None:
         archive_rel = str(header.get("archive_rel") or "")
         expected = str(header.get("source_sha256") or "")
-        if not archive_rel or not expected:
+        epoch = header.get("compaction_epoch")
+        if not archive_rel or not expected or isinstance(epoch, bool) or not isinstance(
+            epoch, int
+        ) or epoch < 1:
             raise UsageLedgerCorrupt("usage baseline header lacks archive provenance")
+        if expected_epoch is not None and epoch != expected_epoch:
+            raise UsageLedgerCorrupt(
+                f"usage archive chain epoch break: expected {expected_epoch}, found {epoch}"
+            )
         if archive_rel in seen:
             raise UsageLedgerCorrupt(f"usage archive segment cycle at {archive_rel}")
         seen.add(archive_rel)
-        segment_ids, header = _load_segment(root, archive_rel, expected)
-        ids |= segment_ids
-    return frozenset(ids)
+        segment_ids, header = _load_segment(root, header)
+        chain.append((archive_rel, expected))
+        segments.append(segment_ids)
+        expected_epoch = epoch - 1
+        if header is None and expected_epoch != 0:
+            raise UsageLedgerCorrupt(
+                f"usage archive chain ends before epoch {expected_epoch}"
+            )
+    key = tuple(chain)
+    cached = _CHAIN_UNION_CACHE.get(key)
+    if cached is not None:
+        return cached
+    union = _union_segment_ids(segments)
+    _CHAIN_UNION_CACHE[key] = union
+    return union
 
 
 def usage_attempt_recorded(

@@ -158,6 +158,16 @@ def _lock_is_held(data_root):
     return False
 
 
+def _rewrite_header(data_root, header):
+    """Replace the live ledger's leading row (tamper simulation)."""
+    path = data_root / ua.LEDGER_REL
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = json.dumps(header, sort_keys=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    uc._SEGMENT_CACHE.clear()
+    uc._CHAIN_UNION_CACHE.clear()
+
+
 def _append_raw_row(data_root, row):
     """Append one already-legal row straight to the live ledger bytes."""
     path = data_root / ua.LEDGER_REL
@@ -438,9 +448,139 @@ def test_tampered_archive_segment_is_detected(data_root):
     segment = data_root / header["archive_rel"]
     payload = segment.read_bytes()
     segment.write_bytes(payload.replace(b'"settled"', b'"sett1ed"', 1))
-    uc._SEGMENT_CACHE.clear()
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
+
+
+def test_rehashed_segment_still_fails_the_ledger_structure(data_root):
+    """A tamperer who also repairs the hash still has to produce a LEDGER."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    header = _ledger_rows(data_root)[0]
+    segment = data_root / header["archive_rel"]
+    forged = segment.read_bytes().replace(b'"seq":2', b'"seq":9', 1)
+    assert len(forged) == header["source_size_bytes"]
+    segment.write_bytes(forged)
+    _rewrite_header(data_root, {
+        **header, "source_sha256": hashlib.sha256(forged).hexdigest(),
+    })
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+
+def test_warm_segment_cache_revalidates_the_file_it_cached(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    assert uc.archived_attempt_ids(data_root)  # warms the per-segment cache
+    header = _ledger_rows(data_root)[0]
+    segment = data_root / header["archive_rel"]
+    segment.unlink()
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+    segment.write_bytes(b'{"kind":"attempt"}\n')
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+
+_SOURCE_PROVENANCE_KEYS = (
+    "archive_rel", "source_sha256", "source_size_bytes", "source_row_count",
+    "source_first_seq", "source_last_seq", "folded_row_count", "retained_row_count",
+)
+
+
+def _embedded_header(data_root, header):
+    """The previous epoch's header, as embedded in the segment ``header`` names."""
+    first = (data_root / header["archive_rel"]).read_text(
+        encoding="utf-8").splitlines()[0]
+    return json.loads(first)
+
+
+def test_repointing_the_header_at_an_older_segment_is_corrupt(data_root):
+    """Dropping the epochs between is a shortened chain, not a shorter history."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    for generation in ("gen2", "gen3"):
+        _settle(data_root, cost=0.75, cost_final=True, task_id=generation)
+        assert _compact(data_root) is not None
+    header3 = _ledger_rows(data_root)[0]
+    assert header3["compaction_epoch"] == 3
+    everything = uc.archived_attempt_ids(data_root)
+    # Each older header is embedded, verbatim and correctly hashed, as the
+    # first row of the segment the newer one names — genuine references, all.
+    header2 = _embedded_header(data_root, header3)
+    header1 = _embedded_header(data_root, header2)
+    assert (header2["compaction_epoch"], header1["compaction_epoch"]) == (2, 1)
+    for skipped_to in (header2, header1):
+        forged = {**header3, **{key: skipped_to[key] for key in _SOURCE_PROVENANCE_KEYS}}
+        _rewrite_header(data_root, forged)
+        _validate_records(_ledger_rows(data_root))  # structurally impeccable
+        with pytest.raises(UsageLedgerCorrupt):
+            uc.archived_attempt_ids(data_root)
+    assert everything  # what the forgeries were trying to make disappear
+
+
+def test_archive_reference_is_bounded_to_the_archive_directory(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    rows = _ledger_rows(data_root)
+    header = rows[0]
+    for archive_rel in (
+        "../../other.jsonl",
+        "/etc/passwd",
+        "archive/usage_ledger/../../other.jsonl",
+        "archive/other/segment.jsonl",
+        "archive\\usage_ledger\\segment.jsonl",
+        "",
+    ):
+        with pytest.raises(UsageLedgerCorrupt):
+            _validate_records([{**header, "archive_rel": archive_rel}, *rows[1:]])
+    # And the reader refuses it even when the named file exists and hashes right.
+    outside = data_root / "outside.jsonl"
+    outside.write_bytes((data_root / header["archive_rel"]).read_bytes())
+    _rewrite_header(data_root, {**header, "archive_rel": "../outside.jsonl"})
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+
+def test_unreadable_leading_row_is_typed_corruption_not_absence(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    folded = sorted(uc.archived_attempt_ids(data_root))
+    assert folded
+    path = data_root / ua.LEDGER_REL
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(['{"kind": "usage_baseline"'] + lines[1:]) + "\n",
+                    encoding="utf-8")
+    uc._SEGMENT_CACHE.clear()
+    uc._CHAIN_UNION_CACHE.clear()
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+    # The CPL-5 join must reach UNKNOWN, never "no attempt row" (orphan seal).
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.usage_attempt_recorded(data_root, folded[0], live_ids=set())
+
+
+def test_archived_id_union_is_built_once_per_chain(data_root, monkeypatch):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    _settle(data_root, cost=0.25, cost_final=True, task_id="gen2")
+    assert _compact(data_root) is not None
+    folded = sorted(uc.archived_attempt_ids(data_root))
+    assert len(folded) > 4
+    builds: list = []
+    original = uc._union_segment_ids
+
+    def counting(segment_ids):
+        builds.append(len(segment_ids))
+        return original(segment_ids)
+
+    monkeypatch.setattr(uc, "_union_segment_ids", counting)
+    uc._CHAIN_UNION_CACHE.clear()
+    # A reverse sweep asks once per seal; the union over the chain is chain
+    # work, not per-question work.
+    for attempt_id in folded:
+        assert uc.usage_attempt_recorded(data_root, attempt_id, live_ids=set())
+    assert builds == [2]
 
 
 # --- 6: idempotent kinds never fold ------------------------------------------
@@ -585,6 +725,88 @@ def test_baseline_rows_are_rejected_outside_the_leading_block(data_root):
     }
     with pytest.raises(UsageLedgerCorrupt):
         _validate_records([*rows, smuggled])
+
+
+def test_a_group_row_cannot_rejoin_the_block_after_it_closed(data_root):
+    """The money-injection shape: a real group row, real ``baseline_id``, later."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    rows = _ledger_rows(data_root)
+    template = next(row for row in rows if row.get("kind") == "usage_baseline_group")
+    smuggled = {
+        **template,
+        "attempt_id": f"{template['attempt_id']}-dup",
+        "seq": len(rows) + 1,
+    }
+    with pytest.raises(UsageLedgerCorrupt):
+        _validate_records([*rows, smuggled])
+
+
+def test_baseline_header_is_rejected_by_POSITION_not_by_shape(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    rows = _ledger_rows(data_root)
+    header = rows[0]
+    groups = [row for row in rows if row.get("kind") == "usage_baseline_group"]
+    assert groups
+    # Control: this exact, unmodified block IS legal at the head of a file.
+    _validate_records([header, *groups])
+    # The SAME rows, changed in nothing but where they sit, are corrupt.
+    displaced = [
+        {"kind": "attempt", "attempt_id": "displacer", "state": "reserved",
+         "seq": 1, "ts": header["ts"]},
+        {**header, "seq": 2},
+        *[{**group, "seq": 3 + offset} for offset, group in enumerate(groups)],
+    ]
+    with pytest.raises(UsageLedgerCorrupt):
+        _validate_records(displaced)
+
+
+def test_baseline_header_counts_must_close(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    rows = _ledger_rows(data_root)
+    header = rows[0]
+    _validate_records(rows)
+    for field, value in (
+        ("compaction_epoch", 0),
+        ("source_first_seq", 2),
+        ("source_last_seq", header["source_last_seq"] + 1),
+        ("folded_row_count", header["folded_row_count"] + 1),
+        ("retained_row_count", header["retained_row_count"] + 1),
+        ("group_count", header["group_count"] + 1),
+        ("folded_attempt_count", header["folded_attempt_count"] + 1),
+        ("source_sha256", "not-a-digest"),
+        ("source_size_bytes", 0),
+    ):
+        with pytest.raises(UsageLedgerCorrupt):
+            _validate_records([{**header, field: value}, *rows[1:]])
+
+
+def test_pre_compaction_seq_is_a_checked_provenance_claim(data_root):
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    rows = _ledger_rows(data_root)
+    carriers = [index for index, row in enumerate(rows) if "pre_compaction_seq" in row]
+    assert len(carriers) >= 2
+    duplicated = [dict(row) for row in rows]
+    duplicated[carriers[1]]["pre_compaction_seq"] = rows[carriers[0]]["pre_compaction_seq"]
+    with pytest.raises(UsageLedgerCorrupt):
+        _validate_records(duplicated)
+    # Claiming a folded epoch on a file that carries no baseline stamp is a
+    # forged provenance; the same rows WITHOUT the claim are ordinary history.
+    orphaned = [
+        dict(row) for row in rows
+        if row.get("kind") not in {"usage_baseline", "usage_baseline_group"}
+    ]
+    for index, row in enumerate(orphaned, start=1):
+        row["seq"] = index
+    with pytest.raises(UsageLedgerCorrupt):
+        _validate_records(orphaned)
+    _validate_records([
+        {key: value for key, value in row.items() if key != "pre_compaction_seq"}
+        for row in orphaned
+    ])
 
 
 def test_group_rows_require_a_leading_header(data_root):
