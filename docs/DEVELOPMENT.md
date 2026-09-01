@@ -2473,7 +2473,7 @@ existing token, not declaring a new one.
   added entry shows no error before the owner tries to save — an attempt
   judges the entries that existed then, never one added afterwards.
   `tests/test_available_subagents_ui_static.py` pins the seam; the
-  `ui_browser` acceptance in `tests/test_ui_smoke_playwright.py` pins the
+  `ui_browser` acceptance in `tests/test_ui_smoke_agents_panel.py` pins the
   behaviour.
 - Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
   `taskTerminalPhase`; `taskPresentation` is the one compact factual projection

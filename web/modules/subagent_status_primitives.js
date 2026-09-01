@@ -169,7 +169,7 @@ export function rowStatus(row, state) {
     };
 }
 
-export const ROUTE_HINT = 'Choose how this subagent runs: an API model or an agent session.';
+const ROUTE_HINT = 'Choose how this subagent runs: an API model or an agent session.';
 
 function executionFor(snapshot, subagentId) {
     const receipt = snapshot?.subagent_last_delegation;

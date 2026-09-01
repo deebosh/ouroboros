@@ -62,7 +62,10 @@ def test_a_fresh_subagent_row_invites_and_only_a_save_attempt_makes_it_red() -> 
     assert "Boolean(row._uiAttempted) && " in editor
     assert "row._uiAttempted && errors.length" in primitives
     assert "Choose how this subagent runs: an API model or an agent session." in primitives
-    assert "noteSubagentsSaveAttempt();" in _read(MODULES / "settings.js")
+    host = _read(MODULES / "settings.js")
+    # Every Save click is an attempt — including one another field's validation
+    # then aborts — so the stamp precedes the cadence check's early return.
+    assert host.index("noteSubagentsSaveAttempt();") < host.index("Every-N cadence needs")
     assert "agentsStep?.noteSaveAttempt?.();" in _read(MODULES / "onboarding_wizard.js")
     # Errors name the card the way its heading does, never a bare "Row N".
     assert "`Subagent ${index + 1} ${text}`" in editor

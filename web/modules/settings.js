@@ -409,12 +409,22 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     let settingsLoaded = false;
     let settingsBaseline = '';
     let settingsDirty = false;
+    // True while the footer status names a roster error from the last Save;
+    // the fix typed into the card clears that message with the card's own tint
+    // and the section line, so no surface keeps reporting a stale draft.
+    let rosterErrorShown = false;
     const providerTestGenerations = new Map();
     const providerTestsInFlight = new Set();
     initMcpSettings({ onChange: updateSettingsDirtyState });
     initReviewerSlots({ onChange: () => updateSettingsDirtyState() });
     initSubagentsSection({
-        onChange: () => updateSettingsDirtyState(),
+        onChange: () => {
+            updateSettingsDirtyState();
+            if (rosterErrorShown && !validateSubagentsDraft().length) {
+                rosterErrorShown = false;
+                setStatus('', 'ok');
+            }
+        },
         isOuterDraftClean: () => !settingsDirty,
         onGeneratedApply: () => {
             if (settingsLoaded && !settingsDirty) setSettingsCleanBaseline();
@@ -1206,6 +1216,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             setStatus('Reload current settings successfully before saving.', 'warn');
             return;
         }
+        // The owner just tried to commit the draft — every Save click is one,
+        // whichever validation aborts it below — so from here the roster shows
+        // its own errors beside the rows they name, not only in this status.
+        noteSubagentsSaveAttempt();
         // Validate Every-N cadence before save: malformed N must NOT silently coerce
         // into a valid (e.g. every-task) cadence. Abort with a visible error instead.
         if (byId('s-post-task-evolution-mode')?.value === 'every_n'
@@ -1213,12 +1227,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             setStatus('Every-N cadence needs a whole number ≥ 1.', 'warn');
             return;
         }
-        // The owner just tried to commit the draft: from here the roster shows
-        // its own errors beside the rows they name, not only in this status.
-        noteSubagentsSaveAttempt();
         const subagentErrors = validateSubagentsDraft();
         if (subagentErrors.length) {
             setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn');
+            rosterErrorShown = true;
             return;
         }
         const body = collectBody();
