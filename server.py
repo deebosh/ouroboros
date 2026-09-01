@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from ouroboros.utils import read_json_dict, utc_now_iso
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
@@ -997,7 +997,9 @@ def _start_supervisor_liveness_watchdog(liveness: list, stop_event=None) -> None
 
 _LAST_CANCEL_INTENT_SWEEP = [0.0]
 _LAST_STORE_GC = [0.0]
+_LAST_REVIEW_CONTINUATION_SWEEP = [0.0]
 _STORE_GC_INTERVAL_SEC = 6 * 3600
+_REVIEW_CONTINUATION_SWEEP_INTERVAL_SEC = 6 * 3600
 
 
 def _periodic_store_gc() -> None:
@@ -1019,6 +1021,26 @@ def _periodic_store_gc() -> None:
             })
     except Exception:
         log.debug("Periodic store GC failed", exc_info=True)
+
+
+def _periodic_stale_continuation_sweep() -> List[str]:
+    """Archive no-result review continuations on the same ~6h cadence as store GC."""
+    if (
+        time.time() - _LAST_REVIEW_CONTINUATION_SWEEP[0]
+        < _REVIEW_CONTINUATION_SWEEP_INTERVAL_SEC
+    ):
+        return []
+    _LAST_REVIEW_CONTINUATION_SWEEP[0] = time.time()
+    try:
+        from ouroboros.task_continuation import sweep_stale_continuations
+
+        retired = sweep_stale_continuations(DATA_DIR)
+        if retired:
+            log.info("Periodic review-continuation sweep retired: %s", retired)
+        return retired
+    except Exception:
+        log.debug("Periodic review-continuation sweep failed", exc_info=True)
+        return []
 
 
 def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconcile: list) -> None:
@@ -1070,6 +1092,7 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
         last_review_reconcile[0] = time.time()
         _periodic_zombie_reconcile()
     _periodic_store_gc()
+    _periodic_stale_continuation_sweep()
 
 
 def _reconcile_delegated_runs(running_task_ids: set) -> None:

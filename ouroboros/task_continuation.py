@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,6 +12,8 @@ from ouroboros.utils import atomic_write_json, replace_atomic, utc_now_iso
 
 _CONTINUATION_DIR_RELPATH = "state/review_continuations"
 _CORRUPT_DIR_NAME = "corrupt"
+
+log = logging.getLogger(__name__)
 
 
 class ContinuationCorruptError(ValueError):
@@ -163,6 +166,7 @@ def retire_settled_continuations(
     is_settled: Any,
     has_open_work: Any = None,
     min_age_days: float = RETIRE_SETTLED_CONTINUATION_AFTER_DAYS,
+    result_missing: Any = None,
 ) -> List[str]:
     """Archive continuations whose owning task SETTLED and that sat un-resumed.
 
@@ -191,6 +195,19 @@ def retire_settled_continuations(
             if item is None or _continuation_age_days(item) < min_age_days:
                 continue
             if not is_settled(task_id):
+                if result_missing is None:
+                    continue
+                if not result_missing(task_id):
+                    continue
+                if _continuation_age_days(item) < (min_age_days * 3):
+                    continue
+                if has_open_work is not None and has_open_work(item):
+                    continue  # unknown result, but recorded obligations may still be open
+                target = archived_continuation_dir(drive_root) / path.name
+                if target.exists():
+                    target = target.with_name(f"{path.stem}.{_safe_ts_token(utc_now_iso())}.json")
+                path.rename(target)
+                retired.append(task_id)
                 continue
             if has_open_work is not None and has_open_work(item):
                 continue  # recorded review work still open: keep the resume pointer
@@ -436,4 +453,51 @@ def retire_settled_continuations_for_context(
         return status.strip().lower() in SETTLED_STATUSES
 
     return retire_settled_continuations(
-        drive_root, is_settled=_is_settled, has_open_work=open_work_matcher(state))
+        drive_root,
+        is_settled=_is_settled,
+        has_open_work=open_work_matcher(state),
+        result_missing=lambda tid: not bool(load_result(tid)),
+    )
+
+
+def sweep_stale_continuations(drive_root: Any) -> List[str]:
+    """Best-effort periodic retirement of abandoned review continuations.
+
+    The review ledger is a safety input, not an optional optimization: if it
+    cannot be read, this sweep is a no-op so an unreadable ledger cannot
+    authorize the destruction of a still-open review pointer. Task result
+    presence is likewise fail-open per record; only an absent result that is
+    already three times older than the normal settle floor is an abandonment.
+    """
+    root = pathlib.Path(drive_root)
+    state_path = root / "state" / "advisory_review.json"
+    if not state_path.is_file():
+        return []
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return []
+        from ouroboros.review_state import load_state
+        from ouroboros.task_results import load_task_result
+        from ouroboros.task_status import SETTLED_STATUSES
+
+        state = load_state(root)
+    except Exception:
+        return []
+
+    def _is_settled(task_id: str) -> bool:
+        result = load_task_result(root, task_id)
+        return str((result or {}).get("status") or "").strip().lower() in SETTLED_STATUSES
+
+    def _result_missing(task_id: str) -> bool:
+        return load_task_result(root, task_id) is None
+
+    retired = retire_settled_continuations(
+        root,
+        is_settled=_is_settled,
+        has_open_work=open_work_matcher(state),
+        result_missing=_result_missing,
+    )
+    if retired:
+        log.info("Stale review-continuation sweep retired: %s", retired)
+    return retired
