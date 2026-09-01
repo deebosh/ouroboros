@@ -654,9 +654,13 @@ def test_warm_segment_cache_revalidates_the_file_it_cached(data_root):
         uc.archived_attempt_ids(data_root)
 
 
+# Everything the forger would carry over from the older genuine stamp — the
+# MUTABLE epoch included, because a rollback that leaves the epoch behind is
+# caught by the chain-step rule alone and proves nothing about this one.
 _SOURCE_PROVENANCE_KEYS = (
     "archive_rel", "source_sha256", "source_size_bytes", "source_row_count",
     "source_first_seq", "source_last_seq", "folded_row_count", "retained_row_count",
+    "compaction_epoch",
 )
 
 
@@ -689,6 +693,52 @@ def test_repointing_the_header_at_an_older_segment_is_corrupt(data_root):
         with pytest.raises(UsageLedgerCorrupt):
             uc.archived_attempt_ids(data_root)
     assert everything  # what the forgeries were trying to make disappear
+
+
+def test_an_orphan_segment_of_the_live_generation_is_not_a_rollback(data_root, monkeypatch):
+    """A pass that lost the snapshot race leaves a segment for an epoch that
+    never committed. It holds THIS generation's bytes, so the archive still
+    anchors the live stamp and the history stays readable."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    known = uc.archived_attempt_ids(data_root)
+    original_write = uc._write_new_file_fsync
+
+    def racing_write(path, payload, root):
+        _append_raw_row(data_root, {
+            "kind": "subscription_session", "attempt_id": "sess-orphaned",
+            "state": "settled", "ts": "2026-09-01T00:00:00+00:00",
+            "cost_usd": 0.25, "cost_final": True, "model": "fable",
+            "provider": "claudexor", "category": "task", "source": "subscription",
+            "task_id": "t", "root_task_id": "root", "parent_task_id": "",
+        })
+        original_write(path, payload, root)
+
+    monkeypatch.setattr(uc, "_write_new_file_fsync", racing_write)
+    _settle(data_root, cost=0.75, cost_final=True, task_id="gen2")
+    assert _compact(data_root) is None  # refused the swap; the segment stays
+    segments = sorted((data_root / "archive" / "usage_ledger").glob("*.jsonl"))
+    assert len(segments) == 2  # one referenced, one orphan of THIS generation
+    uc._SEGMENT_CACHE.clear()
+    uc._CHAIN_UNION_CACHE.clear()
+    assert uc.archived_attempt_ids(data_root) == known
+
+
+def test_pre_compaction_seq_must_name_a_row_the_named_source_held(data_root):
+    """The claim is provenance about an archived range, not a free number."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    rows = _ledger_rows(data_root)
+    header = rows[0]
+    carriers = [index for index, row in enumerate(rows) if "pre_compaction_seq" in row]
+    assert carriers
+    _validate_records([dict(row) for row in rows])  # control: the honest file
+    forged = [dict(row) for row in rows]
+    # Strictly increasing, so only the source range itself refuses it.
+    forged[carriers[-1]]["pre_compaction_seq"] = header["source_last_seq"] + 1
+    with pytest.raises(UsageLedgerCorrupt):
+        _validate_records(forged)
+
 
 
 def test_archive_reference_is_bounded_to_the_archive_directory(data_root):

@@ -196,6 +196,7 @@ BAND_PATHS = {
     "tests/test_timeout_policy.py": "Adaptive timeout and custody regression suite covers raw-deadline admission, explicit finalization reserve, transport bounds, and late-result reconciliation.",
     "tests/test_tool_result.py": "F3.1 typed-organ pins carried with the D02 organ (D04 entry 9): the closed code table, the one legacy-text adapter, the publish/sidecar seam and the meta-boundary contracts pin one organ in one suite; sibling suites (meta_boundaries, t46, classification differential) already hold the spill-over families.",
     "tests/test_usage_accounting.py": None,
+    "tests/test_usage_compaction.py": "Entered the band from 874 lines: the round-3 adversarial pins (lock ownership and heartbeat abort, retry durability of the archive chain, the live-epoch archive anchor, the segment-cache re-hash window, archive symlink bounds) belong beside the monetary-compaction invariants they defend, as one suite.",
     "tests/test_v6730_origin_invariant.py": None,
     "tests/test_v678_receipt_reconciliation.py": None,
     "web/modules/api_types.js": "The shared browser contract module now includes issue 265 publication-preflight types alongside the target settings and subagent contracts.",

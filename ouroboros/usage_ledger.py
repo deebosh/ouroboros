@@ -413,6 +413,10 @@ def _validate_records(
         # ``pre_compaction_seq`` is a provenance claim about an epoch that only
         # a leading header proves happened, and the compactor emits it on the
         # retained rows in one strictly increasing run before any later append.
+        # The claim also has to name a row the archived source ACTUALLY held:
+        # the header declares that range (``source_first_seq``..
+        # ``source_last_seq``), and a retained row claiming an origin outside
+        # it claims to come from bytes nobody archived.
         carried = row.get("pre_compaction_seq")
         if carried is not None:
             if (
@@ -421,6 +425,8 @@ def _validate_records(
                 or isinstance(carried, bool)
                 or not isinstance(carried, int)
                 or carried <= pre_compaction_seq
+                or carried < int(baseline_header.get("source_first_seq") or 0)
+                or carried > int(baseline_header.get("source_last_seq") or 0)
             ):
                 raise UsageLedgerCorrupt(f"invalid pre_compaction_seq in usage row seq={sequence}")
             pre_compaction_seq = carried

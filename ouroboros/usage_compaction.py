@@ -797,6 +797,50 @@ def _load_segment(
     return frozen, prior_header
 
 
+def _no_newer_archived_epoch(
+    root: pathlib.Path, live_header: Dict[str, Any], walked: set
+) -> None:
+    """Refuse a live stamp the archive itself knows to be an older generation.
+
+    The chain walk proves every hop, but it starts wherever the live header
+    points: re-pointing that header at an older GENUINE segment while also
+    lowering the mutable ``compaction_epoch`` yields a chain that is valid and
+    simply short. The generations the forgery orphaned are still on disk, so
+    the archive anchors the live epoch. A segment produced by epoch N embeds
+    the epoch N-1 header (none at all for epoch 1), so a segment's generation
+    is read from its CONTENT, never from its name.
+
+    One generation newer is the legal case, not tampering: a pass that lost
+    the snapshot race, or died before its swap, leaves a segment holding THIS
+    generation's bytes — its embedded leading row IS the live header. A file
+    whose first row cannot be read is no evidence of any generation (a torn
+    segment from a crashed write) and is left to the walk, which verifies
+    every segment the answer actually depends on.
+    """
+    live_epoch = int(live_header.get("compaction_epoch") or 0)
+    try:
+        entries = sorted((root / ARCHIVE_SEGMENT_DIR_REL).iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name in walked:
+            continue
+        try:
+            with open(entry, "rb") as handle:
+                row = json.loads(handle.readline().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        prior = row.get("compaction_epoch") if str(row.get("kind") or "") == "usage_baseline" else 0
+        if isinstance(prior, bool) or not isinstance(prior, int) or prior < 0:
+            continue
+        if prior + 1 > live_epoch and row != live_header:
+            raise UsageLedgerCorrupt(
+                f"usage archive holds a generation newer than the live baseline: {entry.name}"
+            )
+
+
 def _union_segment_ids(segment_ids: list) -> frozenset:
     ids: set = set()
     for chunk in segment_ids:
@@ -813,13 +857,17 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     chain's epochs must step down by one and end at epoch 1 with a segment
     that embeds no header — so re-pointing a live header at an older genuine
     segment (dropping the epochs between) is corruption, not a shorter
-    history. Segments are immutable, so per-segment reads and the union over a
-    given chain are cached. An unreadable, hash-mismatched, mis-stepped, or
-    cyclic chain raises ``UsageLedgerCorrupt`` — the CPL-5 reverse sweep must
-    treat that as its existing UNKNOWN / skip-pass state, never as evidence of
-    an orphan."""
+    history. Because that stamp's own epoch is mutable too, the archive
+    anchors it: no segment on disk may carry a generation newer than the live
+    stamp except an uncommitted orphan of the live generation itself.
+    Segments are immutable, so per-segment reads and the union over a given
+    chain are cached. An unreadable, hash-mismatched, mis-stepped, cyclic or
+    out-anchored chain raises ``UsageLedgerCorrupt`` — the CPL-5 reverse sweep
+    must treat that as its existing UNKNOWN / skip-pass state, never as
+    evidence of an orphan."""
     root = pathlib.Path(_drive_root(root))
-    header = _live_baseline_header(root)
+    live_header = _live_baseline_header(root)
+    header = live_header
     chain: list = []
     segments: list = []
     seen: set = set()
@@ -847,6 +895,10 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
             raise UsageLedgerCorrupt(
                 f"usage archive chain ends before epoch {expected_epoch}"
             )
+    if live_header is not None:
+        _no_newer_archived_epoch(
+            root, live_header, {pathlib.PurePosixPath(rel).name for rel in seen}
+        )
     key = tuple(chain)
     cached = _CHAIN_UNION_CACHE.get(key)
     if cached is not None:
