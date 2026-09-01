@@ -761,7 +761,7 @@ def _run_shell_post_checks(
     makes that LOUD (a typed ``tripwire`` fact plus an appended note) without
     re-introducing the unsound rollback. Disclosed residual: the write itself is
     not reverted; the owner surface is the remedy. Every note TRAILS the payload
-    (#447 В2) so line 1 stays with the command's own outcome."""
+    (#447 В12/H1) so line 1 stays with the command's own outcome."""
     text = result.text if isinstance(result, ToolResult) else result
     typed = result if isinstance(result, ToolResult) else None
 
