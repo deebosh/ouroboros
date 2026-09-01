@@ -275,6 +275,18 @@ def test_future_schema_marker_fails_closed_everywhere(tmp_path, monkeypatch):
         update_tx_phase({"phase": "x"}, {"phase": "y"})
     assert marker.read_bytes() == before
 
+    # Direct rollback entry point: refuses typed BEFORE any marker write or
+    # destructive reset/checkout/clean — the future marker holds a
+    # pre_update_sha, so a permissive read would have interpreted it and reset
+    # the repository by a schema this code does not know.
+    dirty = repo / "uncommitted.txt"
+    dirty.write_text("owner work the rollback must not clean away\n")
+    ok, msg = update_merge.rollback_managed_update("future_marker_probe")
+    assert ok is False and "newer version" in msg
+    assert marker.read_bytes() == before  # byte-identical, never re-phased
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == cur
+    assert dirty.read_text() == "owner work the rollback must not clean away\n"
+
     # A requested restart is deferred rather than riding an unknown tx form.
     from ouroboros.server_restart import _safe_restart_serialized
 

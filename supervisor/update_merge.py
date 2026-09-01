@@ -396,8 +396,19 @@ def rollback_managed_update(
     branch ``failed-update-<target12>`` for inspection and retry, hard-resets the branch
     to pre_update_sha, cleans, clears the update markers, and logs. Boot recovery keeps
     writer admission closed until the restored process restarts. Does NOT push (unlike
-    rollback_to_version, which can push origin — wrong for an internal recovery)."""
-    tx = read_update_tx()
+    rollback_to_version, which can push origin — wrong for an internal recovery).
+
+    Marker admission is STRICT (F14): a FUTURE-schema marker was recorded by a newer
+    release — this code cannot interpret its semantics, so the rollback refuses typed
+    BEFORE any marker write or destructive reset/checkout/clean (the raw marker stays
+    byte-identical, left for the owner); a corrupt marker keeps its raw evidence and
+    refuses on the missing pre_update_sha exactly as before."""
+    status, tx = read_update_tx_strict()
+    if status == "future":
+        return False, (
+            "update tx marker was recorded by a newer version of Ouroboros; "
+            "rollback refuses to interpret it — marker left untouched for the owner"
+        )
     pre = str(tx.get("pre_update_sha") or "")
     branch = str(tx.get("pre_update_branch") or _g.BRANCH_DEV)
     if not pre:
