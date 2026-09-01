@@ -86,7 +86,7 @@ def test_invalid_stamps_are_corrupt_and_newer_stamps_are_future(tmp_path, monkey
     repo, head = _init_repo(tmp_path)
     _point_at(monkeypatch, tmp_path, repo, head)
     marker = update_merge._update_tx_marker_path()
-    for bad_stamp in ("1", True, 0, -3):
+    for bad_stamp in ("1", True, 0, -3, None):
         atomic_write_json(marker, {SCHEMA_VERSION_KEY: bad_stamp, "phase": "x"})
         assert update_merge.read_update_tx_strict()[0] == "corrupt", bad_stamp
     atomic_write_json(
@@ -95,6 +95,37 @@ def test_invalid_stamps_are_corrupt_and_newer_stamps_are_future(tmp_path, monkey
     )
     status, tx = update_merge.read_update_tx_strict()
     assert status == "future" and tx["phase"] == "x"  # raw evidence returned
+
+
+def test_explicit_null_stamp_is_corrupt_and_rollback_refuses_untouched(tmp_path, monkeypatch):
+    """Adversarial fix-round 2, claim 1: an explicit ``_schema_version: null``
+    is a DAMAGED stamp, not the legacy unstamped form (only key ABSENCE is) —
+    it reads ``corrupt`` and the direct rollback entry point refuses typed
+    BEFORE any marker write or destructive reset/checkout/clean."""
+    from ouroboros.utils import atomic_write_json
+
+    repo, head = _init_repo(tmp_path)
+    _point_at(monkeypatch, tmp_path, repo, head)
+    cur = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    marker = update_merge._update_tx_marker_path()
+    atomic_write_json(
+        marker,
+        {
+            SCHEMA_VERSION_KEY: None, "phase": "rolling_back",
+            "pre_update_sha": cur, "pre_update_branch": head,
+        },
+        trailing_newline=True,
+    )
+    before = marker.read_bytes()
+    assert update_merge.read_update_tx_strict() == ("corrupt", {})
+
+    dirty = repo / "uncommitted.txt"
+    dirty.write_text("owner work the rollback must not clean away\n")
+    ok, msg = update_merge.rollback_managed_update("null_stamp_probe")
+    assert ok is False and "pre_update_sha" in msg  # refuses on the empty corrupt tx
+    assert marker.read_bytes() == before  # byte-identical, never re-phased
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == cur
+    assert dirty.read_text() == "owner work the rollback must not clean away\n"
 
 
 # ------------------------------------ N−1 fixtures through the boot finalizer

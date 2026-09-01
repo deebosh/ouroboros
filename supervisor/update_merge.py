@@ -53,6 +53,10 @@ UPDATE_TX_MARKER_NAME = "ouroboros-update-tx.json"
 # the stamp is one additive key its reader ignores.
 UPDATE_TX_SCHEMA_VERSION = 1
 
+# ``dict.get`` sentinel distinguishing a MISSING ``_schema_version`` key (the
+# accepted pre-7.0 unstamped form) from an explicit stored ``null`` (corrupt).
+_SCHEMA_STAMP_ABSENT = object()
+
 
 def managed_update_constitution_present(ref: str = "HEAD") -> bool:
     """Whether *ref* keeps the non-empty regular BIBLE.md blob required by P4."""
@@ -217,12 +221,14 @@ def read_update_tx_strict() -> Tuple[str, Dict[str, Any]]:
     ``"future"``. A marker that exists but is unreadable/invalid is ``corrupt`` — callers
     MUST fail closed (block mutative update/commit ops) rather than treat it as ``absent``.
 
-    Schema admission (F14 N−1 shim): an UNSTAMPED marker is the accepted pre-7.0
-    form and reads ``valid`` — the boot finalizer must drive a transaction the
-    N−1 updater recorded. An integer stamp above ``UPDATE_TX_SCHEMA_VERSION`` is
-    ``future`` (recorded by a newer release; the raw tx is returned as evidence
-    but no caller may interpret or overwrite it); a non-integer stamp is
-    ``corrupt``."""
+    Schema admission (F14 N−1 shim): an UNSTAMPED marker — the key ABSENT —
+    is the accepted pre-7.0 form and reads ``valid``: the boot finalizer must
+    drive a transaction the N−1 updater recorded. An integer stamp above
+    ``UPDATE_TX_SCHEMA_VERSION`` is ``future`` (recorded by a newer release;
+    the raw tx is returned as evidence but no caller may interpret or
+    overwrite it); ANY present non-integer stamp — an explicit ``null``
+    included — is ``corrupt`` (no writer ever stamps ``null``, so it is a
+    damaged stamp, not the legacy unstamped form)."""
     import json
 
     path = _update_tx_marker_path()
@@ -236,8 +242,8 @@ def read_update_tx_strict() -> Tuple[str, Dict[str, Any]]:
         return "corrupt", {}
     from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
 
-    stamp = raw.get(SCHEMA_VERSION_KEY)
-    if stamp is not None:
+    stamp = raw.get(SCHEMA_VERSION_KEY, _SCHEMA_STAMP_ABSENT)
+    if stamp is not _SCHEMA_STAMP_ABSENT:
         if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 1:
             return "corrupt", {}
         if stamp > UPDATE_TX_SCHEMA_VERSION:
