@@ -84,6 +84,7 @@ def _current_scope_context_manifest() -> dict:
 _CANONICAL_CONTEXT_DOCS = (
     "BIBLE.md",
     "docs/DEVELOPMENT.md",
+    "docs/DESIGN.md",
     "docs/ARCHITECTURE.md",
     "docs/CHECKLISTS.md",
 )

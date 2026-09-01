@@ -58,6 +58,18 @@ class DeliveryCandidate:
     model_text: str = ""
 
 
+# Action-gate holds: a gate closable ONLY by a tool call (skill lifecycle
+# action, child-result disposition) retains the candidate WITHOUT arming the
+# JSON-only control instruction — the instruction would conflict with the
+# required tool call. Gates closable by a reconsidered answer arm normally.
+_SKILL_ACTION_HOLD_CONTROL = "skill_action_or_revision_required"
+_CHILD_ABSORPTION_HOLD_CONTROL = "child_absorption_or_revision_required"
+_DELIVERY_HOLD_CONTROLS = frozenset({
+    _SKILL_ACTION_HOLD_CONTROL,
+    _CHILD_ABSORPTION_HOLD_CONTROL,
+})
+
+
 def _swarm_handoff_attempt(ctx: Any) -> Dict[str, Any]:
     attempt = getattr(ctx, "_swarm_handoff_attempt", None)
     return dict(attempt) if isinstance(attempt, dict) else {}
@@ -511,13 +523,19 @@ def _arm_delivery_control(
 def _hold_delivery_for_skill_action(
     tools: ToolRegistry,
     llm_trace: Dict[str, Any],
+    *,
+    control: str = _SKILL_ACTION_HOLD_CONTROL,
 ) -> None:
-    """Retain the answer while an unresolved skill lifecycle gate requires action."""
+    """Retain the answer while an unresolved action gate requires a tool call.
+
+    ``control`` names the open gate; it must stay within
+    ``_DELIVERY_HOLD_CONTROLS`` so both hold readers recognize the state.
+    """
 
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if not isinstance(candidate, _loop().DeliveryCandidate):
         return
-    candidate.finalization_control = "skill_action_or_revision_required"
+    candidate.finalization_control = control
     candidate.repair_attempted = False
     tools._ctx._delivery_control_required = False
     _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
@@ -547,11 +565,49 @@ def _parse_delivery_control_object(
 
     try:
         payload = json.loads(raw, object_pairs_hook=_unique_object)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError, json.JSONDecodeError, RecursionError):
+        # RecursionError: a degenerate deeply-nested blob (repetition-loop
+        # model output) must classify as not-a-control, not crash the round.
         return None, duplicate_protocol_key
     if not isinstance(payload, dict):
         return None, False
     return payload, False
+
+
+def _parse_delivery_control_body(
+    raw: str,
+) -> Tuple[Optional[Dict[str, Any]], bool, bool]:
+    """Normalize a response body and locate its delivery-control object.
+
+    Returns ``(parsed, duplicate_protocol_key, embedded)``. Normalization
+    strips one whole-body markdown fence (shared with
+    ``observability._is_delivery_control_payload``). ``embedded`` is True only
+    when the protocol object sits as a balanced trailing JSON object carrying
+    the ``delivery_control`` key at the very END of surrounding prose — a
+    protocol attempt mixed with text, never a valid control. A control object
+    quoted MID-prose is NOT matched and stays prose (disclosed residual)."""
+    from ouroboros.observability import strip_protocol_fence
+
+    body = strip_protocol_fence(raw)
+    parsed, duplicate_protocol_key = _parse_delivery_control_object(body)
+    if duplicate_protocol_key or isinstance(parsed, dict):
+        return parsed, duplicate_protocol_key, False
+    # Trailing scan: ONE O(n) string-aware pass over the body (fenced and
+    # double-fenced tails peeled, duplicate keys flagged, RecursionError
+    # degraded, bounded line-anchor retries after an unbalanced prose brace
+    # or quote). The extractor is key-agnostic; the protocol judgment stays
+    # HERE: only a trailing object carrying `delivery_control` at its top
+    # level (or a duplicated protocol key) is an embedded protocol attempt.
+    from ouroboros.utils import extract_trailing_json_object
+
+    _prefix, tail_parsed, tail_duplicate = extract_trailing_json_object(
+        body, duplicate_flag_keys=("delivery_control", "full_answer"),
+    )
+    if tail_duplicate:
+        return None, True, True
+    if isinstance(tail_parsed, dict) and "delivery_control" in tail_parsed:
+        return tail_parsed, False, True
+    return None, False, False
 
 
 def _resolve_delivery_control(
@@ -567,10 +623,10 @@ def _resolve_delivery_control(
     if not isinstance(candidate, _loop().DeliveryCandidate):
         return "fresh", _loop()._extract_plain_text_from_content(content)
     raw = _loop()._extract_plain_text_from_content(content).strip()
-    parsed, duplicate_protocol_key = _loop()._parse_delivery_control_object(raw)
-    # ANY parsed object carrying the protocol key is control intent,
-    # regardless of verb/value — an unknown verb is a mangled protocol
-    # attempt, never prose (raw JSON leaked to chat); validity judged below.
+    parsed, duplicate_protocol_key, embedded_protocol = _parse_delivery_control_body(raw)
+    # ANY parsed object carrying the protocol key is control intent, whatever
+    # the verb or placement — a mangled protocol attempt is never prose (raw
+    # JSON leaked to chat); validity judged below.
     is_control_intent = duplicate_protocol_key or (
         isinstance(parsed, dict) and "delivery_control" in parsed
     )
@@ -581,12 +637,12 @@ def _resolve_delivery_control(
             # required latch. The candidate's typed control state is authoritative.
             required = True
             tools._ctx._delivery_control_required = True
-        elif candidate.finalization_control == "skill_action_or_revision_required":
-            # Preserve the historical bounded skill gate: an actual tool
-            # action or a reconsidered full prose answer may proceed, but a
-            # typed keep cannot acknowledge the gate. No delivery JSON prompt
-            # before the action — it would conflict with the instruction to
-            # call the skill lifecycle tool.
+        elif candidate.finalization_control in _DELIVERY_HOLD_CONTROLS:
+            # Bounded action gates (skill lifecycle, child absorption): a tool
+            # action or a reconsidered full prose answer may proceed; a typed
+            # keep cannot acknowledge the gate and no JSON prompt rides the
+            # action round. A typed control attempt escalates to the ONE
+            # replace-required literal for BOTH holds (plan-rejected widening).
             if not is_control_intent:
                 return "fresh", _loop()._extract_plain_text_from_content(content)
             candidate.finalization_control = "skill_revision_required"
@@ -608,7 +664,12 @@ def _resolve_delivery_control(
     selected = str(parsed.get("delivery_control") or "") if isinstance(parsed, dict) else ""
     valid = False
     replacement = ""
-    if selected == "keep" and set(parsed) == {"delivery_control"}:
+    if embedded_protocol:
+        # A trailing prose-embedded object is a protocol ATTEMPT, never a
+        # valid control: honoring it would leak the raw object or drop the
+        # prose half (the default error states the exact-object rule).
+        pass
+    elif selected == "keep" and set(parsed) == {"delivery_control"}:
         valid = _delivery_keep_allowed(
             candidate, evidence_revision, evidence_fingerprint,
         )
@@ -731,7 +792,11 @@ def _no_tool_final_answer(
         tools, limit_ctx, content, messages, emit_progress, llm_trace,
     )
     if absorption_result == "continue":
-        _loop()._arm_delivery_control(tools, limit_ctx, llm_trace)
+        # Child absorption is closable only by disposition tool calls: hold —
+        # arming the JSON-only instruction would contradict the reminder.
+        _hold_delivery_for_skill_action(
+            tools, llm_trace, control=_CHILD_ABSORPTION_HOLD_CONTROL,
+        )
         return None
     if absorption_result is not None:
         return absorption_result

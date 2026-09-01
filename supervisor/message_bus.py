@@ -5,16 +5,21 @@ from __future__ import annotations
 import base64
 import logging
 import queue
-import re
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from ouroboros.artifacts import store_chat_media_bytes
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
-from ouroboros.event_bus import CHAT_DOCUMENT, CHAT_OUTBOUND, CHAT_PHOTO, CHAT_TYPING, CHAT_VIDEO, publish_event
+from ouroboros.event_bus import CHAT_DOCUMENT, CHAT_LINKS, CHAT_OUTBOUND, CHAT_PHOTO, CHAT_QUIZ, CHAT_TYPING, CHAT_VIDEO, publish_event
 from supervisor.state import append_jsonl, load_state
 from ouroboros.projects_registry import stamp_project_thread
+from ouroboros.tools.core import (
+    LinkActionsValidationError,
+    QuizValidationError,
+    validate_link_actions,
+    validate_quiz_payload,
+)
 from ouroboros.utils import utc_now_iso
 from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS
 
@@ -339,13 +344,17 @@ class LocalChatBridge:
         skill event — so it can never be rendered as Ouroboros's own speech
         (Q4 non-mimicry). Absent = the historical assistant framing.
         """
-        clean_text = _strip_markdown(text) if not parse_mode else text
+        # Text rides VERBATIM end to end: the live frame carries the same
+        # bytes as the durable chat.jsonl row, and plain-vs-rich presentation
+        # is the client's decision via the ``markdown`` flag (system rows
+        # without it render escaped). The old best-effort strip here predated
+        # that client contract and only made live diverge from history replay.
         message_ts = ts or utc_now_iso()
         transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
         meta = dict(progress_meta or {})
         msg = {
             "type": "text",
-            "content": clean_text,
+            "content": text,
             "markdown": bool(parse_mode),
             "is_progress": bool(is_progress),
             "ts": message_ts,
@@ -358,14 +367,14 @@ class LocalChatBridge:
                     if cid == chat_id and not is_progress]
         for sid, cb in subs:
             try:
-                cb(clean_text)
+                cb(text)
             except Exception:
                 log.debug("A2A response callback error for sub %s", sid, exc_info=True)
         if self._broadcast_fn and not is_a2a_chat_id(chat_id):
             payload = {
                 "type": "chat",
                 "role": str(role or "") or "assistant",
-                "content": clean_text,
+                "content": text,
                 "markdown": bool(parse_mode),
                 "is_progress": bool(is_progress),
                 "ts": message_ts,
@@ -384,7 +393,7 @@ class LocalChatBridge:
         if not is_a2a_chat_id(chat_id):
             event = {
                 "chat_id": int(chat_id or 0),
-                "text": clean_text,
+                "text": text,
                 "markdown": bool(parse_mode),
                 "is_progress": bool(is_progress),
                 "ts": message_ts,
@@ -411,6 +420,7 @@ class LocalChatBridge:
         status: str = "accepted",
         options: Optional[List[Dict[str, Any]]] = None,
         attachment_manifest: Optional[List[Dict[str, Any]]] = None,
+        routing_token: str = "",
     ) -> None:
         """Emit a typed routing receipt without creating an assistant bubble.
 
@@ -432,6 +442,10 @@ class LocalChatBridge:
         }
         if str(target_label or ""):
             payload["target_label"] = str(target_label)
+        if str(routing_token or ""):
+            # #198: the picker card's click identity; presentation-only frames
+            # without it stay text lines.
+            payload["routing_token"] = str(routing_token)
         if options is not None:
             payload["options"] = [dict(row) for row in options if isinstance(row, dict)]
         if attachment_manifest is not None:
@@ -446,6 +460,32 @@ class LocalChatBridge:
                 "text": "",
                 "transport": dict(self._chat_transports.get(int(chat_id or 0), {}) or {}),
             })
+        if (
+            str(status or "") == "needs_manual_target"
+            and isinstance(options, list) and options
+            and not is_a2a_chat_id(chat_id)
+        ):
+            # Owner decision 4=A (#198): the routing LLM must later ground a
+            # plain "2" reply against EXACTLY the list the owner was shown, so
+            # the rendered numbered list becomes a durable outbound history row
+            # (type="routing_options"; web history skips it — the picker card
+            # is its richer rendering there; Telegram renders its own copy).
+            from ouroboros.project_dialogue import routing_option_label
+
+            labels = [routing_option_label(row) for row in options]
+            labels = [label for label in labels if label]
+            if labels:
+                # Mirror the push-transport rendering exactly (top 8 + tail):
+                # a numbered Telegram reply grounds against THESE numbers.
+                shown = labels[:8]
+                lines = ["I couldn't pick a destination for the last message. Options:"]
+                lines.extend(f"{index}. {label}" for index, label in enumerate(shown, 1))
+                if len(labels) > len(shown):
+                    lines.append(f"…and {len(labels) - len(shown)} more in the web chat.")
+                log_chat(
+                    "out", int(chat_id or 0), 0, "\n".join(lines),
+                    source="routing_picker", record_type="routing_options",
+                )
 
     def send_chat_action(
         self,
@@ -516,6 +556,7 @@ class LocalChatBridge:
             "caption": caption,
             "ts": utc_now_iso(),
             "chat_id": int(chat_id or 0),
+            "task_id": str(task_id or ""),
         }
         stamp_project_thread(DATA_DIR, msg)
         if self._broadcast_fn:
@@ -569,6 +610,7 @@ class LocalChatBridge:
             "caption": caption,
             "ts": utc_now_iso(),
             "chat_id": int(chat_id or 0),
+            "task_id": str(task_id or ""),
         }
         stamp_project_thread(DATA_DIR, msg)
         if self._broadcast_fn:
@@ -625,8 +667,10 @@ class LocalChatBridge:
             "filename": safe_name,
             "caption": caption,
             "download_url": str(download_url or ""),
+            "size_bytes": len(file_bytes),
             "ts": ts,
             "chat_id": int(chat_id or 0),
+            "task_id": str(task_id or ""),
         }
         stamp_project_thread(DATA_DIR, msg)
         if self._broadcast_fn:
@@ -660,9 +704,166 @@ class LocalChatBridge:
             mime=str(mime or ""),
             download_url=str(download_url or ""),
             caption=str(caption or ""),
+            size_bytes=len(file_bytes),
         )
         _advance_project_visible_revision(chat_id)
         return True, "ok"
+
+    def send_links(
+        self,
+        chat_id: int,
+        actions: List[Dict[str, str]],
+        title: str = "",
+        task_id: str = "",
+    ) -> Tuple[bool, str]:
+        """Send validated HTTP(S) actions to UI and host event subscribers."""
+        safe_title = str(title or "")[:240]
+        if is_a2a_chat_id(chat_id):
+            return True, "ok"
+        try:
+            validated = validate_link_actions(actions)
+        except LinkActionsValidationError as exc:
+            return False, str(exc)
+        ts = utc_now_iso()
+        msg = {
+            "type": "links",
+            "role": "assistant",
+            "title": safe_title,
+            "actions": validated,
+            "ts": ts,
+            "chat_id": int(chat_id or 0),
+            "task_id": str(task_id or ""),
+        }
+        stamp_project_thread(DATA_DIR, msg)
+        if self._broadcast_fn:
+            self._broadcast_fn(msg)
+        links_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
+        publish_event(CHAT_LINKS, {
+            "chat_id": int(chat_id or 0),
+            "transport": links_transport,
+            "title": safe_title,
+            "actions": validated,
+            "ts": ts,
+        })
+        try:
+            owner_id = int(load_state().get("owner_id") or 0)
+        except Exception:
+            owner_id = 0
+        log_chat(
+            "out", int(chat_id or 0), owner_id, safe_title, ts=ts,
+            task_id=str(task_id or ""), record_type="links",
+            actions=validated, title=safe_title,
+        )
+        _advance_project_visible_revision(chat_id)
+        return True, "ok"
+
+    def send_quiz(
+        self,
+        chat_id: int,
+        quiz_id: str,
+        question: str,
+        options: List[Dict[str, str]],
+        stake: str = "",
+        assumption: str = "",
+        state: str = "open",
+        task_id: str = "",
+    ) -> Tuple[bool, str]:
+        """Send an owner quiz card to the UI and host event subscribers."""
+        if is_a2a_chat_id(chat_id):
+            return True, "ok"
+        qid = str(quiz_id or "").strip()
+        if not qid:
+            return False, "quiz_id is required"
+        if not str(task_id or "").strip():
+            # The card's answer path is task-addressed (decision_id
+            # "quiz:{task_id}:{quiz_id}"): an anonymous quiz would render
+            # buttons that cannot deliver anywhere.
+            return False, "task_id is required"
+        try:
+            payload = validate_quiz_payload(question, options, stake, assumption)
+        except QuizValidationError as exc:
+            return False, str(exc)
+        ts = utc_now_iso()
+        msg = {
+            "type": "quiz",
+            "role": "assistant",
+            "quiz_id": qid,
+            "question": payload["question"],
+            "options": payload["options"],
+            "stake": payload["stake"],
+            "assumption": payload["assumption"],
+            "state": str(state or "open"),
+            "ts": ts,
+            "chat_id": int(chat_id or 0),
+            "task_id": str(task_id or ""),
+        }
+        stamp_project_thread(DATA_DIR, msg)
+        if self._broadcast_fn:
+            self._broadcast_fn(msg)
+        quiz_transport = dict(self._chat_transports.get(int(chat_id or 0), {}) or {})
+        publish_event(CHAT_QUIZ, {
+            "chat_id": int(chat_id or 0),
+            "transport": quiz_transport,
+            "quiz_id": qid,
+            "task_id": str(task_id or ""),
+            "question": payload["question"],
+            "options": payload["options"],
+            "stake": payload["stake"],
+            "assumption": payload["assumption"],
+            "state": str(state or "open"),
+            "ts": ts,
+        })
+        try:
+            owner_id = int(load_state().get("owner_id") or 0)
+        except Exception:
+            owner_id = 0
+        log_chat(
+            "out", int(chat_id or 0), owner_id, payload["question"], ts=ts,
+            task_id=str(task_id or ""), record_type="quiz",
+            quiz={
+                "quiz_id": qid,
+                "options": payload["options"],
+                "stake": payload["stake"],
+                "assumption": payload["assumption"],
+                "state": str(state or "open"),
+            },
+        )
+        _advance_project_visible_revision(chat_id)
+        return True, "ok"
+
+    def send_quiz_state(
+        self,
+        quiz_id: str,
+        task_id: str,
+        state: str,
+        answered_index: Optional[int] = None,
+        chat_id: int = 0,
+    ) -> None:
+        """Broadcast a quiz lifecycle update to already-rendered cards.
+
+        A SEPARATE WS discriminator ("quiz_state", contracts mirror): the
+        display path dedupes "quiz" frames by quiz_id+ts, so a state change
+        must never masquerade as a new card. Durability lives in the
+        owner_quiz task-result projection (history replay merges it) — this
+        frame is the live half only, so a lost broadcast heals on reload.
+        """
+        if not self._broadcast_fn:
+            return
+        msg: Dict[str, Any] = {
+            "type": "quiz_state",
+            "quiz_id": str(quiz_id or ""),
+            "task_id": str(task_id or ""),
+            "state": str(state or ""),
+            "ts": utc_now_iso(),
+        }
+        if answered_index is not None:
+            msg["answered_index"] = int(answered_index)
+        if int(chat_id or 0):
+            msg["chat_id"] = int(chat_id or 0)
+        try:
+            self._broadcast_fn(msg)
+        except Exception:
+            log.debug("quiz_state broadcast failed", exc_info=True)
 
     def push_log(self, event: dict):
         """Stream append_jsonl events to UI."""
@@ -733,23 +934,6 @@ class LocalChatBridge:
             task_metadata=task_metadata,
         )
 
-
-
-def _strip_markdown(text: str) -> str:
-    """Best-effort markdown-to-plain-text fallback."""
-    text = re.sub(r"```[^\n]*\n([\s\S]*?)```", r"\1", text)
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    text = re.sub(r"\*\*\*(.+?)\*\*\*", r"\1", text)
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-    text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", text)
-    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
-    text = re.sub(r"~~(.+?)~~", r"\1", text)
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"^[\*\-]\s+", "• ", text, flags=re.MULTILINE)
-    text = text.replace("**", "").replace("__", "").replace("~~", "")
-    text = text.replace("`", "")
-    return text
 
 
 def _send_markdown(
@@ -876,6 +1060,10 @@ def log_chat(
     mime: str = "",
     download_url: str = "",
     caption: str = "",
+    actions: Optional[List[Dict[str, str]]] = None,
+    title: str = "",
+    quiz: Optional[Dict[str, Any]] = None,
+    size_bytes: Optional[int] = None,
     client_surface: Optional[Dict[str, Any]] = None,
     message_meta: Optional[Dict[str, Any]] = None,
 ) -> None:
@@ -926,6 +1114,15 @@ def log_chat(
             record["download_url"] = download_url
         if caption:
             record["caption"] = caption
+        if actions:
+            record["actions"] = [dict(action) for action in actions]
+            record["title"] = str(title or "")
+        if quiz:
+            # Quiz rows persist the full card (no base64 anywhere) so history
+            # replay rebuilds it with its lifecycle state.
+            record["quiz"] = dict(quiz)
+        if size_bytes is not None:
+            record["size_bytes"] = int(size_bytes)
         append_jsonl(DATA_DIR / "logs" / "chat.jsonl", record)
 
 

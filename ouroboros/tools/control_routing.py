@@ -419,6 +419,7 @@ def _list_projects(ctx: ToolContext, limit: int = 50) -> str:
 def _route_to_project(
     ctx: ToolContext, project_id: str = "", message: str = "", reason: str = "",
     predecessor_task_id: Any = _MISSING_PREDECESSOR_SELECTOR,
+    candidates: Any = None,
 ) -> str:
     """Route a main-chat message to an EXISTING project so the work continues in
     that project's context (its memory/journal/thread), keeping the main chat free.
@@ -474,6 +475,23 @@ def _route_to_project(
             dict(row) for row in list(routing_contract.get("manual_options") or [])[:100]
             if isinstance(row, dict)
         ]
+        # Owner decision 2=B: the model may NARROW the picker by naming its
+        # plausible candidates — a host-validated reorder, never new options.
+        # Named ids that match host options move to the front; unknown ids are
+        # ignored (host truth wins), and every host option stays clickable.
+        candidate_ids = list(dict.fromkeys(
+            str(row).strip() for row in (candidates if isinstance(candidates, list) else [])
+            if str(row).strip()
+        ))
+        if candidate_ids:
+            def _option_id(row: Dict[str, Any]) -> str:
+                return str(row.get("task_id") or row.get("project_id") or "")
+
+            ranked = [
+                row for cid in candidate_ids for row in options if _option_id(row) == cid
+            ]
+            ranked_ids = {id(row) for row in ranked}
+            options = ranked + [row for row in options if id(row) not in ranked_ids]
         failure = (
             "target_unspecified" if not requested_pid
             else "invalid_project_id" if not pid
@@ -488,6 +506,12 @@ def _route_to_project(
             "requested_target": pid or requested_pid[:200],
             "reason": str(reason or "").strip() or failure,
             "options": options,
+            # The picker click dispatches AFTER this turn's metadata is gone,
+            # so the refusal annotation is the durable carrier of the original
+            # message's staged-attachment specs (#198).
+            "attachment_uploads": list(
+                ((getattr(ctx, "task_metadata", {}) or {}).get("chat_attachment_uploads") or [])
+            ),
             "ts": utc_now_iso(),
         }
         manual_event.update(predecessor_event)

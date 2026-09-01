@@ -114,14 +114,28 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
         i for i, line in enumerate(src)
         if "_set_acceptance_decision(" in line and not line.lstrip().startswith("def ")
     ]
-    # 17th writer: the forced-rail acceptance-bypass recorder (typed, closed-enum
-    # reason). 18th: the forced children_unabsorbed rail terminalizing a requested
-    # improvement pass it cannot grant (owner Q2A, revision_unavailable_on_forced_rail).
-    assert len(starts) == 18, f"writer inventory changed: {len(starts)} call sites"
+    # 19th writer (F6 upstream sync): the A-material identical-acceptance
+    # refusal joins the forced-rail bypass recorder and the forced
+    # children_unabsorbed terminalizer.
+    assert len(starts) == 19, f"writer inventory changed: {len(starts)} call sites"
     allowed_status = {
         "ACCEPTANCE_ACCEPTED", "ACCEPTANCE_REVISION_REQUESTED",
         "ACCEPTANCE_FINALIZED_UNACCEPTED",
     }
+    # The reason may be a literal OR an expression (a constant, or a conditional
+    # picking between a constant and a literal). Both forms are checked: bare
+    # literals against the closed set, and REASON_*/ACCEPTANCE_* names resolved
+    # through the modules that define them.
+    import ouroboros.loop_acceptance as _accept_mod
+    import ouroboros.loop_acceptance_review as _accept_review_mod
+    from ouroboros import outcomes as _outcomes_mod
+    reason_names = {}
+    for module in (_accept_mod, _accept_review_mod, _outcomes_mod):
+        reason_names.update({
+            name: value for name, value in vars(module).items()
+            if name.startswith(("REASON_", "ACCEPTANCE_REASON_")) and isinstance(value, str)
+        })
+    seen_expression_reasons = 0
     for start in starts:
         block = "\n".join(src[start:start + 30])
         status = re.findall(r'"status": ([A-Z_]+)', block)
@@ -129,6 +143,15 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
         assert '"reason"' in block, f"line {start + 1} has no typed reason"
         for reason in re.findall(r'"reason": "([a-z_]+)"', block):
             assert reason in ACCEPTANCE_DECISION_REASONS, reason
+        for name in re.findall(r'\b(REASON_[A-Z_]+|ACCEPTANCE_REASON_[A-Z_]+)\b', block):
+            if name not in reason_names:
+                continue
+            seen_expression_reasons += 1
+            assert reason_names[name] in ACCEPTANCE_DECISION_REASONS, name
+    # The widened regex really does catch expression-valued reasons: the two
+    # `pass_reason if ... == REASON_REVIEW_CYCLES_EXHAUSTED` branches and the
+    # A-material `REASON_IDENTICAL_ACCEPTANCE_REFUSED` writer.
+    assert seen_expression_reasons >= 3, seen_expression_reasons
 
 def test_task_acceptance_review_tool_result_lifts_agent_decision_into_trace():
     from ouroboros.loop_tool_execution import process_tool_results

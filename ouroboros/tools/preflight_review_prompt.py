@@ -166,6 +166,7 @@ def _build_advisory_prompt(
         bible = _car()._mandatory_read_pointer(repo_dir, "BIBLE.md")
         checklists = _car()._mandatory_read_pointer(repo_dir, "docs/CHECKLISTS.md", section=checklist_name)
         dev_guide = _car()._mandatory_read_pointer(repo_dir, "docs/DEVELOPMENT.md")
+        design_doc = _car()._mandatory_read_pointer(repo_dir, "docs/DESIGN.md")
         arch_doc = _car()._mandatory_read_pointer(repo_dir, "docs/ARCHITECTURE.md")
     else:
         bible = _car().load_governance_doc(repo_dir, "BIBLE.md", on_missing="placeholder", fallback="(BIBLE.md not found)")
@@ -174,6 +175,7 @@ def _build_advisory_prompt(
         except Exception:
             checklists = _car().load_governance_doc(repo_dir, "docs/CHECKLISTS.md", on_missing="placeholder", fallback="(CHECKLISTS.md not found)")
         dev_guide = _car().load_governance_doc(repo_dir, "docs/DEVELOPMENT.md", on_missing="placeholder", fallback="(DEVELOPMENT.md not found)")
+        design_doc = _car().load_governance_doc(repo_dir, "docs/DESIGN.md", on_missing="placeholder", fallback="(DESIGN.md not found)")
         arch_doc = _car().load_governance_doc(repo_dir, "docs/ARCHITECTURE.md", on_missing="placeholder", fallback="(ARCHITECTURE.md not found)")
     if diff is None:
         diff = _car()._get_staged_diff(repo_dir, paths=resolved_paths)
@@ -279,6 +281,7 @@ def _build_advisory_prompt(
         f"## CHECKLISTS.md (What to review)\n\n{checklists}\n\n"
         f"{scope_section}\n\n{goal_section}\n\n"
         f"## DEVELOPMENT.md (Engineering standards)\n\n{dev_guide}\n\n"
+        f"## DESIGN.md (UI design system)\n\n{design_doc}\n\n"
         f"## BIBLE.md (Constitutional context — top priority)\n\n{bible}\n\n"
         "## ARCHITECTURE.md (System structure — critical for version sync and module checks)\n\n"
         f"{arch_doc}\n\n{skill_host_context}\n\n{blocking_history}\n\n"

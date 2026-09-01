@@ -316,6 +316,19 @@ def _undispositioned_children(ctx: _RoundLimitContext) -> list[Dict[str, Any]]:
         return []
 
 
+def _undecided_children_listing(undecided: list[Dict[str, Any]]) -> str:
+    """Bounded ``id [status] sha256`` listing shared by the absorption
+    reminder and the forced-finalization prompt."""
+
+    from ouroboros.tools.join_ledger import _child_result_sha256
+
+    return "; ".join(
+        f"{c.get('task_id') or c.get('id') or '?'} [{c.get('status') or 'unknown'}] "
+        f"sha256={_child_result_sha256(c)}"
+        for c in undecided[:10]
+    )
+
+
 def _maybe_enforce_child_absorption_gate(
     tools: ToolRegistry,
     limit_ctx: _RoundLimitContext,
@@ -331,13 +344,7 @@ def _maybe_enforce_child_absorption_gate(
         tools._ctx._child_absorption_reminded = True
         if content and str(content).strip():
             messages.append({"role": "assistant", "content": content})
-        from ouroboros.tools.join_ledger import _child_result_sha256
-
-        listed = "; ".join(
-            f"{c.get('task_id') or c.get('id') or '?'} [{c.get('status') or 'unknown'}] "
-            f"sha256={_child_result_sha256(c)}"
-            for c in undecided[:10]
-        )
+        listed = _undecided_children_listing(undecided)
         reminder = (
             "[CHILD_ABSORPTION_REQUIRED]\n"
             "You have child result(s) without a current exact-hash disposition: "
@@ -354,20 +361,24 @@ def _maybe_enforce_child_absorption_gate(
         emit_progress("Child absorption reminder injected before final response.")
         llm_trace["reasoning_notes"].append("Child absorption reminder injected before final response.")
         return "continue"
+    # Fresh snapshot for the forced prompt: child statuses may have flipped
+    # since the reminder round; the model must state CURRENT statuses.
+    undecided = _undispositioned_children(limit_ctx)
     text, usage, forced_trace = _loop()._forced_final_answer(
         limit_ctx,
         prompt=(
             "[FINALIZE_WITH_UNABSORBED_CHILDREN]\n"
             "You still have child results without exact dispositions and already received one "
             "child-absorption reminder. Produce an honest best-effort final answer now; name the "
-            "unabsorbed or unfinished children explicitly."
+            "unabsorbed or unfinished children explicitly. Current child state: "
+            f"{_undecided_children_listing(undecided)}."
         ),
         fallback_text="⚠️ Finalized best-effort with undispositioned child results.",
         reason_code="children_unabsorbed",
     )
     _loop()._merge_finalization_trace(llm_trace, forced_trace)
     _run_forced_children_acceptance(
-        tools, limit_ctx, undecided, text, messages, emit_progress, llm_trace,
+        tools, limit_ctx, text, messages, emit_progress, llm_trace,
     )
     return text, usage, llm_trace
 
@@ -375,7 +386,6 @@ def _maybe_enforce_child_absorption_gate(
 def _run_forced_children_acceptance(
     tools: ToolRegistry,
     limit_ctx: _RoundLimitContext,
-    undecided: list[Dict[str, Any]],
     text: str,
     messages: List[Dict[str, Any]],
     emit_progress: Callable[[str], None],
@@ -397,6 +407,9 @@ def _run_forced_children_acceptance(
     try:
         from ouroboros.tools.join_ledger import _child_result_sha256
 
+        # Fresh debt adjacent to the panel's own fresh subtree read: a child
+        # may settle across the forced call — one packet, one moment.
+        undecided = _undispositioned_children(limit_ctx)
         debt = [
             {
                 "task_id": str(c.get("task_id") or c.get("id") or ""),
@@ -860,27 +873,31 @@ def _resolve_forced_delivery_control(
     if not armed:
         return extracted, ""
     tools_ctx._delivery_control_required = False
-    parsed, duplicate_protocol_key = _loop()._parse_delivery_control_object(extracted)
+    from ouroboros.observability import strip_protocol_fence
+
+    parsed, duplicate_protocol_key, embedded_protocol = _loop()._parse_delivery_control_body(extracted)
     # Protocol intent: any parsed object with the protocol key (unknown verb =
-    # broken control, never prose), or JSON-looking text that fails to parse (a
-    # mangled protocol attempt under the armed latch — the candidate is the answer).
+    # broken control; a trailing prose-embedded object counts), or JSON-looking
+    # text after the shared fence-strip that fails to parse under the latch.
     protocol_intent = duplicate_protocol_key or (
         ("delivery_control" in parsed)
         if isinstance(parsed, dict)
-        else extracted.lstrip().startswith("{")
+        else strip_protocol_fence(extracted).startswith("{")
     )
     if not protocol_intent:
-        # An ordinary prose answer under an armed latch: the fresh text stands.
+        # Ordinary prose under an armed latch stands (a control object quoted
+        # MID-prose is the disclosed residual).
         return extracted, ""
-    selected = str(parsed.get("delivery_control") or "") if isinstance(parsed, dict) else ""
-    if selected == "replace" and set(parsed) == {"delivery_control", "full_answer"}:
-        replacement = parsed.get("full_answer")
-        if isinstance(replacement, str) and replacement.strip():
-            return replacement, ""
-    elif selected == "keep" and set(parsed) == {"delivery_control"} and candidate is not None:
-        return candidate.full_text, ""
-    # Malformed/duplicate/invalid control: preserve the retained candidate (or,
-    # with none retained, let the caller's fallback text stand) and say so.
+    if not embedded_protocol:
+        selected = str(parsed.get("delivery_control") or "") if isinstance(parsed, dict) else ""
+        if selected == "replace" and set(parsed) == {"delivery_control", "full_answer"}:
+            replacement = parsed.get("full_answer")
+            if isinstance(replacement, str) and replacement.strip():
+                return replacement, ""
+        elif selected == "keep" and set(parsed) == {"delivery_control"} and candidate is not None:
+            return candidate.full_text, ""
+    # Malformed/duplicate/prose-embedded/invalid control: preserve the retained
+    # candidate (with none retained, the caller's fallback stands) and say so.
     return (
         candidate.full_text if candidate is not None else "",
         REASON_DELIVERY_CONTROL_DEGRADED,

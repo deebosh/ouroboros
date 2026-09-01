@@ -121,6 +121,8 @@ class RunCustody:
     profile_id: str = ""
     project_id: str = ""
     project_owned: bool = False
+    # #362: a stable user-target registration outlives any single run.
+    project_persistent: bool = False
     root_task_id: str = ""
     parent_task_id: str = ""
     category: str = "subagent"
@@ -144,6 +146,7 @@ class RunCustody:
     authority_fingerprint: str = ""
     ledger_recorded: bool = False
     settled: bool = False
+    terminal_state: str = ""  # SETTLED row's state, replayed (empty pre-existing/CLOSED_ABSENT)
     containment_disclosed: bool = False  # written once; a re-poll must not re-find
     unread_disclosed: bool = False  # settled-never-read omission named durably
     # Staged-output half of the terminal story (D7). ``output_artifact``:
@@ -309,35 +312,12 @@ def _iter_rows(path: pathlib.Path, tail_bytes: Optional[int] = None) -> Iterator
         return
 
 
-# The STARTED row's string facts as ``(RunCustody attribute, row key)`` pairs —
-# one table shared by the replay and the ``record_started`` emit.
-_STARTED_STR_FIELDS: Tuple[Tuple[str, str], ...] = tuple(
-    (attr, "route" if attr == "route_id" else attr) for attr in (
-        "task_id", "route_id", "model", "profile_id", "project_id", "root_task_id",
-        "parent_task_id", "category", "source", *REVIEW_ATTRIBUTION_KEYS,
-        "ledger_root", "idempotency_key", "invocation_id",
-        "snapshot_id", "execution_root", "baseline_sha", "target_root",
-        "authority_source", "access", "mode", "isolation",
-        "selected_subagent_id", "config_fingerprint", "work_order_fingerprint",
-        "work_order_coverage", "authority_fingerprint",
-    )
+from ouroboros.delegate_registration_policy import (
+    record_persistent as _record_persistent,
+    STARTED_FIRST_WINS_FACTS as _STARTED_FIRST_WINS_FACTS,
+    STARTED_PROGRESS_FLAGS as _STARTED_PROGRESS_FLAGS,
+    STARTED_STR_FIELDS as _STARTED_STR_FIELDS,
 )
-# Progress carried forward from a previous row: an idempotent re-start writes a
-# SECOND started row; replacing wholesale would forget a settlement and put a
-# finished run back into the orphan sweep (which would cancel it).
-_STARTED_PROGRESS_FLAGS: Tuple[str, ...] = (
-    "ledger_recorded", "settled", "containment_disclosed", "unread_disclosed",
-    "output_artifact", "output_complete", "output_sha", "output_consumed",
-    "patch_captured", "patch_disposed", "patch_apply_pending")
-# Binding/authority facts are FIRST-WINS (R1-2): a later idempotent STARTED row
-# may be minted by a context that no longer knows the original binding; the
-# first recorded fact is authoritative and is never erased or retargeted.
-_STARTED_FIRST_WINS_FACTS: Tuple[str, ...] = (
-    "snapshot_id", "execution_root", "baseline_sha", "target_root",
-    "authority_source", "resource_ref", "selected_subagent_id",
-    "config_fingerprint", "work_order_fingerprint", "work_order_coverage",
-    "authority_fingerprint", "work_order_source_request", "category", "source",
-    *REVIEW_ATTRIBUTION_KEYS)
 
 from ouroboros.delegate_source_coverage import (
     apply_source_delivery_confirmation,
@@ -361,6 +341,7 @@ def _merge_started_into(entry: RunCustody, previous: RunCustody) -> None:
     for attr in _STARTED_PROGRESS_FLAGS:
         setattr(entry, attr, getattr(previous, attr))
     entry.project_owned = previous.project_owned and entry.project_owned
+    entry.project_persistent = previous.project_persistent or entry.project_persistent
     for attr in _STARTED_FIRST_WINS_FACTS:
         prior = getattr(previous, attr)
         if prior:
@@ -387,6 +368,7 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
         entry = RunCustody(
             run_id=run_id,
             project_owned=bool(row.get("project_owned")),
+            project_persistent=bool(row.get("project_persistent")),
             delegated=row.get("delegated") is True,
             resource_ref=dict(ref) if isinstance(ref, dict) else {},
             work_order_source_request=(
@@ -460,14 +442,13 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
         disposition = str(row.get("disposition") or "")
         if disposition:
             custody.patch_disposed = disposition
-            # A recorded disposition completes the apply-intent story too.
-            custody.patch_apply_pending = False
+            custody.patch_apply_pending = False  # a recorded disposition completes the apply-intent story
     elif kind == SETTLED:
         # A RUN-level fact: it no longer clears the registration obligation -
         # PROJECT_RETIRED is the only discharging row (historical logs always
         # emitted it before SETTLED, so replay is unaffected).
-        custody.ledger_recorded = True
-        custody.settled = True
+        custody.ledger_recorded = custody.settled = True
+        custody.terminal_state = str(row.get("state") or "") or custody.terminal_state
     elif kind == CLOSED_ABSENT:
         # Closed, not settled: custody is over, the run leaves ``open_runs``.
         # The registration survives independently (wholesale clearing here was
@@ -692,6 +673,9 @@ def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str,
                 "route": str(row.get("route") or ""),
                 "project_id": str(row.get("project_id") or ""),
                 "project_owned": bool(row.get("project_owned")),
+                # Absence is a fact: legacy rows fall back to the stored request.
+                **({"project_persistent": bool(row["project_persistent"])}
+                   if "project_persistent" in row else {}),
                 "idempotency_key": str(row.get("idempotency_key") or ""),
                 "root_task_id": str(row.get("root_task_id") or ""),
                 "parent_task_id": str(row.get("parent_task_id") or ""),
@@ -762,7 +746,7 @@ def record_started(drive_root: Any, custody: RunCustody,
     # recorded separately can lose half of itself to a crash); shape spreads LAST.
     return emit(drive_root, STARTED, {
         "run_id": custody.run_id,
-        "project_owned": custody.project_owned,
+        "project_owned": custody.project_owned, "project_persistent": custody.project_persistent,
         "resource_ref": custody.resource_ref or {},
         "work_order_source_request": custody.work_order_source_request or {},
         **{key: getattr(custody, attr) for attr, key in _STARTED_STR_FIELDS},
@@ -800,6 +784,13 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
     LOWEST-run_id sharer keeps attempting; the rest defer quietly and
     discharge on the daemon's 404 (deterministic tie-break: someone always
     attempts)."""
+    if custody.project_persistent:
+        # #362: stable identity outlives the run — discharge the duty DURABLY
+        # (replay must not resurrect owned=True), keep the project itself.
+        custody.project_owned = False
+        emit(drive_root, PROJECT_RETIRED, {"run_id": custody.run_id, "task_id": custody.task_id,
+                                           "project_id": custody.project_id, "project_kept": True})
+        return
     if not (custody.project_owned and custody.project_id):
         return
     try:
@@ -820,6 +811,13 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
             return
         rows = [run for run in state.values()
                 if run.project_id == custody.project_id and run.run_id]
+        if any(run.project_persistent for run in rows):
+            # #362: ANY persistent sharer makes the project a durable user
+            # identity — a non-persistent creator must not delete it either.
+            custody.project_owned = False
+            emit(drive_root, PROJECT_RETIRED, {"run_id": custody.run_id, "task_id": custody.task_id,
+                                               "project_id": custody.project_id, "project_kept": True})
+            return
         if any(not run.settled and run.run_id != custody.run_id for run in rows):
             return
         sharers = sorted(run.run_id for run in rows if run.project_owned)
@@ -877,7 +875,8 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
     settlement is retried; ``settled`` means the durable fact exists."""
     if custody.settled:
         return {"settled": True, "ledger_recorded": True,
-                "project_retired": not custody.project_owned, "retried": False}
+                "project_retired": not custody.project_owned and not custody.project_persistent,
+                "project_persistent": custody.project_persistent, "retried": False}
     summary = summary_of(detail)
     # Claudexor reports CASH in `spendUsd`, EXACTNESS in `spendEstimated`. A run
     # is only free when the amount is really zero AND really settled: expired
@@ -963,7 +962,8 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
     return {
         "settled": custody.settled,
         "ledger_recorded": custody.ledger_recorded,
-        "project_retired": not custody.project_owned,
+        "project_retired": not custody.project_owned and not custody.project_persistent,
+        "project_persistent": custody.project_persistent,
         "retried": True,
     }
 
@@ -1057,7 +1057,7 @@ def settled_unread_outputs(drive_root: Any) -> List[RunCustody]:
             if settled_output_unread(custody)]
 
 
-def undisposed_patches(drive_root: Any) -> List[RunCustody]:
+def undisposed_patches(drive_root: Any, state: Optional[Dict[str, RunCustody]] = None) -> List[RunCustody]:
     """Settled mutating runs whose snapshot work awaits an explicit apply/reject.
 
     The C1 counterpart of ``settled_unread_outputs``: a run that executed in a
@@ -1069,7 +1069,7 @@ def undisposed_patches(drive_root: Any) -> List[RunCustody]:
     forever, preserved but findable by nobody. Self-clearing: the
     ``PATCH_DISPOSED`` row flips ``patch_disposed`` in the very replay this reads.
     """
-    return [custody for custody in replay(drive_root).values()
+    return [custody for custody in (state if state is not None else replay(drive_root)).values()
             if custody.snapshot_id and custody.settled and not custody.patch_disposed]
 
 
@@ -1207,13 +1207,11 @@ def _cancel_result(drive_root: Any, custody: RunCustody, outcome: str, *, accept
 # -- reconciliation ------------------------------------------------------------
 
 
-def owned_project_registrations(drive_root: Any) -> List[RunCustody]:
+def owned_project_registrations(drive_root: Any, state: Optional[Dict[str, RunCustody]] = None) -> List[RunCustody]:
     """Runs whose registration is still owned - settled or not (``open_runs``
     cannot see registrations that outlive their runs)."""
-    return [
-        custody for custody in replay(drive_root).values()
-        if custody.project_owned and custody.project_id
-    ]
+    return [custody for custody in (state if state is not None else replay(drive_root)).values()
+            if custody.project_owned and custody.project_id]
 
 
 def retire_settled_registrations(drive_root: Any, gateway: Any) -> None:

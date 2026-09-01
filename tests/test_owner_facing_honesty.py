@@ -555,7 +555,7 @@ def test_degraded_owner_line_bounds_each_reason():
     # acceptance review owner; loop.py re-exports it.
     from ouroboros import loop_acceptance_review as loop_mod
 
-    src = inspect.getsource(loop_mod)
+    src = inspect.getsource(accept_mod)
     assert "more in the task result" in src  # overflow disclosure, not silence
     # Bounded preview per cause via the shared primitive; full causes live in
     # the structured decision record.

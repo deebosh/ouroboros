@@ -704,6 +704,11 @@ _EXACT_IDENTIFIER_CODES = MappingProxyType(
         "MCP_TOOL_TIMEOUT": "MCP_TIMEOUT",
         "MCP_TOOL_ERROR": "MCP_ERROR",
         "TOOL_TIMEOUT": "TOOL_TIMEOUT",
+        # #440 fix-forward markers (upstream failure prefixes, typed here): an
+        # abandoned call's void result is the call's own timeout; the
+        # hung-session backlog refusal is browser unavailability.
+        "BROWSER_SESSION_RETIRED": "TOOL_TIMEOUT",
+        "BROWSER_BACKLOG_RETIRED_SESSIONS": "LEGACY_UNAVAILABLE",
         "TOOL_ARG_ERROR": "TOOL_ARG_ERROR",
         "INVALID_ARG": "TOOL_ARG_ERROR",
         "TOOL_ERROR": "TOOL_ERROR",

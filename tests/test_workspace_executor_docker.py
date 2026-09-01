@@ -107,9 +107,10 @@ def test_docker_executor_run_script_uses_backend_script_path(tmp_path, monkeypat
     data.mkdir()
     captured: dict[str, object] = {}
 
-    def fake_execute(ctx, cmd, cwd, timeout_sec):
+    def fake_execute(ctx, cmd, cwd, timeout_sec, env_overlay=None):
         captured["cmd"] = list(cmd)
         captured["cwd"] = str(cwd)
+        captured["env_overlay"] = env_overlay
         return SimpleNamespace(returncode=0, stdout="ok\n", stderr="", backend_trace={"executor_id": "pb-container"}, args=list(cmd))
 
     monkeypatch.setattr(shell_mod, "executor_execute", fake_execute)
@@ -135,6 +136,7 @@ def test_docker_executor_run_script_uses_backend_script_path(tmp_path, monkeypat
     assert "ok" in result
     assert captured["cmd"][1].startswith("/workspace/.ouroboros/tmp_scripts/script_")
     assert not str(captured["cmd"][1]).startswith(str(workspace))
+    assert captured["env_overlay"] is None  # no node emergency → env untouched
 
 
 def test_docker_executor_accepts_backend_absolute_write_targets_and_outputs(tmp_path, monkeypatch):
@@ -151,8 +153,9 @@ def test_docker_executor_accepts_backend_absolute_write_targets_and_outputs(tmp_
     data.mkdir()
     captured: dict[str, object] = {}
 
-    def fake_execute(ctx, cmd, cwd, timeout_sec):
+    def fake_execute(ctx, cmd, cwd, timeout_sec, env_overlay=None):
         captured["cmd"] = list(cmd)
+        captured["env_overlay"] = env_overlay
         (workspace / "backend-output.txt").write_text("ok\n", encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="wrote\n", stderr="", backend_trace={"executor_id": "pb-container"}, args=list(cmd))
 
@@ -187,6 +190,7 @@ def test_docker_executor_accepts_backend_absolute_write_targets_and_outputs(tmp_
     assert "ARTIFACT_OUTPUT_ERROR" not in result
     assert "backend-output.txt" in result
     assert captured["cmd"] == ["sh", "-c", "printf ok > /workspace/backend-output.txt"]
+    assert captured["env_overlay"] is None  # no node emergency → env untouched
 
 
 def test_docker_executor_enforces_network_none_before_exec(tmp_path, monkeypatch):

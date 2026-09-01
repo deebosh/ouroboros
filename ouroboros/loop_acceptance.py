@@ -9,7 +9,8 @@ import logging
 import pathlib
 
 from typing import Any, Callable, Dict, List, Optional
-from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, extract_final_answer, turn_has_reviewable_effects
+from ouroboros.review_cycles import REASON_REVIEW_CYCLES_EXHAUSTED
+from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_IDENTICAL_ACCEPTANCE_REFUSED, extract_final_answer, turn_has_reviewable_effects
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import truncate_review_artifact
 
@@ -556,6 +557,13 @@ ACCEPTANCE_DECISION_REASONS = (
     "review_degraded",
     "fence_reopen_failed",
     "infra_failure",
+    # The pacing/wallet reason two branches below already STAMP (`pass_reason ==
+    # REASON_REVIEW_CYCLES_EXHAUSTED`); it was missing from the closed set, so a
+    # spent shared cap shipped a reason no reader could validate.
+    REASON_REVIEW_CYCLES_EXHAUSTED,
+    # A-material (2026-08-30): the resubmit carried no changed candidate and no new
+    # obligation disposition, so the recorded verdict was replayed for free.
+    REASON_IDENTICAL_ACCEPTANCE_REFUSED,
     # Owner Q2A: the forced children_unabsorbed rail runs the panel but cannot
     # grant a requested improvement pass; the dangling revision terminalizes.
     "revision_unavailable_on_forced_rail",

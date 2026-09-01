@@ -228,6 +228,9 @@
  * @property {string=} task_phase
  *   "finalizing" on a root's early final answer: post-task synthesis still
  *   runs, so the frame is not the task's terminal conclusion.
+ * @property {string=} task_terminal_status
+ *   Typed terminal fact on a frame that IS the turn's conclusion (stamped on
+ *   direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
  * @property {string=} toast_once
  * @property {boolean=} task_id_pending
@@ -262,7 +265,8 @@
  *   {delegated_runs_started, delegated_runs_settled, delegated_runs_succeeded,
  *   delegated_runs_failed, delegated_run_failure_states, evidence_read_failed,
  *   subscription_cost_usd, subscription_cost_estimated, harness_models,
- *   nanny_nudge_recorded, delegate_start_attempted}.
+ *   nanny_nudge_recorded, delegate_start_attempted,
+ *   applied_access_profiles}.
  *   Terminal frames only; absent = "no evidence yet", never "ran natively".
  *   `evidence_read_failed: true` = the custody log exists but could not be
  *   read — zero counts are then UNKNOWN, never a "no run" receipt.
@@ -363,6 +367,7 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  */
 
@@ -381,7 +386,92 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
+ */
+
+/**
+ * @typedef {Object} LinkAction
+ * @property {string} label
+ * @property {string} url
+ */
+
+/**
+ * @typedef {Object} LinksOutbound
+ * @property {"links"} type
+ * @property {"assistant"} role
+ * @property {LinkAction[]} actions
+ * @property {string} ts
+ * @property {string=} title
+ * @property {number=} chat_id
+ * @property {string=} task_id
+ * @property {boolean=} project_thread
+ * @property {Object=} transport
+ */
+
+/**
+ * @typedef {Object} QuizOption
+ * @property {string} label
+ * @property {string=} detail
+ */
+
+/**
+ * @typedef {Object} QuizOutbound
+ * @property {"quiz"} type
+ * @property {"assistant"} role
+ * @property {string} quiz_id
+ * @property {string} question
+ * @property {QuizOption[]} options
+ * @property {string} stake
+ * @property {string} assumption
+ * @property {string} state
+ * @property {string} ts
+ * @property {number=} chat_id
+ * @property {string=} task_id
+ * @property {boolean=} project_thread
+ * @property {Object=} transport
+ */
+
+/**
+ * Lifecycle update for an already-rendered quiz card (WS "quiz_state") —
+ * a separate discriminator so a state change never dedupes as (or spawns)
+ * a second card. answered_index rides only with state "answered".
+ * @typedef {Object} QuizStateOutbound
+ * @property {"quiz_state"} type
+ * @property {string} quiz_id
+ * @property {string} task_id
+ * @property {string} state
+ * @property {string} ts
+ * @property {number=} answered_index
+ * @property {number=} chat_id
+ */
+
+/**
+ * POST /api/decisions body — the ONE answer ingress for owner decision cards
+ * (decision families quiz:/routing:/interaction:). request_id is the
+ * idempotency key; a replay returns the recorded confirmation.
+ * @typedef {Object} DecisionRequest
+ * @property {string} request_id
+ * @property {string} decision_id
+ * @property {number} option_index
+ * @property {string=} comment
+ */
+
+/**
+ * Answer-ingress reply; 409 carries the card's truthful lifecycle state so a
+ * late click settles the card instead of inviting retries.
+ * @typedef {Object} DecisionResponse
+ * @property {boolean=} ok
+ * @property {string=} decision_id
+ * @property {string=} state
+ * @property {number=} answered_index
+ * @property {boolean=} duplicate
+ * @property {string=} error
+ * @property {string=} dispatched
+ * @property {string=} task_id
+ * @property {string=} latest_status
+ * @property {string=} reason
+ * @property {string=} detail
  */
 
 /**
@@ -401,6 +491,8 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {string=} task_id
+ * @property {number=} size_bytes
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  */
 
@@ -432,6 +524,7 @@
  * @property {string} status
  * @property {Array<Object>=} options
  * @property {AttachmentManifestEntry[]=} attachment_manifest
+ * @property {string=} routing_token
  * @property {boolean} suppress_bubble
  * @property {string=} ts
  */
@@ -589,7 +682,7 @@
  * @property {string=} payload_root
  * @property {string=} review_status
  * @property {boolean=} review_stale
- * @property {Object=} review_gate
+ * @property {{status: string, stale: boolean, executable_review: boolean, blocking_reason: string, review_enforcement: string, summary: string, preflight_failed: (boolean|undefined), preflight_failed_stale: (boolean|undefined)}=} review_gate
  * @property {boolean=} executable_review
  * @property {string=} review_profile
  * @property {boolean=} official_hub_verified
@@ -1082,4 +1175,6 @@
  * @property {?boolean} check_ok
  */
 
-export const GATEWAY_CONTRACT_VERSION = '6.113.4';
+export const MAX_LINK_ACTIONS = 12;
+export const MAX_QUIZ_OPTIONS = 6;
+export const GATEWAY_CONTRACT_VERSION = '6.113.5';

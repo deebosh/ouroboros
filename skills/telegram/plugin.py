@@ -952,6 +952,31 @@ def _make_outbound(api):
             if event.get("is_progress") and not _mirror_progress_enabled(local_settings):
                 return
 
+            # Routing receipts ride the outbound bus as typed annotations with
+            # suppress_bubble (no text). The only one worth a Telegram push is
+            # the actionable refusal: a numbered destination list (#198). The
+            # owner replies with a number in plain words — the LLM router reads
+            # this list from history and dispatches the choice (P5 LLM-first,
+            # no keyword gate) — or taps the picker card in the web UI.
+            if str(event.get("annotation_type") or "") == "routing_ack":
+                if str(event.get("status") or "") != "needs_manual_target":
+                    return
+                raw_options = event.get("options") if isinstance(event.get("options"), list) else []
+                from ouroboros.project_dialogue import routing_option_label
+
+                labels = [routing_option_label(option) for option in raw_options]
+                labels = [label for label in labels if label][:8]
+                if not labels:
+                    return
+                lines = ["I couldn't pick a destination for your last message. Options:"]
+                lines.extend(f"{index}. {label}" for index, label in enumerate(labels, 1))
+                if len(raw_options) > len(labels):
+                    lines.append(f"…and {len(raw_options) - len(labels)} more in the web chat.")
+                lines.append("Reply with a number, or tap an option in the web chat.")
+                _clear_silent_msg(api, chat_id)
+                await client.send_message(chat_id, "\n".join(lines), parse_mode="")
+                return
+
             text = str(event.get("text") or "").strip()
             if not text:
                 return
@@ -1058,14 +1083,127 @@ def _make_document(api):
                 import base64 as _base64
                 filename = str(event.get("filename") or "file")
                 caption = str(event.get("caption") or "")
-                await client.send_document(
-                    chat_id,
-                    _base64.b64decode(file_base64),
-                    filename=filename,
-                    caption=caption,
-                )
+                file_bytes = _base64.b64decode(file_base64)
+                mime = str(event.get("mime") or "application/octet-stream")
+                if _is_native_audio_document(filename, mime):
+                    try:
+                        await client.send_audio(
+                            chat_id,
+                            file_bytes,
+                            filename=filename,
+                            caption=caption,
+                            mime=mime,
+                        )
+                    except TelegramRequestRejected as exc:
+                        # Fall back to a plain document only on a definitive
+                        # format rejection (HTTP 400). Auth failures and
+                        # transient errors (429/5xx) re-raise: retrying the
+                        # upload there risks a duplicate delivery.
+                        if exc.status_code != 400 or exc.transient:
+                            raise
+                        await client.send_document(
+                            chat_id,
+                            file_bytes,
+                            filename=filename,
+                            caption=caption,
+                        )
+                else:
+                    await client.send_document(
+                        chat_id,
+                        file_bytes,
+                        filename=filename,
+                        caption=caption,
+                    )
         except Exception as exc:
             api.log("error", f"Telegram document error: {exc}")
+    return handle
+
+
+def _is_native_audio_document(filename: str, mime: str) -> bool:
+    extension = pathlib.Path(str(filename or "")).suffix.casefold()
+    normalized_mime = str(mime or "").split(";", 1)[0].strip().casefold()
+    return extension in {".mp3", ".m4a"} or normalized_mime in {
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/mp4",
+        "audio/x-m4a",
+    }
+
+
+def _make_links(api):
+    async def handle(event: Dict[str, Any]) -> None:
+        try:
+            protected_settings = api.get_settings(["TELEGRAM_BOT_TOKEN"])
+            local_settings = _load_settings(api)
+            client = TelegramClient(protected_settings.get("TELEGRAM_BOT_TOKEN", ""))
+            chat_id = _target_chat(local_settings, event)
+            if not chat_id:
+                return
+            title = str(event.get("title") or "").strip() or "Links"
+            raw_actions = event.get("actions") if isinstance(event.get("actions"), list) else []
+            actions = []
+            for action in raw_actions:
+                if not isinstance(action, dict):
+                    continue
+                label = str(action.get("label") or "").strip()
+                url = str(action.get("url") or "").strip()
+                if label and url:
+                    actions.append((label, url))
+            # Shared link-action contract cap: ouroboros.tools.core._MAX_LINK_ACTIONS.
+            actions = actions[:12]
+            if not actions:
+                return
+            _clear_silent_msg(api, chat_id)
+            keyboard = [[{"text": label, "url": url}] for label, url in actions]
+            try:
+                await client.send_message_with_inline_keyboard(chat_id, title, keyboard)
+            except TelegramRequestRejected as exc:
+                if not exc.plain_retry_safe:
+                    raise
+                api.log("warning", "Telegram links keyboard failed; sending a plain list.")
+                plain_text = "\n".join([title, *(f"{label} — {url}" for label, url in actions)])
+                await client.send_message(chat_id, plain_text, parse_mode="")
+        except Exception as exc:
+            api.log("error", f"Telegram links error: {exc}")
+    return handle
+
+
+def _make_quiz(api):
+    async def handle(event: Dict[str, Any]) -> None:
+        try:
+            protected_settings = api.get_settings(["TELEGRAM_BOT_TOKEN"])
+            local_settings = _load_settings(api)
+            client = TelegramClient(protected_settings.get("TELEGRAM_BOT_TOKEN", ""))
+            chat_id = _target_chat(local_settings, event)
+            if not chat_id:
+                return
+            question = str(event.get("question") or "").strip()
+            raw_options = event.get("options") if isinstance(event.get("options"), list) else []
+            labels = []
+            for option in raw_options:
+                if isinstance(option, dict):
+                    label = str(option.get("label") or "").strip()
+                    if label:
+                        labels.append(label)
+            # Shared quiz contract cap: ouroboros.tools.core._MAX_QUIZ_OPTIONS.
+            labels = labels[:6]
+            if not question or len(labels) < 2:
+                return
+            _clear_silent_msg(api, chat_id)
+            stake = str(event.get("stake") or "").strip()
+            assumption = str(event.get("assumption") or "").strip()
+            lines = [f"Question: {question}"]
+            if stake:
+                lines.append(f"At stake: {stake}")
+            lines.extend(f"{index}. {label}" for index, label in enumerate(labels, 1))
+            if assumption:
+                lines.append(f"Continuing meanwhile: {assumption}")
+            # Display-only for now: answering happens in the web UI. A tappable
+            # inline-keyboard answer flow is a planned follow-up of this skill.
+            lines.append("Answer from the Ouroboros web UI.")
+            await client.send_message(chat_id, "\n".join(lines), parse_mode="")
+        except Exception as exc:
+            api.log("error", f"Telegram quiz error: {exc}")
     return handle
 
 
@@ -1077,6 +1215,8 @@ def register(api):
     api.subscribe_event("chat.photo", _make_photo(api))
     api.subscribe_event("chat.video", _make_video(api))
     api.subscribe_event("chat.document", _make_document(api))
+    api.subscribe_event("chat.links", _make_links(api))
+    api.subscribe_event("chat.quiz", _make_quiz(api))
     api.register_route("settings/save", handler=_make_settings_save(api), methods=("POST",))
     api.register_route("miniapp/status", handler=_make_status(api), methods=("POST",))
     api.register_settings_section(

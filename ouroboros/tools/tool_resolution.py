@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from typing import TYPE_CHECKING
 
-from ouroboros.python_interpreter import record_python_resolution, resolve_process_python
+from ouroboros.process_interpreters import record_interpreter_resolution, resolve_process_python
 
 from ouroboros.tools.tool_result import ToolResult
 
@@ -574,6 +574,7 @@ def _resolve_python_predispatch(
 
     Every downstream guard and the handler therefore see byte-identical
     argv; launchers must not select an interpreter after this boundary.
+    Python never EXECUTES a candidate; node probes post-gates instead.
     """
     args, python_resolution = resolve_process_python(
         registry._ctx,
@@ -583,7 +584,7 @@ def _resolve_python_predispatch(
         effective_constraint=effective_constraint,
         resolved_binding=resolved_binding,
     )
-    record_python_resolution(registry._ctx, python_resolution)
+    record_interpreter_resolution(registry._ctx, python_resolution)
     if python_resolution is not None and python_resolution.error_reason:
         if python_resolution.error_reason == "cwd_resolution_failed":
             # The failure is the CWD CONFINEMENT policy, not interpreter

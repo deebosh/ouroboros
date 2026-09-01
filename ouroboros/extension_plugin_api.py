@@ -556,6 +556,32 @@ class PluginAPIImpl:
             raise ExtensionRegistrationError("companion command must be declared in manifest")
         if expected_runtime in {"python", "python3"} and cmd[0] in {"python", "python3"}:
             cmd = [sys.executable, *cmd[1:]]
+        manifest_path_override = any(
+            str(key).upper() == "PATH" for key in (spec.get("env") or {})
+        )
+        if expected_runtime in {"node", "npm"} and not manifest_path_override:
+            # T14: an explicit PATH in the companion manifest means the author
+            # owns the runtime lookup — the host-side probe cannot see that
+            # child-only PATH, so neither the bundled rewrite nor the emergency
+            # prepend may shadow it.
+            # Node symmetry with the python->sys.executable rewrite above: the
+            # skill-family runtime precedence (bundled-first + health rollback
+            # to a working PATH node) is owned by
+            # platform_layer.select_skill_node_runtime. npm itself is NOT
+            # bundled and is never rewritten; only in the emergency state
+            # (PATH node missing/execution-probed broken, healthy bundled
+            # selected) does the companion child PATH gain the bundled-node
+            # dir so npm's `#!/usr/bin/env node` shebang finds a working
+            # runtime (the PATH prepend itself happens in the post-fence env
+            # materialization, ouroboros/extension_child_catalog.py). On a
+            # healthy PATH the child env stays byte-identical. Disclosed
+            # residual: an npm launcher rewritten to an ABSOLUTE node shebang
+            # ignores PATH and keeps failing honestly.
+            from ouroboros.platform_layer import select_skill_node_runtime
+
+            selected_node, _node_provenance = select_skill_node_runtime()
+            if selected_node and cmd[0] == "node":
+                cmd = [selected_node, *cmd[1:]]
         if not is_server_process():
             with _lock:
                 self._require_open_locked()

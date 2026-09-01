@@ -159,18 +159,40 @@ def _accept_obligation_row(o: Dict[str, Any]) -> Dict[str, Any]:
             row["previous_agent_reason"] = _accept_redact_cap(
                 str(o.get("previous_reason")), 600,
             )
+    # The LAST counter-argument in the exchange — without it this panel
+    # cannot tell "already answered" from "never answered".
+    if str(o.get("reviewer_rebuttal_response") or "").strip():
+        row["previous_reviewer_response"] = _accept_redact_cap(
+            str(o.get("reviewer_rebuttal_response")), 600,
+        )
     return row
+
+
+# Reviewer-VISIBLE packet keys that are deliberately outside the packet's content
+# identity. The acceptance dialogue history is host-authored audit context that
+# grows by one row per panel: hashing it would shift the evidence revision — and
+# therefore mint a fresh paid binding — for a submission the agent did not change,
+# which is the acceptance pump A-material exists to close. Keep this set tiny; a
+# key belongs here only when it is derived from panels already paid for.
+UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY = "acceptance_dialogue_history"
+UNHASHED_EVIDENCE_KEYS = (UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY,)
 
 
 def task_acceptance_evidence_revision(evidence: Dict[str, Any]) -> str:
     """Return the stable content revision used to bind acceptance evidence.
 
     The evidence packet is already bounded and redacted by the shared builder.
-    Hashing that exact packet lets the agent's cheap evidence call and the
-    host-owned panel refer to the same revision without a second ledger.
+    Hashing that exact packet — minus ``UNHASHED_EVIDENCE_KEYS`` — lets the
+    agent's cheap evidence call and the host-owned panel refer to the same
+    revision without a second ledger.
     """
+    packet = {
+        key: value
+        for key, value in (evidence or {}).items()
+        if key not in UNHASHED_EVIDENCE_KEYS
+    }
     payload = json.dumps(
-        evidence or {},
+        packet,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -324,6 +346,18 @@ def _accept_verification_summary(receipts: list) -> Dict[str, Any]:
         "latest_identity": _latest_identity,
         "latest_check": _latest_identity["check"],
         "latest_returncode": latest.get("returncode"),
+        # Disclosure keys (node-runtime sprint, D6/R4), mirroring the fixed
+        # ledger projection (`verification_receipt_ledger_row`) — a receipt key
+        # missing from EITHER side is silently dropped, so both carry them.
+        # Present only when the latest receipt has them: `latest_duration_ms`
+        # (check process lifetime), `latest_signal` (POSIX signal name of a
+        # killed check — a 9ms SIGKILL is not an ordinary red), and
+        # `latest_resolved_runtime` (the substituted physical executable;
+        # absent = the recorded check argv ran as written). The path is raw
+        # host surface, so it goes through the redacting bound.
+        **({"latest_duration_ms": latest.get("duration_ms")} if latest.get("duration_ms") is not None else {}),
+        **({"latest_signal": str(latest.get("signal") or "")} if latest.get("signal") else {}),
+        **({"latest_resolved_runtime": _accept_redact_cap(str(latest.get("resolved_runtime") or ""), 300)} if latest.get("resolved_runtime") else {}),
         "latest_expected_match": str(latest.get("expected_match") or ""),
         "latest_summary": _accept_redact_cap(str(latest.get("summary") or ""), 2000),
         # C: aggregate the after-only artifact-lifecycle flag across ALL receipts (a deleted

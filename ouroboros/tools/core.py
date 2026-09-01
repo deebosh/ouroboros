@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import ipaddress
 import json
 import logging
 import os
@@ -88,6 +89,13 @@ from ouroboros.tools.core_artifacts import (  # noqa: F401
     _send_file,
     _send_photo,
     _send_video,
+    LinkActionsValidationError,
+    QuizValidationError,
+    _MAX_LINK_ACTIONS,
+    _escalate,
+    _send_links,
+    validate_link_actions,
+    validate_quiz_payload,
 )
 
 log = logging.getLogger(__name__)
@@ -865,17 +873,6 @@ def _edit_text(
     except Exception as exc:
         return f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}"
 
-
-_MAX_SEARCH_RESULTS = 200
-# Search file-skip helper and caps live in ouroboros.code_search_rg (the search
-# module SSOT); imported with the historical private names used by call sites.
-from ouroboros.code_search_rg import (  # noqa: E402
-    MAX_SEARCH_FILES_SCANNED as _MAX_SEARCH_FILES_SCANNED,
-    _search_wall_clock_sec,
-    is_search_skippable as _is_search_skippable,
-)
-
-
 def _code_search(ctx: ToolContext, query: str, path: str = ".",
                  regex: bool = False, max_results: int = 200,
                  include: str = "", root: str = "active_workspace",
@@ -1208,6 +1205,7 @@ def _forward_to_worker(
         return f"⚠️ TASK_MESSAGE_UNWRITTEN: message to task {tid} was not persisted."
     return f"Message forwarded to task {tid}"
 
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("read_file", {
@@ -1333,6 +1331,18 @@ def get_tools() -> List[ToolEntry]:
                 "caption": {"type": "string", "description": "Optional caption for the file"},
             }, "required": ["file_path"]},
         }, _send_file),
+        ToolEntry("send_links", {
+            "name": "send_links",
+            "description": "Send one or more HTTP(S) links as prominent clickable buttons in the owner's chat.",
+            "parameters": {"type": "object", "properties": {
+                "title": {"type": "string", "description": "Optional heading above the buttons"},
+                "links": {"type": "array", "minItems": 1, "maxItems": _MAX_LINK_ACTIONS, "items": {
+                    "type": "object", "properties": {
+                        "label": {"type": "string"},
+                        "url": {"type": "string"},
+                    }, "required": ["label", "url"]}},
+            }, "required": ["links"]},
+        }, _send_links),
         ToolEntry("search_code", {
             "name": "search_code",
             "description": (
@@ -1355,6 +1365,27 @@ def get_tools() -> List[ToolEntry]:
                 "include": {"type": "string", "default": "", "description": "Filter by glob pattern (e.g. '*.py')"},
             }, "required": ["query"]},
         }, _code_search),
+        ToolEntry("escalate", {
+            "name": "escalate",
+            "description": (
+                "Escalate a decision up the responsibility chain instead of guessing. "
+                "A root task asks the OWNER (a typed quiz card with option buttons); "
+                "a subagent asks its PARENT task (a typed mailbox frame the parent "
+                "answers with forward_to_worker or escalates higher, verbatim). "
+                "Fire-and-continue: state the assumption you keep working under — "
+                "the answer, if it comes, arrives in a later round, and the question "
+                "expires when your task ends."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "question": {"type": "string", "description": "The decision being escalated (markdown renders in chat)"},
+                "options": {"type": "array", "items": {"type": "object", "properties": {
+                    "label": {"type": "string", "description": "Short option label (button text, max 120)"},
+                    "detail": {"type": "string", "description": "Optional one-line consequence of this option (max 500)"},
+                }, "required": ["label"]}, "description": "2-6 mutually exclusive options"},
+                "stake": {"type": "string", "description": "What depends on this decision (optional, max 500)"},
+                "assumption": {"type": "string", "description": "REQUIRED: the assumption you continue under until answered (max 500)"},
+            }, "required": ["question", "options", "assumption"]},
+        }, _escalate),
         ToolEntry("forward_to_worker", {
             "name": "forward_to_worker",
             "description": (

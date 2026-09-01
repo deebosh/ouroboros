@@ -238,20 +238,40 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
         )
 
 
+
+def _delivery_chat_id(evt: Dict[str, Any], ctx: Any) -> "int | None":
+    """The bound delivery chat for a media/links/quiz frame (upstream unification):
+    post-hoc bound media stays in the project panel even when the task retained
+    its original chat id; chat 0 is a real hidden session (same contract across
+    photo/video/file/links)."""
+    bound_chat = _bound_project_chat_id(
+        ctx, evt.get("task_id"), evt.get("parent_task_id"), evt.get("root_task_id")
+    )
+    raw_chat_id = evt.get("chat_id")
+    if not bound_chat and (raw_chat_id is None or raw_chat_id == ""):
+        return None
+    return bound_chat or int(raw_chat_id)
+
+
+def _log_error(ctx: Any, event_type: str, **fields: Any) -> None:
+    ctx.append_jsonl(
+        ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
+        {"ts": utc_now_iso(), "type": event_type, **fields},
+    )
+
+
 def _handle_send_photo(evt: Dict[str, Any], ctx: Any) -> None:
     """Send a photo to the owner's chat."""
     import base64 as b64mod
     try:
-        # Binding precedence (matches _handle_send_message/_handle_log_event): a
-        # post-hoc bound task keeps its original main chat_id, so its media must
-        # still route to the project panel.
-        chat_id = _bound_project_chat_id(
-            ctx, evt.get("task_id"), evt.get("parent_task_id"), evt.get("root_task_id")
-        ) or int(evt.get("chat_id") or 0)
+        # Binding precedence matches text delivery: post-hoc bound media stays
+        # in the project panel even when the task retained its original chat id.
+        # chat 0 is a real hidden session (same contract as video/file/links).
+        chat_id = _delivery_chat_id(evt, ctx)
         image_b64 = str(evt.get("image_base64") or "")
         caption = str(evt.get("caption") or "")
         mime = str(evt.get("mime") or "image/png")
-        if not chat_id or not image_b64:
+        if chat_id is None or not image_b64:
             return
         photo_bytes = b64mod.b64decode(image_b64)
         ok, err = ctx.bridge.send_photo(
@@ -259,41 +279,20 @@ def _handle_send_photo(evt: Dict[str, Any], ctx: Any) -> None:
             task_id=str(evt.get("task_id") or ""),
         )
         if not ok:
-            ctx.append_jsonl(
-                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "send_photo_error",
-                    "chat_id": chat_id, "error": err,
-                },
-            )
+            _log_error(ctx, "send_photo_error", chat_id=chat_id, error=err)
     except Exception as e:
-        ctx.append_jsonl(
-            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "send_photo_event_error", "error": repr(e),
-            },
-        )
+        _log_error(ctx, "send_photo_event_error", error=repr(e))
 
 
 def _handle_send_video(evt: Dict[str, Any], ctx: Any) -> None:
     """Send a video to the owner's chat."""
     import base64 as b64mod
     try:
-        # Binding precedence (matches the sibling handlers): a post-hoc bound
-        # task's media routes to its project panel, not the old main thread.
-        bound_chat = _bound_project_chat_id(
-            ctx, evt.get("task_id"), evt.get("parent_task_id"), evt.get("root_task_id")
-        )
-        raw_chat_id = evt.get("chat_id")
-        if not bound_chat and (raw_chat_id is None or raw_chat_id == ""):
-            return
-        chat_id = bound_chat or int(raw_chat_id)
+        chat_id = _delivery_chat_id(evt, ctx)
         video_b64 = str(evt.get("video_base64") or "")
         caption = str(evt.get("caption") or "")
         mime = str(evt.get("mime") or "video/mp4")
-        if not video_b64:
+        if chat_id is None or not video_b64:
             return
         video_bytes = b64mod.b64decode(video_b64)
         ok, err = ctx.bridge.send_video(
@@ -301,64 +300,87 @@ def _handle_send_video(evt: Dict[str, Any], ctx: Any) -> None:
             task_id=str(evt.get("task_id") or ""),
         )
         if not ok:
-            ctx.append_jsonl(
-                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "send_video_error",
-                    "chat_id": chat_id, "error": err,
-                },
-            )
+            _log_error(ctx, "send_video_error", chat_id=chat_id, error=err)
     except Exception as e:
-        ctx.append_jsonl(
-            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "send_video_event_error", "error": repr(e),
-            },
-        )
+        _log_error(ctx, "send_video_event_error", error=repr(e))
 
 
 def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
     """Send an arbitrary document/file to the owner's chat."""
     import base64 as b64mod
     try:
-        # Binding precedence (matches the sibling media handlers): a post-hoc
-        # bound task's file routes to its project panel, not the old main thread.
-        bound_chat = _bound_project_chat_id(
-            ctx, evt.get("task_id"), evt.get("parent_task_id"), evt.get("root_task_id")
-        )
-        raw_chat_id = evt.get("chat_id")
-        if not bound_chat and (raw_chat_id is None or raw_chat_id == ""):
-            return
-        chat_id = bound_chat or int(raw_chat_id)
+        chat_id = _delivery_chat_id(evt, ctx)
         file_b64 = str(evt.get("file_base64") or "")
-        caption = str(evt.get("caption") or "")
-        filename = str(evt.get("filename") or "file")
-        mime = str(evt.get("mime") or "application/octet-stream")
-        download_url = str(evt.get("download_url") or "")
-        task_id = str(evt.get("task_id") or "")
-        if not file_b64:
+        if chat_id is None or not file_b64:
             return
-        file_bytes = b64mod.b64decode(file_b64)
         ok, err = ctx.bridge.send_document(
-            chat_id, file_bytes, filename=filename, caption=caption, mime=mime,
-            download_url=download_url, task_id=task_id,
+            chat_id,
+            b64mod.b64decode(file_b64),
+            filename=str(evt.get("filename") or "file"),
+            caption=str(evt.get("caption") or ""),
+            mime=str(evt.get("mime") or "application/octet-stream"),
+            download_url=str(evt.get("download_url") or ""),
+            task_id=str(evt.get("task_id") or ""),
         )
         if not ok:
-            ctx.append_jsonl(
-                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "send_document_error",
-                    "chat_id": chat_id, "error": err,
-                },
-            )
+            _log_error(ctx, "send_document_error", chat_id=chat_id, error=err)
     except Exception as e:
-        ctx.append_jsonl(
-            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "send_document_event_error", "error": repr(e),
-            },
+        _log_error(ctx, "send_document_event_error", error=repr(e))
+
+
+def _handle_send_links(evt: Dict[str, Any], ctx: Any) -> None:
+    """Send structured HTTP(S) actions to the owner's chat."""
+    try:
+        chat_id = _delivery_chat_id(evt, ctx)
+        actions = evt.get("actions")
+        if chat_id is None or not isinstance(actions, list) or not actions:
+            return
+        ok, err = ctx.bridge.send_links(
+            chat_id,
+            actions,
+            title=str(evt.get("title") or ""),
+            task_id=str(evt.get("task_id") or ""),
         )
+        if not ok:
+            _log_error(ctx, "send_links_error", chat_id=chat_id, error=err)
+    except Exception as e:
+        _log_error(ctx, "send_links_event_error", error=repr(e))
+
+
+def _handle_send_quiz(evt: Dict[str, Any], ctx: Any) -> None:
+    """Send an owner quiz card to the owner's chat."""
+    try:
+        chat_id = _delivery_chat_id(evt, ctx)
+        options = evt.get("options")
+        if chat_id is None or not isinstance(options, list) or not options:
+            return
+        if chat_id == 0:
+            # Deliberate exception to the "0 is a real hidden session" policy:
+            # an interactive card in the hidden panel can never be seen or
+            # answered, so a headless author's quiz goes to Main.
+            chat_id = 1
+        ok, err = ctx.bridge.send_quiz(
+            chat_id,
+            quiz_id=str(evt.get("quiz_id") or ""),
+            question=str(evt.get("question") or ""),
+            options=options,
+            stake=str(evt.get("stake") or ""),
+            assumption=str(evt.get("assumption") or ""),
+            state=str(evt.get("state") or "open"),
+            task_id=str(evt.get("task_id") or ""),
+        )
+        if not ok:
+            _log_error(ctx, "send_quiz_error", chat_id=chat_id, error=err)
+    except Exception as exc:
+        _log_error(ctx, "send_quiz_event_error", error=repr(exc))
+
+
+# Merged into supervisor.events.EVENT_HANDLERS (the `**_CEH` pattern): the
+# structured chat-delivery event registry this leaf owns.
+EVENT_HANDLERS = {
+    "send_photo": _handle_send_photo,
+    "send_video": _handle_send_video,
+    "send_document": _handle_send_document,
+    "send_links": _handle_send_links,
+    "send_quiz": _handle_send_quiz,
+}

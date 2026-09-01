@@ -204,11 +204,19 @@ def materialize_companion_env(api: "PluginAPIImpl", descriptor: Any, spec: Dict[
         granted_keys=list(api._granted_upper),
     )
     reserved_env = {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL"}
-    for key, value in (spec.get("env") or {}).items():
-        key_text = str(key)
-        if key_text.upper() in FORBIDDEN_SKILL_SETTINGS or key_text.upper() in reserved_env:
-            continue
-        env[key_text] = str(value)
+    manifest_env = {
+        str(key): str(value)
+        for key, value in (spec.get("env") or {}).items()
+        if str(key).upper() not in FORBIDDEN_SKILL_SETTINGS
+        and str(key).upper() not in reserved_env
+    }
+    # Case-aware merge (delta finding D2-8): a manifest "Path" must REPLACE
+    # the allowlisted "PATH" on Windows, never sit next to it — duplicate
+    # case-variant env keys make CreateProcess-era spawns fail or pick an
+    # undefined winner. Same contract as the executor-local service lane.
+    from ouroboros.workspace_executor import overlay_env
+
+    env = overlay_env(env, manifest_env)
     env["HOST_SERVICE_URL"] = f"http://{DEFAULT_HOST_SERVICE_HOST}:{host_service_port()}"
     env["HOST_SERVICE_TOKEN"] = token
     if api._skill_dir is not None:
@@ -217,6 +225,25 @@ def materialize_companion_env(api: "PluginAPIImpl", descriptor: Any, spec: Dict[
             existing_pythonpath = env.get("PYTHONPATH")
             env["PYTHONPATH"] = os.pathsep.join(
                 [*site_dirs, existing_pythonpath] if existing_pythonpath else site_dirs
+            )
+    expected_runtime = str(spec.get("runtime") or "").strip()
+    manifest_path_override = any(
+        str(key).upper() == "PATH" for key in (spec.get("env") or {})
+    )
+    if expected_runtime in {"node", "npm"} and not manifest_path_override:
+        # T14 emergency-only PATH prepend (see register_companion_process):
+        # descriptor env keys win over the supervisor's `_companion_base_env`
+        # merge, so the prepended PATH reaches the child and survives
+        # supervisor restarts.
+        from ouroboros.platform_layer import skill_node_emergency_path_dir
+
+        node_prepend_dir = skill_node_emergency_path_dir()
+        if node_prepend_dir:
+            existing_path = env.get("PATH") or os.environ.get("PATH", "")
+            env["PATH"] = (
+                os.pathsep.join([node_prepend_dir, existing_path])
+                if existing_path
+                else node_prepend_dir
             )
     descriptor.env.clear()
     descriptor.env.update(env)

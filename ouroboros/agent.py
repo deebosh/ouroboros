@@ -113,6 +113,36 @@ class Env:
         return (self.drive_root / safe_relpath(rel)).resolve()
 
 
+def _emit_budget_pause_checkpoint(
+    event_queue: Any,
+    drive_logs: pathlib.Path | None,
+    task_id: str,
+    resource_limit: Dict[str, Any],
+) -> None:
+    """Publish the owner-visible budget-pause checkpoint on the registered path.
+
+    The enveloped log_event route is the ONE registered checkpoint channel
+    (_handle_log_event persists task_checkpoint rows and pushes them live);
+    a bare task_checkpoint on _pending_events has no handler and died as
+    unknown_worker_event, silently losing the owner-visible toast.
+    """
+    checkpoint = {
+        "type": "task_checkpoint",
+        "task_id": task_id,
+        "checkpoint_kind": "budget_scope_paused",
+        "owner_visible": True,
+        "toast_once": f"{task_id}:budget-paused:{resource_limit['scope']}",
+        **resource_limit,
+    }
+    if event_queue is not None:
+        emit_log_event(event_queue, checkpoint)
+    elif drive_logs:
+        try:
+            append_jsonl(drive_logs / "events.jsonl", {"ts": utc_now_iso(), **checkpoint})
+        except Exception:
+            log.debug("budget-pause checkpoint append failed", exc_info=True)
+
+
 class OuroborosAgent:
     """Per-worker agent instance; long-term state lives on Drive."""
 
@@ -688,11 +718,15 @@ class OuroborosAgent:
 
     def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Run one task under the root/subtree monetary attribution scope."""
-        # Hot-reload settings so UI changes affect the next task without restart.
-        try:
-            subagent_runtime.apply_task_start_settings()
-        except Exception:
-            pass
+        # A reused worker agent still carries the PREVIOUS task's chat binding;
+        # events emitted before _handle_task_scoped rebinds it would be
+        # addressed to the old thread. No binding lets the supervisor stamp
+        # the right chat from the RUNNING row by task_id (log_addressing).
+        self._current_chat_id = None
+        # Hot-reload settings so UI changes affect the next task without
+        # restart; a failed reload is disclosed loudly, not swallowed (#285).
+        subagent_runtime.apply_task_start_settings_or_disclose(
+            str(task.get("id") or ""), self._emit_live_log)
 
         from ouroboros.usage_accounting import UsageScope, usage_scope
 
@@ -976,14 +1010,9 @@ class OuroborosAgent:
                 "tool_calls": [],
                 "resource_limit": resource_limit,
             }
-            self._pending_events.append({
-                "type": "task_checkpoint",
-                "task_id": task_id,
-                "checkpoint_kind": "budget_scope_paused",
-                "owner_visible": True,
-                "toast_once": f"{task_id}:budget-paused:{resource_limit['scope']}",
-                **resource_limit,
-            })
+            _emit_budget_pause_checkpoint(
+                self._event_queue, drive_logs, task_id, resource_limit
+            )
             emit_task_results(
                 self.env,
                 self.memory,

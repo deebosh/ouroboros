@@ -984,7 +984,7 @@ def test_triad_template_stable_part_has_no_dynamic_fields():
                           "{current_files_section}", "{review_history_section}"):
         assert dynamic_field not in stable
     dynamic = review_mod._REVIEW_PROMPT_TEMPLATE_DYNAMIC
-    for stable_field in ("{checklist_section}", "{dev_guide_text}", "{architecture_section}"):
+    for stable_field in ("{checklist_section}", "{dev_guide_text}", "{design_text}", "{architecture_section}"):
         assert stable_field not in dynamic
 
 
@@ -1463,11 +1463,14 @@ def test_extended_ttl_scales_cache_write_estimate(monkeypatch):
 
 def test_supervisor_handles_review_wave_budget_event(monkeypatch):
     from supervisor import events as sup_events
-    from supervisor import events_budget
+    from supervisor import telemetry_events as sup_telemetry
 
     assert "review_wave_budget_insufficient" in sup_events.EVENT_HANDLERS
     captured = {}
-    monkeypatch.setattr(events_budget, "append_jsonl", lambda path, row: captured.update(row))
+    # The durable passthrough lives in the telemetry module (split out of
+    # events.py at the 200K module-byte ceiling); the registry key is the
+    # contract, the append is the behavior.
+    monkeypatch.setattr(sup_telemetry, "append_jsonl", lambda path, row: captured.update(row))
 
     class _Ctx:
         DRIVE_ROOT = pathlib.Path("/tmp")

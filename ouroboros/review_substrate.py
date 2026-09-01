@@ -784,12 +784,15 @@ from ouroboros.review_records import (  # noqa: E402, F401 -- intentional public
 
 from ouroboros.review_verdict import (  # noqa: E402, F401 -- intentional public re-exports
     DIALOGUE_CONTINUE,
+    DIALOGUE_INCONCLUSIVE,
     DIALOGUE_STABLE_DISAGREEMENT,
     DIALOGUE_STATUS_VALUES,
+    DIALOGUE_TERMINAL_STATUSES,
     DIALOGUE_UNREACHABLE,
+    DIALOGUE_VOTE_ABSTAIN_INVALID,
+    DIALOGUE_VOTE_CONTINUE_WITHOUT_FINDINGS,
     _CRITERION_STATUSES,
     _TIER_ORDER,
-    _contract_valid_actors,
     _contributing_actors,
     _criteria_have_supported_evidence,
     _criteria_shape_valid,
