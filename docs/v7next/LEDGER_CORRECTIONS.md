@@ -4353,3 +4353,126 @@ S11-S13, all keyless mock-lane, every scenario green on this host.
    from wave 2. S-id note for the integrator: a parallel Ф4 wave (gateway/UI
    truth) may also claim S11+; renumber ONE side's manifest rows at
    integration if both landed — the gen/verify pins make a collision loud.
+## From the F4 wave 3a (review/acceptance, base 8827fd2c)
+
+Scenario wave on the lane-1/2 skeleton — the plan-§8 review surfaces (plan
+review; commit triad+scope in BOTH enforcement classes with stale-rejection;
+acceptance loop), four manifest rows S11-S14, all keyless mock-lane, every
+scenario green on this host.
+
+1. SCENARIOS LANDED (tests/system_e2e/test_system_scenarios_w3a.py):
+   - S11 plan review (~22s solo + ~21s cap variant): a scripted task drives
+     `plan_task` through a real REVISE→ACCEPT cycle — cycle 1: every triad
+     slot (plan review rides the configured triad rows) returns one blocking
+     finding with `breaks: goal` → aggregate REVISE_PLAN, open; cycle 2: a
+     CHANGED spec (new fingerprint, new paid cycle) → all-clean → GREEN,
+     closed. Durable chronicle asserted honest: `plan_review_state` on the
+     stored task row (`cycles_paid == 2`, last wave GREEN/closed) plus the
+     immutable per-wave artifacts (`task_results/artifacts/<task>/`
+     `plan-review-wave-*.json` — aggregates exactly [REVISE_PLAN, GREEN], the
+     scripted finding text preserved verbatim). The cap variant proves the
+     shared owner ceiling (`OUROBOROS_REVIEW_MAX_CYCLES`, shipped default 2)
+     end-to-end: two paid waves (6 slot calls total), then a THIRD changed
+     envelope answered with the typed `PLAN_REVIEW_CYCLES_EXHAUSTED` refusal
+     at $0 (no reviewer called, stub count still 6),
+     `current_attempt.status == "cycles_exhausted"` stamped, and the durable
+     `review_cycles_exhausted` escalation event (surface=plan_review,
+     cycles_paid=2, cap=2) — which lands in the SERVER-level events.jsonl,
+     not the task drive (see W3A-F4).
+   - S12 commit triad+scope, ADVISORY class (~25s in-lane): the SAME red
+     triad verdict that blocks S13 is waved through — the doc-only commit
+     LANDS, and the wave-through is loud and durable (BIBLE P3): typed
+     `review_advisory_override` event (block_reason=critical_findings), the
+     persistent `state/advisory_overrides.json` counter, and the verbatim
+     verdicts on the commit-attempt ledger row. Both organs dispatched
+     (3 triad + 1 scope stub calls).
+   - S13 commit triad+scope, BLOCKING class (~30s in-lane): red critical
+     triad FAIL → `REVIEW_BLOCKED`, repo HEAD does not move; a BYTE-IDENTICAL
+     resubmission → the typed `IDENTICAL_DIFF_REFUSED` free refusal (verdict
+     streak, $0 — no triad calls consumed); a FIXED diff → clean verdicts →
+     the commit lands exactly once (HEAD parent == pre-task HEAD). Durable:
+     the verdict-blocked attempt row (block_reason=critical_findings), 6
+     triad + 2 scope calls total (none for the identical resubmit).
+   - S13 freshness stale-rejection (~50s in-lane, private clone): pins the
+     tree's ACTUAL freshness mechanics, both layers, live:
+     (a) advisory freshness — a REAL fresh `preflight_review` verdict (the
+     advisory row of `OUROBOROS_REVIEWER_SLOTS` pinned onto the stub; the
+     native inspection episode answers `[]`+NO_FINDINGS → status "fresh"),
+     then a worktree edit (`invalidate_advisory_after_mutation` via
+     write_file), then `commit_reviewed` WITHOUT the audited skip →
+     `ADVISORY_PRE_REVIEW_REQUIRED` naming the worktree edit, $0 (no
+     triad/scope dispatched), the fresh run demoted to status="stale" on the
+     durable ledger;
+     (b) post-verdict revalidation — with the advisory bypassed, a
+     `ReviewScript` CALLABLE hooked on the scope call stages NEW bytes into
+     the clone's index mid-wave (after the pre-dispatch
+     `_fingerprint_staged_diff`, before settlement) and returns an ALL-CLEAN
+     verdict; the commit is still refused: `REVIEW_REVALIDATION_FAILED`,
+     attempt row block_reason=revalidation_failed with
+     fingerprint_status="mismatch", typed
+     `reviewed_attempt_revalidation_failed` event — a verdict for other
+     bytes is never carried forward. HEAD never moves in this scenario.
+   - S14 acceptance loop, required+blocking (~25s + ~26s variants): the
+     terminal runs the REAL acceptance dialogue keyless (acceptance panels
+     ride the triad rows; the clean accept cites `verification_summary` — a
+     top-level packet section `build_task_acceptance_evidence` writes
+     host-attested unconditionally, so the supported criterion's evidence_ref
+     resolves under the exact-match vocabulary). Reject→rework→accept: panel
+     1 FAIL (well-formed: tier best_effort + coach + typed finding +
+     criteria), improvement note fed back, the agent reworks, panel 2 accepts
+     clean — `acceptance_decision.status == "accepted"`, aggregate signals
+     PASS-only, and the durable wallet
+     (`task_acceptance_review_accounting.claims_by_binding`) carries TWO
+     claims: both candidate identities were separately paid. Free-replay
+     variant: a rework that changes NOTHING is refused for FREE — one paid
+     panel only (3 acceptance stub calls total), ONE wallet claim,
+     `acceptance_decision {status: finalized_unaccepted, reason:
+     identical_acceptance_refused}` — the keyless instance of the $0-refusal
+     class.
+2. HARNESS DELTAS (tests/system_e2e/harness.py):
+   (a) two new prompt markers with source pins — `PLAN_REVIEW_MARKER`
+   (tools/plan_packet.py system-prompt head) and `NATIVE_EPISODE_MARKER`
+   (review_native_episode.py; deliberately the FIRST source line of the
+   two-literal sentence, because the marker-pin test greps the source file
+   where the concatenation does not exist); `classify_call` now returns
+   `plan_review` / `advisory_review` / `native_episode` (the native episode
+   is a TOOL-BEARING review call — unclassified it would eat agent script
+   steps; the surface is parsed off the episode's own `Surface:` line);
+   `REVIEW_KINDS` is the closed kind set.
+   (b) canned clean answers for the new kinds are the shared
+   `[]`+NO_FINDINGS shape — verified-clean under BOTH real parsers
+   (plan_spec.parse_findings; the advisory clean predicate shared with
+   triad_review.empty_array_is_verified_clean), pinned in the default lane.
+   (c) `ReviewScript` — ordered per-kind verdict queues for review-organ
+   calls: each call of a kind consumes one entry (str content / dict message
+   / CALLABLE over the request body — the S13 freshness hook both mutates
+   the staged tree and returns the verdict), an exhausted or absent queue
+   falls back to canned all-clean, `assert_consumed()` is the integrity
+   gate, and review calls still never consume agent script steps (default-
+   lane pins in both directions). `ScriptedStubModel(review_script=...)` →
+   `scripted_completion(..., review_next=...)`, consulted ONLY for
+   `REVIEW_KINDS`.
+   (d) `keyless_reviewer_slots(advisory=True)` — the ONE optional advisory
+   row pinned onto the stub slug, so the advisory pre-review runs its real
+   bounded native inspection episode keyless instead of degrading to the
+   audited-bypass compensation; the default form stays byte-identical.
+3. E2E-находки wave-3a (runtime defects/observations — NOT fixed in this
+   lane, per the lane rule):
+
+   | id | surface | observation | evidence |
+   |---|---|---|---|
+   | W3A-F1 | advisory admission vs commit gate (P9 scope) | `release_metadata_preflight` hard-blocks ANY changed set without VERSION in scope — including doc-only diffs, which the commit gate deliberately exempts (`_diff_is_doc_only` carve, applied only to the tests preflight; the commit path runs no release-metadata preflight). Net effect on every install: a doc-only change can NEVER obtain a fresh advisory verdict — the standard preflight_review→commit_reviewed flow structurally degrades to the audited bypass for doc-only work. S13b reaches a real verdict by naming the UNCHANGED `VERSION` in `paths` (satisfies the scope check; carriers already consistent). Owner decision candidates: a doc-only carve in the admission, or an explicit typed "advisory not applicable to doc-only" outcome instead of PREFLIGHT_BLOCKED. | ouroboros/commit_admission.py:90-99 vs ouroboros/tools/git.py:614; observed live (doc-only diff → PREFLIGHT_BLOCKED naming BIBLE P9) |
+   | W3A-F2 | tree state: README Version History over its own P9 limit | The checked-in README on this base carries 6 patch rows against the limit of 5 (`check_history_limit`), so EVERY VERSION-in-scope advisory admission on this tree is deterministically blocked before any review. The next release touching VERSION must trim the oldest patch entry anyway; until then advisory verdicts are unreachable on this checkout without the S13b fixture repair (the scenario trims the oldest patch row in its private clone and commits it). | ouroboros/tools/release_sync.py:576-605; README.md Version History (6.113.5..6.113.1 + 6.110.1); observed live (PREFLIGHT_BLOCKED "6 patch rows (limit 5)") |
+   | W3A-F3 | advisory stale mark transience | `last_stale_from_edit_ts` is a transient repo-scoped mark: it is cleared once a LATER advisory run row lands (including the audited-bypass row a subsequent `skip_advisory_review=True` commit records), so a post-hoc reader cannot rely on it. The durable evidence of edit-staleness is the demoted run row (status="stale") plus the refusal text naming the edit; the scenario pins those. | ouroboros/review_state_model.py add_run/mark_all_stale_except; observed live in S13b (mark set at refusal time, empty in the final state) |
+   | W3A-F4 | plan-review escalation event routing | `emit_review_cycles_exhausted` for surface=plan_review lands in the SERVER-level `logs/events.jsonl`, while the rest of the task's plan-review evidence (tool rows, wave artifacts via the task artifact store) is task-scoped — a reader scanning only the task drive misses the escalation row. Cheap disclosure, not necessarily a defect. | ouroboros/review_cycles.py:171-199; observed live in S11-cap |
+
+4. DEFERRED (disclosed, wave-4 remainder): self-evolution absorb with
+   kill-mid-absorb restart recovery (the instruction's optional item 4 — the
+   evolution-campaign fixture is a full wave of its own), plus the carried
+   wave-2 remainder (carrier-conflict / assisted-merge / crash-mid-phase
+   update variations, chat-lineage cancel receipt, delegated-transport
+   FakeClaudexorDaemon, gateway/UI-truth Playwright, skills lifecycle).
+5. LANE BUDGET: full mock lane (S1-S14 + default pins, serial) — 43 passed
+   in ~610s (10:09) on this host, inside the plan's 10-25 min PR keyless
+   budget; wave 3a added 12 tests / ~6.5 min over wave 2's ~219s. The five
+   new default-lane pins add well under 1s to the ordinary battery.
