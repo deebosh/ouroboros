@@ -236,8 +236,19 @@ def _append_bytes_fsync(path: pathlib.Path, payload: bytes) -> None:
         os.close(fd)
 
 
-def _write_bytes_atomic_fsync(path: pathlib.Path, payload: bytes) -> None:
-    """Persist the exact snapshotted bytes without reopening the source."""
+def _write_bytes_atomic_fsync(
+    path: pathlib.Path,
+    payload: bytes,
+    precondition: Optional[Callable[[], bool]] = None,
+) -> bool:
+    """Persist the exact snapshotted bytes without reopening the source.
+
+    ``precondition`` is evaluated once the temp bytes are durable, immediately
+    before the rename — the last instant the replace can still be refused. A
+    ``False`` answer cleans up the temp file and returns ``False`` with the
+    destination untouched (CPL4-C6: the compactor re-proves that the live
+    ledger is still the snapshot it folded, INSIDE the swap, so an append
+    landing after the outer re-check cannot be erased by the rename)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}")
     fd: Optional[int] = None
@@ -255,7 +266,11 @@ def _write_bytes_atomic_fsync(path: pathlib.Path, payload: bytes) -> None:
         os.fsync(fd)
         os.close(fd)
         fd = None
+        if precondition is not None and not precondition():
+            tmp.unlink()
+            return False
         replace_atomic(tmp, path)
+        return True
     except Exception:
         if fd is not None:
             os.close(fd)

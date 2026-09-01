@@ -154,6 +154,7 @@ BAND_PATHS = {
     "ouroboros/tools/skill_exec.py": None,
     "ouroboros/tools/skill_publish.py": "Entered the band from 952 lines: publish now writes the OuroborosHub publication receipt at pr_opened through the shared locked-update seam and maps the receipt from the validated serialized form (hubflow sprint, receipt-as-only-stored-fact design).",
     "ouroboros/usage_accounting.py": "Entered the band from the 1501-1600 zone (1600 lines) by the v7 L-C2 extraction of the one-time legacy usage import into ouroboros/usage_legacy_import.py; shrink-only residue of the split, not new growth.",
+    "ouroboros/usage_compaction.py": "Entered the band from 971 lines: the C6 round-4 fixes homed here \u2014 dir-fd/O_NOFOLLOW anchoring of the archive writer and reader (a link planted after any path check cannot receive or serve monetary history) and the swap's last-instant snapshot re-proof inside the atomic replace \u2014 defenses that belong beside the compaction pass they defend.",
     "ouroboros/workspace_executor.py": None,
     "scripts/v7next_transplant.py": "F0 phase-review CRITICAL hardening: whole-leaf runtime invariants (handle existence/shape, declared/preamble disjointness, unread-declared) added to the byte-proof verifier; campaign tool retires with F6, not a runtime module",
     "skills/telegram/plugin.py": None,

@@ -175,38 +175,132 @@ def _mkdir_fsync_chain(path: pathlib.Path, root: pathlib.Path) -> None:
         _fsync_dir(directory)
 
 
-def _write_new_file_fsync(path: pathlib.Path, payload: bytes, root: pathlib.Path) -> None:
-    """Create-exclusive write + fsync of file AND directory (archive segments)."""
-    _mkdir_fsync_chain(path.parent, root)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    fd = os.open(str(path), flags, 0o600)
+def _dir_fd_capable() -> bool:
+    """POSIX with dir_fd/O_DIRECTORY support; Windows (or an os lacking them)
+    keeps the path-based shape as a disclosed best effort, by predicate."""
+    from ouroboros.platform_layer import IS_WINDOWS
+
+    return (
+        not IS_WINDOWS
+        and hasattr(os, "O_DIRECTORY")
+        and {os.open, os.mkdir} <= os.supports_dir_fd
+    )
+
+
+def _close_fds(fds: list) -> None:
+    for handle in fds:
+        with contextlib.suppress(OSError):
+            os.close(handle)
+
+
+def _archive_dir_fds(root: pathlib.Path, *, create: bool) -> list:
+    """POSIX handles for [data root, ``archive/``, ``archive/usage_ledger``].
+
+    Each level below the root is opened ``O_DIRECTORY|O_NOFOLLOW`` relative
+    to the previous HANDLE (``dir_fd``), so the directory the caller then
+    writes into or reads from IS the one that was checked — a link swapped in
+    after any path-based look changes nothing, because no path is ever
+    re-resolved. (The root itself is the anchor and may be reached through
+    links legitimately.) A link at either archive level surfaces here as
+    ``UsageLedgerCorrupt``.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fds = [os.open(str(root), os.O_RDONLY | os.O_DIRECTORY)]
+    level = root
     try:
-        view = memoryview(payload)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise OSError(f"short write to {path}")
-            view = view[written:]
-        os.fsync(fd)
+        for name in ARCHIVE_SEGMENT_DIR_REL.parts:
+            level = level / name
+            if create:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(name, dir_fd=fds[-1])
+            try:
+                fds.append(os.open(name, flags, dir_fd=fds[-1]))
+            except OSError as exc:
+                raise UsageLedgerCorrupt(
+                    f"usage archive level is not our own directory: {level}"
+                ) from exc
+        return fds
+    except BaseException:
+        _close_fds(fds)
+        raise
+
+
+def _write_all_fsync(fd: int, payload: bytes, path: pathlib.Path) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError(f"short write to {path}")
+        view = view[written:]
+    os.fsync(fd)
+
+
+def _write_new_file_fsync(path: pathlib.Path, payload: bytes, root: pathlib.Path) -> None:
+    """Create-exclusive write + fsync of an archive segment AND its dir chain.
+
+    POSIX creates the segment ``O_NOFOLLOW`` via the ``dir_fd`` handles of
+    :func:`_archive_dir_fds` and fsyncs file then every directory HANDLE, so
+    the chain proven durable is the one the bytes actually landed in — a link
+    planted after any path-based check cannot receive monetary history.
+    Windows keeps the path-based chain (no dir_fd), best effort, disclosed.
+    """
+    if not _dir_fd_capable():
+        _mkdir_fsync_chain(path.parent, root)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        fd = os.open(str(path), flags, 0o600)
+        try:
+            _write_all_fsync(fd, payload, path)
+        finally:
+            os.close(fd)
+        _fsync_dir(path.parent)
+        return
+    fds = _archive_dir_fds(root, create=True)
+    try:
+        try:
+            fd = os.open(
+                path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600, dir_fd=fds[-1],
+            )
+        except OSError as exc:
+            raise UsageLedgerCorrupt(
+                f"usage archive segment cannot be created as our own file: {path}"
+            ) from exc
+        try:
+            _write_all_fsync(fd, payload, path)
+        finally:
+            os.close(fd)
+        for handle in reversed(fds):  # segment dir, archive/, data root
+            os.fsync(handle)
     finally:
-        os.close(fd)
-    _fsync_dir(path.parent)
+        _close_fds(fds)
 
 
-def _swap_ledger_fsync(path: pathlib.Path, payload: bytes) -> None:
+def _swap_ledger_fsync(
+    path: pathlib.Path, payload: bytes, raw: bytes, beat: Callable[[], None]
+) -> None:
     """Atomically replace the live ledger with the verified candidate bytes.
 
-    The receipt this pass returns describes the bytes it approved, so the swap
-    proves they are the bytes now AT the path — a rename that reported success
-    without landing (or that something else immediately wrote over) must not
-    be logged as a completed compaction.
+    Two proofs run immediately BEFORE the rename — after the temp bytes are
+    durable, at the last instant the replace can still be refused, because
+    writing and fsyncing the candidate temp can take arbitrarily long and any
+    proof taken before the swap began is stale by the rename. Ownership FIRST
+    (``beat`` aborts the pass if the lock stopped being ours while the temp
+    was written — a snapshot answered while robbed is a meaningless answer),
+    THEN the live file must still be the snapshot ``raw`` this candidate
+    folded: the recheck-to-replace gap is where an append under a broken lock
+    would be silently erased, so the last look happens inside the swap itself.
+    AFTER it, the pass re-reads what landed: the receipt describes bytes that
+    are actually AT the path, so a rename that reported success without
+    landing (or was immediately written over) is never logged as a compaction.
     """
-    _write_bytes_atomic_fsync(path, payload)
+    def owned_and_intact() -> bool:
+        beat()  # raises _Abort on a lost hold; the temp is cleaned up en route
+        return _snapshot_intact(path, raw)
+
+    if not _write_bytes_atomic_fsync(path, payload, precondition=owned_and_intact):
+        raise _Abort("ledger changed between the re-check and the replace")
     _fsync_dir(path.parent)
-    landed = path.read_bytes()
-    if len(landed) != len(payload) or hashlib.sha256(landed).hexdigest() != hashlib.sha256(
-        payload
-    ).hexdigest():
+    if path.read_bytes() != payload:
         raise UsageLedgerCorrupt(f"usage ledger swap did not land the approved bytes: {path}")
 
 
@@ -626,28 +720,36 @@ def compact_usage_ledger_locked(
 
     # Commit: archive first (durable before the live file is touched). The
     # literal path chain here is the scanner-visible writer of the
-    # archive/usage_ledger plane (docs/PERSISTENCE.md row).
+    # archive/usage_ledger plane (docs/PERSISTENCE.md row). Ownership is
+    # re-proven IMMEDIATELY before each snapshot look — including the final
+    # look inside the swap itself, after the candidate temp is durable and
+    # right before the rename: a re-check answered while the lock already
+    # belongs to someone else is a meaningless answer, and the rename is the
+    # irreversible step it licenses.
     try:
-        beat()
         try:
             _archive_dir_bounded(root)  # never write history through a link
         except UsageLedgerCorrupt as exc:
             raise _Abort(str(exc)) from exc
+        beat()
         if not _snapshot_intact(ledger_path, raw):
             log.warning("usage-ledger compaction abandoned before archive: ledger changed under the lock")
             return None
         segment_name = pathlib.PurePosixPath(receipt["archive_rel"]).name
-        _write_new_file_fsync(root / "archive" / "usage_ledger" / segment_name, raw, root)
+        try:
+            _write_new_file_fsync(root / "archive" / "usage_ledger" / segment_name, raw, root)
+        except UsageLedgerCorrupt as exc:
+            raise _Abort(str(exc)) from exc  # e.g. a link planted mid-pass
         beat()
         if not _snapshot_intact(ledger_path, raw):
             # A row landed between the snapshot and here. Swapping now would
             # erase it; the written segment is an orphan (never referenced).
             log.warning("usage-ledger compaction abandoned before swap: ledger changed under the lock")
             return None
+        _swap_ledger_fsync(ledger_path, candidate, raw, beat)
     except _Abort as abort:
         log.info("usage-ledger compaction skipped: %s", abort.reason)
         return None
-    _swap_ledger_fsync(ledger_path, candidate)
     try:
         append_jsonl(
             root / "logs" / "events.jsonl",
@@ -796,25 +898,46 @@ def _load_segment(
     expected_sha256 = str(header.get("source_sha256") or "")
     path = _segment_path(root, str(header.get("archive_rel") or ""))
     key = str(path)
+    fds: list = []
+    fd: Optional[int] = None
     try:
-        info = os.stat(path)
-    except OSError as exc:
-        raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
-    fingerprint = (info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns)
-    now = time.time()
-    cached = _SEGMENT_CACHE.get(key)
-    if (
-        cached is not None
-        and cached[0] == expected_sha256
-        and cached[3] == fingerprint
-        and (now - info.st_mtime) > _SEGMENT_MTIME_SETTLE_SEC
-        and (now - cached[4]) <= _SEGMENT_CACHE_TTL_SEC
-    ):
-        return cached[1], cached[2]
-    try:
-        payload = path.read_bytes()
-    except OSError as exc:
-        raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
+        # POSIX opens the segment O_NOFOLLOW through the dir-fd handles, so
+        # the file fingerprinted AND read is one plain file inside the checked
+        # archive directory — a link planted after `_segment_path`'s look is
+        # an open error here, never a read through it. Windows stays
+        # path-based, best effort, by the platform predicate.
+        try:
+            if _dir_fd_capable():
+                fds = _archive_dir_fds(root, create=False)
+                fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[-1])
+            else:
+                fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        except OSError as exc:
+            raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
+        info = os.fstat(fd)
+        fingerprint = (info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns)
+        now = time.time()
+        cached = _SEGMENT_CACHE.get(key)
+        if (
+            cached is not None
+            and cached[0] == expected_sha256
+            and cached[3] == fingerprint
+            and (now - info.st_mtime) > _SEGMENT_MTIME_SETTLE_SEC
+            and (now - cached[4]) <= _SEGMENT_CACHE_TTL_SEC
+        ):
+            return cached[1], cached[2]
+        chunks: list = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+    finally:
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        _close_fds(fds)
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise UsageLedgerCorrupt(f"usage archive segment hash mismatch: {path}")
     if len(payload) != int(header.get("source_size_bytes") or -1):

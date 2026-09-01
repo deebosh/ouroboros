@@ -358,9 +358,9 @@ def test_archive_directory_chain_is_durable_before_the_swap(data_root, monkeypat
 
     real_swap = uc._swap_ledger_fsync
 
-    def watched_swap(path, payload):
+    def watched_swap(*args):
         swapped.append(len(synced))
-        return real_swap(path, payload)
+        return real_swap(*args)
 
     monkeypatch.setattr(os, "fsync", recording_fsync)
     monkeypatch.setattr(uc, "_swap_ledger_fsync", watched_swap)
@@ -423,9 +423,9 @@ def test_the_directory_chain_is_re_synced_on_the_retry_after_a_failed_pass(data_
 
     real_swap = uc._swap_ledger_fsync
 
-    def watched_swap(path, payload):
+    def watched_swap(*args):
         swapped.append(len(synced))
-        return real_swap(path, payload)
+        return real_swap(*args)
 
     monkeypatch.setattr(os, "fsync", recording_fsync)
     monkeypatch.setattr(uc, "_swap_ledger_fsync", watched_swap)
@@ -592,6 +592,141 @@ def test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt(data_root, mo
     with ua._locked(data_root) as heartbeat:
         with pytest.raises(UsageLedgerCorrupt):
             uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
+
+
+def test_an_append_between_the_recheck_and_the_replace_aborts_without_loss(
+    data_root, monkeypatch
+):
+    """The pre-swap re-check is not the last look: the live ledger is proven
+    unchanged again INSIDE the swap, after the candidate bytes are durable and
+    immediately before the rename — the last instant the replace can still be
+    refused. A row that lands after the outer re-check therefore survives."""
+    _seed_mixed_ledger(data_root)
+    before_money = _decimal_money(_ledger_rows(data_root))
+    real_check = uc._snapshot_intact
+    injected: dict = {}
+    calls: list = []
+
+    def racing_check(path, raw):
+        verdict = real_check(path, raw)
+        calls.append(verdict)
+        if len(calls) == 2 and verdict:
+            # The charge lands AFTER the outer pre-swap re-check answered
+            # "intact" and BEFORE the rename trusts that answer.
+            injected.update(_append_raw_row(data_root, {
+                "kind": "subscription_session", "attempt_id": "sess-last-instant",
+                "state": "settled", "ts": "2026-09-01T00:00:00+00:00",
+                "cost_usd": 0.25, "cost_final": True, "model": "fable",
+                "provider": "claudexor", "category": "task", "source": "subscription",
+                "task_id": "t", "root_task_id": "root", "parent_task_id": "",
+            }))
+        return verdict
+
+    monkeypatch.setattr(uc, "_snapshot_intact", racing_check)
+    assert _compact(data_root) is None  # the replace was refused
+    rows = _ledger_rows(data_root)
+    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
+    assert not any(row.get("kind") == "usage_baseline" for row in rows)
+    _validate_records(rows)
+    ledger_path = data_root / ua.LEDGER_REL
+    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
+    cost, bound = _decimal_money(rows)
+    assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
+
+
+def test_a_hold_lost_at_the_archive_is_seen_before_the_snapshot_is_trusted(
+    data_root, monkeypatch
+):
+    """The pass proves ownership immediately BEFORE each snapshot look: a
+    re-check answered while the lock already belongs to someone else is a
+    meaningless answer, so the loss must abort before it is even asked."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    before = ledger_path.read_bytes()
+    archive_dir = data_root / "archive" / "usage_ledger"
+    checks: list = []
+    real_check = uc._snapshot_intact
+
+    def counting_check(path, raw):
+        checks.append(1)
+        return real_check(path, raw)
+
+    monkeypatch.setattr(uc, "_snapshot_intact", counting_check)
+
+    def heartbeat():
+        # Ownership dies at the exact moment the archive segment lands.
+        return not list(archive_dir.glob("segment_*.jsonl"))
+
+    with ua._locked(data_root):
+        assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
+    assert ledger_path.read_bytes() == before
+    assert len(checks) == 1  # the post-archive re-check never ran
+    assert list(archive_dir.glob("segment_*.jsonl"))  # the orphan stays, disclosed
+
+
+def test_a_hold_lost_after_the_recheck_aborts_before_the_swap(data_root, monkeypatch):
+    """Ownership is proven once more between the re-check and the rename: a
+    verdict that arrived while ours cannot license a replace that happens
+    after the hold left us."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    before = ledger_path.read_bytes()
+    state = {"checks": 0}
+    real_check = uc._snapshot_intact
+
+    def counting_check(path, raw):
+        state["checks"] += 1
+        return real_check(path, raw)
+
+    monkeypatch.setattr(uc, "_snapshot_intact", counting_check)
+
+    def heartbeat():
+        # Ownership dies the moment the pre-swap re-check has answered.
+        return state["checks"] < 2
+
+    with ua._locked(data_root):
+        assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
+    assert ledger_path.read_bytes() == before  # no swap: byte-identical
+    assert not any(row.get("kind") == "usage_baseline" for row in _ledger_rows(data_root))
+
+
+def test_a_hold_lost_while_the_temp_is_written_refuses_the_replace(data_root):
+    """Writing and fsyncing the candidate temp can take arbitrarily long, so
+    an ownership proof taken before the swap began is stale by the rename.
+    The proof therefore lives INSIDE the atomic writer — once the temp bytes
+    are durable, immediately before the snapshot look and the rename — and it
+    runs FIRST: a hold lost while the temp was written refuses the replace,
+    and a charge the new holder appended survives byte-for-byte."""
+    _seed_mixed_ledger(data_root)
+    before_money = _decimal_money(_ledger_rows(data_root))
+    ledger_path = data_root / ua.LEDGER_REL
+    injected: dict = {}
+
+    def heartbeat():
+        # Ownership dies while the candidate temp is being written: the first
+        # proof asked with the temp on disk answers False — and the new
+        # holder's charge lands with it, exactly the row a rename would erase.
+        if not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*")):
+            return True
+        if not injected:
+            injected.update(_append_raw_row(data_root, {
+                "kind": "subscription_session", "attempt_id": "sess-new-holder",
+                "state": "settled", "ts": "2026-09-01T00:00:00+00:00",
+                "cost_usd": 0.25, "cost_final": True, "model": "fable",
+                "provider": "claudexor", "category": "task", "source": "subscription",
+                "task_id": "t", "root_task_id": "root", "parent_task_id": "",
+            }))
+        return False
+
+    with ua._locked(data_root):
+        assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
+    rows = _ledger_rows(data_root)
+    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
+    assert not any(row.get("kind") == "usage_baseline" for row in rows)
+    _validate_records(rows)
+    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
+    cost, bound = _decimal_money(rows)
+    assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
 
 
 
@@ -838,6 +973,69 @@ def test_a_symlinked_archive_path_is_refused_by_writer_and_reader(data_root, tmp
     before = ledger_path.read_bytes()
     assert _compact(data_root) is None  # the writer refuses to feed it
     assert ledger_path.read_bytes() == before
+
+
+def test_a_link_planted_after_the_writer_bound_check_cannot_receive_history(
+    data_root, tmp_path, monkeypatch
+):
+    """The bound check and the write are not one instant: on POSIX the writer
+    creates the segment through O_NOFOLLOW dir-fd handles, so a link swapped
+    in AFTER the check passed still cannot receive monetary history."""
+    if platform_layer.IS_WINDOWS:  # pragma: no cover - platform predicate
+        pytest.skip("dir-fd anchoring is POSIX; Windows is a disclosed best effort")
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    _settle(data_root, cost=0.5, cost_final=True, task_id="gen2")
+    ledger_path = data_root / ua.LEDGER_REL
+    archive = data_root / "archive"
+    elsewhere = tmp_path / "elsewhere"
+    real_bound = uc._archive_dir_bounded
+
+    def racing_bound(root):
+        result = real_bound(root)
+        if not archive.is_symlink():
+            shutil.move(str(archive), str(elsewhere))
+            archive.symlink_to(elsewhere, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(uc, "_archive_dir_bounded", racing_bound)
+    before = ledger_path.read_bytes()
+
+    assert _compact(data_root) is None  # the pass aborts at the write itself
+    assert ledger_path.read_bytes() == before
+    linked = list((elsewhere / "usage_ledger").glob("segment_*.jsonl"))
+    assert len(linked) == 1  # only the pre-existing segment: nothing crossed the link
+
+
+def test_a_link_planted_after_the_reader_bound_check_is_refused(
+    data_root, tmp_path, monkeypatch
+):
+    """A byte-identical copy behind a planted link hashes perfectly — the
+    only defense is that the read itself refuses to traverse a link, which
+    the O_NOFOLLOW dir-fd open enforces at the open, not at an earlier look."""
+    if platform_layer.IS_WINDOWS:  # pragma: no cover - platform predicate
+        pytest.skip("dir-fd anchoring is POSIX; Windows is a disclosed best effort")
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    header = _ledger_rows(data_root)[0]
+    segment = data_root / header["archive_rel"]
+    copy = tmp_path / "copy.jsonl"
+    copy.write_bytes(segment.read_bytes())  # identical bytes: the hash cannot object
+    real_path = uc._segment_path
+
+    def racing_path(root, rel):
+        result = real_path(root, rel)
+        if not segment.is_symlink():
+            segment.unlink()
+            segment.symlink_to(copy)
+        return result
+
+    monkeypatch.setattr(uc, "_segment_path", racing_path)
+    uc._SEGMENT_CACHE.clear()
+    uc._CHAIN_UNION_CACHE.clear()
+
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
 
 
 
