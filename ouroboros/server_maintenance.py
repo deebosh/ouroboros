@@ -256,7 +256,11 @@ def _startup_prune_sweeps() -> None:
         from ouroboros.memory_journal_compaction import compact_memory_journal_snapshots
 
         journal_report = compact_memory_journal_snapshots(DATA_DIR)
-        if journal_report.get("digested") or journal_report.get("errors"):
+        if (
+            journal_report.get("digested")
+            or journal_report.get("digest_mismatch")
+            or journal_report.get("errors")
+        ):
             append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
                 "type": "memory_journal_compaction",
