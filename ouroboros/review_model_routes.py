@@ -122,12 +122,20 @@ def resolved_review_model_target(model: str, *, effort: str = "") -> ResolvedMod
 
 
 def get_review_targets() -> tuple[ResolvedModelTarget, ...]:
-    """The effective triad list as typed targets (ABI-4), same order/membership."""
+    """The effective triad list as typed targets (ABI-4), same order/membership.
+
+    TYPED VIEW FOR FUTURE CONSUMERS — no production caller yet: today's review
+    lanes consume ``get_review_models`` plus ``resolved_review_model_target``
+    per slot (reviewer_slot_config); wiring a whole-list consumer is review-
+    surface work outside the ABI-4 sweep's byte-identical contract."""
     return tuple(resolved_review_model_target(model) for model in get_review_models())
 
 
 def get_scope_review_targets() -> tuple[ResolvedModelTarget, ...]:
-    """The effective scope list as typed targets (ABI-4), duplicates preserved."""
+    """The effective scope list as typed targets (ABI-4), duplicates preserved.
+
+    TYPED VIEW FOR FUTURE CONSUMERS — no production caller yet (see
+    ``get_review_targets``)."""
     return tuple(resolved_review_model_target(model) for model in get_scope_review_models())
 
 

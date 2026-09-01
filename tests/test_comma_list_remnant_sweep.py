@@ -22,6 +22,7 @@ shrink deliberately.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 from collections import Counter
@@ -124,6 +125,25 @@ _COMMA_SPLIT_ALLOWLIST = {
 }
 
 
+def _count_comma_split_calls_py(text: str) -> int:
+    """AST-level count of ``<expr>.split(",")`` / ``.rsplit(",")`` calls —
+    positional or keyword extras (``maxsplit=``), spacing and quote style
+    cannot evade it (the setattr-scan lesson: a parser gate scans SYNTAX,
+    not one string spelling)."""
+    tree = ast.parse(text)
+    count = 0
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr not in ("split", "rsplit"):
+            continue
+        first = node.args[0] if node.args else next(
+            (kw.value for kw in node.keywords if kw.arg == "sep"), None)
+        if isinstance(first, ast.Constant) and first.value == ",":
+            count += 1
+    return count
+
+
 def test_comma_split_model_parsing_is_allowlisted():
     observed: Counter = Counter()
     for path in _sweep_files():
@@ -131,7 +151,11 @@ def test_comma_split_model_parsing_is_allowlisted():
         if not re.search(r"model|review", rel):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
-        count = len(re.findall(r"""split\((?:","|',')\)""", text))
+        if path.suffix == ".py":
+            count = _count_comma_split_calls_py(text)
+        else:
+            # Non-Python mirrors keep the textual scan (no Python AST there).
+            count = len(re.findall(r"""split\(\s*(?:","|',')\s*""", text))
         if count:
             observed[rel] = count
     expected = {rel: count for rel, (_reason, count) in _COMMA_SPLIT_ALLOWLIST.items()}
@@ -139,6 +163,17 @@ def test_comma_split_model_parsing_is_allowlisted():
         f"comma-split drift in model/review modules: observed={dict(observed)}, "
         f"allowlisted={expected}"
     )
+
+
+def test_comma_split_ast_scan_sees_the_evasion_spellings():
+    """Self-test of the gate's detector: the plain-syntax evasions the string
+    regexp missed are counted, and a non-comma split is not."""
+    assert _count_comma_split_calls_py('raw.split(",", maxsplit=-1)') == 1
+    assert _count_comma_split_calls_py("raw.split( ',' )") == 1
+    assert _count_comma_split_calls_py("raw.rsplit(',')") == 1
+    assert _count_comma_split_calls_py('raw.split(sep=",")') == 1
+    assert _count_comma_split_calls_py('raw.split(";")') == 0
+    assert _count_comma_split_calls_py("raw.split()") == 0
 
 
 def test_phase5_route_plumbing_stays_removed():

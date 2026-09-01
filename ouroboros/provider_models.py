@@ -148,11 +148,36 @@ def fallback_candidate_targets(active_model: str = "") -> tuple[ResolvedModelTar
     Same membership and order as ``model_slots.get_fallback_models`` — a typed
     view over the ONE chain SSOT, not a second resolver. Effort stays the ""
     sentinel: the ladder resolves destinations, the dispatching round owns the
-    active effort.
+    active effort. ``provider_route`` stays the ``""`` sentinel DELIBERATELY:
+    the chain's local-vs-remote dispatch lane is the loop's single global
+    ``USE_LOCAL_FALLBACK`` flag (the pre-existing contract, byte-identical
+    through the ABI-4 sweep), so a per-candidate route here would be a
+    fabricated fact no dispatcher consumes.
     """
     from ouroboros.model_slots import get_fallback_models
 
-    return tuple(resolve_model_target(model) for model in get_fallback_models(active_model))
+    return tuple(
+        ResolvedModelTarget(model_id=model, provider_route="")
+        for model in get_fallback_models(active_model)
+    )
+
+
+def delegated_route_target(route) -> ResolvedModelTarget:
+    """The ABI-4 typed target a delegated harness route pins (reuse-first bridge).
+
+    ``provider_route`` carries the OPAQUE harness route id — the delegated
+    transport lane, never interpreted here (AGENTS.md); ``credential_ref`` is
+    the optional strict account pin (D-U6). The ``""``/``0`` sentinels mean
+    "the engine's own default", exactly as on the wire, where the run request
+    re-serializes these fields as strings (transport boundary).
+    """
+    return ResolvedModelTarget(
+        model_id=str(getattr(route, "model", "") or ""),
+        provider_route=str(getattr(route, "route_id", "") or ""),
+        credential_ref=str(getattr(route, "profile_id", "") or ""),
+        effort=str(getattr(route, "effort", "") or ""),
+        context_window=0,
+    )
 
 
 def provider_has_credentials(provider: str) -> bool:

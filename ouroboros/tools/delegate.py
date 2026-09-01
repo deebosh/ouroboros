@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from ouroboros import delegate_custody as custody
 from ouroboros import delegate_progress as progress
 from ouroboros.delegate_custody import RunCustody as _RunCustody
+from ouroboros.provider_models import delegated_route_target
 from ouroboros.tool_capabilities import tool_result_limit
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.subagent_work_order import (  # noqa: F401 - compatibility re-export
@@ -240,10 +241,7 @@ def _start_request(ctx: ToolContext, route: Any, authority: "DelegatedRunShape",
     whether to recompute them or replay the recorded ones (the retry path never calls
     this function at all — it replays the stored canonical body verbatim).
     """
-    # ABI-4: the run request is assembled from the route's typed target — one
-    # ResolvedModelTarget read, serialized to strings only here, at the engine's
-    # wire boundary (the adapter never re-parses a harness[=model] slug).
-    target = route.resolved_model_target()
+    target = delegated_route_target(route)  # ABI-4: one typed read; strings only at the wire
     request: Dict[str, Any] = {
         "prompt": text,
         # Built from the SHAPE plus the task contract, so a mutating delegated
@@ -279,13 +277,11 @@ def _start_request(ctx: ToolContext, route: Any, authority: "DelegatedRunShape",
         # containment hole, so neither is assembled separately.
         request["execution"] = {"isolation": authority.isolation, "delegated": authority.delegated,
                                 **({"workspaceRoot": execution_root} if execution_root else {})}
-    if target.model_id:
-        request["model"] = target.model_id
-    if target.effort:
-        request["effort"] = target.effort
-    if target.credential_ref:
-        # Account pin (D-U5), reviewer-slot wire contract; strict (D-U6). In the stored canonical body, so a retry_of replay stays byte-identical, pin included.
-        request["credentialProfileId"] = target.credential_ref
+    # credentialProfileId is the account pin (D-U5), reviewer-slot wire contract; strict
+    # (D-U6). In the stored canonical body, so a retry_of replay stays byte-identical.
+    for key, value in (("model", target.model_id), ("effort", target.effort), ("credentialProfileId", target.credential_ref)):
+        if value:
+            request[key] = value
     if seconds:
         request["maxSeconds"] = seconds
     return request

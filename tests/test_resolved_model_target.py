@@ -92,11 +92,24 @@ def test_fallback_ladder_is_a_typed_view_of_the_chain_ssot(monkeypatch):
     candidates = fallback_candidate_targets("")
     assert isinstance(candidates, tuple)
     assert [c.model_id for c in candidates] == get_fallback_models("")
-    assert [c.provider_route for c in candidates] == ["openai", "openrouter", "local"]
+    # provider_route stays the "" sentinel DELIBERATELY: the chain's dispatch
+    # lane is the loop's single global USE_LOCAL_FALLBACK flag (pre-existing
+    # contract), so a per-candidate route would be a fabricated fact no
+    # dispatcher consumes (adversarial finding 7 disposition).
+    assert [c.provider_route for c in candidates] == ["", "", ""]
     # The active model collapses out of the ladder exactly as in the SSOT list.
     assert [c.model_id for c in fallback_candidate_targets("b")] == get_fallback_models("b")
     # Ladder targets keep the "" effort sentinel: the round owns active effort.
     assert all(c.effort == "" and c.context_window == 0 for c in candidates)
+
+
+def test_fallback_dispatch_lane_stays_the_global_flag():
+    """Equivalence pin for the sweep's byte-identical contract: the loop's
+    local-vs-remote lane still comes from the one global USE_LOCAL_FALLBACK
+    read, never from a per-candidate route field."""
+    source = (REPO / "ouroboros" / "loop_model_call.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("USE_LOCAL_FALLBACK", "")' in source
+    assert "candidate.provider_route" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -147,14 +160,16 @@ def test_reviewer_slots_consume_the_typed_local_route(monkeypatch):
 
 
 def test_delegation_route_bridges_to_the_typed_target():
+    from ouroboros.provider_models import delegated_route_target
+
     route = parse_subagent_harness("codex=gpt-5.5:high")
     assert route == DelegationRoute(route_id="codex", model="gpt-5.5", effort="high")
-    assert route.resolved_model_target() == ResolvedModelTarget(
+    assert delegated_route_target(route) == ResolvedModelTarget(
         model_id="gpt-5.5", provider_route="codex",
         credential_ref="", effort="high", context_window=0,
     )
     pinned = DelegationRoute(route_id="claude", model="", effort="", profile_id="acct-1")
-    target = pinned.resolved_model_target()
+    target = delegated_route_target(pinned)
     assert (target.model_id, target.provider_route, target.credential_ref) == ("", "claude", "acct-1")
 
 
@@ -180,7 +195,7 @@ def test_reviewer_slot_builders_take_the_dataclass():
 
 def test_delegate_run_request_takes_the_dataclass():
     source = (REPO / "ouroboros" / "tools" / "delegate.py").read_text(encoding="utf-8")
-    assert "route.resolved_model_target()" in source
+    assert "delegated_route_target(route)" in source
     assert 'request["model"] = route.model' not in source
     assert 'request["credentialProfileId"] = route.profile_id' not in source
     assert 'split(","' not in source and 'partition("=")' not in source

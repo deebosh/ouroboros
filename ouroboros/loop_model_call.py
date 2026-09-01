@@ -108,7 +108,10 @@ def _run_cross_model_fallback_chain(
     msg = None
     # ABI-4: the candidate ladder arrives as typed ResolvedModelTarget values;
     # `.model_id` is read once here and crosses to strings only at the LLM
-    # transport boundary (the chat API's model parameter).
+    # transport boundary (the chat API's model parameter). The local-vs-remote
+    # dispatch lane is the single global USE_LOCAL_FALLBACK flag above (the
+    # pre-existing chain contract): the ladder's `provider_route` stays the ""
+    # sentinel rather than fabricating a per-candidate fact nothing consumes.
     for candidate in fallback_candidate_targets(active_model):
         fallback_model = candidate.model_id
         if _fcd.is_cooling_down(fallback_model, fallback_use_local):

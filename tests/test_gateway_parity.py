@@ -42,6 +42,7 @@ from ouroboros.gateway.contracts import (
     TaskHurryRequest,
     TaskHurryResponse,
     TypingOutbound,
+    UiPreferencesResponse,
     UpdateApplyErrorResponse,
     UpdateApplyRequest,
     UpdateApplySuccessResponse,
@@ -222,6 +223,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     # loop above cannot see a new @property, so an ABI field added on the Python side would otherwise
     # never have to appear in the browser's typedef (ARCHITECTURE.md §11.3).
     for cls in (ChatInbound, ChatOutbound, PhotoOutbound, VideoOutbound,
+                DocumentOutbound, UiPreferencesResponse,
                 ActiveDirectTurn, ActiveChatActivity, TypingOutbound,
                 StateResponse, UpdateMergePlan,
                 UpdatePreflightRequest, UpdatePreflightResponse, UpdateApplyRequest,
@@ -244,6 +246,21 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         # ABI 7.0 (ABI-3): the alias JSDoc lines were cleaned up in the F3.3
         # comma-sweep tact — the browser mirror is exact again, no excuse set.
         assert actual == expected, f"{cls.__name__} JSDoc fields drifted: missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+    # ABI-3 removal exact pins: the five removed alias fields stay out of BOTH
+    # mirrors of the frames they were removed from — a JSDoc resurrection alone
+    # (the exact loop would catch a Python one) must go red here.
+    for cls, removed in (
+        (ChatOutbound, ("cost_usd", "cost_usd_with_children", "telegram_chat_id")),
+        (PhotoOutbound, ("telegram_chat_id",)),
+        (VideoOutbound, ("telegram_chat_id",)),
+        (DocumentOutbound, ("telegram_chat_id",)),
+        (UiPreferencesResponse, ("project_last_viewed", "project_hidden")),
+    ):
+        hints = set(get_type_hints(cls, include_extras=True))
+        js_fields = _js_typedef_fields(text, cls.__name__)
+        for field in removed:
+            assert field not in hints, f"{cls.__name__}.{field} resurrected in Python"
+            assert field not in js_fields, f"{cls.__name__}.{field} resurrected in JSDoc"
     # Field-set parity alone would accept an optional marker on the two
     # discriminators. Pin the browser mirror's requiredness as well as names.
     success_decl = re.search(
