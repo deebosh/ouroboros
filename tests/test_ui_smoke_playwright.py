@@ -3680,6 +3680,16 @@ def _agents_panel_add_reveals_the_new_card(page) -> None:
     assert page.locator(".available-subagent-row[data-invalid]").count() == 0
     hint = page.locator(".available-subagent-row").last.locator("[data-subagent-meta]")
     assert "Choose how this subagent runs" in hint.inner_text()
+    # A keystroke makes the draft dirty: every card's head status says so at once,
+    # patched in place (the caret stays in the field being typed into).
+    page.keyboard.type("Scout")
+    page.wait_for_function(
+        """() => [...document.querySelectorAll('[data-subagent-status]')]
+            .every((el) => el.textContent.startsWith('Draft · '))
+            && document.activeElement === [...document.querySelectorAll('.available-subagent-row')].pop()
+                .querySelector('[data-subagent-field="recommended_use"]')""",
+        timeout=5_000,
+    )
 
 
 @pytest.mark.ui_browser
@@ -3717,6 +3727,23 @@ def test_ui_smoke_agents_panel_list_editor(direct_server_with_data):
                 assert tinted.count() == 1
                 assert tinted.locator('[data-subagent-meta][data-tone="error"]').inner_text().startswith(
                     "Subagent 4 needs")
+
+                # A fix typed into the field clears the section line and the tint TOGETHER …
+                tinted.locator('[data-subagent-field="model"]').fill("openai/gpt-5.6-luna")
+                page.wait_for_function(
+                    "() => document.querySelector('[data-subagents-validation]').hidden"
+                    " && !document.querySelector('.available-subagent-row[data-invalid]')",
+                    timeout=5_000,
+                )
+                # … and the NEXT added entry is still an invitation, not an error: the
+                # attempt judged the rows that existed then, not every row forever.
+                page.click("[data-subagent-add]")
+                page.wait_for_function(
+                    "() => document.querySelectorAll('.available-subagent-row').length === 5", timeout=5_000)
+                assert page.evaluate("() => document.querySelector('[data-subagents-validation]').hidden") is True
+                assert page.locator(".available-subagent-row[data-invalid]").count() == 0
+                assert "Choose how this subagent runs" in page.locator(
+                    ".available-subagent-row").last.locator("[data-subagent-meta]").inner_text()
 
                 # Review lanes: the group's Add sits in its head and reveals the appended row.
                 assert page.evaluate(

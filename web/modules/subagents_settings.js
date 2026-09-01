@@ -26,7 +26,6 @@ import {
     encodeRouteChoice,
     indexProfilesByHarness,
     mintStableId,
-    modelsGapNote,
     profileOptionsFor,
     routeChoiceGroups,
     selectHtml,
@@ -199,7 +198,7 @@ function rowErrors(row, index, ids) {
         if (/\s|:/.test(target) || parts.length > 2
             || !SUBAGENT_ID_PATTERN.test(parts[0] || '')
             || (parts.length === 2 && !parts[1])) {
-            errors.push('Agent session must use harness or harness=model without whitespace or legacy :effort.');
+            errors.push('needs its agent-session target as harness or harness=model, without whitespace or legacy :effort.');
         }
     }
     if (row?.effort && !EFFORT_CHOICES.includes(String(row.effort))) {
@@ -213,14 +212,16 @@ function rowErrors(row, index, ids) {
     return errors.map((text) => `Subagent ${index + 1} ${text}`);
 }
 
+function listLevelErrors(setting) {
+    return setting.items.length > MAX_AVAILABLE_SUBAGENTS
+        ? [`Available subagents supports at most ${MAX_AVAILABLE_SUBAGENTS} rows.`] : [];
+}
+
 export function validateAvailableSubagentsSetting(setting) {
     if (!setting || typeof setting.enabled !== 'boolean' || !Array.isArray(setting.items)) {
         return ['Available subagents configuration is not loaded.'];
     }
-    const errors = [];
-    if (setting.items.length > MAX_AVAILABLE_SUBAGENTS) {
-        errors.push(`Available subagents supports at most ${MAX_AVAILABLE_SUBAGENTS} rows.`);
-    }
+    const errors = listLevelErrors(setting);
     const ids = new Set();
     setting.items.forEach((row, index) => errors.push(...rowErrors(row, index, ids)));
     return errors;
@@ -343,12 +344,10 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
         row.route.credential_profile_id || '',
         { accountsKnown: state.accountsKnown },
     );
-    const gap = session ? modelsGapNote(harnesses[split.harness], state.catalogKnown) : '';
     const status = rowStatus(row, state);
-    const statusTitle = [status.text, gap].filter(Boolean).join(' · ');
     const errors = rowErrors(row, index, new Set());
     const meta = rowMeta(row, state, errors);
-    const invalid = state.saveAttempted && errors.length > 0;
+    const invalid = Boolean(row._uiAttempted) && errors.length > 0;
     const routeIdentity = session
         ? harnessIdentityMarkup(split.harness, {
             // A retained snapshot is useful for preserving the controls, but
@@ -369,7 +368,7 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
             <div class="available-subagent-head">
                 <h4 class="available-subagent-heading" id="${escapeHtml(headingId)}">Subagent ${ordinal}</h4>
                 <div class="available-subagent-route-identity-wrap">${routeIdentity}</div>
-                <span class="settings-inline-status" data-subagent-status data-tone="${escapeHtml(status.tone)}" title="${escapeHtml(statusTitle)}">${escapeHtml(status.label)}</span>
+                <span class="settings-inline-status" data-subagent-status data-tone="${escapeHtml(status.tone)}" title="${escapeHtml(status.text)}">${escapeHtml(status.label)}</span>
                 <div class="available-subagent-actions">
                     <button type="button" class="btn btn-default" data-subagent-duplicate aria-label="Duplicate Subagent ${ordinal}">Duplicate</button>
                     <button type="button" class="btn btn-default" data-subagent-remove aria-label="Remove Subagent ${ordinal}">Remove</button>
@@ -398,7 +397,7 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         state.parseError,
         state.setting,
         state.saveAttempted,
-        state.baselineLabel,
+        state.baseline,
         state.source,
         diagnosticsText(state.diagnostics),
         state.statusError,
@@ -427,7 +426,7 @@ export function createAvailableSubagentsEditor({
     onGeneratedApply = () => {},
     allowUnloadedOmission = false,
     previewGenerated = null,
-    baselineLabel = 'Saved intent',
+    baseline = 'saved',
 } = {}) {
     const getDoc = typeof doc === 'function' ? doc : () => doc;
     const getWin = typeof win === 'function' ? win : () => win;
@@ -440,7 +439,7 @@ export function createAvailableSubagentsEditor({
         diagnostics: [],
         dirty: false,
         saveAttempted: false,
-        baselineLabel: String(baselineLabel || 'Saved intent'),
+        baseline: baseline === 'generated' ? 'generated' : 'saved',
         statusError: '',
         catalogKnown: false,
         accountsKnown: false,
@@ -481,42 +480,53 @@ export function createAvailableSubagentsEditor({
     }
 
     // The ONE painter of verdicts, patching in place (never innerHTML, so the
-    // caret survives): the section-level line, and every row's own error tint
-    // and meta line. A load/parse problem is always shown; a draft's own errors
-    // only after the owner tried to save — until then a fresh entry carries
-    // its hint. Rows and the top line are reconciled together so a fix typed
-    // into a field can never clear one and leave the other red.
+    // caret survives): every row's head status, error tint and meta line, and
+    // the section-level line — reconciled together, so a fix typed into a
+    // field can never clear one and leave the other red, and a keystroke that
+    // makes the draft dirty (or re-routes a session) shows in the head at
+    // once. The section line says: a load/parse problem always; otherwise the
+    // roster's own errors, only for the rows the owner has tried to save —
+    // until then a fresh entry carries its hint.
     function renderValidation() {
         const container = host();
         if (!container) return;
-        const errors = validationErrors();
-        const box = container.querySelector('[data-subagents-validation]');
-        if (box) {
-            box.hidden = !errors.length || !(state.saveAttempted || !state.loaded || state.parseError);
-            box.textContent = errors[0] || '';
-        }
+        const structural = !state.loaded || Boolean(state.parseError);
+        const shown = structural ? validationErrors()
+            : (state.saveAttempted ? listLevelErrors(state.setting) : []);
         const ids = new Set();
         state.setting.items.forEach((row, index) => {
-            const key = row._uiKey || row.subagent_id;
-            const el = container.querySelector(`[data-subagent-row="${key}"]`);
-            if (!el) return;
             const rowErrs = state.loaded ? rowErrors(row, index, ids) : [];
-            el.toggleAttribute('data-invalid', state.saveAttempted && rowErrs.length > 0);
+            const judged = Boolean(row._uiAttempted) && rowErrs.length > 0;
+            if (judged && !structural) shown.push(...rowErrs);
+            const el = container.querySelector(`[data-subagent-row="${row._uiKey || row.subagent_id}"]`);
+            if (!el) return;
+            el.toggleAttribute('data-invalid', judged);
+            const status = rowStatus(row, state);
+            const statusEl = el.querySelector('[data-subagent-status]');
+            if (statusEl) {
+                Object.assign(statusEl, { textContent: status.label, title: status.text });
+                statusEl.dataset.tone = status.tone;
+            }
             const meta = rowMeta(row, state, rowErrs);
             const metaEl = el.querySelector('[data-subagent-meta]');
             if (!metaEl) return;
-            metaEl.hidden = !meta.text;
-            metaEl.textContent = meta.text;
-            metaEl.title = meta.text;
+            Object.assign(metaEl, { hidden: !meta.text, textContent: meta.text, title: meta.text });
             if (meta.tone) metaEl.dataset.tone = meta.tone;
             else delete metaEl.dataset.tone;
         });
+        const box = container.querySelector('[data-subagents-validation]');
+        if (box) Object.assign(box, { hidden: !shown.length, textContent: shown[0] || '' });
     }
 
-    /** The Save/Finish button says the owner tried to commit the draft. */
+    // The Save/Finish button says the owner tried to commit the draft: the rows
+    // that exist now are judged from here on; an entry added later is fresh
+    // again. Everything is already patched in place, so the signature advances
+    // and the next status tick skips the repaint.
     function noteSaveAttempt() {
         state.saveAttempted = true;
+        state.setting.items.forEach((row) => { row._uiAttempted = true; });
         renderValidation();
+        state.signature = availableSubagentsRenderSignature(state);
     }
 
     function markDirty({ structural = false } = {}) {

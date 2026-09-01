@@ -1065,6 +1065,7 @@ textarea:focus {
 .available-subagent-purpose textarea {
   width: 100%;
   field-sizing: content;
+  line-height: var(--line-body);
   min-height: calc(var(--type-body) * var(--line-body) + 22px);
   max-height: calc(4 * var(--type-body) * var(--line-body) + 22px);
   overflow-y: auto;
@@ -1214,6 +1215,7 @@ textarea:focus {
   color: var(--status-neutral-fg);
 }
 
+.settings-inline-status[data-tone="neutral"] { color: var(--status-neutral-fg); }
 .settings-inline-status[data-tone="ok"] { color: var(--status-ok-fg); }
 .settings-inline-status[data-tone="warn"] { color: var(--status-warn-fg); }
 .settings-inline-status[data-tone="error"] { color: var(--status-error-fg); }

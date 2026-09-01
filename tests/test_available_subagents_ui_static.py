@@ -52,13 +52,16 @@ def test_every_list_editor_reveals_its_added_entry_through_the_shared_helper() -
 def test_a_fresh_subagent_row_invites_and_only_a_save_attempt_makes_it_red() -> None:
     """docs/DESIGN.md "List editors": the section-level line and the row-local
     tint appear only after the owner tried to save; Save and Finish say so
-    through `noteSaveAttempt`, and `validate()` stays pure."""
+    through `noteSaveAttempt`, which judges the rows that existed then (a row
+    added afterwards is fresh again), and `validate()` stays pure."""
     editor = _read(MODULES / "subagents_settings.js")
+    primitives = _read(MODULES / "subagent_status_primitives.js")
     assert "noteSaveAttempt" in editor
     assert "validate: validationErrors," in editor
-    assert "state.saveAttempted && " in editor
-    assert "Choose how this subagent runs: an API model or an agent session." in _read(
-        MODULES / "subagent_status_primitives.js")
+    assert "row._uiAttempted = true" in editor
+    assert "Boolean(row._uiAttempted) && " in editor
+    assert "row._uiAttempted && errors.length" in primitives
+    assert "Choose how this subagent runs: an API model or an agent session." in primitives
     assert "noteSubagentsSaveAttempt();" in _read(MODULES / "settings.js")
     assert "agentsStep?.noteSaveAttempt?.();" in _read(MODULES / "onboarding_wizard.js")
     # Errors name the card the way its heading does, never a bare "Row N".
@@ -168,3 +171,11 @@ def test_effort_choice_mirrors_track_the_python_scale() -> None:
     values = re.findall(r"value: '([a-z]+)'", block.group(1))
     # `minimal` is deliberately not an owner-facing standing default (see EFFORT_OPTIONS).
     assert values == [tier for tier in EFFORT_SCALE if tier != "minimal"]
+
+
+def test_every_status_tone_the_card_emits_has_a_rule_in_both_sheets() -> None:
+    # The card head puts data-tone="neutral" on .settings-inline-status. A tone the
+    # code emits must have a rule (docs/DESIGN.md §4) — in the main sheet and in the
+    # wizard's standalone sheet alike — or it silently falls through to body text.
+    for sheet in ("style.css", "onboarding.css"):
+        assert '.settings-inline-status[data-tone="neutral"]' in _read(ROOT / "web" / sheet), sheet

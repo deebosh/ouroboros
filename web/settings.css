@@ -615,6 +615,7 @@
 .available-subagent-purpose textarea {
     width: 100%;
     field-sizing: content;
+    line-height: var(--line-body);
     min-height: calc(var(--type-body) * var(--line-body) + 22px);
     max-height: calc(4 * var(--type-body) * var(--line-body) + 22px);
     overflow-y: auto;

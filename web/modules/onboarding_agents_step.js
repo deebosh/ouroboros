@@ -582,7 +582,7 @@ export function createAgentsStep({
         win: () => getDoc()?.defaultView,
         store,
         onChange: onSubagentsChange,
-        baselineLabel: 'Generated draft',
+        baseline: 'generated',
     });
 
     function previewRequest() {

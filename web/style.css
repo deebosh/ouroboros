@@ -3300,6 +3300,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 /* `muted` is a tone the code emits but no rule named. */
 .ui-status[data-tone="neutral"],
 .ui-status[data-tone="muted"],
+.settings-inline-status[data-tone="neutral"],
 .settings-inline-status[data-tone="muted"],
 .marketplace-status[data-tone="muted"] { color: var(--status-neutral-fg); }
 
@@ -6379,15 +6380,16 @@ textarea.chat-input {
    Down to the matching end marker: docs/DESIGN.md tokens only, guarded by
    tests/test_web_typography_static.py. The rest of this file is a later pass. */
 /* Subsection rhythm: a group is its head (heading + that group's own Add
-   action, docked right — docs/DESIGN.md "List editors") followed by its rows.
-   The head sits one space token above its rows; the section's flex gap keeps
-   the groups apart. */
+   action, docked right — docs/DESIGN.md "List editors") followed by its rows,
+   one space token apart inside the group; the section's own flex gap keeps
+   the groups apart, so a heading always sits nearer its rows than its
+   neighbour — structure, not negative margins. */
+.reviewer-slots-group { display: flex; flex-direction: column; gap: var(--space-2); }
 .reviewer-slots-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
-    margin-bottom: calc(-1 * var(--space-1));
 }
 .reviewer-slots-heading {
     margin: 0;

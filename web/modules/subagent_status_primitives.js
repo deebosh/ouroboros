@@ -1,12 +1,16 @@
-// Live-status projection for one saved Agent-session actor. Dispatch remains
-// authoritative; this module only decides which positive/negative facts the
-// Settings row may honestly claim from the shared Claudexor snapshot.
+// Status and meta projection of one Available-subagents card: pure functions
+// of the row, the editor's state and the shared Claudexor snapshot, with no
+// DOM, so the editor's markup and its in-place painter read one source and
+// node tests pin the words without a browser. Dispatch remains authoritative;
+// this module only decides which positive/negative facts a card may honestly
+// claim.
 
 import { accountRows, nextUpAccount } from './claudexor_status_store.js';
 import {
     ROUTE_KIND_AGENT_SESSION,
     describeExecutionEvidence,
     harnessModelsKnown,
+    modelsGapNote,
     splitSessionTarget,
 } from './route_editor_primitives.js';
 
@@ -126,26 +130,43 @@ export function sessionRouteVerdict(row, state, nowMs = Date.now()) {
     return verdict(NOT_CHECKED, `${harness} · live availability not checked`);
 }
 
-/** The full sentence alone, for callers that only render prose. */
-export function sessionRouteAvailability(row, state, nowMs = Date.now()) {
-    return sessionRouteVerdict(row, state, nowMs).text;
+// The card head has room for two short words — the intent axis and the
+// availability axis — with one dot whose tone is the worse of the two; the
+// full sentence of each axis (plus any model-list gap note) rides the title.
+// Both axes are structural: the intent word and tone follow the editor's
+// dirty flag and its baseline (what was loaded: saved bytes, or a generated
+// draft in the wizard), never a parse of prose; an API model's availability
+// is only ever known when a child starts, so its second word says exactly
+// that.
+const INTENT = {
+    draft: { word: 'Draft', tone: 'neutral', text: 'Draft intent' },
+    generated: { word: 'Generated', tone: 'neutral', text: 'Generated draft' },
+    saved: { word: 'Saved', tone: 'ok', text: 'Saved intent' },
+};
+const TONE_RANK = { ok: 0, neutral: 1, warn: 2, error: 3 };
+const worseTone = (a, b) => (TONE_RANK[b] > TONE_RANK[a] ? b : a);
+
+export function intentAxis(state) {
+    return INTENT[state.dirty ? 'draft' : state.baseline] || INTENT.saved;
 }
 
-// The card head has room for two short words — the intent axis (Saved /
-// Draft / Generated) and the availability axis — with one dot whose tone is
-// the worse of the two; the full sentence of each axis rides the title.
 export function rowStatus(row, state) {
-    const intent = state.dirty ? 'Draft intent' : (state.baselineLabel || 'Saved intent');
-    const intentWord = intent.split(' ')[0];
+    const intent = intentAxis(state);
     if (row.route.kind !== ROUTE_KIND_AGENT_SESSION) {
         return {
-            label: `${intentWord} · API`,
-            tone: 'neutral',
-            text: `${intent} · API model · availability is checked when a child starts`,
+            label: `${intent.word} · Checked at start`,
+            tone: worseTone(intent.tone, 'neutral'),
+            text: `${intent.text} · API model · availability is checked when a child starts`,
         };
     }
     const live = sessionRouteVerdict(row, state);
-    return { label: `${intentWord} · ${live.label}`, tone: live.tone, text: `${intent} · ${live.text}` };
+    const { harness } = splitSessionTarget(row.route.target_id);
+    const gap = modelsGapNote(harnessMap(state.snapshot)[harness], state.catalogKnown);
+    return {
+        label: `${intent.word} · ${live.label}`,
+        tone: worseTone(intent.tone, live.tone),
+        text: [`${intent.text} · ${live.text}`, gap].filter(Boolean).join(' · '),
+    };
 }
 
 export const ROUTE_HINT = 'Choose how this subagent runs: an API model or an agent session.';
@@ -158,10 +179,12 @@ function executionFor(snapshot, subagentId) {
 }
 
 // ONE meta line under the controls, in priority: the row's own error once the
-// owner tried to save; the neutral hint while its route is still unchosen (a
-// fresh entry is an invitation, not an error); the last actual run; nothing.
+// owner tried to save THIS row (`_uiAttempted`, stamped by the save attempt on
+// the rows that existed then — an entry added afterwards is fresh again); the
+// neutral hint while its route is still unchosen (a fresh entry is an
+// invitation, not an error); the last actual run; nothing.
 export function rowMeta(row, state, errors) {
-    if (state.saveAttempted && errors.length) return { text: errors[0], tone: 'error' };
+    if (row._uiAttempted && errors.length) return { text: errors[0], tone: 'error' };
     if (!String(row.route?.target_id || '').trim()) return { text: ROUTE_HINT, tone: '' };
     const evidence = describeExecutionEvidence(executionFor(state.snapshot, row.subagent_id));
     return { text: evidence ? `Last actual run: ${evidence}` : '', tone: '' };

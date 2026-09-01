@@ -495,21 +495,27 @@ export function renderReviewerSlotsSection() {
             <div id="reviewer-slots-error" class="ui-status" data-tone="error" hidden></div>
             <div id="reviewer-slots-pins" class="settings-inline-status" data-tone="warn" hidden></div>
             <datalist id="reviewer-api-model-catalog"></datalist>
-            <div class="reviewer-slots-head">
-                <h4 class="reviewer-slots-heading">Triad slots <span class="muted" id="reviewer-triad-limit" title="The commit gate's real ceiling"></span></h4>
-                <button type="button" class="btn btn-default" id="btn-add-triad-slot">Add triad slot</button>
+            <div class="reviewer-slots-group">
+                <div class="reviewer-slots-head">
+                    <h4 class="reviewer-slots-heading">Triad slots <span class="muted" id="reviewer-triad-limit" title="The commit gate's real ceiling"></span></h4>
+                    <button type="button" class="btn btn-default" id="btn-add-triad-slot">Add triad slot</button>
+                </div>
+                <div id="reviewer-triad-rows" class="reviewer-slot-rows"></div>
             </div>
-            <div id="reviewer-triad-rows" class="reviewer-slot-rows"></div>
-            <div class="reviewer-slots-head">
-                <h4 class="reviewer-slots-heading">Scope slots <span class="muted" id="reviewer-scope-limit" title="The scope pool's real width"></span></h4>
-                <button type="button" class="btn btn-default" id="btn-add-scope-slot">Add scope slot</button>
+            <div class="reviewer-slots-group">
+                <div class="reviewer-slots-head">
+                    <h4 class="reviewer-slots-heading">Scope slots <span class="muted" id="reviewer-scope-limit" title="The scope pool's real width"></span></h4>
+                    <button type="button" class="btn btn-default" id="btn-add-scope-slot">Add scope slot</button>
+                </div>
+                <div class="settings-inline-note">An agent row reads the repository with its own read-only tools instead of
+                    being handed one assembled pack. Its verdict is authoritative once that agent's context window is
+                    confirmed at 200K or more; Ouroboros does not attest which files the agent opened.</div>
+                <div id="reviewer-scope-rows" class="reviewer-slot-rows"></div>
             </div>
-            <div class="settings-inline-note">An agent row reads the repository with its own read-only tools instead of
-                being handed one assembled pack. Its verdict is authoritative once that agent's context window is
-                confirmed at 200K or more; Ouroboros does not attest which files the agent opened.</div>
-            <div id="reviewer-scope-rows" class="reviewer-slot-rows"></div>
-            <h4 class="reviewer-slots-heading">Advisory pre-reviewer</h4>
-            <div id="reviewer-advisory-row" class="reviewer-slot-rows"></div>
+            <div class="reviewer-slots-group">
+                <h4 class="reviewer-slots-heading">Advisory pre-reviewer</h4>
+                <div id="reviewer-advisory-row" class="reviewer-slot-rows"></div>
+            </div>
             <div class="settings-inline-note">
                 Disabling the advisory is a standing decision with a constitutional consequence:
                 every reviewed commit then records an <strong>audited bypass</strong> instead of an

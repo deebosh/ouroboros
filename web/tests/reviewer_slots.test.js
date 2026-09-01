@@ -90,10 +90,9 @@ test('the standing note states the POLICY, never the current routing', () => {
 
 
 test('each group carries its own Add action in its head, above the rows it adds to', () => {
-    // docs/DESIGN.md "List editors": a section-level add action lives in the
-    // group's header and the new row lands at the group's end, revealed by
-    // `revealNewRow`. These two Add buttons used to sit in footer toolbars
-    // UNDER the rows — the one Settings list editor that did.
+    // docs/DESIGN.md "List editors": a group's add action lives in its head,
+    // never in a footer toolbar under the rows, and the new row lands at the
+    // group's end, revealed by `revealNewRow`.
     const markup = renderReviewerSlotsSection();
     for (const [head, rows, button] of [
         ['Triad slots', 'reviewer-triad-rows', 'btn-add-triad-slot'],
