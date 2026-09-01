@@ -89,6 +89,28 @@ test('the standing note states the POLICY, never the current routing', () => {
 });
 
 
+test('each group carries its own Add action in its head, above the rows it adds to', () => {
+    // docs/DESIGN.md "List editors": a section-level add action lives in the
+    // group's header and the new row lands at the group's end, revealed by
+    // `revealNewRow`. These two Add buttons used to sit in footer toolbars
+    // UNDER the rows — the one Settings list editor that did.
+    const markup = renderReviewerSlotsSection();
+    for (const [head, rows, button] of [
+        ['Triad slots', 'reviewer-triad-rows', 'btn-add-triad-slot'],
+        ['Scope slots', 'reviewer-scope-rows', 'btn-add-scope-slot'],
+    ]) {
+        const headingAt = markup.indexOf(`class="reviewer-slots-heading">${head}`);
+        assert.ok(headingAt > 0, `${head} heading exists`);
+        const headOpen = markup.lastIndexOf('<div class="reviewer-slots-head">', headingAt);
+        const headClose = markup.indexOf('</div>', headingAt);
+        assert.ok(headOpen > 0 && headOpen < headingAt, `${head} heading sits inside a group head`);
+        assert.match(markup.slice(headOpen, headClose), new RegExp(`id="${button}"`),
+            `${button} lives in the ${head} head`);
+        assert.ok(headClose < markup.indexOf(`id="${rows}"`), `${head} head precedes its rows`);
+    }
+    assert.doesNotMatch(markup, /settings-toolbar/, 'no footer Add toolbar remains');
+});
+
 test('a saved account pin survives a discovery list that no longer contains it', () => {
     // The select's value must EXIST as an option or the browser silently selects the
     // first one — "automatic rotation" — so a row pinned to one account redrew as

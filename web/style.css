@@ -6378,17 +6378,25 @@ textarea.chat-input {
 /* === design-system:migrated-begin (harness accounts + reviewer slots + Dashboard Updates tab) ===
    Down to the matching end marker: docs/DESIGN.md tokens only, guarded by
    tests/test_web_typography_static.py. The rest of this file is a later pass. */
-/* Subsection rhythm: the section's flex gap (14px) is the baseline; the small
-   negative bottom margins pull a heading and its Add toolbar to 8px from the
-   rows they belong to, so heading+rows+toolbar reads as one group. */
+/* Subsection rhythm: a group is its head (heading + that group's own Add
+   action, docked right — docs/DESIGN.md "List editors") followed by its rows.
+   The head sits one space token above its rows; the section's flex gap keeps
+   the groups apart. */
+.reviewer-slots-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: calc(-1 * var(--space-1));
+}
 .reviewer-slots-heading {
-    margin: 10px 0 -6px;
+    margin: 0;
     font-size: var(--type-body);
     line-height: var(--line-title);
     font-weight: 600;
     color: var(--text-primary);
 }
-.reviewer-slot-rows { display: flex; flex-direction: column; gap: 8px; margin-bottom: -6px; }
+.reviewer-slot-rows { display: flex; flex-direction: column; gap: 8px; }
 .reviewer-slot-row {
     border: 1px solid var(--divider);
     border-radius: 8px;

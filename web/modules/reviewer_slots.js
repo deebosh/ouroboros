@@ -27,7 +27,7 @@
 import { apiFetch } from './api_client.js';
 import { bindStatusSurface, boundedStatusRefresh, claudexorStatus } from './claudexor_status_store.js';
 import { harnessIdentityMarkup } from './harness_presentation.js';
-import { formatRelativeAge } from './ui_helpers.js';
+import { formatRelativeAge, revealNewRow } from './ui_helpers.js';
 import * as routeEditor from './route_editor_primitives.js';
 import {
     availableSubagentsLoadValue,
@@ -495,19 +495,19 @@ export function renderReviewerSlotsSection() {
             <div id="reviewer-slots-error" class="ui-status" data-tone="error" hidden></div>
             <div id="reviewer-slots-pins" class="settings-inline-status" data-tone="warn" hidden></div>
             <datalist id="reviewer-api-model-catalog"></datalist>
-            <h4 class="reviewer-slots-heading">Triad slots <span class="muted" id="reviewer-triad-limit" title="The commit gate's real ceiling"></span></h4>
-            <div id="reviewer-triad-rows" class="reviewer-slot-rows"></div>
-            <div class="settings-toolbar">
+            <div class="reviewer-slots-head">
+                <h4 class="reviewer-slots-heading">Triad slots <span class="muted" id="reviewer-triad-limit" title="The commit gate's real ceiling"></span></h4>
                 <button type="button" class="btn btn-default" id="btn-add-triad-slot">Add triad slot</button>
             </div>
-            <h4 class="reviewer-slots-heading">Scope slots <span class="muted" id="reviewer-scope-limit" title="The scope pool's real width"></span></h4>
+            <div id="reviewer-triad-rows" class="reviewer-slot-rows"></div>
+            <div class="reviewer-slots-head">
+                <h4 class="reviewer-slots-heading">Scope slots <span class="muted" id="reviewer-scope-limit" title="The scope pool's real width"></span></h4>
+                <button type="button" class="btn btn-default" id="btn-add-scope-slot">Add scope slot</button>
+            </div>
             <div class="settings-inline-note">An agent row reads the repository with its own read-only tools instead of
                 being handed one assembled pack. Its verdict is authoritative once that agent's context window is
                 confirmed at 200K or more; Ouroboros does not attest which files the agent opened.</div>
             <div id="reviewer-scope-rows" class="reviewer-slot-rows"></div>
-            <div class="settings-toolbar">
-                <button type="button" class="btn btn-default" id="btn-add-scope-slot">Add scope slot</button>
-            </div>
             <h4 class="reviewer-slots-heading">Advisory pre-reviewer</h4>
             <div id="reviewer-advisory-row" class="reviewer-slot-rows"></div>
             <div class="settings-inline-note">
@@ -697,7 +697,7 @@ function renderRows() {
         errorBox.hidden = !(state.configError || state.loadError);
         errorBox.textContent = state.configError
             ? `Saved reviewer-slot configuration is invalid and blocks reviews: ${state.configError}. `
-              + 'To repair it, add at least one triad slot and one scope slot below, then Save'
+              + 'To repair it, add at least one triad slot and one scope slot from the group headers below, then Save'
               + (state.triad.length && state.scope.length ? '.' : ' — Save will report the missing rows.')
             : (state.loadError
                 ? `Could not reach the reviewer-slot settings — ${state.loadError}. Your saved configuration is unchanged; retry when the connection is back.`
@@ -874,6 +874,11 @@ function addRow(group) {
         effort: '',
     });
     renderRows();
+    // The Add button sits in the group's header while the new row lands at
+    // the group's end — reveal it there and hand the caret to its picker.
+    const added = document.getElementById(group === 'scope' ? 'reviewer-scope-rows' : 'reviewer-triad-rows')
+        ?.lastElementChild;
+    revealNewRow(added, added?.querySelector?.('[data-slot-route]'));
     state.onChange();
 }
 
