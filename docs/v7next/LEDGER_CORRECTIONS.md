@@ -4893,3 +4893,66 @@ plan files.
    Lesson recorded for AGENTS (proposal pending owner «ok»): before keeping a
    legacy mechanism as a fallback, `git log --all -S<identifier>` — a parallel
    line may already have retired it with a stated reason.
+## From the persistence corrective lane (audits #14/#15, base 3e4a6181)
+
+The daemon audits found the mechanical persistence train (base d1276c5f)
+landed with real defects around it. This lane is the corrective pass over
+audit #15 findings 7 and 11-14 and audit #14 findings 5-6 — no new
+persistence policy, only the guards the landed policy assumed it had. Every
+fix is red-first pinned; each is one commit, author Ouroboros.
+
+| finding | disposition | mechanism |
+|---|---|---|
+| #15-11 (CRITICAL, journal compactor) | ACCEPTED, fixed | Three guards on the one sweep that destroys CONTENT. (a) `_digest_row` used `setdefault`, so a stored `*_sha256`/`*_len` that CONTRADICTED the text was kept while the text was deleted — the lie became the whole record. A row whose stored fact disagrees with its text now keeps its FULL content and is reported as a typed `digest_mismatch` on the existing `memory_journal_compaction` event. (b) The append lock is taken `owner_aware_stale=True`, so elapsed time alone can never hand a live journal to a second writer. (c) The rewrite streams line by line into the temp sibling, and the source is re-identified (bytes consumed + device + inode) immediately before `os.replace`; any delta abandons the rewrite and leaves the appender's file. Pins: false digest (both `_sha256` and `_len` shapes) → text untouched + typed fact; a concurrent unlocked append → the row survives whichever branch runs; a source swapped for a different inode → nothing published, `source_changed` reported, no temp left behind; whole-file readers poisoned → compaction still works; source pin on the owner-aware lock |
+| #15-12a (append short-write) | ACCEPTED, fixed | `append_jsonl` issued one bare `os.write` and returned success without checking the byte count — the class the atomic writers closed in f772717c, left in the append SSOT every authority JSONL stream goes through, where a torn line is a LOST RECORD (not merely a truncated file). Both lanes now share `_write_fd_fully`. A failure MID-record returns False instead of replaying the whole line over the prefix already on disk (only the open is retried); the next append's `ensure_record_boundary` starts a clean record. The SAME commit removes the second duplicate in that function: the non-required lane hand-rolled its own `O_CREAT\|O_EXCL` + age-reclaim loop (the duplicate DEVELOPMENT.md tells feature code not to write), and that copy was NOT owner-aware — a high-volume appender could delete the lockfile of a LIVE holder, and the memory-journal compactor rewrites a journal under exactly this lock. Both lanes take the shared owner-aware primitive and release through it; a live holder is waited out and the non-required lane then appends unlocked, as before. Pins: one-byte-at-a-time `os.write` → whole record lands; die-after-4-bytes → `False`, exactly two write attempts, no whole-record replay |
+| #15-12b / #14-6a (chain enumeration) | ACCEPTED, fixed — and the audit's evidence line was WEAKER than the defect | The audit quoted `jsonl_archive_segments`' `except OSError: return []`. That except was in fact nearly dead: `Path.glob` SWALLOWS a `PermissionError` on the archive directory and yields nothing, so an unreadable archive reached every reader as "this store never rotated" without any exception at all. Enumeration is now an explicit `scandir`, and `strict=True` raises the typed `JsonlChainUnreadable` from `jsonl_archive_segments`/`jsonl_chain_handles`. Strict callers = the authority readers: the legacy usage import (money — its `except OSError` → `UsageAccountingError` was written expecting exactly this and never received it), `complete_custody_rows` and `custody_log_unreadable`. Fail-soft (documented, unchanged): memory tail backfill, the settled-terminal cursor, worker-boot probe, the swarm-fanout rollup, `delegate_custody._iter_rows` (whose strict sibling IS `custody_log_unreadable`). `complete_custody_rows` also drops its hand-rolled duplicate of the chain traversal for the shared helper: one chain SSOT, −30 lines |
+| #15-12c (ATIF) | ACCEPTED, fixed | `build_trajectory` read `events.jsonl`/`tools.jsonl` as single from-birth files while chat/progress already used `_read_jsonl_chain`; after the C1/C2 train those two rotate too, so a rotated trial published a trajectory missing its early tool calls and its usage/startup events — a FALSE trajectory. Both go through the chain reader. Pin: rotated tools+events → both calls present in order, tokens summed across the chain, the agent version read from the archived startup row |
+| #15-13a (media prune symlinks) | ACCEPTED, fixed — defect reproduced | `is_file()`/`stat()` follow symlinks, so the C21 age sweep would unlink old files wherever a link pointed. The pre-fix pin proves it: the sweep deleted a file OUTSIDE the drive root. Only REGULAR files inside the real family directory are unlinked now (`lstat` + `S_ISREG`, one stat per entry); a symlinked `uploads/screenshots`/`uploads/views` and any non-regular entry are counted `skipped` and surfaced on the event |
+| #15-13b (reconcile GC premise) | ACCEPTED, fixed | The C15 GC was chosen on the stated premise that "the failure fact is already durable in events.jsonl". It was not — `_mark_failed` wrote the marker and nothing else, so the age prune destroyed the only record of why an extension gave up. The terminal failure (skill, request id, reason, source, attempts, last error) is appended to the event log BEFORE the `failed/` marker is written, so the marker is genuinely a cache of a fact that outlives it. Pin: five failing attempts → exactly one `extension_reconcile_failed` row; the marker aged out and pruned; the fact still readable |
+| #14-5 (Windows O_BINARY) | ACCEPTED, fixed — and BROADER than the audit or ledger item 15 said | Both parties were half right. Ledger item 15 rejected replaying the frozen reference's `O_BINARY` into `write_text_atomic`'s fsync path, correctly: that fixes ONE lane. What neither the reference, the audit, nor item 15 noticed is that the OTHER lane translated too — `Path.write_text` opens in text mode, so the non-fsync path rewrote newlines on Windows exactly the same way. "Platform newline semantics" was therefore not a decomposition anyone had chosen for a caller; it was an unexamined default on both halves. Caller survey: `atomic_write_json` (all durable JSON state), `write_text` , outcome receipts, reviewer-slot projections, benchmark `run_manifest.json` (byte-compared by `tests/test_devtools_benchmarks.py`), and `tools/core.py`'s `write_file`/`edit_file`, which round-trip source Python read back with universal newlines and would have re-saved LF files as CRLF. NOT ONE of them wants translation. The complete class fix is the decomposition upstream already built: `write_text_atomic` is now `write_bytes_atomic` plus a UTF-8 encode — one full-write loop, one flag set, byte-exact everywhere. DEVELOPMENT.md's shared-helper paragraph updated in the same commit. Pins: exact bytes on both lanes; the fsync lane's `os.open` flags carry `O_BINARY` under a simulated Windows `os` (POSIX has no translation to observe); `atomic_write_json` byte pin |
+| #14-6b (unbounded history scan) | ACCEPTED, fixed | `load_history` documents "every reader is byte-bounded" (CPL4-C12) while `count_paid_skill_review_cycles` still scanned EVERY installed skill's `review_history.jsonl` whole — the read where the cost multiplies by the number of skills, and the one that made the claim false. The bound stays where it lives: `skill_review_history.iter_history_rows_bounded` (raw rows, same tail window) and the cycles module carries no window size. Same disclosed residual as the family — a group whose newest ordinal-bearing row aged past the window under-counts, never over-blocks — and the docstring now NAMES this reader so the claim is checkable rather than merely asserted. Pin: with the window shrunk, ancient paid rows fall out of the cross-skill count |
+| #14-6c (rotation by size) | ACCEPTED, fixed — defect reproduced | Worker-boot verification decided "rotated" from `old_offset > new_size`. Under a busy supervisor the fresh live file has usually already grown past the old offset by the time the verify reads, so the rotation went unnoticed and the read seeked into a DIFFERENT file at a meaningless offset. Reproduced on the pre-fix tree: the boot lookup returns `None`. The cursor is now `(size, device, inode)` from `events_log_cursor()`; a moved identity reads the MATCHING archive segment from the same offset (exact continuation), a cursor whose file is gone falls back to the newest segment whole, and a truncated same-inode file still resets. Both capture sites (pool spawn, assisted-resolver boot wait) pass the cursor; the new re-export regenerated `FACADE_INVENTORY.md` in the same commit |
+| #15-14 (ARCHITECTURE same-commit) | ACCEPTED, fixed for this lane's scope | Ownership/data-flow rows added for `delegate_state_sweep.py`, `memory_journal_compaction.py` and `skill_uninstall_state.py`: what each OWNS (which durable paths), what it removes and on what proof, where it fails closed. No absolutes. `scripts/regenerate_inventories.py --check` green. NOT covered here: `usage_compaction.py` belongs to the C6 lane and must carry its own row with it |
+| #15-7 (CPL-4 status) | ACCEPTED, fixed | `CPL-4` `done` → `in-progress`, with honest text: the mechanical train landed, this corrective lane landed the defects it left, and C6 runs in a separate reviewed lane and is NOT integrated. The row becomes `done` only after C6 integrates with a green hook — status must not run ahead of the work. `scripts/v7next_adoption.py` OK |
+
+Cross-cutting notes:
+
+- **One bug-cementing test removed.** `tests/test_memory_journal_compaction.py`
+  asserted `digested["old_sha256"] == "pinned-old-hash"` — i.e. it pinned
+  that a digest known to contradict its own text survives the deletion of
+  that text. That is the #15-11 defect stated as intent, with a convincing
+  comment ("existing hash never overwritten") for the next reader. The row
+  is reshaped to a truthful stored digest and the false-fact case is now its
+  own pin.
+- **`append_jsonl` failure semantics changed, narrowly.** A mid-record write
+  failure now returns `False` immediately instead of retrying the record and
+  then falling through to the text-mode fallback. Retrying a partially
+  landed record duplicates its prefix; open failures still retry three times
+  and still fall through. Callers already had to handle `False` (that is why
+  the helper returns a bool).
+- **Not taken, deliberately.** `rotate_jsonl_log_if_needed` takes the same
+  sidecar lock without `owner_aware_stale`. Left as is: rotation is an
+  atomic rename, so a stolen lock cannot LOSE a row (a racing appender's
+  bytes land in the renamed inode, which the chain readers read). The
+  journal compactor is different in kind — it rewrites the file — which is
+  why the owner-aware lock went there.
+- **Residual named.** `iter_jsonl_chain_objects` has no `strict` parameter:
+  its only runtime caller is the swarm-fanout rollup (observability). Adding
+  an unused knob would be surface without a caller; the strict path exists
+  where an authority reader asks for it.
+- **Size ratchet, and why the lane's local history was rebuilt.** The chain
+  work took `ouroboros/utils.py` from 1560 to 1629 lines — over the 1600 hard
+  cap. The paydown is the append_jsonl lock dedup above: a real removal of a
+  duplicated primitive in the same function the lane was already fixing, not
+  a helper split and not comment golf. Because a commit that exceeds the cap
+  is condemned on the first-parent line forever (a linear repair descendant
+  does not heal it), the lock dedup was folded into the FIRST commit and the
+  lane's LOCAL, unpushed chain was rebuilt so no commit ever crossed the cap;
+  the byte-exact commit was ordered before the chain commit for the same
+  reason. Per-commit sizes on the rebuilt chain: 1546, 1545, then 1599 to the
+  tip. `regenerate_size_ratchet.py --check` green, `-m size_ratchet` green.
+  **Disclosed residual: utils.py sits ONE line under the cap.** The next lane
+  that touches it must reduce before it adds; there was no further honest
+  simplification available inside this lane's scope, and buying the room by
+  deleting contract-bearing docstrings or by exporting a fragment to a
+  neighbour module would have been the forbidden kind of paydown.
