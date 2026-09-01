@@ -348,6 +348,6 @@ def test_ui_smoke_agents_panel_wizard_finish_judges_the_roster(direct_server_wit
             finally:
                 browser.close()
     except PlaywrightError as exc:
-        if "executable doesn't exist" in str(exc).lower():
+        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
             pytest.skip(str(exc))
         raise
