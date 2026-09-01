@@ -16,7 +16,7 @@ import re
 import uuid
 from typing import Any, Callable, Dict, List
 
-from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
+from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +84,22 @@ def list_extension_reconcile_requests(drive_root: pathlib.Path) -> List[Dict[str
     return out
 
 
-def _mark_failed(path: pathlib.Path, payload: Dict[str, Any], error: str) -> None:
+def _mark_failed(
+    path: pathlib.Path,
+    payload: Dict[str, Any],
+    error: str,
+    *,
+    drive_root: pathlib.Path,
+) -> None:
+    """Record one failed attempt; the LAST one becomes a durable terminal fact.
+
+    The ``failed/`` marker is age-pruned as a dead flag (CPL4-C15) on the
+    premise that "the failure fact is already durable in events.jsonl" — which
+    was not true: nothing but the marker itself recorded why an extension gave
+    up. The terminal failure is therefore appended to the event log BEFORE the
+    marker is written, so the marker really is only a cache of it and the GC
+    that clears it destroys nothing (audit #15-13).
+    """
     attempts = int(payload.get("attempts") or 0) + 1
     payload = dict(payload)
     payload.pop("_path", None)
@@ -95,6 +110,16 @@ def _mark_failed(path: pathlib.Path, payload: Dict[str, Any], error: str) -> Non
     })
     if attempts >= MAX_ATTEMPTS:
         payload["status"] = "failed"
+        append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
+            "ts": payload["last_attempt_at"],
+            "type": "extension_reconcile_failed",
+            "skill": payload.get("skill"),
+            "request_id": payload.get("request_id"),
+            "reason": payload.get("reason"),
+            "source": payload.get("source"),
+            "attempts": attempts,
+            "last_error": payload["last_error"],
+        })
         failed_path = path.parent / "failed" / path.name
         atomic_write_json(failed_path, payload)
         try:
@@ -114,9 +139,10 @@ def prune_failed_reconcile_markers(
     """Age-prune permanently failed reconcile markers (CPL4-C15).
 
     A marker lands in ``failed/`` after ``MAX_ATTEMPTS`` and was kept forever;
-    the failure fact is already durable in events.jsonl, so past GC retention
-    the marker is a dead flag. Age by file mtime (written at the final
-    failure); a refused unlink keeps the file and reports.
+    ``_mark_failed`` appends the terminal failure to events.jsonl BEFORE
+    writing the marker, so past GC retention the marker is a dead flag over a
+    fact that survives it. Age by file mtime (written at the final failure); a
+    refused unlink keeps the file and reports.
     """
     from ouroboros.retention import age_cutoff, get_gc_retention_days
 
@@ -184,7 +210,10 @@ def process_extension_reconcile_requests(
             })
         except Exception as exc:
             log.warning("server extension reconcile request failed for %s", skill, exc_info=True)
-            _mark_failed(path, item, f"{type(exc).__name__}: {exc}")
+            _mark_failed(
+                path, item, f"{type(exc).__name__}: {exc}",
+                drive_root=pathlib.Path(drive_root),
+            )
     return processed
 
 

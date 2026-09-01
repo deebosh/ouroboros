@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from unittest import mock
 
 from ouroboros.code_intelligence import prune_stale_code_intel_roots
 from ouroboros.extension_reconcile_queue import prune_failed_reconcile_markers
@@ -60,6 +61,46 @@ def test_failed_reconcile_markers_age_out(tmp_path):
 
     assert not old.exists() and fresh.exists() and pending.exists()
     assert report["removed"] == ["skill-abc-1.json"] and report["kept"] == 1
+
+
+def test_the_terminal_failure_survives_the_marker_it_is_cached_in(tmp_path):
+    """Audit #15-13: the C15 GC was chosen on the premise that the failure fact
+    'is already durable in events.jsonl' — but ``_mark_failed`` wrote only the
+    marker, so pruning it destroyed the last-error detail forever. The terminal
+    failure is now appended to the event log BEFORE the marker exists, and the
+    marker really is only a cache of it."""
+    from ouroboros.extension_reconcile_queue import (
+        list_extension_reconcile_requests,
+        process_extension_reconcile_requests,
+        request_extension_reconcile,
+    )
+
+    marker = request_extension_reconcile(tmp_path, "telegram", reason="enable")
+    for _ in range(5):  # MAX_ATTEMPTS
+        with mock.patch(
+            "ouroboros.extension_loader.reconcile_extension",
+            side_effect=RuntimeError("companion port already bound"),
+        ):
+            process_extension_reconcile_requests(tmp_path, lambda: {})
+
+    assert not marker.exists()
+    failed_dir = tmp_path / "state" / "extension_reconcile" / "failed"
+    (failed_marker,) = list(failed_dir.glob("*.json"))
+    os.utime(failed_marker, (_OLD, _OLD))
+    prune_failed_reconcile_markers(tmp_path)
+    assert not failed_marker.exists()
+    assert not list_extension_reconcile_requests(tmp_path)
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "logs" / "events.jsonl").read_text(
+            encoding="utf-8",
+        ).splitlines()
+    ]
+    terminal = [row for row in rows if row["type"] == "extension_reconcile_failed"]
+    assert len(terminal) == 1  # exactly one terminal fact, at the last attempt
+    assert terminal[0]["skill"] == "telegram" and terminal[0]["attempts"] == 5
+    assert "companion port already bound" in terminal[0]["last_error"]
 
 
 def test_startup_prune_sweeps_run_both():
