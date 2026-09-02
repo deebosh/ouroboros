@@ -854,6 +854,7 @@ def _run_retrieving_review(
     # The executor's own list is never mutated (shallow copy): the coverage
     # deltas below are appended to THIS record's copy.
     usage["capability_delta"] = list(usage.get("capability_delta") or [])
+    usage["deep_review_memory"] = task_facts["memory"]  # attached FIRST: every D22 row's usage carries it
     text = str(attempt.raw_text or "")
     if not text.strip():
         # An empty product is an ERROR row in «Выполняется как», exactly like
@@ -894,7 +895,6 @@ def _run_retrieving_review(
         usage.pop("capability_delta", None)  # an empty list is not a disclosure
     if not usage.get("resolved_model"):
         usage["resolved_model"] = row.target_id
-    usage["deep_review_memory"] = task_facts["memory"]
     incomplete = _delivery_incomplete(delivery, usage)
     model = str(usage.get("resolved_model") or row.target_id)
     # Every external value on the HUMAN line is bounded and sanitized too.
@@ -1053,15 +1053,15 @@ def _run_packed_review(
         no_proxy=True,
     )
     usage = dict(usage or {})
+    memory = stats.get("memory") or {"inlined": 0, "total": len(_MEMORY_WHITELIST), "dispositions": {}}
+    usage["deep_review_memory"] = memory  # attached FIRST: the error row's usage carries it too
     slot = _review_slot(row, model, None)
-    text = response.get("content") or ""
+    text = response.get("content") or "" if isinstance(response, dict) else ""
     if not text:
         _record_execution(slot, usage, status="error", error="empty response")
         return _failed("⚠️ Model returned an empty response for the deep self-review.",
                        reason_code="deep_self_review_error", usage=usage)
     usage.setdefault("resolved_model", model)
-    memory = stats.get("memory") or {"inlined": 0, "total": len(_MEMORY_WHITELIST), "dispositions": {}}
-    usage["deep_review_memory"] = memory
     _record_execution(slot, usage, status="responded")
     # Completeness from the response the packed path holds: the provider's
     # stop marker (OpenAI-compatible finish_reason OR direct-Anthropic
@@ -1089,12 +1089,15 @@ def run_deep_self_review(
     deadline_at: str = "",
     slot: Optional[ConfiguredReviewerSlot] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """Execute the deep self-review on the configured row; never raises.
+    """Execute the deep self-review on the configured row.
 
     Returns ``(text, usage)``. A delivered report carries the host provenance
-    header; every failure returns its text with typed usage
+    header; every ordinary review failure returns its text with typed usage
     (``execution_status="infra_failed"`` + ``reason_code``) so the caller can
-    keep the previous report instead of overwriting it with an error.
+    keep the previous report instead of overwriting it with an error. The ONE
+    exception that propagates is ``BudgetExceeded`` — the paid ledger's
+    refusal is budget vocabulary for the agent's budget-pause rail, not a
+    review error.
     ``slot`` overrides the configured row (tests, callers that already resolved it).
     """
     try:

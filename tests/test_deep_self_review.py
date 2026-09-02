@@ -715,10 +715,11 @@ class TestReviewPackOverflow:
         # v6.80.0: the deep reviewer's cap is DENSITY-calibrated per model at call
         # time (the module constant is only the uncalibrated window arithmetic), so
         # the message must quote the calibrated number actually enforced.
-        # v6.87.9: the window itself is resolved from Capability Evidence per
-        # reviewer (an unknown route keeps the full-window assumption; a KNOWN
-        # sub-1M one shrinks) and the reserves scale to it, so the quoted number
-        # follows the same resolution instead of a hardcoded 1M.
+        # v6.87.9 / Ф3: the window is resolved from Capability Evidence per
+        # reviewer. An unknown route keeps the full-window assumption and is
+        # dispatched-and-disclosed (`window=assumed_1000000`, owner fork A
+        # pending ratification); a CONFIRMED sub-1M route is a typed refusal
+        # (no shrink). The quoted number follows that same resolution.
         from ouroboros.reviewer_window import (
             reviewer_context_window,
             window_scaled_reserves,

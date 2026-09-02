@@ -874,22 +874,32 @@ def test_coverage_deltas_never_mutate_the_executors_usage(review_repo, review_dr
     """Item 14: `dict(attempt.usage)` is shallow — the appended coverage delta
     must land on THIS record's copy, never on the list the executor owns."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
     import ouroboros.review_native_episode as native_episode
 
-    executors = []
+    attempts = []
     original = native_episode.NativeToolRoundReviewExecutor.execute
 
     def spy(self):
-        executors.append(self)
-        return original(self)
+        result = original(self)
+        attempts.append(result)
+        return result
 
     monkeypatch.setattr(native_episode.NativeToolRoundReviewExecutor, "execute", spy)
-    llm = _ScriptedLLM([{"content": _REPORT}])  # no BIBLE.md read → a coverage delta is appended
+    # An exhausted report episode: the EXECUTOR itself owns a non-empty delta
+    # list (`native_transcript_bound_before_final_answer`); the record then
+    # appends its coverage delta — to ITS copy only.
+    (review_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    draft = "# Draft\n\nCRITICAL: something.\n"
+    llm = _ScriptedLLM([{"content": draft, "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, "c1")]}] + [
+        {"tool_calls": [_tool_call("read_file", {"path": "ouroboros/loop.py"}, f"c{i}")]} for i in range(2, 40)
+    ])
     _text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
-    assert [d["reason"] for d in usage["capability_delta"]] == ["deep_review_mandatory_read_missing"]
-    executor_usage = executors[0]._episode_usage
-    assert "capability_delta" not in executor_usage or executor_usage["capability_delta"] == []
-    assert executor_usage is not usage and usage["capability_delta"] is not executor_usage.get("capability_delta")
+    executor_list = attempts[0].usage["capability_delta"]
+    assert [d["reason"] for d in executor_list] == ["native_transcript_bound_before_final_answer"]
+    assert [d["reason"] for d in usage["capability_delta"]] == [
+        "native_transcript_bound_before_final_answer", "deep_review_mandatory_read_missing"]
+    assert usage["capability_delta"] is not executor_list and len(executor_list) == 1
 
 
 def test_budget_exhaustion_propagates_out_of_the_review(review_repo, review_drive, monkeypatch):
