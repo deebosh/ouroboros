@@ -26,10 +26,17 @@ below), so no alias itself is deferred.
   alias; history replay of stored `chat.jsonl` rows via
   `task_results.TASK_COST_META_FIELDS`.
 - JS: `web/modules/utils.js` `resolveCostPair` resolves the pair with
-  deprecated-wins precedence AND an honest-name fallback — an alias-free frame
-  renders identically, so removal needs no web edit. `chat.js::costMetaKeys`
-  forwards the key optionally (undefined drops out of JSON). JSDoc typedefs at
-  `api_types.js:283/:291` go stale — HOT-DEFERRED (web/ untouchable).
+  deprecated-wins precedence AND an honest-name fallback. Removal DID need a
+  web edit, made in the stage-2 fix wave: `chat.js::costMetaKeys` copies the
+  retired names unconditionally, and nothing serializes them away on that
+  in-memory path (no JSON round-trip runs between the whitelist and the
+  reader), so an alias-free frame reached the reader with `cost_usd*` as own
+  properties valued `undefined`. The resolver read that as "the deprecated
+  name is present" and answered null, freezing a subagent card on
+  "cost pending" for the rest of the run. Presence there now means a DEFINED
+  value; an explicit `null` is still present (Python parity with `old in src`)
+  and a mirrored legacy amount still wins its pair. JSDoc typedefs at
+  `api_types.js:288/:291` already name the honest fields.
 - producer: `cost_projection.py` is the one author of the emitted pair;
   `gateway/tasks.py:227` stamps `cost_usd=0.0` into the stored
   admission-failure record; hand literals (`agent_task_pipeline.py`,
