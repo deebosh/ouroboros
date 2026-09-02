@@ -19,6 +19,25 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def test_architecture_deep_review_has_no_compact_manifest_retry_rung():
+    """The compact-manifest retry rung was removed; the doc still promised it.
+
+    ``deep_self_review._compile`` is now called once with ``compact=True``
+    because compact coverage IS the atlas default (the durable manifest keeps
+    full per-file coverage either way), so there is no fuller form to fall back
+    from. A failed assembly returns no pack at all (BIBLE P3). The
+    final-shrink rebuild — one retry at a hard budget tightened by the measured
+    overage — is a different rung and still exists.
+    """
+    arch_flat = " ".join(_read("docs/ARCHITECTURE.md").split())
+    source = _read("ouroboros/deep_self_review.py")
+
+    assert "no compact retry rung anymore" in source
+    assert "retries once with the compact manifest" not in arch_flat
+    assert "the compact manifest is the atlas default" in arch_flat
+    assert "final-shrink rebuild" in arch_flat and "hard_budget_reduction" in source
+
+
 def test_architecture_component_map_covers_every_live_runtime_module():
     """README calls ARCHITECTURE.md the full component map — so prove it.
 
