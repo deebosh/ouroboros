@@ -152,21 +152,6 @@ def _lock_path(data_root):
     return data_root / "state" / "usage_attempts.lock"
 
 
-def _lock_is_held(data_root):
-    """Whether the monetary lock is held RIGHT NOW by someone else."""
-    path = _lock_path(data_root)
-    if not path.exists():
-        return False
-    fd = platform_layer.acquire_exclusive_file_lock(
-        path, timeout_sec=0.05, stale_sec=3600.0, poll_sec=0.01,
-        owner_aware_stale=True,
-    )
-    if fd is None:
-        return True
-    platform_layer.release_exclusive_file_lock(path, fd)
-    return False
-
-
 def _rewrite_header(data_root, header):
     """Replace the live ledger's leading row (tamper simulation)."""
     path = data_root / ua.LEDGER_REL
@@ -195,6 +180,18 @@ def _raced_row(attempt_id):
         "source": "subscription", "task_id": "t", "root_task_id": "root",
         "parent_task_id": "",
     }
+
+
+def _charge_survived(data_root, injected, before_money):
+    """The raced charge is in the live ledger, no baseline landed, no temp
+    residue, and money = before + that charge: the swap was refused whole."""
+    rows = _ledger_rows(data_root)
+    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
+    assert not any(row.get("kind") == "usage_baseline" for row in rows)
+    _validate_records(rows)
+    ledger_path = data_root / ua.LEDGER_REL
+    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
+    assert _decimal_money(rows) == (before_money[0] + Decimal("0.25"), before_money[1])
 
 
 def _snapshot_looks(monkeypatch, on_look=lambda looks: None):
@@ -439,30 +436,10 @@ def test_the_directory_chain_is_re_synced_on_the_retry_after_a_failed_pass(data_
         with pytest.raises(OSError):
             uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
     assert archive_dir.is_dir()  # present after the failure, durability unknown
-
-    synced: list = []
-    swapped: list = []
-
-    def recording_fsync(fd):
-        info = os.fstat(fd)
-        synced.append((info.st_dev, info.st_ino))
-        return real_fsync(fd)
-
-    real_swap = uc._swap_ledger_fsync
-
-    def watched_swap(*args):
-        swapped.append(len(synced))
-        return real_swap(*args)
-
-    monkeypatch.setattr(os, "fsync", recording_fsync)
-    monkeypatch.setattr(uc, "_swap_ledger_fsync", watched_swap)
-    assert _compact(data_root) is not None
-    assert swapped, "the swap never ran"
-    before_swap = set(synced[: swapped[0]])
-    for directory in (archive_dir, archive_dir.parent, data_root):
-        info = directory.stat()
-        assert (info.st_dev, info.st_ino) in before_swap, directory
-
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    # The retry is the first-pass proof itself, run over the directories the
+    # failed pass left behind: every level is fsync'd again before the swap.
+    test_archive_directory_chain_is_durable_before_the_swap(data_root, monkeypatch)
 
 
 # --- 1b: the lock the pass runs under ----------------------------------------
@@ -503,12 +480,7 @@ def test_append_between_snapshot_and_swap_aborts_instead_of_erasing_it(data_root
 
     monkeypatch.setattr(uc, "_write_new_file_fsync", racing_write)
     assert _compact(data_root) is None  # refused the swap
-    rows = _ledger_rows(data_root)
-    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
-    assert not any(row.get("kind") == "usage_baseline" for row in rows)
-    _validate_records(rows)
-    cost, bound = _decimal_money(rows)
-    assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
+    _charge_survived(data_root, injected, before_money)
 
 
 def test_a_lost_lock_aborts_the_pass_instead_of_swapping(data_root):
@@ -634,14 +606,7 @@ def test_an_append_between_the_recheck_and_the_replace_aborts_without_loss(
 
     _snapshot_looks(monkeypatch, land_after_the_recheck)
     assert _compact(data_root) is None  # the replace was refused
-    rows = _ledger_rows(data_root)
-    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
-    assert not any(row.get("kind") == "usage_baseline" for row in rows)
-    _validate_records(rows)
-    ledger_path = data_root / ua.LEDGER_REL
-    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
-    cost, bound = _decimal_money(rows)
-    assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
+    _charge_survived(data_root, injected, before_money)
 
 
 def test_a_hold_lost_at_the_archive_is_seen_before_the_snapshot_is_trusted(
@@ -692,7 +657,6 @@ def test_a_hold_lost_before_the_first_commit_look_writes_no_orphan(data_root, mo
     assert not (data_root / "archive").exists()  # and no orphan was written
 
 
-
 def test_a_hold_lost_after_the_recheck_aborts_before_the_swap(data_root, monkeypatch):
     """Ownership is proven once more between the re-check and the rename: a
     verdict that arrived while ours cannot license a replace that happens
@@ -721,7 +685,6 @@ def test_a_hold_lost_after_the_last_snapshot_look_refuses_the_rename(data_root, 
     holder's charge landing right behind it, refuses the replace."""
     _seed_mixed_ledger(data_root)
     before_money = _decimal_money(_ledger_rows(data_root))
-    ledger_path = data_root / ua.LEDGER_REL
     injected: dict = {}
     looks = _snapshot_looks(monkeypatch)
 
@@ -734,12 +697,7 @@ def test_a_hold_lost_after_the_last_snapshot_look_refuses_the_rename(data_root, 
 
     with ua._locked(data_root):
         assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
-    rows = _ledger_rows(data_root)
-    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
-    assert not any(row.get("kind") == "usage_baseline" for row in rows)
-    _validate_records(rows)
-    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
-    assert _decimal_money(rows) == (before_money[0] + Decimal("0.25"), before_money[1])
+    _charge_survived(data_root, injected, before_money)
 
 
 def test_a_hold_lost_while_the_temp_is_written_refuses_the_replace(data_root):
@@ -766,13 +724,8 @@ def test_a_hold_lost_while_the_temp_is_written_refuses_the_replace(data_root):
 
     with ua._locked(data_root):
         assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
-    rows = _ledger_rows(data_root)
-    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
-    assert not any(row.get("kind") == "usage_baseline" for row in rows)
-    _validate_records(rows)
-    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
-    cost, bound = _decimal_money(rows)
-    assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
+    _charge_survived(data_root, injected, before_money)
+
 
 @pytest.mark.parametrize("intrusion", ("append", "hold_lost"))
 def test_a_refused_rename_re_proves_the_hold_and_the_snapshot_before_retrying(
@@ -810,16 +763,11 @@ def test_a_refused_rename_re_proves_the_hold_and_the_snapshot_before_retrying(
         assert uc.compact_usage_ledger_locked(
             data_root, heartbeat=lambda: state["owned"] and heartbeat()) is None
     assert attempts == [1]  # the second rename never happened
-    rows = _ledger_rows(data_root)
-    assert not any(row.get("kind") == "usage_baseline" for row in rows)
-    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
     if intrusion == "append":
-        assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
-        _validate_records(rows)
-        assert _decimal_money(rows) == (before_money[0] + Decimal("0.25"), before_money[1])
+        _charge_survived(data_root, injected, before_money)
     else:
         assert ledger_path.read_bytes() == before
-
+        assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
 
 
 def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, monkeypatch, caplog):
@@ -844,7 +792,6 @@ def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, mon
     rows = _ledger_rows(data_root)
     assert not any(row.get("kind") == "usage_baseline" for row in rows)
     assert len(rows) == len(before.splitlines()) + 3  # reserved, dispatched, settled
-
 
 
 # --- 5: CPL-5 join surface ---------------------------------------------------
@@ -955,7 +902,6 @@ def test_a_same_size_rewrite_is_caught_once_the_cache_entry_expires(data_root):
 
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
-
 
 
 # Everything the forger would carry over from the older genuine stamp — the
@@ -1074,7 +1020,6 @@ def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root):
         uc.archived_attempt_ids(data_root)
 
 
-
 def test_pre_compaction_seq_must_name_a_row_the_named_source_held(data_root):
     """The claim is provenance about an archived range, not a free number."""
     _seed_mixed_ledger(data_root)
@@ -1089,7 +1034,6 @@ def test_pre_compaction_seq_must_name_a_row_the_named_source_held(data_root):
     forged[carriers[-1]]["pre_compaction_seq"] = header["source_last_seq"] + 1
     with pytest.raises(UsageLedgerCorrupt):
         _validate_records(forged)
-
 
 
 def test_archive_reference_is_bounded_to_the_archive_directory(data_root):
@@ -1202,7 +1146,6 @@ def test_a_link_planted_after_the_reader_bound_check_is_refused(
         uc.archived_attempt_ids(data_root)
 
 
-
 def test_unreadable_leading_row_is_typed_corruption_not_absence(data_root):
     _seed_mixed_ledger(data_root)
     assert _compact(data_root) is not None
@@ -1307,7 +1250,13 @@ def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch
     original = uc.compact_usage_ledger_locked
 
     def observing(root, **kwargs):
-        holds.append(_lock_is_held(data_root))
+        probe = platform_layer.acquire_exclusive_file_lock(  # None: held by someone else
+            _lock_path(data_root), timeout_sec=0.05, stale_sec=3600.0, poll_sec=0.01,
+            owner_aware_stale=True,
+        )
+        holds.append(probe is None)
+        if probe is not None:
+            platform_layer.release_exclusive_file_lock(_lock_path(data_root), probe)
         return original(root, **kwargs)
 
     monkeypatch.setattr(uc, "compact_usage_ledger_locked", observing)
