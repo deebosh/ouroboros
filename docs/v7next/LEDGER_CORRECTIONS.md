@@ -7667,3 +7667,107 @@ Three read-only lenses on the 5.4 delta: NEEDS_FIXES × 3, no HIGH (3 MEDIUM, 7 
 3. **R3 stamp-less symlink levels (LOW) — fixed**, pin deferred (suite at its 1600-line cap; mutation-verified by hand). **R5 witness inode tie + `_Abort` on a vanished ledger (LOW) — fixed**, no pin (disclosed). **R6 heartbeat-ownership pin (LOW) — disclosed, not fixed.** **R1 uncached unprobeable directory, R7 shared liveness primitive, R8d epoch-floor duration, R8e socket shape (LOW) — docs corrected** in DESIGN §8/§10/§12.5, packet §5.9/§5.10/§9/§10, ARCHITECTURE row.
 
 Gates at the close-out tip: `tests/test_lockfile_helpers.py` + `tests/test_usage_compaction.py` + `tests/test_usage_*` + `tests/test_persistence_inventory.py` rc 0 (107 passed, 1 skipped Windows-only); `ruff --select F` rc 0; `scripts/check_domains.py` rc 0; `scripts/regenerate_size_ratchet.py --check` rc 0 (`platform_layer.py` 1500, `tests/test_usage_compaction.py` 1600 — both AT their ceilings); `git diff --check` rc 0. The CI-shape battery and `-m serial` run on the integration tree after the lane merges.
+
+## From the stage-2 fix wave, lane code-smalls (base 9faccf31)
+
+Nine independent small fixes, one single-intent commit each, every behaviour
+change pinned red-first. The lane touched no protected file except the
+owner-sanctioned ABI-1 edit named in item 4.
+
+| # | item | red-first evidence (pre-fix shape) | green |
+|---|---|---|---|
+| 1 | dead `TOTAL_BUDGET_LIMIT` copy in `supervisor/workers.py` (owner batch №6 item 3=A, second SSOT fix) | new pin in `tests/test_settings_budget_hotreload.py` fails on `assert not hasattr(workers, "TOTAL_BUDGET_LIMIT")` | 74 passed (`test_settings_budget_hotreload` + `test_legacy_timeout_retirement` + the three `workers.init` callers + `test_packaging_sync`) |
+| 2 | no negative contract for the three ABI-6 P1 removals | a resurrection mutant re-adding all five retired names (`_call_llm_with_retry`, `compute_cost_with_children`, `format_handoff_message`, `_handoff_snippet`, `HANDOFF_SNIPPET_CHARS`) to `ouroboros/loop.py` + `ouroboros/task_status.py` → 5 failed, 2 passed | 7 passed; tree restored byte-identical after the demonstration |
+| 3 | `timeout-minutes > 0` on the `system-e2e-mock` job | the new `>= 30` floor fails under a `40 -> 1` mutant, run against a TEMP COPY of `.github/workflows/ci.yml` (the real file is protected and untouched) | 5 passed |
+| 4 | `plugin_api_surface_fingerprint` hashed only method NAMES and RuntimeInfo KEYS | with the pre-fix payload restored (`git stash`), both mutants — a parameter annotation `Sequence[str] -> List[str]`, and `server_port: int -> str` — produce the IDENTICAL digest `4b391ba5…` and negotiate happily; the two parametrized cases fail on that equality | 102 passed (`test_extension_plugin_api_matrix` + `test_contracts` + `test_plugin_api_admission` + `test_oop_extension_parity`), then 108 more across the extension loader/API suites |
+| 5 | whitespace-only `model_experience` string accepted | the two new parametrize cases (`"   "`, `"\n\t \n"`) report `DID NOT RAISE SkillManifestError` | 147 passed (`test_skill_model_experience` + `test_skill_manifest_v11` + `test_contracts` + `test_skill_loader`) |
+| 6 | `broadcast_ws` coroutine leaked when `run_coroutine_threadsafe` raised | the new pin drives a CLOSED loop through `broadcast_ws_sync` and records exactly one `coroutine 'broadcast_ws' was never awaited` | 82 passed (`test_broadcast_ws` + `test_extensions_api` + three ws suites) |
+| 7 | route pin read `os.name == "nt"` (R-WINWAVE open item 1) | with the target binding forced to raise — the 8.3 short-path miss reproduced on this host — the scenario still passes its refusal contract on the native route with 0 adapter calls: the NEW pin is green and the OLD `os.name` expression fails `assert 0 == 3` | 20 passed |
+| 8 | pinned transplant corpora silently reconstructed from the landed leaf | with `git` forced to fail, the pre-fix probes RUN on reconstructed bytes (the git_ops case does not even reconstruct faithfully: `unresolvable names: {BRANCH_DEV, BRANCH_STABLE, append_jsonl, current_drive_root, utc_now_iso}` — a meaningless red, not merely a vacuous green); post-fix the same run reports 7 honest SKIPs naming the file and base SHA | 50 passed, 0 skipped (the real corpus is present on this host) |
+| 9 | retired comma-list keys dropped with no owner-visible word (review M2) | both new pins fail: no notice is emitted at all | 23 passed (`test_settings_read_seam`), then 123 across `test_settings_honesty`, `test_comma_list_sweep`, `test_legacy_timeout_retirement`, `test_abi5_q10_removals`, `test_config_extraction`, `test_review_cycles`, `test_rc_audit_fixture_suite` |
+
+Dispositions beyond the plain fix:
+
+1. **Item 1 — the accepted-and-ignored ARGUMENT went with the global (fixed,
+   scope named).** The brief named `:34/:71/:75`. Keeping the
+   `total_budget_limit` parameter while deleting the global it wrote would
+   have left the worse half of the defect — an input accepted from
+   `server.py` on every boot and honored by nobody — so `workers.init` no
+   longer asks for it and the three test call sites drop the argument. This
+   is the same idiom `tests/test_legacy_timeout_retirement.py` already pins
+   for `soft_timeout`/`hard_timeout` (the FIRST fix of that owner batch). The
+   two copies that ARE read (`supervisor.state`, the authority
+   `budget_remaining` reads; `supervisor.message_bus`, the reporting plane)
+   are untouched.
+2. **Item 2 — the ADOPTION row text is NOT edited (disclosed).** Row ABI-6
+   carries "DISCLOSED RESIDUAL: the three F3.0 removals are proven by
+   surviving positive suites plus grep-level absence, not by dedicated
+   negative-pin tests". That residual is now closed by
+   `tests/test_abi6_removals.py`, but ADOPTION_v7next.md belongs to the
+   ledger lane in this wave, so the row is left for it to update rather than
+   risking a cross-lane conflict. `scripts/v7next_adoption.py` and
+   `--release` are rc 0 as-is (the row was already `done`).
+3. **Item 4 — protected-file edit, owner-sanctioned ABI-1 package.** The
+   `2.0` fingerprint is re-recorded for the wider payload
+   (`03fabdf4334e6b2bde217b4cb83a80faaebc773ddce870546dd2108b75de17ca`); a
+   repo-wide grep confirmed no fixture, doc or receipt stored the previous
+   digest, so nothing else needed re-recording. Both halves of the payload
+   are the annotation SOURCE text, because `from __future__ import
+   annotations` is active in the module.
+4. **Item 5 — fixed by subtraction, not by a second error site.** The string
+   form IS the one-key mapping form, so it routes through the mapping branch
+   instead of carrying its own `return`. The two shapes now refuse
+   identically BY CONSTRUCTION rather than through a copied message, and the
+   function is one line shorter.
+5. **Item 6 — the leak is in the code path; no test double is involved.**
+   The brief offered both hypotheses. `broadcast_ws_sync` built the coroutine
+   before the call and dropped it on the `RuntimeError` arm; the warning
+   surfaces inside `test_api_extension*` only because an earlier test leaves
+   a finished loop in the module global, so the collection point — not the
+   author — got the blame. The pin records with `simplefilter("always")`, not
+   `"error"`: raised from `__del__`, an escalated warning becomes UNRAISABLE
+   (a pytest side note) and the pin would have stayed green. That was
+   observed on the first draft of this pin.
+6. **Item 7 — the predicate is the BINDING, not the access-layer detector.**
+   A first draft pinned on `light_cognitive_or_root_redirect` returning text;
+   that is wrong, because BOTH routes take their text from that same
+   function. `registry_core` reaches the light repo-mutation block only when
+   `_build_builtin_target_binding` RETURNED a binding (legacy text → adapter,
+   3 calls); when it RAISES, the except arm answers from the resolution layer
+   with a native `ToolResult` (0 calls). The test now reads that predicate.
+   Only the test landed — the R-WINWAVE row text belongs to the ledger lane.
+7. **Item 8 — fixed as a CLASS, one file wider than the brief.** The brief
+   named `_QUEUE_BASE_SHA` and `_GO_BASE_SHA`; `LOOP_UPSTREAM` (line 211 of
+   the pre-fix file) carried the identical fallback and is included, and the
+   three copies of the fetch collapse into one reader that returns EMPTY on
+   an unreachable object. The pre-existing `needs_go_corpus` marker could
+   never fire because `GO_UPSTREAM` was never empty; each real case now
+   carries a skipif naming its file and base SHA.
+8. **Item 9 — the notice is a LOG line, not a typed event (disclosed
+   residual).** `normalize_settings_raw` is THE raw-stage seam every settings
+   reader applies, and it exists precisely so that a read stays a read;
+   routing the notice into `logs/events.jsonl` would make every settings read
+   a write. So the first read that finds a retired key warns on the module
+   logger (`server.log` + stdout), once per process per dropped set, naming
+   the exact keys and — for the comma-list family — `OUROBOROS_REVIEWER_SLOTS`
+   plus the fact that the SHIPPED default panel is what runs until it is
+   authored. The docstring's purity claim is amended to name this one effect
+   instead of continuing to claim unqualified purity; the properties the pin
+   actually asserts (no file read, no document persisted, no environment, no
+   mutation of the caller's mapping, idempotent output) all still hold.
+   An owner who watches only the Logs panel will not see it there.
+
+Gates, each its own command with rc printed at the lane tip `fd0fa676`:
+`ruff check . --select F` rc 0; `scripts/check_domains.py` rc 0 (no module row
+moved, nothing to commit); `scripts/regenerate_inventories.py --check` rc 0
+(no inventory changed); `scripts/regenerate_size_ratchet.py --check` rc 0
+(`supervisor/workers.py` only SHRANK; the three files at their exact caps —
+`ouroboros/utils.py`, `ouroboros/platform_layer.py`,
+`tests/test_usage_compaction.py` — were not touched);
+`scripts/v7next_adoption.py` rc 0 and `--release` rc 0 (37 rows, 36 done, 1
+deferred); `git diff --check` rc 0; `git diff --check 9faccf31..HEAD` rc 0.
+Suites: the 17 directly touched files 380 passed; the wider related sweep
+(every `test_*settings*`, `*config*`, `*skill*`, `*extension*`, `*worker*`,
+`*supervisor*`, `*ws*`, `*plugin*`) 1651 passed, 7 skipped.
+`git rev-parse HEAD` was re-read after every pytest invocation and never
+moved off the lane branch.
