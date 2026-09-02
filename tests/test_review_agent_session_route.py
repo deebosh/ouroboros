@@ -337,6 +337,25 @@ def test_schema_is_not_asked_when_the_manifest_does_not_declare_it(tmp_path, fak
     assert any(d["reason"] == "schema_unavailable_on_effective_route" for d in deltas)
 
 
+def test_report_session_asks_no_schema_and_records_no_schema_landing(tmp_path, fake_route):
+    """A report-shaped surface (deep self-review) asks for NO output schema, so
+    neither its absence nor a missing outputConformance is a capability delta
+    — the host never requested one — and the prose passes through verbatim."""
+    fake_route.manifest_capabilities = {}
+    report = "# Deep self-review\n\nCRITICAL: loop.py finalization race.\n"
+    fake_route.detail = _terminal_detail(report)
+    result = run_review_request(
+        _agent_request(surface="deep_self_review", call_type="deep_self_review"),
+        slots=[_agent_slot()], drive_root=tmp_path, llm=FakeLLM(),
+    )
+    assert "outputSchema" not in fake_route.instances[0].start_requests[0]
+    actor = result.actors[0]
+    assert actor["raw_text"] == report
+    assert actor["usage"]["verdict_method"] == "report"
+    reasons = [d.get("reason", "") for d in actor["usage"].get("capability_delta", [])]
+    assert not [r for r in reasons if str(r).startswith("schema_")], reasons
+
+
 def test_the_run_request_pins_the_route_as_the_explicit_pool(tmp_path, fake_route):
     """CLAIM-1 regression: `primaryHarness` alone only fronts the engine's
     auto-pool (orchestrator orderPool) — other doctor-OK harnesses stay
