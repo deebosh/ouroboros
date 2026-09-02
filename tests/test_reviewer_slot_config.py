@@ -679,7 +679,7 @@ def test_reviewer_slots_endpoint_reports_rows_and_config_errors(monkeypatch):
     _set_structured(monkeypatch)
     body = json.loads(_get().body)
     assert body["source"] == "structured"
-    assert body["limits"] == {"triad": TRIAD_SLOT_LIMIT, "scope": SCOPE_SLOT_LIMIT, "advisory": 1}
+    assert body["limits"] == {"triad": TRIAD_SLOT_LIMIT, "scope": SCOPE_SLOT_LIMIT, "advisory": 1, "deep_review": 1}
     assert body["triad"][1]["route"]["kind"] == "agent_session"
     assert body["advisory"]["enabled"] is False
 

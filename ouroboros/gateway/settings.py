@@ -928,12 +928,13 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     from ouroboros.reviewer_slot_config import (
         SCOPE_SLOT_LIMIT,
         TRIAD_SLOT_LIMIT,
+        deep_review_slot,
         load_reviewer_slot_config,
         reviewer_slot_last_executions,
     )
 
     payload: Dict[str, Any] = {
-        "limits": {"triad": TRIAD_SLOT_LIMIT, "scope": SCOPE_SLOT_LIMIT, "advisory": 1},
+        "limits": {"triad": TRIAD_SLOT_LIMIT, "scope": SCOPE_SLOT_LIMIT, "advisory": 1, "deep_review": 1},
         "last_executions": reviewer_slot_last_executions(),
     }
     try:
@@ -960,6 +961,12 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     payload["source"] = config.source
     payload["triad"] = [_row(r) for r in config.triad]
     payload["scope"] = [_row(r) for r in config.scope]
+    # The deep self-review singleton: the saved row, or the packed api row
+    # synthesized from the legacy model key — disclosed as such so the editor
+    # can say the row is not saved yet (saving materializes the migration).
+    payload["deep_review"] = {k: v for k, v in _row(deep_review_slot(config)).items() if k != "slot_id"}
+    if config.deep_review is None:
+        payload["deep_review"]["synthesized_from"] = "OUROBOROS_MODEL_DEEP_SELF_REVIEW"
     advisory_route = {"kind": config.advisory.kind, "target_id": config.advisory.target_id}
     if config.advisory.profile_id:
         advisory_route["profile_id"] = config.advisory.profile_id

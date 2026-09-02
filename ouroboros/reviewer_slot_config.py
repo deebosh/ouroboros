@@ -1,8 +1,10 @@
 """Reviewer-slot configuration SSOT (phase 6.1).
 
 ONE structured setting — ``OUROBOROS_REVIEWER_SLOTS`` — describes every
-configured reviewer row: the commit-triad slots, the scope slots, and the one
-optional advisory reviewer. Each row is::
+configured reviewer row: the commit-triad slots, the scope slots, the one
+optional advisory reviewer, and the one optional deep self-reviewer
+(``deep_review``; absent = synthesized from the legacy model key, see
+``deep_review_slot``). Each row is::
 
     {"slot_id": "t_9f3a", "route": {"kind": "api_chat" | "agent_session",
                                     "target_id": "<model id | harness[=model]>"},
@@ -78,6 +80,10 @@ TRIAD_SLOT_LIMIT = 10
 SCOPE_SLOT_LIMIT = 4
 
 _SLOT_ID_MAX_CHARS = 64
+
+# The deep self-review row is a singleton like the advisory: its identity is
+# fixed (the UI reads «Выполняется как» under this id), never owner-minted.
+DEEP_REVIEW_SLOT_ID = "deep_review_slot_1"
 
 
 @dataclass(frozen=True)
@@ -171,6 +177,15 @@ class ReviewerSlotConfig:
     scope: Tuple[ConfiguredReviewerSlot, ...]
     advisory: AdvisorySlotConfig
     source: str  # "structured" | "legacy"
+    # The optional deep self-review row on the shared vocabulary (no
+    # ``enabled``: a deep review is owner-triggered, never a standing gate).
+    # None = not configured; ``deep_review_slot`` then synthesizes the packed
+    # api row from the legacy model key. An api row WITHOUT a subagent
+    # reference is the packed 1M-context review (the historical delivery); a
+    # configured-subagent api row is a native inspection episode and an
+    # agent_session row a delegated session — the same three deliveries as
+    # every other surface, chosen by the same ``retrieves`` predicate.
+    deep_review: Optional[ConfiguredReviewerSlot] = None
 
 
 def structured_reviewer_slots_raw() -> str:
@@ -486,6 +501,19 @@ def _parse_advisory(raw: Any) -> AdvisorySlotConfig:
     )
 
 
+def _parse_deep_review(raw: Any, seen_ids: set) -> Optional[ConfiguredReviewerSlot]:
+    """The optional deep self-review row: the shared row vocabulary minus
+    ``slot_id`` (a singleton's identity is fixed) and minus ``enabled``."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{REVIEWER_SLOTS_ENV}: deep_review must be an object")
+    unknown = sorted(set(raw) - {"route", "subagent_id", "effort"})
+    if unknown:
+        raise ValueError(f"{REVIEWER_SLOTS_ENV}: deep_review has unknown keys: {unknown}")
+    return _parse_slot({**raw, "slot_id": DEEP_REVIEW_SLOT_ID}, "deep_review", seen_ids)
+
+
 def parse_reviewer_slots(raw: str) -> ReviewerSlotConfig:
     """Strict parse of the structured setting. Raises ValueError, row-precise."""
     try:
@@ -494,7 +522,7 @@ def parse_reviewer_slots(raw: str) -> ReviewerSlotConfig:
         raise ValueError(f"{REVIEWER_SLOTS_ENV} is not valid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{REVIEWER_SLOTS_ENV} must be a JSON object")
-    unknown = sorted(set(payload) - {"triad", "scope", "advisory"})
+    unknown = sorted(set(payload) - {"triad", "scope", "advisory", "deep_review"})
     if unknown:
         raise ValueError(f"{REVIEWER_SLOTS_ENV} has unknown top-level keys: {unknown}")
     seen_ids: set = set()
@@ -522,6 +550,7 @@ def parse_reviewer_slots(raw: str) -> ReviewerSlotConfig:
         scope=tuple(groups["scope"]),
         advisory=_parse_advisory(payload.get("advisory")),
         source="structured",
+        deep_review=_parse_deep_review(payload.get("deep_review"), seen_ids),
     )
 
 
@@ -680,6 +709,30 @@ def commit_scope_rows() -> List[ConfiguredReviewerSlot]:
 
 def advisory_slot_config() -> AdvisorySlotConfig:
     return load_reviewer_slot_config().advisory
+
+
+def deep_review_slot(config: Optional[ReviewerSlotConfig] = None) -> ConfiguredReviewerSlot:
+    """THE deep self-review row: the configured ``deep_review`` row, or the
+    packed api row synthesized from the legacy model key.
+
+    ``OUROBOROS_MODEL_DEEP_SELF_REVIEW`` stays the invisible migration source
+    and fallback: an install that never saved a row keeps today's exact
+    delivery (one packed 1M-context review on that model), and the row's own
+    effort — resolved by ``row_effort(row, "deep_self_review")`` — outranks the
+    surface key ``OUROBOROS_EFFORT_DEEP_SELF_REVIEW`` only when set (R6). A
+    malformed structured value raises the same typed ValueError as every other
+    consumer of this parser; the surface turns it into its typed refusal.
+    ``config`` lets a caller that already parsed the setting avoid a second parse.
+    """
+    row = (config if config is not None else load_reviewer_slot_config()).deep_review
+    if row is not None:
+        return row
+    from ouroboros.config import get_deep_self_review_model
+
+    return ConfiguredReviewerSlot(
+        slot_id=DEEP_REVIEW_SLOT_ID, kind=ROUTE_KIND_API,
+        target_id=get_deep_self_review_model(),
+    )
 
 
 def structured_scope_review_slots() -> Optional[list]:
@@ -1113,6 +1166,7 @@ def reviewer_slot_last_executions() -> Dict[str, Any]:
 
 
 __all__ = [
+    "DEEP_REVIEW_SLOT_ID",
     "REVIEWER_SLOTS_ENV",
     "ROUTE_KIND_API",
     "ROUTE_KIND_SESSION",
@@ -1125,6 +1179,7 @@ __all__ = [
     "api_fallback_disclosure",
     "commit_scope_rows",
     "commit_triad_rows",
+    "deep_review_slot",
     "reviewer_slot_api_fallback_warning",
     "load_reviewer_slot_config",
     "parse_reviewer_slots",
