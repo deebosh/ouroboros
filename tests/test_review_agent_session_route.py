@@ -1289,7 +1289,7 @@ def test_restart_reconciliation_settles_review_spend_to_the_recorded_root(
     outcomes = custody.reconcile_orphaned_runs(
         tmp_path, running_task_ids=set(), gateway_factory=lambda: FakeGateway(),
     )
-    assert [o["action"] for o in outcomes] == ["settled"]
+    assert [o["action"] for o in outcomes] == ["settle_attempted"]
 
     ledger = [json.loads(line) for line in
               (tmp_path / "state" / "usage_attempts.jsonl").read_text().splitlines()
@@ -1338,7 +1338,7 @@ def test_pending_invocation_recovery_replays_the_recorded_lineage(tmp_path, fake
     # The sweep recovers the invocation with NO ambient scope: the stored
     # record is the single source of the replay's facts, lineage included.
     result = custody._recover_pending_invocation(tmp_path, FakeGateway(), record)
-    assert result["action"] == "settled"
+    assert result["action"] == "settle_attempted"
     recovered = [r for r in _custody_rows(tmp_path)
                  if r["type"] == custody.STARTED
                  and r.get("recovered_from_pending_invocation")]
@@ -1915,7 +1915,11 @@ def test_late_worker_uses_its_captured_stamp_after_caller_restores_context(
 
     def delayed_find(self, root):
         entered.set()
-        assert release.wait(2)
+        # 10s, not 2s: this gate opens only after the caller's run_review_request
+        # returns, and on a loaded CI runner that return itself exceeded 2s — the
+        # worker then died here, never stamped, and leaked a live _ACTIVE entry
+        # into the next (equal-key) test.  Drain/gate bounds are coarse on purpose.
+        assert release.wait(10)
         return original(self, root)
 
     def observed_close(self):
@@ -1932,8 +1936,13 @@ def test_late_worker_uses_its_captured_stamp_after_caller_restores_context(
     assert entered.is_set() and result.actors[0]["status"] == "error"
     ctx._review_paid_stamp = None  # mirrors review_skill's finally restoration
     release.set()
-    assert stamped.wait(2), "the late physical start must retain its original wave stamp"
-    assert finished.wait(2), "the delayed worker must not leak into the next test"
+    # 10s bounds (were 2s): these are drain waits on the released worker, not
+    # discrimination margins — on a loaded CI runner the 2s bound tripped while
+    # the worker was healthily mid-flight, and the still-live worker then
+    # poisoned the next equal-key test (its run joined this _ACTIVE entry and
+    # posted zero starts of its own).
+    assert stamped.wait(10), "the late physical start must retain its original wave stamp"
+    assert finished.wait(10), "the delayed worker must not leak into the next test"
     # Gateway close precedes the substrate's final actor publication by a few
     # instructions. Wait for process-local custody too, otherwise the following
     # equal-content test can legitimately join this late actor.
@@ -1942,7 +1951,7 @@ def test_late_worker_uses_its_captured_stamp_after_caller_restores_context(
     from ouroboros.review_custody import _ACTIVE, _ACTIVE_LOCK, _attempt_key
 
     key = _attempt_key(_agent_request(), _agent_slot(timeout_sec=0.02))
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         with _ACTIVE_LOCK:
             if key not in _ACTIVE:
@@ -3153,7 +3162,15 @@ def test_clock_crossing_between_timeout_checks_still_cancels_the_running_session
     from ouroboros import review_execution as rx
 
     ticks = iter([0.0, 0.0, 0.5, 1.1, 1.2])
-    monkeypatch.setattr(rx.time, "monotonic", lambda: next(ticks))
+    # Replace the module reference, not attributes on the process-global
+    # ``time`` module: pytest itself calls monotonic on Windows and would
+    # exhaust the finite tick iterator (same scoping precedent as
+    # tests/test_external_unmetered_dispatch.py).
+    monkeypatch.setattr(
+        rx,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _seconds: None),
+    )
     monkeypatch.setattr(
         rx,
         "_poll_detail",

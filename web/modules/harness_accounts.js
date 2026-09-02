@@ -62,7 +62,7 @@ import {
 } from './claudexor_status_store.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import { harnessIdentityMarkup } from './harness_presentation.js';
-import { createLoginCardController, normalizeProfileName } from './harness_login_cards.js';
+import { createLoginCardController, normalizeProfileName, preserveCardFocus } from './harness_login_cards.js';
 import { formatRelativeAge } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 
@@ -135,7 +135,7 @@ export function humanizeResetAt(resetsAt, nowMs = Date.now()) {
 
 export function quotaSummary(snapshots, harnessId, subjectId = '',
                              { quotaRead = READ_OK, nowMs = Date.now(),
-                               fallbackSubjectIds = [] } = {}) {
+                               fallbackSubjectIds = [], absences = [] } = {}) {
     // The exhausted window is SHOWN with its reset time, never hidden (Q2-б):
     // hiding it would make the D28 fallback to API money unexplainable. What
     // CHANGED is only the wording — the owner asked for the limit text to be
@@ -189,7 +189,8 @@ export function quotaSummary(snapshots, harnessId, subjectId = '',
     for (const snap of rows) {
         for (const constraint of snap.constraints || []) {
             const used = Number(constraint.used_ratio);
-            const spent = Boolean(constraint.cooldown_until) || (Number.isFinite(used) && used >= 1.0);
+            const spent = Boolean(constraint.cooldown_until)
+                || (Number.isFinite(used) && used >= 1.0);
             const models = Array.isArray(constraint.applies_to_models)
                 ? constraint.applies_to_models.filter(Boolean) : [];
             if (models.length) {
@@ -220,14 +221,47 @@ export function quotaSummary(snapshots, harnessId, subjectId = '',
     else if (worst) {
         base = `${Math.min(100, Math.round(worst.used * 100))}% used${resets ? ` · resets ${resets}` : ''}`;
     }
-    // Read, and nothing to report about THIS account: say the usage is
-    // unavailable rather than implying an empty window.
-    if (!base && !note) return { label: 'Usage unavailable', exhausted: false, resetsAt: '', tone: 'muted' };
+    // Match typed gaps by the exact current subject only: the legacy default
+    // alias belongs to retained snapshots, never to another subject's
+    // credential verdict. Claudexor suppresses snapshot-covered absences at
+    // its response boundary; a contradictory future body stays visible here
+    // rather than authorizing a stronger consumer-side interpretation.
+    const absence = (Array.isArray(absences) ? absences : []).find((row) => {
+            const subject = row?.subject;
+            if (!subject || typeof subject !== 'object') return false;
+            if (typeof subject.harness !== 'string') return false;
+            if (subject.subject_id !== null && typeof subject.subject_id !== 'string') return false;
+            return subject.harness === String(harnessId)
+                && String(subject.subject_id || '') === String(subjectId);
+        }) || null;
+    const reason = typeof absence?.reason === 'string' ? absence.reason : '';
+    const labels = {
+        refresh_failed: 'Usage refresh failed',
+        rate_limited: 'Usage check rate-limited',
+        probe_skipped_rate_limited: 'Usage check paused after a rate limit',
+        poll_paced: 'Usage check paced',
+        not_logged_in: 'Usage unavailable · not signed in',
+        auth_revoked: 'Usage unavailable · sign-in revoked',
+    };
+    const absenceLabel = reason ? (labels[reason] || 'Usage unavailable') : '';
+    // Claudexor's absence detail is already redacted at the producer. Display
+    // it as text only; it never chooses reason, tone, login action, or routing.
+    const absenceDetail = reason && typeof absence?.detail === 'string'
+        ? absence.detail.trim() : '';
+    const gap = [absenceLabel, absenceDetail].filter(Boolean).join(' · ');
+    if (!base && !note) {
+        return {
+            label: gap || 'Usage unavailable',
+            exhausted: false,
+            resetsAt: '',
+            tone: 'muted',
+        };
+    }
     return {
         exhausted,
         resetsAt,
         tone: exhausted ? 'warn' : 'muted',
-        label: [base, note].filter(Boolean).join(' · '),
+        label: [base, note, gap].filter(Boolean).join(' · '),
     };
 }
 
@@ -598,7 +632,8 @@ export function accountMetaLine(row, payload, { quotaRead = READ_OK, nowMs = Dat
         parts.push('disabled — excluded from rotation');
     }
     parts.push(quotaSummary(payload?.quota || [], row.harness, row.profile_id,
-        { quotaRead, nowMs, fallbackSubjectIds: quotaSubjectAliases(row, payload) }).label);
+        { quotaRead, nowMs, fallbackSubjectIds: quotaSubjectAliases(row, payload),
+          absences: payload?.quota_absences || [] }).label);
     const identity = row.identity || {};
     if (identity.plan) parts.push(String(identity.plan));
     // The email is metadata only while it is not already the row's name.
@@ -890,6 +925,7 @@ export function vendorCredentialRetainedNotice(receipt, name, family) {
 const state = {
     store: claudexorStatus,
     loginCard: null,
+    loginFamily: '',
     disposers: [],
     removeError: '',
     removeNotice: '',
@@ -947,7 +983,8 @@ export function accountRowFacts(row, payload,
     return {
         badge: verificationBadge(row, { known: accountsRead === READ_OK }),
         quota: quotaSummary(payload?.quota || [], row.harness, row.profile_id,
-            { quotaRead, nowMs, fallbackSubjectIds: quotaSubjectAliases(row, payload) }),
+            { quotaRead, nowMs, fallbackSubjectIds: quotaSubjectAliases(row, payload),
+              absences: payload?.quota_absences || [] }),
         name: accountName(row),
         meta: accountMetaLine(row, payload, { quotaRead, nowMs }),
     };
@@ -995,6 +1032,7 @@ export function harnessFamilyMarkup(group, payload, facets) {
                 </div>
                 <button type="button" class="btn btn-default" data-family-add>${escapeHtml(familyActionLabel(group, payload))}</button>
             </div>
+            <div class="agent-family-login" data-family-login="${escapeHtml(group.harness)}"></div>
             <div class="agent-family-rows">${body}</div>
         </section>
     `;
@@ -1040,62 +1078,68 @@ function renderRows() {
     const payload = state.store.snapshot || {};
     const accountsRead = state.store.facet(FACET_ACCOUNTS);
     const quotaRead = state.store.facet(FACET_QUOTA);
-    host.innerHTML = accountGroups(payload, {
-        accountsRead,
-        catalogKnown: state.store.catalogKnown,
-    })
-        .map((group) => harnessFamilyMarkup(group, payload, { accountsRead, quotaRead })).join('');
-    host.querySelectorAll('[data-harness-login]').forEach((button) => {
-        button.addEventListener('click', () => {
-            if (!state.initialized) return;
-            const row = button.closest('[data-harness]');
-            const rowData = row?.dataset || {};
-            const rowModel = accountRows(payload).find((candidate) =>
-                String(candidate?.harness || '') === String(rowData.harness || '')
-                && String(candidate?.profile_id || '') === String(rowData.profile || '')
-            );
-            const action = rowLoginAction(rowModel, payload);
-            if (action.refresh) {
-                state.store.refresh();
-                return;
-            }
-            startLogin(rowData.harness, rowData.profile);
-        });
-    });
-    host.querySelectorAll('[data-harness-remove]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const row = button.closest('[data-harness]');
-            confirmRemoveAccount(row?.dataset.harness, row?.dataset.profile);
-        });
-    });
-    host.querySelectorAll('[data-harness-toggle]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const row = button.closest('[data-harness]');
-            // The button carries the state it RENDERED for, so a click flips
-            // exactly what the owner saw — never a re-read of a row the poll
-            // may have replaced mid-click.
-            toggleAccountEnabled(row?.dataset.harness, row?.dataset.profile,
-                button.dataset.enabled === '0');
-        });
-    });
-    host.querySelectorAll('[data-family-add]').forEach((button) => {
-        button.addEventListener('click', async () => {
-            if (!state.initialized) return;
-            // Captured before the await: the status poll replaces the cards
-            // while the dialog is open, detaching this button's section.
-            const card = button.closest('[data-family]');
-            const harness = card?.dataset.family;
-            const hasRows = Boolean(card?.querySelector('[data-harness]'));
-            if (!hasRows) { startLogin(harness, ''); return; }
-            const profile = await promptProfileName({
-                family: familyLabel(harness, state.store.snapshot || {}, {
-                    catalogKnown: state.store.catalogKnown,
-                }),
+    // The family-mounted login card lives INSIDE this container, so the
+    // innerHTML rebuild destroys a focused paste-code/name input before the
+    // card's own render can see it. The capture must therefore wrap the
+    // whole rebuild: same SSOT helper, one level up.
+    preserveCardFocus(host, () => {
+        host.innerHTML = accountGroups(payload, {
+            accountsRead,
+            catalogKnown: state.store.catalogKnown,
+        })
+            .map((group) => harnessFamilyMarkup(group, payload, { accountsRead, quotaRead })).join('');
+        host.querySelectorAll('[data-harness-login]').forEach((button) => {
+            button.addEventListener('click', () => {
+                if (!state.initialized) return;
+                const row = button.closest('[data-harness]');
+                const rowData = row?.dataset || {};
+                const rowModel = accountRows(payload).find((candidate) =>
+                    String(candidate?.harness || '') === String(rowData.harness || '')
+                    && String(candidate?.profile_id || '') === String(rowData.profile || '')
+                );
+                const action = rowLoginAction(rowModel, payload);
+                if (action.refresh) {
+                    state.store.refresh();
+                    return;
+                }
+                startLogin(rowData.harness, rowData.profile);
             });
-            if (profile) startLogin(harness, profile);
         });
+        host.querySelectorAll('[data-harness-remove]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const row = button.closest('[data-harness]');
+                confirmRemoveAccount(row?.dataset.harness, row?.dataset.profile);
+            });
+        });
+        host.querySelectorAll('[data-harness-toggle]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const row = button.closest('[data-harness]');
+                // The button carries the state it RENDERED for, so a click flips
+                // exactly what the owner saw — never a re-read of a row the poll
+                // may have replaced mid-click.
+                toggleAccountEnabled(row?.dataset.harness, row?.dataset.profile,
+                    button.dataset.enabled === '0');
+            });
+        });
+        host.querySelectorAll('[data-family-add]').forEach((button) => {
+            button.addEventListener('click', async () => {
+                if (!state.initialized) return;
+                // Captured before the await: the status poll replaces the cards
+                // while the dialog is open, detaching this button's section.
+                const card = button.closest('[data-family]');
+                const harness = card?.dataset.family;
+                const hasRows = Boolean(card?.querySelector('[data-harness]'));
+                if (!hasRows) { startLogin(harness, ''); return; }
+                const profile = await promptProfileName({
+                    family: familyLabel(harness, state.store.snapshot || {}, {
+                        catalogKnown: state.store.catalogKnown,
+                    }),
+                });
+                if (profile) startLogin(harness, profile);
+            });
+        });
+        state.loginCard?.render();
     });
-    state.loginCard?.render();
 }
 
 async function toggleAccountEnabled(harness, profileId, enabled) {
@@ -1179,6 +1223,12 @@ export async function wakeDaemon() {
     renderRows();
 }
 
+// Harness ids are conservative tokens; escape defensively for the attribute
+// selector without depending on the browser-only CSS.escape (node tests).
+function familyLoginSelector(harness) {
+    return `[data-family-login="${String(harness).replace(/["\\]/g, '\\$&')}"]`;
+}
+
 function ensureLoginCard() {
     if (state.loginCard && !state.loginCard.disposed) return state.loginCard;
     // `detach()` permanently fences one controller. Explicit Connect after a
@@ -1186,7 +1236,11 @@ function ensureLoginCard() {
     // reusing a cached disposed object whose start() correctly does nothing.
     state.loginCard = null;
     state.loginCard = createLoginCardController({
-        host: () => document.getElementById('harness-login-card'),
+        host: () => (
+            (state.loginFamily
+                && document.querySelector?.(familyLoginSelector(state.loginFamily)))
+            || document.getElementById('harness-login-card')
+        ),
         store: state.store,
         // The Settings face is the FULL card: paste-code entry, engine detail,
         // the collapsed Advanced terminal fallback, Close.
@@ -1202,7 +1256,13 @@ function ensureLoginCard() {
  */
 export async function startLogin(harness, profile) {
     if (!harness || !state.initialized) return;
-    await ensureLoginCard().start(harness, profile);
+    state.loginFamily = String(harness);
+    const card = ensureLoginCard();
+    await card.start(harness, profile);
+    // The card mounts inside the clicked family's block; make sure a long
+    // account list has not left it above/below the viewport.
+    document.querySelector?.(familyLoginSelector(state.loginFamily))
+        ?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
 }
 
 /** Read the shared status once (the Refresh button, and the first paint). */

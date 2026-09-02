@@ -33,8 +33,17 @@ from ouroboros.utils import estimate_tokens
 ATLAS_SCHEMA_VERSION = 1
 DEFAULT_ATLAS_TARGET_TOTAL_TOKENS = 850_000
 DEFAULT_ATLAS_HARD_TOTAL_TOKENS = 920_000
-_ATLAS_MANIFEST_RESERVE_TOKENS = 30_000
 _ATLAS_HARD_HEADROOM_TOKENS = 5_000
+
+# Dispositions whose per-path rows carry no review-relevant detail: the compact
+# coverage index collapses them to one `disposition<TAB>directory/ (N files)`
+# row per directory (the durable manifest keeps every per-path row regardless).
+_COLLAPSED_INDEX_DISPOSITIONS = frozenset({
+    "excluded_test",
+    "excluded_dir",
+    "binary_media",
+    "vendored_minified",
+})
 
 _CANONICAL_CONTEXT_DOCS = frozenset({
     "BIBLE.md",
@@ -197,7 +206,11 @@ class ReviewContextAtlasRequest:
     include_tests: bool = False
     title: str = "Generated Scope Atlas"
     drive_root: pathlib.Path | None = None
-    compact_manifest: bool = False
+    # Compact coverage is the DEFAULT prompt form (approved with issue #284's
+    # pack-arithmetic fixes): the durable manifest keeps full per-file coverage
+    # either way, and the full JSON coverage array in the prompt was pure
+    # render overhead (~121K chars observed) charged against review content.
+    compact_manifest: bool = True
     # Optional additive per-path score bonus (rel_path -> bonus), e.g. import-graph
     # centrality. Default empty = selection identical to the heuristic baseline;
     # scope/plan review never pass it (deep self-review is the only producer).
@@ -252,13 +265,13 @@ class _FileFacts:
     reason: str = ""
     score: float = 0.0
     required: bool = False
-    # Owed IN FULL — a snapshot that does not fit is an assembly FAILURE, never a
-    # smaller pack. The narrower tier inside `required`: touched paths (anchors)
-    # and canonical review docs. A force-included path the diff does NOT touch is
-    # `required` for COVERAGE (a manifest row must name it) but NOT
-    # `required_in_full` — under budget pressure it demotes to `manifest_only`,
-    # because an unrelated small change is not owed its full snapshot.
-    # (ibl-1b372dd99e48 / ibl-8c94b2ce5783)
+    # Owed IN FULL — a snapshot that does not fit is an assembly FAILURE, never
+    # a smaller pack. Narrower than `required`: touched paths (anchors) and
+    # canonical review docs only. A force-included path the diff does NOT touch
+    # is `required` for COVERAGE (a manifest row must name it) but NOT
+    # `required_in_full` — under aggregate budget pressure it demotes to
+    # `manifest_only`, because an unrelated small change is not owed its full
+    # snapshot. (ibl-1b372dd99e48 / ibl-8c94b2ce5783)
     required_in_full: bool = False
     symbols: tuple[str, ...] = ()
     imports: tuple[str, ...] = ()
@@ -281,17 +294,10 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
     diff_only_included = frozenset(
         _normalize_path(path) for path in req.diff_only_included if _normalize_path(path)
     )
-    manifest_reserve_tokens = min(
-        _ATLAS_MANIFEST_RESERVE_TOKENS,
-        max(1_000, int(req.target_total_tokens) // 10),
-    )
-    target_context_tokens = max(
-        0,
-        int(req.target_total_tokens)
-        - max(0, int(req.fixed_prompt_tokens))
-        - manifest_reserve_tokens,
-    )
-    hard_context_tokens = max(
+    # Budget for the RENDERED atlas text (manifest render included); the
+    # content-only selection budgets are derived below, after the measured
+    # render overhead is known.
+    hard_text_tokens = max(
         0,
         int(req.hard_total_tokens)
         - max(0, int(req.fixed_prompt_tokens))
@@ -346,28 +352,32 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
                 facts.score += bonus
                 facts.reasons.append("graph_centrality")
 
-    # Early per-file oversize diagnostic (ibl-f320ce46acb0): a SINGLE
-    # required-in-full artifact that individually exceeds hard_context_tokens
-    # is structurally un-assemblable at any diff size, so the generic
-    # "exceeded the atlas hard budget" reason string leaves callers guessing
-    # WHICH artifact is too big. Record each oversize as a structured note
-    # (path + token_count + hard_context_tokens) on the manifest, and the
-    # selection-loop branch below mirrors the numeric comparison into the
-    # row's `reason` so atlas_assembly_failure_reason surfaces it through
-    # its existing path (reason) renderer. Diagnostics only — selection /
-    # shrink behaviour is unchanged.
-    oversized_required_artifacts: list[dict[str, Any]] = [
-        {
-            "path": facts.rel_path,
-            "token_count": int(facts.token_count),
-            "hard_context_tokens": int(hard_context_tokens),
-        }
-        for facts in facts_by_path.values()
-        if facts.required_in_full and facts.token_count > hard_context_tokens
-    ]
-
     selected_paths: list[str] = []
     used_tokens = 0
+
+    # The rendered manifest/index skeleton is part of the pack, so it is
+    # MEASURED and charged against the selection budgets up front. The old
+    # blind 30K reserve let a real render (observed ~121K chars on this
+    # repository) dwarf it, so the greedy loop admitted content it could not
+    # keep and the shrink waves then evicted already-charged (even required)
+    # content — an admit-then-evict failure the arithmetic itself caused.
+    base_render_tokens = estimate_tokens(
+        _render_atlas_text(req, facts_by_path, [], status_hint="")
+    )
+    hard_context_tokens = max(0, hard_text_tokens - base_render_tokens)
+    # The target admission budget can never exceed what the hard rail will
+    # keep: when target-vs-hard gap is smaller than the hard headroom (small
+    # configured budgets), an uncapped target admits content the shrink waves
+    # must then evict — the same admit-then-evict failure by another route.
+    target_context_tokens = min(
+        hard_context_tokens,
+        max(
+            0,
+            int(req.target_total_tokens)
+            - max(0, int(req.fixed_prompt_tokens))
+            - base_render_tokens,
+        ),
+    )
 
     candidates = [
         facts
@@ -384,33 +394,40 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
     )
 
     for facts in candidates:
+        # Fork tier (ibl-1b372dd99e48): required_in_full (touched path / canonical
+        # doc) competes for the hard budget; a force-included path the diff does
+        # not touch competes only for the target budget and can legally demote.
         limit = hard_context_tokens if facts.required_in_full else target_context_tokens
-        if used_tokens + facts.token_count <= limit:
+        # The admission cost is the EXACT bytes selection adds to the render:
+        # the file section (header + metadata + fenced content) PLUS this
+        # file's JSON row in the manifest preview's `selected` array — the
+        # bare content estimate undercounted both, which was the second half
+        # of the admit-then-evict arithmetic failure.
+        # The preview pretty-prints the row (indent=2 inside the `selected`
+        # array); charging the same form (plus a small list-punctuation pad)
+        # keeps admission a slight OVERcharge, never an undercharge.
+        row_cost = estimate_tokens(_render_file_content(facts)) + estimate_tokens(
+            json.dumps(_manifest_row(facts), ensure_ascii=False, indent=2)
+        ) + 4
+        if used_tokens + row_cost <= limit:
             facts.disposition = "full"
             facts.reason = ", ".join(facts.reasons) or "selected"
             selected_paths.append(facts.rel_path)
-            used_tokens += facts.token_count
+            used_tokens += row_cost
             continue
         if facts.required_in_full:
             # BIBLE P3 scope floor: a REQUIRED-IN-FULL artifact (touched path or
             # canonical review doc) that does not fit is a failure to ASSEMBLE,
             # not a smaller pack. The row records artifact + reason (disclosure,
-            # P1); the pack status refuses the review.
+            # P1); the pack status refuses the review. The reason states what
+            # actually happened: the REMAINDER was too small, not necessarily the
+            # file alone against the whole budget.
             facts.disposition = "budget_omitted"
-            if facts.token_count > hard_context_tokens:
-                # ibl-f320ce46acb0 — per-file oversize diagnostic. The numeric
-                # comparison mirrors manifest["oversized_required_artifacts"]
-                # so callers see WHICH artifact is too big with its actual
-                # token count vs the hard budget, instead of the generic
-                # "exceeded" string. Atlas_assembly_failure_reason reads
-                # the row's `reason`, so the fragment surfaces through its
-                # existing path (reason) renderer without a second carrier.
-                facts.reason = (
-                    f"required file exceeded the atlas hard budget "
-                    f"({facts.token_count:,} tok > {hard_context_tokens:,} hard)"
-                )
-            else:
-                facts.reason = "required file exceeded the atlas hard budget"
+            facts.reason = (
+                "required file does not fit the atlas hard budget: needs "
+                f"{row_cost:,} tokens rendered, {max(0, limit - used_tokens):,} remain "
+                "after higher-priority content and the rendered manifest"
+            )
         elif facts.required and facts.token_count > hard_context_tokens:
             # A force-included path the diff does NOT touch, individually larger
             # than the whole hard budget: it could not be assembled at ANY diff
@@ -421,9 +438,9 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
         elif facts.required:
             # A force-included path the diff does NOT touch that WOULD fit alone
             # but loses to aggregate budget pressure (ibl-1b372dd99e48): owed a
-            # coverage manifest row, not a full snapshot for an unrelated
-            # change. Demote with a disclosed reason — the assembly succeeds and
-            # scope review can dispatch instead of failing closed at $0.
+            # coverage manifest row, not a full snapshot for an unrelated change.
+            # Demote with a disclosed reason — the assembly succeeds and scope
+            # review can dispatch instead of failing closed at $0.
             facts.disposition = "manifest_only"
             facts.reason = (
                 "force-included path not in the diff: coverage row only, "
@@ -436,13 +453,16 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
     text = _render_atlas_text(req, facts_by_path, selected_paths, status_hint="")
     token_count = estimate_tokens(text)
 
-    if token_count > hard_context_tokens:
-        # Shrink waves, cheapest tier first (ibl-1b372dd99e48): non-required
-        # content, then force-included paths the diff did NOT touch (a legal
-        # demotion — the manifest row proves the path was considered), then
-        # required-in-full content as the LAST resort. Dropping a
-        # required-in-full artifact here is the same assembly failure as the
-        # first-pass branch above: identical disposition, identical refusal.
+    if token_count > hard_text_tokens:
+        # Backstop shrink waves for residual estimator drift (per-file estimates
+        # vs the joined render; the selected-rows part of the manifest preview):
+        # non-required content first, then required content (largest first) — the
+        # atlas always converges to at worst a manifest-only pack instead of
+        # giving up with budget_exceeded. Dropping a REQUIRED artifact here is
+        # the same assembly failure as above, not a legal degradation: identical
+        # disposition, identical refusal. The reasons say what actually
+        # happened — admitted, then evicted because the RENDER overflowed — so
+        # the row cannot be read as "this file alone exceeded the budget".
         removable = [path for path in reversed(selected_paths) if not facts_by_path[path].required]
         removable += sorted(
             (
@@ -460,12 +480,15 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
             facts = facts_by_path[path]
             if facts.required_in_full:
                 facts.disposition = "budget_omitted"
-                facts.reason = "required file removed to keep atlas below hard budget"
+                facts.reason = (
+                    "required file admitted, then removed because the rendered "
+                    "atlas exceeded the hard budget"
+                )
             elif facts.required:
-                # It was SELECTED (so it fits alone) but the pack still
-                # overflows: an untouched force-included path degrades to a
-                # coverage row rather than failing the assembly for an
-                # unrelated change (ibl-1b372dd99e48).
+                # Selected (so it fit alone) but the pack still overflows: an
+                # untouched force-included path degrades to a coverage row rather
+                # than failing the assembly for an unrelated change
+                # (ibl-1b372dd99e48).
                 facts.disposition = "manifest_only"
                 facts.reason = (
                     "force-included path not in the diff removed to keep atlas "
@@ -473,11 +496,14 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
                 )
             else:
                 facts.disposition = "manifest_only"
-                facts.reason = "removed to keep atlas below hard budget"
+                facts.reason = (
+                    "admitted, then removed because the rendered atlas exceeded "
+                    "the hard budget"
+                )
             selected_paths.remove(path)
             text = _render_atlas_text(req, facts_by_path, selected_paths, status_hint="")
             token_count = estimate_tokens(text)
-            if token_count <= hard_context_tokens:
+            if token_count <= hard_text_tokens:
                 break
 
     target_text_tokens = max(0, int(req.target_total_tokens) - max(0, int(req.fixed_prompt_tokens)))
@@ -486,7 +512,10 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
         for path in removable:
             facts = facts_by_path[path]
             facts.disposition = "manifest_only"
-            facts.reason = "removed to keep assembled prompt near atlas target"
+            facts.reason = (
+                "admitted, then removed to keep the assembled prompt within "
+                "the atlas target"
+            )
             selected_paths.remove(path)
             text = _render_atlas_text(req, facts_by_path, selected_paths, status_hint="")
             token_count = estimate_tokens(text)
@@ -503,7 +532,7 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
     # atlas_hard_budget_overflowed. The status ranks the overflow first only
     # because a pack that cannot even render is the harder failure.
     unassembled = _unassembled_required(facts_by_path)
-    if token_count > hard_context_tokens:
+    if token_count > hard_text_tokens:
         status: AtlasStatus = "budget_exceeded"
     elif unassembled:
         status = "required_artifact_omitted"
@@ -519,15 +548,7 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
 
     text = _render_atlas_text(req, facts_by_path, selected_paths, status_hint=status)
     token_count = estimate_tokens(text)
-    manifest = _build_manifest(
-        req,
-        facts_by_path,
-        selected_paths,
-        token_count,
-        status,
-        unassembled,
-        oversized_required_artifacts=oversized_required_artifacts,
-    )
+    manifest = _build_manifest(req, facts_by_path, selected_paths, token_count, status, unassembled)
     manifest["code_inventory"] = inventory_summary
     selected = tuple(_record_for(facts_by_path[path]) for path in selected_paths)
     omitted = tuple(
@@ -546,15 +567,7 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
 
 
 def _unassembled_required(facts_by_path: dict[str, _FileFacts]) -> list[_FileFacts]:
-    """Required artifacts the assembler could not fit — the assembly-failure SSOT.
-
-    A ``budget_omitted`` disposition is reached only by an artifact that could
-    not be assembled at ANY diff size: a required-in-full artifact (touched path
-    / canonical doc), or a force-included path individually larger than the hard
-    budget / per-file cap. A force-included path the diff did NOT touch that
-    merely lost to aggregate budget pressure degrades to ``manifest_only``
-    instead (ibl-1b372dd99e48) and is not an assembly failure.
-    """
+    """Required artifacts the assembler could not fit — the assembly-failure SSOT."""
     return [
         facts
         for facts in facts_by_path.values()
@@ -588,12 +601,12 @@ def _build_file_facts(
     # Owed IN FULL vs. owed for COVERAGE only (ibl-1b372dd99e48). A touched path
     # (anchor) and a canonical review doc are owed in full — the staged diff is
     # not a substitute, and dropping them fails the assembly. A force-included
-    # path the diff does NOT touch is owed only a coverage manifest row: a
-    # small unrelated change does not need its full snapshot, so under budget
+    # path the diff does NOT touch is owed only a coverage manifest row: a small
+    # unrelated change does not need its full snapshot, so under aggregate budget
     # pressure it demotes to `manifest_only` instead of refusing the review.
     # Without this split, ANY commit that co-exists with the repo's fixed
-    # force-include set (prompts/, ouroboros/contracts/, the protected runtime
-    # + review-stack paths) overflows the atlas and is scope-blocked at $0.
+    # force-include set (prompts/, ouroboros/contracts/, protected runtime +
+    # review-stack paths) overflows the atlas and is scope-blocked at $0.
     facts.required_in_full = is_anchor or is_canonical
     # The classes owed IN FULL regardless of the change: for these the staged
     # diff is never a substitute for the artifact. An anchor is required
@@ -678,9 +691,7 @@ def _build_file_facts(
     if facts.size_bytes > _MAX_FULL_REPO_FILE_BYTES:
         if facts.required:
             # BIBLE P3: a required artifact over the per-file cap cannot be
-            # assembled at any diff size — a typed failure, never a silent
-            # coverage row. (This is individual-artifact oversize, distinct
-            # from losing to aggregate budget pressure in the selection loop.)
+            # assembled — a typed failure, never a silent coverage row.
             facts.disposition = "budget_omitted"
             facts.reason = (
                 "required file exceeds the per-file atlas cap "
@@ -966,10 +977,10 @@ def _render_atlas_text(
         "",
         "This is a generated, deterministic, bounded repository atlas. It replaces the raw full-repo pack for this review flow. Summaries here are structural facts only; they are not LLM-generated claims.",
         (
-            "WARNING: The atlas prompt is using compact coverage mode because the "
-            "initial scope atlas or assembled prompt was too large for the "
-            "configured scope-review input budget. Full per-file coverage remains "
-            "available in the durable scope-review context_manifest."
+            "NOTE: The atlas prompt uses compact coverage mode (the default): a "
+            "full path/disposition index with collapsed excluded groups plus "
+            "bounded per-disposition samples. Full per-file coverage remains "
+            "available in the durable review context_manifest."
             if req.compact_manifest else ""
         ),
         "",
@@ -987,26 +998,34 @@ def _render_atlas_text(
         "",
     ]
     if req.compact_manifest:
-        coverage_index = sorted(
-            (
-                str(row.get("disposition") or "unknown"),
-                str(row.get("path") or ""),
-            )
-            for row in coverage_rows
-        )
+        detailed_rows: list[tuple[str, str]] = []
+        collapsed_groups: Counter[tuple[str, str]] = Counter()
+        for row in coverage_rows:
+            disposition = str(row.get("disposition") or "unknown")
+            path = str(row.get("path") or "")
+            if disposition in _COLLAPSED_INDEX_DISPOSITIONS:
+                parent = str(pathlib.PurePosixPath(path).parent)
+                collapsed_groups[(disposition, "" if parent == "." else parent)] += 1
+            else:
+                detailed_rows.append((disposition, path))
+        index_lines = [f"{disposition}\t{path}" for disposition, path in sorted(detailed_rows)]
+        index_lines += [
+            f"{disposition}\t{directory}/ ({count} files)"
+            for (disposition, directory), count in sorted(collapsed_groups.items())
+        ]
         parts.extend([
             "### Compact full coverage index",
             "",
             (
-                "Every tracked path appears below as `disposition<TAB>path`. "
+                "Every tracked path appears below as `disposition<TAB>path`; "
+                "policy-excluded classes (excluded_test, excluded_dir, "
+                "binary_media, vendored_minified) are collapsed to one "
+                "`disposition<TAB>directory/ (N files)` row per directory. "
                 "Detailed hashes, sizes, symbols, and imports remain in the "
                 "durable context_manifest."
             ),
             "",
-            format_prompt_code_block(
-                "\n".join(f"{disposition}\t{path}" for disposition, path in coverage_index),
-                "text",
-            ),
+            format_prompt_code_block("\n".join(index_lines), "text"),
             "",
         ])
     parts.extend([
@@ -1027,7 +1046,6 @@ def _build_manifest(
     token_count: int,
     status: str,
     unassembled: list[_FileFacts],
-    oversized_required_artifacts: list[dict[str, Any]] | None = None,
 ) -> dict:
     counts = Counter(facts.disposition for facts in facts_by_path.values())
     return {
@@ -1049,16 +1067,6 @@ def _build_manifest(
         # for a reader to rediscover among ~900 coverage rows. This dict is the
         # ONE carrier — read it with ``atlas_unassembled_required``.
         "unassembled_required": [_manifest_row(facts) for facts in unassembled],
-        # ibl-f320ce46acb0 — early per-file oversize diagnostic. Lists EACH
-        # required-in-full artifact whose raw token count individually
-        # exceeded hard_context_tokens at assembly time, with its path,
-        # token_count, and hard_context_tokens. An empty list is the normal
-        # case (no oversize); the key is always present so consumers do not
-        # have to special-case absence. Diagnostics only — never blocks or
-        # gates; selection / shrink behaviour remains unchanged.
-        "oversized_required_artifacts": [
-            dict(entry) for entry in (oversized_required_artifacts or [])
-        ],
     }
 
 
