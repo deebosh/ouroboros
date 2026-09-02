@@ -50,10 +50,6 @@ from ouroboros.utils import atomic_write_json, estimate_tokens, utc_now_iso  # n
 from ouroboros.config import get_context_mode  # noqa: E402
 from ouroboros.provider_models import provider_for_model, provider_has_credentials  # noqa: E402
 from ouroboros.context_layout import generate_doc_nav_map  # noqa: E402
-from ouroboros.outcomes import (  # noqa: E402
-    REASON_DEEP_SELF_REVIEW_ERROR,
-    REASON_DEEP_SELF_REVIEW_UNAVAILABLE,
-)
 from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot, deep_review_slot, row_effort  # noqa: E402
 from ouroboros.triad_review import REVIEW_REPORT_CONTRACT  # noqa: E402
 
@@ -575,11 +571,13 @@ def _provenance_header(facts: Dict[str, Any], human: str) -> str:
     return f"<!-- deep-review provenance: {comment} -->\n_{human}_\n\n"
 
 
-def _failed(text: str, reason: str, usage: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
+def _failed(text: str, *, reason_code: str, usage: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
     """A failure result: the text plus TYPED usage, so the caller keeps the
-    previous report instead of overwriting durable memory with an error."""
+    previous report instead of overwriting durable memory with an error.
+    Callers spell ``reason_code`` as a literal — the runtime's reason-code
+    drift guard (outcomes vocabulary) reads emit sites, not constants."""
     out = dict(usage or {})
-    out.update({"execution_status": "infra_failed", "reason_code": reason})
+    out.update({"execution_status": "infra_failed", "reason_code": reason_code})
     return text, out
 
 
@@ -708,7 +706,7 @@ def _run_retrieving_review(
     text = str(attempt.raw_text or "")
     if not text.strip():
         return _failed("⚠️ Model returned an empty response for the deep self-review.",
-                       REASON_DEEP_SELF_REVIEW_ERROR, usage)
+                       reason_code="deep_self_review_error", usage=usage)
     if not usage.get("resolved_model"):
         usage["resolved_model"] = row.target_id
     incomplete = str(usage.get("native_incomplete") or "") or "none"
@@ -790,7 +788,7 @@ def _run_packed_review(
         input_token_limit=input_limit,
     )
     if not pack_text and stats.get("skipped"):
-        return _failed(f"❌ Failed to build review pack: {stats['skipped'][0]}", REASON_DEEP_SELF_REVIEW_ERROR)
+        return _failed(f"❌ Failed to build review pack: {stats['skipped'][0]}", reason_code="deep_self_review_error")
 
     emit_progress(
         f"Review pack built: {stats['file_count']} files, "
@@ -820,7 +818,7 @@ def _run_packed_review(
             input_token_limit=input_limit,
         )
         if not pack_text and stats.get("skipped"):
-            return _failed(f"❌ Failed to build review pack: {stats['skipped'][0]}", REASON_DEEP_SELF_REVIEW_ERROR)
+            return _failed(f"❌ Failed to build review pack: {stats['skipped'][0]}", reason_code="deep_self_review_error")
         estimated_tokens = estimate_tokens(_SYSTEM_PROMPT + pack_text)
     full_prompt_chars = len(_SYSTEM_PROMPT) + len(pack_text)
     if estimated_tokens > input_limit:
@@ -831,7 +829,7 @@ def _run_packed_review(
             f"({deep_window:,}-token window minus {deep_output_reserve:,} output reserve, "
             f"calibrated for {model}). "
             "Reduce codebase size or split review.",
-            REASON_DEEP_SELF_REVIEW_ERROR,
+            reason_code="deep_self_review_error",
         )
 
     if stats.get("context_manifest"):
@@ -877,7 +875,7 @@ def _run_packed_review(
     if not text:
         _record_execution(slot, usage, status="error", error="empty response")
         return _failed("⚠️ Model returned an empty response for the deep self-review.",
-                       REASON_DEEP_SELF_REVIEW_ERROR, usage)
+                       reason_code="deep_self_review_error", usage=usage)
     usage.setdefault("resolved_model", model)
     _record_execution(slot, usage, status="responded")
     emit_progress(f"Deep self-review complete ({len(text):,} chars).")
@@ -911,10 +909,10 @@ def run_deep_self_review(
         try:
             row = slot or deep_review_slot()
         except ValueError as exc:
-            return _failed(deep_review_unavailable_text(str(exc)), REASON_DEEP_SELF_REVIEW_UNAVAILABLE)
+            return _failed(deep_review_unavailable_text(str(exc)), reason_code="deep_self_review_unavailable")
         reason, model = deep_review_route(row)
         if reason:
-            return _failed(deep_review_unavailable_text(reason), REASON_DEEP_SELF_REVIEW_UNAVAILABLE)
+            return _failed(deep_review_unavailable_text(reason), reason_code="deep_self_review_unavailable")
         if row.retrieves:
             return _run_retrieving_review(
                 repo_dir, drive_root, llm, emit_progress, row, task_id=task_id, deadline_at=deadline_at,
@@ -922,4 +920,4 @@ def run_deep_self_review(
         return _run_packed_review(repo_dir, drive_root, llm, emit_progress, row, str(model or ""))
     except Exception as e:
         log.error("Deep self-review failed: %s", e, exc_info=True)
-        return _failed(f"❌ Deep self-review failed: {type(e).__name__}: {e}", REASON_DEEP_SELF_REVIEW_ERROR)
+        return _failed(f"❌ Deep self-review failed: {type(e).__name__}: {e}", reason_code="deep_self_review_error")
