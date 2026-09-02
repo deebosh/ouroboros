@@ -266,10 +266,10 @@ def test_low_mode_skips_backlog_and_observations(tmp_path, monkeypatch):
     sections = bc._last_context_sections
     section_names = {s[0] for s in sections}
     assert "backlog_digest_skipped_low_mode" in section_names
-    # Observations were drained (queue cleared) but not appended under low mode.
+    # Observations were snapshotted (for gap tracking) but not appended in low mode.
     assert "observations_skipped_low_mode" in section_names
-    # The queue is empty after the drain (proving the drain happened).
-    assert bc._observations.empty()
+    # The injected observation is not rendered into the low-mode context.
+    assert "hello from owner" not in ctx
     # Stamped mode is low.
     assert bc._last_context_mode == "low"
 
@@ -296,7 +296,10 @@ def test_max_mode_keeps_backlog_and_observations(tmp_path, monkeypatch):
         ctx = bc._build_context()
 
     # Backlog digest WAS called in max mode and the sentinel IS in context.
-    assert called["backlog"] == 1
+    # (v6.110.0: the builder calls format_backlog_digest twice — once unbounded
+    # to detect truncation for the complete_source hint, once bounded for the
+    # in-context digest.)
+    assert called["backlog"] == 2
     assert "SENTINEL_BACKLOG_DIGEST_PAYLOAD_42" in ctx
     # Observations section IS appended.
     sections = bc._last_context_sections

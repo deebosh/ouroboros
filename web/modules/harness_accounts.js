@@ -81,6 +81,7 @@ export function verificationBadge(profile, { known = true } = {}) {
     const status = profile?.status || profile || {};
     const source = String(status.verification_source || '');
     const verification = String(status.verification || '');
+    const availability = String(status.availability || '');
     const badge = () => {
         if (source === 'vendor' && verification === 'passed') {
             return { tone: 'ok', label: 'Verified live' };
@@ -92,7 +93,15 @@ export function verificationBadge(profile, { known = true } = {}) {
         }
         if (verification === 'not_run') {
             // No probe ran, so this is unknown rather than a failed login.
-            return { tone: 'muted', label: 'Not verified' };
+            // A typed `availability=unknown` is stronger evidence: the engine
+            // tried the auth-status probe but could not get a verdict (timeout,
+            // malformed output, etc.). Keep that distinct from a clean
+            // not-yet-verified profile so the owner is not nudged into a
+            // needless re-login.
+            return {
+                tone: 'muted',
+                label: availability === 'unknown' ? 'Login status unknown' : 'Not verified',
+            };
         }
         if (verification) {
             return { tone: 'error', label: `Verification ${verification}` };
@@ -650,9 +659,37 @@ export function rowActionLabel(row, payload) {
     // what it is really offering: an account that HAS a session signs in again,
     // one that does not simply signs in. ("Connect" belongs to a family with no
     // account yet, where it is the first step rather than a repeat.)
+    return rowLoginAction(row, payload).label;
+}
+
+/**
+ * The engine's explicit auth-probe-unknown state is not permission to start a
+ * new login. `availability=unknown` + `verification=not_run` means that the
+ * probe could not decide; only an explicit `unavailable`/`failed` verdict may
+ * offer the sign-in action. Older engines omit `availability`, so they retain
+ * the legacy behavior. The top-level Refresh action re-runs the status probe.
+ */
+export function loginStatusUnknown(row) {
+    const status = row?.status || {};
+    return String(status.availability || '') === 'unknown'
+        && String(status.verification || '') === 'not_run';
+}
+
+export function rowLoginAction(row, payload) {
     const runtime = runtimeActionLabel(payload);
-    if (runtime !== 'Connect') return runtime;
-    return String(row?.status?.verification || '') === 'passed' ? 'Sign in again' : 'Sign in';
+    if (runtime !== 'Connect') return { label: runtime, refresh: false };
+    if (loginStatusUnknown(row)) {
+        // Keep recovery available for every harness.  An unknown probe is not
+        // proof of logout, but it also must not strand a profile whose next
+        // status read may become a clean login verdict.  The click handler
+        // below runs the shared Refresh path instead of starting OAuth.
+        return { label: 'Check status', refresh: true };
+    }
+    return {
+        label: String(row?.status?.verification || '') === 'passed'
+            ? 'Sign in again' : 'Sign in',
+        refresh: false,
+    };
 }
 
 // "agents", "agents and limits", "agents, accounts and limits".
@@ -880,7 +917,7 @@ export function renderAgentAccountsSection() {
             <div id="harness-accounts-groups" class="agent-family-list"></div>
             <div id="harness-login-card"></div>
             <div class="settings-toolbar">
-                <button type="button" class="settings-ghost-btn" id="btn-harness-refresh">Refresh</button>
+                <button type="button" class="btn btn-default" id="btn-harness-refresh">Refresh</button>
             </div>
         </div>
     `;
@@ -912,14 +949,15 @@ export function accountRowFacts(row, payload,
 
 function rowHtml(row, payload, facets = {}) {
     const { badge, quota, name, meta } = accountRowFacts(row, payload, facets);
+    const loginAction = rowLoginAction(row, payload);
     // Row ACTIONS follow the engine's own routes, never the row's looks: a
     // named registry row (every row on a unified engine, the named profiles on
     // a legacy one) has the PATCH Enabled toggle and DELETE Remove; the legacy
     // native pseudo-row has neither, because that engine has no route for
     // either and a dead button would claim an effect this app cannot have.
     const rowActions = row.kind === 'native' ? '' : `
-                <button type="button" class="settings-ghost-btn" data-harness-toggle data-enabled="${row.enabled === false ? '0' : '1'}" title="${row.enabled === false ? 'Let rotation use this account again' : 'Keep the login, take this account out of rotation'}">${row.enabled === false ? 'Enable' : 'Disable'}</button>
-                <button type="button" class="settings-ghost-btn" data-harness-remove title="Ask the agent service to forget this account">Remove</button>`;
+                <button type="button" class="btn btn-default" data-harness-toggle data-enabled="${row.enabled === false ? '0' : '1'}" title="${row.enabled === false ? 'Let rotation use this account again' : 'Keep the login, take this account out of rotation'}">${row.enabled === false ? 'Enable' : 'Disable'}</button>
+                <button type="button" class="btn btn-default" data-harness-remove title="Ask the agent service to forget this account">Remove</button>`;
     return `
         <div class="harness-account-row${quota.exhausted ? ' harness-exhausted' : ''}" data-harness="${escapeHtml(row.harness)}" data-profile="${escapeHtml(row.profile_id)}" data-kind="${escapeHtml(row.kind)}">
             <div class="harness-account-main">
@@ -928,7 +966,7 @@ function rowHtml(row, payload, facets = {}) {
             </div>
             <div class="harness-account-meta muted">${escapeHtml(meta)}</div>
             <div class="harness-account-actions">
-                <button type="button" class="settings-ghost-btn" data-harness-login>${escapeHtml(rowActionLabel(row, payload))}</button>${rowActions}
+                <button type="button" class="btn btn-default" data-harness-login>${escapeHtml(loginAction.label)}</button>${rowActions}
             </div>
         </div>
     `;
@@ -949,7 +987,7 @@ function groupHtml(group, payload, facets) {
                     <span class="ui-status" data-tone="${group.status.tone}">${escapeHtml(group.status.label)}</span>
                     ${nextUp ? `<span class="ui-status" data-tone="muted" data-next-up>${escapeHtml(nextUp)}</span>` : ''}
                 </div>
-                <button type="button" class="settings-ghost-btn" data-family-add>${escapeHtml(familyActionLabel(group, payload))}</button>
+                <button type="button" class="btn btn-default" data-family-add>${escapeHtml(familyActionLabel(group, payload))}</button>
             </div>
             <div class="agent-family-rows">${body}</div>
         </section>
@@ -1002,7 +1040,17 @@ function renderRows() {
         button.addEventListener('click', () => {
             if (!state.initialized) return;
             const row = button.closest('[data-harness]');
-            startLogin(row?.dataset.harness, row?.dataset.profile);
+            const rowData = row?.dataset || {};
+            const rowModel = accountRows(payload).find((candidate) =>
+                String(candidate?.harness || '') === String(rowData.harness || '')
+                && String(candidate?.profile_id || '') === String(rowData.profile || '')
+            );
+            const action = rowLoginAction(rowModel, payload);
+            if (action.refresh) {
+                state.store.refresh();
+                return;
+            }
+            startLogin(rowData.harness, rowData.profile);
         });
     });
     host.querySelectorAll('[data-harness-remove]').forEach((button) => {

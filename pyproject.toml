@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ouroboros"
-version = "6.109.30"
+version = "6.110.1"
 description = "Self-creating AI agent with constitution, background consciousness, and persistent identity"
 readme = "README.md"
 license = {text = "MIT"}
@@ -108,16 +108,6 @@ required-version = "==0.12.1"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-# Defense-in-depth default per-test timeout: pytest-timeout signal-method is the
-# default, and ``method`` falls back to whatever the suite passes via ``--timeout-method``
-# (the hermetic commit gate in ouroboros/preflight_runner.py uses ``thread`` so
-# signal-resistant primitives — ``os.fsync`` under flock, blocking C extensions —
-# can be interrupted; the streaming completion handler in tests/test_web_search.py
-# was the canonical case that motivated both this default and Fix 2's ledger
-# fsync short-circuit, documented in ibl-28f3c68cfaae / ibl-c094f2f90ec4 /
-# ibl-system-test-fragility). 30s is generous for unit tests and catches genuine
-# hangs that the per-test marker cannot reach.
-timeout = 30
 # Default local pytest excludes token-burning integration/browser suites.
 addopts = "-q --tb=short -m 'not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet'"
 markers = [

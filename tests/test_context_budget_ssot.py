@@ -23,6 +23,7 @@ def test_agent_context_budget_values_pinned():
     assert cb.BG_STATE_JSON_WARN_CHARS == 200_000
     assert cb.LARGE_CONTEXT_SECTION_CHARS == 200_000
     assert cb.MAX_RECENT_CHAT_TAIL == 1000
+    assert cb.CHAT_ARCHIVE_SCAN_WARN_BYTES == 100_000_000
     assert not hasattr(cb, "CONTEXT_SOFT_CAP_TOKENS")
 
 
@@ -76,11 +77,14 @@ def test_call_sites_import_the_ssot_names():
 
     ctx_recent_src = _src("ouroboros/context.py")
     assert "MAX_RECENT_CHAT_TAIL" in ctx_recent_src
-    assert "consolidated_offset > 0" in ctx_recent_src
+    assert "read_unconsolidated_chat" in ctx_recent_src
+    assert "last_consolidated_offset" in _src("ouroboros/memory.py")
 
-    consc_src = _src("ouroboros/consciousness.py")
+    # The BG context builder + its extracted degradation helpers
+    # (consciousness_context.py, split out at the v6.110.0 merge) consume the SSOT.
+    consc_src = _src("ouroboros/consciousness.py") + _src("ouroboros/consciousness_context.py")
     for name in ("BG_CONTEXT_MAX_CHARS", "BG_CONTEXT_WARN_CHARS", "BG_STATE_JSON_WARN_CHARS"):
-        assert name in consc_src, f"consciousness.py must consume {name}"
+        assert name in consc_src, f"consciousness.py/consciousness_context.py must consume {name}"
 
     ctx_src = _src("ouroboros/context.py")
     assert "LARGE_CONTEXT_SECTION_CHARS" in ctx_src

@@ -300,6 +300,19 @@ complete registry; trusted integration CI sends that same registry in one bounde
 tool canary per supported provider family/API surface, while pull-request CI
 remains secretless.
 
+The trusted canary keeps the response choice's outer `finish_reason` as the
+bounded per-call usage fact `response_finish_reason`; it is observational and
+the reserved usage keys are host-owned, so provider-supplied extensions are
+discarded unless the designated outer response supplies the value. It must not
+be copied into canonical assistant history or used to change retry
+classification. A schema-valid native call remains usable when a provider also
+returns assistant text, with only a length/hash warning emitted on the trusted
+integration test's warning stream; the warning list is host-owned and provider
+extension fields are discarded before emission. Malformed native
+arguments and invalid schemas stay red, with diagnostics limited to structural
+facts, hashes, and parse position. Do not add a prose parser, provider hop, or
+unbounded retry to make that contract green.
+
 When adding or changing a provider, update one coherent route contract:
 
 1. credential/readiness detection and exact model-id migration;
@@ -486,6 +499,38 @@ enroll that store in the `ouroboros/context_budget.py` threshold table (with a
 justified constant) in the same commit — an unenrolled hot store is invisible
 to the tripwire.
 
+### Invariant: Source-complete decision pipeline
+
+Every new or changed continuity surface is reviewed as one narrow chain:
+
+`producer → canonical full source → bounded projection → consumer → decision → retention/GC`.
+
+- The producer records the complete event or artifact before it publishes a
+  projection or wakeup. The canonical source owns identity, order, bytes, and
+  integrity state; a cache or hot index is never a second authority.
+- A bounded projection names what it omitted and carries a source reference
+  that the *same actor* can resolve through an existing reader. `source_complete`
+  is a coverage fact, not a permission to infer missing material.
+- A consumer that can authorize PASS, a destructive rewrite, or replacement of
+  a full contract must materialize the named source first. A known `partial`
+  marker and an unverified claim that some host might retrieve more are not
+  equivalent: the latter is not actor-attested coverage and cannot release the
+  decision.
+- Retention and GC are part of the chain. Anything referenced by a canonical
+  result, review, identity decision, or project summary is retained or promoted
+  before its execution root can be collected. Unreferenced scratch remains
+  disposable under the unified retention owner; an unavailable legacy source is
+  represented as an explicit gap, never silently treated as complete.
+
+#### Context and growth matrix
+
+| Store / surface | Complete producer and source | Interactive projection / consumer | Growth and retention proof |
+|---|---|---|---|
+| Background observations | `BackgroundConsciousness.inject_observation` → `state/consciousness_observations.jsonl` enqueue rows | Cached pending/oldest status and bounded `_render_observations` view; identity-update consumer reads the gap marker and source ref | `BG_OBSERVATIONS_WARN_BYTES` in `context_budget.py` / `agent_startup_checks.py`; append-only rows, including unacknowledged rows, are not GC-pruned by the hot-store warning |
+| Chat and biography | Canonical `logs/chat.jsonl`, rotated generations, and dialogue blocks | Main/Project context and archive-aware `chat_history` | Rotation/archive readers carry generation/gap coverage; blocks are the compression path, not a deletion of the horizon |
+| Plan/review evidence | Exact task-artifact/observability bodies and reviewer route/thread receipts | Bounded review hot index, obligations, and latest-wave status | Exact artifact refs and candidate SHA bind the decision; index rotation cannot certify a missing or partial wave |
+| Task/project execution | Canonical task result plus promoted child artifacts and summaries | Status cards, terminal rows, and Main/Project summary projections | Canonical promotion precedes child-drive GC; disposable task scratch follows the unified retention owner |
+
 ### Invariant: UI resources carry a disposer
 
 Every long-lived acquisition in `web/` returns or records a disposer, and a UI
@@ -510,6 +555,25 @@ release-tier `ui_browser` lane, not at commit tier; commit-tier coverage is
 the advisory Repo Commit Checklist item 24. The class is closed
 deterministically for the instrumented surfaces and advisorily for future
 ones.
+
+---
+
+### Invariant: Embedded surfaces declare geometry and refresh semantics
+
+Every owner-visible embedded or framed surface has an explicit host-owned
+geometry/overflow contract, a paired disposer for every long-lived resource,
+declared refresh/stream/error semantics, and a named real-consumer visual
+verification path. Intentional omissions record why they are safe to defer.
+For Widgets, framed `height` values are bounded and module auto-height is
+host-controlled; module source loading and declarative requests have a bounded
+host timeout; declarative job widgets keep their `job_id` and bounded
+retry/timeout behavior visible in the refresh contract rather than hiding them
+in an author script.
+Missing or malformed job status is an immediate protocol error, while unknown
+non-empty in-progress labels remain bounded pending states for producer
+compatibility.
+Repo Commit Checklist item 24 points lifecycle changes here instead of
+re-deriving a second domain-specific rule.
 
 ---
 
@@ -943,6 +1007,7 @@ Before every commit, verify the following:
 - Use `edit_text` for one exact replacement and `write_file` only for new files or intentional full rewrites with `root=skill_payload`. (`edit_batch`/`apply_patch` are repo-lane tools and do not accept `root=skill_payload`.)
 - Finish repair with `skill_preflight` and `skill_review`; grants and enablement stay owner-controlled.
 - Repair mode is a stricter UI lane, not the only path for skill authoring. In every runtime mode, ordinary top-level tasks may mutate an exact user-managed payload via `root=skill_payload`, `bucket`, and `skill_name`; `skill_payload_binding.py` projects an existing physical `data/skills/native/<skill>` without `.seed-origin` as logical `external` while retaining its physical confinement. Marker-present launcher seeds, `data/state/skills/*`, marketplace/provenance/dependency sidecars, and direct `run_command` writes to repo targets remain blocked. The legacy constrained `skill_repair` selector stays limited to `{external,clawhub,ouroboroshub}`.
+- The direct `operator_control` and `local_readonly_subagent` profiles may inspect a selected native payload with `read`/`list`/`search`, including ordinary payload markers and dependency directories. This is a read-only binding exception: native mutation, owner state, grants/review/enablement, acting-child selection, and the constrained `skill_repair` lane remain closed.
 - New path checks for skill edits must use `ouroboros.contracts.skill_payload_policy` rather than reimplementing bucket/path traversal logic in each tool.
 
 #### Native-Risk Extension Dispatch
@@ -979,6 +1044,8 @@ Before every commit, verify the following:
 #### Light Mode External Deliverables
 - `runtime_mode=light` is a self-modification boundary, not an OS sandbox. User-visible deliverables are allowed when they are outside the Ouroboros repo/control-plane.
 - Preferred flow: `task_drive` for scratch, `artifact_store` for canonical deliverables, and `user_files` for the owner's visible copy (for example `Desktop/report.html`). `write_file(root=user_files)` and declared process `outputs` must register/copy canonical task artifacts. Rewrites of the same user-visible source keep the previous canonical artifact in non-manifest history with last-5 retention; history is for recovery, not a second deliverable list.
+- The logical `root=deliverables` tool remains read/list/search-only for orchestrator inspection. A configured physical Deliverables destination remains reachable through existing top-level `user_files`-authorized paths; the new shell seam is narrow, does not grant that logical root to a child, and the normal declared-output/undeclared-output custody flow still applies.
+- For argv-visible targets, the shell guard checks lexical Deliverables origin before generic workspace or executor roots, then checks the symlink-resolved destination. Hidden, credential-like, protected, and symlink-escaping descendants therefore do not inherit a broader root's admission; direct `cp`/`mv`/`ln` directory destinations derive their immediate child target (including attached `-tDIR`/`-Ssuffix` forms, `cp --parents`, and `cp -s`/`--symbolic-link` symlink creation). `ln --relative` resolves its source from the command cwd before checking the resulting payload. Recursive directory/archive copies are not walked for nested symlinks or hidden descendants. Declared-output custody and Presence ceilings use the same target-first rule, and Presence keeps its logical `user_files` prefix across the physical Deliverables remap. The undeclared-output audit remains best-effort rather than a full shell parser; relative writes after an in-command `cd`, shell-variable/indirect destinations, and arbitrary inline-code path construction remain deferred parser residuals. Declared outputs still use normal custody, while a successful dynamic undeclared write may lack the nudge. Inode aliases (hardlinks) remain a disclosed filesystem residual rather than a new Deliverables authority check.
 - `run_command`/`run_script` `scratch=[...]` (v6.52.2) is a DISTINCT channel from `outputs=[...]`: it declares EPHEMERAL in-workspace verification files (a throwaway test the agent writes, runs, and deletes — e.g. an in-package test that must live in the repo to compile). Scratch is exempt from the undeclared-output guard, never registered as an artifact, confined to the cwd, honored for NEW files and (v6.56.0) for ADOPTED existing untracked in-cwd files — adoption records the file's sha at declaration time through the SSOT `artifacts.record_task_scratch`, so the patch exclusion applies only while the content still matches (tracked files, paths outside the cwd, and paths outside a git worktree stay blocked; a real edit can never hide behind a scratch declaration) — and excluded from the workspace patch via `.scratch_manifest.json` (`headless.write_workspace_patch_artifacts`). Re-declaring a manifest path is idempotent. The undeclared-output guard verifies candidates POST-exec by stat (exists + mtime ≥ start−slack), so a mere path MENTION (import strings, CLI flags, heredoc bodies) is not a write. Use `outputs` for deliverables, `scratch` for throwaway verification — never overload one for the other.
 - `run_command`/`run_script`/`start_service` may use cwd under `active_workspace`, explicit `system_repo`, task-scoped `task_drive`, task-scoped `artifact_store`, and external `user_files` where the active profile permits it. Omitted cwd consistently selects `active_workspace`; a light direct task that needs writable scratch must therefore select `task_drive` explicitly. Long-running services in light must use an explicit external/task/artifact cwd. Declared service `outputs` are copied into the task artifact store when the service stops.
 - `run_script` temporary files are created under the active workspace when the task is workspace/executor-backed, then removed after execution. Do not run workspace scripts from the system repo temp path; relative imports, generated files, and toolchain discovery must observe the same cwd the user requested.
@@ -1060,9 +1127,31 @@ Before every commit, verify the following:
 - A configured session child must start or recover its exact external leaf before
   its first LLM call. Compile one complete work order from the immutable child brief
   and authority, reuse `subagent_runtime.exact_start`, and inject the custody-durable
-  startup/fault receipt. `started_uncustodied` is a fault with a possibly live run:
+  startup/fault receipt. started_uncustodied is a fault with a possibly live run:
   do not enter quiet sleep or start a replacement until verified settlement, and
   replay the original pending invocation/idempotency key after worker loss.
+  The complete external work-order wire budget is one total 250,000-character
+  limit, not a model-context claim and not a per-field prefix rule. A brief that
+  fits is sent byte-complete. A brief above that limit is never silently prefixed:
+  the bootstrap may send only a compact coverage=partial source-request lens
+  when the selected route's live manifest positively declares an interactive
+  question channel. The lens carries the full brief SHA/size and an
+  actor-resolvable `get_task_result` canonical-work-order selector; the child must
+  request exact character ranges through the existing interaction seam before
+  substantive work. The reader and validator share one renderer, so the bytes and
+  offsets the actor sees are exactly the bytes the host verifies.
+  A route whose channel is unavailable or unknown receives a typed cannot_verify
+  refusal before any external start. Pending recovery replays the stored compact
+  request body and the full canonical fingerprint, never a fresh reconstruction
+  from the oversized task. The source request and its host-verified character
+  intervals are part of durable delegate custody and replay. `delegate_answer`
+  accepts a typed `source_response`; the host re-renders the canonical complete
+  brief and compares the selector, digest, bounds, and exact bytes before recording
+  an interval. If the engine answers `already_resolved`, the host records an interval
+  only when a durable prior delivery receipt binds that same interaction and exact
+  source selector; timeout or another resolution remains incomplete. Until the union covers the whole brief, terminal delivery carries
+  `work_order_verification.status=cannot_verify`, and `integrate_delegated_patch`
+  may reject the captured result but may not apply it.
 - `delegate_wait` is an event-only model sleep. Renew bounded transport windows in
   `delegate_supervision` with zero LLM calls; journal progress may stream to the
   owner but is not a wake. Wake only for terminal/interaction/fault, an addressed
@@ -1190,9 +1279,13 @@ Before every commit, verify the following:
   Ouroboros control-plane ports (agent API / local-model / host-service, the configured
   `LOCAL_MODEL_PORT`, and the actual bound `state/server_port`); `file://` is ALLOWED
   only under the task's explicit `workspace_root` (symlink/traversal-safe), denied
-  otherwise. `evaluate` JS stays unavailable to subagents; `vlm_query` /
+  otherwise. `evaluate` JS stays unavailable to `local_readonly_subagent`; a valid
+  `acting_subagent` may evaluate JavaScript on its current page while the
+  owner/self-lowering guards remain active. `vlm_query` /
   `analyze_screenshot` are available. (Relaxed in v6.24.0 for local UI/build inspection;
-  control-plane, private-range, and DNS-rebind denial preserved. See ARCHITECTURE.md.)
+  control-plane, private-range, and DNS-rebind denial preserved. Acting children retain
+  the pre-existing shell-to-loopback `/ws` route; this change does not add WebSocket
+  authentication or broaden that route to local-readonly children. See ARCHITECTURE.md.)
 - The canonical/replica terminal post-task/accounting field-custody projection
   must live in one pure reducer reused by both physical copy-back and effective
   reads; never blanket-overlay the replica over canonical truth. Every change
@@ -1809,7 +1902,11 @@ commit.
   `style=""` markup and `.style.<property>` assignments are review debt.
   Dynamic measured values may update a narrowly named CSS custom property when
   that is the actual runtime data flow.
-- One semantic button variant expresses one action role. Notifications use the
+- One semantic button variant expresses one action role. Neutral Settings and
+  onboarding controls use the existing `.btn.btn-default` role; do not add a
+  parallel `settings-ghost-btn` variant. A one-action result row uses the
+  named `.settings-action-row` contract (status first, action docked right),
+  while multi-action toolbars retain their own grouping. Notifications use the
   shared toast host unless status belongs to a permanently reserved control
   row. Working, warning, error, and destructive states keep consistent meaning
   across Chat, Logs, Settings, and Skills.

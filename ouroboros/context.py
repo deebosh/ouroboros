@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import sys
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_context_mode
@@ -31,13 +32,13 @@ from ouroboros.context_fit import (
     estimate_context_prompt_tokens as estimate_context_prompt_tokens,
 )
 from ouroboros.context_health import (
+    _STRAY_PROBE_CACHE as _STRAY_PROBE_CACHE,
+)
+from ouroboros.context_health import (
     _compute_cache_hit_rate as _compute_cache_hit_rate,
 )
 from ouroboros.context_health import (
     _iter_recent_jsonl as _iter_recent_jsonl,
-)
-from ouroboros.context_health import (
-    _STRAY_PROBE_CACHE as _STRAY_PROBE_CACHE,
 )
 from ouroboros.context_health import (
     _stray_server_note as _stray_server_note,
@@ -48,19 +49,14 @@ from ouroboros.context_health import (
 from ouroboros.context_health import (
     safe_read as safe_read,
 )
-from ouroboros.context_fit import (
-    _render_context_system_content,
-)
-from ouroboros.context_layout import (
-    architecture_context_section,
-    reference_doc_sections,
-)
+from ouroboros.context_layout import architecture_context_section, reference_doc_sections  # noqa: F401
 from ouroboros.contracts.task_contract import normalize_bool
 from ouroboros.memory import Memory
 from ouroboros.utils import (
     get_git_info,
     read_json_dict,
     read_text,
+    safe_relpath,
     truncate_review_artifact,
     utc_now_iso,
 )
@@ -79,6 +75,49 @@ def _chat_log_signature_matches(expected: Any, current: Dict[str, Any]) -> bool:
         )
     except (TypeError, ValueError):
         return False
+
+
+def _log_stale_consolidation_offset(memory: Any, dialogue_meta: Dict[str, Any]) -> None:
+    """Per-build triage for a stale consolidation cursor (ibl-28109914789e).
+
+    ``memory.read_unconsolidated_chat`` already returns a truthfully-gapped
+    suffix; this only classifies the per-build LOG level so triage can tell a
+    recoverable stale signature (INFO — next consolidation re-bases) from a
+    truly-missing generation (WARNING). A resolver error fails safe to WARNING.
+    """
+    try:
+        consolidated_offset = int(dialogue_meta.get("last_consolidated_offset") or 0)
+    except (TypeError, ValueError):
+        return
+    if consolidated_offset <= 0:
+        return
+    expected_signature = dialogue_meta.get("chat_log_signature")
+    try:
+        current_signature = memory.jsonl_generation_signature("chat.jsonl")
+    except Exception:
+        current_signature = {}
+    if _chat_log_signature_matches(expected_signature, current_signature):
+        return
+    try:
+        from ouroboros.consolidator import _resolve_generation_segments
+
+        _segments, _offset, gap_detected = _resolve_generation_segments(
+            dict(dialogue_meta or {}), memory.logs_path("chat.jsonl"),
+        )
+    except Exception:
+        gap_detected = True  # fall back to WARNING = louder
+    if not gap_detected:
+        log.info(
+            "Ignoring dialogue consolidation offset %s because chat log generation "
+            "signature is missing or stale (recoverable; next consolidation will re-base)",
+            consolidated_offset,
+        )
+    else:
+        log.warning(
+            "Ignoring dialogue consolidation offset %s because chat log generation "
+            "signature is missing or stale",
+            consolidated_offset,
+        )
 
 
 def build_user_content(task: Dict[str, Any]) -> Any:
@@ -560,7 +599,54 @@ def _delegation_capability_fact() -> Optional[Dict[str, Any]]:
         return None
 
 
-def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) -> str:
+def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
+    """Exact active task/origin/plan authority, before route-specific fitting."""
+    projection: Dict[str, Any] = {}
+    if isinstance(task.get("task_contract"), dict):
+        projection["task_contract"] = task.get("task_contract")
+    origin_ref, origin_text = task.get("origin_message_ref"), task.get("origin_message_text")
+    if isinstance(origin_ref, dict) and origin_ref:
+        projection["task_authority_origin"] = {
+            "ref": dict(origin_ref),
+            **({"text": origin_text} if isinstance(origin_text, str) and origin_text else {}),
+        }
+    if isinstance(task.get("predecessor_authority"), dict):
+        projection["predecessor_authority"] = task.get("predecessor_authority")
+    if isinstance(task.get("authority_historical_gaps"), list):
+        projection["authority_historical_gaps"] = task.get("authority_historical_gaps")
+    task_id = str(task.get("id") or "").strip()
+    if not task_id:
+        return projection
+    canonical_root = pathlib.Path(
+        task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or env.drive_root
+    )
+    source = {
+        "tool": "get_task_result",
+        "arguments": {"task_id": task_id, "include_authority": True},
+    }
+    try:
+        from ouroboros.task_results import current_plan_review_wave, load_plan_review_state
+
+        state = load_plan_review_state(canonical_root, task_id)
+        wave = current_plan_review_wave(state)
+        if wave is not None or state.get("current_attempt") or state.get("legacy_v1"):
+            projection["plan_review_authority"] = {
+                "current_attempt": state.get("current_attempt") or {},
+                "current_wave": wave,
+                "legacy_v1_projection": state.get("legacy_v1_projection") or {},
+                "waves_omitted": int(state.get("waves_omitted") or 0),
+                "source": source,
+            }
+    except Exception as exc:
+        projection["plan_review_authority"] = {
+            "status": "authority_source_unavailable", "source": source,
+            "error": type(exc).__name__,
+            "rule": "Do not treat the current plan/review authority as complete.",
+        }
+    return projection
+
+
+def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, scheduled_tasks_digest_out: Optional[Dict[str, Any]] = None) -> str:
     try:
         git_branch, git_sha = get_git_info(env.repo_dir)
     except Exception:
@@ -595,6 +681,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
             "budget_drive_root": task.get("budget_drive_root"),
             "deadline_at": task.get("deadline_at"),
             "allowed_resources": task.get("allowed_resources"),
+            "context": task.get("context"),
         },
         # Server-process presentation posture (launcher-exported; absent = a
         # web/headless serving process). This is the PROCESS's shell, NOT the
@@ -606,8 +693,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
             "platform": sys.platform,
         },
     }
-    if isinstance(task.get("task_contract"), dict):
-        runtime_data["task_contract"] = task.get("task_contract")
+    runtime_data.update(_task_authority_projection(env, task))
     runtime_data["operational_reality_rule"] = (
         "This live runtime context is authoritative over stale paths, tool lists, "
         "or capability assumptions embedded in the task text. Use the visible "
@@ -730,9 +816,9 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
     schedule_digest = _scheduled_tasks_digest(env)
     if schedule_digest:
         runtime_data["scheduled_tasks"] = schedule_digest
-    # Surface RUNNING tasks so a busy-chat turn can steer the right one instead of
-    # duplicating it. This is a structural fact; the model still chooses (BIBLE P5).
-    # It also gives project-room messages their default project scene.
+        if scheduled_tasks_digest_out is not None:
+            scheduled_tasks_digest_out.update(schedule_digest)
+    # Surface running tasks so a busy-chat turn can steer instead of duplicating it.
     _meta = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     # Owner Surface Fact: the surface that SENT the message this task/turn came
     # from. A web message carries raw observables (pywebview/ua/viewport/...);
@@ -836,9 +922,14 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None) ->
     out = "## Runtime context\n\n" + runtime_ctx
     try:
         from ouroboros.task_tree_ledger import tree_ledger_tail_digest
-
         _root_id = str(task.get("root_task_id") or task.get("id") or "")
-        _tree_digest = tree_ledger_tail_digest(_root_id, limit=40) if _root_id else ""
+        from ouroboros.tool_access import canonical_data_root
+        _tree_root = (canonical_data_root(ctx) if ctx is not None else pathlib.Path(
+            task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or env.drive_root
+        ).resolve(strict=False))
+        _tree_digest = tree_ledger_tail_digest(
+            _root_id, limit=40, data_root=_tree_root,
+        ) if _root_id else ""
         if _tree_digest:
             out += (
                 "\n\n## Task-tree coordination ledger (shared swarm blackboard)\n\n"
@@ -934,7 +1025,7 @@ def _warn_if_over_budget(name: str, content: str) -> None:
         log.warning("Context section '%s' exceeds budget: %d chars > %d", name, len(content), budget)
 
 
-def build_memory_sections(memory: Memory, partition: str = "all") -> List[str]:
+def build_memory_sections(memory: Memory, partition: str = "all", durable_dialogue_gaps_out: Optional[List[Dict[str, Any]]] = None) -> List[str]:
     sections = []
 
     include_stable = partition in {"all", "stable"}
@@ -951,9 +1042,7 @@ def build_memory_sections(memory: Memory, partition: str = "all") -> List[str]:
         sections.append("## Identity (from `memory/identity.md` — already loaded; do not re-read via read_file(root='runtime_data', path='memory/identity.md'))\n\n" + identity_raw)
         world_raw = memory.load_world_profile().strip()
         if world_raw:
-            # Generated environment profile: include in FULL and warn rather than
-            # silently prefix-slicing (BIBLE P1 no-silent-truncation). An oversized
-            # WORLD.md is a generation-discipline bug, not a context-budget excuse.
+            # Generated profile is full; oversize is a generation-discipline bug.
             _warn_if_over_budget("world", world_raw)
             sections.append("## Environment Profile (from `memory/WORLD.md` — already loaded; delete WORLD.md and restart to regenerate if the host environment changes)\n\n" + world_raw)
 
@@ -962,6 +1051,8 @@ def build_memory_sections(memory: Memory, partition: str = "all") -> List[str]:
         if dialogue_blocks:
             blocks_md = memory.format_blocks_as_markdown(dialogue_blocks)
             if blocks_md.strip():
+                if durable_dialogue_gaps_out is not None:
+                    durable_dialogue_gaps_out.extend(memory._durable_dialogue_gaps(dialogue_blocks)[0])
                 sections.append("## Dialogue History\n\n" + blocks_md)
         legacy_summary = safe_read(memory.drive_root / "memory" / "dialogue_summary.md").strip()
         if legacy_summary:
@@ -1033,23 +1124,9 @@ def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 10) -
     return "\n\n".join(blocks)
 
 
-def _entry_chat_id(entry: Any) -> int:
-    """Best-effort chat_id of a chat.jsonl row (missing/blank -> 0 = main)."""
-    try:
-        return int((entry or {}).get("chat_id", 0) or 0)
-    except (TypeError, ValueError, AttributeError):
-        return 0
-
-
-# How many trailing chat.jsonl rows to scan when reconstructing a single project
-# thread's own recent tail (project threads are bounded/recent, unlike the штаб's
-# fully-consolidated main dialogue).
-_PROJECT_THREAD_SCAN = 4000
-
-
 def build_recent_sections(
     memory: Memory, env: Any, task_id: str = "", thread_chat_id: int = 0,
-    project_id: str = "",
+    project_id: str = "", chat_coverage_out: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     sections = []
 
@@ -1066,105 +1143,79 @@ def build_recent_sections(
     except Exception:
         _project_chat_ids = set()
 
-    _context_mode = get_context_mode()
     _chat_tail = MAX_RECENT_CHAT_TAIL
+    retained_project_origins: List[Dict[str, Any]] = []
 
     if thread_chat_id and thread_chat_id in _project_chat_ids:
-        # Project task: a FOCUSED working view of its OWN thread (reduces
-        # cross-project interference while executing) — NOT isolation from the one
-        # mind, which sees everything via the main/background path below. Read the
-        # project's raw tail directly. Post-hoc bound tasks keep their original main
-        # chat_id but belong to this project — include their rows via the binding.
-        try:
-            from ouroboros.projects_registry import all_task_bindings
+        # Post-hoc bindings and retention-proof origins belong to the existing
+        # Project dialogue read model; focus changes the working view, not memory.
+        from ouroboros.project_dialogue import project_recent_dialogue
 
-            _bound = all_task_bindings(memory.drive_root)
-        except Exception:
-            _bound = {}
-        recent = memory.read_jsonl_tail("chat.jsonl", _PROJECT_THREAD_SCAN)
-        chat_entries = [
-            e for e in recent
-            if _entry_chat_id(e) == thread_chat_id
-            or _bound.get(str((e or {}).get("task_id") or "")) == thread_chat_id
-        ][-_chat_tail:]
+        chat_entries, chat_coverage, retained_project_origins = project_recent_dialogue(
+            memory, thread_chat_id, _chat_tail,
+        )
     else:
         dialogue_meta = memory.load_dialogue_meta()
-        try:
-            consolidated_offset = int(dialogue_meta.get("last_consolidated_offset") or 0)
-        except (TypeError, ValueError):
-            consolidated_offset = 0
-        if consolidated_offset > 0:
-            expected_signature = dialogue_meta.get("chat_log_signature")
-            current_signature = memory.jsonl_generation_signature("chat.jsonl")
-            if not _chat_log_signature_matches(expected_signature, current_signature):
-                # Recoverable vs. irrecoverable: ask the consolidator's
-                # generation-aware resolver (P1: gap-not-lost). If it can still
-                # locate the stored generation in the archive chain, the next
-                # consolidation pass will re-base — that is INFO. Only a truly
-                # missing generation (manual deletion/corruption) keeps the loud
-                # WARNING, so triage sees real gaps without per-build noise on a
-                # transient `gap_detected == False`.
-                try:
-                    from ouroboros.consolidator import _resolve_generation_segments
-
-                    _segments, _offset, gap_detected = _resolve_generation_segments(
-                        dict(dialogue_meta or {}),
-                        memory.logs_path("chat.jsonl"),
-                    )
-                except Exception:
-                    gap_detected = True  # fall back to WARNING = louder
-                if not gap_detected:
-                    log.info(
-                        "Ignoring dialogue consolidation offset %s because chat log generation signature is missing or stale (recoverable; next consolidation will re-base)",
-                        consolidated_offset,
-                    )
-                else:
-                    log.warning(
-                        "Ignoring dialogue consolidation offset %s because chat log generation signature is missing or stale",
-                        consolidated_offset,
-                    )
-                consolidated_offset = 0
-        # Raw recent-dialogue tail: smaller in low context mode only when it cannot
-        # silently drop unconsolidated dialogue. If a valid consolidation offset
-        # exists, the older span is represented by dialogue_blocks.json and the whole
-        # suffix after that offset remains raw (P1: horizon preserved, granularity
-        # varies but unconsolidated dialogue is not cut away).
-        if _context_mode == "low" and consolidated_offset > 0:
-            _chat_tail = 10**9
-        # read_jsonl_tail_after_offset returns the one identity's WHOLE dialogue
-        # (main + project threads; only A2A virtual transport excluded), aligned
-        # with the consolidator so the shared offset indexes the same stream.
-        chat_entries = memory.read_jsonl_tail_after_offset(
-            "chat.jsonl",
-            consolidated_offset,
-            _chat_tail,
+        _log_stale_consolidation_offset(memory, dialogue_meta)
+        # The Memory owner returns one bounded, truthfully-gapped raw suffix.
+        chat_entries, chat_coverage = memory.read_unconsolidated_chat(
+            dialogue_meta, _chat_tail,
         )
-    # Pass the same tail intent down: summarize_chat's internal default cap
-    # would silently re-cut the low-mode full-window read to 1000 lines.
+    if chat_coverage_out is not None:
+        chat_coverage_out.update(chat_coverage)
     chat_summary = memory.summarize_chat(chat_entries, limit=_chat_tail)
     if chat_summary:
         sections.append("## Recent chat\n\n" + chat_summary)
+    if retained_project_origins:
+        sections.append(
+            "## Project owner origins (retention-proof bindings)\n\n"
+            + memory.summarize_chat(
+                retained_project_origins, limit=len(retained_project_origins),
+            )
+        )
+    if chat_entries or chat_coverage.get("gaps"):
+        generation_count = len(chat_coverage.get("generations") or [])
+        compact_gaps = [
+            {
+                key: gap[key]
+                for key in (
+                    "kind", "detail", "first_line_sha256", "offset", "error",
+                    "count", "omitted_bytes_at_least", "omitted_rows",
+                )
+                if key in gap
+            }
+            for gap in (chat_coverage.get("gaps") or [])
+            if isinstance(gap, dict)
+        ]
+        coverage_projection = {
+            "matched_rows": int(chat_coverage.get("matched_rows") or 0),
+            "shown_rows": int(chat_coverage.get("shown_rows") or 0),
+            "omitted_matching_rows": int(chat_coverage.get("omitted_matching_rows") or 0),
+            "omitted_matching_rows_unknown": bool(
+                chat_coverage.get("omitted_matching_rows_unknown")
+            ),
+            "generation_count": generation_count,
+            "gaps": compact_gaps,
+            "reader": str(chat_coverage.get("reader") or "chat_history(count, offset, search)"),
+        }
+        sections.append(
+            "## Recent chat coverage\n\n"
+            + json.dumps(coverage_projection, ensure_ascii=False, sort_keys=True, default=str)
+        )
 
-    # razzant/ouroboros#131: these three logs are unbounded and were fully
-    # streamed each prompt just to keep the last 200 rows. A ~1 MB tail window
-    # comfortably holds 200 rows of any of them; a pathological giant-row log
-    # degrades to fewer rows rather than a full read.
-    _RECENT_LOG_TAIL_BYTES = 1_048_576
     for log_name, header, formatter in (
         ("progress.jsonl", "## Recent progress", lambda rows: memory.summarize_progress(rows, limit=50)),
         ("tools.jsonl", "## Recent tools", memory.summarize_tools),
         ("events.jsonl", "## Recent events", memory.summarize_events),
     ):
-        entries = memory.read_jsonl_tail(log_name, 200, tail_bytes=_RECENT_LOG_TAIL_BYTES)
+        entries = memory.read_jsonl_tail(log_name, 200)
         if task_id:
             entries = [e for e in entries if str(e.get("task_id", "")).strip() == task_id]
         summary = formatter(entries)
         if summary:
             sections.append(f"{header}\n\n{summary}")
 
-    supervisor_summary = memory.summarize_supervisor(
-        memory.read_jsonl_tail("supervisor.jsonl", 200, tail_bytes=_RECENT_LOG_TAIL_BYTES)
-    )
+    supervisor_summary = memory.summarize_supervisor(memory.read_jsonl_tail("supervisor.jsonl", 200))
     if supervisor_summary:
         sections.append("## Supervisor\n\n" + supervisor_summary)
 
@@ -1338,7 +1389,28 @@ def _capture_context_core(
     architecture_md = safe_read(env.repo_path("docs/ARCHITECTURE.md"))
     development_md = safe_read(env.repo_path("docs/DEVELOPMENT.md"))
 
-    memory.ensure_files()
+    # A fork is an execution boundary, not a second mind.  Keep the agent's
+    # writable Memory object task-local, but capture identity/dialogue from the
+    # already-existing canonical budget root for promoted roots and subagents.
+    canonical_root = pathlib.Path(
+        task.get("budget_drive_root")
+        or getattr(env, "budget_drive_root", None)
+        or memory.drive_root
+    )
+    context_memory = (
+        memory
+        if canonical_root.resolve(strict=False) == memory.drive_root.resolve(strict=False)
+        else Memory(drive_root=canonical_root, repo_dir=memory.repo_dir)
+    )
+    context_memory.ensure_files()
+    context_env = SimpleNamespace(
+        repo_dir=env.repo_dir,
+        drive_root=canonical_root,
+        budget_drive_root=canonical_root,
+        branch_dev=getattr(env, "branch_dev", "ouroboros"),
+        repo_path=env.repo_path,
+        drive_path=lambda rel: (canonical_root / safe_relpath(rel)).resolve(),
+    )
 
     from ouroboros.project_facts import resolve_project_id
 
@@ -1405,11 +1477,11 @@ def _capture_context_core(
             )
     except Exception:
         log.debug("Failed to build Available subagents catalog", exc_info=True)
-    semi_stable_parts.extend(build_memory_sections(memory, partition="stable"))
+    semi_stable_parts.extend(build_memory_sections(context_memory, partition="stable"))
 
-    semi_stable_parts.extend(build_knowledge_sections(env, project_id=resolve_project_id(task)))
+    semi_stable_parts.extend(build_knowledge_sections(context_env, project_id=resolve_project_id(task)))
 
-    deep_review_path = env.drive_path("memory/deep_review.md")
+    deep_review_path = context_env.drive_path("memory/deep_review.md")
     try:
         if deep_review_path.exists():
             dr_text = deep_review_path.read_text(encoding="utf-8")
@@ -1423,20 +1495,20 @@ def _capture_context_core(
 
     semi_stable_text = "\n\n".join(semi_stable_parts)
 
-    health_section = build_health_invariants(env)
+    health_section = build_health_invariants(context_env)
     dynamic_parts = []
     if health_section:
         dynamic_parts.append(health_section)
-    dynamic_parts.extend(build_memory_sections(memory, partition="volatile"))
+    dynamic_parts.extend(build_memory_sections(context_memory, partition="volatile"))
 
-    registry_digest = _build_registry_digest(env)
+    registry_digest = _build_registry_digest(context_env)
     if registry_digest:
         dynamic_parts.append(registry_digest)
-    installed_skills = _build_installed_skills_section(env)
+    installed_skills = _build_installed_skills_section(context_env)
     if installed_skills:
         dynamic_parts.append(installed_skills)
     dynamic_parts.extend([
-        _drive_state_section(env),
+        _drive_state_section(context_env),
         build_runtime_section(env, task, ctx=ctx),
         (
             "## Task Contract Discipline\n\n"
@@ -1451,8 +1523,8 @@ def _capture_context_core(
     try:
         from ouroboros.improvement_backlog import format_backlog_digest
 
-        backlog_digest = format_backlog_digest(env.drive_root)
-        if backlog_digest:
+        backlog_digest = format_backlog_digest(canonical_root)
+        if backlog_digest and str(task.get("type") or "") in {"evolution", "deep_self_review"}:
             dynamic_parts.append(backlog_digest)
     except Exception:
         log.debug("Failed to build improvement backlog digest", exc_info=True)
@@ -1468,7 +1540,7 @@ def _capture_context_core(
     else:
         try:
             from ouroboros.review_state import format_status_section, load_state
-            advisory_state = load_state(pathlib.Path(env.drive_root))
+            advisory_state = load_state(canonical_root)
             if advisory_state.advisory_runs or advisory_state.latest_attempt():
                 advisory_section = format_status_section(
                     advisory_state,
@@ -1488,7 +1560,7 @@ def _capture_context_core(
     except Exception:
         _reflections_pid = ""
     dynamic_parts.extend(build_recent_sections(
-        memory, env, task_id=task.get("id", ""), thread_chat_id=int(task.get("chat_id") or 0),
+        context_memory, env, task_id=task.get("id", ""), thread_chat_id=int(task.get("chat_id") or 0),
         project_id=_reflections_pid,
     ))
     task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
@@ -1529,39 +1601,21 @@ def _context_fit_route(
 
 def measure_context_section_bytes(
     env: Any,
-    core: ContextCore,
+    core: Any,
     *,
     mode: str = "max",
     tool_schemas: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Return per-section byte contributions of the rendered context.
 
-    One SSOT helper for "which section is heavy" — walks every captured
-    ContextCore source plus the optional tool_schemas blob and records the
-    byte cost of each, so the operator can see WHICH section is heavy
-    instead of guessing (per task-latency determination 2026-08-29 rec #4).
-
-    The result also includes:
-
-      * ``assembled_system_content_bytes`` — the byte length of the rendered
-        system content (when ``_render_context_system_content`` is
-        available); this is the canonical reconciliation target the per-section
-        numbers MUST sum to (modulo the tool_schemas tuple, which lives beside
-        ``messages`` on the wire and is intentionally excluded from this
-        reconciliation — a separate ``tool_schemas_bytes`` entry owns it).
-      * ``tool_schemas_bytes`` — bytes for the JSON-serialized tool-schemas
-        blob when supplied.
-      * ``total_bytes`` — sum of all entries above (system + tool_schemas).
-
-    Args:
-        env: the task env (used to render reference_doc_sections).
-        core: a captured ``ContextCore`` (the unit passed to
-            ``_render_context_system_content``).
-        mode: owner context mode (``"max"`` or ``"low"``). Controls the form
-            of the ARCHITECTURE section (full vs nav map).
-        tool_schemas: optional tool-schema list to size. Pass ``None`` (the
-            default) to omit; pass ``[]`` to record a zero-byte entry.
+    One SSOT helper for "which section is heavy" (closes ibl-local-29a81a770be0
+    / task-latency determination 2026-08-29 rec #4). The system-side entries sum
+    to ``assembled_system_content_bytes`` modulo a recorded structural
+    ``system_side_delta_bytes``; ``user_content`` and ``tool_schemas`` live
+    beside ``messages`` on the wire and are surfaced separately.
     """
+    from ouroboros.context_fit import _render_context_system_content
+
     base_prompt_bytes = len((core.base_prompt or "").encode("utf-8"))
     bible_bytes = len((core.bible_md or "").encode("utf-8"))
 
@@ -1575,11 +1629,8 @@ def measure_context_section_bytes(
     ref_breakdown: Dict[str, int] = {}
     for index, part in enumerate(ref_parts):
         first_line = (part.split("\n", 1)[0] or "").strip()
-        if first_line.startswith("## "):
-            title = first_line[3:].strip() or f"reference_doc_part_{index}"
-        else:
-            title = f"reference_doc_part_{index}"
-        # Disambiguate duplicate titles by suffixing the index (rare; safe).
+        title = first_line[3:].strip() if first_line.startswith("## ") else ""
+        title = title or f"reference_doc_part_{index}"
         if title in ref_breakdown:
             title = f"{title}#{index}"
         ref_breakdown[title] = len((part or "").encode("utf-8"))
@@ -1592,14 +1643,9 @@ def measure_context_section_bytes(
     if tool_schemas is None:
         tool_schemas_bytes: Optional[int] = None
     else:
-        tool_schemas_bytes = len(
-            json.dumps(
-                tool_schemas,
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            ).encode("utf-8")
-        )
+        tool_schemas_bytes = len(json.dumps(
+            tool_schemas, ensure_ascii=False, sort_keys=True, default=str,
+        ).encode("utf-8"))
 
     measurement: Dict[str, Any] = {
         "base_prompt_bytes": base_prompt_bytes,
@@ -1612,12 +1658,6 @@ def measure_context_section_bytes(
         "tool_schemas_bytes": tool_schemas_bytes,
         "mode": str(mode or "max"),
     }
-    # Reconciliation against the rendered system content: every byte that
-    # enters the system block has to land in this map, and the sum of the
-    # system-side entries MUST equal the length of the rendered system
-    # content. The user_content and tool_schemas blobs live beside messages
-    # on the wire and are intentionally NOT included in the system-content
-    # reconciliation — they are surfaced separately for transparency.
     rendered_system_content_bytes: Optional[int] = None
     try:
         system_content = _render_context_system_content(env, core, mode=mode)
@@ -1628,47 +1668,65 @@ def measure_context_section_bytes(
         log.debug("Could not render system content for measurement reconciliation", exc_info=True)
     measurement["assembled_system_content_bytes"] = rendered_system_content_bytes
     system_side_sum = (
-        base_prompt_bytes
-        + bible_bytes
-        + reference_doc_sections_bytes
-        + semi_stable_bytes
-        + dynamic_bytes
+        base_prompt_bytes + bible_bytes + reference_doc_sections_bytes
+        + semi_stable_bytes + dynamic_bytes
     )
     measurement["system_side_total_bytes"] = system_side_sum
     if rendered_system_content_bytes is not None:
-        # The rendered system content is a JSON list of blocks; the per-section
-        # sum joins those blocks with "\n\n" via "\n\n".join(static_parts) plus
-        # the semi_stable / dynamic text blocks. A small constant delta for the
-        # join separators + JSON structural characters is expected — we record
-        # it for the operator instead of asserting equality, so a future
-        # contract drift (e.g., a new system block) surfaces as a measurable
-        # delta, not a silent overwrite.
-        measurement["system_side_delta_bytes"] = (
-            rendered_system_content_bytes - system_side_sum
-        )
-    measurement["total_bytes"] = (
-        system_side_sum
-        + user_content_bytes
-        + (tool_schemas_bytes or 0)
-    )
+        measurement["system_side_delta_bytes"] = rendered_system_content_bytes - system_side_sum
+    measurement["total_bytes"] = system_side_sum + user_content_bytes + (tool_schemas_bytes or 0)
     return measurement
 
 
 def last_section_measurement(ctx: Any) -> Optional[Dict[str, Any]]:
-    """Return the last ``measure_context_section_bytes`` result stored on ctx.
-
-    Tests and operators use this reader to inspect what the most recent
-    ``build_llm_messages`` call measured, without having to plumb the dict
-    through every call site. Returns ``None`` when no measurement has been
-    recorded on this ctx (e.g., callers that bypass ``build_llm_messages``
-    or pre-date the probe).
-    """
+    """Return the last ``measure_context_section_bytes`` result stored on ctx."""
     if ctx is None:
         return None
     try:
         return getattr(ctx, "context_section_measurement", None)
     except Exception:
         return None
+
+
+def _maybe_emit_context_section_sizes(
+    env: Any, core: Any, task: Dict[str, Any], ctx: Any, preferred_mode: Optional[str],
+) -> None:
+    """Instrument: per-task context section byte attribution, ONCE per task
+    (closes ibl-local-29a81a770be0). No behavioural change to rendered context."""
+    if ctx is None or getattr(ctx, "context_section_measurement", None) is not None:
+        return
+    try:
+        mode_for_measurement = str(preferred_mode or get_context_mode() or "max")
+        measurement = measure_context_section_bytes(env, core, mode=mode_for_measurement)
+        setattr(ctx, "context_section_measurement", measurement)
+        try:
+            from ouroboros.utils import append_jsonl as _append_jsonl
+            from ouroboros.utils import utc_now_iso as _utc_now_iso
+
+            _per_section_bytes = {
+                k: v for k, v in measurement.items()
+                if isinstance(k, str) and k.endswith("_bytes")
+            }
+            _event = {
+                "ts": _utc_now_iso(),
+                "type": "context_section_sizes",
+                "task_id": str(task.get("id") or ""),
+                "mode": measurement.get("mode"),
+                "per_section_bytes": _per_section_bytes,
+                "reference_doc_sections_breakdown": measurement.get(
+                    "reference_doc_sections_breakdown", {}),
+                "assembled_system_content_bytes": measurement.get("assembled_system_content_bytes"),
+                "system_side_total_bytes": measurement.get("system_side_total_bytes"),
+                "system_side_delta_bytes": measurement.get("system_side_delta_bytes"),
+            }
+            try:
+                _append_jsonl(env.drive_path("logs") / "events.jsonl", _event)
+            except Exception:
+                log.debug("context_section_sizes: append_jsonl failed", exc_info=True)
+        except Exception:
+            log.debug("context_section_sizes: event build failed", exc_info=True)
+    except Exception:
+        log.debug("context_section_sizes: measurement failed; skipping", exc_info=True)
 
 
 def build_context_fit_plan(
@@ -1682,67 +1740,7 @@ def build_context_fit_plan(
 ) -> ContextFitPlan:
     """Compatibility wrapper over the cohesive context-fit implementation."""
     core = _capture_context_core(env, memory, task, review_context_builder, ctx)
-    # Instrument: per-task context section byte attribution
-    # (closes ibl-local-29a81a770be0). Called ONCE per task — subsequent
-    # rounds see the stashed measurement on ctx and skip. No behavioural
-    # change to the rendered context: this is the probe step, the follow-up
-    # shrinks based on what the probe surfaces.
-    if ctx is not None and getattr(ctx, "context_section_measurement", None) is None:
-        try:
-            mode_for_measurement = str(
-                preferred_mode or get_context_mode() or "max"
-            )
-            measurement = measure_context_section_bytes(
-                env, core, mode=mode_for_measurement,
-            )
-            setattr(ctx, "context_section_measurement", measurement)
-            try:
-                from ouroboros.utils import append_jsonl as _append_jsonl
-                from ouroboros.utils import utc_now_iso as _utc_now_iso
-
-                _per_section_bytes = {
-                    k: v
-                    for k, v in measurement.items()
-                    if isinstance(k, str) and k.endswith("_bytes")
-                }
-                _event = {
-                    "ts": _utc_now_iso(),
-                    "type": "context_section_sizes",
-                    "task_id": str(task.get("id") or ""),
-                    "mode": measurement.get("mode"),
-                    "per_section_bytes": _per_section_bytes,
-                    "reference_doc_sections_breakdown": measurement.get(
-                        "reference_doc_sections_breakdown", {}
-                    ),
-                    "assembled_system_content_bytes": measurement.get(
-                        "assembled_system_content_bytes"
-                    ),
-                    "system_side_total_bytes": measurement.get(
-                        "system_side_total_bytes"
-                    ),
-                    "system_side_delta_bytes": measurement.get(
-                        "system_side_delta_bytes"
-                    ),
-                }
-                try:
-                    _append_jsonl(
-                        env.drive_path("logs") / "events.jsonl", _event
-                    )
-                except Exception:
-                    log.debug(
-                        "context_section_sizes: append_jsonl failed",
-                        exc_info=True,
-                    )
-            except Exception:
-                log.debug(
-                    "context_section_sizes: event build failed",
-                    exc_info=True,
-                )
-        except Exception:
-            log.debug(
-                "context_section_sizes: measurement failed; skipping",
-                exc_info=True,
-            )
+    _maybe_emit_context_section_sizes(env, core, task, ctx, preferred_mode)
     return _build_context_fit_plan(
         env,
         core,

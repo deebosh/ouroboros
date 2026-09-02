@@ -2980,6 +2980,11 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
+.btn:focus-visible {
+    outline: 2px solid var(--focus-accent-border);
+    outline-offset: 2px;
+}
+
 .btn:hover {
     transform: scale(1.02);
 }
@@ -4977,7 +4982,9 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 .widgets-frame {
     width: 100%;
+    height: var(--widget-frame-height, 320px);
     min-height: 320px;
+    display: block;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: var(--radius);
     background: rgba(13, 11, 15, 0.88);

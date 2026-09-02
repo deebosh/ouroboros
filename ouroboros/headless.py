@@ -190,6 +190,35 @@ def _timestamp_from_result(result: Dict[str, Any], fallback: float) -> float:
     return fallback
 
 
+
+def _live_unpromoted_child_refs(
+    promotion: Any, expected_child: pathlib.Path,
+) -> List[Dict[str, Any]]:
+    if not isinstance(promotion, dict):
+        return []
+    try:
+        version = int(promotion.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        return []
+    if version < 1:
+        return []
+    if str(promotion.get("status") or "") == "complete":
+        return []
+    child_root = expected_child.resolve(strict=False)
+    live: List[Dict[str, Any]] = []
+    for row in promotion.get("pending_refs") or []:
+        if not isinstance(row, dict) or not row.get("path"):
+            continue
+        try:
+            path = pathlib.Path(str(row["path"])).resolve(strict=False)
+            path.relative_to(child_root)
+        except (OSError, ValueError):
+            continue
+        if path.is_file():
+            live.append(dict(row))
+    return live
+
+
 def prune_headless_task_drives(
     parent_drive_root: pathlib.Path,
     *,
@@ -204,9 +233,19 @@ def prune_headless_task_drives(
     base = parent / HEADLESS_TASKS_DIR
     days = _resolve_retention_days(retention_days)
     cutoff = age_cutoff(days, now)
-    report: Dict[str, Any] = {"retention_days": days, "scanned": 0, "pruned": [], "skipped": [], "errors": []}
+    report: Dict[str, Any] = {
+        "retention_days": days,
+        "scanned": 0,
+        "pruned": [],
+        "skipped": [],
+        "errors": [],
+        "promotion_retry": {},
+    }
     if not base.is_dir():
         return report
+    from ouroboros.observability import retry_pending_child_ref_promotions
+
+    report["promotion_retry"] = retry_pending_child_ref_promotions(parent)
     for task_dir in sorted(base.iterdir()):
         if not task_dir.is_dir():
             continue
@@ -242,6 +281,16 @@ def prune_headless_task_drives(
             ).strip()
             if known_child and str(pathlib.Path(known_child).resolve(strict=False)) != expected_child:
                 report["skipped"].append({"task_id": task_id, "reason": "child_drive_mismatch"})
+                continue
+            live_unpromoted = _live_unpromoted_child_refs(
+                result.get("child_ref_promotion"), pathlib.Path(expected_child),
+            )
+            if live_unpromoted:
+                report["skipped"].append({
+                    "task_id": task_id,
+                    "reason": "child_refs_unpromoted",
+                    "pending_ref_count": len(live_unpromoted),
+                })
                 continue
             shutil.rmtree(task_dir)
             report["pruned"].append({"task_id": task_id, "path": str(task_dir)})
@@ -347,7 +396,29 @@ def prune_task_results(
             if task_id in protected:
                 report["skipped"].append({"task_id": task_id, "reason": "open_review_continuation"})
                 continue
-            if _timestamp_from_result(result, path.stat().st_mtime) > cutoff:
+            # A child-task handoff record whose child-ref promotion has not
+            # settled is load-bearing for the startup observability reconcile
+            # (retry_pending_child_ref_promotions rewrites it in place) — keep
+            # it until the promotion is complete.
+            _promotion = result.get("child_ref_promotion")
+            if isinstance(_promotion, dict) and str(_promotion.get("status") or "") not in (
+                "", "complete", "not_applicable",
+            ):
+                report["skipped"].append({"task_id": task_id, "reason": "child_ref_promotion_unsettled"})
+                continue
+            result_ts = _timestamp_from_result(result, path.stat().st_mtime)
+            # A child-task handoff record carries child-authored timestamps
+            # (``artifact_finalized_at`` etc.) that can be arbitrarily stale;
+            # for those, the parent's own last write (file mtime) also has to
+            # be past the cutoff before the canonical record is GC-eligible.
+            is_child_handoff = bool(
+                result.get("child_ref_promotion")
+                or result.get("headless_child_drive_root")
+                or result.get("child_drive_root")
+                or result.get("child_status")
+            )
+            effective_ts = max(result_ts, path.stat().st_mtime) if is_child_handoff else result_ts
+            if effective_ts > cutoff:
                 report["skipped"].append({"task_id": task_id, "reason": "younger_than_retention"})
                 continue
             path.unlink()
@@ -421,6 +492,18 @@ def remove_subagent_task_drive(parent_drive_root: pathlib.Path, task_id: str) ->
         return False
     headless_base = parent / HEADLESS_TASKS_DIR / task_id
     task_drive_base = parent / TASK_DRIVES_DIR / task_id
+    try:
+        result = load_task_result(parent, task_id) or {}
+        promotion = result.get("child_ref_promotion")
+        if (
+            _live_unpromoted_child_refs(promotion, headless_base / "data")
+            or _live_unpromoted_child_refs(promotion, task_drive_base)
+        ):
+            return False
+    except Exception:
+        # Legacy/no-metadata cleanup behavior remains fail-soft. Newly produced
+        # valid metadata is parsed by the helper without raising.
+        pass
     bases = (headless_base, task_drive_base)
     removed = False
     for base in bases:
@@ -449,6 +532,15 @@ def copy_child_task_result(parent_drive_root: pathlib.Path, task: Dict[str, Any]
     child_result = load_task_result(child_drive, task_id)
     if not isinstance(child_result, dict):
         return None
+    # Canonical terminal results must not retain child-local forensic/source
+    # pointers that the startup GC is about to delete. Promotion happens before
+    # the one atomic canonical result write; a live ref whose destination write
+    # was interrupted remains named in metadata so GC can retry safely.
+    from ouroboros.observability import promote_child_task_refs
+
+    child_result, ref_promotion = promote_child_task_refs(
+        pathlib.Path(parent_drive_root), child_drive, task_id, child_result,
+    )
     # W2 receipt-level handoff: the child's durable verify_and_record receipts ride
     # the SAME finalization copy-back as its artifacts (fail-soft, never blocks).
     _publish_child_verification_receipts(parent_drive_root, task_id, child_drive)
@@ -468,6 +560,7 @@ def copy_child_task_result(parent_drive_root: pathlib.Path, task: Dict[str, Any]
         for key, value in child_result.items()
         if key not in {"task_id", "status"}
     }
+    payload["child_ref_promotion"] = ref_promotion
     if isinstance(payload.get("artifacts"), list):
         payload["artifacts"] = _copy_child_artifacts_to_parent(
             parent_drive_root,
