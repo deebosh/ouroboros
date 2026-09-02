@@ -54,15 +54,8 @@ def data_root(tmp_path, monkeypatch):
 
 
 def _request(data_root, **overrides):
-    values = {
-        "model": "openai/gpt-5.2",
-        "provider": "openai",
-        "reservation_usd": 1.0,
-        "drive_root": data_root,
-        "task_id": "child",
-        "root_task_id": "root",
-        "source": "test",
-    }
+    values = {"model": "openai/gpt-5.2", "provider": "openai", "reservation_usd": 1.0,
+              "drive_root": data_root, "task_id": "child", "root_task_id": "root", "source": "test"}
     values.update(overrides)
     return ua.AttemptRequest(**values)
 
@@ -90,24 +83,18 @@ def _seed_mixed_ledger(data_root):
     """A realistic ledger: settled (weird floats, unknown costs), unresolved,
     released, in-flight, sessions, external, review-attributed."""
     _settle(data_root, cost=0.123456789012345, cost_final=True)
-    _settle(data_root, cost=1.1, task_id="t2", root_task_id="root2",
-            root_limit_usd=50.0)
-    _settle(data_root, cost=2.2, task_id="t2", root_task_id="root2",
-            root_limit_usd=40.0)
+    _settle(data_root, cost=1.1, task_id="t2", root_task_id="root2", root_limit_usd=50.0)
+    _settle(data_root, cost=2.2, task_id="t2", root_task_id="root2", root_limit_usd=40.0)
     _settle(data_root, cost=None, usage={}, model="openai/gpt-5.2-mini")
     reservation = ua.reserve_attempt(_request(data_root, task_id="t3"))
     ua.mark_dispatched(reservation)
     ua.mark_unresolved(reservation, "provider went dark")
     reservation = ua.reserve_attempt(_request(data_root, task_id="t4"))
     ua.release_attempt(reservation, "not_dispatched")
-    ua.record_subscription_session(
-        "sess-1", drive_root=data_root, route="claudexor:claude", model="fable",
-        task_id="t5", root_task_id="root", spend_usd=0.5, reset_at="2026-09-02T00:00:00Z",
-    )
-    ua.record_unmetered_external_dispatch(
-        "ext-1", drive_root=data_root, model="ext-model", task_id="t6",
-        prompt_tokens=7, completion_tokens=3,
-    )
+    ua.record_subscription_session("sess-1", drive_root=data_root, route="claudexor:claude", model="fable",
+                                   task_id="t5", root_task_id="root", spend_usd=0.5, reset_at="2026-09-02T00:00:00Z")
+    ua.record_unmetered_external_dispatch("ext-1", drive_root=data_root, model="ext-model", task_id="t6",
+                                          prompt_tokens=7, completion_tokens=3)
     with ua.usage_scope(ua.UsageScope(
         drive_root=data_root, task_id="rv", root_task_id="root",
         review_skill="skill-x", review_wave_id="w1", review_slot_id="s1",
@@ -184,13 +171,10 @@ def _append_raw_row(data_root, row):
 
 def _raced_row(attempt_id):
     """A settled charge a concurrent holder lands: the row a stale swap erases."""
-    return {
-        "kind": "subscription_session", "attempt_id": attempt_id, "state": "settled",
-        "ts": "2026-09-01T00:00:00+00:00", "cost_usd": 0.25, "cost_final": True,
-        "model": "fable", "provider": "claudexor", "category": "task",
-        "source": "subscription", "task_id": "t", "root_task_id": "root",
-        "parent_task_id": "",
-    }
+    return {"kind": "subscription_session", "attempt_id": attempt_id, "state": "settled",
+            "ts": "2026-09-01T00:00:00+00:00", "cost_usd": 0.25, "cost_final": True, "model": "fable",
+            "provider": "claudexor", "category": "task", "source": "subscription", "task_id": "t",
+            "root_task_id": "root", "parent_task_id": ""}
 
 
 def _charge_survived(data_root, injected, before_money):
@@ -307,10 +291,8 @@ def test_root_budget_enforcement_survives_compaction(data_root):
             task_id="rt", root_task_id="rooted", root_limit_usd=10.0)
     assert _compact(data_root) is not None
     with pytest.raises(ua.BudgetExceeded) as excinfo:
-        ua.reserve_attempt(_request(
-            data_root, reservation_usd=5.0, task_id="rt2",
-            root_task_id="rooted", root_limit_usd=10.0,
-        ))
+        ua.reserve_attempt(_request(data_root, reservation_usd=5.0, task_id="rt2",
+                                    root_task_id="rooted", root_limit_usd=10.0))
     assert excinfo.value.limit_scope == "root"
     projection = ua.usage_projection(data_root, root_task_id="rooted")
     assert projection["limit_usd"] == 10.0
@@ -1196,14 +1178,13 @@ def test_a_symlinked_archive_path_is_refused_by_writer_and_reader(data_root, tmp
     assert ledger_path.read_bytes() == before
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="dir-fd anchoring is POSIX; Windows is a disclosed best effort")
 def test_a_link_planted_after_the_writer_bound_check_cannot_receive_history(
     data_root, tmp_path, monkeypatch, compacted
 ):
     """The bound check and the write are not one instant: on POSIX the writer
     creates the segment through O_NOFOLLOW dir-fd handles, so a link swapped
     in AFTER the check passed still cannot receive monetary history."""
-    if platform_layer.IS_WINDOWS:  # pragma: no cover - platform predicate
-        pytest.skip("dir-fd anchoring is POSIX; Windows is a disclosed best effort")
     _settle(data_root, cost=0.5, cost_final=True, task_id="gen2")
     ledger_path = data_root / ua.LEDGER_REL
     archive = data_root / "archive"
@@ -1226,14 +1207,13 @@ def test_a_link_planted_after_the_writer_bound_check_cannot_receive_history(
     assert len(linked) == 1  # only the pre-existing segment: nothing crossed the link
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="dir-fd anchoring is POSIX; Windows is a disclosed best effort")
 def test_a_link_planted_after_the_reader_bound_check_is_refused(
     data_root, tmp_path, monkeypatch, compacted
 ):
     """A byte-identical copy behind a planted link hashes perfectly — the
     only defense is that the read itself refuses to traverse a link, which
     the O_NOFOLLOW dir-fd open enforces at the open, not at an earlier look."""
-    if platform_layer.IS_WINDOWS:  # pragma: no cover - platform predicate
-        pytest.skip("dir-fd anchoring is POSIX; Windows is a disclosed best effort")
     _, segment = compacted
     copy = tmp_path / "copy.jsonl"
     copy.write_bytes(segment.read_bytes())  # identical bytes: the hash cannot object
@@ -1300,20 +1280,15 @@ def test_subscription_replay_still_dedups_after_compaction(data_root, compacted)
     before = len(_ledger_rows(data_root))
     attempt_id = ua.record_subscription_session(
         "sess-1", drive_root=data_root, route="claudexor:claude", model="fable",
-        task_id="t5", root_task_id="root", spend_usd=0.5, reset_at="2026-09-02T00:00:00Z",
-    )
+        task_id="t5", root_task_id="root", spend_usd=0.5, reset_at="2026-09-02T00:00:00Z")
     assert attempt_id.startswith("session-")
     assert len(_ledger_rows(data_root)) == before  # no duplicate row
     with pytest.raises(ua.UsageAccountingError):
-        ua.record_subscription_session(
-            "sess-1", drive_root=data_root, route="other-route", model="fable",
-            task_id="t5", root_task_id="root", spend_usd=0.5,
-        )
+        ua.record_subscription_session("sess-1", drive_root=data_root, route="other-route", model="fable",
+                                       task_id="t5", root_task_id="root", spend_usd=0.5)
     before = len(_ledger_rows(data_root))
-    ua.record_unmetered_external_dispatch(
-        "ext-1", drive_root=data_root, model="ext-model", task_id="t6",
-        prompt_tokens=7, completion_tokens=3,
-    )
+    ua.record_unmetered_external_dispatch("ext-1", drive_root=data_root, model="ext-model", task_id="t6",
+                                          prompt_tokens=7, completion_tokens=3)
     assert len(_ledger_rows(data_root)) == before
 
 
@@ -1410,10 +1385,8 @@ def test_unprofitable_pass_is_throttled(data_root, monkeypatch):
 
 def test_verify_abort_on_foreign_noncanonical_literal(data_root):
     _settle(data_root, cost=1.0, cost_final=True)
-    ua.record_subscription_session(
-        "sess-nc", drive_root=data_root, route="claudexor:claude", model="fable",
-        task_id="t", root_task_id="root", spend_usd=0.5,
-    )
+    ua.record_subscription_session("sess-nc", drive_root=data_root, route="claudexor:claude", model="fable",
+                                   task_id="t", root_task_id="root", spend_usd=0.5)
     path = data_root / ua.LEDGER_REL
     lines = _ledger_lines(data_root)
     # A RETAINED row (subscription kind never folds) whose monetary literal is
@@ -1421,8 +1394,7 @@ def test_verify_abort_on_foreign_noncanonical_literal(data_root):
     # survives as a double, but the exact decimal cannot be re-serialized, so
     # the pass must abort and leave the ledger untouched. (Folded rows are
     # immune by construction: their decimals are carried as exact strings.)
-    doctored = lines[-1].replace(
-        '"cost_usd":0.5', '"cost_usd":0.50000000000000002775557561563')
+    doctored = lines[-1].replace('"cost_usd":0.5', '"cost_usd":0.50000000000000002775557561563')
     assert doctored != lines[-1]
     path.write_text("\n".join(lines[:-1] + [doctored]) + "\n", encoding="utf-8")
     before_bytes = path.read_bytes()
