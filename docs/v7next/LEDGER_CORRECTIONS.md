@@ -7667,3 +7667,201 @@ Three read-only lenses on the 5.4 delta: NEEDS_FIXES × 3, no HIGH (3 MEDIUM, 7 
 3. **R3 stamp-less symlink levels (LOW) — fixed**, pin deferred (suite at its 1600-line cap; mutation-verified by hand). **R5 witness inode tie + `_Abort` on a vanished ledger (LOW) — fixed**, no pin (disclosed). **R6 heartbeat-ownership pin (LOW) — disclosed, not fixed.** **R1 uncached unprobeable directory, R7 shared liveness primitive, R8d epoch-floor duration, R8e socket shape (LOW) — docs corrected** in DESIGN §8/§10/§12.5, packet §5.9/§5.10/§9/§10, ARCHITECTURE row.
 
 Gates at the close-out tip: `tests/test_lockfile_helpers.py` + `tests/test_usage_compaction.py` + `tests/test_usage_*` + `tests/test_persistence_inventory.py` rc 0 (107 passed, 1 skipped Windows-only); `ruff --select F` rc 0; `scripts/check_domains.py` rc 0; `scripts/regenerate_size_ratchet.py --check` rc 0 (`platform_layer.py` 1500, `tests/test_usage_compaction.py` 1600 — both AT their ceilings); `git diff --check` rc 0. The CI-shape battery and `-m serial` run on the integration tree after the lane merges.
+
+## From the stage-2 fix wave, lane ledger-validator (base 9faccf31)
+
+Scope: `ADOPTION_v7next.md`, `scripts/v7next_adoption.py`,
+`docs/v7next/WINWAVE_CLASS_REGISTRY.md` and this file. The lane's finding is
+one class, not six: **the manifest was checked for shape, never for truth**, so
+every claim it made about the tree was load-bearing and unpinned. A whole-file
+overwrite could delete a row, a hook could name a pin nobody wrote, and a row
+could say in prose the opposite of its own status cell — all at rc 0 in both
+validator modes.
+
+### 1. The deleted train row (restored)
+
+`TRAIN-F6b-f3fbfdbb` — upstream sync #2, 101 commits `8d13373b..f3fbfdbb`,
+campaign merge `b9ceed6e` — was written in `8ac736a8` and disappeared in
+`285ab66d` ("adoption: the ledger says what the tree proves"), whose whole-file
+rewrite came from a lane based before the row existed. Nothing announced the
+loss: `git show 285ab66d -- ADOPTION_v7next.md` shows the row deleted in the
+same diff that added 47 other lines.
+
+Restored verbatim (commit `1525fff5`). Its hook names no test that moved, and
+the ledger section it cites («From the F6 rolling-upstream sync #2», line 3839
+of this file) is still here, so no adjustment was owed.
+
+The deletion is the lane's red-first evidence, measured rather than argued: on
+the pre-fix validator, the live manifest with **every** `TRAIN-` row removed
+returned rc 0 in the default mode **and** rc 0 under `--release`.
+
+### 2. The missing train row (added)
+
+Upstream sync #3 had no row at all: 40 upstream commits
+`f3fbfdbb..a76961de` (upstream release 6.114.0, the live chat card, the Agents
+panel, the SYSTEM.md rewrite, governance schemas) merged whole as `f4abe0a5`
+(parents `43dcc1d2`, `a76961de`) on 2026-09-02, under the owner signal recorded
+as `[A-BATCH-12-C6-SYNC]` in `~/.claude/ouroboros_requirements_archive.md`,
+owner verbatim: «+не забудь подтянуть все свежие изменения, там многое
+изменилось вреоятно уже в ветке ouroboros. Или это и так в плане в конце?».
+`TRAIN-F6c-a76961de` (commit `4b004a2e`) cites the merge commit message for the
+by-class resolutions rather than restating them, and hooks the five suites the
+merge actually moved bytes in: `tests/test_packaging_sync.py` (the SAFETY and
+SYSTEM mirrors), `tests/test_golden_capabilities.py`,
+`tests/test_capability_effect_predicates.py`,
+`tests/test_terminal_delegation_receipt.py`, `tests/test_git_extraction.py`.
+
+### 3. Three enforcement rules and the pytest wrapper (commit `19a4ff7d`)
+
+**Train coverage, both modes.** `REQUIRED_TRAINS` maps each absorbed upstream
+train to `(upstream tip, campaign merge)`; a missing row, a row of the wrong
+kind, or a row whose text no longer names both SHAs is an error in the default
+mode as well as under `--release`.
+
+Frozen inventory rather than a git derivation, and the reason is this history:
+of the three recorded sync merges only `f4abe0a5` has an upstream commit as its
+literal second parent. `0aa74e9f` and `0f9a8daf` merge *campaign* commits
+(`816e7b82`, `4c32691e`) that had already absorbed `8d13373b` and `f3fbfdbb`,
+because the re-tie merge `f61ea3c2` reshaped the first-parent line. A rule
+reading second parents would therefore police one train of three and stay blind
+to exactly the two whose row was lost; widened to «second parent descends from a
+recorded upstream tip» it would demand a train row for every lane merge, the C6
+lane `8fb08d44` included. Neither form is honest, and both need a subprocess in
+a checker that today reads one file. Adding a train to the inventory is the same
+edit as merging one.
+
+**Hook `::nodeid` tokens read by AST.** The path half of a hook was resolved;
+the `::name` half was free text, so a hook could point at a suite that exists
+and a pin that does not. `_defined_names()` collects functions and classes at
+any depth (`path::Class::method`) plus module-level bindings — the latter
+because a hook may legitimately name the closed inventory a pin drives
+(`tests/_shared.py::SETTINGS_WRITERS`), not only the pin. An unparseable hook
+file is an error, not a pass.
+
+**A `done` row may not say the work is open.** `not done`, `open residual`,
+`not integrated yet`, `still owed`, `read pending` (case-insensitive) in a row
+with `status=done` is an error unless the row declares what stays open in an
+explicit `residual:` clause. This is a text-vs-cell consistency lint on an
+operator manifest — not a gate on any runtime decision of Ouroboros (BIBLE P5
+is about the latter) — and the escape is explicit so a genuine disclosure on a
+shipped row stays sayable. `CPL-1` carried a *negated* «no longer an open
+residual», which the rule would have read as a marker; the phrase was reworded
+to «no longer open» rather than escaped, because it is not a residual.
+
+Hook resolution also moved off the `--release` invocation onto the property it
+actually is — something true of a **shipped** row — which is what the
+manifest's own Notes already claimed the validator did.
+
+`tests/test_v7next_adoption.py` (new, 144 lines) runs `validate()` in both
+modes on the live manifest and drives one mutant per rule. This closes «the
+release bar is executed by nothing automatic» at the test level only:
+`.github/workflows/ci.yml` is a protected file and was NOT touched, so the bar
+runs wherever the default pytest lane runs, not as a separate CI job.
+
+### Red-first table
+
+| # | pin | red on the pre-fix shape | green after |
+|---|---|---|---|
+| 1 | train coverage — every `TRAIN-` row deleted from the live manifest | pre-fix `scripts/v7next_adoption.py` @ `9faccf31`: rc 0 default **and** rc 0 `--release` (the deletion of `TRAIN-F6b` in `285ab66d` passed for exactly this reason) | `test_deleting_an_upstream_train_row_turns_the_bar_red` — 6 cases (3 trains × 2 modes) |
+| 2 | train row re-pointed at another merge | same shape: rc 0 both modes | `test_repointing_a_train_row_at_another_merge_turns_the_bar_red` — 2 cases |
+| 3 | hook naming a pin that does not exist (`tests/test_smoke.py::test_no_such_pin_was_ever_written`) | pre-fix: accepted, the path resolved and the nodeid was prose | `test_a_bogus_hook_nodeid_turns_the_bar_red` |
+| 4 | `done` row whose text says the work is open | pre-fix: accepted for all five markers | `test_a_done_row_that_says_it_is_not_done_turns_the_bar_red` — 5 cases |
+| 5 | goldens: live manifest green both modes; a real nodeid (incl. a module-level inventory) accepted; a `residual:` clause is the escape | green before and after — characterizing, by design | 3 cases |
+| 6 | post-release without a recorded deferral; a required row parked post-release by operator authority | green on this lane's own base **only because the vocabulary landed one commit earlier** (`b89b9bd2`) — the pre-`b89b9bd2` script has no `DEFERRED_OUT_OF_V70` symbol at all, so no red on the old shape is expressible; recorded as goldens for that commit, not as red-first | `test_a_post_release_row_needs_a_recorded_deferral`, `test_a_required_row_cannot_be_parked_post_release_by_the_operator` |
+
+Step-A evidence for rows 1-4 (the honest form of «red on the pre-fix shape»,
+since the suite imports symbols the pre-fix script does not export): the
+constant `REQUIRED_TRAINS` was added with **no enforcement wired**, and
+`tests/test_v7next_adoption.py` ran 14 failed / 5 passed. With the three rules
+wired: 19 passed.
+
+### Prose and status corrections (commit `f2dea89b`)
+
+| row | claim | disposition |
+|---|---|---|
+| D06 | «all 44 kinds the tree actually has» | **fixed** → 45. `supervisor/event_taxonomy.py::EVENT_DISPOSITIONS` has 45 keys: 34 `worker_handler` + 7 `telemetry_only` + 1 `server_intercept` + 3 `nested_log_event`. The row's own arithmetic (34+7, plus the two tiers it asserts absent from `EVENT_HANDLERS`) already summed to 45 |
+| D07 | «so the disposition leaves pending-decision» beside `status=done` | **fixed**. «Leaves» was meant as *departs from*; next to a done row it reads as *keeps it pending*. Now: «is no longer pending-decision: it reads re-prove and the row ships» |
+| D08 | «Disposition therefore leaves pending-decision for re-prove» | **fixed**, same ambiguity → «moves off pending-decision to re-prove» |
+| D18 | «OPEN RESIDUAL, and the reason the row is not done: MIGRATION row 1030 … is neither re-applied nor dispositioned» while the row reads `done` and its own hook names `test_queue_snapshot_path_has_a_single_authority` | **fixed, and the inversion stated.** The residual was closed by `091ee3b3` — in the direction **opposite** to the oracle. MIGRATION row 1030 reads «retired: supervisor.state owns the queue snapshot path; the queue reads it through the module at use time»; what landed is `supervisor.queue` as the sole authority with no copy in `supervisor/state.py`. The defect cured is the same (two module globals answering one question, agreeing only because both `init()`s got the same drive root); the harness consequence is mirrored — the oracle noted that an isolation harness must then call `state.init` because `queue.init` alone would no longer redirect, and here it is `queue.init` that redirects and `state.init` alone that does not (production binds both either way). The oracle's hook name never came across either (`test_the_queue_snapshot_path_has_one_owner`, which does not exist in `tests/test_heartbeat_presentation.py`). Choosing the direction was the **operator's** call, not an owner decision: disclosed here and in the row for the owner to overturn |
+| R-WINWAVE | «NOT DONE, and the reason is the re-prove itself» + «its result is recorded as PENDING because nobody has read it» beside `status=done` and a hook listing four green 3-OS runs | **fixed.** The re-prove is run 33569841899 (`8b27b507`, full 3-OS green) and it held on 33570328266, 33571681398, 33572515529 and on the later tips 33579445704 (`1072a317`), 33624546416 (`ac17fa03`), 33626834806 (`43dcc1d2`). The «unread» run 33563498919 has been read (it cleared class 17 and surfaced nine further Windows classes, fixed in `20afdbb7..e0aee1ac`). What remains is **freshness, not colour**: run 33644668074 on the sync #3 merge `f4abe0a5` is dispatched and unread. The second item — the accepted 2026-08-30 audit item to re-pin the registry route test on the actual alias condition — is **still open on this tree** (`tests/test_registry_core.py:813` reads `os.name`) and is named with the lane landing it: the smalls lane of this same stage-2 wave |
+| ABI-4 | «`provider_models.delegated_route_target(route)` feeds the run-request assembly — relocated from a `DelegationRoute` method» | **fixed.** No such symbol exists on this tree (`rg delegated_route_target` — zero hits). The landed shape is the method: `DelegationRoute.resolved_target()` at `ouroboros/subagents.py:183`, read once by `ouroboros/tools/delegate.py:245`. The relocation an earlier draft described did not happen, and the row now says so |
+| CPL-1 | «are no longer an open residual» | **fixed** (reworded to «no longer open») — a negated marker would have read as a real one to the new honesty rule |
+| Notes | «D04/D05 are decided but their lanes are still owed, which is why they read `pending` and not `done`» | **fixed.** Both landed (D04 `5b1767fa`, D05 `0bf723cc`) and both rows read `done`; the sentence outlived the lanes |
+| Notes | «The row that still owes work is CPL-4 (C6, on the owner checkpoint)» | **fixed.** CPL-4 landed with the C6 usage-ledger compaction lane (merge `9faccf31`, this lane's own base). Found while fixing the neighbouring sentence and corrected in the same commit rather than left as a known-stale line |
+
+### Rows added (commit `b89b9bd2`)
+
+| row | provenance | note |
+|---|---|---|
+| `DEFER-BROWSER` | owner batch №9 №14, 2026-09-01, archive `[A-BATCH-9-ANSWERS]`; owner verbatim «14. A» on the option recorded as «браузерная волна пост-релиз, смоук зелёным до тега» | The gateway/UI-truth E2E actor is deferred out of 7.0 by the owner, and the condition on the tag is a green smoke rather than a green browser lane. Hook: `tests/system_e2e/interfaces.py`'s refusing `PlaywrightUIClient` stub and its pin `tests/system_e2e/test_system_scenarios.py::test_interface_stubs_refuse_instantiation_until_their_lanes_land`. `residual:` clause names what nobody covers in 7.0 |
+| `W4-F1` | `docs/v7next/LEDGER_CORRECTIONS.md` «From the F4 wave 4» findings table (this file, the W4-F1 row) | Crash window between the reviewed `git commit` and `record_evolution_commit`: a landed reviewed commit no boot path will attribute. `post-release` |
+| `W4-F2` | same table, W4-F2 row | Absorb write and `cycle_outcome` append are not one transaction; the digest can under-report a cycle forever. `post-release` |
+| — | same table, W4-F3 and W4-F4 | **disclosed observations, no row.** Both are named asymmetries of decisions that already exist (the restart-marker knob predates the claim machinery; rescue-local refs are deliberately durable), not work owed. Recorded as such in the manifest Notes |
+
+The validator's single post-release allowlist (`OWNER_DEFERRED = {"ABI-8"}`)
+became `DEFERRED_OUT_OF_V70`, an id → authority record. Every post-release row
+must be listed, and a row of the owner-approved required inventory
+(`REQUIRED_PHASE`) may only be parked there with `OWNER` authority — so the
+anti-bypass property the frozenset carried is unchanged, while an operator
+disclosure can be stated as what it is instead of borrowing an owner decision
+it does not have. `DEFER-BROWSER` is also pinned to phase `POST` in
+`REQUIRED_PHASE` so it cannot be silently re-phased.
+
+### WINWAVE registry reconciliation (commit `fada56d6`)
+
+Open item 2 read «No green windows leg exists yet on any frozen SHA» while the
+run table three sections below it logged a green Windows leg (33568728122,
+`f5a94675`) and four consecutive green 3-OS matrices from 33569841899 onward —
+the same table the ADOPTION row cites as its re-prove. The item now states what
+is actually open: **freshness on the newest tip**, not colour. Open item 1 gains
+the lane landing the alias-condition repin.
+
+Later CI facts appended to the run table: 33579445704 (`1072a317`) green,
+33624546416 (`ac17fa03`) green, 33626834806 (`43dcc1d2`) green — full-test 3-OS
+green on the **first** attempt — and 33644668074 (`f4abe0a5`, the sync #3 merge)
+**pending**, written as pending because a verdict nobody read is not evidence.
+
+The two red `system-e2e-mock` subtests on attempt 1 of 33626834806 are written
+up in the registry as what they were: races in the mock lane's own scaffolding
+— the `/proc`-environ scan of `pids_with_env_value` (a process can exit between
+the listing and the read) and an S22 wait that assumed its window was wide
+enough under CI load — green on rerun of the same job on the same SHA, and
+57/57 twice locally. Recorded so the attempt-1 red is not later misread as a
+cross-OS class; it belongs to the E2E lane's ledger, not to this row.
+
+### Not done, and why
+
+- **The pending 3-OS matrix on `f4abe0a5` (run 33644668074) was not read.** No
+  verdict was fetched in this lane, so both the registry and the R-WINWAVE row
+  say «pending» rather than guessing. The re-prove itself stands on the seven
+  green runs already logged; what is missing is coverage of the newest bytes.
+- **Run 33574822693 (`d21806d8`) is left as it was recorded** («pending at the
+  time of writing»). It is the first dispatch of the scheduled
+  `system-e2e-mock` job, its outcome was not verified in this lane, and
+  overwriting an unread verdict with a guess is the failure mode the row's own
+  wording warns about.
+- **`ci.yml` was not touched.** The brief forbids it and it is a protected
+  file, so «the release bar is executed by nothing automatic» is closed at the
+  test level only: `scripts/v7next_adoption.py` now has a pytest wrapper, and
+  it runs wherever the default lane runs.
+- **The alias-condition repin (`tests/test_registry_core.py:813`) was not
+  applied here** — it is the smalls lane's item in this same wave. This lane
+  only names it and its owner.
+- **The D18 direction was not sent back to the owner.** The inversion is
+  disclosed in the row and here; deciding it is not this lane's authority, and
+  it changes no behaviour (production binds both modules).
+
+### Gates (host 0897-oma, 2026-09-02; every python/pytest under a fresh mktemp `OUROBOROS_APP_ROOT`/`REPO_DIR`/`DATA_DIR`/`SETTINGS_PATH` plus a private `TMPDIR`, `-p no:cacheprovider`, `git rev-parse HEAD` re-checked after every pytest)
+
+Each as its own command, rc printed: `tests/test_v7next_adoption.py` +
+`tests/test_legacy_timeout_retirement.py` + `tests/test_event_taxonomy.py` +
+`tests/test_module_handle_extraction.py` — 197 passed, rc 0;
+`scripts/v7next_adoption.py` rc 0 and `--release` rc 0 (42 rows);
+`ruff check . --select F` rc 0; `scripts/check_domains.py` rc 0;
+`scripts/regenerate_inventories.py --check` rc 0;
+`scripts/regenerate_size_ratchet.py --check` rc 0 (no path of this lane is in
+`GIANT_PATHS`, `BAND_BASELINE_PATHS` or `BYTE_DEBT`; the new suite is 144
+lines, `scripts/v7next_adoption.py` 418); `git diff --check` and
+`git diff --check 9faccf31..HEAD` rc 0. No helper module, wrapper or
+neighbour file was added to pay a size cap; the only new file is the pin the
+brief asked for.
