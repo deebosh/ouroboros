@@ -436,14 +436,18 @@ are exact. An opaque blob is only dangerous through loader code the
 review CAN see (``ctypes.CDLL`` / ``zipimport`` / ``require`` /
 ``sys.path`` insertion) — flag any code path that loads or executes a
 descriptor-only file, and treat an unexplained opaque blob in an
-executable position as a finding. ``skill_exec`` independently refuses
-to execute a declared script that is not valid UTF-8 text, so a blob
-renamed into the scripts list cannot run. Media-carrying skills should
-still prefer fetching binary assets on demand from a reviewable HTTPS
-source over vendoring opaque bytes. This content-judged posture is the
-current owner decision, revisitable explicitly; a future sandbox
-project (out-of-process / WASM) remains the prerequisite for trusting
-opaque bytes as EXECUTABLE payload inside the skill tree.
+executable position as a finding (the deliberate exception: a `.wasm`
+module that widget JavaScript instantiates inside the browser-sandboxed
+widget frame, which never runs in the host process). ``skill_exec``
+independently refuses to execute a declared script that is not valid
+UTF-8 text, so a blob renamed into the scripts list cannot run.
+Media-carrying skills should still prefer fetching binary assets on
+demand from a reviewable HTTPS source over vendoring opaque bytes. This
+content-judged posture is the current owner decision, revisitable
+explicitly; a future sandbox project (out-of-process / WASM) remains
+the prerequisite for trusting opaque bytes as EXECUTABLE payload inside
+the skill tree — the WASM there is a host-side WebAssembly runtime, a
+separate future topic from the browser-sandboxed `.wasm` above.
 
 Skills default to **disabled** and cannot be executed by `skill_exec`
 until review produces a fresh executable verdict. Skill review output is persisted

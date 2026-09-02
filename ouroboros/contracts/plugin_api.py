@@ -124,7 +124,13 @@ class PluginAPI(Protocol):
         *,
         methods: Sequence[str] = ("GET",),
     ) -> None:
-        """Register ``/api/extensions/<skill>/<path>`` for allowed methods."""
+        """Register ``/api/extensions/<skill>/<path>`` for allowed methods.
+
+        The host owns GET/HEAD under three prefixes of that namespace —
+        ``manifest``, ``module/...`` (any depth) and ``settings_section`` — so
+        a skill route registered there is shadowed for GET/HEAD (POST and the
+        other methods still reach the skill); register under another path.
+        """
         ...
 
     def register_ws_handler(

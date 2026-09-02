@@ -129,6 +129,7 @@ def test_api_extension_module_serves_reviewed_js_files_without_discovery(tmp_pat
         "lib/y.mjs": "export const y = 2;\n",
         "node_modules/dep/index.js": "module.exports = 1;\n",  # review-opaque: never captured
         ".hidden/h.js": "window.__hidden = 1;\n",            # dot directory: never captured
+        ".hidden.js": "window.__dotfile = 1;\n",             # dot-prefixed file: never captured
         "notes.txt": "not javascript\n",
     }
     for rel, body in files.items():
@@ -172,21 +173,28 @@ def test_api_extension_module_serves_reviewed_js_files_without_discovery(tmp_pat
         # The sources live on the loader bundle, never in a browser-facing projection.
         assert "window.__" not in json.dumps(extension_loader.snapshot())
         assert "window.__" not in json.dumps(client.get("/api/widgets").json())
-        # Not captured: review-opaque and dot directories, files the payload lacks.
-        for rel in ("node_modules/dep/index.js", ".hidden/h.js", "missing.js", "lib/missing.mjs"):
-            assert get(rel).status_code == 404, rel
+        # A refusal carries the same no-store/ACAO headers as a 200: the opaque-origin
+        # frame's ``import()`` then reads the 4xx instead of an unreadable CORS failure.
+        def refused(response, status: int, label: str) -> None:
+            assert response.status_code == status, (label, response.status_code, response.text)
+            assert response.headers["cache-control"] == "no-store", label
+            assert response.headers["access-control-allow-origin"] == "*", label
+
+        # Not captured: review-opaque and dot-prefixed paths, files the payload lacks.
+        for rel in ("node_modules/dep/index.js", ".hidden/h.js", ".hidden.js", "missing.js", "lib/missing.mjs"):
+            refused(get(rel), 404, rel)
         # Shape-rejected before any lookup; percent-escapes arrive decoded, so an
         # encoded traversal is the same ``..`` segment as a literal one.
         for rel in (
             "%2e%2e/widget.js", "..%2Fwidget.js", "lib%2F..%2Fwidget.js", "%2e/widget.js", "lib%5Cx.js",
             "%2Flib/x.js", "lib//x.js", "%00.js", "widget.js%00", "notes.txt", "plugin.py", "lib/", "",
         ):
-            assert get(rel).status_code == 400, rel
+            refused(get(rel), 400, rel)
         # Cross-skill and unloaded: a live skill never serves another's files.
-        assert client.get("/api/extensions/ext_other/module/widget.js").status_code == 404
-        assert client.get("/api/extensions/nope/module/widget.js").status_code == 409
+        refused(client.get("/api/extensions/ext_other/module/widget.js"), 404, "ext_other")
+        refused(client.get("/api/extensions/nope/module/widget.js"), 409, "nope")
         extension_loader.unload_extension("ext_module")
-        assert get("widget.js").status_code == 409
+        refused(get("widget.js"), 409, "unloaded")
     assert all(count == 0 for count in calls.values()), calls
 
 

@@ -677,7 +677,9 @@ def register(api):
         timeout_sec=60,
     )
 
-    # HTTP routes — mounted at /api/extensions/<skill>/<path>.
+    # HTTP routes — mounted at /api/extensions/<skill>/<path>. GET/HEAD under
+    # manifest, module/... and settings_section are host-owned (see "Loading
+    # more than one file").
     api.register_route("search", handler=http_search, methods=("POST",))
 
     # WebSocket message handlers (inbound) and broadcasts (outbound).
@@ -857,8 +859,11 @@ and the module's provenance instead of its bytes.
 
 Ship and load it through your own route: register a route that returns the
 module bytes (an in-process handler may return a Starlette `Response` or
-`FileResponse`; an out-of-process handler's body is buffered by the host), then
-in the widget:
+`FileResponse` of any size; an out-of-process handler's body is buffered by the
+host and capped at 512 KiB — `_RESULT_CAP` in
+`ouroboros/extension_process_runner.py` — so a larger module needs an in-process
+skill or the runtime-download path described under assets below), then in the
+widget:
 
 ```js
 const bytes = await (await OuroborosWidget.fetch('/api/extensions/<skill>/core.wasm')).arrayBuffer();
@@ -875,8 +880,9 @@ slices.
 #### Assets: fonts, audio, video, images
 
 Widget assets are ordinary payload files and travel the same way as
-WebAssembly: your own routes serve them (`register_route` returning the bytes),
-the widget references them by `/api/extensions/<skill>/...` URL, and review
+WebAssembly: your own routes serve them (`register_route` returning the bytes;
+an out-of-process handler answers at most 512 KiB per response, as above), the
+widget references them by `/api/extensions/<skill>/...` URL, and review
 sees each non-text asset as a content-hash-bound descriptor. The module
 endpoint stays JavaScript-only. Hub packages admit `.png .jpg .jpeg .gif .webp
 .svg`, `.mp3 .ogg .wav`, `.mp4 .webm`, `.woff .woff2 .ttf .otf`, and `.wasm`.
@@ -898,10 +904,14 @@ endpoint, keyed by its path relative to the skill directory:
 `GET /api/extensions/<skill>/module/lib/x.js`. The host captures all of them
 when the module tab registers (the same moment it reads the entry), so the frame
 always receives the bytes the reviewed bundle loaded from; files under
-`node_modules`, `.ouroboros_env`, other cache directories, and dot-directories
-are never served, and only UTF-8 text is admitted — a non-UTF-8 `.js` fails the
-load exactly like a broken entry. Load a sibling either as a classic script or
-as an ES module:
+`node_modules`, `.ouroboros_env`, other cache directories, and dot-prefixed
+paths (directories and files) are never served, and only UTF-8 text is
+admitted — a non-UTF-8 `.js` fails the load exactly like a broken entry. The
+host owns GET/HEAD under three prefixes of `/api/extensions/<skill>/` —
+`manifest`, `module/…` (any depth), and `settings_section` — so do not register
+skill routes there: a route registered under them is shadowed for GET/HEAD,
+while POST and the other methods are unaffected. Load a sibling either as a
+classic script or as an ES module:
 
 ```html
 <script src="/api/extensions/<skill>/module/lib/x.js"></script>

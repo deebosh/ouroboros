@@ -528,15 +528,21 @@ async def api_extension_module(request: Request) -> Response:
     (``lib/x.js``). Authorization and content are one loader read under one
     lock: 409 when the skill has no live bundle; 404 when the path is not among
     the files captured when its module tab registered (dependency, cache, and
-    dot directories are never captured); 400 for a path with a backslash or
+    dot-prefixed paths are never captured); 400 for a path with a backslash or
     NUL, an empty/``.``/``..`` segment (the ASGI server already decoded
     ``%2e%2e`` and ``%2F``), or a non-``.js``/``.mjs`` suffix. The body is the
     text captured at load — no per-request disk read, so an edit after load is
     not served until the skill reloads (DEVELOPMENT "Passive GET"). The
     requesting ``srcdoc`` frame has an opaque origin and fetches anonymously
-    cross-origin, hence ``Access-Control-Allow-Origin: *`` (no credentials).
+    cross-origin, hence ``Access-Control-Allow-Origin: *`` (no credentials) on
+    every response, refusals included — else ``import()`` sees a CORS failure.
     """
     from ouroboros.extension_loader import live_module_sources
+
+    headers = {"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"}
+
+    def refuse(message: str, status: int) -> Response:
+        return JSONResponse({"error": message}, status_code=status, headers=headers)
 
     skill_name = str(request.path_params.get("skill") or "").strip()
     path = str(request.path_params.get("entry") or "")
@@ -545,18 +551,14 @@ async def api_extension_module(request: Request) -> Response:
         or any(part in {"", ".", ".."} for part in path.split("/"))
         or not path.endswith((".js", ".mjs"))
     ):
-        return json_error("invalid module path", 400)
+        return refuse("invalid module path", 400)
     sources = live_module_sources(skill_name)
     if sources is None:
-        return json_error(f"extension {skill_name!r} not live", 409)
+        return refuse(f"extension {skill_name!r} not live", 409)
     source = sources.get(path)
     if source is None:
-        return json_error("module path is not a reviewed JavaScript file of a live widget", 404)
-    return Response(
-        source,
-        media_type="application/javascript; charset=utf-8",
-        headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"},
-    )
+        return refuse("module path is not a reviewed JavaScript file of a live widget", 404)
+    return Response(source, media_type="application/javascript; charset=utf-8", headers=headers)
 
 
 async def api_extension_settings_section(request: Request) -> JSONResponse:
