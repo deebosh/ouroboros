@@ -172,6 +172,91 @@ def clear_acceptance_fence_for_root(root_task_id: str) -> bool:
         return q.ACCEPTANCE_FENCES.pop(root_task_id, None) is not None
 
 
+def clear_budget_root_fence_for_settled_tree(task: dict) -> bool:
+    """Release a root budget fence once its tree has no live members left.
+
+    The brother of ``clear_acceptance_fence_for_root``, keyed by the ROOT id
+    (a fence covers the whole tree, not one task): called from the task_done
+    seam, so every cancel path — pending capture, running custody, cascade —
+    releases the latch as a class. A fence over a tree that still has PENDING
+    or RUNNING members stays: only the last settling member clears it.
+    Without this, cancelling a paused tree left the fence latched forever
+    (and the snapshot restore would resurrect it after a restart).
+    """
+    q = _queue_module()
+    if not isinstance(task, dict):
+        return False
+    root_id = str(task.get("root_task_id") or task.get("id") or "").strip()
+    if not root_id:
+        return False
+    with q._queue_lock:
+        if root_id not in q.BUDGET_ROOT_FENCES:
+            return False
+
+        def _member(row) -> bool:
+            return isinstance(row, dict) and root_id in (
+                str(row.get("root_task_id") or ""), str(row.get("id") or ""),
+            )
+
+        if any(_member(row) for row in q.PENDING):
+            return False
+        for meta in q.RUNNING.values():
+            row = meta.get("task") if isinstance(meta, dict) else None
+            if _member(row):
+                return False
+        return q.BUDGET_ROOT_FENCES.pop(root_id, None) is not None
+
+
+def sweep_orphaned_budget_fences(pending, fences, drive_root) -> list:
+    """Drop restored budget fences whose trees have no live members left.
+
+    A fence over a DEAD tree is an orphan: its members settled (a cancel
+    raced the pre-crash snapshot, or the release lost the crash window
+    between the in-memory pop and the snapshot persist) and no future
+    task_done will ever release it. Runs at the restore seam so the latch
+    cannot outlive its tree across restarts.
+    """
+    try:
+        live_roots = {
+            str(t.get("root_task_id") or t.get("id") or "")
+            for t in pending if isinstance(t, dict)
+        }
+        orphaned = [root for root in list(fences) if root not in live_roots]
+        for root in orphaned:
+            fences.pop(root, None)
+        if orphaned:
+            from ouroboros.utils import append_jsonl
+
+            append_jsonl(
+                pathlib.Path(drive_root) / "logs" / "supervisor.jsonl",
+                {"ts": utc_now_iso(), "type": "budget_root_fence_orphan_swept",
+                 "root_task_ids": sorted(orphaned)},
+            )
+        return orphaned
+    except Exception:
+        log.warning("Orphaned budget fence sweep failed", exc_info=True)
+        return []
+
+
+def budget_pause_fact(task, fences=None):
+    """The ONE predicate for "this queued task is budget-paused".
+
+    A member is paused either by its own replay-safe ``_budget_pause`` row or
+    by a live root budget fence over its tree (a fenced sibling carries no
+    row of its own). ``fences`` defaults to the live registry; pass a snapshot
+    taken under the queue lock for a consistent projection.
+    """
+    pause = task.get("_budget_pause") if isinstance(task, dict) else None
+    if isinstance(pause, dict):
+        return pause
+    fence_map = _queue_module().BUDGET_ROOT_FENCES if fences is None else fences
+    root_id = str((task or {}).get("root_task_id") or (task or {}).get("id") or "")
+    fence = fence_map.get(root_id)
+    if isinstance(fence, dict) and str(fence.get("status") or "") in {"active", "paused"}:
+        return fence
+    return None
+
+
 def resume_budget_paused_task(task_id: str) -> Dict[str, Any]:
     """Explicitly resume one zero-dispatch task and, if needed, its root latch."""
     q = _queue_module()
@@ -956,3 +1041,38 @@ def resume_project_deletions(drive_root: object) -> int:
             project.get("chat_id"),
         ))
     return started
+
+
+def reconcile_terminal_task_projections(drive_root, task_id: str) -> None:
+    """One task-done seam for the per-task owner-control projections.
+
+    Each domain keeps its own ``reconcile_terminal`` in its own module
+    (owner_hurry, owner_quiz); this thin coordinator exists so
+    ``supervisor/events.py`` — far past the module size gate — carries one
+    call instead of one try/except block per domain. Every leg is fail-soft:
+    a projection that cannot reconcile never blocks the terminal dispatch.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    try:
+        # §19.7.2 item 5: a hurry the worker never drained loses the terminal
+        # race honestly — not_applied_before_terminal.
+        from ouroboros.owner_hurry import reconcile_terminal
+
+        reconcile_terminal(drive_root, str(task_id))
+    except Exception:
+        log.debug("owner_hurry terminal reconcile failed for %s", task_id, exc_info=True)
+    try:
+        # #Q-2b structural expiry (owner decision 30=A): every still-open quiz
+        # dies with its author, and the already-rendered cards learn it live.
+        from ouroboros.owner_quiz import reconcile_terminal as quiz_reconcile
+
+        expired = quiz_reconcile(drive_root, str(task_id))
+        if expired:
+            from supervisor.message_bus import get_bridge
+
+            for quiz_id in expired:
+                get_bridge().send_quiz_state(quiz_id, str(task_id), "expired_terminal")
+    except Exception:
+        log.debug("owner_quiz terminal reconcile failed for %s", task_id, exc_info=True)

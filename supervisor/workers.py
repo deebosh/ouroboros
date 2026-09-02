@@ -489,7 +489,7 @@ def _stage_promoted_initial_attachments(
     manifest: list[dict] = []
     try:
         from ouroboros.artifacts import (
-            attachment_manifest_has_rejections,
+            attachment_manifest_all_rejected,
             materialize_inherited_attachment_manifest,
             remove_staged_attachments,
             stage_task_attachments,
@@ -533,7 +533,9 @@ def _stage_promoted_initial_attachments(
             if isinstance(row, dict):
                 row["ordinal"] = ordinal
         rendered = _render_attachment_lines(manifest)
-        if attachment_manifest_has_rejections(manifest):
+        # В25c partial-default; a FULLY-rejected set stays atomic (the task
+        # would start with none of its declared material).
+        if attachment_manifest_all_rejected(manifest):
             remove_staged_attachments(manifest)
             from ouroboros.headless import remove_subagent_task_drive
 
@@ -1398,22 +1400,31 @@ def _run_chat_task(
         # legacy inline image_base64 so the same image is not double-injected.
         if uploads:
             from ouroboros.artifacts import (
+                attachment_manifest_all_rejected,
                 attachment_manifest_has_rejections,
-                remove_staged_attachments,
                 stage_task_attachments,
             )
             from ouroboros.gateway.tasks import _render_attachment_lines
             try:
                 manifest = stage_task_attachments(DRIVE_ROOT, str(task["id"]), uploads)
                 rendered = _render_attachment_lines(manifest)
-                if attachment_manifest_has_rejections(manifest):
+                # Partial staging is the default (В25c, capinv-447); a FULLY-rejected
+                # set stays atomic — the task would start with none of its material.
+                if attachment_manifest_all_rejected(manifest):
+                    from ouroboros.artifacts import remove_staged_attachments
+
                     remove_staged_attachments(manifest)
                     send_with_budget(
                         chat_id,
-                        "⚠️ Task was not started because one or more declared attachments "
-                        f"could not be staged.\n{rendered}",
+                        f"⚠️ Task not started: every attachment was rejected.\n{rendered}",
                     )
                     return
+                if attachment_manifest_has_rejections(manifest):
+                    send_with_budget(
+                        chat_id,
+                        "⚠️ Some declared attachments could not be staged; the task "
+                        f"starts with the rest.\n{rendered}",
+                    )
                 if manifest:
                     manifest = [dict(row) for row in manifest]
                     task["drive_root"] = str(DRIVE_ROOT)

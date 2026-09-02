@@ -95,7 +95,7 @@ def test_spawn_block_acquires_and_releases_inter_process_file_lock(monkeypatch, 
 
     call_state = {"n": 0}
 
-    def fake_alive_endpoint(self):
+    def fake_alive_endpoint(self, *, timeout_sec=None):
         call_state["n"] += 1
         if call_state["n"] == 1:
             return None
@@ -140,7 +140,7 @@ def test_live_daemon_found_inside_lock_skips_spawn(monkeypatch, tmp_path):
     monkeypatch.setattr(owned.OwnedClaudexorDaemon, "_classify_liveness",
                         lambda self: (live_endpoint, "running", ""))
     monkeypatch.setattr(owned.OwnedClaudexorDaemon, "_alive_endpoint",
-                        lambda self: live_endpoint)
+                        lambda self, *, timeout_sec=None: live_endpoint)
 
     spawn_calls: list[tuple] = []
 
@@ -270,12 +270,12 @@ def test_concurrent_ensure_running_spawns_exactly_once(monkeypatch, tmp_path):
     # Liveness gating: stale UNTIL spawn completes, then alive.
     alive_after_spawn = threading.Event()
 
-    def fake_classify_liveness(self):
+    def fake_classify_liveness(self, *, timeout_sec=None):
         if alive_after_spawn.is_set():
             return live_endpoint, "running", ""
         return None, "stale", ""
 
-    def fake_alive_endpoint(self):
+    def fake_alive_endpoint(self, *, timeout_sec=None):
         return live_endpoint if alive_after_spawn.is_set() else None
 
     monkeypatch.setattr(owned.OwnedClaudexorDaemon, "_classify_liveness",

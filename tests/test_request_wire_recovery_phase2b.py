@@ -12,10 +12,12 @@ import ouroboros.request_wire_contract as wire
 from ouroboros.llm import LLMClient, add_usage
 from ouroboros.request_wire_contract import (
     canonical_sha256,
+    infer_tool_dialect,
     payload_effort,
     physical_candidate_sha256,
 )
 from ouroboros.request_wire_recovery import (
+    current_wire_candidate,
     finalize_wire_response,
     merge_request_wire_usage,
     note_wire_send_failed,
@@ -210,6 +212,38 @@ def test_exact_route_tool_shape_isolation(evidence_root):
     assert native_payload["temperature"] == 0.4
 
 
+def test_unrepresentable_custom_catalog_falls_to_function_rung(evidence_root):
+    """E4: a catalog the custom dialect cannot represent (CustomToolProjectionError)
+    must fall to the function rung WITH a registered candidate. It used to be
+    swallowed as a malformed payload: the raw payload went on the wire with
+    state.current cleared, so every retry rung returned None and the turn died
+    on the raw provider error."""
+    huge = {f"field_{index:03d}": {"type": "string"} for index in range(300)}
+    source = _payload()
+    source["model"] = "gpt-future"
+    source["tools"] = [{
+        "type": "function",
+        "function": {
+            "name": "probe",
+            "parameters": {"type": "object", "properties": huge},
+        },
+    }]
+    target = _target(provider="openai", model="gpt-future")
+    with request_wire_call_scope():
+        sent = prepare_wire_payload_for_send(target, source, api_surface="chat.completions")
+        registered = current_wire_candidate()
+        # Never on the wire with a severed ladder: the function-dialect rung is
+        # bound and registered, and the physical payload IS that candidate.
+        assert registered is not None
+        assert infer_tool_dialect(sent) == "function"
+        assert registered.candidate_sha256 == physical_candidate_sha256(sent)
+        note_wire_send_failed()
+        # The retry ladder stays reachable after the projection failure.
+        retry = plan_wire_retry_from_exception(_Rejected("temperature is unsupported"))
+        assert retry is not None
+        assert "temperature" not in retry
+
+
 def _value_payload(carrier, target, effort):
     payload = {
         "model": target["resolved_model"],
@@ -317,6 +351,58 @@ def test_ambiguous_named_effort_fails_open_but_explicit_carrier_absence_drops(
             },
             body_error=True,
         ) is None
+
+
+def test_prescribed_lower_effort_tier_wins_over_the_one_rung_walk(evidence_root):
+    target = _target(provider="openai")
+    ultra = _payload(effort="ultra")
+    with request_wire_call_scope():
+        prepare_wire_payload_for_send(target, ultra, api_surface="chat.completions")
+        prescribed = plan_wire_retry_from_exception(_Rejected(
+            "reasoning_effort value 'ultra' is not supported. "
+            "Supported values are: 'low', 'medium', 'high', 'xhigh'."
+        ))
+    assert prescribed is not None and payload_effort(prescribed) == "xhigh"
+
+    with request_wire_call_scope():
+        prepare_wire_payload_for_send(target, ultra, api_surface="chat.completions")
+        bare = plan_wire_retry_from_exception(
+            _Rejected("reasoning_effort value 'ultra' is not supported")
+        )
+    assert bare is not None and payload_effort(bare) == "max"
+
+    with request_wire_call_scope():
+        prepare_wire_payload_for_send(target, _payload(), api_surface="chat.completions")
+        upward = plan_wire_retry_from_exception(
+            _Rejected("reasoning_effort value 'high' is not supported; use 'max' or 'ultra'")
+        )
+    assert upward is not None and payload_effort(upward) == "medium"
+
+
+def test_prescribed_jump_needs_a_quoted_tier_inside_the_retry_floor(evidence_root):
+    target = _target(provider="openai")
+
+    with request_wire_call_scope():
+        prepare_wire_payload_for_send(target, _payload(effort="ultra"), api_surface="chat.completions")
+        prose = plan_wire_retry_from_exception(_Rejected(
+            "reasoning_effort value 'ultra' is not supported: too high for this model"
+        ))
+    assert prose is not None and payload_effort(prose) == "max"
+
+    with request_wire_call_scope():
+        prepare_wire_payload_for_send(target, _payload(effort="medium"), api_surface="chat.completions")
+        english_word = plan_wire_retry_from_exception(_Rejected(
+            "reasoning_effort value 'medium' is not supported; "
+            "none of the selected endpoints accept it"
+        ))
+    assert english_word is not None and payload_effort(english_word) == "low"
+
+    with request_wire_call_scope():
+        prepare_wire_payload_for_send(target, _payload(effort="high"), api_surface="chat.completions")
+        sub_low = plan_wire_retry_from_exception(_Rejected(
+            "reasoning_effort value 'high' is not supported; use 'minimal' instead"
+        ))
+    assert sub_low is not None and payload_effort(sub_low) == "medium"
 
 
 def test_failed_invalid_and_phase2a_finalized_attempts_never_poison(evidence_root):

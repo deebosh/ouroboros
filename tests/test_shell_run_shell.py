@@ -193,9 +193,13 @@ class TestShellArgContract:
         result = _run_shell(_ctx(tmp_path), "")
         assert "SHELL_ARG_ERROR" in result
 
-    def test_string_cmd_still_validates_env_refs(self, tmp_path):
+    def test_string_cmd_still_discloses_env_refs(self, tmp_path, fake_subprocess):
+        # #447 A5: literal shell syntax in direct argv is DATA — the command runs
+        # and the literal pass-through is disclosed, not refused.
+        fake_subprocess(stdout="ok")
         result = _run_shell(_ctx(tmp_path), 'curl -H "x-api-key: $SECRET"')
-        assert "SHELL_ENV_ERROR" in result
+        assert "SHELL_LITERAL_ARGV_NOTE" in result
+        assert "exit_code=0" in result
 
     # JSON-shape refusal — 2026-05-03 production bug. See module docstring
     # for the failure mode this guard prevents.
@@ -251,16 +255,21 @@ class TestShellArgContract:
 # ---------------------------------------------------------------------------
 
 
-def test_run_shell_rejects_literal_env_refs_in_argv(tmp_path):
+def test_run_shell_discloses_literal_env_refs_in_argv(tmp_path, fake_subprocess):
+    # #447 A5: the argv is executed as-is (no shell interprets "$..."), and the
+    # unexpanded pass-through is disclosed in the result.
+    calls = fake_subprocess(stdout="ok")
     result = _run_shell(_ctx(tmp_path), ["curl", "-H", "x-api-key: $ANTHROPIC_API_KEY"])
-    assert "SHELL_ENV_ERROR" in result
+    assert "SHELL_LITERAL_ARGV_NOTE" in result
     assert "$ANTHROPIC_API_KEY" in result
+    assert "exit_code=0" in result
+    assert calls, "the command must actually run"
 
 
 def test_run_shell_allows_shell_expansion_via_sh_c(tmp_path, fake_subprocess):
     fake_subprocess(stdout="ok")
     result = _run_shell(_ctx(tmp_path), ["sh", "-c", "printf '%s' \"$ANTHROPIC_API_KEY\""])
-    assert "SHELL_ENV_ERROR" not in result
+    assert "SHELL_LITERAL_ARGV_NOTE" not in result
     assert "exit_code=0" in result
 
 
@@ -742,19 +751,26 @@ def test_run_shell_accepts_heredoc_inside_shell_script(cmd):
     "arg",
     [
         "2>/dev/null", "2>&1", ">out.log", ">>app.log", "&>all.log", ">&2",
-        "1>x", "2>>err", "<<EOF", "<<<word", "0<in.txt", "2<&1", "<",
+        "1>x", "2>>err", "<<EOF", "<<<word", "0<in.txt", "2<&1",
+        # a bare "<" is a STANDALONE shell operator (still refused by
+        # _validate_shell_argv step 3 / test_run_shell_blocks_standalone_shell_operator),
+        # not a glued redirect — deliberately excluded here.
     ],
 )
-def test_run_shell_glued_redirect_still_blocked_without_shell(arg):
+def test_run_shell_glued_redirect_still_flagged_without_shell(arg):
     """Regression guard: the _SHELL_INTERPRETERS gate must NOT extend to
     non-shell argv. A `find ... 2>/dev/null` style argv (no shell interpreter
-    in cmd[0]) must STILL be refused — the original safety guarantee from
-    v6.37.0 (test_shell_redirect_guard.py:18) survives the class-level fix."""
-    from ouroboros.tools.shell import _validate_shell_argv
+    in cmd[0]) must STILL be flagged — since #447 A5 the flag is a DISCLOSURE
+    note (`_literal_argv_notes`) rather than a refusal, but the original
+    v6.37.0 safety intent (test_shell_redirect_guard.py) survives: the
+    redirect-shaped element is surfaced with the ["sh","-c",...] hint. The
+    validator itself no longer refuses it."""
+    from ouroboros.tools.shell import _literal_argv_notes, _validate_shell_argv
 
-    err = _validate_shell_argv(["somecmd", "arg1", arg])
-    assert "SHELL_CMD_ERROR" in err
-    assert arg in err
+    assert _validate_shell_argv(["somecmd", "arg1", arg]) == ""
+    note = _literal_argv_notes(["somecmd", "arg1", arg])
+    assert "SHELL_LITERAL_ARGV_NOTE" in note
+    assert arg in note
 
 
 def test_run_shell_bash_c_heredoc_runs_end_to_end(tmp_path, fake_subprocess):

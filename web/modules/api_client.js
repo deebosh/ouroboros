@@ -8,6 +8,26 @@ export async function apiFetch(url, init = {}) {
     return fetch(url, init);
 }
 
+/**
+ * Read an owner-visible sentence out of a gateway error body. Several routes
+ * answer with a STRUCTURED error (`{error: {code, message, ...}}`), and
+ * interpolating that object straight into an Error message produced the
+ * literal `[object Object]` in a toast — the owner saw an alarm carrying no
+ * fact at all. Prefer the object's own sentence, then its code, and serialize
+ * only as a last resort so nothing is silently swallowed.
+ */
+function errorText(data) {
+    for (const value of [data?.error, data?.message]) {
+        if (typeof value === 'string' && value.trim()) return value;
+        if (value && typeof value === 'object') {
+            const inner = value.message || value.detail || value.code;
+            if (typeof inner === 'string' && inner.trim()) return inner;
+            try { return JSON.stringify(value); } catch { /* fall through */ }
+        }
+    }
+    return '';
+}
+
 export async function fetchJson(url, init = {}, options = {}) {
     const response = await apiFetch(url, init);
     let data = null;
@@ -17,7 +37,7 @@ export async function fetchJson(url, init = {}, options = {}) {
         data = { error: `non-json response (HTTP ${response.status})` };
     }
     if (!response.ok || (options.rejectOkFalse && data && data.ok === false)) {
-        const message = (data && (data.error || data.message)) || `HTTP ${response.status}`;
+        const message = errorText(data) || `HTTP ${response.status}`;
         const error = new Error(message);
         error.status = response.status;
         error.body = data;
@@ -77,6 +97,10 @@ export function cancelTask(taskId, { cascade = false, stopPolicy = '' } = {}) {
     return Object.keys(body).length ? jsonPost(url, body) : fetchJson(url, { method: 'POST' });
 }
 
+export async function resumeTask(taskId) {
+    return fetchJson(`/api/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' });
+}
+
 /**
  * Owner hurry (S3, HQ1): the text-free typed task-local acceleration control.
  * The body carries ONLY the client-generated stable request_id (reuse the same
@@ -104,6 +128,23 @@ export function hurryTask(taskId, requestId) {
 export async function fetchTaskDetail(taskId) {
     const resp = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}`);
     return (resp && typeof resp.json === 'function' && resp.ok !== false) ? resp.json() : null;
+}
+
+/**
+ * Strict task-detail read for consumers that must tell a genuinely absent
+ * record (404 → null) apart from a failed read (rejects). The lenient
+ * fetchTaskDetail above keeps its every-failure→null contract for reconcile
+ * flows that treat all misses alike.
+ * @param {string} taskId
+ * @returns {Promise<import('./api_types.js').TaskDetailResponse|null>}
+ */
+export async function fetchTaskDetailStrict(taskId) {
+    const resp = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}`);
+    if (resp && typeof resp.json === 'function') {
+        if (resp.ok !== false) return resp.json();
+        if (resp.status === 404) return null;
+    }
+    throw new Error(`task detail read failed (HTTP ${resp?.status ?? 'no response'})`);
 }
 
 export function cleanExtensionRoute(value) {

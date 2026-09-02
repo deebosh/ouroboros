@@ -112,6 +112,11 @@ class ChatOutbound(TypedDict):
     # while post-task synthesis still runs, so the frame is NOT the task's
     # terminal conclusion — task_done settles the card/turn.
     task_phase: NotRequired[str]
+    # Typed terminal fact on a frame that IS the turn's conclusion: stamped on
+    # direct/ephemeral finals (and the direct error branch) so the client's
+    # live gate settles the activity without waiting for a snapshot. One of
+    # completed/failed/cancelled/rejected_duplicate.
+    task_terminal_status: NotRequired[str]
     ephemeral_decision: NotRequired[bool]
     task_incident: NotRequired[str]
     toast_once: NotRequired[str]
@@ -230,6 +235,15 @@ class PhotoOutbound(TypedDict):
     mime: str
     ts: str
     caption: NotRequired[str]
+    # Durable task-artifact URL for the stored media, replayed by chat history
+    # (the live frame carries the bytes inline instead).
+    download_url: NotRequired[str]
+    # Second address for the SAME bytes on the long-shipped
+    # /api/files/download route, present only when the stored file resolves
+    # inside the current file-browser root. Packaged desktop launchers gate
+    # their file bridge to a URL allowlist that predates the artifact route,
+    # so the browser uses download_url and the host bridge prefers this one.
+    download_url_compat: NotRequired[str]
     content: NotRequired[str]
     source: NotRequired[str]
     sender_label: NotRequired[str]
@@ -237,6 +251,7 @@ class PhotoOutbound(TypedDict):
     client_message_id: NotRequired[str]
     transport: NotRequired[TransportMetadata]
     chat_id: NotRequired[int]
+    task_id: NotRequired[str]
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
     project_thread: NotRequired[bool]
@@ -253,6 +268,15 @@ class VideoOutbound(TypedDict):
     mime: str
     ts: str
     caption: NotRequired[str]
+    # Durable task-artifact URL for the stored media, replayed by chat history
+    # (the live frame carries the bytes inline instead).
+    download_url: NotRequired[str]
+    # Second address for the SAME bytes on the long-shipped
+    # /api/files/download route, present only when the stored file resolves
+    # inside the current file-browser root. Packaged desktop launchers gate
+    # their file bridge to a URL allowlist that predates the artifact route,
+    # so the browser uses download_url and the host bridge prefers this one.
+    download_url_compat: NotRequired[str]
     content: NotRequired[str]
     source: NotRequired[str]
     sender_label: NotRequired[str]
@@ -260,6 +284,7 @@ class VideoOutbound(TypedDict):
     client_message_id: NotRequired[str]
     transport: NotRequired[TransportMetadata]
     chat_id: NotRequired[int]
+    task_id: NotRequired[str]
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
     project_thread: NotRequired[bool]
@@ -288,11 +313,88 @@ class DocumentOutbound(TypedDict):
     client_message_id: NotRequired[str]
     transport: NotRequired[TransportMetadata]
     chat_id: NotRequired[int]
+    task_id: NotRequired[str]
+    size_bytes: NotRequired[int]
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
     project_thread: NotRequired[bool]
     # Deprecated compatibility field: runtime emits ``transport`` instead.
     telegram_chat_id: NotRequired[int]
+
+
+class LinkAction(TypedDict):
+    """One validated HTTP(S) action in a structured links frame."""
+
+    label: str
+    url: str
+
+
+class LinksOutbound(TypedDict):
+    """Outbound group of first-class external link buttons."""
+
+    type: Literal["links"]
+    role: Literal["assistant"]
+    actions: list[LinkAction]
+    ts: str
+    title: NotRequired[str]
+    chat_id: NotRequired[int]
+    task_id: NotRequired[str]
+    project_thread: NotRequired[bool]
+    transport: NotRequired[TransportMetadata]
+
+
+class QuizOption(TypedDict):
+    """One selectable option on an owner quiz card."""
+
+    label: str
+    detail: NotRequired[str]
+
+
+class QuizOutbound(TypedDict):
+    """Outbound owner quiz card: a typed question with option buttons.
+
+    Fire-and-continue: the asking task keeps working under ``assumption``
+    while the card is open. ``state`` is the card's lifecycle word
+    (``open`` in this display phase; answered/expired arrive with the
+    answer ingress). History replay of a SETTLED card additionally merges the
+    projection's record of the answer: ``answered_index`` when an offered
+    option was taken, and the owner's verbatim ``comment`` (the whole answer
+    when the owner took none of the options).
+    """
+
+    type: Literal["quiz"]
+    role: Literal["assistant"]
+    quiz_id: str
+    question: str
+    options: list[QuizOption]
+    stake: str
+    assumption: str
+    state: str
+    ts: str
+    answered_index: NotRequired[int]
+    comment: NotRequired[str]
+    chat_id: NotRequired[int]
+    task_id: NotRequired[str]
+    project_thread: NotRequired[bool]
+    transport: NotRequired[TransportMetadata]
+
+
+class QuizStateOutbound(TypedDict):
+    """Outbound WS lifecycle update for an already-rendered quiz card.
+
+    A separate discriminator (not a second ``quiz`` frame): the display path
+    dedupes quiz frames by ``quiz:{quiz_id}:{ts}``, so a state change must
+    never look like a new card. ``answered_index`` rides only with the
+    ``answered`` state.
+    """
+
+    type: Literal["quiz_state"]
+    quiz_id: str
+    task_id: str
+    state: str
+    ts: str
+    answered_index: NotRequired[int]
+    chat_id: NotRequired[int]
 
 
 class TypingOutbound(TypedDict):
@@ -371,6 +473,10 @@ class MessageAnnotationOutbound(TypedDict):
     target_label: NotRequired[str]
     options: NotRequired[List[Dict[str, Any]]]
     attachment_manifest: NotRequired[List[AttachmentManifestEntry]]
+    # #198: the exact refusal-attempt identity — the picker card composes its
+    # decision_id (routing:{client_message_id}:{routing_token}) from it; a
+    # presentation frame without it renders text, never a clickable card.
+    routing_token: NotRequired[str]
     ts: NotRequired[str]
 
 
@@ -581,8 +687,10 @@ class ActiveChatActivity(TypedDict):
 
     The combined snapshot: direct/ephemeral registry turns (same rows as
     ``active_direct_turns``) plus ROOT managed queue tasks projected as
-    ``kind="managed_task"`` with ``phase`` ``queued`` | ``working`` |
-    ``finalizing`` (final answer stored, post-task synthesis still open).
+    ``kind="managed_task"`` with ``phase`` ``queued`` | ``budget_paused``
+    (zero-dispatch member awaiting an explicit resume — never plain
+    "queued") | ``working`` | ``finalizing`` (final answer stored, post-task
+    synthesis still open).
     Field shape mirrors ``ActiveDirectTurn`` so one client reducer hydrates
     both; managed rows carry an empty ``client_message_id``.
     """
@@ -766,7 +874,10 @@ class UiPreferencesResponse(TypedDict):
 
 class GitLogResponse(TypedDict):
     commits: list[Dict[str, Any]]
-    tags: list[str]
+    # Tag rows: {tag, date, sha (peeled commit), message} — the mirror said
+    # ``list[str]`` while ``list_versions`` has always emitted dicts; corrected
+    # (behavioural documentation) in the 2026-08-31 updates redesign.
+    tags: list[Dict[str, Any]]
     branch: str
     sha: str
 
@@ -920,7 +1031,9 @@ class TaskCreateRequest(_TaskCreateRequestRequired, total=False):
     memory_mode: str
     project_id: str
     attachments: list[Dict[str, Any]]
-    # Explicit raw-API opt-in. Browser/UI callers omit it and remain atomic.
+    # Partial staging is the default (В25c, capinv-447): omitted/true stages
+    # the good attachments and discloses rejected rows; explicit false keeps
+    # the old atomic all-or-nothing admission.
     allow_partial_attachments: bool
     acceptance_claims: list[Dict[str, Any]]
     # v6.60.0: "" | "final_answer_line" — adapter-declared machine-extractable answer
@@ -1212,6 +1325,50 @@ class TaskHurryResponse(TypedDict, total=False):
     error: str
 
 
+class DecisionRequest(TypedDict):
+    """POST /api/decisions body — the ONE answer ingress for owner decision
+    cards (owner decision 1=A). ``decision_id`` is a composed family id:
+    ``quiz:{task_id}:{quiz_id}`` (this phase), ``routing:{client_message_id}:
+    {routing_token}`` (#198), ``interaction:{task_id}:{run_id}:
+    {interaction_id}`` (#204). ``request_id`` is the idempotency key; a
+    replayed request returns the recorded confirmation instead of acting
+    twice. ``comment`` is the owner's optional verbatim remark.
+
+    ``option_index`` is optional for the ``quiz`` family ONLY: an owner who
+    takes none of the offered options answers with a non-empty ``comment``
+    and no index. Every other family still requires the integer — a routing
+    choice IS its option."""
+
+    request_id: str
+    decision_id: str
+    option_index: NotRequired[int]
+    comment: NotRequired[str]
+
+
+class DecisionResponse(TypedDict, total=False):
+    """Answer-ingress reply. 2xx carries the card's new lifecycle ``state``
+    (``answered``; ``duplicate`` marks an idempotent replay). A late answer
+    to a settled task is 409 with ``state`` telling the truth
+    (``expired_terminal``/``answered``) so the card settles instead of
+    inviting retries. The routing family (#198) adds: ``dispatched`` (the
+    confirmed durable receipt status), ``task_id`` (the derived id of a
+    promoted task), ``latest_status`` (the superseding row's status on a 409),
+    ``reason``/``detail`` (typed refusal/unconfirmed diagnostics)."""
+
+    ok: bool
+    decision_id: str
+    state: str
+    answered_index: int
+    comment: str
+    duplicate: bool
+    error: str
+    dispatched: str
+    task_id: str
+    latest_status: str
+    reason: str
+    detail: str
+
+
 class LogTailResponse(TypedDict, total=False):
     name: str
     entries: list[Dict[str, Any]]
@@ -1302,119 +1459,7 @@ class OnboardingPresetFailureResponse(TypedDict):
 
 
 # Human/test-visible contract index; routers own executable Route objects.
-HTTP_ENDPOINTS: tuple[str, ...] = (
-    "GET /api/health",
-    "GET /api/state",
-    "GET /api/review-continuations",
-    "GET /api/settings",
-    "POST /api/settings",
-    "GET /api/ui/preferences",
-    "POST /api/ui/preferences",
-    "POST /api/owner/runtime-mode",
-    "POST /api/owner/auto-grant",
-    "POST /api/owner/context-mode",
-    "POST /api/owner/scope-review-floor",
-    "POST /api/owner/safety-mode",
-    "POST /api/owner/capability-ack",
-    "POST /api/owner/skills/{skill}/attest-review",
-    "POST /api/owner/skills/{skill}/presence-runtime",
-    "POST /api/skills/{skill}/publish-preflight",
-    "GET /api/model-catalog",
-    "POST /api/tasks",
-    "GET /api/tasks",
-    "GET /api/tasks/{task_id}",
-    "GET /api/tasks/{task_id}/artifacts/{name}",
-    "GET /api/tasks/{task_id}/events",
-    "POST /api/tasks/{task_id}/cancel",
-    "POST /api/tasks/{task_id}/hurry",
-    "POST /api/tasks/{task_id}/resume",
-    "GET /api/schedules",
-    "POST /api/schedules",
-    "DELETE /api/schedules/{schedule_id}",
-    "POST /api/command",
-    "POST /api/reset",
-    "GET /api/git/log",
-    "POST /api/git/rollback",
-    "POST /api/git/promote",
-    "GET /api/update/status",
-    "POST /api/update/check",
-    "POST /api/update/preflight",
-    "POST /api/update/apply",
-    "GET /api/cost-breakdown",
-    "GET /api/evolution-data",
-    "GET /api/projects",
-    "POST /api/projects",
-    "POST /api/projects/from-task",
-    "POST /api/projects/{project_id}/update",
-    "POST /api/projects/{project_id}/delete",
-    "GET /api/fs/dirs",
-    "GET /api/chat/history",
-    "GET /api/logs/{name}",
-    "POST /api/chat/upload",
-    "DELETE /api/chat/upload",
-    "POST /api/openai-compatible/models",
-    "POST /api/providers/test",
-    "GET /api/local-model/status",
-    "POST /api/local-model/start",
-    "POST /api/local-model/stop",
-    "POST /api/local-model/test",
-    "POST /api/local-model/install-runtime",
-    "GET /api/mcp/status",
-    "POST /api/mcp/refresh",
-    "POST /api/mcp/test",
-    "GET /api/reviewer-slots",
-    "GET /api/claudexor/status",
-    "POST /api/claudexor/wake",
-    "POST /api/claudexor/login",
-    "GET /api/claudexor/login/{job_id}",
-    "DELETE /api/claudexor/login/{job_id}",
-    "POST /api/claudexor/login/{job_id}/input",
-    "POST /api/claudexor/login/{job_id}/reconcile",
-    "DELETE /api/claudexor/credential-profiles/{harness}/{profile_id}",
-    "PATCH /api/claudexor/credential-profiles/{harness}/{profile_id}",
-    "GET /api/extensions",
-    "GET /api/extensions/{skill}/manifest",
-    "GET /api/extensions/{skill}/module/{entry}",
-    "GET /api/extensions/{skill}/settings_section",
-    "ANY /api/extensions/{skill}/{rest:path}",
-    "GET /api/skills/daemons",
-    "POST /api/skills/{skill}/toggle",
-    "POST /api/skills/{skill}/delete",
-    "GET /api/skills/lifecycle-queue",
-    "POST /api/skills/{skill}/review",
-    "GET /api/skills/{skill}/review-history/{job_id}",
-    "POST /api/skills/{skill}/grants",
-    "POST /api/skills/{skill}/reconcile",
-    "GET /api/marketplace/clawhub/search",
-    "GET /api/marketplace/clawhub/installed",
-    "GET /api/marketplace/clawhub/info/{slug:path}",
-    "GET /api/marketplace/clawhub/preview/{slug:path}",
-    "POST /api/marketplace/clawhub/install",
-    "POST /api/marketplace/clawhub/update/{name}",
-    "POST /api/marketplace/clawhub/uninstall/{name}",
-    "GET /api/marketplace/ouroboroshub/catalog",
-    "GET /api/marketplace/ouroboroshub/installed",
-    "GET /api/marketplace/ouroboroshub/preview/{slug:path}",
-    "POST /api/marketplace/ouroboroshub/install",
-    "POST /api/marketplace/ouroboroshub/update/{name}",
-    "POST /api/marketplace/ouroboroshub/uninstall/{name}",
-    # The wizard PAGE (one onboarding host: desktop setup window, blocking
-    # overlay frame, plain browser). /api/onboarding stays the readiness probe.
-    "GET /onboarding",
-    "GET /api/onboarding",
-    "POST /api/onboarding/subagents/preview",
-    "POST /api/onboarding/complete",
-    "GET /api/files/list",
-    "GET /api/files/read",
-    "GET /api/files/content",
-    "GET /api/files/download",
-    "POST /api/files/upload",
-    "POST /api/files/mkdir",
-    "POST /api/files/write",
-    "POST /api/files/delete",
-    "POST /api/files/transfer",
-    "WS /ws",
-)
+from ouroboros.gateway.endpoint_index import HTTP_ENDPOINTS
 
 WS_MESSAGE_TYPES: tuple[str, ...] = (
     "chat",
@@ -1422,6 +1467,9 @@ WS_MESSAGE_TYPES: tuple[str, ...] = (
     "photo",
     "video",
     "document",
+    "links",
+    "quiz",
+    "quiz_state",
     "typing",
     "log",
     "heartbeat",
@@ -1443,6 +1491,13 @@ __all__ = [
     "PhotoOutbound",
     "VideoOutbound",
     "DocumentOutbound",
+    "LinkAction",
+    "LinksOutbound",
+    "QuizOption",
+    "QuizOutbound",
+    "QuizStateOutbound",
+    "DecisionRequest",
+    "DecisionResponse",
     "TypingOutbound",
     "LogOutbound",
     "HeartbeatOutbound",

@@ -335,27 +335,44 @@ def test_set_acceptance_decision_collapses_unknown_status_fail_closed():
 
 def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason():
     """Table-driven guard over the WHOLE writer inventory (v6.78.0): every
-    `_set_acceptance_decision` call site in loop.py must pass a canonical status
-    constant and a reason from the closed set. Source-level so a new writer added
-    without a reason fails here instead of silently shipping an untyped decision."""
+    `_set_acceptance_decision` call site must pass a canonical status constant and
+    a reason from the closed set. Source-level so a new writer added without a
+    reason fails here instead of silently shipping an untyped decision.
+
+    Scans BOTH holders: the acceptance machinery moved into
+    `acceptance_dialogue.py` while loop.py kept the rail-side writers, so reading
+    only `loop_mod.__file__` would have gone quietly blind to most of them."""
     import pathlib
     import re
 
+    import ouroboros.acceptance_dialogue as accept_mod
     from ouroboros.loop import ACCEPTANCE_DECISION_REASONS
 
-    src = pathlib.Path(loop_mod.__file__).read_text(encoding="utf-8").splitlines()
+    src = []
+    for module in (loop_mod, accept_mod):
+        src.extend(pathlib.Path(module.__file__).read_text(encoding="utf-8").splitlines())
     starts = [
         i for i, line in enumerate(src)
         if "_set_acceptance_decision(" in line and not line.lstrip().startswith("def ")
     ]
-    # 17th writer: the forced-rail acceptance-bypass recorder (typed, closed-enum
-    # reason). 18th: the forced children_unabsorbed rail terminalizing a requested
-    # improvement pass it cannot grant (owner Q2A, revision_unavailable_on_forced_rail).
-    assert len(starts) == 18, f"writer inventory changed: {len(starts)} call sites"
+    # 7 rail-side writers in loop.py (owner follow-up, evidence refresh, delivery
+    # binding, launch reserve, forced bypass, forced-rail revision) + 12 in
+    # acceptance_dialogue.py (the terminal branches, the clean pass, the capsule,
+    # the fence-reopen failure and the A-material identical refusal).
+    assert len(starts) == 19, f"writer inventory changed: {len(starts)} call sites"
     allowed_status = {
         "ACCEPTANCE_ACCEPTED", "ACCEPTANCE_REVISION_REQUESTED",
         "ACCEPTANCE_FINALIZED_UNACCEPTED",
     }
+    # The reason may be a literal OR an expression (a constant, or a conditional
+    # picking between a constant and a literal). Both forms are checked: bare
+    # literals against the closed set, and REASON_*/ACCEPTANCE_* names resolved
+    # through the module that defines them.
+    reason_names = {
+        name: value for name, value in vars(accept_mod).items()
+        if name.startswith(("REASON_", "ACCEPTANCE_REASON_")) and isinstance(value, str)
+    }
+    seen_expression_reasons = 0
     for start in starts:
         block = "\n".join(src[start:start + 30])
         status = re.findall(r'"status": ([A-Z_]+)', block)
@@ -363,6 +380,15 @@ def test_every_host_acceptance_writer_emits_a_canonical_status_and_typed_reason(
         assert '"reason"' in block, f"line {start + 1} has no typed reason"
         for reason in re.findall(r'"reason": "([a-z_]+)"', block):
             assert reason in ACCEPTANCE_DECISION_REASONS, reason
+        for name in re.findall(r'\b(REASON_[A-Z_]+|ACCEPTANCE_REASON_[A-Z_]+)\b', block):
+            if name not in reason_names:
+                continue
+            seen_expression_reasons += 1
+            assert reason_names[name] in ACCEPTANCE_DECISION_REASONS, name
+    # The widened regex really does catch expression-valued reasons: the two
+    # `pass_reason if ... == REASON_REVIEW_CYCLES_EXHAUSTED` branches and the
+    # A-material `REASON_IDENTICAL_ACCEPTANCE_REFUSED` writer.
+    assert seen_expression_reasons >= 3, seen_expression_reasons
 
 
 def test_task_acceptance_review_tool_result_lifts_agent_decision_into_trace():
@@ -1595,11 +1621,13 @@ def test_run_llm_loop_appends_orphan_note_when_finalizing_with_unhandled_child(t
 
     def fake_call_llm_with_retry(_llm, _request_messages, *_args, **_kwargs):
         calls["count"] += 1
-        # The agent never absorbs/discards the child; after the service reminder it
-        # explicitly keeps the retained complete answer.
+        # The agent never absorbs/discards the child; it keeps through the
+        # handoff control round, then answers the absorption reminder with
+        # prose (the absorption round HOLDS the candidate — no JSON
+        # instruction rides that round, so a typed keep is not requested).
         if calls["count"] == 1:
             content = "child1 is still running; I will finalize now."
-        elif calls["count"] in {2, 3}:
+        elif calls["count"] == 2:
             content = '{"delivery_control":"keep"}'
         else:
             content = "Best effort: child1 is still running."
@@ -1642,6 +1670,7 @@ def test_run_llm_loop_forces_best_effort_after_child_absorption_reminder(tmp_pat
     )
     messages = [{"role": "user", "content": "inspect"}]
     calls = {"count": 0}
+    seen_requests = []
     progress = []
     tools = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     tools._ctx.task_contract = {"delegation_budget": {"may_delegate": True, "may_fan_out": True}}
@@ -1650,9 +1679,17 @@ def test_run_llm_loop_forces_best_effort_after_child_absorption_reminder(tmp_pat
         def default_model(self):
             return "test-model"
 
-    def fake_call_llm_with_retry(_llm, _request_messages, *_args, **_kwargs):
+    def fake_call_llm_with_retry(_llm, request_messages, *_args, **_kwargs):
         calls["count"] += 1
-        content = f"answer {calls['count']}" if calls["count"] in {1, 4} else '{"delivery_control":"keep"}'
+        seen_requests.append([dict(m) for m in request_messages])
+        # Call 2 answers the handoff control round with a typed keep; the
+        # absorption round HOLDS the candidate (no JSON instruction), so the
+        # reminder round is answered with prose like any ordinary round.
+        content = (
+            '{"delivery_control":"keep"}'
+            if calls["count"] == 2
+            else f"answer {calls['count']}"
+        )
         return {"role": "assistant", "content": content}, 0.0
 
     monkeypatch.setattr(loop_mod, "call_llm_with_retry", fake_call_llm_with_retry)
@@ -1674,6 +1711,21 @@ def test_run_llm_loop_forces_best_effort_after_child_absorption_reminder(tmp_pat
     assert "Child absorption reminder injected" in "\n".join(trace["reasoning_notes"])
     assert "child task(s) not explicitly absorbed" in result
     assert calls["count"] == 4
+    # D2a: the absorption reminder round holds instead of arming — the new
+    # messages of that round carry the reminder and NOT the JSON instruction
+    # (the earlier handoff-armed instruction legitimately stays in history).
+    absorption_round_delta = seen_requests[2][len(seen_requests[1]):]
+    delta_text = "\n".join(
+        str(m.get("content") or "") for m in absorption_round_delta
+    )
+    assert "[CHILD_ABSORPTION_REQUIRED]" in delta_text
+    assert "[DELIVERY_FINALIZATION_CONTROL]" not in delta_text
+    # D2b: the forced prompt names the CURRENT child listing, not a guess.
+    forced_round_text = "\n".join(
+        str(m.get("content") or "") for m in seen_requests[3]
+    )
+    assert "[FINALIZE_WITH_UNABSORBED_CHILDREN]" in forced_round_text
+    assert "child1 [running]" in forced_round_text
 
 
 def test_run_llm_loop_does_not_include_current_subagent_in_own_handoff(tmp_path, monkeypatch):

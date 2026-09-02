@@ -228,6 +228,9 @@
  * @property {string=} task_phase
  *   "finalizing" on a root's early final answer: post-task synthesis still
  *   runs, so the frame is not the task's terminal conclusion.
+ * @property {string=} task_terminal_status
+ *   Typed terminal fact on a frame that IS the turn's conclusion (stamped on
+ *   direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
  * @property {string=} toast_once
  * @property {boolean=} task_id_pending
@@ -262,7 +265,8 @@
  *   {delegated_runs_started, delegated_runs_settled, delegated_runs_succeeded,
  *   delegated_runs_failed, delegated_run_failure_states, evidence_read_failed,
  *   subscription_cost_usd, subscription_cost_estimated, harness_models,
- *   nanny_nudge_recorded, delegate_start_attempted}.
+ *   nanny_nudge_recorded, delegate_start_attempted,
+ *   applied_access_profiles}.
  *   Terminal frames only; absent = "no evidence yet", never "ran natively".
  *   `evidence_read_failed: true` = the custody log exists but could not be
  *   read — zero counts are then UNKNOWN, never a "no run" receipt.
@@ -317,6 +321,13 @@
  *   v6.74.0 additive keys: panels[].dialogue ({status, votes} — the reviewer-authored
  *   dialogue-status reduction), panels[].single_reviewer_no_diversity (boolean label),
  *   and actors[].dialogue_status ("continue_actionable"|"unreachable_here"|"stable_disagreement"|"").
+ *   Additive bounded-findings keys: actors[].findings (disclosed rows
+ *   {id?, severity?, verdict?, item?, summary?, evidence?, reason?,
+ *   recommendation?} — redacted, each string
+ *   bounded with an explicit omission marker, at most 8 rows per actor) and
+ *   actors[].findings_omitted (exact count, 0 included). Both are emitted only
+ *   when that reviewer produced a parsed response; their absence is a
+ *   transport/parse hole, never "zero findings".
  * @property {boolean=} worker_saturation_warning
  * @property {string=} source
  * @property {string=} sender_label
@@ -352,6 +363,8 @@
  * @property {string} mime
  * @property {string} ts
  * @property {string=} caption
+ * @property {string=} download_url  // durable task-artifact URL, replayed by chat history
+ * @property {string=} download_url_compat  // same bytes on /api/files/download; host-bridge form for launchers whose gate predates the artifact route
  * @property {string=} content
  * @property {string=} source
  * @property {string=} sender_label
@@ -359,6 +372,7 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  * @property {number=} telegram_chat_id
  */
@@ -371,6 +385,8 @@
  * @property {string} mime
  * @property {string} ts
  * @property {string=} caption
+ * @property {string=} download_url  // durable task-artifact URL, replayed by chat history
+ * @property {string=} download_url_compat  // same bytes on /api/files/download; host-bridge form for launchers whose gate predates the artifact route
  * @property {string=} content
  * @property {string=} source
  * @property {string=} sender_label
@@ -378,8 +394,98 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  * @property {number=} telegram_chat_id
+ */
+
+/**
+ * @typedef {Object} LinkAction
+ * @property {string} label
+ * @property {string} url
+ */
+
+/**
+ * @typedef {Object} LinksOutbound
+ * @property {"links"} type
+ * @property {"assistant"} role
+ * @property {LinkAction[]} actions
+ * @property {string} ts
+ * @property {string=} title
+ * @property {number=} chat_id
+ * @property {string=} task_id
+ * @property {boolean=} project_thread
+ * @property {Object=} transport
+ */
+
+/**
+ * @typedef {Object} QuizOption
+ * @property {string} label
+ * @property {string=} detail
+ */
+
+/**
+ * @typedef {Object} QuizOutbound
+ * @property {"quiz"} type
+ * @property {"assistant"} role
+ * @property {string} quiz_id
+ * @property {string} question
+ * @property {QuizOption[]} options
+ * @property {string} stake
+ * @property {string} assumption
+ * @property {string} state
+ * @property {string} ts
+ * @property {number=} answered_index
+ * @property {string=} comment
+ * @property {number=} chat_id
+ * @property {string=} task_id
+ * @property {boolean=} project_thread
+ * @property {Object=} transport
+ */
+
+/**
+ * Lifecycle update for an already-rendered quiz card (WS "quiz_state") —
+ * a separate discriminator so a state change never dedupes as (or spawns)
+ * a second card. answered_index rides only with state "answered".
+ * @typedef {Object} QuizStateOutbound
+ * @property {"quiz_state"} type
+ * @property {string} quiz_id
+ * @property {string} task_id
+ * @property {string} state
+ * @property {string} ts
+ * @property {number=} answered_index
+ * @property {number=} chat_id
+ */
+
+/**
+ * POST /api/decisions body — the ONE answer ingress for owner decision cards
+ * (decision families quiz:/routing:/interaction:). request_id is the
+ * idempotency key; a replay returns the recorded confirmation. option_index is
+ * optional for the quiz family only: an owner who takes none of the offered
+ * options sends a non-empty comment and no index.
+ * @typedef {Object} DecisionRequest
+ * @property {string} request_id
+ * @property {string} decision_id
+ * @property {number=} option_index
+ * @property {string=} comment
+ */
+
+/**
+ * Answer-ingress reply; 409 carries the card's truthful lifecycle state so a
+ * late click settles the card instead of inviting retries.
+ * @typedef {Object} DecisionResponse
+ * @property {boolean=} ok
+ * @property {string=} decision_id
+ * @property {string=} state
+ * @property {number=} answered_index
+ * @property {string=} comment
+ * @property {boolean=} duplicate
+ * @property {string=} error
+ * @property {string=} dispatched
+ * @property {string=} task_id
+ * @property {string=} latest_status
+ * @property {string=} reason
+ * @property {string=} detail
  */
 
 /**
@@ -399,6 +505,8 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {string=} task_id
+ * @property {number=} size_bytes
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  * @property {number=} telegram_chat_id
  */
@@ -431,6 +539,7 @@
  * @property {string} status
  * @property {Array<Object>=} options
  * @property {AttachmentManifestEntry[]=} attachment_manifest
+ * @property {string=} routing_token
  * @property {boolean} suppress_bubble
  * @property {string=} ts
  */
@@ -595,13 +704,13 @@
  * @property {string=} payload_root
  * @property {string=} review_status
  * @property {boolean=} review_stale
- * @property {Object=} review_gate
+ * @property {{status: string, stale: boolean, executable_review: boolean, blocking_reason: string, review_enforcement: string, summary: string, preflight_failed: (boolean|undefined), preflight_failed_stale: (boolean|undefined)}=} review_gate
  * @property {boolean=} executable_review
  * @property {string=} review_profile
  * @property {boolean=} official_hub_verified
  * @property {boolean=} owner_attestable
  * @property {{visible: boolean, publication_ready: boolean, task_start_allowed: boolean, disabled: boolean, state: "ready"|"warnings"|"needs_attention"|"repairable"|"hard_block", reason: string}=} submit_hub
- * @property {{current: Object, history: Object[]}=} skill_review
+ * @property {{current: Object, history: Object[], history_omitted: number=}=} skill_review
  * @property {boolean=} is_self_authored
  * @property {Object=} grants
  * @property {string[]=} permissions
@@ -1093,4 +1202,10 @@
  * @property {?boolean} check_ok
  */
 
-export const GATEWAY_CONTRACT_VERSION = '6.113.5';
+export const MAX_LINK_ACTIONS = 12;
+export const MAX_QUIZ_OPTIONS = 6;
+// Mirror of ouroboros/gateway/task_decision.py::_COMMENT_MAX — the ingress
+// REFUSES a longer comment (it is delivered verbatim, never truncated), so
+// the card must not offer to send one.
+export const MAX_DECISION_COMMENT = 2000;
+export const GATEWAY_CONTRACT_VERSION = '6.114.1';

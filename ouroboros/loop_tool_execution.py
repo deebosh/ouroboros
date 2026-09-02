@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import contextvars
 import json
+import logging
 import os
 import pathlib
 import re
 import time
-import concurrent.futures
-import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
-
-import logging
 
 from ouroboros.config import (
     NESTED_SETTLEMENT_MARGIN_SEC,
@@ -22,16 +21,23 @@ from ouroboros.config import (
 from ouroboros.deadline_utils import deadline_remaining_sec
 from ouroboros.observability import new_call_id, persist_call
 from ouroboros.tool_capabilities import (
-    READ_ONLY_PARALLEL_TOOLS,
-    PARALLEL_SAFE_ENQUEUE_TOOLS,
     FOREGROUND_MUTATIVE_TOOLS,
+    PARALLEL_SAFE_ENQUEUE_TOOLS,
+    READ_ONLY_PARALLEL_TOOLS,
     REVIEWED_MUTATIVE_TOOLS,
     STATEFUL_BROWSER_TOOLS,
-    UNTRUNCATED_TOOL_RESULTS as _UNTRUNCATED_TOOL_RESULTS,
+)
+from ouroboros.tool_capabilities import (
     UNTRUNCATED_REPO_READ_PATHS as _UNTRUNCATED_REPO_READ_PATHS,
+)
+from ouroboros.tool_capabilities import (
+    UNTRUNCATED_TOOL_RESULTS as _UNTRUNCATED_TOOL_RESULTS,
+)
+from ouroboros.tool_capabilities import (
     tool_result_limit as _tool_result_limit,
 )
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.tools.result_envelope import result_payload_text, typed_result_meta
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
 from ouroboros.usage_accounting import UsageAccountingError
 from ouroboros.utils import (
@@ -69,6 +75,10 @@ _FAILURE_PREFIXES = (
     "⚠️ RUN_SCRIPT_",
     "⚠️ CLAUDE_CODE_",
     "⚠️ VLM_",
+    # #440 fix-forward: an abandoned call's typed void result and the
+    # hung-session backlog refusal are failures, not content.
+    "⚠️ BROWSER_SESSION_RETIRED",
+    "⚠️ BROWSER_BACKLOG_RETIRED_SESSIONS",
     "⚠️ LIGHT_MODE_",
     "⚠️ WORKSPACE_",
     "⚠️ ELEVATION_",
@@ -283,12 +293,18 @@ def _attach_late_tool_settlement(
     task_id: str,
     tool_call_id: str,
     correlation: Dict[str, Any],
+    on_settled: Optional[Callable[[], None]] = None,
 ) -> None:
     """Close the cognitive lease when a timed-out worker finally settles."""
     tool_ctx = getattr(tools, "_ctx", None)
     event_queue = getattr(tool_ctx, "event_queue", None)
 
     def _settled(_future: Any) -> None:
+        if on_settled is not None:
+            try:
+                on_settled()
+            except Exception:
+                log.debug("Late tool cleanup failed", exc_info=True)
         emit_cognitive_operation_event(
             event_queue,
             task_id=task_id,
@@ -359,6 +375,13 @@ def _with_correlation(payload: Dict[str, Any], correlation: Dict[str, Any], *, t
 
 
 _PER_CALL_TIMEOUT_TOOLS = ("run_command", "run_script")
+# Process tools whose handler publishes TYPED process facts (exit_code, POSIX
+# signal name, duration_ms — plus resolved_runtime when the interpreter
+# resolver substituted the executable) through the thread-local channel in
+# ouroboros.tools.process_facts. Typed facts take PRECEDENCE over the regex harvest
+# below (_EXIT_CODE_RE/_SIGNAL_RE), which remains as the read-fallback for
+# records that lack typed meta (older traces, prose-only paths).
+_PROCESS_META_TOOLS = frozenset({"run_command", "run_script"})
 # Structural ordering margin: the outer cap sits this far above the requested
 # per-call timeout so the handler's own (cleanly-messaged) subprocess timeout
 # fires first, before the outer thread-kill. Not a wait duration — a race margin.
@@ -574,9 +597,11 @@ def _structured_tool_failure(result: Any) -> bool:
 
     Deliberately narrow: the payload must be a JSON OBJECT whose top-level `ok` is
     exactly False. A tool returning prose, a list, or `ok` as data-not-status is
-    untouched.
+    untouched. Host notes (safety warning, tripwires) are appended AFTER the
+    payload (#447 В12), so detection reads the pre-note payload from the
+    result envelope when one is present.
     """
-    text = str(result or "").lstrip()
+    text = result_payload_text(result).lstrip()
     if not text.startswith("{") or '"ok"' not in text:
         return False
     try:
@@ -592,6 +617,11 @@ def _is_tool_execution_failure(tool_ok: bool, result: Any) -> bool:
         return True
     if _structured_tool_failure(result):
         return True
+    typed = typed_result_meta(result)
+    if typed and isinstance(typed.get("is_failure"), bool):
+        # A migrated producer's typed verdict (#447 В12) wins over first-line
+        # parsing; unmigrated producers keep the text fallback below.
+        return typed["is_failure"]
     text = str(result or "")
     if any(text.startswith(p) for p in _AUTOCORRECT_PREFIXES):
         remainder = text.split("\n", 1)[1] if "\n" in text else ""
@@ -609,12 +639,17 @@ def _is_tool_execution_failure(tool_ok: bool, result: Any) -> bool:
 def _extract_result_metadata(fn_name: str, result: Any, is_error: bool) -> Dict[str, Any]:
     """Extract structured outcome facts for summaries and reflections."""
     text = str(result or "")
+    typed = typed_result_meta(result)
     status = "error" if is_error else "ok"
     if _structured_tool_failure(result):
         # A typed status, not the generic "error": an extension tool that answered
         # honestly is a different fact from an executor crash, and the trace should
         # say which happened.
         status = "tool_reported_failure"
+    elif typed and typed.get("status"):
+        # A migrated producer's typed status (#447 В12 minimal) replaces the
+        # first-line startswith ladder below; unmigrated producers keep it.
+        status = str(typed["status"])
     elif text.startswith("⚠️ TOOL_TIMEOUT"):
         status = "timeout"
     elif text.startswith("⚠️ SHELL_REGEX_AUTO_CORRECTED") and "⚠️ ARTIFACT_OUTPUT_UNDECLARED" in text:
@@ -707,6 +742,13 @@ def _extract_result_metadata(fn_name: str, result: Any, is_error: bool) -> Dict[
         status = "error"
 
     meta: Dict[str, Any] = {"status": status}
+    if typed:
+        # Typed facts stamped by producers/gates travel into result_meta as-is:
+        # the refusal's contract name and surviving route (#447 В12), the
+        # host-appended notes, and post-exec tripwire facts.
+        for passthrough in ("policy_contract", "remaining_route", "notes", "tripwire"):
+            if passthrough in typed:
+                meta[passthrough] = typed[passthrough]
     # Structured deliverable signal captured from the FULL result (before the trace
     # preview is truncated to 700 chars) so effect detection never misses a
     # late ARTIFACT_OUTPUTS marker (e.g. a stopped service after a long log tail).
@@ -737,6 +779,41 @@ def _extract_result_metadata(fn_name: str, result: Any, is_error: bool) -> Dict[
 
         meta.update(extract_skill_publish_result_metadata(result))
     return meta
+
+
+def _execute_browser_tool_bound(
+    tools: ToolRegistry,
+    tc: Dict[str, Any],
+    drive_logs: pathlib.Path,
+    task_id: str,
+    generation: Any,
+) -> Dict[str, Any]:
+    """The stateful (browser) submit wrapper: the call is BOUND to the browser
+    generation the main thread saw at submit time. A call that only STARTS
+    after its generation was retired (its own timeout fired before the worker
+    reached the tool body) must not touch the replacement — its result goes to
+    the settlement void anyway, so it refuses instead of executing."""
+    tool_ctx = getattr(tools, "_ctx", None)
+    current = getattr(tool_ctx, "browser_state", None) if tool_ctx is not None else None
+    if generation is not None and current is not None and current is not generation:
+        return {
+            "tool_call_id": tc.get("id"),
+            "fn_name": str(tc.get("function", {}).get("name") or ""),
+            "result": ("⚠️ BROWSER_SESSION_RETIRED: this call timed out before it "
+                       "started and its browser generation was retired; nothing ran."),
+            "is_error": True,
+            "args_for_log": {},
+            "is_code_tool": False,
+        }
+    if tool_ctx is not None and generation is not None:
+        # Pin the expectation for the tool body: _ensure_browser re-checks it
+        # at the exact moment it captures the generation, which closes the
+        # check-then-run window (safety checks between here and the handler
+        # can be long). _ensure_browser's own legitimate replacements update
+        # the pin, so a mid-call error after such a replacement is never
+        # mistaken for a timeout retirement.
+        setattr(tool_ctx, "_active_browser_generation", generation)
+    return _execute_single_tool(tools, tc, drive_logs, task_id)
 
 
 def _execute_single_tool(
@@ -801,6 +878,15 @@ def _execute_single_tool(
 
     args_for_log = sanitize_tool_args_for_log(fn_name, args if isinstance(args, dict) else {})
 
+    typed_process_meta = fn_name in _PROCESS_META_TOOLS
+    if typed_process_meta:
+        # Defensive: drop any stale thread-local facts before dispatch so a
+        # process-tool path that runs NO process (arg errors, blocks) can never
+        # inherit a previous call's measurements.
+        from ouroboros.tools.process_facts import consume_last_process_facts
+
+        consume_last_process_facts()
+
     tool_ok = True
     # ibl-a0348d742b9b: non-semantic pre-flight root hint. If the policy
     # matrix says the requested root is denied for this profile+operation
@@ -827,6 +913,21 @@ def _execute_single_tool(
 
     is_error = _is_tool_execution_failure(tool_ok, result)
     result_meta = _extract_result_metadata(fn_name, result, is_error)
+    if typed_process_meta:
+        # R5 (node-runtime sprint): merge the handler's TYPED process facts into
+        # the call's result_meta. When a typed publication exists it owns the
+        # WHOLE fact family — including the ABSENCE of a member: a regex hit on
+        # the child's own stdout (e.g. `signal=SIGKILL` inside grepped log
+        # output) must not survive beside honest typed facts, or D7 would
+        # manufacture a false red from prose. The regex path above stays intact
+        # as the fallback for records that carry no typed meta.
+        from ouroboros.tools.process_facts import PROCESS_FACT_KEYS
+
+        process_facts = consume_last_process_facts()
+        if process_facts:
+            for stale_key in PROCESS_FACT_KEYS:
+                result_meta.pop(stale_key, None)
+            result_meta.update(process_facts)
 
     trace_ref = {}
     try:
@@ -899,6 +1000,16 @@ class StatefulToolExecutor:
         """Reset the sticky thread after timeout/error."""
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
+
+    def retire(self):
+        """Detach from the sticky thread WITHOUT cancelling queued work.
+
+        The timeout path queues the browser-generation cleanup BEHIND the
+        hung call on this same thread; reset()'s cancel_futures would cancel
+        exactly that cleanup and leak the browser."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=False)
             self._executor = None
 
     def shutdown(self, wait=True, cancel_futures=False):
@@ -1009,6 +1120,7 @@ def _execute_with_timeout(
     use_stateful = stateful_executor and fn_name in STATEFUL_BROWSER_TOOLS
     started_at = time.perf_counter()
     correlation = _tool_correlation(tools)
+    tool_ctx = getattr(tools, "_ctx", None)
     args_for_log = {}
     try:
         args = json.loads(tc["function"]["arguments"] or "{}")
@@ -1026,7 +1138,16 @@ def _execute_with_timeout(
     }, correlation, tool_call_id=tool_call_id))
 
     if use_stateful:
-        future = stateful_executor.submit(_execute_single_tool, tools, tc, drive_logs, task_id)
+        assert stateful_executor is not None
+        # The generation this call is bound to, captured by the SUBMITTING
+        # thread: if the call's own timeout retires it before the worker even
+        # reaches the tool body, the wrapper refuses instead of letting the
+        # abandoned call build a session in the NEXT command's state.
+        submit_generation = getattr(tool_ctx, "browser_state", None)
+        future = stateful_executor.submit(
+            _execute_browser_tool_bound, tools, tc, drive_logs, task_id,
+            submit_generation,
+        )
         try:
             result = future.result(timeout=timeout_sec)
             result_meta = result.get("result_meta") or {}
@@ -1046,11 +1167,46 @@ def _execute_with_timeout(
             }, correlation, tool_call_id=tool_call_id))
             return result
         except (TimeoutError, concurrent.futures.TimeoutError):
+            settlement_target = future
+            on_settled: Optional[Callable[[], None]] = None
+            if tool_ctx is not None:  # stateful branch: use_stateful is already true here
+                from ouroboros.tools.browser import (
+                    _detach_browser,
+                    cleanup_browser_handles,
+                )
+
+                # CROSS-THREAD INVARIANT (#409): Playwright objects are bound
+                # to the worker thread that created them. This main-thread
+                # path may only DETACH (retire) the generation — never call
+                # close()/stop() here (a cross-thread stop() kills the driver
+                # under the hung worker and turns its dispatcher wait into a
+                # CPU busy-loop). The close is QUEUED on the retiring
+                # executor behind the hung call, so it runs on the owning
+                # worker thread whenever that call settles — including the
+                # already-settled race, where the queued task runs at once on
+                # that same thread (a done-callback would have run HERE, on
+                # the main thread, exactly the cross-thread close this path
+                # exists to prevent).
+                retired_generation, _fresh = _detach_browser(tool_ctx)
+                try:
+                    settlement_target = stateful_executor.submit(
+                        cleanup_browser_handles, retired_generation,
+                    )
+                except Exception:
+                    # Degenerate fallback (executor already dead): settle on
+                    # the tool future and close best-effort in its callback.
+                    log.debug("cleanup submit failed; falling back to done-callback",
+                              exc_info=True)
+                    settlement_target = future
+                    on_settled = lambda: cleanup_browser_handles(retired_generation)  # noqa: E731
             _attach_late_tool_settlement(
-                tools, future, task_id=task_id, tool_call_id=tool_call_id,
+                tools, settlement_target, task_id=task_id, tool_call_id=tool_call_id,
                 correlation={**correlation, "tool": fn_name},
+                on_settled=on_settled,
             )
-            stateful_executor.reset()
+            # retire(), not reset(): cancel_futures would cancel exactly the
+            # queued cleanup task this path just submitted.
+            stateful_executor.retire()
             reset_msg = "Browser state has been reset. "
             timeout_result = _make_timeout_result(
                 fn_name, tool_call_id, is_code_tool, tc, drive_logs,

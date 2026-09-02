@@ -298,7 +298,7 @@ def test_api_v1_declares_core_ws_message_types():
     """api_v1 must declare the core chat/media/status WS envelopes."""
     from ouroboros.contracts import api_v1
 
-    for name in ("ChatInbound", "ChatOutbound", "PhotoOutbound", "VideoOutbound", "TypingOutbound", "LogOutbound"):
+    for name in ("ChatInbound", "ChatOutbound", "PhotoOutbound", "VideoOutbound", "DocumentOutbound", "LinkAction", "LinksOutbound", "QuizOption", "QuizOutbound", "QuizStateOutbound", "DecisionRequest", "DecisionResponse", "MessageAnnotationOutbound", "TypingOutbound", "LogOutbound"):
         assert hasattr(api_v1, name), f"api_v1 missing {name}"
 
 
@@ -385,12 +385,23 @@ def _collect_literal_progress_meta_keys(source_path: pathlib.Path) -> set[str]:
             for target in node.targets:
                 if (
                     isinstance(target, ast.Subscript)
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "progress_meta"
                     and isinstance(target.slice, ast.Constant)
                     and isinstance(target.slice.value, str)
                 ):
-                    keys.add(target.slice.value)
+                    base = target.value
+                    if isinstance(base, ast.Name) and base.id == "progress_meta":
+                        keys.add(target.slice.value)
+                    # evt.setdefault("progress_meta", {})["key"] = ... — the
+                    # in-place producer idiom (task_finalization stamps).
+                    elif (
+                        isinstance(base, ast.Call)
+                        and isinstance(base.func, ast.Attribute)
+                        and base.func.attr == "setdefault"
+                        and base.args
+                        and isinstance(base.args[0], ast.Constant)
+                        and base.args[0].value == "progress_meta"
+                    ):
+                        keys.add(target.slice.value)
         elif isinstance(node, ast.Call):
             func = node.func
             if (
@@ -417,6 +428,8 @@ _CHAT_OUTBOUND_REQUIRED = frozenset({"type", "role", "content", "ts"})
 _PHOTO_OUTBOUND_REQUIRED = frozenset({"type", "role", "image_base64", "mime", "ts"})
 _VIDEO_OUTBOUND_REQUIRED = frozenset({"type", "role", "video_base64", "mime", "ts"})
 _DOCUMENT_OUTBOUND_REQUIRED = frozenset({"type", "role", "file_base64", "mime", "filename", "ts"})
+_LINKS_OUTBOUND_REQUIRED = frozenset({"type", "role", "actions", "ts"})
+_QUIZ_OUTBOUND_REQUIRED = frozenset({"type", "role", "quiz_id", "question", "options", "stake", "assumption", "state", "ts"})
 _TYPING_OUTBOUND_REQUIRED = frozenset({"type", "action"})
 _LOG_OUTBOUND_REQUIRED = frozenset({"type", "data"})
 
@@ -512,8 +525,10 @@ def test_chat_outbound_declares_progress_meta_keys_used_by_runtime():
     progress_keys: set[str] = set()
     for rel in (
         "supervisor/events.py",
+        "supervisor/workers.py",
         "ouroboros/agent.py",
         "ouroboros/skill_lifecycle_queue.py",
+        "ouroboros/task_finalization.py",
     ):
         progress_keys.update(_collect_literal_progress_meta_keys(REPO_ROOT / rel))
 
@@ -593,6 +608,36 @@ def test_document_outbound_matches_message_bus_sends():
         declared_keys=declared,
         required_keys=_DOCUMENT_OUTBOUND_REQUIRED,
         envelope_name="DocumentOutbound",
+    )
+
+
+def test_links_outbound_matches_message_bus_sends():
+    """LinksOutbound covers the structured frame emitted by the message bus."""
+    from ouroboros.gateway.contracts import LinksOutbound
+
+    declared = set(LinksOutbound.__annotations__)
+    assert _LINKS_OUTBOUND_REQUIRED <= declared
+    _assert_envelope_parity(
+        REPO_ROOT / "supervisor" / "message_bus.py",
+        discriminator="links",
+        declared_keys=declared,
+        required_keys=_LINKS_OUTBOUND_REQUIRED,
+        envelope_name="LinksOutbound",
+    )
+
+
+def test_quiz_outbound_matches_message_bus_sends():
+    """QuizOutbound covers the structured frame emitted by the message bus."""
+    from ouroboros.gateway.contracts import QuizOutbound
+
+    declared = set(QuizOutbound.__annotations__)
+    assert _QUIZ_OUTBOUND_REQUIRED <= declared
+    _assert_envelope_parity(
+        REPO_ROOT / "supervisor" / "message_bus.py",
+        discriminator="quiz",
+        declared_keys=declared,
+        required_keys=_QUIZ_OUTBOUND_REQUIRED,
+        envelope_name="QuizOutbound",
     )
 
 
@@ -1463,3 +1508,17 @@ def test_login_job_browser_envelopes_keep_their_required_discriminators():
                for key, annotation in problem.items() if key != "error")
     assert "ClaudexorLoginJobResponse" in contracts.__all__
     assert "ClaudexorLoginJobProblem" in contracts.__all__
+
+
+def test_skill_review_gate_key_set_is_frozen_with_optional_preflight_fact():
+    """ABI §11.1: the browser consumes review_gate keys; the set is pinned.
+    ``preflight_failed`` and its D11 companion ``preflight_failed_stale`` are
+    additive-optional — present exactly when the producer supplied findings
+    (#335), never fabricated in absence."""
+    from ouroboros.skill_review_status import skill_review_gate
+
+    base_keys = {"status", "stale", "executable_review", "blocking_reason",
+                 "review_enforcement", "summary"}
+    assert set(skill_review_gate("pending")) == base_keys
+    assert set(skill_review_gate("pending", findings=[])) == base_keys | {
+        "preflight_failed", "preflight_failed_stale"}

@@ -137,7 +137,7 @@ class LoadedSkill:
         from ouroboros.tools.skill_exec import _resolve_runtime_binary, _resolve_script_path
 
         runtime = (self.manifest.runtime or "").strip().lower()
-        if _resolve_runtime_binary(runtime) is None:
+        if _resolve_runtime_binary(runtime)[0] is None:
             return False
         for entry in self.manifest.scripts or []:
             if not isinstance(entry, dict):
@@ -1430,7 +1430,7 @@ def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
     available = blocked_by_grants = pending_review = blocker_review = warning_review = broken = 0
     for s in skills:
         stale = s.review.is_stale_for(s.content_hash)
-        gate = skill_review_gate(s.review.status, stale=stale)
+        gate = skill_review_gate(s.review.status, stale=stale, findings=s.review.findings)
         if s.identity_collision:
             # Readiness probes include lifecycle/dependency state. A collision
             # has no unique lifecycle identity, so its UI projection must stay
@@ -1438,6 +1438,7 @@ def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
             grants_usable = True
             runnable = False
             conflict = None
+            readiness = None
         else:
             readiness = skill_readiness_for_execution(drive_root, s, skills=skills)
             grant_status = readiness.grant_status or grant_status_for_skill(drive_root, s)
@@ -1473,6 +1474,11 @@ def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
             "source": s.source,
             "conflicts": list(s.manifest.conflicts or []),
             "conflict": conflict,
+            # #447 G3: an unresolvable manual dependency must reach the CALLER,
+            # not just the internal readiness object — a skill that needs
+            # `brew:ffmpeg` installed by a human is otherwise reported ready
+            # and fails only at execution time.
+            "manual_dependencies": list(getattr(readiness, "manual_dependencies", []) or []),
         })
     return {
         "count": len(skills),

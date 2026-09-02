@@ -54,20 +54,26 @@ _VALIDATORS: Dict[str, Tuple[List[str], str]] = {
 }
 
 
-def _resolve_runtime(runtime: str) -> Optional[str]:
+def _resolve_runtime(runtime: str) -> Tuple[Optional[str], str]:
+    """Resolve a validator runtime: ``(path, "")`` or ``(None, reason)``."""
     if runtime == "python3":
-        return shutil.which("python3") or shutil.which("python")
+        return (shutil.which("python3") or shutil.which("python")), ""
     if runtime == "node":
-        # Prefer the bundled, signed node over a PATH (Homebrew) node that macOS
-        # code-signing enforcement may SIGKILL inside the packaged app.
+        # Skill-family node precedence is owned by
+        # platform_layer.select_skill_node_runtime: bundled-first (the signed
+        # runtime macOS code-signing enforcement cannot SIGKILL inside the
+        # packaged app), with a health ROLLBACK to a working PATH node when the
+        # bundled one is absent or execution-probed broken. A provably dead
+        # candidate is never selected while a usable neighbour exists.
         try:
-            from ouroboros.platform_layer import resolve_bundled_node
-            bundled = resolve_bundled_node()
-            if bundled:
-                return bundled
+            from ouroboros.platform_layer import select_skill_node_runtime
+            selected, info = select_skill_node_runtime()
+            if selected:
+                return selected, ""
+            return None, info
         except Exception:
-            log.debug("resolve_bundled_node failed", exc_info=True)
-    return shutil.which(runtime)
+            log.debug("select_skill_node_runtime failed", exc_info=True)
+    return shutil.which(runtime), ""
 
 
 def _run_check(cmd: List[str], cwd: pathlib.Path) -> Dict[str, Any]:
@@ -472,25 +478,66 @@ def _plugin_permission_findings(skill_dir: pathlib.Path, manifest: Optional[Skil
         tree = ast.parse(plugin.read_text(encoding="utf-8"), filename=str(plugin))
     except Exception:
         return []
-    seen: dict[str, int] = {}
+    # Receiver proof (#447 A6): a method NAME alone does not prove a PluginAPI
+    # call — `OtherLibrary().get_settings()` made a skill permanently
+    # non-executable (STATUS_PENDING, no advisory override). Only a call whose
+    # receiver is provably the `register(api)` parameter (or an alias assigned
+    # from it) keeps blocking power; an unproven receiver DEGRADES to an ok=True
+    # note — the disposition every other unprovable preflight check already gets
+    # — and the tri-model review / runtime permission gate stay authoritative.
+    api_names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "register"
+            and node.args.args
+        ):
+            api_names.add(node.args.args[0].arg)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in api_names
+        ):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    api_names.add(target.id)
+    seen: dict[str, tuple[int, bool]] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
         if isinstance(func, ast.Attribute):
             perm = required_by_call.get(func.attr)
-            if perm and perm not in seen:
-                seen[perm] = getattr(node, "lineno", 0)
+            if not perm:
+                continue
+            proven = isinstance(func.value, ast.Name) and func.value.id in api_names
+            line, seen_proven = seen.get(perm, (0, False))
+            if perm not in seen or (proven and not seen_proven):
+                seen[perm] = (getattr(node, "lineno", 0), proven)
     declared = set(manifest.permissions or [])
     findings: List[Dict[str, Any]] = []
-    for perm, line in sorted(seen.items()):
-        findings.append({
+    for perm, (line, proven) in sorted(seen.items()):
+        if perm in declared:
+            detail = "ok"
+        elif proven:
+            detail = f"plugin calls PluginAPI surface requiring permission {perm!r}"
+        else:
+            detail = (
+                f"call names a PluginAPI-like surface requiring permission {perm!r}, but the "
+                "receiver is not provably the plugin's `api` object — not statically required "
+                "(reviewers and the runtime permission gate stay authoritative)"
+            )
+        finding: Dict[str, Any] = {
             "item": "permission_static",
             "source": f"{plugin.name}:{line}" if line else plugin.name,
             "permission": perm,
-            "ok": perm in declared,
-            "detail": "ok" if perm in declared else f"plugin calls PluginAPI surface requiring permission {perm!r}",
-        })
+            "ok": perm in declared or not proven,
+            "detail": detail,
+        }
+        if perm not in declared and not proven:
+            finding["degraded"] = True
+        findings.append(finding)
     return findings
 
 
@@ -688,19 +735,23 @@ def _handle_skill_preflight(
         if validator is None:
             continue
         argv_template, runtime = validator
-        runtime_path = _resolve_runtime(runtime)
+        runtime_path, runtime_reason = _resolve_runtime(runtime)
         rel_path = str(path.relative_to(skill_dir))
         if runtime_path is None:
-            # Missing external runtime is an environment gap, not a syntax
-            # verdict. Skip it (do not block); tri-model review still reads the
-            # file in full.
+            # Missing/unusable external runtime is an environment gap, not a
+            # syntax verdict. Skip it (do not block) and disclose the health
+            # reason; tri-model review still reads the file in full.
+            reason_note = f" ({runtime_reason})" if runtime_reason else ""
             file_findings.append({
                 "path": rel_path,
                 "runtime": runtime,
                 "ok": True,
                 "skipped": True,
                 "skip_reason": "runtime_unavailable",
-                "detail": f"{runtime} not on PATH — syntax not verified; relying on tri-model review",
+                "detail": (
+                    f"{runtime} not usable{reason_note} — syntax not verified; "
+                    "relying on tri-model review"
+                ),
             })
             continue
         cmd = [runtime_path] + [str(path) if part == "{path}" else part for part in argv_template[1:]]

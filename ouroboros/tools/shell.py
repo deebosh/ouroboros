@@ -9,7 +9,7 @@ import os
 import pathlib
 import re
 import shlex
-import signal
+import stat
 import subprocess
 import threading
 import time
@@ -18,11 +18,25 @@ from typing import Dict, List
 
 from ouroboros.artifacts import copy_directory_to_task_artifacts, copy_file_to_task_artifacts, record_task_scratch
 from ouroboros.platform_layer import bootstrap_process_path, kill_process_tree, scrub_repo_from_pythonpath, subprocess_new_group_kwargs
+from ouroboros.process_interpreters import (
+    active_node_resolution,
+    apply_env_path_prepend,
+    interpreter_path_overlay,
+)
 from ouroboros.config import SETTINGS_DEFAULTS, load_settings
 from ouroboros.runtime_mode_policy import (
     is_protected_runtime_path,
 )
 from ouroboros.tools.commit_gate import _invalidate_advisory
+# Export-eligibility policy (extracted module; re-exported names keep call sites
+# and tests importing from here working).
+from ouroboros.tools.output_export_policy import (  # noqa: F401 — re-exported for call sites/tests
+    _changed_path_covers,
+    _protected_output_source_reason,
+    _scan_directory_output_members,
+    _sensitive_output_component_reason,
+)
+from ouroboros.tools.result_envelope import annotate as _annotate_result
 from ouroboros.shell_parse import is_absolute_path_text, recover_stringified_argv
 from ouroboros.tools.registry import (
     ToolContext,
@@ -89,6 +103,10 @@ _active_subprocesses: set = set()
 _subprocess_lock = threading.Lock()
 _RUN_SHELL_DEFAULT_TIMEOUT_SEC = 360
 _CONTROL_DIR_BACKUP_MAX_BYTES = 5 * 1024 * 1024
+from ouroboros.tools.output_export_policy import (  # noqa: E402 — constants SSOT moved with the policy
+    _OUTPUT_DIR_MAX_BYTES,
+    _OUTPUT_DIR_MAX_FILES,
+)
 
 
 def _tracked_subprocess_run(cmd, **kwargs):
@@ -219,28 +237,13 @@ def _resolve_effective_timeout(
     return max(1, int(effective))
 
 
-def _describe_returncode(returncode: int, *, cwd: pathlib.Path | str | None = None,
-                         binding: ResolvedResourceBinding | None = None) -> str:
-    """Render a return code with signal details when applicable."""
-    suffix: list[str] = []
-    if int(returncode) < 0:
-        signal_num = abs(int(returncode))
-        try:
-            signal_name = signal.Signals(signal_num).name
-        except ValueError:
-            signal_name = f"SIG{signal_num}"
-        suffix.append(f"signal={signal_name}")
-    if cwd is not None:
-        suffix.append(f"cwd={pathlib.Path(cwd).resolve(strict=False)}")
-    rendered_suffix = f" ({', '.join(suffix)})" if suffix else ""
-    target_suffix = ""
-    if binding is not None:
-        target = [f"root={binding.root}", f"source={binding.source}"]
-        if binding.skill_name:
-            target.append(f"skill={binding.skill_name}")
-        target_suffix = "; " + ", ".join(target)
-    return f"exit_code={returncode}{rendered_suffix}{target_suffix}"
-
+# Typed process-facts channel (R5) seam: ouroboros/tools/process_facts.py.
+# Historical private spellings stay as aliases for call sites and tests.
+from ouroboros.tools.process_facts import (  # noqa: E402
+    active_resolved_runtime as _active_resolved_runtime,
+    describe_returncode as _describe_returncode,
+    publish_process_facts as _publish_process_facts,
+)
 
 def _format_process_output(stdout: str, stderr: str, *, limit: int = 50_000) -> str:
     """Render bounded stdout/stderr sections."""
@@ -255,79 +258,6 @@ def _format_process_output(stdout: str, stderr: str, *, limit: int = 50_000) -> 
     if len(rendered) > limit:
         rendered = rendered[: limit // 2] + "\n...(truncated)...\n" + rendered[-limit // 2 :]
     return rendered
-
-
-def _protected_output_source_reason(
-    ctx: ToolContext,
-    source: pathlib.Path,
-    label: str,
-    changed_paths: set[str],
-    binding: ResolvedResourceBinding | None = None,
-) -> str:
-    """Return a block reason for protected/control-plane output sources."""
-
-    try:
-        from ouroboros.protected_artifacts import block_reason_for_path
-
-        protected_artifact_reason = block_reason_for_path(
-            ctx, source, "copy", binding,
-        )
-        if protected_artifact_reason:
-            return protected_artifact_reason
-    except Exception:
-        pass
-
-    name_lower = source.name.lower()
-    if (
-        source.name.startswith(".")
-        or name_lower in _SENSITIVE_OUTPUT_NAMES
-        or name_lower.endswith(_SENSITIVE_OUTPUT_SUFFIXES)
-        or any(marker in name_lower for marker in _SENSITIVE_OUTPUT_MARKERS)
-    ):
-        return f"credential-like output {source.name} is not a deliverable artifact"
-
-    try:
-        system_repo = pathlib.Path(getattr(ctx, "system_repo_dir", None) or getattr(ctx, "repo_dir")).resolve(strict=False)
-    except Exception:
-        system_repo = pathlib.Path(getattr(ctx, "repo_dir")).resolve(strict=False)
-    if path_is_relative_to(source, system_repo):
-        try:
-            rel = source.relative_to(system_repo).as_posix()
-        except ValueError:
-            rel = source.name
-        if is_protected_runtime_path(rel):
-            return f"protected repo output {rel} is not a deliverable artifact"
-        if label in {"active_workspace", "system_repo"} and not _changed_path_covers(rel, changed_paths):
-            return f"unchanged repo output {rel} is not a generated deliverable"
-
-    try:
-        drive = pathlib.Path(getattr(ctx, "drive_root")).resolve(strict=False)
-        if path_is_relative_to(source, drive):
-            if (
-                binding is not None
-                and binding.root == "skill_payload"
-                and path_is_relative_to(source, binding.base_path)
-            ):
-                return ""
-            task_drive = resource_root_path(ctx, "task_drive")
-            artifact_store = resource_root_path(ctx, "artifact_store")
-            if not (path_is_relative_to(source, task_drive) or path_is_relative_to(source, artifact_store)):
-                return "runtime data output is not a user deliverable; use task_drive or artifact_store"
-    except Exception:
-        pass
-
-    return ""
-
-
-def _changed_path_covers(rel: str, changed_paths: set[str]) -> bool:
-    clean = str(rel or "").strip().strip("/")
-    if not clean:
-        return False
-    for item in changed_paths or set():
-        path = str(item or "").strip().strip("/")
-        if path == clean or path.startswith(clean + "/") or clean.startswith(path + "/"):
-            return True
-    return False
 
 
 def _resolve_declared_output(
@@ -473,49 +403,6 @@ def _snapshot_declared_outputs(
     return snapshots
 
 
-def _scan_directory_output_members(
-    ctx: ToolContext,
-    source: pathlib.Path,
-    *,
-    label: str,
-    changed_paths: set[str],
-    binding: ResolvedResourceBinding | None = None,
-) -> tuple[list[pathlib.Path], int, str]:
-    root = pathlib.Path(source).resolve(strict=False)
-    members: list[pathlib.Path] = []
-    dir_size = 0
-    try:
-        for child in root.rglob("*"):
-            if child.is_symlink():
-                continue
-            if not child.is_file():
-                continue
-            members.append(child)
-            try:
-                dir_size += child.stat().st_size
-            except OSError:
-                pass
-            try:
-                rel_parts = child.resolve(strict=False).relative_to(root).parts
-            except ValueError:
-                rel_parts = child.parts
-            component_reason = _sensitive_output_component_reason(rel_parts)
-            if component_reason:
-                return [], dir_size, f"{child}: {component_reason}"
-            reason = _protected_output_source_reason(
-                ctx, child.resolve(strict=False), label, changed_paths, binding,
-            )
-            if reason:
-                return [], dir_size, f"{child}: {reason}"
-            if len(members) > _OUTPUT_DIR_MAX_FILES:
-                return [], dir_size, f"{source}: directory output has more than {_OUTPUT_DIR_MAX_FILES} files"
-            if dir_size > _OUTPUT_DIR_MAX_BYTES:
-                return [], dir_size, f"{source}: directory output exceeds {_OUTPUT_DIR_MAX_BYTES} bytes"
-    except OSError as exc:
-        return [], dir_size, f"{source}: {type(exc).__name__}: {exc}"
-    return sorted(members, key=lambda item: item.as_posix()), dir_size, ""
-
-
 def _register_process_outputs(
     ctx: ToolContext,
     outputs: List[str] | None,
@@ -581,15 +468,38 @@ def _register_process_outputs(
                 notes.append(f"failed output copy {text}: source is not a regular file")
                 failed = True
         elif source.is_dir():
-            dir_members, _dir_size, blocked_member = _scan_directory_output_members(
+            dir_members, _dir_size, blocked_member, skipped_members = _scan_directory_output_members(
                 ctx,
                 source,
                 label=str(cwd_root or "cwd"),
                 changed_paths=changed_paths or set(),
                 binding=binding,
             )
+            if skipped_members:
+                # Per-member receipt (D4): the export is PARTIAL, never silently
+                # so. The rendered note is bounded; the COMPLETE list goes to
+                # the task log so the omission stays resolvable (#447 P1).
+                shown = "; ".join(skipped_members[:5])
+                more = (
+                    f" (+{len(skipped_members) - 5} more; full list in server.log,"
+                    f" task {getattr(ctx, 'task_id', '') or '?'})"
+                    if len(skipped_members) > 5 else ""
+                )
+                if len(skipped_members) > 5:
+                    log.info(
+                        "task %s: directory output %s: full export skip list (%d): %s",
+                        getattr(ctx, "task_id", "") or "?",
+                        text, len(skipped_members), "; ".join(skipped_members),
+                    )
+                notes.append(
+                    f"skipped {len(skipped_members)} member(s) of directory output {text}: {shown}{more}"
+                )
             if blocked_member:
                 notes.append(f"blocked directory output: {blocked_member}")
+                failed = True
+                continue
+            if not dir_members:
+                notes.append(f"failed directory output copy {text}: no exportable members")
                 failed = True
                 continue
             try:
@@ -857,23 +767,6 @@ _EMBEDDED_SHELL_OP_RE = re.compile(r'\s(?:&&|\|\|)\s')
 _SINGLE_ARG_SHELL_META_RE = re.compile(r'\s(?:&&|\|\|)\s|(?<!\|)\|(?!\|)|;')
 _SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"})
 _ENV_REF_PATTERN = re.compile(r'\$(?:\{[A-Z][A-Z0-9_]*\}|[A-Z][A-Z0-9_]*)')
-_SENSITIVE_OUTPUT_NAMES = frozenset({".env", ".env.local", "credentials.json", "secrets.json", "token.json"})
-_SENSITIVE_OUTPUT_SUFFIXES = (".key", ".pem", ".p12", ".pfx")
-_SENSITIVE_OUTPUT_MARKERS = ("api_key", "apikey", "access_token", "bearer_token", "credential", "password", "refresh_token", "secret")
-_SENSITIVE_OUTPUT_COMPONENT_NAMES = _SENSITIVE_OUTPUT_NAMES | frozenset({"secret", "secrets", "credential", "credentials", "token", "tokens"})
-
-
-def _sensitive_output_component_reason(parts: tuple[str, ...]) -> str:
-    for part in parts:
-        text = str(part or "")
-        if not text:
-            continue
-        low = text.lower()
-        if text.startswith("."):
-            return f"hidden/control output path component {text} is not a deliverable artifact"
-        if low in _SENSITIVE_OUTPUT_COMPONENT_NAMES or low.endswith(_SENSITIVE_OUTPUT_SUFFIXES) or any(marker in low for marker in _SENSITIVE_OUTPUT_MARKERS):
-            return f"credential-like output path component {text} is not a deliverable artifact"
-    return ""
 def _validate_shell_argv(cmd: List[str]) -> str:
     """Cascade validation of a shell argv after autocorrect.
 
@@ -885,13 +778,12 @@ def _validate_shell_argv(cmd: List[str]) -> str:
     NOT in here — callers run it first so this helper validates what
     actually gets executed.
 
-    Cascade order (matches the original inline layout):
-      1. env_ref check (excluded for shell interpreters — same gate as the
-         embedded-op check, so `["sh", "-c", "$FOO && bar"]` passes through)
+    Cascade order (the still-refused subset; env-ref and glued-redirect
+    shapes are now DISCLOSED by ``_literal_argv_notes`` rather than refused —
+    #447 A5 — so those two steps were removed here):
       2. shell-builtin check (cd, source, ., etc. — refuse with cwd hint
          for cd and a generic sh -c hint for the rest)
       3. standalone shell-operator check (`_SHELL_OPERATORS.intersection`)
-      4. glued-redirect check (`_GLUED_REDIRECT_RE`)
       5. single-element metacharacter check (v6.101.0 fix: a lone `&&`/`||`/
          `|`/`;` when cmd has EXACTLY ONE element — the whole cmd is then
          necessarily one full pipeline mistakenly passed as an un-split
@@ -903,16 +795,6 @@ def _validate_shell_argv(cmd: List[str]) -> str:
          multi-arg production failure shape).
     """
     executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
-    if executable_name not in _SHELL_INTERPRETERS:
-        for arg in cmd:
-            match = _ENV_REF_PATTERN.search(arg)
-            if match:
-                return (
-                    f'⚠️ SHELL_ENV_ERROR: Found literal env reference "{match.group(0)}" in cmd array. '
-                    "run_command executes argv directly, so shell variables are not expanded. "
-                    'Use ["sh", "-c", "..."] if you intentionally need shell expansion, '
-                    "or read the environment variable inside the called program."
-                )
 
     if cmd and cmd[0] in _SHELL_BUILTINS:
         if cmd[0] == "cd":
@@ -937,35 +819,9 @@ def _validate_shell_argv(cmd: List[str]) -> str:
             '(2) For pipes/chaining: ["sh", "-c", "cmd1 && cmd2"]'
         )
 
-    # A redirect glued into one argv element (e.g. "2>/dev/null", "2>&1")
-    # slips past the standalone-operator set above and reaches the program
-    # as a literal arg — the program then dies cryptically ("find:
-    # 2>/dev/null: unknown primary"). Surface the same actionable hint
-    # before subprocess runs.
-    #
-    # GATE on _SHELL_INTERPRETERS (closes ibl-e357d33b9c54 / class of heredoc-via-
-    # bash-c false positives): when the executable IS a shell interpreter
-    # (`sh`/`bash`/`zsh`/`fish`/`cmd`/`powershell`/`pwsh`), every following argv
-    # element is shell-syntax content — typically `cmd[1]="-c"` and then the
-    # script body. A heredoc start (`<<EOF`) at the beginning of a script body is
-    # VALID shell (the shell reads the body from the script text itself; external
-    # stdin is irrelevant for `bash -c "..."`). Without this gate, a call like
-    # `["bash", "-c", "<<EOF\nbody\nEOF"]` falsely hit this step and surfaced
-    # "Use [...'-c',...] for redirection" even though the caller was already doing
-    # exactly that — a class-level false positive unrelated to the underlying OS
-    # behavior (which works fine, verified empirically). The gate mirrors the
-    # env_ref and embedded_op gates at steps 1+6: argv syntax-checks belong to
-    # the "argv without a shell" case, never to the "argv whose content is a
-    # shell script" case.
-    if cmd and pathlib.Path(cmd[0]).name.lower() not in _SHELL_INTERPRETERS:
-        for arg in cmd:
-            if _GLUED_REDIRECT_RE.match(arg):
-                return (
-                    f'⚠️ SHELL_CMD_ERROR: Shell redirection "{arg}" found in cmd array. '
-                    'Subprocess does not interpret shell syntax, so it reaches the '
-                    'program as a literal argument. '
-                    'Use ["sh", "-c", "your command with redirects"] for redirection.'
-                )
+    # (Glued-redirect refusal removed — #447 A5: a "2>/dev/null" element is
+    # literal data to subprocess and is now DISCLOSED by _literal_argv_notes,
+    # so the command runs and the [sh,-c,...] hint rides along in the result.)
 
     # cmd has exactly ONE element: that element is not "one argument among
     # several" (where operator-looking text can be legitimate content, e.g.
@@ -1016,6 +872,47 @@ def _validate_shell_argv(cmd: List[str]) -> str:
                 )
 
     return ""
+
+
+def _literal_argv_notes(cmd: List[str]) -> str:
+    """Disclosure notes for shell-syntax-looking bytes in direct argv (#447 A5).
+
+    A commit message naming ``$HOME``, an awk ``|`` field separator, a
+    ``2>/dev/null`` element — no shell runs for direct argv, so these are
+    LITERAL DATA carrying no authority question. They used to be REFUSED as
+    errors, blocking commands that would have worked; the in-file autocorrect
+    precedent applies instead: run the command and DISCLOSE what was passed
+    literally, so a genuinely mistaken spelling still explains its own cryptic
+    program error.
+    """
+    notes: list[str] = []
+    executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
+    if executable_name not in _SHELL_INTERPRETERS:
+        for arg in cmd:
+            match = _ENV_REF_PATTERN.search(arg)
+            if match:
+                notes.append(
+                    f'⚠️ SHELL_LITERAL_ARGV_NOTE: literal env reference "{match.group(0)}" in the cmd '
+                    "array reached the program UNEXPANDED (run_command executes argv directly). "
+                    'Use ["sh", "-c", "..."] if you intended shell expansion.\n'
+                )
+                break
+    if found_ops := _SHELL_OPERATORS.intersection(cmd):
+        notes.append(
+            f'⚠️ SHELL_LITERAL_ARGV_NOTE: shell operator "{sorted(found_ops)[0]}" in the cmd array was '
+            "passed to the program as a LITERAL argument (subprocess interprets no shell syntax). "
+            'Use ["sh", "-c", "cmd1 && cmd2"] for pipes/chaining.\n'
+        )
+    # Glued redirects bypass the standalone-operator set but remain shell-looking.
+    for arg in cmd:
+        if _GLUED_REDIRECT_RE.match(arg):
+            notes.append(
+                f'⚠️ SHELL_LITERAL_ARGV_NOTE: redirect-looking argument "{arg}" in the cmd array was '
+                "passed to the program as a LITERAL argument (subprocess interprets no shell "
+                'syntax). Use ["sh", "-c", "..."] for real redirection.\n'
+            )
+            break
+    return "".join(notes)
 
 
 def _resolve_scratch_abs(scratch: List[str] | None, work_dir) -> list[pathlib.Path]:
@@ -1179,6 +1076,9 @@ def _run_shell(
     err = _validate_shell_argv(cmd)
     if err:
         return err
+    # #447 A5: env-ref / glued-redirect shapes that used to be refused are now
+    # disclosed as literal pass-throughs — the command still runs.
+    autocorrect_note += _literal_argv_notes(cmd)
 
     try:
         binding = _resolved_binding or build_resolved_resource_binding(
@@ -1230,21 +1130,33 @@ def _run_shell(
         _scratch_reason = _scratch_safety_reason(ctx, scratch_abs, pathlib.Path(work_dir), repo_root)
         if _scratch_reason:
             return f"⚠️ SCRATCH_BLOCKED: {_scratch_reason}."
-
     timeout_sec = _resolve_effective_timeout(_RUN_SHELL_DEFAULT_TIMEOUT_SEC, ctx, override_sec=_timeout_override)
     bootstrap_process_path()
-    _command_start_ts = time.time()
+    # Emergency bundled-node PATH prepend; None on every healthy path (env stays byte-identical).
+    node_resolution = active_node_resolution(ctx)
+    # Two clocks (D2-1): EPOCH feeds the st_mtime audit; MONOTONIC feeds durations.
+    _command_start_epoch = time.time()
+    _command_start_ts = time.monotonic()
     try:
         if _executor_can_run_cwd(ctx, pathlib.Path(work_dir)):
-            res = executor_execute(ctx, cmd, pathlib.Path(work_dir), timeout_sec)
+            res = executor_execute(ctx, cmd, pathlib.Path(work_dir), timeout_sec,
+                                   env_overlay=interpreter_path_overlay(node_resolution))
         else:
-            run_env = _shell_env_for_cwd(ctx, pathlib.Path(work_dir))
+            run_env = apply_env_path_prepend(
+                _shell_env_for_cwd(ctx, pathlib.Path(work_dir)), node_resolution)
             res = _tracked_subprocess_run(
                 cmd, cwd=str(work_dir),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, timeout=timeout_sec,
                 **({"env": run_env} if run_env is not None else {}),
             )
+        # Typed process facts (R5): measured HERE, structurally — never re-derived from prose.
+        _lived_ms = max(0, int((time.monotonic() - _command_start_ts) * 1000))
+        _publish_process_facts(
+            returncode=getattr(res, "returncode", None),
+            started_ts=_command_start_ts,
+            resolved_runtime=_active_resolved_runtime(ctx),
+        )
         # Post-run hashes exclude scratch only while its exact bytes still match.
         _record_scratch_fingerprints(ctx, scratch_abs)
         if res.returncode != 0:
@@ -1257,7 +1169,7 @@ def _run_shell(
                     f"{_format_process_output(res.stdout or '', '')}"
                     f"{executor_note}"
                 )
-            return autocorrect_note + f"⚠️ SHELL_EXIT_ERROR: command exited with {_describe_returncode(res.returncode, cwd=work_dir, binding=binding)}.\n\n{_format_process_output(res.stdout or '', res.stderr or '')}{executor_note}"
+            return _annotate_result(autocorrect_note + f"⚠️ SHELL_EXIT_ERROR: command exited with {_describe_returncode(res.returncode, cwd=work_dir, binding=binding, lived_ms=_lived_ms, resolved_runtime=_active_resolved_runtime(ctx))}.\n\n{_format_process_output(res.stdout or '', res.stderr or '')}{executor_note}", status="non_zero_exit", is_failure=True)
         after_changed = _status_snapshot(repo_root)
         if after_changed != before_changed:
             # This resolved cwd may be outside the live-repo dispatcher snapshot.
@@ -1307,7 +1219,7 @@ def _run_shell(
             cmd,
             outputs,
             scratch_abs=scratch_abs,
-            command_start_ts=_command_start_ts,
+            command_start_ts=_command_start_epoch,
             cwd=work_dir,
         )
         if undeclared_user_outputs:
@@ -1371,8 +1283,11 @@ def _run_shell(
         executor_note = ""
         if getattr(res, "backend_trace", None):
             executor_note = "\n\nEXECUTOR_TRACE:\n" + json.dumps(res.backend_trace, ensure_ascii=False, indent=2)
-        return autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}{protected_restore_note}"
+        return _annotate_result(autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}{protected_restore_note}", status="ok_autocorrected" if autocorrect_note else "ok", is_failure=False)
     except subprocess.TimeoutExpired:
+        # A timed-out child has no returncode (unlike signal death): duration only.
+        _publish_process_facts(started_ts=_command_start_ts,
+                               resolved_runtime=_active_resolved_runtime(ctx))
         # Timeout-created scratch still needs its exclusion fingerprint.
         _record_scratch_fingerprints(ctx, scratch_abs)
         return (
@@ -1384,6 +1299,9 @@ def _run_shell(
             f"(up to the per-call ceiling) — and preserve a best-effort deliverable before the task deadline."
         )
     except Exception as e:
+        # e.g. FileNotFoundError before/at exec: no returncode, duration only.
+        _publish_process_facts(started_ts=_command_start_ts,
+                               resolved_runtime=_active_resolved_runtime(ctx))
         _record_scratch_fingerprints(ctx, scratch_abs)
         return f"⚠️ SHELL_ERROR: {e}. root={binding.root}, cwd={work_dir}"
 
@@ -1422,6 +1340,28 @@ def _get_changed_files(repo_dir: pathlib.Path) -> list:
     return []
 
 
+def _get_diff_stat(repo_dir: pathlib.Path) -> str:
+    """Return git diff --stat output."""
+    try:
+        res = subprocess.run(
+            ["git", "diff", "--stat"],
+            cwd=str(repo_dir), capture_output=True, text=True, timeout=5,
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+# The run_script interpreter VALIDATOR (SSOT; the schema enum below is the
+# advertised subset — Windows launcher spellings are accepted, not advertised).
+RUN_SCRIPT_INTERPRETER_ALLOWLIST = frozenset({
+    "python", "python3", "python.exe", "python3.exe",
+    "bash", "sh", "node", "node.exe", "ruby",
+})
+
+
 def _run_script(
     ctx: ToolContext,
     script: str,
@@ -1443,17 +1383,24 @@ def _run_script(
     bucket = str(kwargs.get("bucket") or "")
     skill_name = str(kwargs.get("skill_name") or "")
     interp = str(interpreter or "python3").strip()
-    allowed = {"python", "python3", "python.exe", "python3.exe", "bash", "sh", "node", "ruby"}
+    allowed = RUN_SCRIPT_INTERPRETER_ALLOWLIST
     resolver_attested = False
     try:
-        from ouroboros.python_interpreter import PythonResolutionTrace
+        from ouroboros.process_interpreters import InterpreterResolutionTrace
 
-        resolution = getattr(ctx, "_active_python_resolution", None)
+        resolution = getattr(ctx, "_active_interpreter_resolution", None)
         resolver_attested = bool(
-            isinstance(resolution, PythonResolutionTrace)
+            isinstance(resolution, InterpreterResolutionTrace)
             and resolution.verified
             and resolution.tool == "run_script"
-            and resolution.requested_interpreter in {"python", "python3"}
+            and (
+                resolution.requested_interpreter in {"python", "python3"}
+                if resolution.family == "python"
+                # A node attestation admits only an actual SUBSTITUTION (emergency
+                # rewrite); healthy paths have changed=False, so bare spellings
+                # still hit the allowlist (A-F1).
+                else (resolution.family == "node" and resolution.changed)
+            )
             and resolution.resolved_interpreter == interp
         )
     except Exception:
@@ -1476,7 +1423,8 @@ def _run_script(
     # executes in so a relatively-declared scratch path matches a user_files write in the body.
     resolved_workdir = pathlib.Path(binding.target_path)
     _scratch_abs_body = _resolve_scratch_abs(scratch, resolved_workdir)
-    _body_start_ts = time.time()
+    _body_start_epoch = time.time()  # st_mtime audit; monotonic below is for durations
+    _body_start_ts = time.monotonic()
     executor_active = _executor_can_run_cwd(ctx, resolved_workdir)
     active_workspace_script = binding.root == "active_workspace"
     if active_workspace_script:
@@ -1527,7 +1475,7 @@ def _run_script(
         [interp, "-c", body],
         outputs,
         scratch_abs=_scratch_abs_body,
-        command_start_ts=_body_start_ts,
+        command_start_ts=_body_start_epoch,
         cwd=resolved_workdir,
     )
     audit_note = ""
@@ -1539,10 +1487,16 @@ def _run_script(
             + ". Re-run with outputs=[...] or write the canonical deliverable via root=artifact_store."
         )
     if str(result).lstrip().startswith("⚠️"):
+        # The result already owns line 1 with its own typed marker, which is what
+        # the failure classifier reads — the nudge appends after it.
         tail = f"\n{audit_note}" if audit_note else ""
         return f"{result}{tail}\n# script_path={script_path}"
     if audit_note:
-        return f"{audit_note}\n# script_path={script_path}"
+        # The nudge used to REPLACE the whole _run_shell payload (a successful
+        # script's answer was gone; re-running was the sole recovery). Marker
+        # first — ARTIFACT_OUTPUT_UNDECLARED is a typed policy-denial surface the
+        # classifier reads off line 1 — payload appended, as in run_command.
+        return f"{audit_note}\n\n# script_path={script_path}\n{result}"
     return f"# script_path={script_path}\n{result}"
 
 

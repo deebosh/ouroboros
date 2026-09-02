@@ -206,7 +206,11 @@ def test_skill_preflight_missing_validator_runtime_is_tolerated(tmp_path, monkey
     (skill_dir / "scripts" / "check.js").write_text("console.log('ok')\n", encoding="utf-8")
 
     from ouroboros.tools import skill_preflight as sp
-    monkeypatch.setattr(sp, "_resolve_runtime", lambda runtime: None if runtime == "node" else "/bin/echo")
+    monkeypatch.setattr(
+        sp,
+        "_resolve_runtime",
+        lambda runtime: (None, "bundled:absent; path:missing:not_on_path") if runtime == "node" else ("/bin/echo", ""),
+    )
 
     result = json.loads(sp._handle_skill_preflight(ctx, skill="alpha", paths=["scripts/check.js"]))
 
@@ -347,19 +351,26 @@ def test_run_shell_blocks_self_authored_marker_writes(tmp_path, monkeypatch):
     assert ".self_authored.json" in result
 
 
-def test_run_shell_restores_obfuscated_self_authored_state_marker(tmp_path):
+def test_run_shell_blocks_obfuscated_self_authored_marker_write_pre_exec(tmp_path, monkeypatch):
+    """Pre-execution proof replacing the deleted snapshot/restore pin (issue #447).
+
+    A shell path that merely NAMES state/skills/self_authored.json is refused
+    BEFORE execution (SKILL_STATE_WRITE_BLOCKED) — no post-hoc restore exists
+    any more, so the block plus the absent file is the whole property.
+    """
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
     ctx = _make_ctx(tmp_path)
     marker = ctx.drive_root / "state" / "skills" / "alpha" / "self_authored.json"
     marker.parent.mkdir(parents=True)
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
 
-    before = registry._snapshot_owner_files()
-    marker.write_text('{"origin":"self_authored"}', encoding="utf-8")
+    result = registry.execute(
+        "run_command",
+        {"cmd": ["bash", "-c", f"printf '{{}}' > {marker}"]},
+    )
 
-    restored = registry._restore_owner_files(before)
-
-    assert restored is True
+    assert "SKILL_STATE_WRITE_BLOCKED" in result
     assert not marker.exists()
 
 
@@ -613,6 +624,63 @@ def test_skill_exec_rejects_runtime_outside_allowlist(tmp_path, monkeypatch):
     assert "allowlist" in result
 
 
+def test_skill_exec_node_unavailable_reports_health_reason(tmp_path, monkeypatch):
+    """When neither the bundled nor the PATH node is usable, the existing
+    SKILL_EXEC_ERROR shape now also carries the health probe verdicts."""
+    from ouroboros import platform_layer
+
+    skills_root = tmp_path / "skills"
+    skill_dir = _build_skill(
+        skills_root,
+        "hello",
+        manifest=_valid_script_manifest("hello", runtime="node"),
+    )
+    ctx = _make_ctx(tmp_path)
+    _mark_reviewed_and_enabled(ctx.drive_root, skill_dir, "hello")
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    monkeypatch.setattr(
+        platform_layer,
+        "select_skill_node_runtime",
+        lambda timeout_sec=10: ("", "bundled:broken:signal:SIGKILL; path:missing:not_on_path"),
+    )
+
+    result = skill_exec_mod._handle_skill_exec(
+        ctx, skill="hello", script="scripts/hello.py"
+    )
+    assert "SKILL_EXEC_ERROR" in result
+    assert "bundled:broken:signal:SIGKILL" in result
+    assert "path:missing:not_on_path" in result
+
+
+def test_skill_preflight_node_unavailable_detail_carries_health_reason(tmp_path, monkeypatch):
+    """The preflight finding keeps skip_reason=runtime_unavailable but its
+    detail now discloses WHY the runtime was rejected (health verdicts)."""
+    from ouroboros import platform_layer
+
+    ctx = _make_ctx(tmp_path)
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    skill_dir = _build_skill(skills_root, "alpha")
+    (skill_dir / "scripts" / "check.js").write_text("console.log('ok')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        platform_layer,
+        "select_skill_node_runtime",
+        lambda timeout_sec=10: ("", "bundled:absent; path:broken:signal:SIGKILL"),
+    )
+
+    from ouroboros.tools import skill_preflight as sp
+
+    result = json.loads(sp._handle_skill_preflight(ctx, skill="alpha", paths=["scripts/check.js"]))
+
+    assert result["ok"] is True
+    js = next(f for f in result["files"] if f["path"].endswith("check.js"))
+    assert js.get("skipped") is True
+    assert js.get("skip_reason") == "runtime_unavailable"
+    assert "path:broken:signal:SIGKILL" in js["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Happy path: actual subprocess execution
 # ---------------------------------------------------------------------------
@@ -697,6 +765,55 @@ def test_skill_exec_queues_lifecycle_event_for_supervisor(tmp_path, monkeypatch)
     assert queued[-1]["type"] == "skill_exec_finished"
     assert queued[-1]["skill"] == "hello"
     assert queued[-1]["exit_code"] == 0
+
+
+def test_skill_exec_refuses_non_utf8_declared_script(tmp_path, monkeypatch):
+    """#447 X4 exec seam: review admission carries non-UTF-8 payload files as
+    descriptors, so the exec layer must refuse to hand a binary blob (a
+    PK/zipapp renamed into the scripts list) to an interpreter — judged on the
+    WHOLE file, so a binary tail behind a text prefix cannot ride through."""
+    skills_root = tmp_path / "skills"
+    skill_dir = _build_skill(skills_root, "blobby", script_body="print('placeholder')\n")
+    # Overwrite the declared script with >64 KiB of VALID UTF-8 text followed by
+    # a binary tail: a prefix-only (64 KiB) check accepts this file — only the
+    # whole-file decode refuses it, which is exactly the seam being pinned.
+    (skill_dir / "scripts" / "hello.py").write_bytes(
+        (b"# looks like python\n" * 4000) + b"PK\x03\x04" + b"\xff\xfe" * 4000
+    )
+    ctx = _make_ctx(tmp_path)
+    _mark_reviewed_and_enabled(ctx.drive_root, skill_dir, "blobby")
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+
+    raw = skill_exec_mod._handle_skill_exec(ctx, skill="blobby", script="scripts/hello.py")
+    assert "SKILL_EXEC_ERROR" in raw and "not valid UTF-8" in raw, raw[:300]
+
+
+def test_skill_exec_large_multibyte_script_survives_the_utf8_seam(tmp_path, monkeypatch):
+    """Positive pin for the seam (#447 item 21: name the surviving path): a
+    legitimate >64 KiB script with multibyte characters — including one that
+    would straddle a 64 KiB prefix boundary — still executes."""
+    skills_root = tmp_path / "skills"
+    skill_dir = _build_skill(skills_root, "bigtext", script_body="print('placeholder')\n")
+    # Construct the file so a 2-byte UTF-8 character STRADDLES byte 65536
+    # exactly: a prefix-only decode cuts mid-character and falsely refuses;
+    # the whole-file decode accepts. A comment pad of ASCII up to offset
+    # 65535, then "я" (2 bytes at 65535..65536), then the real payload.
+    # One long COMMENT line whose "я" occupies bytes 65535..65536 exactly.
+    body = b"#" + b"x" * 65534 + "я".encode("utf-8") + b"\n"
+    assert body[65535:65537] == "я".encode("utf-8")
+    (skill_dir / "scripts" / "hello.py").write_bytes(
+        body + b"print('ok-big')\n"
+    )
+    ctx = _make_ctx(tmp_path)
+    _mark_reviewed_and_enabled(ctx.drive_root, skill_dir, "bigtext")
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+
+    raw = skill_exec_mod._handle_skill_exec(ctx, skill="bigtext", script="scripts/hello.py")
+    payload = json.loads(raw)
+    assert payload["exit_code"] == 0, payload
+    assert "ok-big" in payload["stdout"]
 
 
 def test_skill_exec_runs_in_light_mode(tmp_path, monkeypatch):

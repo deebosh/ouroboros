@@ -92,14 +92,56 @@ export function reviewTone(status, error = '') {
     return ['warnings', 'pending'].includes(status) ? 'warn' : 'muted';
 }
 
+// #335: the typed backend fact behind the Repair affordance. Absence of the
+// key means the producer could not know — never treated as false-positive.
+export function preflightFailed(entity) {
+    return entity?.review_gate?.preflight_failed === true;
+}
+
+// #335 follow-up (D11): a recorded preflight FAIL whose findings are STALE for
+// the current payload bytes. Re-review stays primary (it reruns the preflight);
+// Repair is additionally offered based on the last recorded preflight.
+export function preflightFailedStale(entity) {
+    return entity?.review_gate?.preflight_failed_stale === true;
+}
+
+// #335: a deterministic-preflight finding carries the raw preflight JSON in
+// its reason; render the failed entries as a human-readable diagnosis.
+// Fail-soft: anything unparseable falls back to the caller's raw rendering.
+export function preflightFindingText(finding) {
+    if ((finding?.item || '') !== 'skill_preflight') return '';
+    let parsed;
+    try { parsed = JSON.parse(finding.reason || ''); } catch { return ''; }
+    if (!parsed || typeof parsed !== 'object') return '';
+    const parts = [];
+    // manifest / widgets / permissions / presence rows share {item, ok, detail}.
+    for (const section of ['manifest', 'widgets', 'permissions', 'presence']) {
+        for (const row of Array.isArray(parsed[section]) ? parsed[section] : []) {
+            if (row && row.ok === false) parts.push(`${row.item}: ${row.detail || 'failed'}`);
+        }
+    }
+    for (const file of Array.isArray(parsed.files) ? parsed.files : []) {
+        if (file && file.ok === false) {
+            const firstLine = String(file.stderr || file.detail || '').split('\n').find(Boolean) || 'failed';
+            parts.push(`${file.path}: ${firstLine}`);
+        }
+    }
+    if (!parts.length) return '';
+    const shown = parts.slice(0, 3).join('; ');
+    return `Preflight failed — ${shown}${parts.length > 3 ? ` (+${parts.length - 3} more)` : ''}`;
+}
+
 export function topReviewFinding(entity) {
     const findings = Array.isArray(entity?.review_findings) ? entity.review_findings : [];
     if (!findings.length) return '';
     const first = findings[0] || {};
+    const more = findings.length > 1 ? ` (+${findings.length - 1} more)` : '';
+    const preflight = preflightFindingText(first);
+    if (preflight) return `${preflight}${more}`;
     const label = first.item || first.check || first.title || 'finding';
     const verdict = first.verdict || first.severity || '';
     const reason = first.reason || first.message || '';
-    return `${verdict ? `${verdict} ` : ''}${label}: ${reason}`.trim();
+    return `${`${verdict ? `${verdict} ` : ''}${label}: ${reason}`.trim()}${more}`;
 }
 
 export function renderHubCard(item, {
@@ -203,11 +245,23 @@ export function renderMarkdownSafe(rawMd, { emptyHtml = '', preClass = '' } = {}
             gfm: true,
             breaks: false,
         });
-        return DOMPurify.sanitize(rendered, {
+        const clean = DOMPurify.sanitize(rendered, {
             USE_PROFILES: { html: true },
             FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'img', 'video', 'audio', 'source'],
             FORBID_ATTR: ['style', 'src', 'srcset', 'srcdoc'],
+            RETURN_DOM_FRAGMENT: true,
         });
+        // Same link contract the chat markdown renderer applies: the desktop
+        // WKWebView has no new-window delegate, so a same-window navigation
+        // out of a widget replaces the whole app with no way back. `_blank`
+        // also lets the shell interceptor route the click to the OS browser.
+        for (const link of clean.querySelectorAll('a[href]')) {
+            link.setAttribute('target', '_blank');
+            link.setAttribute('rel', 'noopener noreferrer');
+        }
+        const host = document.createElement('div');
+        host.appendChild(clean);
+        return host.innerHTML;
     } catch (err) {
         console.warn('renderMarkdownSafe: markdown render failed', err);
         return fallback;

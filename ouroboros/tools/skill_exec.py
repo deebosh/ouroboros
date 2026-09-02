@@ -75,28 +75,44 @@ _ALWAYS_FORWARDED_ENV = frozenset({
 _FORBIDDEN_ENV_FORWARD_KEYS = FORBIDDEN_SKILL_SETTINGS
 
 
-def _resolve_runtime_binary(runtime: str) -> Optional[str]:
+def _resolve_runtime_binary(runtime: str) -> Tuple[Optional[str], str]:
+    """Resolve a skill runtime binary: ``(path, "")`` or ``(None, reason)``.
+
+    The reason (when known) carries the node health verdicts verbatim so the
+    surface error can say WHY nothing was usable, not just that it was not.
+    """
     import sys
     if runtime == "node":
-        # Prefer the bundled, signed node over a PATH (Homebrew) node that macOS
-        # code-signing enforcement may SIGKILL inside the packaged app.
+        # Skill-family node precedence is owned by
+        # platform_layer.select_skill_node_runtime: bundled-first (the signed
+        # runtime macOS code-signing enforcement cannot SIGKILL inside the
+        # packaged app), with a health ROLLBACK to a working PATH node when the
+        # bundled one is absent or execution-probed broken. A provably dead
+        # candidate is never selected while a usable neighbour exists.
         try:
-            from ouroboros.platform_layer import resolve_bundled_node
-            bundled = resolve_bundled_node()
-            if bundled:
-                return bundled
-        except Exception:
-            log.debug("resolve_bundled_node failed", exc_info=True)
+            from ouroboros.platform_layer import select_skill_node_runtime
+            selected, info = select_skill_node_runtime()
+            if selected:
+                return selected, ""
+            return None, info
+        except Exception as exc:
+            # An unexpected selector failure must not be invisible: the PATH
+            # scan below still runs, but the operator sees WHY the skill-family
+            # precedence was skipped (T16).
+            log.warning(
+                "select_skill_node_runtime failed (%s: %s); falling back to a plain PATH scan",
+                type(exc).__name__, exc, exc_info=True,
+            )
     candidates = _ALLOWED_RUNTIMES.get(runtime or "", ())
     for candidate in candidates:
         resolved = shutil.which(candidate)
         if resolved:
-            return resolved
+            return resolved, ""
     if runtime in ("python", "python3") and sys.executable:
         resolved = pathlib.Path(sys.executable)
         if resolved.is_file():
-            return str(resolved)
-    return None
+            return str(resolved), ""
+    return None, ""
 
 
 def _scrub_env(
@@ -594,6 +610,27 @@ def _non_executable_review_message(prefix: str, skill_name: str, status: str, *,
     )
 
 
+def _non_text_script_refusal(script_path: pathlib.Path, script_rel: str) -> str:
+    """Execution-seam guard (#447 X4): review admission carries non-UTF-8
+    payload files as DESCRIPTORS instead of hard-blocking them, so the exec
+    layer independently refuses to hand a non-text blob (a zipapp/PK archive
+    renamed to a declared script name) to an interpreter. A declared script is
+    a reviewed TEXT artifact by contract. Returns the typed refusal or ""."""
+    try:
+        # Decode the WHOLE file: a 64 KiB prefix check would pass a script with
+        # a binary tail (and falsely refuse a multibyte char straddling the
+        # boundary). The file is about to be executed anyway — one full read
+        # here is not the expensive part.
+        script_path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return (
+            f"⚠️ SKILL_EXEC_ERROR: script {script_rel!r} is not valid UTF-8 "
+            "text; declared skill scripts are reviewed text artifacts and a "
+            "binary blob cannot be executed through skill_exec."
+        )
+    return ""
+
+
 def _handle_skill_exec(
     ctx: ToolContext,
     skill: str = "",
@@ -679,21 +716,20 @@ def _handle_skill_exec(
         return deps_block
 
     runtime = (loaded.manifest.runtime or "").strip().lower()
-    runtime_binary = _resolve_runtime_binary(runtime)
+    runtime_binary, runtime_unavailable_reason = _resolve_runtime_binary(runtime)
     try:
         from ouroboros.marketplace.isolated_deps import python_runtime_binary
-
         if runtime in {"python", "python3"}:
-            isolated_python = python_runtime_binary(loaded.skill_dir)
-            if isolated_python is not None:
-                runtime_binary = str(isolated_python)
+            isolated = python_runtime_binary(loaded.skill_dir)
+            runtime_binary = str(isolated) if isolated is not None else runtime_binary
     except Exception:
         log.debug("Could not resolve isolated Python runtime", exc_info=True)
     if runtime_binary is None:
         return (
             f"⚠️ SKILL_EXEC_ERROR: skill {skill_name!r} declared runtime "
             f"{runtime!r} is not in the allowlist {sorted(set(_ALLOWED_RUNTIMES))} "
-            "or the matching binary is not on PATH."
+            f"or the matching binary is not on PATH."
+            + (f" ({runtime_unavailable_reason})" if runtime_unavailable_reason else "")
         )
 
     def _canonical_declared_path(declared_name: str) -> Optional[pathlib.Path]:
@@ -735,6 +771,8 @@ def _handle_skill_exec(
             "Add the script to the manifest and re-run skill_review."
         )
 
+    if (non_text := _non_text_script_refusal(script_path, script_rel)):
+        return non_text
     cmd = [runtime_binary, str(script_path)]
     if args is None:
         extra_args: List[Any] = []
@@ -791,11 +829,10 @@ def _handle_skill_exec(
         log.debug("Could not augment skill env with isolated dependencies", exc_info=True)
 
     # E2BIG hygiene (C5): byte-accurate argv+env budget against the REAL exec
-    # environment, checked before spawn. Type validation above proves the args
-    # are scalars; only this proves the kernel will accept them. There is no
-    # automatic file/stdin fallback here — a skill accepts bulk input via files
-    # only when its own manifest/interface says so — so an over-budget call is
-    # a typed refusal telling the caller to use the skill's file inputs.
+    # environment, checked before spawn (type validation above only proves the
+    # args are scalars). No automatic file/stdin fallback — a skill accepts
+    # bulk input via files only when its own manifest says so — so an
+    # over-budget call is a typed refusal pointing at the skill's file inputs.
     from ouroboros.argv_budget import argv_budget_excess
 
     _argv_excess = argv_budget_excess(cmd, env=env)

@@ -375,6 +375,49 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
     summary: Dict[str, Any] = {
         "outcome_axes": normalize_outcome_axes(data),
     }
+    # R5: CURRENT delegated-custody reconciliation state next to the historical
+    # axes, on the full single-child handoff surfaces only (get_task_result /
+    # wait_task — wait_tasks' batch projection is a pinned compact contract).
+    # The frozen delegated_runs_* counters are a historical snapshot (owner
+    # Q2=B); the envelope's trigger + open_run_ids are the liveness surface a
+    # parent can trust after a refresh/backfill healed the row. One bounded
+    # entry: capped lists with an exact omitted count.
+    unreconciled = data.get("delegated_runs_unreconciled")
+    unreconciled = (
+        [str(item) for item in unreconciled] if isinstance(unreconciled, list) else []
+    )
+    envelope = data.get("delegate_terminal_reconciliation")
+    envelope = envelope if isinstance(envelope, dict) else {}
+    if unreconciled or envelope:
+        custody: Dict[str, Any] = {"unreconciled": unreconciled[:10]}
+        omitted_any = False
+        if len(unreconciled) > 10:
+            custody["unreconciled_omitted"] = len(unreconciled) - 10
+            omitted_any = True
+        if envelope:
+            open_ids = envelope.get("open_run_ids")
+            open_ids = [str(item) for item in open_ids] if isinstance(open_ids, list) else []
+            custody["trigger"] = str(envelope.get("trigger") or "")
+            custody["open_run_ids"] = open_ids[:10]
+            if len(open_ids) > 10:
+                custody["open_run_ids_omitted"] = len(open_ids) - 10
+                omitted_any = True
+        if omitted_any:
+            # A bound must name a source the actor can resolve (BIBLE P1).
+            # Retry lineage unions the ORIGINAL row's disclosure into this
+            # projection, so the omitted identifiers may live on either row —
+            # name both when the lineage exists.
+            tid = str(data.get("task_id") or "")
+            origin = str(
+                data.get("original_task_id") or data.get("timeout_retry_from") or ""
+            )
+            paths = [f"task_results/{tid}.json"]
+            if origin and origin != tid:
+                paths.append(f"task_results/{origin}.json")
+            custody["full_source"] = [
+                f"read_file(root='runtime_data', path='{p}')" for p in paths
+            ]
+        summary["delegated_custody"] = custody
     if isinstance(data.get("task_contract"), dict):
         summary["task_contract"] = data.get("task_contract")
     _delta = disclosable_capability_delta(data)
@@ -550,40 +593,14 @@ def _wait_for_promotion_admission(
     client_message_id: str = "",
     timeout_sec: float = _PROMOTE_CONFIRM_TIMEOUT_SEC,
 ) -> Dict[str, Any]:
-    """Wait for matching-token admission in the canonical task-result SSOT."""
-    from ouroboros.task_results import load_task_result
+    """Wait for matching-token admission (SSOT moved to routing_wait, #198)."""
+    from ouroboros.routing_wait import wait_for_promotion_admission
 
-    root = _routing_status_root(ctx)
-    deadline = time.monotonic() + max(0.0, float(timeout_sec))
-    while True:
-        result = load_task_result(root, task_id) or {}
-        admission = result.get("promotion_admission")
-        if (
-            isinstance(admission, dict)
-            and str(admission.get("routing_token") or "") == routing_token
-        ):
-            status = str(admission.get("status") or "")
-            if status in {"scheduled", "rejected", "unconfirmed"}:
-                return {**admission, "task_status": str(result.get("status") or "")}
-        # A duplicate id must never overwrite the existing task_result merely
-        # to report the loser.  The exact-token chat annotation is therefore a
-        # negative-only fallback; positive scheduling authority stays solely in
-        # the task-result admission record.
-        if str(client_message_id or "").strip():
-            from ouroboros.project_dialogue import chat_annotation_receipt
-
-            receipt = chat_annotation_receipt(
-                root, str(client_message_id), routing_token
-            )
-            if str(receipt.get("status") or "") in {
-                "needs_manual_target",
-                "rejected",
-                "unconfirmed",
-            }:
-                return receipt
-        if time.monotonic() >= deadline:
-            return {"status": "unconfirmed", "reason": "confirmation_timeout"}
-        time.sleep(_PROMOTE_CONFIRM_POLL_SEC)
+    return wait_for_promotion_admission(
+        _routing_status_root(ctx), task_id, routing_token,
+        client_message_id=client_message_id, timeout_sec=timeout_sec,
+        poll_sec=_PROMOTE_CONFIRM_POLL_SEC,
+    )
 
 
 def _wait_for_routing_annotation(
@@ -593,21 +610,13 @@ def _wait_for_routing_annotation(
     *,
     timeout_sec: float = _PROMOTE_CONFIRM_TIMEOUT_SEC,
 ) -> Dict[str, Any]:
-    """Wait for an exact existing chat-annotation receipt (manual/steer)."""
-    from ouroboros.project_dialogue import chat_annotation_receipt
+    """Wait for an exact chat-annotation receipt (SSOT in routing_wait, #198)."""
+    from ouroboros.routing_wait import wait_for_routing_annotation
 
-    if not str(client_message_id or "").strip():
-        return {"status": "unconfirmed", "reason": "client_message_id_missing"}
-    root = _routing_status_root(ctx)
-    deadline = time.monotonic() + max(0.0, float(timeout_sec))
-    while True:
-        receipt = chat_annotation_receipt(root, client_message_id, routing_token)
-        status = str(receipt.get("status") or "")
-        if status in {"delivered", "needs_manual_target", "unconfirmed"}:
-            return receipt
-        if time.monotonic() >= deadline:
-            return {"status": "unconfirmed", "reason": "confirmation_timeout"}
-        time.sleep(_PROMOTE_CONFIRM_POLL_SEC)
+    return wait_for_routing_annotation(
+        _routing_status_root(ctx), client_message_id, routing_token,
+        timeout_sec=timeout_sec, poll_sec=_PROMOTE_CONFIRM_POLL_SEC,
+    )
 
 
 def _emit_and_wait_for_routing(
@@ -1136,6 +1145,7 @@ def _list_projects(ctx: ToolContext, limit: int = 50) -> str:
 def _route_to_project(
     ctx: ToolContext, project_id: str = "", message: str = "", reason: str = "",
     predecessor_task_id: Any = _MISSING_PREDECESSOR_SELECTOR,
+    candidates: Any = None,
 ) -> str:
     """Route a main-chat message to an EXISTING project so the work continues in
     that project's context (its memory/journal/thread), keeping the main chat free.
@@ -1191,6 +1201,23 @@ def _route_to_project(
             dict(row) for row in list(routing_contract.get("manual_options") or [])[:100]
             if isinstance(row, dict)
         ]
+        # Owner decision 2=B: the model may NARROW the picker by naming its
+        # plausible candidates — a host-validated reorder, never new options.
+        # Named ids that match host options move to the front; unknown ids are
+        # ignored (host truth wins), and every host option stays clickable.
+        candidate_ids = list(dict.fromkeys(
+            str(row).strip() for row in (candidates if isinstance(candidates, list) else [])
+            if str(row).strip()
+        ))
+        if candidate_ids:
+            def _option_id(row: Dict[str, Any]) -> str:
+                return str(row.get("task_id") or row.get("project_id") or "")
+
+            ranked = [
+                row for cid in candidate_ids for row in options if _option_id(row) == cid
+            ]
+            ranked_ids = {id(row) for row in ranked}
+            options = ranked + [row for row in options if id(row) not in ranked_ids]
         failure = (
             "target_unspecified" if not requested_pid
             else "invalid_project_id" if not pid
@@ -1205,6 +1232,10 @@ def _route_to_project(
             "requested_target": pid or requested_pid[:200],
             "reason": str(reason or "").strip() or failure,
             "options": options,
+            # The picker click dispatches AFTER this turn's metadata is gone,
+            # so the refusal annotation is the durable carrier of the original
+            # message's staged-attachment specs (#198).
+            "attachment_uploads": list(metadata.get("chat_attachment_uploads") or []),
             "ts": utc_now_iso(),
         }
         manual_event.update(predecessor_event)
@@ -2236,26 +2267,36 @@ def _send_user_message(ctx: ToolContext, text: str, reason: str = "") -> str:
     Use when you have something genuinely worth saying — an insight,
     a question, a status update, or an invitation to collaborate.
     """
-    if not ctx.current_chat_id:
+    chat_id = getattr(ctx, "current_chat_id", None)
+    if chat_id is None or chat_id == "":  # 0 is a real hidden session, not absence
         return "⚠️ No active chat — cannot send proactive message."
     if not text or not text.strip():
         return "⚠️ Empty message."
 
+    from ouroboros.tools.owner_delivery import deliver_owner_event
     from ouroboros.utils import append_jsonl
-    ctx.pending_events.append({
+    mode = deliver_owner_event(ctx, {
         "type": "send_message",
-        "chat_id": ctx.current_chat_id,
+        "chat_id": chat_id,
         "text": text,
         "format": "markdown",
         "is_progress": False,
+        # Discriminates the row from a bare final on history replay: the
+        # client treats an UNtyped assistant row with a task_id as the task's
+        # last word and would finalize a still-running live card. Persisted
+        # via log_chat(record_type=...) exactly like media rows.
+        "system_type": "proactive_message",
         "ts": utc_now_iso(),
     })
     append_jsonl(ctx.drive_logs() / "events.jsonl", {
         "ts": utc_now_iso(),
         "type": "proactive_message",
         "reason": reason,
+        "transport_mode": mode,
         "text_preview": text[:200],
     })
+    if mode == "live":
+        return "OK: message sent to owner chat."
     return "OK: message queued for delivery."
 
 
@@ -2417,9 +2458,16 @@ def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
 
     Stored in ToolContext, applied on the next LLM call in the loop.
     """
-    from ouroboros.llm import LLMClient, normalize_reasoning_effort
+    from ouroboros.config import EFFORT_SCALE
+    from ouroboros.llm import LLMClient
     available = LLMClient().available_models()
     changes = []
+
+    # Validated before anything is applied: an unknown effort refuses the WHOLE call,
+    # so a same-call model switch is not half-applied behind a rejected tier.
+    requested_effort = str(effort or "").strip().lower()
+    if requested_effort and requested_effort not in EFFORT_SCALE:
+        return f"⚠️ Unknown effort: {effort}. Valid: {', '.join(EFFORT_SCALE)}"
 
     if model:
         if model not in available:
@@ -2440,10 +2488,9 @@ def _switch_model(ctx: ToolContext, model: str = "", effort: str = "") -> str:
         ctx.active_use_local_override = use_local
         changes.append(f"model={model}{' (local)' if use_local else ''}")
 
-    if effort:
-        normalized = normalize_reasoning_effort(effort, default="medium")
-        ctx.active_effort_override = normalized
-        changes.append(f"effort={normalized}")
+    if requested_effort:
+        ctx.active_effort_override = requested_effort
+        changes.append(f"effort={requested_effort}")
 
     if not changes:
         return f"Current available models: {', '.join(available)}. Pass model and/or effort to switch."
@@ -3081,6 +3128,8 @@ _PROMOTE_CHAT_DESCRIPTION = (
 
 
 def get_tools() -> List[ToolEntry]:
+    from ouroboros.config import EFFORT_SCALE
+
     return [
         ToolEntry("set_tool_timeout", {
             "name": "set_tool_timeout",
@@ -3169,6 +3218,7 @@ def get_tools() -> List[ToolEntry]:
                 "message": {"type": "string", "description": "The owner message / work to route into the project."},
                 "reason": {"type": "string", "default": "", "description": "Optional short why-this-project note (provenance)."},
                 "predecessor_task_id": {"type": "string", "description": "Required explicit selector: pass an empty string for fresh work, or the completed result id listed by the Main host manifest to continue it."},
+                "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional, ONLY with project_id='': the task/project ids you consider plausible, in preference order. The typed picker shows them first; ids not in the host-built option list are ignored."},
             }, "required": ["message", "predecessor_task_id"]},
         }, _route_to_project),
         ToolEntry("steer_task", {
@@ -3320,8 +3370,8 @@ def get_tools() -> List[ToolEntry]:
                            "or want to save budget (simple tasks). Takes effect on next round.",
             "parameters": {"type": "object", "properties": {
                 "model": {"type": "string", "description": "Model name (e.g. anthropic/claude-sonnet-4). Leave empty to keep current."},
-                "effort": {"type": "string", "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-                           "description": "Reasoning effort level (clamped to the model's real ceiling). Leave empty to keep current."},
+                "effort": {"type": "string", "enum": list(EFFORT_SCALE),
+                           "description": "Reasoning effort level (adapted down per route when a model tops out lower). Leave empty to keep current."},
             }, "required": []},
         }, _switch_model),
         ToolEntry("get_task_result", {

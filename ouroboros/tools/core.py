@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import ipaddress
 import json
 import logging
 import os
@@ -17,6 +18,12 @@ from ouroboros.artifacts import artifact_store_path_block_reason, copy_file_to_t
 from ouroboros.project_facts import filter_out_project_store as _filter_out_project_store
 from ouroboros.project_facts import project_store_access_block as _project_store_access_block
 from ouroboros.protected_artifacts import block_reason_for_path
+from ouroboros.credential_shapes import (
+    CREDENTIAL_FILE_SUFFIXES,
+    CREDENTIAL_NAME_RE,
+    SUBAGENT_CREDENTIAL_FILE_NAMES as _SUBAGENT_SECRET_FILE_NAMES,
+)
+from ouroboros.secret_masking import mask_secret_bytes
 from ouroboros.tools.registry import ToolContext, ToolEntry, active_repo_dir_for
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
@@ -279,7 +286,10 @@ def _list_user_files_dir(ctx: ToolContext, root: pathlib.Path, target: pathlib.P
     # A hard iterdir/permission/race failure PROPAGATES to the first-class
     # "⚠️ LIST_FILES_ERROR" path in _list_files (v6.54.3, review round 3).
     for entry in sorted(target.iterdir()):
-        if user_files_path_block_reason(ctx, entry):
+        # operation="list" (capinv-447 / В23=A): the root principal's listing no
+        # longer hides credential-SHAPED names — only control-plane/outside-home
+        # entries stay omitted (and counted in the marker below).
+        if user_files_path_block_reason(ctx, entry, operation="list"):
             hidden += 1
             continue
         if len(items) >= max_entries:
@@ -298,22 +308,6 @@ def _list_user_files_dir(ctx: ToolContext, root: pathlib.Path, target: pathlib.P
     if hidden:
         items.append(f"⚠️ {hidden} hidden/control entr{'y' if hidden == 1 else 'ies'} omitted from user_files listing.")
     return items
-
-
-_SUBAGENT_SECRET_FILE_NAMES = frozenset({
-    ".env",
-    ".netrc",
-    "auth.json",
-    "credentials",
-    "credentials.json",
-    "keys.json",
-    "secret.json",
-    "secrets.json",
-    "settings.json",
-    "settings.json.lock",
-    "token.json",
-    "tokens.json",
-})
 
 
 def is_restricted_subagent_profile(ctx: ToolContext) -> bool:
@@ -349,9 +343,9 @@ def _is_subagent_secret_data_path(norm: str) -> bool:
         return True
     if name.startswith(".env") or name.endswith(".env") or ".env." in name:
         return True
-    if name.endswith((".key", ".pem", ".p12", ".pfx")):
+    if name.endswith(CREDENTIAL_FILE_SUFFIXES):
         return True
-    return bool(re.search(r"(?:^|[._-])(api[_-]?key|credential|password|secret|token)(?:[._-]|$)", name))
+    return bool(CREDENTIAL_NAME_RE.search(name))
 
 
 def _is_subagent_secret_repo_path(norm: str) -> bool:
@@ -368,9 +362,9 @@ def _is_subagent_secret_repo_path(norm: str) -> bool:
         return True
     if name.startswith(".env") or name.endswith(".env") or ".env." in name:
         return True
-    if name.endswith((".key", ".pem", ".p12", ".pfx")):
+    if name.endswith(CREDENTIAL_FILE_SUFFIXES):
         return True
-    if re.search(r"(?:^|[._-])(api[_-]?key|credential|password|secret|token)(?:[._-]|$)", name):
+    if CREDENTIAL_NAME_RE.search(name):
         suffix = pathlib.PurePosixPath(name).suffix.lower()
         return suffix in {"", ".json", ".env", ".key", ".pem", ".p12", ".pfx", ".toml", ".yaml", ".yml", ".ini", ".cfg", ".conf"}
     return False
@@ -469,6 +463,7 @@ def _repo_read(
     path: str,
     max_lines: int = 2000,
     start_line: int = 1,
+    start_char: int = 0,
     display_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
 ) -> str:
@@ -497,7 +492,8 @@ def _repo_read(
                 f"`read_file(root='runtime_data', path='memory/{base}')`."
             )
         return f"⚠️ NOT_FOUND: file does not exist: {target}"
-    return _render_line_slice(display_path or path, content, max_lines=max_lines, start_line=start_line)
+    return _render_line_slice(display_path or path, content, max_lines=max_lines, start_line=start_line,
+                              start_char=start_char)
 
 
 def _repo_list(
@@ -538,6 +534,7 @@ def _data_read(
     path: str,
     max_lines: int = 2000,
     start_line: int = 1,
+    start_char: int = 0,
     display_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
 ) -> str:
@@ -586,16 +583,22 @@ def _data_read(
         else pathlib.Path(ctx.drive_root)
     )
     if _is_skill_owner_state_target(target, state_root) and target.name.lower() != "review.json":
-        return "DATA_READ_BLOCKED: skill owner state is not readable through generic data tools."
+        # The marker carries the ⚠️ prefix like its three siblings above: the
+        # status classifier only reads a first line that starts with it, so the
+        # bare form degraded a typed policy denial into a generic tool failure.
+        return "⚠️ DATA_READ_BLOCKED: skill owner state is not readable through generic data tools."
     try:
         content = read_text(target)
         start_raw, max_raw = _coerce_line_window(start_line, max_lines)
-        if _is_cognitive_data_path(norm) and start_raw == 1 and max_raw == 2000:
+        # The cognitive full-read shortcut only applies to a DEFAULT read: an explicit
+        # start_char is a sub-line cursor request and must be honored, not swallowed.
+        if _is_cognitive_data_path(norm) and start_raw == 1 and max_raw == 2000 and not _coerce_start_char(start_char):
             if display_path is None:
                 return content
             full_line_count = max(1, len(content.splitlines()))
             return _render_line_slice(display_path, content, max_lines=full_line_count, start_line=1)
-        return _render_line_slice(display_path or norm, content, max_lines=max_raw, start_line=start_raw)
+        return _render_line_slice(display_path or norm, content, max_lines=max_raw, start_line=start_raw,
+                                  start_char=start_char)
     except FileNotFoundError:
         if norm.replace("\\", "/").startswith("memory/"):
             explanation = (
@@ -1152,18 +1155,20 @@ def _read_file(
             path,
             max_lines=max_lines,
             start_line=start_line,
+            start_char=start_char,
             display_path=display_path,
             _resolved_binding=binding,
-        ))
+        ), start_char=start_char)
     if normalized == "runtime_data":
         return _annotate_reread(ctx, target, start_line, max_lines, _data_read(
             ctx,
             path,
             max_lines=max_lines,
             start_line=start_line,
+            start_char=start_char,
             display_path=_root_display_path(normalized, path),
             _resolved_binding=binding,
-        ))
+        ), start_char=start_char)
     block_msg = _local_readonly_resource_block(
         ctx, normalized, target, binding.base_path, action="READ_FILE"
     )
@@ -1173,6 +1178,18 @@ def _read_file(
         content = read_text(target)
         rendered = _render_line_slice(_root_display_path(normalized, path), content,
                                       max_lines=max_lines, start_line=start_line, start_char=start_char)
+        if normalized == "user_files":
+            # Egress seam for owner-home reads (#447 X1/В23): the file may be
+            # read, but raw credential bytes never enter model context/history —
+            # the masked form (***) may. Masking happens on the rendered slice;
+            # the search egress applies the same seam to its match lines.
+            rendered, masked = mask_secret_bytes(rendered)
+            if masked:
+                rendered += (
+                    f"\n⚠️ SECRET_BYTES_MASKED: {masked} secret-shaped span(s) in this "
+                    "view were replaced with ***; raw credentials never enter model "
+                    "context. Reference them by location, not value."
+                )
         if normalized == "task_drive":
             # D7 coverage acknowledgement: what counts as read is what the DELIVERY
             # layer will actually hand the model, so the hook receives the rendered
@@ -1326,7 +1343,7 @@ def _write_file(
         from ouroboros.tools.git import _repo_write
 
         return _repo_write(
-            ctx, path=path, content=content, files=files or [], force=force,
+            ctx, path=path, content=content, files=files or [], mode=mode, force=force,
             display_root=normalized, _resolved_binding=bindings,
         )
     if normalized == "runtime_data":
@@ -1403,13 +1420,21 @@ def _write_file(
                         results.append(f"⚠️ WRITE_FILE_BLOCKED: artifact_store path blocked: {block_reason}")
                         continue
                 target.parent.mkdir(parents=True, exist_ok=True)
-                # Deferral 5: batch items overwrite too — shrink-guard each (parity with the
-                # single-file path), force=true bypasses.
-                if (shrink := _check_data_shrink_guard(target, str(item.get("content") or ""), force)):
-                    results.append(shrink)
-                    continue
-                write_text_atomic(target, str(item.get("content") or ""))  # crash-safe (G)
-                result = f"OK: wrote {_root_display_path(normalized, rel_path)} ({len(str(item.get('content') or ''))} chars)"
+                body = str(item.get("content") or "")
+                if mode == "append":
+                    # Batch items honor the declared mode like the single-file path below:
+                    # silently overwriting here destroyed every prior chunk of a chunked
+                    # large-file write while reporting success (#447 D2).
+                    with target.open("a", encoding="utf-8") as fh:
+                        fh.write(body)  # append is intentionally NOT atomized
+                else:
+                    # Deferral 5: batch items overwrite too — shrink-guard each (parity with the
+                    # single-file path), force=true bypasses.
+                    if (shrink := _check_data_shrink_guard(target, body, force)):
+                        results.append(shrink)
+                        continue
+                    write_text_atomic(target, body)  # crash-safe (G)
+                result = f"OK: wrote {_root_display_path(normalized, rel_path)} ({len(body)} chars)"
                 if normalized == "user_files":
                     record = copy_file_to_task_artifacts(ctx, target, kind="user_file")
                     if record:
@@ -1616,8 +1641,9 @@ def _detect_image_mime(data: bytes) -> str:
 
 def _send_photo(ctx: ToolContext, file_path: str = "", image_base64: str = "",
                 caption: str = "") -> str:
-    """Queue an owner-chat image from a file or legacy base64 payload."""
-    if not ctx.current_chat_id:
+    """Send an owner-chat image from a file or legacy base64 payload."""
+    _photo_chat_id = getattr(ctx, "current_chat_id", None)
+    if _photo_chat_id is None or _photo_chat_id == "":  # 0 is a real hidden session
         return "⚠️ No active chat — cannot send photo."
 
     actual_b64 = ""
@@ -1648,19 +1674,16 @@ def _send_photo(ctx: ToolContext, file_path: str = "", image_base64: str = "",
     if not actual_b64 or len(actual_b64) < 100:
         return "⚠️ Image data is empty or too short."
 
-    _photo_meta = getattr(ctx, "task_metadata", {})
-    _photo_meta = _photo_meta if isinstance(_photo_meta, dict) else {}
-    ctx.pending_events.append({
+    from ouroboros.tools.owner_delivery import deliver_owner_event
+    mode = deliver_owner_event(ctx, {
         "type": "send_photo",
-        "chat_id": ctx.current_chat_id, "task_id": str(getattr(ctx, "task_id", "") or ""),  # task_id -> bound-task project-panel routing
-        # Lineage so a SUBAGENT's photo routes to its root's project thread (C4.4) —
-        # only the root is bound; the child carries parent/root on its task metadata.
-        "parent_task_id": str(_photo_meta.get("parent_task_id") or ""),
-        "root_task_id": str(_photo_meta.get("root_task_id") or ""),
+        "chat_id": _photo_chat_id,
         "image_base64": actual_b64,
         "mime": mime,
         "caption": caption or "",
     })
+    if mode == "live":
+        return "OK: photo sent to owner chat."
     return "OK: photo queued for delivery to owner."
 
 
@@ -1680,7 +1703,7 @@ def _detect_video_mime(file_path: str, data: bytes) -> str:
 
 
 def _send_video(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
-    """Queue an owner-chat video from a file."""
+    """Send an owner-chat video from a file."""
     chat_id = getattr(ctx, "current_chat_id", None)
     if chat_id is None or chat_id == "":
         return "⚠️ No active chat — cannot send video."
@@ -1700,22 +1723,163 @@ def _send_video(ctx: ToolContext, file_path: str = "", caption: str = "") -> str
     except Exception as e:
         return f"⚠️ Failed to read video file: {e}"
 
-    _video_meta = getattr(ctx, "task_metadata", {})
-    _video_meta = _video_meta if isinstance(_video_meta, dict) else {}
-    ctx.pending_events.append({
+    from ouroboros.tools.owner_delivery import deliver_owner_event
+    mode = deliver_owner_event(ctx, {
         "type": "send_video",
-        "chat_id": chat_id, "task_id": str(getattr(ctx, "task_id", "") or ""),  # task_id -> bound-task project-panel routing
-        # Lineage so a SUBAGENT's video routes to its root's project thread (C4.4).
-        "parent_task_id": str(_video_meta.get("parent_task_id") or ""),
-        "root_task_id": str(_video_meta.get("root_task_id") or ""),
+        "chat_id": chat_id,
         "video_base64": actual_b64,
         "mime": mime,
         "caption": caption or "",
     })
+    if mode == "live":
+        return "OK: video sent to owner chat."
     return "OK: video queued for delivery to owner."
 
 
 _MAX_DOCUMENT_FILE_BYTES = 50 * 1024 * 1024  # 50 MB (Telegram bot sendDocument limit)
+_MAX_LINK_ACTIONS = 12
+
+
+class LinkActionsValidationError(ValueError):
+    """Typed atomic refusal from the shared link-action validator."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def validate_link_actions(actions: Any) -> List[Dict[str, str]]:
+    """Return one cleaned HTTP(S) action batch, or refuse the entire batch."""
+    from urllib.parse import urlparse
+
+    if not isinstance(actions, list) or not actions:
+        raise LinkActionsValidationError(
+            "SEND_LINKS_ARG_ERROR", "provide a non-empty links array."
+        )
+    if len(actions) > _MAX_LINK_ACTIONS:
+        raise LinkActionsValidationError(
+            "SEND_LINKS_TOO_MANY", f"maximum {_MAX_LINK_ACTIONS} links."
+        )
+    cleaned: List[Dict[str, str]] = []
+    for item in actions:
+        if not isinstance(item, dict):
+            raise LinkActionsValidationError(
+                "SEND_LINKS_ARG_ERROR", "each link must contain label and url."
+            )
+        label = str(item.get("label") or "")
+        url = str(item.get("url") or "")
+        invalid_url_char = any(
+            ord(char) < 0x20 or ord(char) == 0x7F or char.isspace() for char in url
+        )
+        invalid_label_char = any(
+            ord(char) < 0x20 or ord(char) == 0x7F
+            or (char.isspace() and char != " ") for char in label
+        )
+        label = label.strip()
+        if len(url) > 2048 or invalid_url_char:
+            raise LinkActionsValidationError(
+                "SEND_LINKS_URL_BLOCKED",
+                "URL contains disallowed characters or exceeds 2048 characters.",
+            )
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            port = parsed.port
+            if "[" in parsed.netloc:
+                ipaddress.ip_address(hostname or "")
+        except ValueError as exc:
+            raise LinkActionsValidationError(
+                "SEND_LINKS_URL_BLOCKED", "URL has an invalid authority."
+            ) from exc
+        if parsed.scheme not in {"http", "https"}:
+            raise LinkActionsValidationError(
+                "SEND_LINKS_URL_BLOCKED", "only http:// and https:// URLs are allowed."
+            )
+        if not hostname or (port is not None and not 0 <= port <= 65535):
+            raise LinkActionsValidationError(
+                "SEND_LINKS_URL_BLOCKED", "URL has an invalid authority."
+            )
+        if "\\" in parsed.netloc:
+            raise LinkActionsValidationError("SEND_LINKS_URL_BLOCKED", "URL has an invalid authority.")
+        invalid_reg_name = "[" not in parsed.netloc and any(
+            not ((char.isascii() and (char.isalnum() or char in "._~-")) or
+                 (not char.isascii() and char.isalpha())) for char in hostname
+        )
+        if "%" in hostname or invalid_reg_name:
+            raise LinkActionsValidationError(
+                "SEND_LINKS_URL_BLOCKED", "URL has an invalid authority."
+            )
+        if not label or invalid_label_char:
+            raise LinkActionsValidationError(
+                "SEND_LINKS_ARG_ERROR", "each link requires a label and absolute URL."
+            )
+        cleaned.append({"label": label[:120], "url": url})
+    return cleaned
+
+
+_MAX_QUIZ_OPTIONS = 6
+_MAX_QUIZ_QUESTION_CHARS = 2000
+
+
+class QuizValidationError(ValueError):
+    """Typed atomic refusal from the shared quiz payload validator."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def validate_quiz_payload(
+    question: Any, options: Any, stake: Any, assumption: Any,
+) -> Dict[str, Any]:
+    """Return one cleaned quiz payload, or refuse the entire card.
+
+    Shared by the asking tool and the message bus (one validator, two
+    callers — the LinksOutbound pattern). ``assumption`` is REQUIRED by
+    owner decision 27=A: a quiz is fire-and-continue, so the card must name
+    what the task keeps doing while the owner has not answered.
+    """
+    q_text = str(question or "").strip()
+    if not q_text or len(q_text) > _MAX_QUIZ_QUESTION_CHARS:
+        raise QuizValidationError(
+            "QUIZ_QUESTION_INVALID",
+            f"question must be 1..{_MAX_QUIZ_QUESTION_CHARS} characters.",
+        )
+    if not isinstance(options, list) or not 2 <= len(options) <= _MAX_QUIZ_OPTIONS:
+        raise QuizValidationError(
+            "QUIZ_OPTIONS_INVALID",
+            f"provide 2..{_MAX_QUIZ_OPTIONS} options.",
+        )
+    cleaned: List[Dict[str, str]] = []
+    for item in options:
+        if isinstance(item, str):
+            item = {"label": item}
+        if not isinstance(item, dict):
+            raise QuizValidationError(
+                "QUIZ_OPTIONS_INVALID", "each option needs a label."
+            )
+        label = str(item.get("label") or "").strip()
+        detail = str(item.get("detail") or "").strip()
+        if not label:
+            raise QuizValidationError(
+                "QUIZ_OPTIONS_INVALID", "each option needs a non-empty label."
+            )
+        option: Dict[str, str] = {"label": label[:120]}
+        if detail:
+            option["detail"] = detail[:500]
+        cleaned.append(option)
+    assumption_text = str(assumption or "").strip()
+    if not assumption_text:
+        raise QuizValidationError(
+            "QUIZ_ASSUMPTION_REQUIRED",
+            "state the assumption you continue under until the owner answers.",
+        )
+    return {
+        "question": q_text,
+        "options": cleaned,
+        "stake": str(stake or "").strip()[:500],
+        "assumption": assumption_text[:500],
+    }
 
 
 def _detect_document_mime(file_path: str) -> str:
@@ -1725,7 +1889,7 @@ def _detect_document_mime(file_path: str) -> str:
 
 
 def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
-    """Queue an owner-chat document/file (report, archive, code, PDF, etc.) from a local path."""
+    """Send an owner-chat document/file (report, archive, code, PDF, etc.) from a local path."""
     chat_id = getattr(ctx, "current_chat_id", None)
     if chat_id is None or chat_id == "":
         return "⚠️ No active chat — cannot send file."
@@ -1760,21 +1924,45 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
     except Exception:
         download_url = ""  # non-fatal: fall back to base64 blob delivery
 
-    _doc_meta = getattr(ctx, "task_metadata", {})
-    _doc_meta = _doc_meta if isinstance(_doc_meta, dict) else {}
-    ctx.pending_events.append({
+    from ouroboros.tools.owner_delivery import deliver_owner_event
+    mode = deliver_owner_event(ctx, {
         "type": "send_document",
-        "chat_id": chat_id, "task_id": str(getattr(ctx, "task_id", "") or ""),  # task_id -> bound-task project-panel routing
-        # Lineage so a SUBAGENT's file routes to its root's project thread (C4.4).
-        "parent_task_id": str(_doc_meta.get("parent_task_id") or ""),
-        "root_task_id": str(_doc_meta.get("root_task_id") or ""),
+        "chat_id": chat_id,
         "file_base64": actual_b64,
         "mime": mime,
         "filename": fp.name,
         "caption": caption or "",
         "download_url": download_url,
     })
+    if mode == "live":
+        return f"OK: file '{fp.name}' sent to owner chat."
     return f"OK: file '{fp.name}' queued for delivery to owner."
+
+
+def _send_links(
+    ctx: ToolContext,
+    links: list | None = None,
+    title: str = "",
+) -> str:
+    """Queue validated HTTP(S) links as first-class chat actions."""
+    chat_id = getattr(ctx, "current_chat_id", None)
+    if chat_id is None or chat_id == "":
+        return "⚠️ SEND_LINKS_NO_CHAT: no active chat."
+    try:
+        actions = validate_link_actions(links)
+    except LinkActionsValidationError as exc:
+        return f"⚠️ {exc.code}: {exc}"
+    from ouroboros.tools.owner_delivery import deliver_owner_event
+    mode = deliver_owner_event(ctx, {
+        "type": "send_links",
+        "chat_id": chat_id,
+        "title": str(title or "")[:240],
+        "actions": actions,
+    })
+    if mode == "live":
+        return "OK: link buttons sent to owner chat."
+    return "OK: link buttons queued for delivery to owner."
+
 
 _MAX_SEARCH_RESULTS = 200
 # Search file-skip helper and caps live in ouroboros.code_search_rg (the search
@@ -1782,7 +1970,8 @@ _MAX_SEARCH_RESULTS = 200
 from ouroboros.code_search_rg import (  # noqa: E402
     MAX_SEARCH_FILES_SCANNED as _MAX_SEARCH_FILES_SCANNED,
     _search_wall_clock_sec,
-    is_search_skippable as _is_search_skippable,
+    is_search_skippable as _is_search_skippable,  # noqa: F401 — re-exported for tests/call sites
+    search_skip_reason as _search_skip_reason,
 )
 
 
@@ -1840,6 +2029,14 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             return block_msg
     root_resolved = root_path.resolve(strict=False)
     _rt_search_root = str(root_resolved) if normalized == "runtime_data" else ""
+    # Filter receipt (D3, capinv-447): every file present under the search root
+    # but excluded before reading is COUNTED by typed reason, so "No matches"
+    # can honestly distinguish a clean empty result from a filtered one.
+    search_drops: dict[str, int] = {}
+
+    def _drop(reason: str) -> bool:
+        search_drops[reason] = search_drops.get(reason, 0) + 1
+        return False
 
     def _path_allowed_for_rg(fp: pathlib.Path) -> bool:
         # Resolve, then CONFINE to the resource root: a path whose resolved target
@@ -1848,16 +2045,36 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             fp = pathlib.Path(fp).resolve(strict=False)
             rel_parts = fp.relative_to(root_resolved).parts
         except Exception:
-            return False
+            return _drop("escapes_root")
         # runtime_data per-project store is reachable only via scoped knowledge tools.
         if normalized == "runtime_data" and rel_parts and str(rel_parts[0]).casefold() == "projects":
-            return False
-        return not (
-            (subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH"))
-            or (normalized == "user_files" and user_files_path_block_reason(ctx, fp))
-            or block_reason_for_path(ctx, fp, "read_bytes", binding)
-            or _is_search_skippable(fp)
-        )
+            return _drop("project_store_scoped")
+        if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH"):
+            return _drop("restricted_subagent")
+        if normalized == "user_files" and user_files_path_block_reason(ctx, fp, operation="search"):
+            return _drop("user_files_policy")
+        if block_reason_for_path(ctx, fp, "read_bytes", binding):
+            return _drop("protected_artifact")
+        skip = _search_skip_reason(fp)
+        if skip:
+            return _drop(skip)
+        return True
+
+    def _mask_user_files_matches(result_text: str) -> str:
+        # Same egress seam as _read_file (#447 В23): a search over the owner's
+        # home surfaces file CONTENT in the match lines, so raw credential
+        # bytes must be masked here too — on BOTH the rg path and the Python
+        # fallback. Names/paths stay; values become ***.
+        if normalized != "user_files":
+            return result_text
+        masked_text, masked = mask_secret_bytes(result_text)
+        if masked:
+            masked_text += (
+                f"\n⚠️ SECRET_BYTES_MASKED: {masked} secret-shaped span(s) in these "
+                "matches were replaced with ***; raw credentials never enter model "
+                "context. Reference them by location, not value."
+            )
+        return masked_text
 
     # Validate a regex query UP FRONT so the invalid-regex contract holds for BOTH the
     # ripgrep path and the Python fallback. ripgrep accepts some malformed patterns
@@ -1883,11 +2100,11 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
                 search_root, query, regex=bool(regex), include=include,
                 max_results=max_results, path_allowed=_path_allowed_for_rg,
             )
-            return format_search_result(
+            return _mask_user_files_matches(format_search_result(
                 display_path=display_search_path, root_name=normalized,
                 root_path=root_path, query=query, regex=bool(regex),
-                max_results=max_results, result=rg_result,
-            )
+                max_results=max_results, result=rg_result, dropped=search_drops,
+            ))
     except (FileNotFoundError, RuntimeError, subprocess.SubprocessError, OSError) as e:
         # Degrade to the policy-aware Python scanner for rg absent/failed/timeout
         # AND OSError (wrong-arch/non-executable bundled rg -> 'Exec format
@@ -1904,7 +2121,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
 
     matches: List[str] = []
     files_searched = 0
-    protected_omitted = 0
+    search_drops.clear()  # the fallback re-walks the tree; drop any partial rg counts
     truncated = False
     files_capped = False
     deadline_hit = False
@@ -1927,19 +2144,32 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         # per-project store (reachable only via the scoped knowledge tools).
         from ouroboros.code_intelligence import SKIP_DIRS
 
+        # SKIP_DIRS pruning is a documented walk convention (parity with rg's
+        # skip of .git/node_modules); POLICY prunes below are counted — a whole
+        # subtree removed by policy must not read as "0 files searched" with no
+        # receipt (#447 D3).
         dirnames[:] = [d for d in sorted(dirnames) if d not in SKIP_DIRS]
         if normalized == "runtime_data" and str(pathlib.Path(dirpath).resolve(strict=False)) == _rt_search_root:
+            for d in dirnames:
+                if d.casefold() == "projects":
+                    _drop("project_store_scoped")
             dirnames[:] = [d for d in dirnames if d.casefold() != "projects"]
         if normalized == "user_files":
-            dirnames[:] = [
-                d for d in dirnames
-                if not user_files_path_block_reason(ctx, pathlib.Path(dirpath) / d)
-            ]
+            kept_dirs = []
+            for d in dirnames:
+                if user_files_path_block_reason(ctx, pathlib.Path(dirpath) / d, operation="search"):
+                    _drop("user_files_policy")
+                else:
+                    kept_dirs.append(d)
+            dirnames[:] = kept_dirs
         if subagent_readonly:
-            dirnames[:] = [
-                d for d in dirnames
-                if not _local_readonly_resource_block(ctx, normalized, pathlib.Path(dirpath) / d, root_path, action="SEARCH")
-            ]
+            kept_dirs = []
+            for d in dirnames:
+                if _local_readonly_resource_block(ctx, normalized, pathlib.Path(dirpath) / d, root_path, action="SEARCH"):
+                    _drop("restricted_subagent")
+                else:
+                    kept_dirs.append(d)
+            dirnames[:] = kept_dirs
 
         for fname in sorted(filenames):
             fp = pathlib.Path(dirpath) / fname
@@ -1948,14 +2178,17 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
                 continue
 
             if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH"):
+                _drop("restricted_subagent")
                 continue
-            if normalized == "user_files" and user_files_path_block_reason(ctx, fp):
+            if normalized == "user_files" and user_files_path_block_reason(ctx, fp, operation="search"):
+                _drop("user_files_policy")
                 continue
             if block_reason_for_path(ctx, fp, "read_bytes", binding):
-                protected_omitted += 1
+                _drop("protected_artifact")
                 continue
 
-            if _is_search_skippable(fp):
+            if _skip := _search_skip_reason(fp):
+                _drop(_skip)
                 continue
 
             # CONFINE to the root before reading (parity with the rg path's _path_allowed_for_rg
@@ -1964,6 +2197,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             try:
                 fp.resolve(strict=False).relative_to(root_resolved)
             except (OSError, ValueError):
+                _drop("escapes_root")
                 continue
 
             if files_searched >= _MAX_SEARCH_FILES_SCANNED:
@@ -1973,6 +2207,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             try:
                 text = fp.read_text(encoding="utf-8", errors="replace")
             except Exception:
+                _drop("read_error")
                 continue
 
             files_searched += 1
@@ -1996,10 +2231,27 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         "may be incomplete; narrow the path or glob, or raise OUROBOROS_SEARCH_CODE_WALL_SEC."
         if deadline_hit else ""
     )
+    # Typed disclosure, not invisibility (capinv-447): a restricted subagent is
+    # TOLD how many secret/control files its search could not see, mirroring the
+    # listing filters' hidden-entries marker.
+    protected_omitted = search_drops.get("protected_artifact", 0)
+    restricted_omitted = search_drops.get("restricted_subagent", 0)
+    restricted_note = (
+        f" {restricted_omitted} secret/control file(s) omitted from this subagent's search."
+        if restricted_omitted else ""
+    )
+    # Filter receipt for the remaining ordinary exclusions (D3): oversized,
+    # symlinks, excluded names, unreadable, policy-scoped — never silent.
+    from ouroboros.code_search_rg import format_dropped_files_note
+
+    other_dropped_note = format_dropped_files_note({
+        key: count for key, count in search_drops.items()
+        if key not in ("protected_artifact", "restricted_subagent")
+    })
     if not matches:
         suffix = f" {protected_omitted} protected artifact file(s) omitted." if protected_omitted else ""
         cap_note = f" Scan stopped after {_MAX_SEARCH_FILES_SCANNED} files — narrow the path or glob." if files_capped else ""
-        return f"No matches found for {'regex' if regex else 'literal'} `{query}` in {display_search_path} ({files_searched} files searched).{suffix}{cap_note}{deadline_note}"
+        return f"No matches found for {'regex' if regex else 'literal'} `{query}` in {display_search_path} ({files_searched} files searched).{suffix}{restricted_note}{other_dropped_note}{cap_note}{deadline_note}"
 
     header = f"Found {len(matches)} match{'es' if len(matches) != 1 else ''} in {display_search_path} ({files_searched} files searched)"
     if files_capped:
@@ -2010,7 +2262,11 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         header += " — stopped at the time budget (results may be incomplete)"
     if protected_omitted:
         header += f" — {protected_omitted} protected artifact file(s) omitted"
-    return header + "\n\n" + "\n".join(matches)
+    if restricted_omitted:
+        header += f" — {restricted_omitted} secret/control file(s) omitted from this subagent's search"
+    if other_dropped_note:
+        header += " —" + other_dropped_note.rstrip(".")
+    return _mask_user_files_matches(header + "\n\n" + "\n".join(matches))
 
 
 def _durable_descendant_of(
@@ -2117,6 +2373,161 @@ def _forward_to_worker(
     if not written:
         return f"⚠️ TASK_MESSAGE_UNWRITTEN: message to task {tid} was not persisted."
     return f"Message forwarded to task {tid}"
+
+def _escalate(
+    ctx: ToolContext,
+    question: str,
+    options: list | None = None,
+    stake: str = "",
+    assumption: str = "",
+) -> str:
+    """One escalation verb for the whole tree (owner decision 31 hierarchy).
+
+    A ROOT task addresses the OWNER: a typed quiz card in the chat
+    (fire-and-continue under the mandatory ``assumption`` — decision 27=A).
+    A SUBAGENT addresses its PARENT: a typed mailbox frame the parent answers
+    with ``forward_to_worker`` or raises higher by calling ``escalate``
+    itself, forwarding the payload verbatim. The owner only ever sees what no
+    ancestor was willing to answer. Expiry is structural only (decision
+    30=A): the question dies with its author; there is no host deadline.
+    """
+    from ouroboros.tool_capabilities import BACKGROUND_DELEGATION_ROLE
+
+    meta = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
+    if str(meta.get("delegation_role") or "") == BACKGROUND_DELEGATION_ROLE:
+        # Background cognition has no owner-interactive loop and no parent:
+        # a card it can never collect an answer for would be a zombie.
+        return ("⚠️ ESCALATE_UNAVAILABLE: background consciousness cannot escalate — "
+                "record the open question in memory or scratchpad instead.")
+    try:
+        payload = validate_quiz_payload(question, options, stake, assumption)
+    except QuizValidationError as exc:
+        return f"⚠️ {exc.code}: {exc}"
+    task_id = str(getattr(ctx, "task_id", "") or "").strip()
+    if not task_id:
+        return "⚠️ ESCALATE_UNAVAILABLE: escalate requires an active task context."
+    if bool(getattr(ctx, "is_direct_chat", False)):
+        # A direct chat turn IS the owner conversation: it is not a queue
+        # task the answer ingress can address, and a card would be a dead
+        # end — ask the question directly in the reply instead.
+        return ("⚠️ ESCALATE_UNAVAILABLE: this is a live owner conversation — "
+                "ask the question directly in your reply instead of a card.")
+    parent_task_id = str(meta.get("parent_task_id") or "").strip()
+    delegation_role = str(meta.get("delegation_role") or "").strip()
+    if delegation_role and not parent_task_id:
+        # Fail-closed on corrupted lineage: a delegated context without its
+        # parent id must never fall through to the OWNER card path (decision
+        # 31 — the owner sees only what no ancestor answered).
+        return ("⚠️ ESCALATE_UNAVAILABLE: delegated context without a parent "
+                "task id — record the open question in your result instead.")
+
+    if parent_task_id:
+        # Upward hop: descendant -> nearest LIVE ancestor (the mirror of
+        # forward_to_worker). A live subagent may legitimately OUTLIVE its
+        # direct parent (the queue keeps descendants running past a settled
+        # intermediate), so one settled/unknown/cancel-pending link is not a
+        # dead end — the walk continues toward the root; only a chain with NO
+        # live ancestor is the typed terminal (decision 31: the owner-facing
+        # card still belongs to the ROOT alone, so an orphaned subtree keeps
+        # the assumption path).
+        from ouroboros.owner_mailbox import write_task_message
+        from ouroboros.task_status import FINAL_STATUSES, load_effective_task_result
+
+        status_drive_root = pathlib.Path(str(meta.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
+        from ouroboros.task_results import STATUS_RUNNING, STATUS_SCHEDULED
+
+        root_task_id = str(meta.get("root_task_id") or "").strip()
+        target_id, data = "", {}
+        candidate, seen = parent_task_id, set()
+        for _ in range(10):
+            if not candidate or candidate in seen or candidate == task_id:
+                break
+            seen.add(candidate)
+            row = load_effective_task_result(status_drive_root, candidate)
+            status = str(row.get("status") or "").lower()
+            # A scheduled ancestor is a legitimate addressee (its mailbox is
+            # drained when it starts); unknown/empty status is not.
+            alive = bool(row) and status not in FINAL_STATUSES \
+                and status in {STATUS_RUNNING, STATUS_SCHEDULED}
+            if alive:
+                try:
+                    from ouroboros.cancel_intents import cancel_pending
+
+                    if cancel_pending(status_drive_root, candidate):
+                        alive = False
+                except Exception:
+                    pass
+            if alive:
+                target_id, data = candidate, row
+                break
+            next_candidate = str(row.get("parent_task_id") or "").strip()
+            if not next_candidate and candidate != root_task_id:
+                next_candidate = root_task_id
+            candidate = next_candidate
+        if not target_id:
+            return ("⚠️ ESCALATE_PARENT_SETTLED: no live ancestor is left to "
+                    f"answer (walked up from parent {parent_task_id}) — proceed "
+                    "under your stated assumption and record the open question "
+                    "in your result.")
+        parent_task_id = target_id
+        lines = [f"ESCALATION (decision requested): {payload['question']}", "Options:"]
+        lines += [
+            f"{i + 1}. {row['label']}" + (f" — {row['detail']}" if row.get("detail") else "")
+            for i, row in enumerate(payload["options"])
+        ]
+        if payload["stake"]:
+            lines.append(f"At stake: {payload['stake']}")
+        lines.append(f"I continue meanwhile under the assumption: {payload['assumption']}")
+        lines.append(
+            f"Answer with forward_to_worker(task_id={task_id}, message=...), or "
+            "escalate this question yourself (verbatim) if it is above your authority."
+        )
+        parent_drive = str(data.get("child_drive_root") or data.get("headless_child_drive_root") or data.get("drive_root") or "").strip()
+        written = write_task_message(
+            pathlib.Path(parent_drive) if parent_drive else status_drive_root,
+            "\n".join(lines),
+            task_id=parent_task_id,
+            source_task_id=task_id,
+            provenance="descendant_task",
+        )
+        if not written:
+            return f"⚠️ ESCALATE_UNWRITTEN: the escalation to parent {parent_task_id} was not persisted."
+        return (f"OK: escalated to parent task {parent_task_id}; continuing under "
+                f"assumption: {payload['assumption']}")
+
+    # Root task: the owner gets a typed quiz card.
+    from ouroboros.owner_quiz import record_asked
+
+    quiz_id = uuid.uuid4().hex
+    canonical_root = pathlib.Path(str(meta.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
+    asked = record_asked(
+        canonical_root, task_id,
+        quiz_id=quiz_id, question=payload["question"],
+        options=[row["label"] for row in payload["options"]],
+        stake=payload["stake"], assumption=payload["assumption"],
+    )
+    if asked.get("refused"):
+        return ("⚠️ ESCALATE_UNAVAILABLE: this task already has the maximum "
+                "number of unanswered owner questions open; proceed under your "
+                f"stated assumption: {payload['assumption']}")
+    from ouroboros.tools.owner_delivery import deliver_owner_event
+
+    mode = deliver_owner_event(ctx, {
+        "type": "send_quiz",
+        "chat_id": getattr(ctx, "current_chat_id", None) or 0,
+        "quiz_id": quiz_id,
+        "question": payload["question"],
+        "options": payload["options"],
+        "stake": payload["stake"],
+        "assumption": payload["assumption"],
+        "state": "open",
+        "task_id": task_id,
+    })
+    delivered = "delivered to the owner" if mode == "live" else "queued for the owner"
+    return (f"OK: quiz {quiz_id} {delivered}; continuing under assumption: "
+            f"{payload['assumption']}. The answer (if any) arrives as an owner "
+            "quiz answer in a later round; the card expires when this task ends.")
+
 
 def get_tools() -> List[ToolEntry]:
     return [
@@ -2243,6 +2654,18 @@ def get_tools() -> List[ToolEntry]:
                 "caption": {"type": "string", "description": "Optional caption for the file"},
             }, "required": ["file_path"]},
         }, _send_file),
+        ToolEntry("send_links", {
+            "name": "send_links",
+            "description": "Send one or more HTTP(S) links as prominent clickable buttons in the owner's chat.",
+            "parameters": {"type": "object", "properties": {
+                "title": {"type": "string", "description": "Optional heading above the buttons"},
+                "links": {"type": "array", "minItems": 1, "maxItems": _MAX_LINK_ACTIONS, "items": {
+                    "type": "object", "properties": {
+                        "label": {"type": "string"},
+                        "url": {"type": "string"},
+                    }, "required": ["label", "url"]}},
+            }, "required": ["links"]},
+        }, _send_links),
         ToolEntry("search_code", {
             "name": "search_code",
             "description": (
@@ -2265,6 +2688,27 @@ def get_tools() -> List[ToolEntry]:
                 "include": {"type": "string", "default": "", "description": "Filter by glob pattern (e.g. '*.py')"},
             }, "required": ["query"]},
         }, _code_search),
+        ToolEntry("escalate", {
+            "name": "escalate",
+            "description": (
+                "Escalate a decision up the responsibility chain instead of guessing. "
+                "A root task asks the OWNER (a typed quiz card with option buttons); "
+                "a subagent asks its PARENT task (a typed mailbox frame the parent "
+                "answers with forward_to_worker or escalates higher, verbatim). "
+                "Fire-and-continue: state the assumption you keep working under — "
+                "the answer, if it comes, arrives in a later round, and the question "
+                "expires when your task ends."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "question": {"type": "string", "description": "The decision being escalated (markdown renders in chat)"},
+                "options": {"type": "array", "items": {"type": "object", "properties": {
+                    "label": {"type": "string", "description": "Short option label (button text, max 120)"},
+                    "detail": {"type": "string", "description": "Optional one-line consequence of this option (max 500)"},
+                }, "required": ["label"]}, "description": "2-6 mutually exclusive options"},
+                "stake": {"type": "string", "description": "What depends on this decision (optional, max 500)"},
+                "assumption": {"type": "string", "description": "REQUIRED: the assumption you continue under until answered (max 500)"},
+            }, "required": ["question", "options", "assumption"]},
+        }, _escalate),
         ToolEntry("forward_to_worker", {
             "name": "forward_to_worker",
             "description": (

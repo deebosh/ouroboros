@@ -275,6 +275,29 @@ test('the chip is layered truth: decision before evidence, receipt only from evi
     assert.equal(inFlight.label, 'Codex · 1 started, none settled');
     assert.match(inFlight.title, /1 run\(s\) started, none settled/);
 
+    // ACCESS + UNVERIFIED (harness-health O13): the requested write surface and
+    // the engine-disclosed applied access ride the tooltip; runs whose
+    // work-order coverage never verified are discounted from ok AND named in
+    // the label — a short ok-count with no visible cause reads as a bug.
+    const withAccess = executorChip({
+        executor_route: 'codex',
+        write_surface: 'external_workspace',
+        execution_evidence: {
+            delegated_runs_started: 2, delegated_runs_settled: 2,
+            delegated_runs_succeeded: 1, delegated_runs_failed: 1,
+            delegated_runs_source_unresolved: 1,
+            subscription_cost_usd: null, harness_models: [],
+            applied_access_profiles: ['workspace_write'],
+        },
+    });
+    assert.match(withAccess.label, /1 unverified/);
+    assert.match(withAccess.title, /unverified work-order coverage/);
+    assert.match(withAccess.title, /write surface external_workspace/);
+    assert.match(withAccess.title, /access applied: workspace_write/);
+    // Frames without the new facts render exactly as before (additive-only).
+    assert.ok(!/unverified/.test(allFailed.label), allFailed.label);
+    assert.ok(!/access applied/.test(allFailed.title), allFailed.title);
+
     // EVIDENCE with zero runs: the route was assigned and no delegated run left
     // a durable record — the chip points at the ledger instead of asserting
     // "ran natively" as a fact (a run started past a failed durable write is
@@ -447,4 +470,51 @@ test('an evidence-bearing chip is marked so sticky rendering can refuse downgrad
         executor_route: 'codex',
         execution_evidence: { delegated_runs_started: 1, delegated_runs_settled: 1, delegated_runs_failed: 0, subscription_cost_usd: null },
     }).hasEvidence, true);
+});
+
+test('actor findings rows, omitted counts and the durable pointer ride the shared formatter', () => {
+    const text = formatReviewProjection({ panels: [{
+        panel_id: 'panel_f', surface: 'task_acceptance', aggregate_signal: 'FAIL',
+        quorum: { required: 2, contributed: 2, configured: 3 },
+        actors: [
+            {
+                slot_id: 'slot_1', model: 'm1', reason: 'summary text',
+                coverage: { criteria_total: 3, findings: 10 },
+                findings: [
+                    {
+                        id: 'f1', severity: 'critical', item: 'Preflop sizing is wrong',
+                        summary: 'Sizing deviates from the baseline in early position',
+                        evidence: 'raises 2bb from UTG', recommendation: 'raise 2.5bb',
+                    },
+                    { severity: 'low', verdict: 'FAIL', item: 'Style nit', reason: 'inconsistent spacing' },
+                ],
+                findings_omitted: 8,
+                response_ref: { call_id: 'review_task_acceptance_slot_1_resp', sha256: 'a'.repeat(64) },
+            },
+            {
+                slot_id: 'slot_2', model: 'm2',
+                coverage: { criteria_total: 3, findings: 0 },
+                findings: [], findings_omitted: 0,
+                response_ref: { call_id: 'c2' },
+            },
+            {
+                // A pre-findings-era projection: count says findings existed,
+                // rows are absent — the pointer is the only resolvable source.
+                slot_id: 'slot_3', model: 'm3',
+                coverage: { criteria_total: 3, findings: 4 },
+                response_ref: { call_id: 'c3' },
+            },
+        ],
+    }] });
+
+    assert.match(text, /Reviewer slot_1 finding: \[critical\] f1 Preflop sizing is wrong — summary: Sizing deviates from the baseline in early position — evidence: raises 2bb from UTG — fix: raise 2\.5bb/);
+    assert.match(text, /Reviewer slot_1 finding: \[low FAIL\] Style nit — reason: inconsistent spacing/);
+    assert.match(text, /Reviewer slot_1 findings omitted: 8/);
+    assert.match(text, /Reviewer slot_1 full response: observability call review_task_acceptance_slot_1_resp/);
+    assert.doesNotMatch(text, /Reviewer slot_2 finding:/);
+    // The durable pointer is unconditional: bounded rows, per-string
+    // truncation markers and pre-findings-era projections all resolve there.
+    assert.match(text, /Reviewer slot_2 full response: observability call c2/);
+    assert.match(text, /Reviewer slot_3 full response: observability call c3/);
+    assert.doesNotMatch(text, /Reviewer slot_3 finding:/);
 });

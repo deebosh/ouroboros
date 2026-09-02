@@ -1,14 +1,11 @@
 """Durable physical-model-attempt accounting.
 
-The append-only JSONL ledger is the monetary authority.  Existing
-``llm_usage`` events and ``state.json`` remain compatibility projections and
-carry ledger attempt ids, so they can never become a second charge source.
-
-The implementation is deliberately small: no hash chain, fanout reservation,
-epoch/reconcile platform, or per-attempt snapshot database.  A projection is
-replayed from validated records under the same short cross-process lock used
-for budget check + append + fsync; network I/O always happens outside that lock.
-"""
+The append-only JSONL ledger is the monetary authority; ``llm_usage`` events and
+``state.json`` remain compatibility projections carrying ledger attempt ids, so
+they can never become a second charge source. Deliberately small: no hash chain,
+fanout reservation, epoch/reconcile platform, or per-attempt snapshot database —
+a projection is replayed from validated records under the same short
+cross-process lock as budget check + append + fsync; network I/O stays outside."""
 
 from __future__ import annotations
 
@@ -292,9 +289,17 @@ class AttemptRequest:
     candidate_context_size_bytes: Optional[int] = None
     candidate_measurement_kind: Literal["canonical_json_v1", "opaque"] = "opaque"
     physical_context: Optional[PhysicalAttemptContext] = None
-    # Route-locality fact (additive): the base_url host is localhost/127.0.0.1/::1
-    # (loopback OpenAI-compatible installs — Ollama / LM Studio / vLLM).
+    # Route-locality fact (additive): base_url host is localhost/127.0.0.1/::1 (loopback OpenAI-compatible installs — Ollama / LM Studio / vLLM).
     route_is_loopback: bool = False
+    # The fit estimator's own token count for this request
+    # (context_fit.estimate_context_prompt_tokens: full projected context, tool
+    # objects and schemas included, images at the billing proxy) — additive,
+    # LAST (frozen dataclass), 0 = producer predates the field. The density
+    # observer MUST calibrate on THIS, the exact quantity measure_main_fit
+    # multiplies, so density lands ≈1.0; `prompt_tokens_estimate` above keeps
+    # the raw base64 basis because budget reservation wants the conservative
+    # over-count (owner decision 3=A: the two consumers intentionally split).
+    prompt_tokens_bounded_estimate: int = 0
 @dataclass(frozen=True)
 class AttemptReservation:
     attempt_id: str
@@ -424,11 +429,8 @@ def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
         request = replace(request, global_limit_usd=scope.global_limit_usd)
     return request, scope
 from ouroboros._usage_rows_memo import (  # noqa: F401,E402  (re-exported seam)
-    _LedgerRowsMemo,
-    _ROWS_MEMO,
-    _ROWS_MEMO_LOCK,
-    _memoized_final_rows,
-    _render_cached,
+    _LedgerRowsMemo, _ROWS_MEMO, _ROWS_MEMO_LOCK,
+    _memoized_final_rows, _read_records_locked_cached, _render_cached,
 )
 
 
@@ -576,9 +578,9 @@ def usage_breakdown(
             "by_category": by_category,
             "by_task": by_task,
             "by_root": by_root,
-            # Execution-axis filter (v6.91): delegated (subscription-harness) rows only —
-            # a VIEW over the same rows for "where did the money go" readers, never a third
-            # monetary sum or authority. Disclosed-free settles $0; undisclosed stays `unknown`.
+            # Execution-axis filter (v6.91): delegated (subscription-harness) rows only — a
+            # VIEW for "where did the money go" readers, never a third monetary sum or
+            # authority; disclosed-free settles $0, undisclosed stays `unknown`.
             "delegated": _with_integrity(
                 _breakdown_bucket([row for row in rows if str(row.get("kind") or "") == "subscription_session"]),
                 integrity_degraded,
@@ -613,6 +615,10 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
         return None
     if str(request.provider or "").lower() == "local":
         return 0.0
+    # Deliberately the RAW estimate (base64-inclusive), NOT the bounded proxy:
+    # for money reservation an over-count on image rounds is the safe
+    # direction, while density calibration needs the bounded basis (owner
+    # decision 3=A). Unifying the two silently lowers image-round reserves.
     prompt_tokens = max(0, int(request.prompt_tokens_estimate or 0))
     # OpenAI-family chars/4 estimates keep the measured 1.10 reservation envelope.
     from ouroboros.provider_models import normalize_model_identity
@@ -1146,40 +1152,12 @@ def settle_attempt(
     )
 
 
-# Cache-inclusive prompt totals are measurable; GigaChat's semantics remain unknown.
-_CACHE_INCLUSIVE_PROMPT_TOKEN_PROVIDERS = frozenset({
-    "openrouter", "openai", "openai-compatible", "cloudru", "qwen", "local", "anthropic",
-})
-
-
 def _observe_token_density(request: AttemptRequest, usage: Optional[Dict[str, Any]]) -> None:
-    """Learn density after settlement; unknown cache semantics produce no witness."""
-    try:
-        normalized = dict(usage or {})
-        cache_bearing = bool(
-            int(normalized.get("cached_tokens") or 0)
-            or int(normalized.get("cache_write_tokens") or 0)
-        )
-        provider = str(request.provider or "").strip().lower()
-        if cache_bearing and provider not in _CACHE_INCLUSIVE_PROMPT_TOKEN_PROVIDERS:
-            return
-        real = int(normalized.get("prompt_tokens") or normalized.get("input_tokens") or 0)
-        estimate = int(request.prompt_tokens_estimate or 0)
-        if real <= 0 or estimate <= 0:
-            return
-        from ouroboros.capability_evidence import record_token_density
-        from ouroboros.provider_models import normalize_model_identity
+    # Lives beside the density store (capability_evidence) since this module's
+    # size ceiling; the settlement paths keep this historical seam name.
+    from ouroboros.capability_evidence import observe_token_density
 
-        record_token_density(
-            _drive_root(request.drive_root),
-            normalize_model_identity(str(request.model or "")),
-            prompt_chars=estimate * 4,
-            prompt_tokens=real,
-            source="dispatch_usage",
-            route_fp=str(request.physical_context.route_fp if request.physical_context else ""),
-        )
-    except Exception:
-        log.debug("token-density observation skipped", exc_info=True)
+    observe_token_density(request, usage, drive_root_resolver=_drive_root)
 
 
 def _is_pre_routing_rejection(exc: BaseException) -> bool:
@@ -1232,7 +1210,11 @@ def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseExcept
         )
         return "settled"
     else:
-        mark_unresolved(reservation, f"{type(exc).__name__}: {exc}")
+        from ouroboros.transport_custody import attempt_custody_event_fields
+        cause = attempt_custody_event_fields(exc).get("transport_cause_type")
+        suffix = f" [cause: {cause}]" if cause else ""
+        # Suffix leads: a verbose provider body must not truncate it away (mark_unresolved keeps 500 chars).
+        mark_unresolved(reservation, f"{type(exc).__name__}{suffix}: {exc}")
         return "unresolved"
 
 

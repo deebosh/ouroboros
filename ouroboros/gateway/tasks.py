@@ -32,6 +32,7 @@ from ouroboros.gateway.task_events import (  # noqa: F401
 # Re-exported hurry ingress (same module-size split as task_events): route
 # wiring and tests address gateway.tasks.api_task_hurry.
 from ouroboros.gateway.task_hurry import api_task_hurry  # noqa: F401
+from ouroboros.gateway.task_decision import api_decision_answer  # noqa: F401
 from ouroboros.headless import (
     ARTIFACTS_DIR,
     ARTIFACT_STATUS_FAILED,
@@ -576,7 +577,10 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     effective_drive = child_drive or drive_root
     attachment_manifest, attachment_error = stage_initial_task_attachments(
         effective_drive, task_id, _normalize_attachments(body.get("attachments")),
-        allow_partial=body.get("allow_partial_attachments") is True,
+        # Partial staging is the DEFAULT (В25c, capinv-447): good attachments
+        # stage, rejected ones stay disclosed rows. Pass explicit false for the
+        # old atomic all-or-nothing admission.
+        allow_partial=body.get("allow_partial_attachments") is not False,
     )
     if attachment_error is not None:
         _cleanup_api_admission_attempt(drive_root, task_id, admission_token, child_drive)
@@ -1526,6 +1530,7 @@ def _supervisor_ready_error(request: Request) -> Optional[JSONResponse]:
 __all__ = [
     "api_task_artifact",
     "api_task_cancel",
+    "api_decision_answer",
     "api_task_hurry",
     "api_task_resume",
     "api_task_events",

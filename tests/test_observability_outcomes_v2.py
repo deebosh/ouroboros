@@ -127,7 +127,7 @@ def test_redactor_masks_compound_secret_names_without_generic_key_false_positive
 
     redacted = redact_projection(payload)
 
-    assert redacted.value["authtoken"] == "***REDACTED***"
+    assert redacted.value["authtoken"].startswith("***REDACTED[")  # G11 fingerprint
     assert structured_secret not in json.dumps(redacted.value)
     assert text_secret not in redacted.value["log"]
     for key, value in benign_fields.items():
@@ -160,8 +160,8 @@ def test_redactor_masks_segmented_secret_markers_with_trailing_qualifiers():
 
     redacted = redact_projection(payload)
 
-    assert redacted.value["client_secret_v2"] == "***REDACTED***"
-    assert redacted.value["api_key_prod"] == "***REDACTED***"
+    assert redacted.value["client_secret_v2"].startswith("***REDACTED[")
+    assert redacted.value["api_key_prod"].startswith("***REDACTED[")
     rendered = json.dumps(redacted.value)
     assert "ClientSecretValue1234" not in rendered
     assert "ApiKeyValue12345678" not in rendered
@@ -205,7 +205,7 @@ def test_persist_call_writes_private_full_and_redacted_refs(tmp_path, monkeypatc
         assert os.stat(redacted_path).st_mode & 0o777 == 0o600
     assert "full_payload_ref" not in refs
     assert "redacted_projection" not in refs
-    assert _read_gzip_json(redacted_path)["args"]["token"] == "***REDACTED***"
+    assert _read_gzip_json(redacted_path)["args"]["token"].startswith("***REDACTED[")
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     # Default: the authoritative blob is REDACTED so no raw secret lands on disk;
@@ -215,7 +215,7 @@ def test_persist_call_writes_private_full_and_redacted_refs(tmp_path, monkeypatc
     full_path = manifest["full_payload_ref"]["path"]
     if posix_private_modes_supported():
         assert os.stat(full_path).st_mode & 0o777 == 0o600
-    assert _read_gzip_json(full_path)["args"]["token"] == "***REDACTED***"
+    assert _read_gzip_json(full_path)["args"]["token"].startswith("***REDACTED[")
     assert manifest["call_type"] == "tool_call"
     assert manifest["redaction"]["redacted"] is True
     assert manifest["full_payload_ref"]["sha256"]
@@ -252,7 +252,7 @@ def test_persist_call_keep_raw_override_preserves_exact_authoritative_payload(
     assert refs["full_payload_redacted"] is False
     assert read_blob_ref(tmp_path, manifest["full_payload_ref"]) == payload
     projection = read_blob_ref(tmp_path, refs["redacted_projection_ref"])
-    assert projection["messages"][0]["content"]["token"] == "***REDACTED***"
+    assert projection["messages"][0]["content"]["token"].startswith("***REDACTED[")
     assert manifest["full_payload_ref"]["sha256"] != refs["redacted_projection_ref"]["sha256"]
 
 
@@ -269,7 +269,7 @@ def test_persist_call_keep_raw_env_persists_unredacted(tmp_path, monkeypatch):
     assert manifest["full_payload_redacted"] is False
     assert refs["full_payload_redacted"] is False
     assert _read_gzip_json(manifest["full_payload_ref"]["path"])["args"]["token"].startswith("ghp_")
-    assert _read_gzip_json(refs["redacted_projection_ref"]["path"])["args"]["token"] == "***REDACTED***"
+    assert _read_gzip_json(refs["redacted_projection_ref"]["path"])["args"]["token"].startswith("***REDACTED[")
     assert manifest["full_payload_ref"]["path"] != refs["redacted_projection_ref"]["path"]
 
 
@@ -806,6 +806,112 @@ def test_t4_cosmetic_partition_guards():
     assert "warning" not in reviewed["outcome_axes"]["objective"]
 
 
+def test_signal_death_is_not_cosmetic_but_plain_exit_still_is():
+    """D7 (node-runtime sprint): the NEW contract for the cosmetic demotion.
+
+    A run_command/run_script child KILLED BY A SIGNAL (typed meta: exit_code<0
+    or a signal name — e.g. the macOS kernel-CODESIGNING SIGKILL of a broken
+    node, an OOM kill, an external `kill -9`) is a REAL execution-degrading
+    tool error, symmetric with the timeout exclusion. A plain non-zero exit
+    (exit_code=1 probe/teardown noise) REMAINS cosmetic — that half of the T4
+    contract is deliberately unchanged."""
+    killed = derive_loop_outcome(
+        "Done.",
+        {"rounds": 2},
+        {"tool_calls": [{
+            "tool": "run_command",
+            "args": {"cmd": ["node", "--version"]},
+            "is_error": True,
+            "status": "non_zero_exit",
+            "exit_code": -9,
+            "signal": "SIGKILL",
+            "result": "⚠️ SHELL_EXIT_ERROR: command exited with exit_code=-9 (signal=SIGKILL, cwd=/x).",
+        }]},
+    )
+    execution = killed["outcome_axes"]["execution"]
+    assert execution["status"] == EXECUTION_DEGRADED
+    assert execution["reason_code"] == "tool_failure"
+    assert execution["failure"]["tool_errors"][0]["signal"] == "SIGKILL"
+    assert not execution["cosmetic_tool_errors"]
+
+    plain = derive_loop_outcome(
+        "Done.",
+        {"rounds": 2},
+        {"tool_calls": [{
+            "tool": "run_command",
+            "args": {"cmd": ["find", "/nope"]},
+            "is_error": True,
+            "status": "non_zero_exit",
+            "exit_code": 1,
+            "result": "⚠️ SHELL_EXIT_ERROR: command exited with exit_code=1.",
+        }]},
+    )
+    assert plain["outcome_axes"]["execution"]["status"] == EXECUTION_OK
+    assert plain["outcome_axes"]["execution"]["cosmetic_tool_errors"]
+
+
+def test_cancel_panic_kill_never_reaches_user_verdict_as_tool_failure(tmp_path):
+    """Q2-2=A MANDATORY pin: our OWN cancel/panic SIGKILL of a run_command child
+    must never surface to the owner as a red `tool_failure` verdict.
+
+    Why no leak exists (read from supervisor/task_lifecycle.cancel_task_custody
+    + task_results._is_status_regression): cancellation custody claims the
+    durable cancel intent, kills and JOINS the worker's whole process TREE (the
+    run_command child dies WITH the worker, so the loop never observes the -9
+    and cannot finalize over it), and only then writes the terminal `cancelled`
+    result — which carries NO trace-derived axes. The panic sweep
+    (shell.kill_all_tracked_subprocesses) rides server-wide teardown where the
+    workers die too. The one remaining lane — a late worker write landing AFTER
+    custody's terminal write — is closed by the sticky-terminal monotonic
+    status guard. Both halves are pinned here at the outcomes level, and the
+    kill path itself is EXECUTED (not argued from code reading) by the serial
+    twin ``test_e2e_cancel_of_inflight_run_command_child_never_reads_as_tool_failure``
+    in tests/test_cancel_intents_phase_a.py — custody kills a real worker tree
+    with a live run_command stand-in child and the stored axis is cancelled.
+    Because no false red leaks, the narrow active-cancel-intent classifier
+    filter of Q2-2=A is deliberately NOT implemented (it is specified only IF
+    a leak exists), and no new public status is introduced."""
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    sigkill_trace = {"tool_calls": [{
+        "tool": "run_command",
+        "args": {"cmd": ["python3", "train.py"]},
+        "is_error": True,
+        "status": "non_zero_exit",
+        "exit_code": -9,
+        "signal": "SIGKILL",
+        "result": "⚠️ SHELL_EXIT_ERROR: command exited with exit_code=-9 (signal=SIGKILL, cwd=/x).",
+    }]}
+
+    # 1) Custody's terminal write (shape mirrored from cancel_task_custody):
+    #    status=cancelled, plain result text, no trace-derived axes.
+    write_task_result(
+        tmp_path, "t-cancel", "cancelled",
+        result="Running task cancelled and worker terminated.",
+    )
+    stored = load_task_result(tmp_path, "t-cancel")
+    axes = normalize_outcome_axes(stored)
+    assert axes["execution"]["status"] == "cancelled"
+    assert axes["execution"]["reason_code"] == "cancelled"
+    assert "tool_failure" not in json.dumps(axes)
+
+    # 2) The honest OTHER half of the contract: had the SAME trace terminated
+    #    naturally (no cancel), the signal death IS a real degradation.
+    late = derive_loop_outcome("done", {}, sigkill_trace)
+    assert late["outcome_axes"]["execution"]["status"] == EXECUTION_DEGRADED
+    assert late["outcome_axes"]["execution"]["reason_code"] == "tool_failure"
+
+    # 3) A LATE worker write carrying that degraded outcome cannot clobber the
+    #    cancelled verdict: terminal statuses are sticky (monotonic guard).
+    write_task_result(
+        tmp_path, "t-cancel", "completed",
+        outcome_axes=late["outcome_axes"], result="late worker settle",
+    )
+    stored_after = load_task_result(tmp_path, "t-cancel")
+    assert stored_after["status"] == "cancelled"
+    assert "tool_failure" not in json.dumps(stored_after)
+
+
 def test_tool_arg_sanitizer_uses_value_pattern_redactor():
     args = {
         "cmd": "curl -H 'Authorization: Bearer verylongbearertokenvalue1234567890' https://x",
@@ -874,6 +980,52 @@ def test_latest_llm_response_text_salvages_newest_assistant_text(tmp_path):
     )
 
     assert latest_llm_response_text(tmp_path, "t-salvage") == "newest real progress"
+
+
+def test_latest_llm_response_text_strips_trailing_protocol_object(tmp_path):
+    """Salvage lockstep with the loop's trailing-object parse: a body of prose
+    plus a trailing delivery-control object salvages the PROSE only; a body
+    that is entirely the protocol object stays suppressed (skipped); an object
+    quoted mid-prose passes through untouched."""
+    import time as _time
+
+    from ouroboros.observability import latest_llm_response_text, persist_call
+
+    persist_call(
+        tmp_path, task_id="t-strip", call_id="llm_a_response", call_type="llm_response",
+        payload={"message": {"content": "older real text"}, "usage": {}},
+    )
+    _time.sleep(0.02)
+    persist_call(
+        tmp_path, task_id="t-strip", call_id="llm_b_response", call_type="llm_response",
+        payload={
+            "message": {
+                "content": 'Final summary for the owner.\n\n{"delivery_control": "keep"}',
+            },
+            "usage": {},
+        },
+    )
+    assert latest_llm_response_text(tmp_path, "t-strip") == "Final summary for the owner."
+
+    # Entirely-protocol body: suppressed, salvage reaches the older real text.
+    persist_call(
+        tmp_path, task_id="t-whole", call_id="llm_a_response", call_type="llm_response",
+        payload={"message": {"content": "older real text"}, "usage": {}},
+    )
+    _time.sleep(0.02)
+    persist_call(
+        tmp_path, task_id="t-whole", call_id="llm_b_response", call_type="llm_response",
+        payload={"message": {"content": '{"delivery_control": "keep"}'}, "usage": {}},
+    )
+    assert latest_llm_response_text(tmp_path, "t-whole") == "older real text"
+
+    # Object with prose AFTER it is quoted material, not a directive.
+    quoted = 'the contract wants {"delivery_control": "keep"} as the reply'
+    persist_call(
+        tmp_path, task_id="t-quoted", call_id="llm_a_response", call_type="llm_response",
+        payload={"message": {"content": quoted}, "usage": {}},
+    )
+    assert latest_llm_response_text(tmp_path, "t-quoted") == quoted
 
 
 def test_latest_llm_response_text_scans_past_many_empty_tool_rounds(tmp_path):

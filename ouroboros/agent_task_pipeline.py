@@ -52,7 +52,7 @@ from ouroboros.skill_publish_result import apply_skill_publish_receipt_veto
 from ouroboros.task_finalization import (
     build_sealed_final_package,
     build_swarm_efficiency as _build_swarm_efficiency,  # moved (module ceiling); tests import it here
-    deliver_final_message_live, prepare_terminal_send_event, register_final_answer_owed,
+    deliver_final_message_live, prepare_terminal_send_event, register_final_answer_owed, stamp_root_final_phase,
     sealed_final_prompt_section, terminal_result_fields,
 )
 from ouroboros.host_bound_outcome import (  # split out (module ceiling); tests import these here
@@ -744,13 +744,10 @@ def emit_task_results(
         # used to buffer the send with no delivery_id and no owed registration
         # at all. Seam + dedup: ouroboros/task_finalization.py.
         if _is_root_post_task(task) and not _presence:
-            if not _root_post_task_already_completed(env, task):
-                # The owner's answer leaves BEFORE post-task synthesis: the
-                # typed phase marker rides the frame (progress_meta merges
-                # into the WS chat payload) so the client holds the card on
-                # "Finalizing…" until the settled task_done, instead of
-                # reading the early final as the task's terminal conclusion.
-                send_event.setdefault("progress_meta", {})["task_phase"] = "finalizing"
+            stamp_root_final_phase(
+                send_event, task,
+                post_task_open=not _root_post_task_already_completed(env, task),
+            )
             register_final_answer_owed(task, send_event, env_drive_root=env.drive_root)
         _store_task_result(
             env, task, text, usage, llm_trace, review_evidence=review_evidence,
@@ -1413,6 +1410,7 @@ def build_review_context(env: Any) -> str:
     try:
         from ouroboros.review_state import (
             _LEGACY_CURRENT_REPO_KEY,
+            advisory_commit_ready,
             compute_snapshot_hash,
             format_status_section,
             load_state,
@@ -1452,13 +1450,13 @@ def build_review_context(env: Any) -> str:
             current_run = run
             break
 
-        lines: List[str] = ["## Review Continuity", "### Live repo gate"]
+        # H5 (capinv-447): honestly named — this is the ADVISORY readiness
+        # projection, not the full commit gate (triad/scope/custody independent).
+        lines: List[str] = ["## Review Continuity", "### Advisory readiness (not the full commit gate)"]
         live_status = str(getattr(current_run, "status", "") or "missing")
-        repo_commit_ready = bool(
-            current_run is not None
-            and current_run.status in ("fresh", "bypassed", "skipped")
-            and not open_obs
-            and not open_debts
+        repo_commit_ready = advisory_commit_ready(
+            current_run is not None and current_run.status in ("fresh", "bypassed", "skipped"),
+            open_obs, open_debts,
         )
         lines.append(f"- repo_key={repo_key}")
         lines.append(f"- snapshot_hash={snapshot_hash[:12] or '(empty)'}")

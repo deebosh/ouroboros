@@ -70,6 +70,7 @@ def collect_routes(
         api_claudexor_status,
         api_claudexor_wake,
     )
+    from ouroboros.gateway.claudexor_quota import api_claudexor_quota_refresh
     from ouroboros.gateway.onboarding import (
         api_onboarding_complete,
         api_onboarding_subagents_preview,
@@ -116,7 +117,8 @@ def collect_routes(
     from ouroboros.gateway.tasks import (
         api_task_artifact,
         api_task_cancel,
-        api_task_hurry,
+    api_decision_answer,
+    api_task_hurry,
         api_task_resume,
         api_task_events,
         api_task_get,
@@ -242,6 +244,7 @@ def collect_routes(
         Route("/api/tasks/{task_id}/cancel", endpoint=api_task_cancel, methods=["POST"]),
         Route("/api/tasks/{task_id}/hurry", endpoint=api_task_hurry, methods=["POST"]),
         Route("/api/tasks/{task_id}/resume", endpoint=api_task_resume, methods=["POST"]),
+    Route("/api/decisions", endpoint=api_decision_answer, methods=["POST"]),
         Route("/api/schedules", endpoint=api_schedules_list, methods=["GET"]),
         Route("/api/schedules", endpoint=api_schedules_upsert, methods=["POST"]),
         Route("/api/schedules/{schedule_id}", endpoint=api_schedules_delete, methods=["DELETE"]),
@@ -278,6 +281,11 @@ def collect_routes(
         # own account surface; zero auth logic on this side.
         Route("/api/reviewer-slots", endpoint=api_reviewer_slots, methods=["GET"]),
         Route("/api/claudexor/status", endpoint=api_claudexor_status, methods=["GET"]),
+        Route(
+            "/api/claudexor/quota/refresh",
+            endpoint=api_claudexor_quota_refresh,
+            methods=["POST"],
+        ),
         Route("/api/claudexor/wake", endpoint=api_claudexor_wake, methods=["POST"]),
         Route("/api/claudexor/login", endpoint=api_claudexor_login, methods=["POST"]),
         Route(

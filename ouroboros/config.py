@@ -146,19 +146,17 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Hard ceiling (seconds) a provider call waits for a concurrency slot when the task has
     # NO deadline; past it the call proceeds WITHOUT a slot (never blocks forever). SSOT here.
     "OUROBOROS_MODEL_SLOT_MAX_WAIT_SEC": 180,
-    # Project-naming LIGHT-call waits (v6.40): the provider-call transport timeout and the
-    # gateway's hard wait for the inline turn-into-project name. SSOT here (not magic numbers
-    # in project_naming.py) per DEVELOPMENT "Timeout & Wait Control".
+    # Project-naming LIGHT-call provider transport and gateway hard wait. SSOT here
+    # (not project_naming.py magic numbers) per DEVELOPMENT "Timeout & Wait Control".
     "OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC": 60,
     "OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC": 8,
     # Skill lifecycle lane deadline (wedged-job loud-failure bound).
     "OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC": 1800,
     "OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC": 300,
+    "OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC": 90,
     "OUROBOROS_SOFT_TIMEOUT_SEC": 600,
-    # NOTE: OUROBOROS_HARD_TIMEOUT_SEC no longer terminates tasks — the flat wall-clock
-    # kill was replaced by the activity model below (idle + subtree-liveness, abs ceiling).
-    # It survives only as a soft-warning/status display input; runtime is governed by
-    # OUROBOROS_TASK_IDLE_TIMEOUT_SEC and OUROBOROS_TASK_ABS_CEILING_SEC.
+    # OUROBOROS_HARD_TIMEOUT_SEC is only soft-warning/status input; task runtime uses
+    # the activity model below (idle + subtree liveness + absolute ceiling).
     "OUROBOROS_HARD_TIMEOUT_SEC": 1800,
     # Activity-based liveness (replaces flat wall-clock as the primary stop):
     # idle window = no real progress AND no progressing subtree; abs ceiling = the
@@ -294,7 +292,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # '5m'/'1h' = the explicit Anthropic ephemeral tiers ('1h' bills at the documented 2x ratio).
     # Non-Anthropic wire formats are a NO-OP by construction (Gemini has no ttl field — v5.30.0 outage class).
     "OUROBOROS_PROMPT_CACHE_TTL": "1h",
-    # Reasoning effort per task type: none | low | medium | high
+    # Reasoning effort per task type: any EFFORT_SCALE tier (the ordered SSOT below)
     "OUROBOROS_EFFORT_TASK": "medium",
     "OUROBOROS_EFFORT_EVOLUTION": "high",
     "OUROBOROS_EFFORT_REVIEW": "high",
@@ -355,6 +353,8 @@ CLAUDEXOR_MIN_VERSION: str = "3.2.0"
 # that question goes to the attempt record instead (`gateways.claudexor.attempt_containment`,
 # DISCLOSED not refused per AGENTS.md). Two gates, two questions; bands: docs/DELEGATED_ADMISSION.md.
 CLAUDEXOR_DELEGATED_MARKER_MIN_VERSION: str = "3.3.0"
+# Engine floor for the delegated ``workspaceRoot`` field (#362 stable-target routes).
+CLAUDEXOR_DELEGATED_WORKSPACE_ROOT_MIN_VERSION: str = "3.8.1"
 
 
 def _main_model() -> str:
@@ -451,10 +451,10 @@ def get_consciousness_model() -> str:
     """Return the high-horizon background-consciousness model slot."""
     return str(os.environ.get("OUROBOROS_MODEL_CONSCIOUSNESS", "") or "").strip() or _main_model()
 
-# v6.57.0 — EFFORT_SCALE: ORDERED reasoning-effort SSOT (low→high), the single place a tier
-# is defined (settings, llm.py builder, switch_model enum, subagent lanes). Exact-route
-# request-wire recovery, not legacy model-global evidence, owns provider adaptation.
-EFFORT_SCALE: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+# v6.57.0 — EFFORT_SCALE: ORDERED reasoning-effort SSOT (low→high), the single place a tier is
+# defined (settings, llm.py builder, switch_model enum, subagent lanes). `ultra` = the codex
+# vendor tier above `max`; above-ceiling tiers adapt per route (API wire recovery / delegated).
+EFFORT_SCALE: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 
 def effort_rank(value: str) -> int:
@@ -1501,6 +1501,8 @@ def get_mcp_tool_timeout_sec() -> int:
 
 def get_vision_caption_timeout_sec() -> int:
     return _clamped_number_setting("OUROBOROS_VISION_CAPTION_TIMEOUT_SEC", low=1, cast=int)
+def get_claudexor_quota_refresh_timeout_sec() -> int:
+    return _clamped_number_setting("OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC", low=1, high=90, cast=int)
 def get_claudexor_harness_install_timeout_sec() -> int:
     return _clamped_number_setting("OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC", low=1, cast=int)
 

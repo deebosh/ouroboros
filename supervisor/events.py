@@ -38,6 +38,8 @@ from ouroboros.subagent_messages import subagent_message_meta
 from ouroboros.task_finalization import send_provider_death_notice
 from ouroboros.contracts.task_contract import build_task_contract, normalize_allowed_resources
 from supervisor.cognitive_operations import EVENT_HANDLERS as _CEH, _handle_cognitive_operation  # noqa: F401
+from supervisor.chat_delivery_events import EVENT_HANDLERS as _CDE
+from supervisor.telemetry_events import TELEMETRY_EVENT_HANDLERS as _TELEMETRY_EVENT_HANDLERS
 from supervisor.log_addressing import (  # re-export: one events surface
     address_ctx_event as _address_ctx,
     address_task_event as _address_task_event,  # noqa: F401  (tests pin it here)
@@ -194,6 +196,8 @@ def _publish_routing_ack(
                 ack_kwargs["options"] = options
             if attachment_manifest is not None:
                 ack_kwargs["attachment_manifest"] = attachment_manifest
+            if str(evt.get("routing_token") or ""):
+                ack_kwargs["routing_token"] = str(evt.get("routing_token"))
             ack(
                 chat_id,
                 **ack_kwargs,
@@ -657,6 +661,9 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
     # what the native web-search tool actually fetched — the search happens on the
     # provider side and never appears in tools.jsonl.
     web_search_sources = usage.get("web_search_sources")
+    # Host-owned sealed-reasoning pin fact (issue #468): why same-model provider
+    # failover was withheld on this call. Bounded {"sealed", "artifact"} dict.
+    reasoning_pin = usage.get("reasoning_pin")
 
     usage_event = {
         "ts": evt.get("ts", utc_now_iso()),
@@ -687,6 +694,7 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
         "ledger_attempt_ids": ledger_attempt_ids,
         **({"chat_id": evt["chat_id"]} if evt.get("chat_id") is not None else {}),
         **({"web_search_sources": web_search_sources} if isinstance(web_search_sources, list) and web_search_sources else {}),
+        **({"reasoning_pin": reasoning_pin} if isinstance(reasoning_pin, dict) and reasoning_pin else {}),
     }
     _address_ctx(ctx, usage_event)
     try:
@@ -1607,6 +1615,18 @@ def _finish_task_done_dispatch(
         enqueue_project_completion_summary,
     )
 
+    # This seam is shared by the normal task_done path AND the lifecycle-fault
+    # resolver, so open owner-quiz/hurry projections settle on EVERY dispatched
+    # terminal transition (ingress lazy-heal covers producers that bypass it,
+    # e.g. orphaned-RUNNING reconciliation).
+    if not bool(evt.get("_ephemeral")):
+        try:
+            from supervisor.queue_transitions import reconcile_terminal_task_projections
+
+            reconcile_terminal_task_projections(ctx.DRIVE_ROOT, str(task_id))
+        except Exception:
+            log.debug("terminal projection reconcile failed for %s", task_id, exc_info=True)
+
     append_terminal_task_projection(
         ctx.DRIVE_ROOT, str(task_id or ""), task, final_task_result, task_done_event,
     )
@@ -1754,6 +1774,23 @@ def _finish_task_done_dispatch(
                 task_id,
                 exc_info=True,
             )
+        try:
+            from supervisor.queue_transitions import clear_budget_root_fence_for_settled_tree
+
+            # Pending-cancel and reaper task_done arrive AFTER the row left
+            # PENDING/RUNNING, so `task` is {} here: the tree identity falls
+            # back to the event stamp, then the durable result.
+            clear_budget_root_fence_for_settled_tree({
+                "id": str(task_id or ""),
+                "root_task_id": str(
+                    (task if isinstance(task, dict) else {}).get("root_task_id")
+                    or (task_done_event or {}).get("root_task_id")
+                    or (final_task_result or {}).get("root_task_id")
+                    or ""
+                ),
+            })
+        except Exception:
+            log.warning("Failed to release budget root fence for %s", task_id, exc_info=True)
     ctx.persist_queue_snapshot(reason="task_done")
     try:
         ctx.bridge.push_log(task_done_event)
@@ -2153,16 +2190,6 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             final_task_result = load_task_result(ctx.DRIVE_ROOT, str(task_id)) or {}
         except Exception:
             final_task_result = {}
-        if not bool(evt.get("_ephemeral")):
-            try:
-                # §19.7.2 item 5: a hurry the worker never drained loses the
-                # terminal race honestly — not_applied_before_terminal.
-                from ouroboros.owner_hurry import reconcile_terminal
-
-                reconcile_terminal(ctx.DRIVE_ROOT, str(task_id))
-            except Exception:
-                log.debug("owner_hurry terminal reconcile failed for %s", task_id, exc_info=True)
-
     outcome_axes = normalize_outcome_axes({**evt, **(final_task_result if isinstance(final_task_result, dict) else {})})
     reason_code = final_task_result.get("reason_code") or evt.get("reason_code")
     artifact_status = final_task_result.get("artifact_status") or evt.get("artifact_status")
@@ -3299,6 +3326,9 @@ def _handle_routing_manual_target(evt: Dict[str, Any], ctx: Any) -> None:
         status="needs_manual_target",
         reason=str(evt.get("reason") or "target_unspecified"),
         options=options,
+        # Durable carrier: the picker click re-forwards these staged specs to
+        # the chosen destination long after the routing turn's metadata died.
+        attachment_manifest=_routing_attachments(evt.get("attachment_uploads")),
     )
 
 
@@ -4047,132 +4077,6 @@ def _handle_toggle_consciousness(evt: Dict[str, Any], ctx: Any) -> None:
         ctx.send_with_budget(int(st["owner_chat_id"]), f"🧠 {result}")
 
 
-def _handle_send_photo(evt: Dict[str, Any], ctx: Any) -> None:
-    """Send a photo to the owner's chat."""
-    import base64 as b64mod
-    try:
-        # Binding precedence (matches _handle_send_message/_handle_log_event): a
-        # post-hoc bound task keeps its original main chat_id, so its media must
-        # still route to the project panel.
-        chat_id = _bound_project_chat_id(
-            ctx, evt.get("task_id"), evt.get("parent_task_id"), evt.get("root_task_id")
-        ) or int(evt.get("chat_id") or 0)
-        image_b64 = str(evt.get("image_base64") or "")
-        caption = str(evt.get("caption") or "")
-        mime = str(evt.get("mime") or "image/png")
-        if not chat_id or not image_b64:
-            return
-        photo_bytes = b64mod.b64decode(image_b64)
-        ok, err = ctx.bridge.send_photo(
-            chat_id, photo_bytes, caption=caption, mime=mime,
-            task_id=str(evt.get("task_id") or ""),
-        )
-        if not ok:
-            ctx.append_jsonl(
-                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "send_photo_error",
-                    "chat_id": chat_id, "error": err,
-                },
-            )
-    except Exception as e:
-        ctx.append_jsonl(
-            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "send_photo_event_error", "error": repr(e),
-            },
-        )
-
-
-def _handle_send_video(evt: Dict[str, Any], ctx: Any) -> None:
-    """Send a video to the owner's chat."""
-    import base64 as b64mod
-    try:
-        # Binding precedence (matches the sibling handlers): a post-hoc bound
-        # task's media routes to its project panel, not the old main thread.
-        bound_chat = _bound_project_chat_id(
-            ctx, evt.get("task_id"), evt.get("parent_task_id"), evt.get("root_task_id")
-        )
-        raw_chat_id = evt.get("chat_id")
-        if not bound_chat and (raw_chat_id is None or raw_chat_id == ""):
-            return
-        chat_id = bound_chat or int(raw_chat_id)
-        video_b64 = str(evt.get("video_base64") or "")
-        caption = str(evt.get("caption") or "")
-        mime = str(evt.get("mime") or "video/mp4")
-        if not video_b64:
-            return
-        video_bytes = b64mod.b64decode(video_b64)
-        ok, err = ctx.bridge.send_video(
-            chat_id, video_bytes, caption=caption, mime=mime,
-            task_id=str(evt.get("task_id") or ""),
-        )
-        if not ok:
-            ctx.append_jsonl(
-                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "send_video_error",
-                    "chat_id": chat_id, "error": err,
-                },
-            )
-    except Exception as e:
-        ctx.append_jsonl(
-            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "send_video_event_error", "error": repr(e),
-            },
-        )
-
-
-def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
-    """Send an arbitrary document/file to the owner's chat."""
-    import base64 as b64mod
-    try:
-        # Binding precedence (matches the sibling media handlers): a post-hoc
-        # bound task's file routes to its project panel, not the old main thread.
-        bound_chat = _bound_project_chat_id(
-            ctx, evt.get("task_id"), evt.get("parent_task_id"), evt.get("root_task_id")
-        )
-        raw_chat_id = evt.get("chat_id")
-        if not bound_chat and (raw_chat_id is None or raw_chat_id == ""):
-            return
-        chat_id = bound_chat or int(raw_chat_id)
-        file_b64 = str(evt.get("file_base64") or "")
-        caption = str(evt.get("caption") or "")
-        filename = str(evt.get("filename") or "file")
-        mime = str(evt.get("mime") or "application/octet-stream")
-        download_url = str(evt.get("download_url") or "")
-        task_id = str(evt.get("task_id") or "")
-        if not file_b64:
-            return
-        file_bytes = b64mod.b64decode(file_b64)
-        ok, err = ctx.bridge.send_document(
-            chat_id, file_bytes, filename=filename, caption=caption, mime=mime,
-            download_url=download_url, task_id=task_id,
-        )
-        if not ok:
-            ctx.append_jsonl(
-                ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "send_document_error",
-                    "chat_id": chat_id, "error": err,
-                },
-            )
-    except Exception as e:
-        ctx.append_jsonl(
-            ctx.DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "send_document_event_error", "error": repr(e),
-            },
-        )
-
-
 def _handle_owner_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
     """Log owner injections so health checks can detect duplicate processing."""
     try:
@@ -4184,21 +4088,6 @@ def _handle_owner_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
         })
     except Exception:
         log.warning("Failed to log owner_message_injected event", exc_info=True)
-
-
-def _handle_review_wave_budget_insufficient(evt: Dict[str, Any], ctx: Any) -> None:
-    """Persist the typed review-wave admission refusal durably (v6.69.0).
-
-    Without a registered handler the worker event would land in
-    supervisor.jsonl as an unknown_worker_event repr instead of a typed
-    events.jsonl row that budget audits can aggregate."""
-    try:
-        append_jsonl(
-            ctx.DRIVE_ROOT / "logs" / "events.jsonl",
-            {"ts": evt.get("ts", utc_now_iso()), **{k: v for k, v in evt.items() if k != "ts"}},
-        )
-    except Exception:
-        log.debug("Failed to log review_wave_budget_insufficient event", exc_info=True)
 
 
 def _handle_log_event(evt: Dict[str, Any], ctx: Any) -> None:
@@ -4215,7 +4104,9 @@ def _handle_log_event(evt: Dict[str, Any], ctx: Any) -> None:
         ctx.bridge.push_log(payload)
     except Exception:
         log.debug("Failed to forward live log event", exc_info=True)
-    if data.get("type") == "task_checkpoint":
+    # task_start_settings_reload_failed is a durable owner disclosure (#285):
+    # without persistence the fact evaporates on the next page load.
+    if data.get("type") in ("task_checkpoint", "task_start_settings_reload_failed"):
         try:
             ctx.append_jsonl(ctx.DRIVE_ROOT / "logs" / "events.jsonl", payload)
         except Exception:
@@ -4384,6 +4275,7 @@ EVENT_HANDLERS = {
     "llm_usage": _handle_llm_usage,
     "external_wait_lease": _handle_external_wait_lease,
     **_CEH,
+    **_CDE,
     "main_llm_call_state": _handle_main_llm_call_state,
     "budget_pause": _handle_budget_pause,
     "budget_root_fence": _handle_budget_root_fence,
@@ -4403,14 +4295,11 @@ EVENT_HANDLERS = {
     "steer_task": _handle_steer_task,
     "project_digest": _handle_project_digest,
     "cancel_task": _handle_cancel_task,
-    "send_photo": _handle_send_photo,
-    "send_video": _handle_send_video,
-    "send_document": _handle_send_document,
     "toggle_evolution": _handle_toggle_evolution,
     "toggle_consciousness": _handle_toggle_consciousness,
     "owner_message_injected": _handle_owner_message_injected,
     "log_event": _handle_log_event,
-    "review_wave_budget_insufficient": _handle_review_wave_budget_insufficient,
+    **_TELEMETRY_EVENT_HANDLERS,
     "skill_exec_finished": _handle_skill_lifecycle,
     "skill_exec_failed": _handle_skill_lifecycle,
     "acceptance_fence": _handle_acceptance_fence,

@@ -24,7 +24,7 @@ import tempfile
 from typing import Any, Dict, List, Tuple, Union
 
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.artifacts import task_artifact_dir_path, task_id_for_artifacts
+from ouroboros.artifacts import task_artifact_dir_path
 from ouroboros.task_results import load_task_result
 from ouroboros.review_state import invalidate_advisory_after_mutation
 from ouroboros.runtime_mode_policy import (
@@ -39,7 +39,6 @@ from ouroboros.headless import (
     ARTIFACT_STATUS_READY_NO_CHANGES,
     ARTIFACT_STATUS_READY_WITH_CHANGES,
 )
-from ouroboros.utils import atomic_write_json, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -128,43 +127,9 @@ def _sha256_file(path: pathlib.Path) -> str:
     return hasher.hexdigest()
 
 
-def _write_verdict(
-    ctx: ToolContext,
-    child_task_id: str,
-    *,
-    outcome: str,
-    reason: str,
-    files: List[str],
-    manifest: Dict[str, Any],
-    applied: bool,
-    conflicts: List[str],
-    protected: List[str],
-    target: str = "",
-) -> str:
-    parent_task_id = task_id_for_artifacts(ctx)
-    art_dir = task_artifact_dir_path(getattr(ctx, "drive_root", "."), parent_task_id, create=True)
-    verdict = {
-        "schema_version": 1,
-        "created_at": utc_now_iso(),
-        "tool": "integrate_subagent_patch",
-        "parent_task_id": parent_task_id,
-        "child_task_id": child_task_id,
-        "outcome": outcome,
-        "applied": bool(applied),
-        "reason": str(reason or ""),
-        "target_root": str(target or ""),
-        "files": list(files or []),
-        "protected_matches": list(protected or []),
-        "conflicts": list(conflicts or []),
-        "patch_sha256": str((manifest or {}).get("sha256") or ""),
-        "diffstat": str((manifest or {}).get("diffstat") or ""),
-    }
-    path = art_dir / f"subagent_patch_verdict_{child_task_id}.json"
-    try:
-        atomic_write_json(path, verdict, trailing_newline=True)
-    except Exception:
-        return ""
-    return str(path)
+# Verdict writing lives in tools/patch_verdict.py (module-size ceiling);
+# the historical private name stays importable for callers and tests.
+from ouroboros.tools.patch_verdict import write_patch_verdict as _write_verdict  # noqa: E402
 
 
 def _child_write_root(child_result: Dict[str, Any]) -> str:
@@ -458,7 +423,7 @@ def _maybe_coop_noop_verdict(
         f"coop tree {target} (verified read-only against its patch; nothing to apply). "
         f"The tree is checkpoint-committed by the host when this task tree finalizes. "
         f"Touched files: {', '.join(touched[:10]) or '(none listed)'}. "
-        f"Verdict: {verdict_path or '(unwritten)'}.{disposition_warning}"
+        f"Verdict: {verdict_path or '(unwritten)'}.{_format_patch_exclusions(manifest)}{disposition_warning}"
     )
 
 
@@ -607,7 +572,7 @@ def _handle_external_workspace_integration(
         return (
             f"✅ Verified external_workspace child {child_task_id}: {len(authoritative_touched)} file(s) are already "
             f"present in the shared workspace {target}. No patch was re-applied. "
-            f"Verdict: {verdict_path or '(unwritten)'}.{disposition_warning}"
+            f"Verdict: {verdict_path or '(unwritten)'}.{_format_patch_exclusions(manifest)}{disposition_warning}"
         )
     if missing:
         return (
@@ -686,7 +651,7 @@ def _integrate_subagent_patch(
         return (
             f"🚫 Rejected subagent patch from {child_task_id} ({len(touched)} file(s) not applied). "
             f"Verdict: {verdict_path or '(unwritten)'}. Reason: {reason or '(none)'}."
-            f"{disposition_warning}"
+            f"{_format_patch_exclusions(manifest)}{disposition_warning}"
         )
 
     status = str(manifest.get("status") or "")
@@ -694,6 +659,7 @@ def _integrate_subagent_patch(
         return (
             f"⚠️ INTEGRATE_NO_CHANGES: child {child_task_id} workspace patch status={status!r}; "
             "nothing to apply."
+            f"{_format_patch_exclusions(manifest)}"
         )
     if not patch_path.exists():
         return f"⚠️ INTEGRATE_PATCH_MISSING: workspace.patch for {child_task_id} not found at {patch_path}."
@@ -849,7 +815,7 @@ def _integrate_subagent_patch(
     )
     return (
         f"✅ Integrated subagent patch from {child_task_id} into {target} ({len(touched)} file(s), staged).{note}\n"
-        f"{diffstat}\n"
+        f"{diffstat}{_format_patch_exclusions(manifest)}\n"
         f"Verdict: {verdict_path or '(unwritten)'}.\n"
         "Changes are staged but NOT committed — review and run commit_reviewed yourself (you are the sole committer)."
         f"{disposition_warning}"
@@ -1242,7 +1208,7 @@ def _integrate_delegated_patch(
         return (
             f"🚫 Rejected delegated run {rid}'s captured patch ({len(touched)} file(s) not "
             f"applied); its execution snapshot is released. Verdict: {verdict_path or '(unwritten)'}. "
-            f"Reason: {reason or '(none)'}.{note}"
+            f"Reason: {reason or '(none)'}.{_format_patch_exclusions(manifest)}{note}"
         )
 
     if capture_status != ARTIFACT_STATUS_READY_WITH_CHANGES:
@@ -1252,7 +1218,8 @@ def _integrate_delegated_patch(
                 return _unwritten_disposition("applied", applied=False)
             return (
                 f"OK: delegated run {rid} changed NOTHING in its execution snapshot; "
-                f"there is no patch to apply and the snapshot is released.{note}"
+                f"there is no patch to apply and the snapshot is released."
+                f"{_format_patch_exclusions(manifest)}{note}"
             )
         return (
             f"⚠️ INTEGRATE_DELEGATED_NO_CAPTURE: run {rid}'s capture status is "
@@ -1374,6 +1341,7 @@ def _integrate_delegated_patch(
                 "was reversed — your tree is back to its pre-apply state and NOTHING is "
                 "left half-applied. The snapshot and the patch are preserved; fix the "
                 f"index problem, then call this tool again. Verdict: {verdict_path or '(unwritten)'}."
+                f"{_format_patch_exclusions(manifest)}"
             )
         recorded, _ = _dispose("applied", cleanup=False)
         tail = "" if recorded else (
@@ -1387,7 +1355,7 @@ def _integrate_delegated_patch(
             "changes are already in your working tree and a second apply would double "
             "them. Inspect with vcs_diff, stage what you accept yourself, and note that "
             "the run is recorded as applied. Its execution snapshot is preserved for "
-            f"comparison. Verdict: {verdict_path or '(unwritten)'}.{tail}"
+            f"comparison. Verdict: {verdict_path or '(unwritten)'}.{_format_patch_exclusions(manifest)}{tail}"
         )
 
     if proc.returncode != 0:
@@ -1436,7 +1404,7 @@ def _integrate_delegated_patch(
         prot_note = f" Includes {len(protected)} protected path(s) (allowed: runtime_mode={runtime_mode})."
     return (
         f"✅ Integrated delegated run {rid}'s patch into {target} ({len(touched)} file(s), staged).{prot_note}\n"
-        f"{diffstat}\n"
+        f"{diffstat}{_format_patch_exclusions(manifest)}\n"
         f"Verdict: {verdict_path or '(unwritten)'}. Its execution snapshot is released.\n"
         "Changes are staged but NOT committed — review them yourself; you are the sole committer."
         f"{note}"
@@ -1493,7 +1461,7 @@ def _compare_subagent_patches(ctx: ToolContext, task_ids: Any = None) -> str:
             f"\n## {cid}\n"
             f"- patch status: {status or '(none)'} | child result status: {result_status or '(unknown)'}\n"
             f"- tracked changed: {len(tracked)} | untracked included: {len(untracked)}\n"
-            f"- diffstat: {diffstat or '(none)'}\n"
+            f"- diffstat: {diffstat or '(none)'}{_format_patch_exclusions(manifest)}\n"
             + (f"- child summary: {result_summary}\n" if result_summary else "")
             + (f"\n```diff\n{body}\n```\n" if body else "- (no patch body; nothing to apply)\n")
         )
@@ -1502,6 +1470,37 @@ def _compare_subagent_patches(ctx: ToolContext, task_ids: Any = None) -> str:
         "or synthesize across candidates yourself (you are the sole committer). Comparison is read-only."
     )
     return "\n".join(parts)
+
+
+def _format_patch_exclusions(manifest) -> str:
+    """One disclosure line for files the capture dropped per policy, or ''.
+
+    The per-file exclusions (#447 F5) live in the workspace_patch manifest,
+    which no parent-facing surface used to render — a dropped deliverable
+    hid behind an affirmative "Integrated N file(s)" success line."""
+    entries = []
+    for key in ("sensitive_blocked", "untracked_excluded", "tracked_excluded"):
+        for item in manifest.get(key) or []:
+            if isinstance(item, dict):
+                path, reason = str(item.get("path") or ""), str(item.get("reason") or "")
+            else:
+                path, reason = str(item or ""), ""
+            if path:
+                entries.append(f"{path} ({reason})" if reason else path)
+    if not entries:
+        return ""
+    shown = "; ".join(entries[:8])
+    more = (
+        f" and {len(entries) - 8} more (full list with reasons: the child's "
+        "workspace_patch.json artifact)"
+        if len(entries) > 8 else ""
+    )
+    return (
+        f"\n⚠️ {len(entries)} file(s) EXCLUDED from this patch by capture policy: "
+        f"{shown}{more}. Excluded content is NOT in this patch: if one is a real "
+        "deliverable, recover it from the child workspace/snapshot while that "
+        "still exists, or have it re-produced."
+    )
 
 
 def get_tools() -> List[ToolEntry]:

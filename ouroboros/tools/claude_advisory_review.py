@@ -249,6 +249,7 @@ def _build_advisory_prompt(
         bible = _mandatory_read_pointer(repo_dir, "BIBLE.md")
         checklists = _mandatory_read_pointer(repo_dir, "docs/CHECKLISTS.md", section=checklist_name)
         dev_guide = _mandatory_read_pointer(repo_dir, "docs/DEVELOPMENT.md")
+        design_doc = _mandatory_read_pointer(repo_dir, "docs/DESIGN.md")
         arch_doc = _mandatory_read_pointer(repo_dir, "docs/ARCHITECTURE.md")
     else:
         bible = load_governance_doc(repo_dir, "BIBLE.md", on_missing="placeholder", fallback="(BIBLE.md not found)")
@@ -257,6 +258,7 @@ def _build_advisory_prompt(
         except Exception:
             checklists = load_governance_doc(repo_dir, "docs/CHECKLISTS.md", on_missing="placeholder", fallback="(CHECKLISTS.md not found)")
         dev_guide = load_governance_doc(repo_dir, "docs/DEVELOPMENT.md", on_missing="placeholder", fallback="(DEVELOPMENT.md not found)")
+        design_doc = load_governance_doc(repo_dir, "docs/DESIGN.md", on_missing="placeholder", fallback="(DESIGN.md not found)")
         arch_doc = load_governance_doc(repo_dir, "docs/ARCHITECTURE.md", on_missing="placeholder", fallback="(ARCHITECTURE.md not found)")
     if diff is None:
         diff = _get_staged_diff(repo_dir, paths=resolved_paths)
@@ -362,6 +364,7 @@ def _build_advisory_prompt(
         f"## CHECKLISTS.md (What to review)\n\n{checklists}\n\n"
         f"{scope_section}\n\n{goal_section}\n\n"
         f"## DEVELOPMENT.md (Engineering standards)\n\n{dev_guide}\n\n"
+        f"## DESIGN.md (UI design system)\n\n{design_doc}\n\n"
         f"## BIBLE.md (Constitutional context — top priority)\n\n{bible}\n\n"
         "## ARCHITECTURE.md (System structure — critical for version sync and module checks)\n\n"
         f"{arch_doc}\n\n{skill_host_context}\n\n{blocking_history}\n\n"
@@ -1453,6 +1456,7 @@ def _advisory_run_record(
         bypass_reason=str(fields.get("bypass_reason") or ""),
         bypassed_by_task=str(fields.get("bypassed_by_task") or ""),
         snapshot_paths=fields.get("snapshot_paths"),
+        reason_kind=str(fields.get("reason_kind") or ""),
         readiness_warnings=list(fields.get("readiness_warnings") or []),
         prompt_chars=int(fields.get("prompt_chars") or 0),
         model_used=str(fields.get("model_used") or ""),
@@ -1686,8 +1690,19 @@ def _next_step_guidance(latest: Optional["AdvisoryRunRecord"], state: "AdvisoryR
                 problem = "test preflight: pytest failed before the paid critic call"
                 fix = "Fix the failing tests and re-run preflight_review. Use preflight_review(skip_tests=True) only for intentional WIP code."
             else:
-                problem = "syntax preflight: a staged .py file has a SyntaxError"
-                fix = "See raw_result for file:line:msg, fix it, and re-run preflight_review."
+                # H4 (capinv-447): "preflight_blocked" is produced by more than one
+                # deterministic check — branch on the typed cause, never assert
+                # "SyntaxError" for a release-metadata block (or an unknown one).
+                reason_kind = str(getattr(latest, "reason_kind", "") or "")
+                if reason_kind == "syntax":
+                    problem = "syntax preflight: a staged .py file has a SyntaxError"
+                    fix = "See raw_result for file:line:msg, fix it, and re-run preflight_review."
+                elif reason_kind == "release_metadata":
+                    problem = "release metadata preflight: version/README release carriers failed the deterministic check"
+                    fix = "See raw_result for the exact carrier mismatch, fix it, and re-run preflight_review."
+                else:
+                    problem = "a deterministic preflight check (see raw_result for the exact cause)"
+                    fix = "Fix the cause named in raw_result and re-run preflight_review."
             return _with_choices(
                 f"Last advisory run was blocked by {problem}. {fix} {_debt_hint()}".strip()
             )
@@ -1783,6 +1798,7 @@ def _persist_preflight_record(
                 repo_key=repo_key, task_id=task_id,
                 snapshot_summary=("advisory delivery error" if record.get("session_id") else "preflight block — critic not called"),
                 raw_result=record.get("raw_result"),
+                reason_kind=record.get("reason_kind"),
                 snapshot_paths=record.get("paths"),
                 readiness_warnings=record.get("readiness_warnings"),
                 prompt_chars=record.get("prompt_chars"),
@@ -1872,6 +1888,7 @@ def _advisory_pre_sdk_gate(
             commit_message=commit_message,
             record={
                 "status": "preflight_blocked",
+                "reason_kind": "release_metadata",
                 "raw_result": release_preflight_err,
                 "paths": paths,
                 "duration_sec": 0.0,
@@ -2110,6 +2127,7 @@ def _handle_advisory_pre_review(
             commit_message=commit_message,
             record={
                 "status": "preflight_blocked",
+                "reason_kind": "syntax",
                 "raw_result": raw_result,
                 "paths": paths,
                 "duration_sec": _advisory_duration,
