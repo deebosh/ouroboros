@@ -31,7 +31,7 @@ from ouroboros.config import get_finalization_grace_sec
 from ouroboros.deadline_utils import owner_deadline_exhausted, review_transport_timeout
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.review_verdict_extraction import canonicalize_session_verdict
-from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT, review_output_shape
+from ouroboros.triad_review import default_output_contract, review_output_shape
 from ouroboros.usage_accounting import (
     POSITIVE_PHYSICAL_ATTEMPT_STATES,
     physical_attempt_limit,
@@ -149,8 +149,14 @@ _LANDING_NOTICE = (
 # Per-tool-result bound inside the episode: one greedy full read of a giant
 # artifact must not consume the whole transcript budget in a single round.
 # Disclosed truncation with an offset/limit continuation handle is honest —
-# unlike compaction, nothing unseen is summarized into the record.
+# unlike compaction, nothing unseen is summarized into the record. The cap is
+# ALSO clamped to the room left below the transcript bound minus the landing
+# reserve, so no single read can jump over the landing notice and the bound.
 _EPISODE_TOOL_RESULT_CHAR_CAP = 120_000
+
+# Room kept below the bound for the landing notice itself: the notice must
+# always fit under the send bound it announces.
+_LANDING_RESERVE_CHARS = 512
 
 class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
     """Bounded native inspection episode for a configured-subagent api row.
@@ -184,7 +190,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
 
     def _output_contract(self) -> str:
         contract = str((self.assignment.request.policy or {}).get("output_contract") or "")
-        return contract or REVIEW_JSON_ARRAY_CONTRACT
+        return contract or default_output_contract(review_output_shape(self.assignment.request.surface))
 
     def prompt_payload(self) -> Dict[str, Any]:
         return {
@@ -312,7 +318,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         max_tokens = int(request.max_tokens or slot.max_tokens)
         transcript_cap = review_native_transcript_bound(
             slot.model, output_reserve=max_tokens, use_local=bool(slot.use_local))
-        landing_at = int(transcript_cap * NATIVE_LANDING_FRACTION)
+        landing_at = min(int(transcript_cap * NATIVE_LANDING_FRACTION),
+                         max(0, transcript_cap - _LANDING_RESERVE_CHARS))
         shape = review_output_shape(request.surface)
         # The data plane is opt-in per surface (policy["native_data_root"]):
         # the default is an empty scratch directory so a repository review
@@ -328,6 +335,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         end_reason = "transcript_bound"
         round_idx = 0
         transcript_chars = 0
+        episode: Dict[str, Any] = {}
         try:
             registry, schemas = self._inspection_registry(root, data_root or scratch)
             # The counter measures what every send actually carries: the
@@ -346,10 +354,21 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 {"role": "system", "content": _NATIVE_REVIEW_INSTRUCTIONS},
                 {"role": "user", "content": self.episode_prompt},
             ]
+            if transcript_chars >= landing_at:
+                # FLOOR: a bound that lands before the first send leaves no
+                # room to read anything — a review with zero reads is not a
+                # review, and the landing notice must never be the first
+                # thing the reviewer hears.
+                end_reason = "bound_below_first_send"
+                raise ReviewRouteUnavailable(
+                    f"native review episode bound ({transcript_cap} chars) leaves no "
+                    f"room to read: the first send alone carries {transcript_chars} "
+                    "chars; the episode fails closed", code="native_bound_below_first_send")
             while True:
                 if owner_deadline_exhausted(
                     deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
                 ):
+                    end_reason = "deadline_exhausted"
                     raise _deadline_exhausted_error(
                         "owner deadline exhausted mid native review episode")
                 # The bound is a SEND bound: it is enforced BEFORE every
@@ -369,6 +388,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         used=transcript_chars, bound=transcript_cap)
                     messages.append({"role": "user", "content": notice})
                     transcript_chars += len(notice)
+                    if transcript_chars > transcript_cap:
+                        break  # even the notice would not fit: the bound has landed
                 round_idx += 1
                 chat_kwargs: Dict[str, Any] = {
                     "messages": messages,
@@ -395,6 +416,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     try:
                         msg, usage = chat(**chat_kwargs)
                     except BaseException as exc:
+                        end_reason = "transport_error"
                         capture = getattr(exc, "physical_attempt_capture", None)
                         if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
@@ -418,152 +440,209 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     if usage.get(_fact):
                         total_usage[_fact] = usage[_fact]
                 content = str(msg.get("content") or "") if isinstance(msg, dict) else ""
-                transcript_chars += len(content)
-                # Tool-call objects (names + argument JSON) join `messages`
-                # below and ride every later send — the cumulative half of
-                # the previous under-count.
-                transcript_chars += sum(
-                    len(json.dumps(tc, ensure_ascii=False, default=str))
-                    for tc in tool_calls if isinstance(tc, dict)
-                )
                 if content:
                     last_content = content
                 if not tool_calls:
                     # The reviewer's answer — or an empty round, which is the
                     # episode's honest end: the empty answer rides the ordinary
-                    # empty-response rail upstream.
+                    # empty-response rail upstream (a report keeps its draft).
                     final_answer = content
                     end_reason = "final_answer" if content else "empty_answer"
+                    break
+                well_formed = [
+                    tc for tc in tool_calls
+                    if isinstance(tc, dict) and isinstance(tc.get("function"), dict)
+                    and str(tc["function"].get("name") or "").strip()
+                ]
+                if not content and not well_formed:
+                    # PROGRESS FLOOR (P13: a floor, never a ceiling): a round
+                    # carrying neither prose nor one well-formed tool call is
+                    # malformed provider output — it adds nothing to the
+                    # transcript and would re-enter the paid send forever.
+                    end_reason = "round_without_progress"
                     break
                 assistant = dict(msg)
                 assistant.setdefault("role", "assistant")
                 messages.append(assistant)
+                # The WHOLE assistant envelope (content + tool-call objects,
+                # names and argument JSON) joins `messages` and rides every
+                # later send — counting only its parts understated each send.
+                transcript_chars += len(json.dumps(assistant, ensure_ascii=False, default=str))
                 for tc in tool_calls:
                     if not isinstance(tc, dict):
                         continue  # a non-dict tool_call is malformed provider output, not a crash
-                    call_id = str(tc.get("id") or "")
-                    function = tc.get("function") if isinstance(tc, dict) else {}
-                    name = str((function or {}).get("name") or "")
-                    raw_args = (function or {}).get("arguments")
-                    args: Optional[Dict[str, Any]] = None
-                    outcome = "executed"  # provenance from CONTROL FLOW, never string-sniffing
-                    verdict = validation_by_id.get(call_id)
-                    if verdict is not None and not getattr(verdict, "allows_execution", True):
-                        outcome = "refused"
-                        result = f"⚠️ TOOL_ARG_ERROR: {getattr(verdict, 'error', 'invalid arguments')}"
-                    elif name not in _INSPECTION_TOOL_NAMES:
-                        outcome = "refused"
-                        result = (
-                            f"⚠️ tool {name!r} is not available in this read-only "
-                            "inspection episode"
-                        )
-                    else:
-                        try:
-                            args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
-                            if not isinstance(args, dict):
-                                raise ValueError("arguments must be a JSON object")
-                        except (TypeError, ValueError) as exc:
-                            outcome = "refused"
-                            args, result = None, f"⚠️ TOOL_ARG_ERROR: {exc}"
-                        if isinstance(args, dict):
-                            try:
-                                result = str(registry.execute(name, args))
-                            except Exception as exc:  # tool errors feed the model, not the rail
-                                outcome = "error"
-                                result = f"⚠️ {type(exc).__name__}: {exc}"
-                            if len(result) > _EPISODE_TOOL_RESULT_CHAR_CAP:
-                                # Disclosed bound with a continuation handle — the
-                                # reader keeps reading in chunks (read_file supports
-                                # offset/limit), so nothing is silently cut.
-                                kept = result[:_EPISODE_TOOL_RESULT_CHAR_CAP]
-                                result = (
-                                    kept
-                                    + f"\n⚠️ RESULT TRUNCATED: showed {_EPISODE_TOOL_RESULT_CHAR_CAP}"
-                                    f" of {len(result)} chars. Continue reading the remainder"
-                                    " in bounded chunks (read_file supports offset/limit)."
-                                )
-                    # Host-observed evidence (bounded): which artifacts THIS
-                    # episode actually opened — disclosure, never a claim of
-                    # full-surface coverage.
-                    self._tool_calls_total += 1
-                    if len(self._tool_receipts) < 200:
-                        receipt: Dict[str, Any] = {"round": round_idx, "tool": name}
-                        if isinstance(args, dict):
-                            for key in ("path", "root", "query", "pattern"):
-                                if args.get(key):
-                                    receipt[key] = str(args[key])[:300]
-                        receipt["result_chars"] = len(result)
-                        # Honesty: a refused call must not read as an executed one.
-                        receipt["outcome"] = outcome
-                        self._tool_receipts.append(receipt)
+                    # The per-result room is what is left below the bound minus
+                    # the landing reserve: one read can never jump over the
+                    # landing notice and the bound in a single round.
+                    call_id, result = self._execute_inspection_call(
+                        registry, tc, validation_by_id, round_idx=round_idx,
+                        room=transcript_cap - _LANDING_RESERVE_CHARS - transcript_chars,
+                    )
                     transcript_chars += len(result)
                     messages.append({
                         "role": "tool", "tool_call_id": call_id, "content": result,
                     })
+            if shape == "report" and not final_answer and last_content:
+                # A report is a product, not a verdict: the collected draft is
+                # delivered marked INCOMPLETE rather than discarded (the bound
+                # landed, the round made no progress, or the final round came
+                # back empty) — the consumer discloses it; nothing unseen is
+                # summarized into it. Decided BEFORE the custody row is written
+                # so the durable fact knows the product is partial.
+                final_answer = last_content
+                episode["native_incomplete"] = end_reason
         finally:
             # Only the host's own scratch is removed; an opted-in data root
             # belongs to the caller and survives a failed episode untouched.
             shutil.rmtree(scratch, ignore_errors=True)
-        episode = {
-            "native_rounds": self._rounds_used,
-            "native_tool_calls": self._tool_calls_total,
-            "native_transcript_chars": transcript_chars,
-            "native_transcript_bound": transcript_cap,
-            "native_landing_notified": landed,
-            "native_end_reason": end_reason,
-        }
-        self._emit_episode_fact(episode)
+            # One typed custody row per episode END — including the ends that
+            # leave through an exception (deadline, transport, registry): a
+            # refused episode used to leave no trace of how far it got. The
+            # actor usage is assembled HERE too, so a refused or errored
+            # episode still carries its delivery, rounds, receipts and paid
+            # ledger facts (`failure_custody` hands them to the error actor).
+            episode.update({
+                "native_rounds": self._rounds_used,
+                "native_tool_calls": self._tool_calls_total,
+                "native_transcript_chars": transcript_chars,
+                "native_transcript_bound": transcript_cap,
+                "native_landing_notified": landed,
+                "native_end_reason": end_reason,
+            })
+            episode["native_custody_row"] = self._emit_episode_fact(episode)
+            self._episode_usage = dict(total_usage)
+            self._episode_usage.update({
+                "provider": str(total_usage.get("provider") or ""),
+                "resolved_model": str(total_usage.get("resolved_model") or slot.model),
+                **episode,
+                "native_tool_receipts": list(self._tool_receipts),
+                # Provenance class of this delivery: the host SAW these reads.
+                "host_file_read_attestation": "host_observed",
+                "delivery": "native_tool_rounds",
+            })
         if final_answer is None:
-            if shape != "report" or not last_content:
+            if end_reason == "round_without_progress":
                 raise ReviewRouteUnavailable(
-                    f"native review episode transcript ({transcript_chars} chars) "
-                    f"exceeded its bound ({transcript_cap}) before a final answer; "
-                    "the episode fails closed — compaction would review a "
-                    "fabricated cut", code="native_transcript_cap_exceeded")
-            # A report is a product, not a verdict: the collected draft is
-            # delivered marked INCOMPLETE rather than discarded — the consumer
-            # discloses the bound; nothing unseen is summarized into it.
-            final_answer = last_content
-            episode["native_incomplete"] = "transcript_bound"
+                    f"native review episode round {self._rounds_used} carried neither "
+                    "an answer nor a well-formed tool call; the episode fails closed "
+                    "— a zero-progress round would re-enter the paid send forever",
+                    code="native_round_without_progress")
+            raise ReviewRouteUnavailable(
+                f"native review episode transcript ({transcript_chars} chars) "
+                f"exceeded its bound ({transcript_cap}) before a final answer; "
+                "the episode fails closed — compaction would review a "
+                "fabricated cut", code="native_transcript_cap_exceeded")
+        if episode.get("native_incomplete"):
             self._episode_deltas.append({
                 "kind": "capability_delta",
                 "requested": "a finished report from the episode",
                 "effective": (
-                    f"the reviewer's last draft ({len(last_content)} chars) — the "
-                    f"transcript bound ({transcript_cap} chars) landed after "
-                    f"{self._rounds_used} rounds without a final answer"
+                    f"the reviewer's last draft ({len(final_answer)} chars) — "
+                    f"{end_reason} after {self._rounds_used} rounds without a final "
+                    f"answer (transcript {transcript_chars} of {transcript_cap} chars)"
                 ),
-                "reason": "native_transcript_bound_before_final_answer",
+                "reason": f"native_{end_reason}_before_final_answer",
             })
         self._raw_transcript = final_answer
-        self._episode_usage = dict(total_usage)
-        self._episode_usage.update({
-            "provider": str(total_usage.get("provider") or ""),
-            "resolved_model": str(total_usage.get("resolved_model") or slot.model),
-            **episode,
-            "native_tool_receipts": list(self._tool_receipts),
-            # Provenance class of this delivery: the host SAW these reads.
-            "host_file_read_attestation": "host_observed",
-            "delivery": "native_tool_rounds",
-        })
 
-    def _emit_episode_fact(self, episode: Dict[str, Any]) -> None:
+    def _execute_inspection_call(
+        self, registry: Any, tc: Dict[str, Any], validation_by_id: Dict[str, Any],
+        *, round_idx: int, room: int,
+    ) -> tuple[str, str]:
+        """Run ONE inspection tool call of a round and return ``(call_id, result)``.
+
+        Owns the tool-policy half of the episode — wire-validation refusal, the
+        inspection allowlist, argument parsing, execution, the disclosed result
+        bound (the fixed per-result cap, clamped to ``room``) and the
+        host-observed receipt — while the caller owns the loop, the transcript
+        counter and the messages. Provenance comes from CONTROL FLOW, never
+        string-sniffing: a refused call must not read as an executed one.
+        """
+        call_id = str(tc.get("id") or "")
+        function = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        name = str(function.get("name") or "")
+        raw_args = function.get("arguments")
+        args: Optional[Dict[str, Any]] = None
+        outcome = "executed"
+        verdict = validation_by_id.get(call_id)
+        if verdict is not None and not getattr(verdict, "allows_execution", True):
+            outcome = "refused"
+            result = f"⚠️ TOOL_ARG_ERROR: {getattr(verdict, 'error', 'invalid arguments')}"
+        elif name not in _INSPECTION_TOOL_NAMES:
+            outcome = "refused"
+            result = f"⚠️ tool {name!r} is not available in this read-only inspection episode"
+        else:
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
+                if not isinstance(args, dict):
+                    raise ValueError("arguments must be a JSON object")
+            except (TypeError, ValueError) as exc:
+                outcome = "refused"
+                args, result = None, f"⚠️ TOOL_ARG_ERROR: {exc}"
+            if isinstance(args, dict):
+                try:
+                    result = str(registry.execute(name, args))
+                except Exception as exc:  # tool errors feed the model, not the rail
+                    outcome = "error"
+                    result = f"⚠️ {type(exc).__name__}: {exc}"
+                result_cap = max(0, min(_EPISODE_TOOL_RESULT_CHAR_CAP, room))
+                if len(result) > result_cap:
+                    # Disclosed bound with a continuation handle — the reader
+                    # keeps reading in chunks (read_file supports offset/limit),
+                    # so nothing is silently cut.
+                    result = (
+                        result[:result_cap]
+                        + f"\n⚠️ RESULT TRUNCATED: showed {result_cap} of {len(result)} chars"
+                        + (
+                            " — the episode transcript budget is nearly spent;"
+                            " answer now from what you have read."
+                            if room < _EPISODE_TOOL_RESULT_CHAR_CAP else
+                            ". Continue reading the remainder in bounded"
+                            " chunks (read_file supports offset/limit)."
+                        )
+                    )
+        # Host-observed evidence (bounded): which artifacts THIS episode
+        # actually opened — disclosure, never a claim of full-surface coverage.
+        self._tool_calls_total += 1
+        if len(self._tool_receipts) < 200:
+            receipt: Dict[str, Any] = {"round": round_idx, "tool": name}
+            if isinstance(args, dict):
+                for key in ("path", "root", "query", "pattern"):
+                    if args.get(key):
+                        receipt[key] = str(args[key])[:300]
+            receipt["result_chars"] = len(result)
+            receipt["outcome"] = outcome
+            self._tool_receipts.append(receipt)
+        return call_id, result
+
+    def failure_custody(self) -> Dict[str, Any]:
+        """The proven facts of a refused or errored episode for the error actor:
+        delivery, rounds, receipts, transcript vs bound, end reason and the paid
+        ledger facts of the rounds that DID run — so a failed native execution
+        stays visible on the public wire instead of vanishing. Empty until the
+        episode started."""
+        return dict(self._episode_usage)
+
+    def _emit_episode_fact(self, episode: Dict[str, Any]) -> str:
         """One typed custody row per episode end (rounds, transcript vs bound,
-        landing, end reason) — the durable telemetry the actor usage carries
-        only when the episode DELIVERS; a refused episode used to leave no
-        trace of how far it got. Never raises; no custody root, no row."""
+        landing, end reason). Returns the row's fate — ``written``, ``failed``
+        or ``no_custody_root`` — so the usage can say whether the durable
+        trace exists. Never raises."""
         drive = self.assignment.custody_root
         if not drive:
-            return
-        from ouroboros.delegate_custody import emit
-
-        emit(drive, "review_native_episode", {
+            return "no_custody_root"
+        try:
+            from ouroboros.delegate_custody import emit
+        except Exception:  # telemetry never masks the episode's own outcome
+            return "failed"
+        written = emit(drive, "review_native_episode", {
             "surface": str(self.assignment.request.surface or ""),
             "task_id": str(self.assignment.request.task_id or ""),
             "slot_id": str(self.assignment.slot.slot_id or ""),
             "model": str(self.assignment.slot.model or ""),
             **episode,
         })
+        return "written" if written else "failed"
 
     def _verdict_result(self, force_extraction: bool = False) -> ReviewAttemptResult:
         text = self._raw_transcript or ""
@@ -614,4 +693,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             "native_transcript": text,
             "verdict_method": method,
         }
+        if usage.get("native_incomplete"):
+            # The partial-product fact travels WITH the product, not only in
+            # usage: a consumer that reads the text alone must still see it.
+            message["native_incomplete"] = usage["native_incomplete"]
         return ReviewAttemptResult(message=message, usage=usage, raw_text=canonical)
