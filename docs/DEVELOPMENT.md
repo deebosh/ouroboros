@@ -2555,6 +2555,11 @@ URLs, and keep charts accessible through a semantic table.
 
 Rare `kind: "module"` UI runs only in a sandboxed opaque-origin iframe, with no
 `allow-same-origin`; its parent bridge proxies only the owning extension route.
+Both framed mounts (the extension-route iframe and the module `srcdoc` iframe
+with its CSP/sandbox constants and parent bridge) live in
+`web/modules/widget_module.js` and return their disposer to the `mountTab`
+dispatcher in `widgets.js`, which keeps the card registry and the declarative
+renderer.
 Never load skill JavaScript into the SPA origin. Long-running actions use a
 durable job id and resumable status polling rather than a foreground request
 lost on remount.

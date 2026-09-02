@@ -2,6 +2,13 @@
 
 export const WIDGET_REQUEST_TIMEOUT_MS = 25000;
 
+// Shared numeric clamp for declarative poll/job bounds and framed geometry.
+export function boundedNumber(value, fallback, min, max) {
+    const parsed = Number(value);
+    const safe = Number.isFinite(parsed) ? parsed : fallback;
+    return Math.max(min, Math.min(safe, max));
+}
+
 function widgetTimeoutError() {
     const error = new Error('widget request timed out');
     error.code = 'WIDGET_REQUEST_TIMEOUT';

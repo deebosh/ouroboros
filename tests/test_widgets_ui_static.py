@@ -14,7 +14,15 @@ def _widgets_js() -> str:
 
 
 def _framed_widget_sources() -> str:
-    return _widgets_js() + _read("web/modules/widget_frame.js")
+    """widgets.js (page host, dispatcher, declarative renderer) plus the framed
+    mounts split out of it (widget_module.js) and the in-frame bootstrap
+    (widget_frame.js). Negative pins run against this union so the moved
+    code never leaves their coverage."""
+    return (
+        _widgets_js()
+        + _read("web/modules/widget_module.js")
+        + _read("web/modules/widget_frame.js")
+    )
 
 
 def _read(rel: str) -> str:
@@ -55,7 +63,7 @@ def test_widgets_escape_and_sanitize_untrusted_content():
     source = _widgets_js()
     assert "renderMarkdownSafe" in source
     # Widgets must NOT redeclare the SSOT helper locally.
-    assert "function renderMarkdownSafe" not in source, (
+    assert "function renderMarkdownSafe" not in _framed_widget_sources(), (
         "widgets.js must use renderMarkdownSafe from utils.js (SSOT), not a local copy"
     )
     assert "escapeHtml(JSON.stringify(value, null, 2))" in source
@@ -74,7 +82,7 @@ def test_widgets_media_sources_are_constrained_to_extension_routes_or_data_urls(
     assert "data:(image\\/" in source
     assert "parsed.pathname.startsWith(expectedPrefix)" in source
     assert "parsed.origin === window.location.origin" in source
-    assert "javascript:" not in source
+    assert "javascript:" not in _framed_widget_sources()
     assert "`${treePath}.gallery.${idx}`, passiveTarget" in source
 
 
@@ -86,9 +94,10 @@ def test_widgets_downloads_use_host_handler_not_navigation():
     assert "downloadViaHostBridge(" in source
     assert "download_file_to_downloads" in helper
     assert "URL.createObjectURL" in helper
-    assert "window.location.href" not in source
-    assert "window.location.assign" not in source
-    assert '<a class="btn btn-default" href' not in source
+    framed = _framed_widget_sources()
+    assert "window.location.href" not in framed
+    assert "window.location.assign" not in framed
+    assert '<a class="btn btn-default" href' not in framed
 
 
 def test_widgets_treat_head_as_no_body_request():
@@ -248,8 +257,9 @@ def test_widgets_card_order_is_owner_ui_preference():
 
 def test_widgets_inline_card_host_path_removed():
     source = _widgets_js()
-    assert "render.kind === 'inline_card'" not in source
-    assert "skill-widget-weather" not in source
+    framed = _framed_widget_sources()
+    assert "render.kind === 'inline_card'" not in framed
+    assert "skill-widget-weather" not in framed
     assert "const saved = widgetSessionState.get(persistenceKey) || {};" in source
 
 
@@ -294,7 +304,7 @@ def test_widgets_schema_v1_composition_uses_stable_tree_keys():
     assert "type === 'metric'" in source
     assert "type === 'callout'" in source
     assert "visibleKeys.forEach((key)" in source
-    assert "components[Number(" not in source
+    assert "components[Number(" not in _framed_widget_sources()
     assert "data-widget-kanban-key" in source
 
 
@@ -344,7 +354,7 @@ def test_widget_public_tones_share_the_host_normalizer_and_canonical_css():
     source = _widgets_js()
     helper = _read("web/modules/ui_helpers.js")
     style = _read("web/style.css")
-    assert "function widgetTone" not in source
+    assert "function widgetTone" not in _framed_widget_sources()
     assert "normalizeTone(component.tone)" in source
     assert "normalizeTone(component.tone, 'info')" in source
     assert "success: 'ok'" in helper
