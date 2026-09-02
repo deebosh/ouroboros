@@ -17,7 +17,7 @@ def _load():
 
 class _Rec:
     sent = []
-    def __init__(self, token): pass
+    def __init__(self, token, **_kwargs): pass
     async def send_message(self, chat_id, text, parse_mode="HTML"):
         _Rec.sent.append((chat_id, text)); return 1
 
@@ -140,7 +140,7 @@ def test_budget_notification_retries_before_advancing_ledger(tmp_path, monkeypat
 
     class Flaky:
         attempts = 0
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             Flaky.attempts += 1
             if Flaky.attempts == 1:
@@ -165,7 +165,7 @@ def test_task_notification_retries_before_advancing_ledger(tmp_path, monkeypatch
 
     class Flaky:
         attempts = 0
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             Flaky.attempts += 1
             if Flaky.attempts == 1:
@@ -193,7 +193,7 @@ def test_tasks_notify_stops_batch_on_first_transient_failure(tmp_path, monkeypat
 
     class AlwaysOffline:
         attempts = 0
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             AlwaysOffline.attempts += 1
             raise nt.TelegramTransportError("offline")
@@ -220,7 +220,7 @@ def test_notifier_cycle_makes_one_send_attempt_when_transport_is_down(tmp_path, 
 
     class AlwaysOffline:
         attempts = 0
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             AlwaysOffline.attempts += 1
             raise nt.TelegramTransportError("offline")
@@ -281,7 +281,7 @@ def test_permanent_notification_rejection_skips_and_persists(tmp_path, monkeypat
 
     class Rejected:
         attempts = 0
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             Rejected.attempts += 1
             raise nt.TelegramRequestRejected("rejected", status_code=401)
@@ -311,7 +311,7 @@ def test_notifier_loop_survives_permanent_rejection_and_saves_state(tmp_path, mo
     nt = _load(); api, data = _api(tmp_path)
 
     class Rejected:
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             raise nt.TelegramRequestRejected("rejected", status_code=401)
 
@@ -359,7 +359,7 @@ def test_notifier_transient_backoff_grows_and_resets_with_transition_logs(tmp_pa
     ])
 
     class Flapping:
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             outcome = next(outcomes)
             if isinstance(outcome, Exception):
@@ -419,7 +419,7 @@ def test_notifier_clears_degraded_silently_when_pending_work_evaporates(tmp_path
     api = LoggingApi(_api_obj)
 
     class AlwaysOffline:
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             raise nt.TelegramTransportError("offline")
 
@@ -470,7 +470,7 @@ def test_notifier_transient_send_failures_log_at_debug_only(tmp_path, monkeypatc
     api = LoggingApi(_api_obj)
 
     class AlwaysOffline:
-        def __init__(self, _token): pass
+        def __init__(self, _token, **_kwargs): pass
         async def send_message(self, *_args, **_kwargs):
             raise nt.TelegramTransportError("offline")
 

@@ -364,15 +364,14 @@ def test_photo_download_accepts_small_response(monkeypatch):
     assert mime == "image/jpeg"
 
 
-@pytest.mark.parametrize("proxied", [False, True])
-def test_telegram_http_clients_trust_env_only_on_proxy_routed_installs(monkeypatch, proxied):
-    """Both TelegramClient transports (API calls and file downloads) isolate the
-    ambient environment — HTTP(S)_PROXY and SSL_CERT_FILE/SSL_CERT_DIR, i.e. an
-    env-injected MITM CA — unless the install actually routes through a proxy
-    (``net_transport.env_proxies_configured()``), where the pin would cut the
-    owner's only Telegram egress; the LLM lane makes the same trade."""
+@pytest.mark.parametrize("trust_env", [None, True])
+def test_telegram_http_clients_follow_the_constructor_trust_env(monkeypatch, trust_env):
+    """Both TelegramClient transports (API calls and file downloads) take
+    ``trust_env`` from the constructor — pinned False by default, so ambient
+    HTTP(S)_PROXY and SSL_CERT_FILE/SSL_CERT_DIR (an env-injected MITM CA)
+    never reach either client unless the caller opted in; the library itself
+    reads no environment and imports nothing from the core."""
     _plugin, telegram_api = _load_skill()
-    monkeypatch.setattr(telegram_api, "env_proxies_configured", lambda: proxied)
     real_async_client = httpx.AsyncClient
     seen: list[dict] = []
 
@@ -386,10 +385,31 @@ def test_telegram_http_clients_trust_env_only_on_proxy_routed_installs(monkeypat
         return real_async_client(transport=httpx.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(telegram_api.httpx, "AsyncClient", client_factory)
-    client = telegram_api.TelegramClient("token")
+    kwargs = {} if trust_env is None else {"trust_env": trust_env}
+    client = telegram_api.TelegramClient("token", **kwargs)
 
     asyncio.run(client.call("getMe"))
     asyncio.run(client._download_bytes("photos/file_1.jpg"))
 
     assert len(seen) == 2
-    assert all(kwargs.get("trust_env") is proxied for kwargs in seen)
+    assert all(kwargs.get("trust_env") is bool(trust_env) for kwargs in seen)
+
+
+@pytest.mark.parametrize(
+    ("proxied", "worker", "expected"),
+    [(False, False, False), (True, True, False), (False, True, False), (True, False, True)],
+)
+def test_plugin_honours_env_proxies_only_in_a_proxy_routed_server_process(
+    monkeypatch, proxied, worker, expected,
+):
+    """The proxy decision is made once, at plugin import in the server process:
+    True only when the install routes through a proxy (``env_proxies_configured``)
+    AND this is not a supervisor worker (``in_worker_process``)."""
+    import ouroboros.net_transport as net_transport
+    import ouroboros.utils as utils
+
+    monkeypatch.setattr(net_transport, "env_proxies_configured", lambda: proxied)
+    monkeypatch.setattr(utils, "in_worker_process", lambda: worker)
+    plugin, _telegram_api = _load_skill()
+
+    assert plugin._HONOR_ENV_PROXIES is expected

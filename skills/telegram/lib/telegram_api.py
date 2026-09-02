@@ -8,8 +8,6 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from ouroboros.net_transport import env_proxies_configured
-
 # Telegram hard-caps a single sendMessage at 4096 UTF-16 code units.
 _TELEGRAM_TEXT_LIMIT = 4096
 _TABLE_MAX_ROWS = 30
@@ -561,8 +559,9 @@ def _telegram_html_to_plain(value: str) -> str:
 
 
 class TelegramClient:
-    def __init__(self, token: str):
+    def __init__(self, token: str, *, trust_env: bool = False):
         self.token = str(token or "").strip()
+        self.trust_env = bool(trust_env)
         if not self.token:
             raise ValueError("TELEGRAM_BOT_TOKEN is missing")
         self.api_base = f"https://api.telegram.org/bot{self.token}"
@@ -572,11 +571,9 @@ class TelegramClient:
         method_text = str(method or "")
         safe_method = method_text if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", method_text) else "request"
         try:
-            # A proxy-routed install keeps its only egress (the LLM lane makes the
-            # same trade in net_transport); every other install is isolated from
-            # ambient HTTP(S)_PROXY and SSL_CERT_FILE/SSL_CERT_DIR — the vector closed
-            # is an env-injected MITM CA (a CONNECT proxy cannot read the token in TLS).
-            async with httpx.AsyncClient(timeout=timeout, trust_env=env_proxies_configured()) as client:
+            # trust_env trades ambient-proxy/SSL_CERT isolation for a proxy-routed install's
+            # only egress; decided once by the caller via net_transport.env_proxies_configured.
+            async with httpx.AsyncClient(timeout=timeout, trust_env=self.trust_env) as client:
                 response = await client.post(f"{self.api_base}/{method_text}", data=data, files=files)
         except httpx.TimeoutException:
             raise TelegramTransportError(f"Telegram API timed out during {safe_method}.") from None
@@ -622,7 +619,7 @@ class TelegramClient:
 
     async def _download_bytes(self, file_path: str) -> bytes:
         try:
-            async with httpx.AsyncClient(timeout=30, trust_env=env_proxies_configured()) as client:
+            async with httpx.AsyncClient(timeout=30, trust_env=self.trust_env) as client:
                 async with client.stream("GET", f"{self.file_base}/{file_path}") as response:
                     if response.status_code >= 400:
                         raise RuntimeError(f"Telegram file download returned HTTP {response.status_code}")
