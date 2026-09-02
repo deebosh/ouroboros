@@ -402,6 +402,7 @@ def validate_ui_render(render: Dict[str, Any]) -> Dict[str, Any]:
             raise ExtensionRegistrationError(f"module widget entry {entry!r} must be a bare filename inside the skill directory")
         if not entry.endswith((".js", ".mjs")):
             raise ExtensionRegistrationError("module widget entry must be a .js / .mjs file")
+        clean["entry"] = entry  # normalized once: the loader capture and the module URL agree
         return clean
     if kind == "declarative":
         if "height" in clean or "max_height" in clean:

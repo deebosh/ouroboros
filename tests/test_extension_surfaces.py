@@ -361,6 +361,12 @@ def test_frame_geometry_validation_rejects_ambiguous_values(render, expected):
         validate_ui_render(render)
 
 
+def test_validate_ui_render_normalizes_module_entry_once():
+    """The stored entry is the stripped filename, so the loader's capture key and
+    the module URL the page builds from ``render.entry`` agree (A9/A11)."""
+    assert validate_ui_render({"kind": "module", "entry": "  widget.js "})["entry"] == "widget.js"
+
+
 _UI_TAB_REJECTION_CASES = [
     (
         "unsupported_render_kind",

@@ -51,7 +51,7 @@ from ouroboros.extension_ui_validation import (
 from ouroboros.gateway.host_service import AUTH_TOKEN_FILENAME
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
 from ouroboros.extension_isolated_deps import _isolated_python_site_dirs, async_isolated_site_dirs_scope, isolated_site_dirs_scope, is_skill_cache_path
-from ouroboros.skill_loader import _SKILL_DIR_CACHE_NAMES, _sanitize_skill_name, LoadedSkill, SkillPayloadUnreadable, compute_content_hash, discover_skills, find_skill, grant_status_for_skill, requested_core_setting_keys, skill_conflict_status, skill_review_gate, skill_state_dir
+from ouroboros.skill_loader import _SKILL_DIR_CACHE_NAMES, _iter_payload_files, _sanitize_skill_name, LoadedSkill, SkillPayloadUnreadable, compute_content_hash, discover_skills, find_skill, grant_status_for_skill, requested_core_setting_keys, skill_conflict_status, skill_review_gate, skill_state_dir
 from ouroboros.skill_token import SkillToken
 from ouroboros.tools.skill_exec import _scrub_env
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
@@ -76,9 +76,10 @@ class _ExtensionRegistrations:
     companion_names: List[str] = field(default_factory=list)
     supervised_futures: List[Any] = field(default_factory=list)
     api_instances: List[Any] = field(default_factory=list)
-    # ``entry -> text`` of every ``kind: "module"`` widget this bundle registered,
-    # read once from the reviewed payload at load; the module endpoint serves
-    # these bytes, never the mutable skill directory. Not part of snapshot().
+    # ``POSIX relative path -> text`` of every reviewed ``.js``/``.mjs`` file under
+    # the skill directory, read once at load when a ``kind: "module"`` widget
+    # registered; the module endpoint serves these bytes, never the mutable
+    # skill directory. Not part of snapshot().
     module_sources: Dict[str, str] = field(default_factory=dict)
     content_hash: Optional[str] = None
     skill_dir: Optional[str] = None
@@ -274,16 +275,14 @@ def _register_out_of_process_surfaces(
 
     # Module widget sources are disk reads: capture them before the lock and
     # attach them inside it, exactly like the in-process register_ui_tab path.
-    module_sources = {
-        entry: _read_module_source(skill.skill_dir, entry)
-        for entry in {
-            str(item["render"].get("entry") or "").strip()
-            for item in (catalog.get("ui_tabs") or [])
-            if isinstance(item, dict) and isinstance(item.get("render"), dict)
-            and str(item["render"].get("kind") or "") == "module"
-        }
-        if entry
-    }
+    # The child's validator already normalized each declared entry.
+    entries = sorted({
+        str(item["render"].get("entry") or "")
+        for item in (catalog.get("ui_tabs") or [])
+        if isinstance(item, dict) and isinstance(item.get("render"), dict)
+        and str(item["render"].get("kind") or "") == "module"
+    } - {""})
+    module_sources = _read_module_sources(skill.skill_dir, *entries) if entries else {}
     with _lock:
         bundle = _extensions.get(skill.name)
         if bundle is None:
@@ -574,31 +573,44 @@ def _widget_geometry_from_render(render: Dict[str, Any]) -> Dict[str, int]:
     return geometry
 
 
-def _read_module_source(skill_dir: pathlib.Path | None, entry: str) -> str:
-    """Read one ``kind: "module"`` entry from the reviewed payload, or fail the registration.
+def _read_module_sources(skill_dir: pathlib.Path | None, *entries: str) -> Dict[str, str]:
+    """Capture every reviewed ``.js``/``.mjs`` file under the skill directory for
+    the declared ``kind: "module"`` ``entries``, keyed by POSIX path relative to it.
 
-    Captured once at load and served from memory by the module endpoint, so the
+    Read once at load and served from memory by the module endpoint, so the
     bytes a browser receives are the bytes the live (reviewed) bundle loaded
-    from; a file edited afterwards is not served until the skill reloads. A
-    missing, escaping, unreadable, or non-UTF-8 entry fails loudly here — the
-    tab is not live without its source.
+    from; a file edited afterwards is not served until the skill reloads. The
+    walk is the review-hash surface (``skill_loader._iter_payload_files``:
+    dependency/cache directories and symlinks escaping the root are not
+    reviewed, so they are not captured) minus dot-prefixed segments. A missing
+    or escaping entry, or any JavaScript file that is not UTF-8 text, fails the
+    registration loudly — the tab is not live without its sources.
     """
     if skill_dir is None:
-        raise ExtensionRegistrationError(f"module widget entry {entry!r} needs a skill directory to read from")
+        raise ExtensionRegistrationError(f"module widget entries {entries!r} need a skill directory to read from")
     root = pathlib.Path(skill_dir).resolve()
-    target = (root / entry).resolve()
+    for entry in entries:
+        if not (root / entry).resolve().is_relative_to(root):
+            raise ExtensionRegistrationError(f"module widget entry {entry!r} escapes the skill directory")
     try:
-        target.relative_to(root)
-    except ValueError:
-        raise ExtensionRegistrationError(f"module widget entry {entry!r} escapes the skill directory") from None
-    try:
-        return target.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise ExtensionRegistrationError(f"module widget entry {entry!r} is missing from the skill directory") from None
-    except UnicodeDecodeError as exc:
-        raise ExtensionRegistrationError(f"module widget entry {entry!r} is not UTF-8 text: {exc}") from None
-    except OSError as exc:
-        raise ExtensionRegistrationError(f"module widget entry {entry!r} is unreadable: {exc}") from None
+        files = _iter_payload_files(root)
+    except SkillPayloadUnreadable as exc:
+        raise ExtensionRegistrationError(f"module widget sources are unreadable: {exc}") from None
+    sources: Dict[str, str] = {}
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        if path.suffix not in (".js", ".mjs") or any(part.startswith(".") for part in rel.split("/")):
+            continue
+        try:
+            sources[rel] = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ExtensionRegistrationError(f"module widget file {rel!r} is not UTF-8 text: {exc}") from None
+        except OSError as exc:
+            raise ExtensionRegistrationError(f"module widget file {rel!r} is unreadable: {exc}") from None
+    for entry in entries:
+        if entry not in sources:
+            raise ExtensionRegistrationError(f"module widget entry {entry!r} is missing from the skill directory")
+    return sources
 
 
 def set_ws_broadcaster(broadcaster: Callable[[dict], None] | None) -> None:
@@ -846,11 +858,11 @@ class PluginAPIImpl:
         key = f"{self._skill}:{clean_tab}"
         validated_render = _validate_ui_render({} if render is None else render)
         span = _widget_span_from_render(validated_render)
-        # A module widget's reviewed source is captured here (disk read, outside
-        # the lock) so the endpoint serves the loaded bundle's bytes, not the disk.
-        entry = str(validated_render.get("entry") or "")
-        module_source = (
-            _read_module_source(self._skill_dir, entry)
+        # A module widget's reviewed JavaScript (its entry plus every sibling
+        # .js/.mjs) is captured here (disk read, outside the lock) so the module
+        # endpoint serves the loaded bundle's bytes, not the disk.
+        module_sources = (
+            _read_module_sources(self._skill_dir, str(validated_render.get("entry") or ""))
             if str(validated_render.get("kind") or "") == "module" else None
         )
         with _lock:
@@ -865,8 +877,8 @@ class PluginAPIImpl:
                 "grid_span": span,
                 **_widget_geometry_from_render(validated_render),
             }, "ui_tabs", "ui tab")
-            if module_source is not None:
-                _extensions[self._skill].module_sources[entry] = module_source
+            if module_sources is not None:
+                _extensions[self._skill].module_sources.update(module_sources)
 
     def register_settings_section(
         self,
@@ -2252,17 +2264,15 @@ def snapshot() -> Dict[str, Any]:
 
 
 def live_widget_projection(skill_name: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
-    """Live UI tabs joined with their owner's revision and module source, under ONE lock.
+    """Live UI tabs joined with their owner's revision, under ONE lock.
 
-    Each row is ``{"tab": <snapshot-shaped tab>, "revision": <owner content_hash>,
-    "module_source": <entry text for kind:"module", else None>}``. A single
-    ``_lock`` acquisition, so a reload racing the read can never pair a tab with
-    another generation's revision or source. With ``skill_name`` the rows are
-    that skill's only and ``None`` means it has no live bundle (the module
-    endpoint's 409); an empty list is a live bundle declaring no tabs (its 404).
-    Loader-side truth for read paths that must not re-discover skills: GET
-    /api/widgets projects the tab plus ``revision`` and drops the source; the
-    module endpoint serves the source as its body. No skill directory here.
+    Each row is ``{"tab": <snapshot-shaped tab>, "revision": <owner content_hash>}``.
+    A single ``_lock`` acquisition, so a reload racing the read can never pair a
+    tab with another generation's revision. With ``skill_name`` the rows are that
+    skill's only and ``None`` means it has no live bundle; an empty list is a live
+    bundle declaring no tabs. Loader-side truth for GET /api/widgets, which must
+    not re-discover skills; module sources are read through
+    ``live_module_sources``. No skill directory here.
     """
     with _lock:
         if skill_name is not None and skill_name not in _extensions:
@@ -2273,14 +2283,22 @@ def live_widget_projection(skill_name: Optional[str] = None) -> Optional[List[Di
             if skill_name is not None and owner != skill_name:
                 continue
             bundle = _extensions.get(owner)
-            render = value.get("render") or {}
-            entry = str(render.get("entry") or "") if str(render.get("kind") or "") == "module" else ""
             rows.append({
                 "tab": dict(copy.deepcopy(value), key=key),
                 "revision": str(bundle.content_hash or "") if bundle is not None else "",
-                "module_source": bundle.module_sources.get(entry) if bundle is not None and entry else None,
             })
         return rows
+
+
+def live_module_sources(skill_name: str) -> Optional[Dict[str, str]]:
+    """The reviewed ``.js``/``.mjs`` texts a live bundle captured at load, keyed by
+    POSIX path relative to the skill directory; ``None`` when the skill has no
+    live bundle (the module endpoint's 409), empty until a module tab registered.
+    One ``_lock`` read; the returned dict is a fresh key snapshot, not a byte copy.
+    """
+    with _lock:
+        bundle = _extensions.get(skill_name)
+        return None if bundle is None else dict(bundle.module_sources)
 
 
 def get_tool(name: str) -> Optional[Dict[str, Any]]:
@@ -2318,7 +2336,7 @@ def list_companion_names() -> List[str]:
 __all__ = [
     "PluginAPIImpl", "is_extension_live", "load_extension", "reconcile_extension",
     "ensure_companions_running", "unload_extension", "reload_all", "runtime_state_for_skill_name", "snapshot",
-    "live_widget_projection",
+    "live_widget_projection", "live_module_sources",
     "get_tool", "list_ws_handlers", "list_routes", "list_companion_names",
     "current_execution_mode",
 ]

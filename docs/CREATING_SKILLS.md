@@ -891,6 +891,37 @@ only bound. The frame's `img-src`/`media-src`/`font-src` entries for your
 skill's route prefix land with the Widgets host's frontend slice; the hub
 admission and review posture above are in place now.
 
+#### Loading more than one file
+
+Every reviewed `.js`/`.mjs` file in the skill directory is served by the module
+endpoint, keyed by its path relative to the skill directory:
+`GET /api/extensions/<skill>/module/lib/x.js`. The host captures all of them
+when the module tab registers (the same moment it reads the entry), so the frame
+always receives the bytes the reviewed bundle loaded from; files under
+`node_modules`, `.ouroboros_env`, other cache directories, and dot-directories
+are never served, and only UTF-8 text is admitted — a non-UTF-8 `.js` fails the
+load exactly like a broken entry. Load a sibling either as a classic script or
+as an ES module:
+
+```html
+<script src="/api/extensions/<skill>/module/lib/x.js"></script>
+```
+
+```js
+const { helper } = await import('/api/extensions/<skill>/module/lib/x.mjs');
+```
+
+The endpoint sends `Access-Control-Allow-Origin: *`, which the opaque-origin
+frame needs for `import()`; relative specifiers inside a module loaded this way
+resolve against its URL, so `import './y.mjs'` reaches `module/lib/y.mjs`. The
+declared `entry` itself still executes as a classic script even when it is named
+`.mjs`, so keep `import`/`export` statements in the files you load with
+`import()`, not in the entry. The `script-src` prefix that permits these loads
+lands with the Widgets host's frontend slice; until then the declared entry is
+the only file the frame executes. Hub packages are bounded by the caps above; a
+locally installed skill has no per-file cap, so its captured JavaScript is
+bounded only by what you ship.
+
 For everything else, prefer declarative components (`form`, `action`, `poll`,
 `subscription`, `stream`, `table`, `chart`, `markdown`, `json`, `kv`, `status`,
 `tabs`, `progress`, media/file/gallery, map/calendar/kanban, `group`, `metric`,

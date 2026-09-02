@@ -82,7 +82,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/widgets",
     "GET /api/extensions",
     "GET /api/extensions/{skill}/manifest",
-    "GET /api/extensions/{skill}/module/{entry}",
+    "GET /api/extensions/{skill}/module/{entry:path}",
     "GET /api/extensions/{skill}/settings_section",
     "ANY /api/extensions/{skill}/{rest:path}",
     "GET /api/skills/daemons",

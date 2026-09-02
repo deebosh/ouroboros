@@ -521,41 +521,37 @@ async def api_extension_manifest(request: Request) -> JSONResponse:
 
 
 async def api_extension_module(request: Request) -> Response:
-    """Serve a live module widget's reviewed JS from the loaded bundle.
+    """Serve one reviewed JavaScript file of a live module widget from the loaded bundle.
 
-    Authorization and content are one loader read under one lock: the skill
-    holds a loaded bundle whose module tab declares exactly this entry, and
-    the body is that entry's text as captured when the bundle loaded — no
-    per-request disk read, so a file edited after load is not served until
-    the skill reloads (which review freshness requires anyway). This path
-    never re-discovers skills or hashes payloads (DEVELOPMENT "Passive GET").
-    The requesting ``srcdoc`` frame has an opaque origin, so its fetch is
-    cross-origin and anonymous; the reply therefore carries
-    ``Access-Control-Allow-Origin: *`` (no credentials are involved).
+    ``{entry:path}`` is a POSIX path relative to the skill directory: the
+    declared entry or any sibling ``.js``/``.mjs`` the reviewed payload ships
+    (``lib/x.js``). Authorization and content are one loader read under one
+    lock: 409 when the skill has no live bundle; 404 when the path is not among
+    the files captured when its module tab registered (dependency, cache, and
+    dot directories are never captured); 400 for a path with a backslash or
+    NUL, an empty/``.``/``..`` segment (the ASGI server already decoded
+    ``%2e%2e`` and ``%2F``), or a non-``.js``/``.mjs`` suffix. The body is the
+    text captured at load — no per-request disk read, so an edit after load is
+    not served until the skill reloads (DEVELOPMENT "Passive GET"). The
+    requesting ``srcdoc`` frame has an opaque origin and fetches anonymously
+    cross-origin, hence ``Access-Control-Allow-Origin: *`` (no credentials).
     """
-    from ouroboros.extension_loader import live_widget_projection
+    from ouroboros.extension_loader import live_module_sources
 
     skill_name = str(request.path_params.get("skill") or "").strip()
-    entry = str(request.path_params.get("entry") or "").strip()
-    if not skill_name or not entry:
-        return json_error("missing skill/module entry", 400)
-    if "/" in entry or "\\" in entry or ".." in entry or entry.startswith("."):
-        return json_error("invalid module entry", 400)
-    rows = live_widget_projection(skill_name)
-    if rows is None:
+    path = str(request.path_params.get("entry") or "")
+    if (
+        not skill_name or "\\" in path or "\0" in path
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+        or not path.endswith((".js", ".mjs"))
+    ):
+        return json_error("invalid module path", 400)
+    sources = live_module_sources(skill_name)
+    if sources is None:
         return json_error(f"extension {skill_name!r} not live", 409)
-    # Authorize against live PluginAPI tab registrations, not only manifest ui_tab.
-    source = next(
-        (
-            row["module_source"]
-            for row in rows
-            if str((row["tab"].get("render") or {}).get("kind") or "") == "module"
-            and str((row["tab"].get("render") or {}).get("entry") or "") == entry
-        ),
-        None,
-    )
+    source = sources.get(path)
     if source is None:
-        return json_error("module entry is not declared by a live widget tab", 404)
+        return json_error("module path is not a reviewed JavaScript file of a live widget", 404)
     return Response(
         source,
         media_type="application/javascript; charset=utf-8",

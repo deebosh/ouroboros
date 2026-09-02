@@ -67,8 +67,7 @@ def widget_tabs() -> List[WidgetTab]:
         tab = row["tab"]
         # The TypedDict IS the projection: every declared key except the stamped
         # revision comes straight from the live tab (frame geometry stays in
-        # ``render``, which is where the page reads it). The row's module source
-        # is not a card key and never leaves the loader through this endpoint.
+        # ``render``, which is where the page reads it).
         card: Dict[str, Any] = {
             name: tab.get(name) for name in WidgetTab.__annotations__ if name != "revision"
         }
