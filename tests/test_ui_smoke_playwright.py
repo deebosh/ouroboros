@@ -2607,7 +2607,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                         > max(card["mainTop"], card["sideTop"]), wide_facts
 
                 # The 620-700px column (laptop with the project panel open): the root
-                # card takes up to 576px there and keeps its single-row header.
+                # card takes up to 620px there and keeps its single-row header.
                 wide.set_viewport_size({"width": 1004, "height": 750})
                 wide.wait_for_timeout(250)
                 owner_facts = wide.evaluate(
@@ -2620,7 +2620,8 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                     }"""
                 )
                 assert 700 <= owner_facts["column"] <= 740, owner_facts
-                assert owner_facts["width"] >= 561 and owner_facts["wrap"] == "nowrap", owner_facts
+                # 80% of a 700-740px column is below the 620px floor, so the floor wins.
+                assert abs(owner_facts["width"] - 620) <= 1 and owner_facts["wrap"] == "nowrap", owner_facts
                 wide.set_viewport_size({"width": 1100, "height": 750})
                 wide.wait_for_timeout(250)
 

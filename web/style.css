@@ -1824,10 +1824,11 @@ body.resizing-panels { user-select: none; }
 .chat-live-card {
     align-self: flex-start;
     width: min(100%, 760px);
-    /* The 80% gutter holds only while 80% is still >= 576px; below that the card
-       takes up to 576px (560px wrap threshold + 16px), so the internal narrow
-       regime starts only when the COLUMN itself is narrow. */
-    max-width: max(80%, min(100%, 576px));
+    /* The 80% gutter holds only while 80% is still >= 620px; below that the card
+       takes up to 620px, the chatcol breakpoint, so the width stays monotonic
+       across it and the internal narrow regime (<= 560px) starts only when the
+       COLUMN itself is narrow. */
+    max-width: max(80%, min(100%, 620px));
     padding: 0;
     border-radius: var(--radius-lg);
     border: 1px solid var(--accent-dim);
