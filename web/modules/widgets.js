@@ -1048,7 +1048,7 @@ async function mountTab(card, tab, mountSignal = null) {
         return mountDeclarativeWidget(mount, tab, render);
     }
     if (render.kind === 'module' && render.entry) {
-        return mountModuleWidget(mount, tab, render, mountSignal);
+        return mountModuleWidget(mount, tab, render, mountSignal, widgetMessageHandlers);
     }
     mount.innerHTML = `<div class="muted">Widget render kind <code>${escapeHtml(render.kind || 'unknown')}</code> is not supported yet.</div>`;
     return null;

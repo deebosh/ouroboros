@@ -757,9 +757,10 @@ ui_tab:
 
 The host fetches reviewed JS through `GET /api/extensions/<skill>/module/<entry>`,
 embeds it in an opaque-origin iframe (`sandbox="allow-scripts"`, no
-`allow-same-origin`), and injects a fetch bridge that forwards only
-`/api/extensions/<skill>/...` paths. The `widget_module_safety` review item still
-checks the source; do not rely on the sandbox alone.
+`allow-same-origin`), and injects the host bridge (`window.OuroborosWidget`,
+below) that forwards only `/api/extensions/<skill>/...` requests and the skill's
+own WebSocket events. The `widget_module_safety` review item still checks the
+source; do not rely on the sandbox alone.
 
 Framed render declarations may add a bounded `height` (320–8,192 pixels).
 When a module omits `height`, the host starts at 320px and measures its
@@ -768,7 +769,8 @@ integer-deduplicates and clamps that value to 8,192px by default; an optional
 module-only `max_height` lowers the ceiling. A fixed `height` disables
 auto-growth. Legacy route iframes accept explicit `height` only because the
 host cannot inspect their opaque document. The parent owns iframe removal and
-the module bootstrap rejects pending fetch promises on disposal, so module
+the module bootstrap rejects pending fetch promises and errors open body streams
+on disposal, so module
 code must not invent a second resize, vertical-scrolling, or teardown protocol:
 the host-owned dispose → acknowledgement handshake described under "Launch
 policy" below is the teardown protocol, and `window.__ouroWidgetOnDispose(fn)`
@@ -785,6 +787,43 @@ host-owned resize contract. For auto-height modules, the host bootstrap
 suppresses only document-viewport `overflow-y` below the ceiling and releases
 it at the ceiling; horizontal document overflow remains author-controlled and
 reachable.
+
+#### The in-frame bridge (`window.OuroborosWidget`)
+
+The frame has no network of its own: `connect-src` stays closed, there is no
+`WebSocket` and no `EventSource` in the frame, and all network goes through the
+parent over one nonce-bound message grammar. Two calls cover it:
+
+- **`OuroborosWidget.fetch(url, init)`** (also installed as the frame's
+  `fetch`). `url` must resolve under `/api/extensions/<skill>/...`; anything
+  else — another skill's prefix, a host API, an absolute URL — rejects with
+  `module widget fetch outside extension route prefix`. The parent issues the
+  request with the owner's session and streams the answer back, so you get a
+  real `Response`: `status`, `statusText`, **every** response header, and a
+  body that is binary by default — `.text()`, `.json()`, `.arrayBuffer()`,
+  `.blob()` and incremental `body.getReader()` reads all work. Server-sent
+  events are a plain streaming `GET` with `Accept: text/event-stream` read
+  through `body.getReader()` (there is no `EventSource` polyfill); NDJSON works
+  the same way. `HEAD` and 204/205/304 answers carry a `null` body.
+  `init.method`, `init.headers` and `init.body` (string, `ArrayBuffer`, typed
+  array or `Blob`) pass through. There is **no default timeout**: a request or
+  stream lives until it ends, until you abort it, or until the frame is
+  disposed. `init.signal` (an `AbortController`) or cancelling the body stream
+  aborts the parent's request; the optional `init.timeoutMs` is an author-side
+  bound that aborts it for you (the read fails with
+  `widget request timed out`).
+- **`OuroborosWidget.onEvent(callback)`** returns an unsubscribe function. The
+  callback receives `{type, data}` for every event this skill emits with
+  `api.send_ws_message(type, data)` — `type` is the short name you passed; the
+  host strips its own namespace prefix. The first listener subscribes the frame,
+  the last unsubscribe stops delivery, and other skills' events never reach it.
+
+Two limits are disclosed rather than hidden: a route served by the
+out-of-process runner (isolated dependencies) is buffered whole before the frame
+sees it — only an in-process route's `StreamingResponse` streams chunk by
+chunk; and the out-of-process / companion WS push (`POST /ui/ws-message`) is
+capped at 60 messages per 60 seconds per skill, so throttle progress events or
+fall back to poll-based status for bursts.
 
 #### Launch policy (`render.start`)
 

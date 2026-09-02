@@ -1,10 +1,13 @@
-"""Widgets lifecycle phase 2 and 3 browser smoke: launch policy (auto / manual /
+"""Widgets lifecycle phase 2–4 browser smoke: launch policy (auto / manual /
 owner override), the ordered dispose → acknowledgement handshake, session-local
-Stop suppression, force-stop on skill disable, and the ``retain`` keep-alive
+Stop suppression, force-stop on skill disable, the ``retain`` keep-alive
 (frame identity and progress across pages, honest badge, Refresh confirmation,
-reorder without a reload, hidden force-stop) on chromium and webkit. Kept apart
-from ``test_widgets_ui_browser.py`` (geometry / job retry) so neither file grows
-past the size-ratchet band."""
+reorder without a reload, hidden force-stop) and the one streaming module
+bridge (binary bodies byte-identical, in-process streaming observed chunk by
+chunk, abort, opt-in timeout, skill WebSocket events, prefix refusal, null
+bodies, dispose with an open stream) on chromium and webkit. Kept apart from
+``test_widgets_ui_browser.py`` (geometry / job retry) so neither file grows past
+the size-ratchet band."""
 
 from __future__ import annotations
 
@@ -191,6 +194,184 @@ def _write_retain_widget_extension(data_dir: pathlib.Path) -> str:
         "(() => { document.getElementById('root').textContent = 'Instrument'; })();\n",
         encoding="utf-8",
     )
+    content_hash = compute_content_hash(skill_dir, manifest_entry="plugin.py")
+    save_review_state(data_dir, name, SkillReviewState(status="pass", content_hash=content_hash))
+    return name
+
+
+_BRIDGE_PLUGIN = """\
+import asyncio
+import os
+
+from starlette.responses import Response, StreamingResponse
+
+BLOB = os.urandom(65536)
+STATE = {"slow_started": 0, "slow_closed": 0, "emitted": 0}
+HOST = {}
+
+
+def fnv1a32(data: bytes) -> int:
+    value = 0x811C9DC5
+    for byte in data:
+        value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return value
+
+
+async def blob(_request):
+    return Response(
+        BLOB,
+        media_type="application/octet-stream",
+        headers={"x-blob-fnv": str(fnv1a32(BLOB)), "x-blob-len": str(len(BLOB))},
+    )
+
+
+async def stream(_request):
+    async def chunks():
+        for index in range(3):
+            yield f"chunk-{index}\\n".encode()
+            await asyncio.sleep(0.25)
+    return StreamingResponse(chunks(), media_type="text/plain")
+
+
+async def slow(_request):
+    async def ticks():
+        STATE["slow_started"] += 1
+        try:
+            while True:
+                yield b"tick\\n"
+                await asyncio.sleep(0.2)
+        finally:
+            STATE["slow_closed"] += 1
+    return StreamingResponse(ticks(), media_type="text/plain")
+
+
+async def state(_request):
+    return dict(STATE)
+
+
+async def nobody(_request):
+    return Response(status_code=204)
+
+
+async def ping(_request):
+    return {"ok": True}
+
+
+async def emit(request):
+    payload = await request.json()
+    STATE["emitted"] += 1
+    HOST["api"].send_ws_message("tick", {"n": STATE["emitted"], "note": str(payload.get("note") or "")})
+    return {"ok": True, "n": STATE["emitted"]}
+
+
+def register(api):
+    HOST["api"] = api
+    for name, handler in (("blob", blob), ("stream", stream), ("slow", slow), ("state", state), ("nobody", nobody), ("ping", ping)):
+        api.register_route(name, handler, methods=("GET",))
+    api.register_route("emit", emit, methods=("POST",))
+    api.register_ui_tab("probe", "Bridge probe", render={"kind": "module", "entry": "probe.js", "height": 360, "start": "auto"})
+"""
+
+# Child-side probe: every call goes through the injected bridge (`fetch` /
+# `OuroborosWidget`), so what the test observes is the grammar end to end.
+_BRIDGE_PROBE_JS = """\
+(() => {
+    document.getElementById('root').textContent = 'Bridge probe';
+    const base = '/api/extensions/__SKILL__/';
+    const fnv = (bytes) => bytes.reduce((value, byte) => Math.imul(value ^ byte, 0x01000193) >>> 0, 0x811c9dc5);
+    const decoder = new TextDecoder();
+    const readAll = async (reader) => {
+        const chunks = [];
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) return chunks;
+            chunks.push(decoder.decode(value));
+        }
+    };
+    const events = [];
+    let unsubscribe = null;
+    window.__bridgeProbe = {
+        async binary() {
+            const r = await OuroborosWidget.fetch(base + 'blob');
+            const buffer = await r.arrayBuffer();
+            return { status: r.status, statusText: r.statusText, length: buffer.byteLength, fnv: fnv(new Uint8Array(buffer)),
+                headerFnv: r.headers.get('x-blob-fnv'), headerLen: r.headers.get('x-blob-len'), contentType: r.headers.get('content-type') };
+        },
+        async stream() {
+            const r = await fetch(base + 'stream');
+            return { status: r.status, chunks: await readAll(r.body.getReader()) };
+        },
+        async abort() {
+            const controller = new AbortController();
+            const r = await fetch(base + 'slow', { signal: controller.signal });
+            const reader = r.body.getReader();
+            const first = decoder.decode((await reader.read()).value);
+            controller.abort();
+            try { await reader.read(); return { first, error: null }; } catch (err) { return { first, error: err.name }; }
+        },
+        async timeout() {
+            const r = await fetch(base + 'slow', { timeoutMs: 400 });
+            try { await readAll(r.body.getReader()); return { error: null }; } catch (err) { return { error: err.message }; }
+        },
+        async nobody() {
+            const r = await fetch(base + 'nobody');
+            const head = await fetch(base + 'ping', { method: 'HEAD' });
+            return { status: r.status, nullBody: r.body === null, text: await r.text(), headStatus: head.status, headNullBody: head.body === null };
+        },
+        async outside() {
+            const results = {};
+            for (const [key, url] of [['sibling', '/api/extensions/other_skill/ping'], ['host', '/api/widgets'], ['absolute', 'https://example.com/api/extensions/__SKILL__/ping']]) {
+                try { await fetch(url); results[key] = 'resolved'; } catch (err) { results[key] = err.message; }
+            }
+            return results;
+        },
+        subscribe() { events.length = 0; unsubscribe = OuroborosWidget.onEvent((event) => events.push(event)); return true; },
+        unsubscribe() { unsubscribe?.(); unsubscribe = null; return true; },
+        events() { return events.slice(); },
+        async emit(note) {
+            const r = await fetch(base + 'emit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }) });
+            return r.json();
+        },
+        async openSlow() {
+            const r = await fetch(base + 'slow');
+            const reader = r.body.getReader();
+            window.__slowState = 'open';
+            readAll(reader).then(() => { window.__slowState = 'ended'; }, (err) => { window.__slowState = 'errored: ' + err.message; });
+            return true;
+        },
+    };
+})();
+"""
+
+
+def _write_bridge_widget_extension(data_dir: pathlib.Path) -> str:
+    """Install the streaming-bridge fixture: an `auto` module probe plus routes for
+    a 64 KiB random blob (with its FNV-1a checksum in a header), a three-chunk
+    in-process `StreamingResponse`, an endless slow stream that records its own
+    teardown, a 204 route, and a POST that emits a namespaced WS event."""
+    from ouroboros.skill_loader import SkillReviewState, compute_content_hash, save_review_state
+
+    name = "bridge_widget_smoke"
+    skill_dir = data_dir / "skills" / "external" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            name: {name}
+            description: Isolated module bridge streaming fixture.
+            version: 0.1.0
+            type: extension
+            entry: plugin.py
+            permissions: ["route", "widget", "ws_handler"]
+            ---
+            # Widget bridge fixture
+            """
+        ),
+        encoding="utf-8",
+    )
+    (skill_dir / "plugin.py").write_text(_BRIDGE_PLUGIN, encoding="utf-8")
+    (skill_dir / "probe.js").write_text(_BRIDGE_PROBE_JS.replace("__SKILL__", name), encoding="utf-8")
     content_hash = compute_content_hash(skill_dir, manifest_entry="plugin.py")
     save_review_state(data_dir, name, SkillReviewState(status="pass", content_hash=content_hash))
     return name
@@ -686,6 +867,125 @@ def test_ui_smoke_widget_retain_keeps_running_across_pages(direct_server_with_da
                     timeout=20_000,
                 )
                 assert page.locator("#widgets-list iframe").count() == 0
+            finally:
+                browser.close()
+    except PlaywrightError as exc:
+        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+            pytest.skip(str(exc))
+        raise
+
+
+@pytest.mark.ui_browser
+@pytest.mark.parametrize("browser_name", ("chromium", "webkit"))
+def test_ui_smoke_module_bridge_streams_binary_events_and_abort(direct_server_with_data, browser_name):
+    """Widgets lifecycle phase 4 end to end, on both engines, all through the
+    child's bridged `fetch` / `OuroborosWidget`: a 64 KiB random body arrives
+    byte-identical (FNV-1a in the child equals the server's header) with every
+    response header; an in-process `StreamingResponse` is read incrementally —
+    at least two separate chunks before `end`; `AbortController` mid-stream
+    rejects the reader with `AbortError` and the server sees the disconnect;
+    the opt-in `timeoutMs` aborts the same way; HEAD and 204 carry a null body;
+    a sibling skill, a host API and an absolute URL are refused; the skill's
+    `send_ws_message` reaches `onEvent` as `{type, data}` and stops after
+    unsubscribe; leaving the page with a stream open tears everything down
+    (server-side generator closed) without a page error."""
+    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    url = direct_server_with_data["url"]
+    data_dir = direct_server_with_data["data_dir"]
+    skill = _write_bridge_widget_extension(data_dir)
+    card = f'[data-widget-key="{skill}:probe"]'
+    page_errors: list[str] = []
+
+    def probe(frame, call: str, *args):
+        return frame.evaluate(f"(args) => window.__bridgeProbe.{call}(...args)", list(args))
+
+    def server_state(page) -> dict:
+        return page.evaluate("async (skill) => (await fetch(`/api/extensions/${skill}/state`)).json()", skill)
+
+    def wait_closed(page, expected: int) -> None:
+        page.wait_for_function(
+            "async ([skill, expected]) => (await (await fetch(`/api/extensions/${skill}/state`)).json()).slow_closed >= expected",
+            arg=[skill, expected],
+            timeout=10_000,
+        )
+
+    try:
+        with sync_playwright() as pw:
+            browser = getattr(pw, browser_name).launch(headless=True)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            page.on("console", lambda message: page_errors.append(message.text) if message.type == "error" and "widget" in message.text.lower() else None)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                toggled = page.evaluate(
+                    """async (skill) => (await fetch(`/api/skills/${encodeURIComponent(skill)}/toggle`, {
+                        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: true}),
+                    })).status""",
+                    skill,
+                )
+                assert toggled == 200
+                page.click('[data-nav-page="widgets"]')
+                page.locator(card).wait_for(state="visible", timeout=30_000)
+                page.wait_for_function("(selector) => document.querySelector(`${selector} iframe`) !== null", arg=card, timeout=10_000)
+                frame = page.locator(f"{card} iframe").element_handle().content_frame()
+                frame.wait_for_function("() => Boolean(window.__bridgeProbe)", timeout=10_000)
+
+                # (a) binary, byte-identical, every header forwarded.
+                binary = probe(frame, "binary")
+                assert binary["status"] == 200 and binary["length"] == 65536, binary
+                assert str(binary["fnv"]) == binary["headerFnv"], binary
+                assert binary["headerLen"] == "65536", binary
+                assert binary["contentType"].startswith("application/octet-stream"), binary
+                assert binary["statusText"] in ("OK", ""), binary
+
+                # (b) in-process streaming: separate chunks observed before end.
+                stream = probe(frame, "stream")
+                assert stream["status"] == 200, stream
+                assert len(stream["chunks"]) >= 2, stream
+                assert "".join(stream["chunks"]) == "chunk-0\nchunk-1\nchunk-2\n", stream
+
+                # (c) abort mid-stream: the reader rejects, the server generator is closed.
+                aborted = probe(frame, "abort")
+                assert aborted == {"first": "tick\n", "error": "AbortError"}, aborted
+                wait_closed(page, 1)
+
+                # (h) the author's opt-in timeoutMs aborts the same way; no default exists.
+                timed_out = probe(frame, "timeout")
+                assert timed_out == {"error": "widget request timed out"}, timed_out
+                wait_closed(page, 2)
+
+                # (f) null bodies; (e) refusal outside the owning prefix on the new channel.
+                assert probe(frame, "nobody") == {"status": 204, "nullBody": True, "text": "", "headStatus": 200, "headNullBody": True}
+                outside = probe(frame, "outside")
+                assert set(outside) == {"sibling", "host", "absolute"}, outside
+                assert all(value == "module widget fetch outside extension route prefix" for value in outside.values()), outside
+
+                # (d) skill WS events through the bridge; unsubscribe stops delivery.
+                assert probe(frame, "subscribe") is True
+                emitted = probe(frame, "emit", "one")
+                assert emitted["ok"] is True, emitted
+                frame.wait_for_function("() => window.__bridgeProbe.events().length >= 1", timeout=10_000)
+                events = probe(frame, "events")
+                assert events == [{"type": "tick", "data": {"n": emitted["n"], "note": "one"}}], events
+                assert probe(frame, "unsubscribe") is True
+                probe(frame, "emit", "two")
+                page.wait_for_timeout(700)
+                assert probe(frame, "events") == events, "an unsubscribed frame must receive nothing"
+
+                # (g) dispose while a stream is open: the frame goes, the parent aborts,
+                # the server closes its generator, and the page logs no error.
+                assert probe(frame, "openSlow") is True
+                frame.wait_for_function("() => window.__slowState === 'open'", timeout=5_000)
+                before = server_state(page)
+                assert before["slow_started"] == before["slow_closed"] + 1, before
+                _click_nav(page, "dashboard")
+                page.wait_for_function("(selector) => document.querySelector(`${selector} iframe`) === null", arg=card, timeout=5_000)
+                wait_closed(page, before["slow_started"])
+                assert page.locator("#widgets-list iframe").count() == 0
+                assert page_errors == [], page_errors
             finally:
                 browser.close()
     except PlaywrightError as exc:

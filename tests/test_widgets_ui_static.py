@@ -184,7 +184,7 @@ def test_widgets_keep_iframe_sandbox_locked_down():
     # restricted to /api/extensions/<skill>/... from the parent side.
     assert "default-src 'none'" in source
     assert "script-src 'unsafe-inline'" in source
-    assert "OuroborosWidget = { fetch: window.fetch }" in source
+    assert "window.OuroborosWidget = { fetch: request, onEvent };" in source
     assert "module widget fetch outside extension route prefix" in source
 
 
@@ -223,7 +223,8 @@ def test_widgets_framed_dispose_is_ordered_and_acknowledged():
     (``widget_frame.js``): on ``ouro-widget-dispose`` every registered hook
     runs first — async hooks are awaited, the fetch bridge stays live for
     them — then the bootstrap posts ``ouro-widget-disposed`` and only then
-    rejects pending fetches and removes its listener. Parent
+    fails pending fetches (rejecting unsettled ones, erroring open body
+    streams) and removes its listener. Parent
     (``widget_module.js``): the disposer posts the dispose message, keeps
     ``onMessage`` answering bridged fetches, and the abort → unlisten →
     ``iframe.remove()`` tail runs from ``finish`` on the acknowledgement or
@@ -240,10 +241,13 @@ def test_widgets_framed_dispose_is_ordered_and_acknowledged():
     dispose_body = child.split("const dispose = async () =>", 1)[1].split("const onMessage", 1)[0]
     assert "await Promise.allSettled(hooks.map((fn) => Promise.resolve().then(fn)));" in dispose_body
     assert dispose_body.index("Promise.allSettled") < dispose_body.index("type: 'ouro-widget-disposed'")
-    assert dispose_body.index("type: 'ouro-widget-disposed'") < dispose_body.index("reject(new Error('widget disposed'))")
-    assert dispose_body.index("reject(new Error('widget disposed'))") < dispose_body.index("window.removeEventListener('message', onMessage);")
-    # The bridge answers during the hooks: fetch is refused only once `disposed`.
-    assert "if (msg.type !== 'ouro-widget-fetch-result' || disposed) return;" in child
+    assert dispose_body.index("type: 'ouro-widget-disposed'") < dispose_body.index("item.fail(new Error('widget disposed'))")
+    assert dispose_body.index("item.fail(new Error('widget disposed'))") < dispose_body.index("window.removeEventListener('message', onMessage);")
+    # The bridge answers during the hooks: frames are refused only once `disposed`,
+    # and the dispose message itself is honoured before that gate.
+    frames = child.split("const onMessage = (event) =>", 1)[1].split("const request =", 1)[0]
+    assert frames.index("if (msg.type === 'ouro-widget-dispose') {") < frames.index("if (disposed) return;")
+    assert frames.index("if (disposed) return;") < frames.index("if (msg.type !== 'ouro-widget-fetch-chunk') return;")
     # Parent: the old synchronous tail is now the post-ack `finish`.
     assert "if (msg.type === 'ouro-widget-disposed') {" in parent
     tail = parent.split("const finish = () =>", 1)[1]
@@ -568,3 +572,73 @@ def test_widget_metrics_share_the_standard_empty_value_and_numeric_formatter():
     assert "const structured = raw !== null && typeof raw === 'object';" in source
     assert "nonFiniteText" in source
     assert "typeof raw === 'number' || numericText ? formatNumber" in source
+
+
+def test_widgets_module_bridge_is_one_streaming_grammar():
+    """Widgets lifecycle phase 4: the module frame has ONE parent-mediated I/O
+    grammar on the existing nonce. Child → parent: ``ouro-widget-fetch``,
+    ``ouro-widget-fetch-abort``, ``ouro-widget-events {subscribe|unsubscribe}``
+    and the ``ouro-widget-disposed`` ack. Parent → child: ``ouro-widget-fetch-chunk``
+    frames (``headers`` with status/statusText/every header first, one ``data``
+    frame per body chunk as a transferred ArrayBuffer, then ``end``; ``error`` on
+    failure) and ``ouro-widget-event`` for the skill's ``ws_prefix`` WebSocket
+    messages. The child rebuilds a real ``Response`` over a ``ReadableStream``
+    (binary by default; null body for HEAD/204/205/304). Negative pins: the old
+    string ``-fetch-result`` path and its ``r.text()`` are gone with no alias,
+    the frame opens no ``EventSource``/``WebSocket`` of its own, and no default
+    timeout constant is applied to a bridged fetch — the only timer in the relay
+    is the author's opt-in ``init.timeoutMs`` (declarative requests and the
+    module source load keep ``WIDGET_REQUEST_TIMEOUT_MS``)."""
+    child = _read("web/modules/widget_frame.js")
+    parent = _read("web/modules/widget_module.js")
+    page = _widgets_js()
+    framed = _framed_widget_sources()
+    # Child grammar and Response construction.
+    for name in (
+        "type: 'ouro-widget-fetch'", "type: 'ouro-widget-fetch-abort'", "type: 'ouro-widget-events'",
+        "'ouro-widget-fetch-chunk'", "'ouro-widget-event'", "type: 'ouro-widget-disposed'",
+    ):
+        assert name in child, name
+    assert "new ReadableStream({" in child
+    assert "resolve(new Response(stream, {" in child
+    assert "const nullBody = method === 'HEAD' || [204, 205, 304].includes(Number(msg.status));" in child
+    assert "headers: Array.from(new Headers(init.headers || {}))," in child
+    assert "timeoutMs: init.timeoutMs ?? null," in child
+    assert "signal?.addEventListener('abort', onAbort, { once: true });" in child
+    assert "const onEvent = (callback) =>" in child
+    assert "post({ type: 'ouro-widget-events', op: 'subscribe' });" in child
+    assert "post({ type: 'ouro-widget-events', op: 'unsubscribe' });" in child
+    assert "window.fetch = request;" in child
+    # Parent relay: prefix check, headers → data (transferred) → end, error; abort;
+    # event forwarding under the card's ws_prefix through the page's handler Set.
+    relay = parent.split("const relayFetch = async (msg) =>", 1)[1].split("const onMessage = (event) =>", 1)[0]
+    assert "module widget fetch outside extension route prefix" in relay
+    assert relay.index("phase: 'headers'") < relay.index("phase: 'data'") < relay.index("phase: 'end'") < relay.index("phase: 'error'")
+    assert "statusText: r.statusText, headers: Array.from(r.headers)" in relay
+    assert "const reader = r.body?.getReader();" in relay
+    assert "const chunk = bridgeChunkBuffer(value);" in relay
+    assert "frame({ phase: 'data', chunk }, [chunk]);" in relay
+    assert "export function bridgeChunkBuffer(view)" in child
+    assert "pendingRequests.get(msg.id)?.abort();" in parent
+    assert "if (msg.type === 'ouro-widget-fetch') relayFetch(msg);" in parent
+    assert "const wsPrefix = String(tab.ws_prefix || '').trim();" in parent
+    assert "if (!wsPrefix || !type.startsWith(wsPrefix)) return;" in parent
+    assert "post({ type: 'ouro-widget-event', event: type.slice(wsPrefix.length), data: msg.data ?? {} });" in parent
+    assert "if (msg.op === 'subscribe') messageHandlers?.add(onWsMessage);" in parent
+    assert "else if (msg.op === 'unsubscribe') messageHandlers?.delete(onWsMessage);" in parent
+    assert "return mountModuleWidget(mount, tab, render, mountSignal, widgetMessageHandlers);" in page
+    # Dispose tail: open streams aborted with the pending requests, forwarding dropped.
+    tail = parent.split("const finish = () =>", 1)[1]
+    assert tail.index("pendingRequests.forEach((controller) => controller.abort());") < tail.index("messageHandlers?.delete(onWsMessage);")
+    assert tail.index("messageHandlers?.delete(onWsMessage);") < tail.index("window.removeEventListener('message', onMessage);")
+    # Negative pins: no string path, no alias, no second transport, no default bridge timeout.
+    assert "ouro-widget-fetch-result" not in framed
+    assert ".text()" not in relay
+    assert "WIDGET_REQUEST_TIMEOUT_MS" not in relay
+    assert "withWidgetRequestTimeout" not in relay
+    assert relay.count("setTimeout(") == 1
+    assert "Number.isFinite(timeoutMs) && timeoutMs > 0" in relay
+    for forbidden in ("EventSource(", "WebSocket(", "XMLHttpRequest", "setTimeout("):
+        assert forbidden not in child, forbidden
+    jobs = _read("web/modules/widget_job.js")
+    assert "BRIDGE" not in jobs and "bridge" not in jobs.split("Ordered stop", 1)[0]
