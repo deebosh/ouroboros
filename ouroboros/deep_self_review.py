@@ -596,11 +596,15 @@ def _record_execution(slot: Any, usage: Dict[str, Any], *, status: str, error: s
 
 
 def _repo_relative(path: Any, repo_dir: pathlib.Path) -> str:
-    """A receipt path as a repo-relative POSIX path: absolute paths under the
-    repository are relativized, relative ones normalized — but a path with a
-    ``..`` component is kept AS SPELLED and so names no mandatory read: the
-    registry refuses traversal shapes before dispatch, so ``a/../BIBLE.md``
-    delivered nothing and must never be folded onto ``BIBLE.md``."""
+    """A receipt path as a repo-relative POSIX path. Coverage hands it the
+    receipt's ``opened_path`` (the root-relative path the reader actually
+    opened — already free of the model's spelling: absolute, whitespace-padded,
+    ``repo/``-prefixed or ``/``-qualified forms all arrive as ``BIBLE.md``)
+    and, for a receipt WITHOUT one (nothing rendered), the raw spelling.
+    Absolute paths under the repository are relativized, relative ones
+    normalized — but a ``..`` component is kept AS SPELLED and so names no
+    mandatory read: the registry refuses traversal shapes before dispatch, so
+    ``a/../BIBLE.md`` delivered nothing and is never folded onto ``BIBLE.md``."""
     text = str(path or "").replace("\\", "/")
     pure = pathlib.PurePosixPath(text)
     if ".." in pure.parts:
@@ -626,10 +630,13 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
     alone); ``partial`` with the covered fraction; ``missing`` when nothing of
     the file was delivered — no receipt names it at a repository root (a
     data-plane read never counts), or every measured receipt delivered zero
-    lines (a cursor past the window, a start past EOF). A receipt whose path
-    carries a ``..`` component names nothing here (the registry refuses
-    traversal shapes before dispatch — see ``_repo_relative``). Disclosure,
-    never a refusal: the report is delivered with the flag in its header.
+    lines (a cursor past the window, a start past EOF). Receipts are matched
+    on the path the reader actually OPENED (``opened_path``, stamped by the
+    reader; the model's spelling is only disclosure), falling back to the raw
+    spelling for a receipt that rendered nothing — where a ``..`` component
+    names nothing (the registry refuses traversal shapes before dispatch — see
+    ``_repo_relative``). Disclosure, never a refusal: the report is delivered
+    with the flag in its header.
     """
     receipts = [r for r in (usage.get("native_tool_receipts") or []) if isinstance(r, dict)]
     capped = int(usage.get("native_tool_calls") or 0) > len(receipts)
@@ -638,11 +645,16 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
         spans: list[tuple[int, int]] = []
         total, unmeasured = 0, False
         for r in receipts:
+            named = r.get("opened_path") if isinstance(r.get("opened_path"), str) and r.get("opened_path") else r.get("path")
             if (r.get("tool") != "read_file" or r.get("outcome") != "executed"
-                    or str(r.get("root") or "") not in _REPO_ROOTS or _repo_relative(r.get("path"), repo_dir) != rel):
+                    or str(r.get("root") or "") not in _REPO_ROOTS or _repo_relative(named, repo_dir) != rel):
                 continue
             if not all(isinstance(r.get(k), int) for k in ("start_line", "end_line", "total_lines")):
-                unmeasured = True  # opened, extent not recorded: this receipt proves nothing about coverage
+                # Names the file but carries no extent: it may never have opened
+                # it (an argument error, a registry refusal answered with text)
+                # or opened it without a recorded extent — either way it proves
+                # nothing, and keeps `read`/`missing` unproven (`unobserved`).
+                unmeasured = True
                 continue
             total = max(total, int(r["total_lines"]))
             if r["end_line"] >= r["start_line"]:

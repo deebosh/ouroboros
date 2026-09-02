@@ -352,9 +352,13 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
         return deep_self_review._native_read_coverage(
             {"native_tool_calls": len(receipts) if calls is None else calls, "native_tool_receipts": receipts}, review_repo)["BIBLE.md"]
 
-    def rec(path, start, end, total, root="", outcome="executed"):
+    def rec(path, start, end, total, root="", outcome="executed", opened=None):
+        # Shaped like a real receipt: `opened_path` is what the reader opened
+        # (the raw `path` is the model's spelling; a receipt that rendered
+        # nothing has no opened path).
         return {"tool": "read_file", "path": path, "root": root, "outcome": outcome,
-                "start_line": start, "end_line": end, "total_lines": total}
+                "start_line": start, "end_line": end, "total_lines": total,
+                "opened_path": path if opened is None else opened}
 
     # Full coverage only when the merged intervals cover the whole file.
     assert cov([rec("BIBLE.md", 1, 12, 12)])["state"] == "read"
@@ -364,9 +368,21 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
     assert one["state"] == "partial" and one["fraction"] == round(1 / 12, 3)
     overlap = cov([rec("BIBLE.md", 1, 6, 12), rec("BIBLE.md", 1, 6, 12), rec("BIBLE.md", 3, 8, 12)])
     assert overlap["state"] == "partial" and overlap["covered_lines"] == 8
-    # Absolute and dot-prefixed spellings of the mandatory path still count.
-    for spelled in (str(review_repo / "BIBLE.md"), "./BIBLE.md", "BIBLE.md"):
-        assert cov([rec(spelled, 1, 12, 12, root="system_repo")])["state"] == "read"
+    # Coverage folds on the OPENED path, never on the model's spelling: every
+    # spelling the REAL registry reads as BIBLE.md (absolute in-repo, whitespace-
+    # padded, redundant `repo/` prefix, root-qualified `/`, dot-prefixed) credits
+    # `read` — one scripted episode per spelling, through the real registry.
+    total = len(_BIBLE.splitlines())
+    for spelled in (str(review_repo / "BIBLE.md"), " BIBLE.md", "repo/BIBLE.md", "/BIBLE.md", "./BIBLE.md", "BIBLE.md"):
+        llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": spelled}, "c1")]}, {"content": _REPORT}])
+        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+        receipt = usage["native_tool_receipts"][0]
+        assert (receipt["path"], receipt["opened_path"], receipt["eof"], receipt["total_lines"]) == (spelled, "BIBLE.md", True, total), receipt
+        assert "coverage=BIBLE.md:read" in text and "BIBLE.md read in full" in text, (spelled, text.split("\n")[0])
+        assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
+    # A receipt without an opened path is matched by its raw spelling, where a
+    # `..` component names nothing (refused before dispatch, nothing rendered).
+    assert cov([{"tool": "read_file", "path": "a/../BIBLE.md", "root": "", "outcome": "executed"}])["state"] == "missing"
     # A data-plane read of a same-named file is NOT the repository read.
     assert cov([rec("BIBLE.md", 1, 12, 12, root="runtime_data")])["state"] == "missing"
     # Refused / withheld reads are not reads; capped receipts or a receipt
@@ -923,7 +939,7 @@ def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review
     for i, p in enumerate(shapes, 1):
         assert tool_msgs[f"c{i + 1}"].startswith("⚠️ READ_FILE_ERROR") and receipts[i]["path"] == p
         assert receipts[i]["outcome"] == "executed"  # the registry answered with text; the vocabulary is unchanged
-        assert not any(k in receipts[i] for k in ("start_line", "end_line", "total_lines", "eof")), receipts[i]
+        assert not any(k in receipts[i] for k in ("start_line", "end_line", "total_lines", "eof", "opened_path")), receipts[i]
     assert "coverage=BIBLE.md:missing" in text and "BIBLE.md NOT read" in text
     assert [d["reason"] for d in usage["capability_delta"]] == ["deep_review_mandatory_read_missing"]
     # A real PARTIAL read followed by a traversal shape stays partial — never `read`.

@@ -740,7 +740,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     # Measured on `sent`, never on a `shown` the exhausted fit
                     # loop reduced after the last build: the receipt credits
                     # exactly what the reviewer received.
-                    extent = self._read_extent(full, sent, args)
+                    extent = self._read_extent(full, sent)
         # Host-observed evidence (bounded): which artifacts THIS episode
         # actually opened — disclosure, never a claim of full-surface coverage.
         self._tool_calls_total += 1
@@ -752,46 +752,49 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         receipt[key] = str(args[key])[:300]
             receipt["result_chars"] = len(result)
             receipt["outcome"] = outcome
-            receipt.update(extent)  # read_file only: the DELIVERED extent (ints/bool, see _read_extent)
+            receipt.update(extent)  # read_file only: the DELIVERED extent + the opened root-relative path (see _read_extent)
             self._tool_receipts.append(receipt)
         return {"role": "tool", "tool_call_id": call_id, "content": result}
 
-    def _read_extent(self, full: str, shown: int, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _read_extent(self, full: str, shown: int) -> Dict[str, Any]:
         """The extent an executed ``read_file`` actually DELIVERED, as bounded
         facts on the receipt: ``start_line``/``end_line`` (the COMPLETE lines
         the reviewer received; an empty delivery is an empty range with
-        ``end_line < start_line``), ``total_lines`` of the file, ``eof``.
+        ``end_line < start_line``), ``total_lines`` of the file, ``eof``, and
+        ``opened_path`` — the root-relative path the reader actually opened
+        (the receipt's ``path`` stays the model's spelling; the registry
+        normalizes absolute in-repo, whitespace-padded and redundant-root
+        spellings before the handler runs, so coverage folds on the opened
+        path, never on the spelling).
 
-        Every number comes from the reader's own stamp (``ctx.last_read_view``,
+        Every fact comes from the reader's own stamp (``ctx.last_read_view``,
         written by the renderer AFTER its sub-line cursor cut: ``first_line`` is
         the first complete line, ``body_start`` where the body begins in the
         returned text, ``line_ends`` the end offsets of the body's complete
         lines on the renderer's own line definition) — nothing is parsed back
-        from the header and no newline is recounted here. The stamp is accepted
-        for THIS call only: the caller clears it before every dispatch, and its
-        request ``path`` must be this call's ``path`` argument — a call refused
-        before the tool ran, or one that returned without rendering, has no
-        stamp and records no extent. (The resolved target is deliberately NOT
-        the identity: recomputing it would re-run the registry's binding, and a
-        traversal shape such as ``a/../BIBLE.md`` resolves to the very file a
-        leaked stamp names — the forgery the identity exists to reject.) When
-        this episode's result bound cut the body, only the complete lines whose
-        end lies inside the delivered prefix count. Fail-safe: a stamp missing
-        any fact records NO extent, which coverage reads as ``unobserved``.
-        Extends the receipt contract; the existing fields and the outcome
-        vocabulary are unchanged."""
+        from the header and no newline is recounted here. The stamp's binding
+        to THIS call is structural, not a comparison: the reader resets it on
+        entry, the caller clears it before every dispatch, the context is
+        instance-local and dispatch is synchronous — so a call refused before
+        the tool ran, or one that returned without rendering, finds no stamp
+        and records no extent. When this episode's result bound cut the body,
+        only the complete lines whose end lies inside the delivered prefix
+        count. Fail-safe: a stamp missing any fact records NO extent, which
+        coverage reads as ``unobserved``. Extends the receipt contract; the
+        existing fields and the outcome vocabulary are unchanged."""
         view = getattr(self._inspection_ctx, "last_read_view", None)
         keys = ("first_line", "end_line", "total_lines", "body_start")
         ends = view.get("line_ends") if isinstance(view, dict) else None
         if (not isinstance(view, dict) or not all(isinstance(view.get(k), int) for k in keys)
                 or not isinstance(ends, (list, tuple)) or not all(isinstance(e, int) for e in ends)
-                or not isinstance(view.get("path"), str) or view["path"] != args.get("path")):
+                or not isinstance(view.get("opened_path"), str)):
             return {}
         start, end, total, body_start = (int(view[k]) for k in keys)
         if shown < len(full):
             delivered = bisect.bisect_right(ends, shown - body_start) if shown > body_start else 0
             end = min(end, start + delivered - 1)
-        return {"start_line": start, "end_line": end, "total_lines": total, "eof": end >= start and end >= total}
+        return {"start_line": start, "end_line": end, "total_lines": total, "eof": end >= start and end >= total,
+                "opened_path": view["opened_path"][:300]}
 
     @staticmethod
     def _terminal_round_fact(messages: List[Dict[str, Any]]) -> str:
