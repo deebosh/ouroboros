@@ -535,3 +535,21 @@ def test_a_lock_whose_identity_cannot_be_read_is_never_a_hold(tmp_path, monkeypa
     monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", real_flock)
     assert acquire_exclusive_file_lock(lock_path, timeout_sec=0.3, poll_sec=0.01) is None
     assert not lock_path.exists(), "a live pid was stamped on a lock nobody may reclaim"
+
+    # The heartbeat has the same blind spots. A renewal is an ownership verdict:
+    # a renewal the kernel refuses is no renewal, our own identity unreadable
+    # with the path absent is not a match of two empty answers, and a stranger's
+    # file at the path is not ours either.
+    monkeypatch.setattr(platform_layer, "_lock_identity", real_identity)
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=0.3, poll_sec=0.01)
+    assert fd is not None and refresh_exclusive_file_lock(lock_path, fd) is True
+    real_utime = os.utime
+    monkeypatch.setattr(os, "utime", lambda *a, **k: (_ for _ in ()).throw(OSError(errno.EIO, "utime refused")))
+    assert refresh_exclusive_file_lock(lock_path, fd) is False
+    monkeypatch.setattr(os, "utime", real_utime)
+    monkeypatch.setattr(platform_layer, "_lock_identity", blind_descriptor)
+    os.unlink(str(lock_path))
+    assert refresh_exclusive_file_lock(lock_path, fd) is False
+    lock_path.write_text("pid=1 ts=stranger\n", encoding="utf-8")
+    assert refresh_exclusive_file_lock(lock_path, fd) is False
+    os.close(fd)

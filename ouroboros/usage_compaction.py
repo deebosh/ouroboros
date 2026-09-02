@@ -554,14 +554,14 @@ def _foldable_attempt_ids(records: list) -> set:
 
 
 def _build_candidate(
-    records: list, decimal_records: list, raw: bytes,
-    beat: Callable[[], None] = lambda: None,
+    records: list, decimal_records: list, raw: bytes, beat: Callable[[], None],
 ) -> Tuple[bytes, Dict[str, Any]]:
     """Fold ``records`` into the candidate bytes + commit receipt.
 
     ``beat`` renews the held lock at the checkpoints of the two row walks: on
     a multi-megabyte ledger this loop, not the commit, is where the pass can
-    outlive its own staleness window.
+    outlive its own staleness window — so it is required, like the entry
+    points' heartbeat, never a default that silently degrades to a no-op.
     """
     foldable = _foldable_attempt_ids(records)
     decimal_finals = _final_rows(decimal_records)
