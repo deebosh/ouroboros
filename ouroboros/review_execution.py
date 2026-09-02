@@ -15,11 +15,16 @@ import hashlib
 import json
 import logging
 import os
+import pathlib
 import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional
 
+from ouroboros.review_cross_check import (  # noqa: F401 — re-exported: tests import from here
+    _cross_check_findings,
+    _identifier_present_in_repo,
+)
 from ouroboros.review_slot_cancel import (  # noqa: F401 — re-exported seam surface
     ReviewSessionSucceededResultUnavailable,
     _cancel_honesty_clause,
@@ -1304,12 +1309,22 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         self._raw_transcript = facts["text"]
 
     def _verdict_result(self, force_extraction: bool = False) -> ReviewAttemptResult:
-        text = self._raw_transcript or ""
+        text = getattr(self, "_raw_transcript", "") or self._transcript or ""
+        # Cross-check (ibl-e8665b941f7e / ibl-01b310c0ce18): when the request
+        # carries a session_root, pass it so critical findings whose factual
+        # claims cannot be substantiated against actual code are downgraded to
+        # advisory before the obligation gate sees them. Empty/None disables it.
+        session_root = (
+            str(getattr(self.assignment.request, "session_root", "") or "")
+            if self.assignment is not None
+            else ""
+        )
         canonical, method, extraction_usage = canonicalize_session_verdict(
             text,
             conformance_passed=self._conformance_passed and not force_extraction,
             contract=self._output_contract(),
             llm=self.llm,
+            repo_root=session_root or None,
             deadline_at=getattr(self.assignment.request, "deadline_at", "") or "",
             transport_timeout_sec=getattr(self.assignment.slot, "transport_timeout_sec", None),
         )
@@ -1333,6 +1348,12 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
                 ),
                 "reason": "extraction_incomplete_transcript_exceeds_bound",
             }]
+        # ibl-01b310c0ce18: promote the cross_check audit to top-level usage so
+        # it survives the downstream merge (schema/strict branches return it in
+        # `extraction_usage`; the light branch keeps its own under `extraction`).
+        cc_audit = extraction_usage.get("cross_check")
+        if cc_audit and not usage.get("cross_check"):
+            usage["cross_check"] = cc_audit
         usage["verdict_method"] = method
         # P1: the cognitive artifact is the SESSION's own output, and canonicalization
         # legitimately destroys it — a schema-conformant `{"findings": []}` becomes `[]`

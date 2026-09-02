@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
+import pathlib
 from typing import Any, Dict, List, Optional
 
 from ouroboros.config import get_finalization_grace_sec
 from ouroboros.deadline_utils import owner_deadline_exhausted, review_transport_timeout
+from ouroboros.review_cross_check import _cross_check_findings
 from ouroboros.triad_review import (
     REVIEW_JSON_ARRAY_CONTRACT,
     empty_array_is_verified_clean,
@@ -100,6 +102,7 @@ def _strictly_parseable(text: str) -> bool:
 
 def canonicalize_session_verdict(
     raw_text: str, *, conformance_passed: bool, contract: str = "", llm: Any = None,
+    repo_root: Optional[str] = None,
     deadline_at: Any = None, transport_timeout_sec: Any = None,
 ) -> tuple[str, str, Dict[str, Any]]:
     """Return ``(canonical_text, method, extraction_usage)`` for a session answer.
@@ -114,8 +117,15 @@ def canonicalize_session_verdict(
     form would be a verdict fabricated from the visible cut. ``method`` is one
     of ``schema | strict | light_model_extraction | extraction_incomplete |
     unparsed``.
+
+    ``repo_root`` (optional, ibl-01b310c0ce18): when set, every parsed findings
+    array is passed through :func:`_cross_check_findings` before re-serialization
+    — critical findings whose factual claims cannot be substantiated against the
+    codebase are downgraded to ``"advisory"`` with an audit note. OFF by default
+    (``repo_root=None``) so existing callers see no behavioural change.
     """
     text = str(raw_text or "")
+    cc_audit: Dict[str, Any] = {}
     if conformance_passed:
         try:
             payload = json.loads(text.strip())
@@ -123,18 +133,48 @@ def canonicalize_session_verdict(
             payload = None
         findings = _findings_array(payload)
         if findings is not None:
-            return ("[]" if not findings else json.dumps(findings, ensure_ascii=False)), "schema", {}
+            if repo_root:
+                findings, cc_audit = _cross_check_findings(findings, pathlib.Path(repo_root))
+            usage = {"cross_check": cc_audit} if cc_audit.get("checked") else {}
+            return ("[]" if not findings else json.dumps(findings, ensure_ascii=False)), "schema", usage
         # The engine claimed conformance over a payload that does not carry the
         # contract's shape: fall through to the honest branches, and the caller
         # discloses the delta.
     if _strictly_parseable(text):
-        return text, "strict", {}
+        try:
+            findings_strict = json.loads(text.strip())
+            if (
+                isinstance(findings_strict, list)
+                and all(isinstance(it, dict) for it in findings_strict)
+                and repo_root
+            ):
+                findings_strict, cc_audit = _cross_check_findings(
+                    findings_strict, pathlib.Path(repo_root),
+                )
+                text = json.dumps(findings_strict, ensure_ascii=False)
+        except (TypeError, ValueError):
+            pass
+        usage = {"cross_check": cc_audit} if cc_audit.get("checked") else {}
+        return text, "strict", usage
     if len(text) > _EXTRACT_MAX_CHARS:
         return text, "extraction_incomplete", {}
     canonical, usage = _extract_verdict_via_light_model(
         text, contract=contract, llm=llm, deadline_at=deadline_at,
         transport_timeout_sec=transport_timeout_sec)
     if canonical is not None:
+        try:
+            payload = json.loads(canonical)
+            if (
+                isinstance(payload, list)
+                and all(isinstance(it, dict) for it in payload)
+                and repo_root
+            ):
+                payload, cc_audit = _cross_check_findings(payload, pathlib.Path(repo_root))
+                canonical = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            pass
+        if cc_audit.get("checked"):
+            usage["cross_check"] = cc_audit
         return canonical, "light_model_extraction", usage
     # `unparsed` is the honest end of THIS layer's knowledge. The coordinator's
     # own fenced scanner may still parse the text downstream; labeling that
