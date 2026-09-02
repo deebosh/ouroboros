@@ -267,14 +267,22 @@ not move them into the migrated set in section 8.
   (a task card's summary), the surface ignores a pointer click whose drag
   produced a non-empty selection; keyboard activation is unaffected.
 - **A markdown heading inside chat is a subsection label**, never a page
-  title: in chat bubbles and in a task card's timeline every heading level
-  renders at `--type-body` semibold (inline, without block margins, in the
-  timeline). The page-size `md-h1` belongs to non-chat surfaces only.
-- **A nested child card is subordinate to its root.** Collapsed, it is one
-  identity row — status chip · `role · model` · notes/toggle — in
-  `--text-secondary` ink at weight 400, with no reserved title or activity
-  lines; its activity and metadata appear only when it is expanded. The root
-  keeps `--text-primary` at weight 500 for its title.
+  title: in chat bubbles every heading level renders at `--type-body`
+  semibold; in a task card's timeline it renders inline, without block
+  margins, at its row's own size. The page-size `md-h1` belongs to non-chat
+  surfaces only.
+- **A task card's summary outranks its details.** The latest-activity line is
+  `--type-body`; collapsed timeline rows are a dense log at `--type-meta` in
+  `--text-secondary`; an expanded row returns to `--type-body` in
+  `--text-primary`. Details never render larger than the summary above them;
+  an inline label inside a row is semibold at the row's own size.
+- **A nested child card is subordinate to its root.** Collapsed, it is an
+  identity row — status chip · `role · model` · `N notes` and the chevron (the
+  `Show details` label belongs to the root) — in `--text-secondary` ink at
+  weight 400, with no reserved title or activity lines, over its metadata row
+  (harness chip with the run count, cost, last update). Only its narration
+  line waits for expansion. The root keeps `--text-primary` at weight 500 for
+  its title.
 
 ### List editors
 
@@ -306,8 +314,8 @@ not child-task cards and never prove execution by themselves.
 
 - A collapsed task card shows only a quiet `Reviews N` count, docked on the
   metadata row (it wraps under the metadata on a narrow card), optionally with an
-  active count; a collapsed nested child card shows it only once expanded, with
-  the rest of its metadata. It has no aggregate pass/fail alert, no synthesized verdict, and
+  active count; a collapsed nested child card docks it on its metadata row the
+  same way. It has no aggregate pass/fail alert, no synthesized verdict, and
   no review dollars.
 - Expanding `Reviews` reveals one row per currently admitted review group
   (`Skill review`, `Plan review`, or `Task acceptance`). Expanding a group
