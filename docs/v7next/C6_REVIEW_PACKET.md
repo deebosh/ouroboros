@@ -884,7 +884,7 @@ Verdicts: 3 × NEEDS_FIXES, no HIGH; 3 MEDIUM + 7 LOW. Fixed here (base `b4938c3
 | LOW R8d — "PERMANENT … for the life of the install" over-stated: the verdict lasts until the fresh ledger's epoch passes the surviving segments, which are then silently ignored | **docs**: DESIGN §10, packet §5.9, ARCHITECTURE row | — |
 | LOW R8e — the socket qualification introduced its own absolute: a UNIX socket is corruption on the dir-fd shape only; the path shape's stat-before-open skips it | **docs**: DESIGN §10/§12.5, packet §5.9, ARCHITECTURE row | — |
 
-Sizes after the close-out: `platform_layer.py` 1500/1500 (band ceiling; net +3 on the policy, paid by rewrapping two prose blocks — no contract text dropped), `usage_compaction.py` 1262 (band), `tests/test_usage_compaction.py` **1600/1600** (owner decision still owed: the next pin in this suite needs either the archive-reader tests moved to their own module — a natural organ boundary, `archived_attempt_ids` vs the pass — or a cap decision), `tests/test_lockfile_helpers.py` 568.
+Sizes after the close-out: `platform_layer.py` 1500/1500 (band ceiling; net +3 on the policy, paid by rewrapping two prose blocks — no contract text dropped), `usage_compaction.py` 1262 (band), `tests/test_usage_compaction.py` **1600/1600** (the owner answered this in batch №13 item 11 = A: the archive-reader tests moved to their own module — the natural organ boundary, `archived_attempt_ids` vs the pass. After the split, the suite is `tests/test_usage_compaction.py` 900 + `tests/test_usage_compaction_archive.py` 660 + `tests/fixtures_usage_compaction.py` 123, same 64 node ids), `tests/test_lockfile_helpers.py` 568.
 
 ### §10 addendum — the Windows matrix (run 33654743857 on bf8b6549)
 
