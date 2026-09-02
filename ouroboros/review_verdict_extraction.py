@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from ouroboros.config import get_finalization_grace_sec
 from ouroboros.deadline_utils import owner_deadline_exhausted, review_transport_timeout
 from ouroboros.triad_review import (
-    REVIEW_JSON_ARRAY_CONTRACT,
+    default_output_contract,
     empty_array_is_verified_clean,
     extract_fenced_json,
     extract_json_array,
@@ -209,7 +209,7 @@ def _extract_verdict_via_light_model(
         return None, {"model": model, "reason_code": "deadline_exhausted", "dispatch": "not_dispatched"}
     template = _SESSION_EXTRACT_OBJECT_PROMPT if shape == "object" else _SESSION_EXTRACT_PROMPT
     prompt = template.format(
-        contract=contract or REVIEW_JSON_ARRAY_CONTRACT,
+        contract=contract or default_output_contract(shape),
         raw_text=raw_text,  # WHOLE — the caller already bounded the one send
     )
     # Formatting the extraction prompt can itself be expensive. Re-check at

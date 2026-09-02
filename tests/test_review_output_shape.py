@@ -21,7 +21,11 @@ from ouroboros.review_verdict_extraction import (
     canonicalize_session_verdict,
 )
 from ouroboros.triad_review import (
+    REVIEW_JSON_ARRAY_CONTRACT,
+    REVIEW_JSON_OBJECT_CONTRACT,
     REVIEW_OUTPUT_SHAPES,
+    REVIEW_REPORT_CONTRACT,
+    default_output_contract,
     object_verdict_payload,
     review_output_shape,
 )
@@ -48,12 +52,45 @@ def test_shape_table_is_form_only_and_defaults_to_array():
         assert review_output_shape(surface) == "array"
 
 
-def test_object_verdict_payload_requires_verdict_and_list_findings():
+def test_object_verdict_payload_mirrors_the_packed_object_ladder_with_type_discipline():
+    """The object predicate mirrors `parse_review_findings`' object ladder (a
+    verdict signal is required, findings are optional) and keeps the array
+    branch's type discipline: a non-empty string verdict and, when present,
+    findings as a list of dicts. Aggregation, not this predicate, demotes a
+    verdict missing tier/coach/criteria keys."""
     assert object_verdict_payload(_OBJECT_VERDICT) is _OBJECT_VERDICT
     assert object_verdict_payload({"findings": []}) is None  # no verdict key
     assert object_verdict_payload({"verdict": "PASS", "findings": "nope"}) is None
     assert object_verdict_payload([{"verdict": "PASS"}]) is None
     assert object_verdict_payload({"verdict": "FAIL"}) == {"verdict": "FAIL"}  # findings optional
+    for garbage in (
+        {"verdict": None}, {"verdict": 5}, {"verdict": ""}, {"verdict": "  "},
+        {"verdict": "PASS", "findings": [1, "x"]}, {"verdict": "PASS", "findings": {"item": "x"}},
+    ):
+        assert object_verdict_payload(garbage) is None, garbage
+
+
+def test_default_output_contract_follows_the_shape():
+    """A retrieving row whose surface hands over no `policy["output_contract"]`
+    is asked for the SAME form its host parses: an object surface prompted
+    with the array contract made an obedient `[]` a malformed answer."""
+    assert default_output_contract("array") is REVIEW_JSON_ARRAY_CONTRACT
+    assert default_output_contract("object") is REVIEW_JSON_OBJECT_CONTRACT
+    assert default_output_contract("report") is REVIEW_REPORT_CONTRACT
+    assert default_output_contract("") is REVIEW_JSON_ARRAY_CONTRACT
+    assert "JSON object" in REVIEW_JSON_OBJECT_CONTRACT and "Never a bare\narray" in REVIEW_JSON_OBJECT_CONTRACT
+    assert "no JSON wrapper" in REVIEW_REPORT_CONTRACT
+
+    from ouroboros.review_execution import ReviewAssignment, ReviewRouteKind, _review_route_executor
+    from ouroboros.review_substrate import ReviewRequest, ReviewSlot
+
+    for surface, expected in (("task_acceptance", REVIEW_JSON_OBJECT_CONTRACT), ("deep_self_review", REVIEW_REPORT_CONTRACT), ("multi_model_review", REVIEW_JSON_ARRAY_CONTRACT)):
+        request = ReviewRequest(surface=surface, goal="g", task_id="t", session_root="/tmp", session_task="task", policy={})
+        native = _review_route_executor(ReviewAssignment(
+            request=request, slot=ReviewSlot(slot_id="n", model="m", effort="low", subagent_id="api-critic"), call_id="c"))
+        session = _review_route_executor(ReviewAssignment(
+            request=request, slot=ReviewSlot(slot_id="s", model="m", effort="low", route=ReviewRouteKind.AGENT_SESSION), call_id="c"))
+        assert native._output_contract() is expected and session._output_contract() is expected
 
 
 def test_strict_object_keeps_the_whole_verdict():
@@ -145,6 +182,9 @@ def test_object_extraction_that_yields_only_findings_is_unparsed(monkeypatch):
 def test_session_schema_follows_the_shape():
     assert review_session_output_schema("task_acceptance") is ACCEPTANCE_SESSION_OUTPUT_SCHEMA
     assert review_session_output_schema("multi_model_review") is REVIEW_SESSION_OUTPUT_SCHEMA
+    # A report is prose: no schema is asked, so the engine is never forced into
+    # a findings shape the canonicalizer would then pass through verbatim.
+    assert review_session_output_schema("deep_self_review") is None
     assert review_session_output_schema("scope_review")["properties"]["findings"]["minItems"] == 1
     assert set(ACCEPTANCE_SESSION_OUTPUT_SCHEMA["required"]) == {"verdict", "findings", "summary"}
     for key in ("outcome_tier", "criteria_used", "dialogue_status"):

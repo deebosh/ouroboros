@@ -31,8 +31,8 @@ from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_
 from ouroboros.usage_accounting import POSITIVE_PHYSICAL_ATTEMPT_STATES
 from ouroboros.triad_review import (
     ACCEPTANCE_SURFACE_RULES,
-    REVIEW_JSON_ARRAY_CONTRACT,
     TIER_CLASSIFICATION_RULES,
+    default_output_contract,
     review_output_shape,
 )
 from ouroboros.deadline_utils import (
@@ -575,7 +575,7 @@ ACCEPTANCE_SESSION_OUTPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def review_session_output_schema(surface: str) -> Dict[str, Any]:
+def review_session_output_schema(surface: str) -> Optional[Dict[str, Any]]:
     """The session verdict schema, shaped to the SURFACE's own clean contract.
 
     The shared schema admits ``{"findings": []}`` — the honest clean verdict for a
@@ -583,9 +583,13 @@ def review_session_output_schema(surface: str) -> Dict[str, Any]:
     checklist rows (PASS included); Skill Review has the same matrix shape. Their
     schemas demand ``minItems: 1`` so an engine cannot conform with an empty answer;
     each surface's downstream parser still verifies exact item coverage. An
-    ``object``-shaped surface (task acceptance) asks for the whole verdict object.
+    ``object``-shaped surface (task acceptance) asks for the whole verdict object; a
+    ``report`` surface asks for NO schema — its prose passes through verbatim.
     """
-    if review_output_shape(surface) == "object":
+    shape = review_output_shape(surface)
+    if shape == "report":
+        return None
+    if shape == "object":
         return ACCEPTANCE_SESSION_OUTPUT_SCHEMA
     if surface == "plan_review":
         # plan review's own element contract (4e133c8a): the generic item/verdict shape
@@ -1131,7 +1135,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
 
     def _output_contract(self) -> str:
         contract = str((self.assignment.request.policy or {}).get("output_contract") or "")
-        return contract or REVIEW_JSON_ARRAY_CONTRACT
+        return contract or default_output_contract(review_output_shape(self.assignment.request.surface))
 
     def prompt_payload(self) -> Dict[str, Any]:
         return {"session_prompt": self.session_prompt}
