@@ -19,6 +19,7 @@ from starlette.responses import FileResponse, JSONResponse
 
 from ouroboros.gateway._helpers import coerce_int, json_error, json_exception, request_drive_root, request_json_or, request_repo_dir, stage_initial_task_attachments
 from ouroboros.depth_evidence import parse_task_depth
+from supervisor.log_addressing import ingress_chat_id
 # Re-exported SSE surface (split out by the 1600-line module gate): route
 # wiring, the CLI, and long-standing monkeypatch pins address these names on
 # gateway.tasks; task_events resolves its patched collaborators back through
@@ -311,6 +312,7 @@ def _complete_api_task_admission(
         "session_id": task.get("session_id"),
         "actor_id": task.get("actor_id"),
         "delegation_role": task.get("delegation_role"),
+        "chat_id": task.get("chat_id"),
         "project_id": project_id,
         "description": description,
         "context": task.get("context"),
@@ -473,7 +475,7 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     if workspace_root and task_type != "task":
         return json_error("external workspace tasks must use type='task'", 400)
     try:
-        chat_id = int(body.get("chat_id") if body.get("chat_id") is not None else 0)
+        chat_id = ingress_chat_id(body.get("chat_id"), drive_root, _task_project_id)
         depth = parse_task_depth(body.get("depth"), default=0)
     except (TypeError, ValueError) as exc:
         return json_error(

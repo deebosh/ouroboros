@@ -821,7 +821,10 @@ def enqueue_project_completion_summary(
             drive_root, tid, task=task, result=result,
             project_id=str(result.get("project_id") or task.get("project_id") or ""),
         )
-        if not snapshot["project_id"]:
+        if not snapshot["project_id"] or not snapshot["project_registered"]:
+            # Owner decision 3A: a run whose project id was DERIVED from a
+            # workspace has no room, so Main stays silent instead of offering an
+            # "Open Project" that lands in an empty duplicate of itself.
             return False
         excerpt = _completion_excerpt(result)
         event = {

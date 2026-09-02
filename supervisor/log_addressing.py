@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID
+
 log = logging.getLogger(__name__)
 
 
@@ -37,6 +39,35 @@ def bound_project_chat_id(ctx: Any, task_id: Any, parent_task_id: Any = "", root
     return resolve_project_chat(
         getattr(ctx, "DRIVE_ROOT", None), task_id, parent_task_id, root_task_id
     )
+
+
+def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "") -> int:
+    """The address a headless/API task is admitted with (ingress capture rule).
+
+    An explicit id wins verbatim, ``HIDDEN_CHAT_ID`` included: 0 is a real
+    session, never "missing" — the same rule ``address_task_event`` enforces at
+    runtime. A malformed explicit value raises, so the caller keeps its typed
+    400. Otherwise a run scoped to a REGISTERED project is admitted into that
+    project's thread, so its dialogue, children and answer live in the room the
+    owner already opened; anything else (no project, or a workspace-derived id
+    with no registry row) stays in the hidden partition, where an unknown
+    positive id would instead leak into Main. Lifecycle is NOT consulted here:
+    ``queue.enqueue_task`` fences a non-active project before an address can
+    matter, and a project deleted mid-run keeps its reserved chat.
+    """
+    if raw_chat_id is not None:
+        return int(raw_chat_id)
+    pid = str(project_id or "").strip()
+    if pid:
+        try:
+            from ouroboros.projects_registry import get_reserved_project
+
+            row = get_reserved_project(drive_root, pid) or {}
+            if row.get("chat_id") is not None:
+                return int(row["chat_id"])
+        except Exception:
+            log.debug("ingress project chat lookup failed for %s", pid, exc_info=True)
+    return HIDDEN_CHAT_ID
 
 
 def address_task_event(running: Any, drive_root: Any, payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -552,7 +552,7 @@ def _bounded_presentation_name(value: Any, *, fallback: str = "") -> str:
 
 
 def task_presentation_snapshot(drive_root: Any, task_id: str, *, task: Any = None,
-                               result: Any = None, project_id: str = "") -> Dict[str, str]:
+                               result: Any = None, project_id: str = "") -> Dict[str, Any]:
     tid = str(task_id or "").strip()
     sources = [row for row in (task, result) if isinstance(row, dict)]
     if tid:
@@ -580,8 +580,14 @@ def task_presentation_snapshot(drive_root: Any, task_id: str, *, task: Any = Non
         binding = project_binding_for_task(drive_root, tid) or {}
         pid = str(binding.get("project_id") or "").strip()
     pname = ""
+    registered = False
     if pid:
+        # ONE registry read serves both the display name and the additive
+        # ``project_registered`` fact: a workspace-derived proj_<hash> is
+        # project-SCOPED without having a room, and a producer that announces it
+        # would point the owner at a project that does not exist.
         project = get_reserved_project(drive_root, pid) or {}
+        registered = bool(project)
         pname = _bounded_presentation_name(project.get("name"))
     if pname == pid:
         pname = ""
@@ -597,7 +603,7 @@ def task_presentation_snapshot(drive_root: Any, task_id: str, *, task: Any = Non
             break
     task_name = task_name or "Task"
     return {"project_id": pid, "project_name": pname, "task_id": tid,
-            "task_name": task_name,
+            "project_registered": registered, "task_name": task_name,
             "target_label": f"{pname} › {task_name}" if pname else task_name}
 
 

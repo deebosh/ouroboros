@@ -147,6 +147,27 @@ prefer provider-settled usage, and otherwise preserve `cost=None` and
 `cost_final=false`. Unknown price is neither free nor a model-admission veto;
 known exhausted budget remains enforceable.
 
+### Anti-pattern: a chat id tested for truth (v6.115.0)
+
+A chat id is a VALUE, not a boolean. `HIDDEN_CHAT_ID` (0) is the hidden
+partition — the Skill Review panel plus every headless task admitted without a
+registered project — and it is a REAL destination that no browser surface reads.
+Absence is `None`, and a negative id is synthetic A2A traffic. `if chat_id:`
+therefore does two wrong things at once: it drops a partition-bound notice AND
+re-routes hidden work to the owner's main chat. That single habit is what made a
+whole `ouroboros run` invisible while its children surfaced in Main as a nameless
+card, and it recurred across two dozen sites because each one re-invented the
+test.
+
+Use the two normalizers instead of a third: `message_bus.notification_chat_route`
+answers "where does this notice go" (first DELIVERABLE candidate, `None` when
+none is), and `message_bus.coerce_chat_identity` answers "what is this row's
+address" (explicit value kept, absence defaulted). Address a headless task once,
+at admission (`log_addressing.ingress_chat_id`), and pass it downstream by value
+— the ingress-capture rule below, applied to routing. `tests/test_chat_id_truthiness_guard.py`
+is the source lint that keeps the class closed; its allowlist is where a
+deliberate exception states its reason.
+
 ### Anti-pattern: content-derived identity for host-minted records (v6.73.0)
 
 If the host itself created a record — a chat message, a task, a binding — its

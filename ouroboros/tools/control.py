@@ -1478,7 +1478,9 @@ def _populate_subagent_event_extras(
 ) -> None:
     """Add the optional fields of a schedule_subagent event in place (extracted from
     _schedule_task to keep it under the method gate; pure field assignment)."""
-    if current_chat_id:
+    # Membership, not truthiness (C4): 0 is the hidden partition — a real
+    # address the consumer must not re-route — so only absence stays absent.
+    if current_chat_id is not None:
         evt["chat_id"] = current_chat_id
     if child_drive is not None:
         evt["drive_root"] = str(child_drive)
@@ -2084,7 +2086,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             allowed_resources=allowed_resources,
             task_contract=child_contract,
             required_capabilities=required_caps,
-            chat_id=current_chat_id or None,
+            chat_id=current_chat_id,
             memory_mode=memory_mode,
             drive_root=str(child_drive) if child_drive is not None else "",
             child_drive_root=str(child_drive) if child_drive is not None else "",
