@@ -1818,6 +1818,14 @@ Before every commit, verify the following:
   because it would contradict the required disposition tool call. Before the
   first reminder places the hold, no disposition instruction exists yet, so
   the ordinary evidence-change arm still applies there.
+- A host-bound (non-subagent) task must not turn a fresh prose turn into the
+  terminal delivery candidate while the tracked files its own coding-tool
+  effects touched are still uncommitted. Up to `_MAX_UNCOMMITTED_DELIVERY_NUDGES`
+  (4) bounded `[UNCOMMITTED_WORK]` reminders are allowed (call `commit_reviewed`,
+  or discard with `vcs_restore`); after that, finalization proceeds unchanged
+  and the run finalizes `work_uncommitted` → `STATUS_FAILED`. Read-only probe
+  (`git status --porcelain`), fail-open, and the attributed-path intersection
+  keeps a concurrent task's dirt on the shared tree from counting.
 
 #### Page Header Layout
 - Top-level page chrome (`renderPageHeader`, tab strips, primary actions) must sit outside the scrolling content region.

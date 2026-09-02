@@ -38,6 +38,7 @@ from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
 from ouroboros.config import adaptive_quorum, get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode, resolve_effort
 from ouroboros.outcomes import ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_DELIVERY_CONTROL_DEGRADED, REASON_OWNER_REQUESTED_FINALIZATION, RESULT_INFRA_FAILED, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects
 from ouroboros.observability import new_execution_id
+from ouroboros.work_uncommitted import withhold_prose_for_uncommitted_work
 # Protocol leaf keeps historical names importable at this module's size ceiling.
 from ouroboros.delivery_protocol import (
     CHILD_ABSORPTION_HOLD_CONTROL as _CHILD_ABSORPTION_HOLD_CONTROL,
@@ -3983,6 +3984,10 @@ def _no_tool_final_answer(
     content = controlled_content
     _project_child_result_dispositions(limit_ctx, llm_trace)
     if control_state == "fresh" and str(content or "").strip():
+        if withhold_prose_for_uncommitted_work(
+            tools, messages, llm_trace, str(content), emit_progress,
+        ):
+            return None
         candidate = _replace_delivery_candidate(
             tools, limit_ctx, llm_trace, str(content), control="candidate",
         )
