@@ -274,6 +274,25 @@ def test_run_headless_main_exits_nonzero_when_lifecycle_thread_dies(monkeypatch)
     assert "release_pid_lock" not in order
 
 
+def test_run_headless_main_crash_fuse_survives_event_set_during_stop_agent(monkeypatch):
+    """A signal landing while stop_agent() runs must not relabel a crash-fuse
+    exit as a requested shutdown: reason and exit code come from one read."""
+    import launcher
+
+    order = []
+    event = _FakeEvent(initially_set=False)
+    monkeypatch.setattr(launcher, "_shutdown_event", event)
+    _stub_headless_teardown(monkeypatch, launcher, order)
+    monkeypatch.setattr(launcher, "stop_agent", lambda: (order.append("stop_agent"), event.set()))
+    dead_thread = types.SimpleNamespace(is_alive=lambda: False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        launcher._run_headless_main("http://127.0.0.1:8765", 8765, dead_thread)
+
+    assert excinfo.value.code == 1
+    assert order[-1] == ("kill_orphans", 8765, "crash_fuse")
+
+
 # ---------------------------------------------------------------------------
 # 4. Signal handlers: platform-layer registration, install-before-lifecycle
 # ---------------------------------------------------------------------------
