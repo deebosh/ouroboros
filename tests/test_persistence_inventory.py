@@ -79,6 +79,21 @@ SUBROOT_ALIASES = {
     # skill_state_dir[_path](drive_root, skill.name).
     "jobs/*": "state/skills/*/jobs/*",
     "jobs/*/*": "state/skills/*/jobs/*/*",
+    # sweep_uninstalled_skill_state (skill_uninstall_state.py:65) writes
+    # `state_dir / UNINSTALL_TOMBSTONE_FILENAME` for each entry of its own
+    # `drive_root / "state" / "skills"` listing, and write_uninstall_tombstone
+    # (:39) spells the SAME file as `skill_state_dir(drive_root, name) /
+    # UNINSTALL_TOMBSTONE_FILENAME` — which the scan already resolves to the
+    # aliased path, so the two spellings collapse onto one entity.
+    "uninstalled.json": "state/skills/*/uninstalled.json",
+    # _stage_extension_import_tree (extension_import_staging.py:84-88) builds
+    # `state_dir / "__extension_imports" / f"{pid}-{uuid}"` plus its `skill`
+    # subtree; its ONE caller (extension_loader.py:649) passes the
+    # `state_dir = skill_state_dir(drive_root, skill.name)` bound at :581, and
+    # the sweep (:120) spells the same directory through skill_state_dir.
+    "__extension_imports/*-*": "state/skills/*/__extension_imports/*-*",
+    "__extension_imports/*-*/skill": "state/skills/*/__extension_imports/*-*/skill",
+    "__extension_imports/*-*/skill/*": "state/skills/*/__extension_imports/*-*/skill/*",
 }
 
 # The same human promise for a parameter whose NAME is the audited root, read
@@ -505,7 +520,11 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # see, and resolving them (module-scope local flow for the stdlib rotating
 # handlers, ``PARAM_SUBROOTS`` for the oversized-task-text sink) added
 # ``logs/server.log``, ``logs/launcher.log`` and ``logs/tasks/*``.
-EXPECTED_SCAN_PATHS = 284
+# 284 -> 283: aliasing the parameter-rooted ``uninstalled.json`` onto
+# ``state/skills/*/uninstalled.json`` merged it with the spelling the scan
+# already resolved; the three ``__extension_imports`` spellings moved plane
+# without changing count.
+EXPECTED_SCAN_PATHS = 283
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -817,3 +836,21 @@ def test_parent_of_a_helper_returned_path_is_a_named_root():
     """
     paths = scan_data_paths()
     assert "state/reviewer_slot_api_fallback.json" in paths
+
+
+def test_no_parameter_rooted_spelling_lands_at_the_data_ROOT():
+    """A path whose root came in as a parameter must not read as top-level.
+
+    ``state_dir`` matches ``DATA_ROOT_MARKERS``, so a chain hanging off it is
+    correctly seen as data-relative but WRONGLY placed at the data root:
+    ``uninstalled.json`` and the ``__extension_imports/*-*`` family are
+    per-skill state under ``state/skills/<name>/``. At the root they were
+    certified by the basename / bare-token fallbacks — covered by accident,
+    documented nowhere they actually live. Every such spelling belongs in
+    ``SUBROOT_ALIASES`` with its call-site audit.
+    """
+    misrooted = sorted(
+        path for path in scan_data_paths()
+        if path.split("/")[0] in {"uninstalled.json", "__extension_imports"}
+    )
+    assert not misrooted, f"parameter-rooted spellings left at the data root: {misrooted}"
