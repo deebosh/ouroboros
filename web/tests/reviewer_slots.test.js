@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { createClaudexorStatusStore } from '../modules/claudexor_status_store.js';
 import { serviceBannerLine } from '../modules/harness_accounts.js';
+import { renderSettingsPage } from '../modules/settings_ui.js';
 
 import {
     API_ROUTE_CHOICE,
@@ -14,6 +15,7 @@ import {
     capabilityBadge,
     composeSessionTarget,
     decodeRouteChoice,
+    deepReviewDeliveryNote,
     describeLastExecution,
     describeSubagentReference,
     encodeRouteChoice,
@@ -76,6 +78,80 @@ test('the category table is the one driver of the multi-row editor and matches i
     }
     assert.equal(CATEGORIES.scope.surfaceDefault, 'scope review effort');
     assert.equal(CATEGORIES.triad.surfaceDefault, 'review effort');
+});
+
+test('the deep self-review row rides the composed setting on the shared vocabulary (R6/R7)', () => {
+    const base = {
+        triad: [{ slot_id: 't1', route: { kind: ROUTE_KIND_API, target_id: 'openai/x' }, effort: '' }],
+        scope: [{ slot_id: 's1', route: { kind: ROUTE_KIND_API, target_id: 'openai/y' }, effort: '' }],
+        advisory: { enabled: true, route: { kind: ROUTE_KIND_API, target_id: '' }, effort: 'low' },
+    };
+    // Legacy callers that know nothing about the singleton keep their bytes:
+    // no `deep_review` key is ever invented.
+    assert.equal('deep_review' in JSON.parse(buildReviewerSlotsSetting(base)), false);
+
+    // A direct api row: the packed review. '' effort is OMITTED (the
+    // Behavior-tab deep effort keeps deciding); the synthesized label and the
+    // fixed identity never reach the saved bytes.
+    const api = JSON.parse(buildReviewerSlotsSetting({
+        ...base,
+        deepReview: { route: { kind: ROUTE_KIND_API, target_id: 'openai/gpt-5.6-sol-pro' }, effort: '',
+                      subagent_id: '', synthesizedFrom: 'OUROBOROS_MODEL_DEEP_SELF_REVIEW' },
+    }));
+    assert.deepEqual(api.deep_review, { route: { kind: 'api_chat', target_id: 'openai/gpt-5.6-sol-pro' } });
+    assert.doesNotMatch(JSON.stringify(api), /synthesized|slot_id":"deep|enabled":true,"route":\{"kind":"api_chat","target_id":"openai\/gpt-5\.6-sol-pro/);
+
+    // A session row keeps its pin and an explicit effort.
+    const session = JSON.parse(buildReviewerSlotsSetting({
+        ...base,
+        deepReview: { route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-5.6-sol', profile_id: 'koshak' }, effort: 'xhigh', subagent_id: '' },
+    }));
+    assert.deepEqual(session.deep_review, {
+        route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-5.6-sol', profile_id: 'koshak' }, effort: 'xhigh',
+    });
+
+    // A configured-subagent reference carries no route knobs (decision 5A).
+    const ref = JSON.parse(buildReviewerSlotsSetting({
+        ...base,
+        deepReview: { subagent_id: 'deep-critic', route: { kind: ROUTE_KIND_API, target_id: 'stash' }, effort: '' },
+    }));
+    assert.deepEqual(ref.deep_review, { subagent_id: 'deep-critic' });
+});
+
+test('the deep self-review block says the ONE difference from the advisory where the owner picks', () => {
+    const markup = renderReviewerSlotsSection();
+    assert.match(markup, /<h4[^>]*>Deep self-review<\/h4>/);
+    assert.match(markup, /id="reviewer-deep-review-row"/);
+    // API model = one packed review here; the advisory's API model = inspection episode.
+    assert.match(markup, /receives ONE packed review/);
+    assert.match(markup, /unlike the advisory, whose API model runs an inspection episode/);
+    assert.match(markup, /native\s+inspection episode with host-observed reads/);
+    assert.match(markup, /reads not host-observed/);
+    assert.match(markup, /outranks the Behavior-tab deep\s+self-review effort/);
+
+    const roster = [
+        { subagent_id: 'api-critic', route: { kind: 'api_model', target_id: 'openai/gpt-5.6-terra' } },
+        { subagent_id: 'sess', route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-5.6-sol' } },
+    ];
+    assert.match(deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }), /One packed review/);
+    assert.match(deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }), /inspection episode instead/);
+    assert.match(deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }), /Native inspection episode/);
+    assert.match(deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }), /host-observed/);
+    assert.match(deepReviewDeliveryNote({ subagent_id: 'sess' }, { roster }), /Agent session .* not host-observed/);
+    const direct = deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_SESSION, target_id: 'codex' } }, { harnesses: { codex: { status: 'ok' } } });
+    assert.match(direct, /agent session — retrieves context with its own tools · route ok — reads not host-observed/);
+    // Absence claims follow provenance, as everywhere in this editor.
+    assert.match(deepReviewDeliveryNote({ subagent_id: 'gone' }, { roster }), /none exists with this ID/);
+    assert.match(deepReviewDeliveryNote({ subagent_id: 'gone' }, { roster: [], rosterKnown: false }), /could not be read/);
+});
+
+test('the Models tab no longer authors the deep self-review model (R7)', () => {
+    // The row lives in Review lanes; the key survives only as the backend's
+    // invisible migration source, so no Settings control writes it.
+    const page = renderSettingsPage();
+    assert.doesNotMatch(page, /s-deep-self-review-model|Deep Self-Review Model/);
+    assert.match(page, /id="s-websearch-model"/, 'the sibling field in Other Model Slots stays');
+    assert.match(page, /id="s-effort-deep-self-review"/, 'the Behavior-tab surface effort stays (the row effort outranks it)');
 });
 
 test('the standing note states the POLICY, never the current routing', () => {
