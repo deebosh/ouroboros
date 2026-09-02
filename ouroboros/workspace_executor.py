@@ -603,15 +603,17 @@ def _host_pid_matches_record(record: dict[str, Any]) -> bool:
         return False
     expected = str(record.get("host_command_sha256") or "").strip()
     if not expected:
-        # No command line could be captured at register time. This is always the
-        # case on Windows, where platform_layer.process_command() is POSIX-only
-        # and returns "". Without this fallback the record would be permanently
-        # unvalidatable, so kill_all_foreground/_services would never dispatch
-        # taskkill for it (the worktree/service cleanup leak). Fall back to a
-        # liveness check; owner/schema/id are already verified by the caller
-        # (_valid_process_record). The PID-reuse hardening via command-hash
-        # comparison still applies on POSIX, where a command line is available.
-        return pid_is_alive(host_pid)
+        # No command line could be captured at register time. On Windows that is
+        # ALWAYS the case (platform_layer.process_command() is POSIX-only), and
+        # without a fallback the record would be permanently unvalidatable, so
+        # kill_all_foreground/_services would never dispatch taskkill for it (the
+        # worktree/service cleanup leak): there, fall back to liveness — owner/
+        # schema/id are already verified by the caller (_valid_process_record).
+        # On POSIX a registered process always has a command line, so an empty
+        # hash is not ours to kill: liveness is NOT proof of ownership — EPERM
+        # reads alive (C6 round 5.4), so an owner-shaped forged record naming a
+        # foreign pid would otherwise be signalled. Fail safe: no hash, no kill.
+        return IS_WINDOWS and pid_is_alive(host_pid)
     return _process_command_sha256(host_pid) == expected
 
 
