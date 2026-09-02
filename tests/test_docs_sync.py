@@ -8,6 +8,9 @@ ARCHITECTURE.md pins below are the load-bearing rationale-layer guards
 
 import os
 import pathlib
+import re
+
+from ouroboros.tools.registry import ToolRegistry
 
 REPO = pathlib.Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -199,3 +202,85 @@ def test_architecture_mirror_matches_the_split_axes_contracts():
     # Both wait_tasks projection enumerations disclose capability_delta.
     assert "trace_summary, capability_delta when the child has something to disclose" in arch_flat
     assert "trace_summary, capability_delta when disclosable, duplicate_of" in dev_flat
+
+
+# Identifiers the prompts legitimately name in backticks that are NOT tools:
+# parameter names, resource roots, write surfaces, typed outcome/status tokens
+# and runtime-context keys. A NEW snake_case identifier in a prompt must either
+# be a real tool (or background-whitelisted tool) or be classified here on
+# purpose — that classification step is the governance the prompt audit wants:
+# a phantom or renamed tool name can no longer hide in the runtime prompts
+# (`advisory_review` and the CONSCIOUSNESS "You can" catalog rotted that way).
+# Scope: backticked names in all three prompts plus the bare snake_case names
+# CONSCIOUSNESS.md writes without backticks; BIBLE.md is deliberately out of scope.
+PROMPT_NON_TOOL_IDENTIFIERS = frozenset({
+    # resource roots / write surfaces / write roots
+    "active_workspace", "artifact_store", "external_workspace", "runtime_data",
+    "skill_payload", "subagent_projects", "system_repo", "task_drive", "user_files",
+    "write_root", "write_surface",
+    # tool parameters named as cross-tool policy
+    "project_id", "project_name", "recommended_use", "review_rebuttal",
+    # typed outcomes / statuses / runtime-context keys
+    "needs_manual_target", "started_uncustodied", "owner_client",
+    # safety policy class names (ouroboros/safety.py TOOL_POLICY values)
+    "check_conditional",
+})
+
+
+def _prompt_backticked_identifiers(text: str) -> set:
+    found = set()
+    for token in re.findall(r"`([^`]+)`", text):
+        head = token.split("(", 1)[0]
+        if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", head):
+            found.add(head)
+    return found
+
+
+def _prompt_bare_identifiers(text: str) -> set:
+    """snake_case tokens written WITHOUT backticks (CONSCIOUSNESS.md's style);
+    tokens that are part of a path or filename (`a/b_c`, `x_y.json`) are skipped."""
+    return {
+        m.group(1)
+        for m in re.finditer(r"(?<![\w/.`-])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?![\w/.`-])", text)
+    }
+
+
+def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
+    """Every backticked snake_case identifier in the three runtime prompts is
+    either a registered tool (public schema), a background-consciousness tool,
+    or a documented non-tool identifier. Completeness is deliberately NOT
+    required (the schemas are the catalog); this only forbids phantoms and
+    stale spellings, the drift class the prompt audit found in every prompt."""
+    from ouroboros.consciousness import BackgroundConsciousness
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
+    registered = {schema["function"]["name"] for schema in registry.schemas()}
+    # The background whitelist is not taken on faith: every name in it must be a
+    # registered public tool or a ToolEntry the consciousness module registers
+    # itself (set_next_wakeup and friends), otherwise the whitelist has rotted.
+    consciousness_src = (root / "ouroboros" / "consciousness.py").read_text(encoding="utf-8")
+    bg_private = set(re.findall(r'ToolEntry\("([a-z0-9_]+)"', consciousness_src))
+    stale_whitelist = set(BackgroundConsciousness._BG_TOOL_WHITELIST) - registered - bg_private
+    assert not stale_whitelist, f"_BG_TOOL_WHITELIST names unregistered tools: {sorted(stale_whitelist)}"
+    universe = (
+        registered
+        | set(BackgroundConsciousness._BG_TOOL_WHITELIST)
+        | PROMPT_NON_TOOL_IDENTIFIERS
+    )
+    for rel in ("prompts/SYSTEM.md", "prompts/SAFETY.md", "prompts/CONSCIOUSNESS.md"):
+        text = (root / rel).read_text(encoding="utf-8")
+        unresolved = _prompt_backticked_identifiers(text) - universe
+        assert not unresolved, (
+            f"{rel} names identifiers that are neither registered tools nor "
+            f"classified non-tool identifiers: {sorted(unresolved)}"
+        )
+    # CONSCIOUSNESS.md writes tool names without backticks; its bare snake_case
+    # tokens must resolve the same way (the runtime drift check in
+    # context_health only catches names with known prefixes).
+    bare = _prompt_bare_identifiers((root / "prompts" / "CONSCIOUSNESS.md").read_text(encoding="utf-8"))
+    unresolved_bare = bare - universe
+    assert not unresolved_bare, (
+        f"prompts/CONSCIOUSNESS.md names bare identifiers that are neither registered tools "
+        f"nor classified non-tool identifiers: {sorted(unresolved_bare)}"
+    )

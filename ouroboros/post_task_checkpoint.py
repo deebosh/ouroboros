@@ -69,16 +69,26 @@ def _parse_updated_at(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _delegated_receipt_counts(value: Any) -> tuple[int, int] | None:
+    if not isinstance(value, dict) or value.get("evidence_read_failed"):
+        return None
+    counts = (value.get("delegated_runs_started"), value.get("delegated_runs_settled"))
+    if any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in counts):
+        return None
+    return counts
+
+
 def project_replica_task_result_fields(
     canonical_fields: Dict[str, Any],
     replica_fields: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Return the replica overlay permitted over a canonical task result.
 
-    A terminal canonical post-task checkpoint owns only its synthesis fields
-    and the accounting snapshot written with that checkpoint. The replica
-    continues to own acceptance, result, review, and trace fields. ``updated_at``
-    is monotonic projection metadata only; it never selects field authority.
+    A terminal canonical post-task checkpoint owns its synthesis fields and
+    accounting snapshot. Canonical custody also retains non-regressing delegation
+    receipts and canonical-if-present reconciliation disclosures under the narrow
+    rules below. The replica continues to own acceptance, result, review, and trace fields.
+    ``updated_at`` is monotonic metadata only; it never selects field authority.
     """
     overlay = dict(replica_fields)
     canonical_checkpoint = canonical_fields.get("root_phase_checkpoint")
@@ -106,6 +116,61 @@ def project_replica_task_result_fields(
     if isinstance(canonical_fields.get("continuation_narrative"), dict):
         if str(canonical_fields["continuation_narrative"].get("text") or "").strip():
             overlay.pop("continuation_narrative", None)
+
+    # Write-side custody heals must survive both reducer consumers. A canonical
+    # absence still accepts the first replica value.
+    for field in (
+        "delegated_runs_unreconciled",
+        "delegate_terminal_reconciliation",
+    ):
+        if field in canonical_fields:
+            overlay.pop(field, None)
+
+    canonical_envelope = canonical_fields.get("subagent_envelope")
+    canonical_evidence = (
+        canonical_envelope.get("execution_evidence")
+        if isinstance(canonical_envelope, dict)
+        else None
+    )
+    if isinstance(canonical_evidence, dict) and canonical_evidence:
+        replica_envelope = overlay.get("subagent_envelope")
+        replica_evidence = (
+            replica_envelope.get("execution_evidence")
+            if isinstance(replica_envelope, dict)
+            else None
+        )
+
+        canonical_counts = _delegated_receipt_counts(canonical_evidence)
+        replica_counts = _delegated_receipt_counts(replica_evidence)
+        canonical_wins = not isinstance(replica_evidence, dict) or not replica_evidence
+        if isinstance(replica_evidence, dict) and replica_evidence:
+            canonical_wins = bool(
+                canonical_counts is not None
+                and (
+                    replica_counts is None
+                    or all(a >= b for a, b in zip(canonical_counts, replica_counts))
+                )
+            )
+        if canonical_wins:
+            merged_envelope = (
+                dict(replica_envelope)
+                if isinstance(replica_envelope, dict)
+                else dict(canonical_envelope)
+            )
+            merged_envelope["execution_evidence"] = dict(canonical_evidence)
+            canonical_substrate = str(
+                canonical_envelope.get("actual_substrate")
+                or canonical_fields.get("actual_substrate")
+                or ""
+            ).strip()
+            if canonical_substrate:
+                merged_envelope["actual_substrate"] = canonical_substrate
+                overlay["actual_substrate"] = canonical_substrate
+            if "native_contribution" in canonical_envelope:
+                merged_envelope["native_contribution"] = canonical_envelope[
+                    "native_contribution"
+                ]
+            overlay["subagent_envelope"] = merged_envelope
 
     canonical_updated_at = _parse_updated_at(canonical_fields.get("updated_at"))
     replica_updated_at = _parse_updated_at(overlay.get("updated_at"))

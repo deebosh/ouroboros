@@ -570,6 +570,7 @@ def _annotate_terminal_task_truth(
         }
         terminal_status_by_task: Dict[str, str] = {}
         terminal_truth_by_task: Dict[str, Dict[str, Any]] = {}
+        terminal_receipt_by_task: Dict[str, Dict[str, Any]] = {}
         legacy_child_meta_by_task: Dict[str, Dict[str, Any]] = {}
         suggested_name_by_task: Dict[str, str] = {}
         finalizing_tasks: set = set()
@@ -612,6 +613,24 @@ def _annotate_terminal_task_truth(
                 # resolves deprecated-wins and leaves under the honest names.
                 terminal_truth.update(carry_cost_meta(result))
                 terminal_truth_by_task[task_id] = terminal_truth
+                envelope = result.get("subagent_envelope")
+                evidence = (
+                    envelope.get("execution_evidence")
+                    if isinstance(envelope, dict)
+                    else None
+                )
+                if isinstance(evidence, dict) and evidence:
+                    receipt: Dict[str, Any] = {
+                        "execution_evidence": dict(evidence),
+                    }
+                    actual_substrate = str(
+                        envelope.get("actual_substrate")
+                        or result.get("actual_substrate")
+                        or ""
+                    ).strip()
+                    if actual_substrate:
+                        receipt["actual_substrate"] = actual_substrate
+                    terminal_receipt_by_task[task_id] = receipt
             suggested_name = str(result.get("suggested_name") or "").strip()
             if suggested_name:
                 suggested_name_by_task[task_id] = suggested_name
@@ -640,6 +659,8 @@ def _annotate_terminal_task_truth(
                 message["task_phase"] = "finalizing"
             if message.get("is_progress") and task_id in terminal_status_by_task:
                 message["task_terminal_status"] = terminal_status_by_task[task_id]
+                if latest_progress_by_task.get(task_id) is message:
+                    message.update(terminal_receipt_by_task.get(task_id) or {})
             is_summary = str(message.get("system_type") or "") == "task_summary"
             if is_summary or (
                 task_id not in summary_task_ids

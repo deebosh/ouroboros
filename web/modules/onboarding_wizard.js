@@ -1274,6 +1274,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         const modelsError = validateModelsStep();
         const reviewError = validateReviewStep();
         const budgetError = validateBudgetStep();
+        agentsStep?.noteSaveAttempt?.();
         const subagentsError = agentsStep?.validateSubagents?.()?.[0] || '';
         const previewError = agentsStep && !agentsStep.generatedPreviewReady
             ? (agentsStep.previewPending

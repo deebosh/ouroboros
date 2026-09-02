@@ -1208,10 +1208,10 @@ class BackgroundConsciousness:
         registry.register(ToolEntry("set_next_wakeup", {
             "name": "set_next_wakeup",
             "description": "Set how many seconds until your next thinking cycle. "
-                           "Default 300. Range: 60-3600.",
+                           f"Default 300. Range: {self._wakeup_min}-{self._wakeup_max} (clamped).",
             "parameters": {"type": "object", "properties": {
                 "seconds": {"type": "integer",
-                            "description": "Seconds until next wakeup (60-3600)"},
+                            "description": f"Seconds until next wakeup ({self._wakeup_min}-{self._wakeup_max})"},
             }, "required": ["seconds"]},
         }, _set_next_wakeup))
 

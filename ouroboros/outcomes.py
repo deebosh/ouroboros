@@ -132,8 +132,9 @@ BEST_EFFORT_REASON_CODES = frozenset({
 })
 
 # Typed final-answer protocol marker (machine-readable deliverable payload,
-# separate from reasoning prose). The agent is instructed in SYSTEM.md to end
-# short-deliverable answers with this exact line.
+# separate from reasoning prose). Since v6.60.0 the instruction to end a
+# short-deliverable answer with this exact line comes from the per-task
+# contract (answer_protocol="final_answer_line"), never from prompts/SYSTEM.md.
 FINAL_ANSWER_MARKER = "FINAL ANSWER:"
 
 OUTCOME_TIER_SOLVED = "solved"

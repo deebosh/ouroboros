@@ -949,7 +949,7 @@ def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("start_service", {
             "name": "start_service",
-            "description": "Start a task-scoped long-running service and return pid/readiness/state.",
+            "description": "Start a task-scoped long-running service and return pid/readiness/state. In runtime_mode=light a service whose cwd is the Ouroboros repository is refused (LIGHT_MODE_BLOCKED): pass an explicit external/task/artifact cwd.",
             "parameters": {"type": "object", "properties": {
                 "cmd": {"type": "array", "items": {"type": "string"}},
                 "cwd": {

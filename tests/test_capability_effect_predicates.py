@@ -9,10 +9,10 @@ A7: git read-only classification is one SSOT with mode parsers, gh is argv-parse
 
 import textwrap
 
-from tests._typed_guard_shared import _shell_guard_text
 import pytest
 
 from ouroboros.shell_parse import sudo_noninteractive_violation
+from ouroboros.tools import registry_guard_process
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ def _registry(tmp_path):
 def test_skill_state_pure_read_inspection_is_allowed(tmp_path, cmd):
     # The runtime_data file plane explicitly allows reading review.json; the
     # shell plane must not refuse the same read with a WRITE-named marker.
-    blocked = _shell_guard_text(_registry(tmp_path), {"cmd": cmd}, "advanced")
+    blocked = registry_guard_process._run_shell_safety_check(_registry(tmp_path), {"cmd": cmd}, "advanced")
     assert blocked is None
 
 
@@ -80,8 +80,9 @@ def test_skill_state_pure_read_inspection_is_allowed(tmp_path, cmd):
     'python -c "open(\'data/state/skills/w/enabled.json\', \'w\').write(\'{}\')"',
 ])
 def test_skill_state_write_shapes_stay_blocked(tmp_path, cmd):
-    blocked = _shell_guard_text(_registry(tmp_path), {"cmd": cmd}, "advanced")
-    assert blocked is not None and "SKILL_STATE_WRITE_BLOCKED" in blocked
+    blocked = registry_guard_process._run_shell_safety_check(_registry(tmp_path), {"cmd": cmd}, "advanced")
+    # v7 D02: the guard returns a typed ToolResult; the code is the contract.
+    assert blocked is not None and blocked.code == "SKILL_STATE_WRITE_BLOCKED"
 
 
 # ---------------------------------------------------------------------------
@@ -214,16 +215,22 @@ def test_glued_dash_c_selects_the_same_base_as_split(tmp_path):
     runtime.mkdir()
     outside = tmp_path / "proj"
     outside.mkdir()
-    # POSIX spellings: the predicate parses the command with shlex, which eats
-    # Windows backslashes (pre-existing, upstream-owned residual).
-    for spelling in (f"git -C {runtime.as_posix()} commit -m x", f"git -C{runtime.as_posix()} commit -m x"):
+    # argv lists, not f-strings: the POSIX lexer eats the backslashes of a
+    # Windows path inside a shell STRING (3-OS CI matrix rule).
+    for spelling in (
+        ["git", "-C", str(runtime), "commit", "-m", "x"],
+        ["git", f"-C{runtime}", "commit", "-m", "x"],
+    ):
         assert external_workspace_git_violation(
             spelling,
             active_root=outside,
             cwd=str(outside),
             protected_roots=[runtime],
         ), spelling
-    for spelling in (f"git -C {outside.as_posix()} commit -m x", f"git -C{outside.as_posix()} commit -m x"):
+    for spelling in (
+        ["git", "-C", str(outside), "commit", "-m", "x"],
+        ["git", f"-C{outside}", "commit", "-m", "x"],
+    ):
         assert external_workspace_git_violation(
             spelling,
             active_root=outside,

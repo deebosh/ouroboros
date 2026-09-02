@@ -5,8 +5,6 @@ An unparseable marker used to be left in place forever, latching
 Boot now quarantines it aside byte-intact (evidence survives, the latch does
 not) unless MERGE_HEAD shows the marker may cover a live merge."""
 
-import os
-
 import pytest
 
 from supervisor import update_candidate, update_merge
@@ -72,7 +70,6 @@ def test_active_valid_tx_still_closes_admission(tmp_path, monkeypatch):
     assert workers.repo_writer_admission_closed() == "managed_update_tx:assisted_resolution"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="chmod(0) does not deny reads on Windows; the unreadable-marker probe is POSIX-only")
 def test_unreadable_marker_is_left_in_place_fail_closed(tmp_path, monkeypatch):
     """#447 S2: "corrupt" conflates unreadable with unparseable. A marker that
     cannot be READ may still be a valid live transaction — boot must not
@@ -87,6 +84,11 @@ def test_unreadable_marker_is_left_in_place_fail_closed(tmp_path, monkeypatch):
     marker = update_merge._update_tx_marker_path()
     marker.write_text('{"phase": "assisted_resolution", "task_id": "x"}', encoding="utf-8")
     os.chmod(marker, 0)
+    if os.access(marker, os.R_OK):
+        # Windows ACLs (and root on POSIX) keep a mode-0 file readable: the
+        # unreadable precondition cannot be staged on this host.
+        os.chmod(marker, 0o644)
+        pytest.skip("host cannot make the marker unreadable (Windows / root)")
     try:
         res = update_merge.finalize_managed_update_on_boot()
     finally:

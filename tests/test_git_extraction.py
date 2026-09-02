@@ -114,7 +114,7 @@ def test_git_catalog_schema_bytes_and_handler_owners_are_stable():
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "7650c07ea4841bdced36cb41921db772b452c02745b4cc48bcf72a6af15cee63"
+        "729fdf1425126168c7408e431611f70ddd11139fa1c4161628fbcec7a27bf8ec"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)
