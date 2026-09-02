@@ -997,6 +997,7 @@ def _call_scope_llm(
     for both deliveries (5.3)."""
     from ouroboros.config import resolve_effort as _resolve_effort
     from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
+    from ouroboros.tools.review import _owner_deadline_at
 
     scope_model = scope_model or _get_scope_model()
     # 6.1/6.3: the row's own effort wins; the global key stays the default.
@@ -1046,6 +1047,7 @@ def _call_scope_llm(
             session_task=session_task if retrieves else "",
             session_root=session_root if retrieves else "",
             reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
+            deadline_at=_owner_deadline_at(ctx),
             # The extraction fallback canonicalizes to the SCOPE contract: required-
             # matrix shape, eight verbatim item ids (D19 — never a looser contract).
             policy=(

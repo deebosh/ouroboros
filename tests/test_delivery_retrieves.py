@@ -21,6 +21,26 @@ def test_predicate_accepts_route_kind_or_wire_string():
     assert delivery_retrieves(None, "") is False
 
 
+def test_owner_deadline_reaches_the_triad_and_scope_requests():
+    """R23: the owner deadline is a bound of every retrieving episode, so the
+    commit triad and scope requests carry the task's deadline_at exactly as
+    the advisory does; a context without one yields ''."""
+    from types import SimpleNamespace
+
+    from ouroboros.tools.review import _owner_deadline_at
+
+    ctx = SimpleNamespace(task_metadata={"deadline_at": "2030-01-01T00:00:00Z"})
+    assert _owner_deadline_at(ctx) == "2030-01-01T00:00:00Z"
+    assert _owner_deadline_at(SimpleNamespace(task_metadata={})) == ""
+    assert _owner_deadline_at(SimpleNamespace()) == "" and _owner_deadline_at(None) == ""
+    import inspect
+
+    from ouroboros.tools import review as review_mod, scope_review as scope_mod
+
+    assert "deadline_at=_owner_deadline_at(ctx)" in inspect.getsource(review_mod._query_model)
+    assert "deadline_at=_owner_deadline_at(ctx)" in inspect.getsource(scope_mod._call_scope_llm)
+
+
 def test_slot_properties_and_plan_review_facade_share_the_predicate():
     api = ReviewSlot(slot_id="t1", model="m", effort="low")
     native = ReviewSlot(slot_id="t2", model="m", effort="low", subagent_id="api-critic")

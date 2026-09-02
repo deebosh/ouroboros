@@ -383,6 +383,12 @@ def _review_output_budget() -> int:
     return max(8192, min(raw, 65536))
 
 
+def _owner_deadline_at(ctx: Any) -> str:
+    """The task's owner deadline (ISO text) from the tool context, or ''."""
+    metadata = getattr(ctx, "task_metadata", None) if ctx is not None else None
+    return str(metadata.get("deadline_at") or "") if isinstance(metadata, dict) else ""
+
+
 async def _query_model(
     llm_client: LLMClient,
     model: str,
@@ -427,6 +433,9 @@ async def _query_model(
                 task_attempt=getattr(ctx, "task_attempt", None) if ctx is not None else None,
                 retry_key=str(retry_key or ""),
                 reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
+                # The owner deadline is a bound of every retrieving episode; it
+                # reaches the row here exactly as the advisory passes it.
+                deadline_at=_owner_deadline_at(ctx),
             )
             slot = ReviewSlot(
                 slot_id=slot_id,
