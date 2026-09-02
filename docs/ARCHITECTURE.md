@@ -2998,26 +2998,35 @@ resolves the exact route the loop runs from `apply_runtime_provider_defaults(loa
 rather than from the owner-raw document (a direct-provider install with no explicit model
 has no main slot at all outside that normalization).
 
-Three surfaces persist THIS process's settings document: `config.save_settings()`,
+Five functions persist a settings document, and every one of them calls
+`serialize_settings()` and commits its output through a byte-exact helper
+(`utils.write_text_atomic()`, or `Path.write_bytes` on the config saver's rename-less
+`OSError` fallback) — never a text-mode write, which would turn LF into CRLF on Windows.
+Three of them persist THIS process's document through `prepare_settings_for_persist()` —
+the single point where the disk-authored silence rule and the owner-only context/safety
+ratchets are enforced against the value ON DISK: `config.save_settings()`,
 `gateway/owner_settings._owner_update_settings()` (which `_owner_write_settings()` is one
-caller of), and the packaged bootstrap's `packaged_cli._save_settings()`. All three pass
-through `prepare_settings_for_persist()` — the single point where the disk-authored
-silence rule and the owner-only context/safety ratchets are enforced against the value
-ON DISK — and all three commit `serialize_settings()` output through
-`utils.write_text_atomic()`, which encodes UTF-8 without translating newlines. Both halves
-are needed for the one-spelling claim to hold on every platform: one serializer settles
-`ensure_ascii` and the indent, and the byte-exact commit stops the text-mode writers from
-emitting CRLF on Windows for the LF the third wrote. The inventory is pinned over
-`ouroboros/**`, `supervisor/**`, `server.py` and the repo-root `launcher.py` (whose
-`_save_settings` delegates to `config.save_settings`); a function enters that scan by
-naming `SETTINGS_PATH` or the settings file, by calling `serialize_settings()`, or by
-carrying "settings" in its own name, and it counts as routed only when it CALLS the
-prologue — naming it in prose is not routing. Two writers are exempt from the prologue by
-design and pinned as such: the one-window raw context-pair migration (written under the
-load lock, raw mapping plus the normalized pair, never a defaults-merged document) and
+caller of), and the packaged bootstrap's `packaged_cli._save_settings()`. Two are exempt
+from the prologue by design and pinned as such: the one-window raw context-pair migration
+(`context_mode_compat.normalize_and_persist_context_mode_compat()`, written under the load
+lock: the raw mapping with only the pair changed, never a defaults-merged document) and
 `colab_bootstrap.write_colab_settings()`, which writes the generated document for the
-Drive data root — a foreign path the prologue's on-disk proofs would answer wrongly for —
-in `serialize_settings()` bytes.
+Drive data root — a foreign path the prologue's on-disk proofs would answer wrongly for.
+Both halves are needed for the one-spelling claim to hold on every platform: one
+serializer settles `ensure_ascii`, the indent and the absent trailing newline, and the
+byte-exact commit keeps the newlines it wrote. The inventory is closed over
+`ouroboros/**`, `supervisor/**`, `server.py` and the repo-root `launcher.py` (whose
+`_save_settings` delegates to `config.save_settings`) by one scan
+(`tests._shared.settings_writers`, whose closed set is the list
+`tests._shared.SETTINGS_WRITERS` the byte pin drives): a function is a settings writer
+when it CALLS `serialize_settings()`, or when it names
+the settings path or file (`SETTINGS_PATH`, a `settings_path` parameter, `settings.json`)
+or carries "settings" in its own name AND does a write-shaped thing — a `.write_text`,
+`.write_bytes`, `.write` or `json.dump` call, or one of the atomic helpers. It counts as
+routed only when it CALLS the prologue; naming either in prose is neither. The flagged
+set must equal the five writers plus the scan's declared non-writer matches, so a sixth
+writer anywhere in those roots fails the tripwire whether or not it is routed, and the
+byte pin drives all five through their real entry points and pins the spelling itself.
 
 An owner endpoint changes one decision inside a document it does not otherwise own, so it
 must write the whole document back. `_owner_update_settings(transform, expected_digest)`

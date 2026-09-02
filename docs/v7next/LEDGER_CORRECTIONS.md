@@ -6572,3 +6572,136 @@ pure relocation, row 913, is byte-identical and needed no tool proof).
     behaviour, kept deliberately and now byte-exact. (d) The stub in 29(a) is this
     lane's pin only; the same unstubbed boot thread in the pre-existing extension
     lifespan tests is not this lane's to change.
+
+### Fix round 4 (review findings on the lane, same base 1072a317)
+
+35. The context-pair migration commits the one serializer's bytes (MEDIUM) — LANDED.
+    `context_mode_compat.normalize_and_persist_context_mode_compat` wrote
+    `atomic_write_json(settings_path, normalized, trailing_newline=False)`, whose text is
+    `utils.atomic_write_json`'s own `json.dumps` — the parallel-authority shape item 25 removed
+    from the owner writer, one file over. Item 25's "'one serializer' is the code rather than
+    two spellings pinned equal", the seam file's "the byte/mechanism pin proves all five put the
+    same spelling on disk" and config.py's "every one of them commits through
+    `write_text_atomic`" were therefore true only while nobody changed the serializer, and
+    unpinned: on a `410613f7` export the serializer mutated to append `\n` left the whole seam
+    family green while `config.save_settings` and the migration wrote two spellings of the same
+    file (the round-3 verdict's proof, reproduced here). It now writes
+    `write_text_atomic(settings_path, serialize_settings(normalized))`, the serializer bound
+    late inside the function because `config` imports this module. Bytes are unchanged today
+    (both spellings were `json.dumps(..., ensure_ascii=False, indent=2)` with no trailing
+    newline). Adapted patch sites: the two write-failure injectors in
+    tests/test_settings_budget_hotreload.py patch `context_mode_compat.write_text_atomic`.
+36. One writer predicate, closed over the tree, seeing a plain-handle write (one MEDIUM per
+    lens) — LANDED. The two scans had drifted into two predicates: the tripwire's regex (five
+    spellings, `json.dump`, no `os.replace`, evaluated per function) and the seam inventory's
+    tuple (five spellings, `os.replace`, no `json.dump`, evaluated per CALL text, six
+    enumerated files). Neither saw `open(path, "w")` / `handle.write(...)`, so an unrouted
+    saver writing `SETTINGS_PATH` through a text-mode handle passed every pin — even appended to
+    `config.py`, the file both scans enumerate — and a ROUTED sixth writer outside the six files
+    passed both as well. Both scans now read `tests._shared.settings_writers`, one predicate in
+    the suite's existing shared-helper module (whose stated purpose this is; the seam file and
+    the giant tripwire file both SHRANK): a function is a writer when it CALLS
+    `serialize_settings` (a settings document by definition), or when it names the settings path
+    or file — `SETTINGS_PATH`, a `settings_path` parameter (the case-insensitive form retires the
+    tripwire's `atomic_write_json(settings_path` special case), the `settings.json` literal — or
+    carries "settings" in its own name AND does a write-shaped thing (`.write_text`,
+    `.write_bytes`, `.write`, `json.dump`, or an atomic helper). The tripwire additionally
+    asserts the flagged set EQUALS `tests._shared.SETTINGS_WRITERS` plus its declared non-writer
+    matches, so the inventory is closed over `ouroboros/**`, `supervisor/**`, `server.py` and
+    `launcher.py`, routed or not; the seam file's six-file inventory
+    (`test_the_three_settings_writers_are_exactly_these_three`) is deleted as the weaker copy.
+    On this tree the predicate flags exactly the same 7 functions (5 writers, 2 non-writer
+    matches) before and after item 35.
+37. The file-level prefilter (MEDIUM) — REMOVED rather than widened. The tripwire skipped any
+    module carrying none of `SETTINGS_PATH` / `atomic_write_json` / `settings.json`, so the
+    round-3 `serialize_settings(` trigger could never fire in such a module: the round-3
+    red-first row used `headless.py`, which carries a `settings.json` literal — the token that
+    admitted it — so the trigger it claimed to add was never exercised (reproduced: `cli.py`,
+    carrying none of the three, with an injected `_persist_owner_document` was blind). Both
+    verdicts' fix (one more token in the conjunction) would have been the instance; the class is
+    "a prefilter narrows the predicate", so the scan now parses every file. Affordable because
+    the function source is sliced by line numbers (`node.lineno..end_lineno`) instead of
+    `ast.get_source_segment`, which re-split the whole module per function: the tripwire runs
+    in 2.5s against the tree where the prefiltered scan took 13s.
+38. The mechanism half is a positive rule (one LOW per lens) — LANDED. `".write_text(" not in
+    body` denied one spelling; a packaged saver rewritten to commit through `open(tmp, "w")` +
+    `handle.write(...)` + `replace_atomic` passed it. The byte pin now `findall`s every
+    commit-shaped token in each writer's source (`write_text_atomic(`, `write_bytes_atomic(`,
+    `atomic_write_json(`, `.write_bytes(`, `.write_text(`, `.write(`, `json.dump(`, `open(`)
+    and requires the set to be non-empty and a subset of the byte-exact four.
+39. The byte pin drives all five writers, requires the serializer CALL, and pins the spelling
+    — LANDED. `test_all_three_writers_serialize_a_document_to_the_same_bytes` is now
+    `test_every_settings_writer_puts_the_one_serializers_bytes_on_disk`: it drives the config
+    saver, the locked owner writer, the packaged saver, the migration (a `load_settings` over
+    an ambiguous Low — the one read that writes) and the Colab generator through their real
+    entry points, compares each file to `serialize_settings(json.loads(file))` bytes, asserts
+    by AST that each entry of `SETTINGS_WRITERS` calls `serialize_settings`, applies item 38's
+    rule, and pins the spelling as a golden. The golden is deliberate and disclosed: once every
+    writer calls the serializer, the agreement assertions cannot see the serializer change at
+    all (after item 35 the round-3 mutation is green on every writer at once), and the spelling
+    — UTF-8, two-space indent, no trailing newline — is the choice the three spelling defects of
+    rounds 1-3 converged on and what the digest precondition, a pinned benchmark snapshot and
+    the migration's convergence observe. It is the one half of the pin that still reads the
+    serializer, and the one that makes the mutation red on the fixed tree.
+40. Wording matched to the code (LOWs) — LANDED. config.py's `serialize_settings` docstring:
+    "each of the five calls this function and commits through a byte-exact helper
+    (`write_text_atomic`, or `Path.write_bytes` on `save_settings`'s rename-less fallback)"
+    instead of "every one of them commits through `write_text_atomic`" (false for the config
+    saver's own `OSError` branch three lines below it). ARCHITECTURE's seam paragraph: five
+    writers, the three routed and the two exempt named, the byte-exact commit with its
+    fallback, the one predicate with BOTH halves of its AND stated, the closed-set rule. The seam
+    file's "Three write THIS process's document; the other two ..." comment and the deleted
+    inventory docstring ("No fourth writer ... all three") are gone with what they annotated; the
+    tripwire's exempt reason for the migration says "the raw document with only its context
+    compatibility pair changed, in serializer bytes". Round-1/2/3 table rows keep the old test
+    names as history.
+41. Red-first table, round 4 (isolated roots, `LC_ALL=C`; "old pins" = the `410613f7` export as
+    delivered, "new pins" = the round-4 test files; probe trees are `git archive` exports and
+    rsync copies under the lane scratch, never the worktree):
+
+    | pin / probe | pre-fix | post-fix |
+    |---|---|---|
+    | test_every_settings_writer_puts_the_one_serializers_bytes_on_disk, calls-the-serializer half | FAILED on the `410613f7` export with the new pins overlaid: "ouroboros/context_mode_compat.py::normalize_and_persist_context_mode_compat persists a settings document without calling the one serializer" | PASSED |
+    | the same pin, `serialize_settings` mutated to append `\n` | FAILED on the `410613f7` export at the migration's bytes (`b'...}' != b'...}\n'` — the round-3 verdict's two spellings, now caught); on the FIXED tree the same mutation fails at the golden ALONE ("the one on-disk spelling changed") with all five writers still agreeing | unmutated: PASSED |
+    | test_context_mode_compat_migration_write_failure_is_honest_and_nonfatal / ..._does_not_rewrite_unchanged_raw_pair (injector on `write_text_atomic`) | FAILED on the `410613f7` export: `AttributeError: ... has no attribute 'write_text_atomic'` — the module's write went through `atomic_write_json` | PASSED |
+    | P1 `config.py::save_settings_document` — unrouted, `SETTINGS_PATH.open("w")` + `fh.write(serialize_settings(...))` | old pins: 3 PASSED (blind); new tripwire: FAILED naming `('ouroboros/config.py', 'save_settings_document')` as unrouted | (injection removed) PASSED |
+    | P2 `cli.py::_persist_owner_document` — `write_text_atomic` + serializer in a module carrying none of the old prefilter tokens | old pins: 3 PASSED (blind); new tripwire: FAILED naming it | PASSED |
+    | P3 `headless.py::_seed_child_document` — neutral name, `open(path, "w")` + `handle.write(serialize_settings(...))` | old pins: 3 PASSED (blind); new tripwire: FAILED naming it | PASSED |
+    | P4 `packaged_cli._save_settings` committing through `open(tmp, "w")` + `handle.write` + `replace_atomic` | old mechanism pin: PASSED (blind); the two old scans went red only because the text-mode saver VANISHED from their inventory (`assert None is True`; the packaged writer missing from the six-file set) — the fail-open shape itself; new byte pin: FAILED "commits a settings document through ['.write(', 'open(']" | PASSED |
+    | P5 `headless.py::_seed_child_settings` — a ROUTED sixth writer (prologue + serializer + `write_text_atomic`) | old pins: 3 PASSED (blind, both scans); new tripwire: FAILED "the settings-writer inventory drifted: [('ouroboros/headless.py', '_seed_child_settings')]" | PASSED |
+    | tests/test_settings_read_seam.py, delivered 21-pin file | 14 FAILED on the `1072a317` export (the round-3 count of 15 minus the deleted six-file inventory pin; the renamed byte pin is among the 14) | 21 PASSED |
+
+42. Gates, round 4 (each a separate command, isolated root, `LC_ALL=C`): the targeted family
+    `tests/test_settings_read_seam.py` (21) + `test_runtime_mode_elevation.py` +
+    `test_settings_budget_hotreload.py` + `test_config_extraction.py` + `test_onboarding_host.py`
+    + `test_owner_settings_write_seam.py` + `test_colab_bootstrap.py` + `test_context_fit_v664.py`
+    + `test_cybergym_server.py` rc=0 (112 passed); the wider settings/owner/onboarding/server
+    family of item 33 (25 files) rc=0; the FULL default suite on a shared clone of `f0de05e5`
+    rc=0 — 14525 passed / 22 skipped, counted from the progress markers because this harness prints no summary line under `-q` (the count exceeds round 3's 13903 for the same reason the round-3 verdict's 14174 did: the clone environment, not this lane) and the serial lane rc=0 (623 passed / 46 skipped, same marker count); `ruff check . --select F`
+    rc=0; `scripts/check_domains.py` rc=0; `scripts/regenerate_size_ratchet.py --check` rc=0 at
+    the tip and on each of the round's commit trees (config.py 946 -> 949 of 1000;
+    context_mode_compat.py 90 -> 96; tests/_shared.py 83 -> 150; tests/test_settings_read_seam.py
+    739 -> 728; the giant tests/test_runtime_mode_elevation.py 2232 -> 2217, shrink);
+    `scripts/regenerate_inventories.py --check` rc=0; `scripts/v7next_adoption.py` rc=0
+    (`--release` still refuses exactly CPL-4); `git diff --check` rc=0; the tripwire's own
+    duration 13s -> 2.5s. Hermeticity: `find ~/ouro/data -newermt <session start>` lists only `data/claudexor/daemon/` and `data/claudexor/profiles/` entries written by the running claudexord and a Codex session — nothing under settings, state, logs or task_results; the live repo stayed clean; the probe and mutation trees were exports and rsync copies under the lane scratch, never the worktree.
+43. Rejected or not taken, with evidence. (a) Widening the prefilter by one token (both
+    verdicts' fix) — the instance, not the class; removed instead (item 37). (b) Verdict 1's
+    "walk every call that reaches the filesystem" AST rule for the mechanism half — "reaches
+    the filesystem" has no finite definition; the token rule over the shapes both lenses probed
+    is what P4 proves (item 38). (c) Keeping two predicates and merely aligning their marker
+    sets — the round-3 evidence is that two copies drift (`json.dump` vs `os.replace`,
+    per-function vs per-call); one predicate with two readers instead (item 36). (d) Sharing the
+    scan through a cross-test-module import (`from tests.test_runtime_mode_elevation import
+    ...`) — no precedent in the suite; `tests/_shared.py` is the precedent (`_shared`,
+    `_typed_guard_shared`). (e) Not claimed: the trigger half remains a heuristic — a writer that
+    neither calls the serializer nor names the settings path, the settings file or "settings"
+    anywhere in its source is invisible by construction; the structural trigger is the
+    serializer call, which any writer of the one spelling must make, and a writer that
+    re-derives the JSON text under a neutral name and a neutral path is outside every
+    scan-based pin. Disclosed, not fixable by scanning. (f) `atomic_write_json(` stays in the
+    mechanism half's byte-exact set (it is byte-exact); a settings writer using it would fail
+    the calls-the-serializer assertion instead, which is the assertion that owns "one
+    serializer". (g) The round-3 table (item 32) is left as written: verdict 2's remark that it
+    recorded only shapes the old markers already saw is answered by item 41, not by rewriting
+    history. (h) Everything in items 10, 22 and 34 stands.

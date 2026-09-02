@@ -729,13 +729,16 @@ def serialize_settings(settings: dict) -> str:
     """THE bytes a settings document is persisted as, for every writer that persists one.
 
     Every writer of this document puts exactly ``serialize_settings(document).encode("utf-8")``
-    on disk on EVERY platform, because every one of them commits through
-    ``ouroboros.utils.write_text_atomic``, which does not translate newlines. Both halves are
-    load-bearing: without one serializer the writers disagreed on ``ensure_ascii``, and with one
-    serializer but a text-mode ``Path.write_text`` two of the three would still have written
-    CRLF on Windows for the LF the third wrote. Pinned by tests/test_settings_read_seam.py on
-    the bytes AND on the mechanism, because the byte comparison alone cannot see a difference
-    that only exists on another platform."""
+    on disk on EVERY platform: each of the five calls this function and commits through a
+    byte-exact helper (``ouroboros.utils.write_text_atomic``, or ``Path.write_bytes`` on
+    ``save_settings``'s rename-less fallback), which does not translate newlines. Both halves
+    are load-bearing: without one serializer the writers disagreed on ``ensure_ascii``, and
+    with one serializer but a text-mode ``Path.write_text`` two of them would still have
+    written CRLF on Windows for the LF the others wrote. Pinned by
+    tests/test_settings_read_seam.py on the bytes of all five, on the mechanism, and on the
+    spelling itself — the byte comparison alone cannot see a difference that only exists on
+    another platform, and once every writer calls this function it cannot see this function
+    change either."""
     return json.dumps(settings, ensure_ascii=False, indent=2)
 
 
