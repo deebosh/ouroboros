@@ -22,9 +22,7 @@ from ouroboros import task_pacing
 # run-record and message rails. Names unused here are re-exported on purpose:
 # external callers and the acceptance-writer inventory still import them from `loop`.
 from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
-    _ACCEPTANCE_REVIEW_CHECKLIST,
     ACCEPTANCE_DECISION_REASONS,
-    ACCEPTANCE_REASON_UNSPECIFIED,
     _acceptance_dialogue_quorum,
     _apply_task_acceptance_result,
     _build_host_acceptance_evidence,
@@ -36,8 +34,6 @@ from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
     _open_acceptance_obligations,
     _prior_acceptance_run,
     _set_acceptance_decision,
-    _total_paid_acceptance_cycles,
-    acceptance_dialogue_history,
     bind_acceptance_paid_identity,
 )
 from ouroboros.config import get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode
@@ -1395,12 +1391,8 @@ def _run_task_acceptance_review_once(
     )
     budget_snapshot = task_pacing.build_budget_snapshot(tools._ctx, profile=budget_profile)
     passes_done = int(getattr(tools._ctx, "_task_acceptance_improvement_passes", 0))
-    launch_ok, launch_reason = task_pacing.review_launch_allowed(
-        budget_snapshot, ctx=tools._ctx,
-        estimated_sec=task_pacing.acceptance_review_estimate_sec(
-            tools._ctx, passes_done=passes_done,
-        ),
-    )
+    estimate = task_pacing.acceptance_review_estimate_sec(tools._ctx, passes_done=passes_done)
+    launch_ok, launch_reason = task_pacing.review_launch_allowed(budget_snapshot, estimated_sec=estimate)
     if not launch_ok:
         tools._ctx._task_acceptance_reviewed = True
         _end_task_acceptance_fence(tools._ctx, outcome="terminal")
@@ -1420,6 +1412,8 @@ def _run_task_acceptance_review_once(
         })
         emit_progress("Task acceptance review skipped: inside the finalization reserve.")
         return False
+    if launch_reason:  # R36: the launch owner records the floor launch
+        task_pacing.record_launch_at_floor(tools._ctx, budget_snapshot, estimated_sec=estimate)
     review_ctx = _TaskAcceptanceContext(
         tools=tools,
         content=content,

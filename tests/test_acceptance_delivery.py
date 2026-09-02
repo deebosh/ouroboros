@@ -1077,22 +1077,229 @@ def test_a_poisoned_reserve_still_launches_a_shorter_deadline_at_the_floor(tmp_p
     assert estimate == 1.5 * (0.5 * 100 + 0.5 * 21600)  # 16275 s: bounded, finite, inflated
     day = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=86400.0, elapsed_sec=0.0,
                                      remaining_sec=86400.0, reserve_sec=3600.0)
-    assert task_pacing.review_launch_allowed(day, estimated_sec=estimate, ctx=ctx) == (True, "")
+    assert task_pacing.review_launch_allowed(day, estimated_sec=estimate) == (True, "")
     short = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
                                        remaining_sec=1100.0, reserve_sec=100.0)  # spendable 1000 s
     fact = task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR
-    assert task_pacing.review_launch_allowed(short, estimated_sec=estimate, ctx=ctx) == (True, fact)
+    assert task_pacing.review_launch_allowed(short, estimated_sec=estimate) == (True, fact)
     assert task_pacing.improvement_pass_allowed(short, 0, {}, estimated_sec=estimate, ctx=ctx) == (True, fact)
-    rows = [e for e in iter_jsonl_objects(events) if e.get("type") == fact]
-    assert [r["gate"] for r in rows] == ["review_launch", "improvement_pass"]
-    assert rows[0]["estimated_sec"] == 16275.0 and rows[0]["floor_sec"] == 200.0 and rows[0]["spendable_sec"] == 1000.0
-    assert [e["gate"] for e in ctx.pending_events if e.get("type") == fact] == ["review_launch", "improvement_pass"]
+    # The predicates are PURE: the fact is recorded by the launch owner (see the
+    # owner/projection cardinality test), never by asking.
+    assert [e for e in iter_jsonl_objects(events) if e.get("type") == fact] == [] and ctx.pending_events == []
+    assert task_pacing.launch_at_floor_payload(short, gate="review_launch", estimated_sec=estimate) == {
+        "gate": "review_launch", "estimated_sec": 16275.0, "floor_sec": 200.0, "spendable_sec": 1000.0}
     tiny = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=300.0, elapsed_sec=0.0,
                                       remaining_sec=300.0, reserve_sec=150.0)  # spendable 150 s < floor
-    assert task_pacing.review_launch_allowed(tiny, estimated_sec=estimate, ctx=ctx) == (
+    assert task_pacing.review_launch_allowed(tiny, estimated_sec=estimate) == (
         False, "review_skipped_deadline_reserve")
     assert task_pacing.improvement_pass_allowed(tiny, 0, {}, estimated_sec=estimate, ctx=ctx) == (
         False, "improvement_window_inside_reserve")
+
+
+# ---------------------------------------------------------------------------
+# R36 facts: bound to the launch owner and the paid seam, never to the helpers.
+# ---------------------------------------------------------------------------
+
+
+def _supervised(tmp_path):
+    """A worker context with the REAL event queue plus the supervisor context
+    that drains it through `dispatch_event`: what production does with a live
+    review event."""
+    import queue
+
+    from ouroboros.utils import append_jsonl
+
+    return queue.Queue(), SimpleNamespace(DRIVE_ROOT=tmp_path, append_jsonl=append_jsonl)
+
+
+def _drain_to_supervisor(event_queue, sup_ctx):
+    from supervisor.events import dispatch_event
+
+    drained = []
+    while not event_queue.empty():
+        evt = event_queue.get_nowait()
+        drained.append(evt)
+        dispatch_event(json.loads(json.dumps(evt)), sup_ctx)
+    return drained
+
+
+def _rows(events_path, event_type):
+    from ouroboros.utils import iter_jsonl_objects
+
+    return [e for e in iter_jsonl_objects(events_path) if e.get("type") == event_type]
+
+
+def test_floor_launch_fact_is_recorded_once_by_the_owner_and_never_by_predicates_or_the_projection(
+        monkeypatch, tmp_path):
+    """Item 1 (the class): the predicates are pure and the read-only capacity
+    projection observes without disclosing — polled twice inside the floor band
+    they write ZERO rows/events — while the launch owner records exactly ONE
+    live event that the REAL supervisor path persists as exactly ONE row."""
+    from ouroboros import task_pacing
+    from ouroboros.task_results import project_task_acceptance_review_capacity
+
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    _offline_env(monkeypatch, _ROW_API)
+    event_queue, sup_ctx = _supervised(tmp_path)
+    governance, workspace = _roots(tmp_path)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project", event_queue=event_queue)
+    tools_ctx = ctx.tools._ctx
+    events = task_pacing.acceptance_timing_events_path(tools_ctx)
+    _raw_timing(events, '"native_rows": 0, "native_rounds": 0, "duration_sec": 1e300, "delivery": "api_chat"')
+    short = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
+                                       remaining_sec=1100.0, reserve_sec=100.0)  # spendable 1000 s: floor band
+    monkeypatch.setattr(task_pacing, "build_budget_snapshot", lambda _ctx, profile=None: short)
+    estimate = task_pacing.acceptance_review_estimate_sec(tools_ctx, passes_done=1, delivery="api_chat")
+    fact = task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR
+    assert estimate > 1000.0 > 200.0
+
+    # Predicates: pure, whatever they are asked.
+    for _ in range(3):
+        assert task_pacing.review_launch_allowed(short, estimated_sec=estimate) == (True, fact)
+        assert task_pacing.improvement_pass_allowed(short, 0, {}, estimated_sec=estimate, ctx=tools_ctx) == (True, fact)
+    # The projection: observes the floor band, discloses nothing, carries the case.
+    # (It reserves the floor while nothing was claimed yet, so the poisoned
+    # estimate is pinned to put its poll inside the band.)
+    monkeypatch.setattr(task_pacing, "acceptance_review_estimate_sec", lambda *_a, **_k: estimate)
+    for _ in range(2):
+        projection = project_task_acceptance_review_capacity(tools_ctx, task_id="root-delivery")
+        assert projection["launch_disclosure"] == fact and projection["state"] != "unavailable"
+    assert event_queue.empty() and _rows(events, fact) == []
+    # The owner: exactly one live event, exactly one canonical row via the REAL path.
+    payload = task_pacing.record_launch_at_floor(tools_ctx, short, estimated_sec=estimate)
+    drained = _drain_to_supervisor(event_queue, sup_ctx)
+    assert [e["type"] for e in drained] == [fact]
+    (row,) = _rows(events, fact)
+    assert row["gate"] == "review_launch" and row["spendable_sec"] == 1000.0 and row["floor_sec"] == 200.0
+    assert row["estimated_sec"] == payload["estimated_sec"] == round(estimate, 3)
+    assert row["task_id"] == "root-delivery"
+    # The adaptive improvement window scales the whole payload.
+    adaptive = task_pacing.launch_at_floor_payload(short, gate="improvement_pass", estimated_sec=estimate,
+                                                   profile={"improvement_policy": "adaptive"})
+    assert adaptive["floor_sec"] == 400.0 and adaptive["estimated_sec"] == round(estimate * 2, 3)
+
+
+def test_the_launch_owners_are_exactly_loop_and_the_improvement_gate():
+    """A source-level pin of item 1's ownership: the recorder is called by the
+    review launch in loop.py and the improvement-pass gate in
+    acceptance_dialogue.py — once each — and never by the projection."""
+    import pathlib
+
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    counts = {name: (repo / "ouroboros" / name).read_text(encoding="utf-8").count("record_launch_at_floor(")
+              for name in ("loop.py", "acceptance_dialogue.py", "task_results.py", "task_pacing.py")}
+    assert counts == {"loop.py": 1, "acceptance_dialogue.py": 1, "task_results.py": 0, "task_pacing.py": 1}
+
+
+def _floor_band_native_panel(monkeypatch, tmp_path, *rows):
+    """A native (or api+native) triad on a seeded $1 wallet with a poisoned
+    rounds estimate (33): the floor wave fits, the rounds-priced wave does not."""
+    from ouroboros import loop as loop_mod, task_pacing
+    from ouroboros import usage_accounting as ua
+
+    _offline_env(monkeypatch, *rows)
+    _priced_offline_model(monkeypatch)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 6, scoped=True)
+    _real_panel(monkeypatch, llm, stub_gate=False)
+    scope = _root_scope(tmp_path, root_limit_usd=1.0)
+    _seed_root_ledger(scope)
+    event_queue, sup_ctx = _supervised(tmp_path)
+    common = dict(evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance), workspace_root=str(workspace),
+                  workspace_mode="project", max_improvement_passes=2, event_queue=event_queue)
+    first = _acceptance_ctx(tmp_path, **common)
+    with ua.usage_scope(scope):
+        assert loop_mod._execute_task_acceptance_panel(first).aggregate_signal == "PASS"  # honest: 1 round/row
+    events = task_pacing.acceptance_timing_events_path(first.tools._ctx)
+    _raw_timing(events, '"native_rounds": 1e300, "native_rows": 1')
+    assert task_pacing.acceptance_native_rounds_estimate(first.tools._ctx) == 33
+    _drain_to_supervisor(event_queue, sup_ctx)  # the honest panel emitted nothing of the fact type
+    assert _rows(events, task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR) == []
+    return SimpleNamespace(loop_mod=loop_mod, task_pacing=task_pacing, ua=ua, scope=scope, llm=llm,
+                           events=events, event_queue=event_queue, sup_ctx=sup_ctx, common=common, first=first)
+
+
+def test_dispatched_at_floor_fact_lands_once_through_the_real_supervisor_path(monkeypatch, tmp_path):
+    """Item 2/8 positive leg: a real floor dispatch → exactly ONE registered
+    live event, dispatched by the supervisor into exactly ONE canonical row —
+    beside the actor-usage attachment and the timing-row field."""
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    s = _floor_band_native_panel(monkeypatch, tmp_path, _ROW_NATIVE)
+    fact = s.task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
+    again = _acceptance_ctx(tmp_path, content="deliverable v2", fresh_result=False, **s.common)
+    with s.ua.usage_scope(s.scope):
+        result = s.loop_mod._execute_task_acceptance_panel(again)
+    assert result.aggregate_signal == "PASS"
+    assert all(actor["usage"][fact]["native_rounds_estimate"] == 33 for actor in result.actors)
+    drained = _drain_to_supervisor(s.event_queue, s.sup_ctx)
+    assert [e["type"] for e in drained if e.get("type") == fact] == [fact]
+    (row,) = _rows(s.events, fact)
+    assert row["native_rounds_estimate"] == 33 and row["floor_slots"] == 1 and row["surface"] == "task_acceptance"
+    assert row["estimated_wave_usd"] > row["remaining_usd"] >= row["floor_wave_usd"] > 0
+    timing = _rows(s.events, "task_acceptance_review_timing")
+    assert timing[-1][fact]["native_rounds_estimate"] == 33  # the timing-row carrier, once
+    assert s.task_pacing.acceptance_native_rounds_estimate(again.tools._ctx) == 17
+
+
+def test_a_refused_panel_in_the_floor_band_leaves_no_dispatched_at_floor_fact(monkeypatch, tmp_path):
+    """Item 2 negative legs, all in the floor band (the prospective fact IS
+    computed): an already-claimed binding retried (preclaim refusal), a
+    zero-physical refusal (immutable-core overflow), a wallet-stamp refusal at
+    the paid seam, and a panel whose stamp never fired (every row refused
+    before its send) — none emits, attaches or persists the fact."""
+    from ouroboros import review_dispatch
+
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    s = _floor_band_native_panel(monkeypatch, tmp_path, _ROW_NATIVE)
+    fact = s.task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
+    sends = len(s.llm.calls)
+
+    def _no_fact(result):
+        assert result.aggregate_signal == "DEGRADED"
+        drained = _drain_to_supervisor(s.event_queue, s.sup_ctx)
+        assert not any(e.get("type") == fact for e in drained)
+        assert _rows(s.events, fact) == []
+        assert not any(fact in row for row in _rows(s.events, "task_acceptance_review_timing"))
+        assert len(s.llm.calls) == sends  # no reviewer was called
+
+    # (a) the SAME binding again: the wallet already claimed it → preclaim refusal.
+    with s.ua.usage_scope(s.scope):
+        _no_fact(s.loop_mod._execute_task_acceptance_panel(s.first))
+    # (b) zero-physical refusal: the immutable core overflowed → refused before any send.
+    overflow = _acceptance_ctx(tmp_path, content="deliverable v2", fresh_result=False,
+                               **{**s.common, "evidence": {**_ACCEPTANCE_PACKET, "__immutable_core_overflow__": True}})
+    with s.ua.usage_scope(s.scope):
+        _no_fact(s.loop_mod._execute_task_acceptance_panel(overflow))
+    # (c) the wallet stamp refuses at the paid seam.
+    import contextlib
+
+    @contextlib.contextmanager
+    def _veto(ctx):
+        raise review_dispatch.TaskAcceptanceDispatchUnavailable("wallet_veto_for_test")
+        yield  # pragma: no cover
+
+    vetoed = _acceptance_ctx(tmp_path, content="deliverable v3", fresh_result=False, **s.common)
+    with monkeypatch.context() as m:
+        m.setattr(review_dispatch, "bind_task_acceptance_paid_dispatch", _veto)
+        with s.ua.usage_scope(s.scope):
+            _no_fact(s.loop_mod._execute_task_acceptance_panel(vetoed))
+    # (d) the stamp never fires: every row refused before its send (route unavailable) —
+    #     the substrate returns undispatched actors and the paid seam was never crossed.
+    import ouroboros.review_substrate as rs
+    from ouroboros.review_substrate import ReviewRunResult
+
+    unrouted = _acceptance_ctx(tmp_path, content="deliverable v4", fresh_result=False, **s.common)
+    with monkeypatch.context() as m:
+        m.setattr(rs, "run_review_request", lambda request, **kw: ReviewRunResult(
+            request={"surface": "task_acceptance"}, actors=[{"slot_id": "t_actor", "status": "error",
+            "operation_state": "not_dispatched", "usage": {}}], parsed_findings=[], aggregate_signal="DEGRADED",
+            degraded=True, degraded_reasons=["route_unavailable"]))
+        with s.ua.usage_scope(s.scope):
+            result = s.loop_mod._execute_task_acceptance_panel(unrouted)
+    assert result.aggregate_signal == "DEGRADED" and fact not in result.actors[0]["usage"]
+    assert not any(e.get("type") == fact for e in _drain_to_supervisor(s.event_queue, s.sup_ctx))
+    assert _rows(s.events, fact) == [] and len(s.llm.calls) == sends
 
 
 # ---------------------------------------------------------------------------

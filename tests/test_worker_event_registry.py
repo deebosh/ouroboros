@@ -1,4 +1,4 @@
-"""Every literal-typed worker event must have a supervisor handler.
+"""Every typed worker event — literal or module-constant typed — must have a supervisor handler.
 
 The supervisor drops an event whose type is not in EVENT_HANDLERS: it is
 downgraded to a truncated ``unknown_worker_event`` repr in supervisor.jsonl
@@ -29,18 +29,41 @@ _QUEUE_HINTS = ("event_q", "event_queue", "out_q", "eq")
 _WRAPPER_FUNCS = {"emit_review_event"}
 
 
-def _dict_type(node):
+def _dict_type(node, constants=None):
+    """The event type of a dict literal: a literal string, or a module-level
+    string constant given by bare name (`DISCLOSURE_X`) or attribute
+    (`task_pacing.DISCLOSURE_X`) — the R36 pacing facts were emitted through
+    constants and a literal-only scan blessed them unregistered."""
     if not isinstance(node, ast.Dict):
         return None
+    constants = constants or {}
     for key, value in zip(node.keys, node.values):
-        if (
-            isinstance(key, ast.Constant)
-            and key.value == "type"
-            and isinstance(value, ast.Constant)
-            and isinstance(value.value, str)
-        ):
+        if not (isinstance(key, ast.Constant) and key.value == "type"):
+            continue
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
             return value.value
+        if isinstance(value, ast.Name):
+            return constants.get(value.id)
+        if isinstance(value, ast.Attribute):
+            return constants.get(value.attr)
     return None
+
+
+def _string_constants(trees):
+    """UPPER_CASE module-level `NAME = "literal"` assignments across the scanned
+    files, keyed by bare name (an attribute access resolves by its last part)."""
+    constants = {}
+    for tree in trees:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target, value = node.targets[0], node.value
+            if (
+                isinstance(target, ast.Name) and target.id.isupper()
+                and isinstance(value, ast.Constant) and isinstance(value.value, str)
+            ):
+                constants.setdefault(target.id, value.value)
+    return constants
 
 
 def _receiver_name(func):
@@ -67,11 +90,14 @@ def _emitted_types():
     files = [REPO / "server.py"]
     files += list((REPO / "ouroboros").rglob("*.py"))
     files += list((REPO / "supervisor").rglob("*.py"))
+    trees = {}
     for path in files:
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            trees[path] = ast.parse(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+    constants = _string_constants(trees.values())
+    for path, tree in trees.items():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -91,7 +117,7 @@ def _emitted_types():
             if _call_name(node.func) in _WRAPPER_FUNCS:
                 candidates = node.args
             for arg in candidates:
-                event_type = _dict_type(arg)
+                event_type = _dict_type(arg, constants)
                 if event_type:
                     emitted.setdefault(event_type, []).append(
                         f"{path.relative_to(REPO)}:{node.lineno}"
@@ -162,3 +188,16 @@ def test_previously_dropped_types_are_registered():
         "plan_task_deadline_skip",
     ):
         assert event_type in registered, event_type
+
+
+def test_constant_typed_emitters_are_seen_and_registered():
+    """The R36 pacing facts are emitted with their type given as a module
+    constant; the scan must resolve them (a literal-only scan reported nothing
+    and the supervisor dropped them as unknown_worker_event)."""
+    from ouroboros import task_pacing
+
+    emitted = _emitted_types()
+    registered = _registered_types()
+    for name in (task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR, task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR):
+        assert name in emitted, f"constant-typed emitter not seen by the scan: {name}"
+        assert name in registered, f"constant-typed event unregistered: {name}"

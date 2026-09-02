@@ -7,8 +7,9 @@ run-record and message rails this module drives — so the acceptance contract
 lives in one readable place: the host packet (``_build_host_acceptance_evidence``)
 and the panel that judges it (``_execute_task_acceptance_panel``) moved here
 WHOLE beside the obligations and the paid identity they feed; ``loop`` re-exports
-every moved name so external callers and the acceptance-writer inventory keep one
-import surface. The reducer over the reviewers' typed ``dialogue_status`` votes
+every moved name with an external caller (patch sites, the acceptance-writer
+inventory) so they keep one import surface — a moved name nobody outside
+references is not re-exported. The reducer over the reviewers' typed ``dialogue_status`` votes
 stays in ``review_substrate.aggregate_dialogue_status`` — that is the vote SSOT;
 this module is its CONSUMER.
 
@@ -493,16 +494,22 @@ def _apply_task_acceptance_result(
     budget_snapshot = task_pacing.build_budget_snapshot(
         ctx.tools._ctx, profile=ctx.budget_profile,
     )
+    next_pass_estimate = task_pacing.acceptance_review_estimate_sec(ctx.tools._ctx, passes_done=ctx.passes_done + 1)
     pass_ok, pass_reason = task_pacing.improvement_pass_allowed(
         budget_snapshot,
         ctx.passes_done,
         ctx.budget_profile,
         required_blocking=blocking_lane,
-        estimated_sec=task_pacing.acceptance_review_estimate_sec(
-            ctx.tools._ctx, passes_done=ctx.passes_done + 1,
-        ),
+        estimated_sec=next_pass_estimate,
         ctx=ctx.tools._ctx,
     )
+    if pass_ok and pass_reason == task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR:
+        # R36: this gate is the launch owner of the improvement pass — the fact is
+        # recorded here, once; the predicate stayed pure.
+        task_pacing.record_launch_at_floor(
+            ctx.tools._ctx, budget_snapshot, gate="improvement_pass",
+            estimated_sec=next_pass_estimate, profile=ctx.budget_profile,
+        )
     # A DEGRADED panel (no valid verdict quorum) cannot "judge" the dialogue:
     # a lone terminal vote from the one contributing slot must NOT shadow the
     # review_degraded path below, which is the only surface carrying the
@@ -1133,6 +1140,8 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                         scope.drive_root, root_task_id=scope.root_task_id,
                         models=floor_models, prompt_chars=_prompt_chars)
                     if not priced.get("fits", True):
+                        # The PROSPECTIVE fact only: it is attached, emitted and
+                        # persisted after the paid dispatch actually fired.
                         floor_dispatch = {
                             "estimated_wave_usd": priced.get("estimated_wave_usd"),
                             "floor_wave_usd": floor_priced.get("estimated_wave_usd"),
@@ -1140,10 +1149,6 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                             "native_rounds_estimate": rounds,
                             "floor_slots": len(floor_models),
                         }
-                        emit_review_event(ctx.tools._ctx, {
-                            "type": task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR, "surface": "task_acceptance",
-                            "task_id": str(ctx.task_id), **floor_dispatch,
-                        })
             except Exception:
                 log.debug("rounds-priced admission check failed open", exc_info=True)
     free_result = _free_dispatch(request, slots, drive_root=drive_root, usage_ctx=ctx.tools._ctx)
@@ -1155,18 +1160,30 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     # Q6: bind the exact tree wallet to the target's physical-dispatch stamp.
     # Route/candidate refusals remain free; one strict stamp gates every slot.
     started = time.monotonic()
+    stamp = None
     try:
         with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
+            stamp = getattr(usage_ctx, "_review_paid_stamp", None)
             result = run_review_request(request, slots=slots, drive_root=drive_root, usage_ctx=usage_ctx)
     except TaskAcceptanceDispatchUnavailable as exc:
         return _refused(f"{exc} (no reviewer was called)")
     duration_sec = round(time.monotonic() - started, 3)
+    if floor_dispatch is not None and not bool(getattr(stamp, "fired", False)):
+        # Nothing was physically dispatched (every row refused before its send,
+        # e.g. route unavailable): a floor dispatch that never happened is no fact.
+        floor_dispatch = None
     if floor_dispatch is not None:
-        # The typed fact rides the panel usage: every actor of a panel admitted
-        # at the floor price says so beside its other usage facts.
+        # The paid seam fired: the typed fact rides the panel usage (every actor
+        # of a panel admitted at the floor price says so beside its other usage
+        # facts), the timing row below, and ONE live event whose registered
+        # supervisor handler persists the canonical events.jsonl row.
         for actor in getattr(result, "actors", None) or []:
             if isinstance(actor, dict) and isinstance(actor.get("usage"), dict):
                 actor["usage"][task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR] = dict(floor_dispatch)
+        emit_review_event(ctx.tools._ctx, {
+            "type": task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR, "surface": "task_acceptance",
+            "task_id": str(ctx.task_id), **floor_dispatch,
+        })
     try:
         from ouroboros.review_cycles import review_max_cycles, review_max_cycles_source
         from ouroboros.utils import append_jsonl, utc_now_iso

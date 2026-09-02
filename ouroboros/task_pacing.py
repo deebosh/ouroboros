@@ -270,27 +270,41 @@ def _acceptance_floor_sec() -> float:
     return max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
 
 
-def _disclose_launch_at_floor(ctx: Any, *, gate: str, estimated_sec: float, floor_sec: float,
-                              spendable_sec: float) -> None:
-    """Record that a history-derived reserve did not fit but the floor did (R36):
-    one durable row on the canonical event stream and one live review event."""
-    if ctx is None:
-        return
-    row = {
-        "type": DISCLOSURE_LAUNCHED_AT_FLOOR, "gate": gate, "task_id": str(getattr(ctx, "task_id", "") or ""),
-        "estimated_sec": round(float(estimated_sec), 3), "floor_sec": round(float(floor_sec), 3),
-        "spendable_sec": round(float(spendable_sec), 3),
+def _window_scale(profile: Any) -> float:
+    """The improvement window is 2× the estimate under the adaptive policy."""
+    return 2.0 if isinstance(profile, dict) and profile.get("improvement_policy") == "adaptive" else 1.0
+
+
+def launch_at_floor_payload(snapshot: BudgetSnapshot, *, gate: str, estimated_sec: float,
+                            profile: Any = None) -> Dict[str, Any]:
+    """The prospective R36 fact of a floor launch — what the history-derived
+    reserve would have needed, what the floor admitted, what was spendable —
+    computed purely; the launch owner decides whether to record it."""
+    scale = _window_scale(profile)
+    return {
+        "gate": str(gate), "estimated_sec": round(float(estimated_sec) * scale, 3),
+        "floor_sec": round(_acceptance_floor_sec() * scale, 3),
+        "spendable_sec": round(float(snapshot.spendable_sec), 3),
     }
-    try:
-        append_jsonl(acceptance_timing_events_path(ctx), {"ts": utc_now_iso(), **row})
-    except Exception:
-        log.debug("floor-launch disclosure could not be persisted", exc_info=True)
+
+
+def record_launch_at_floor(ctx: Any, snapshot: BudgetSnapshot, *, estimated_sec: float,
+                           gate: str = "review_launch", profile: Any = None) -> Dict[str, Any]:
+    """Emit the R36 launch-at-floor fact ONCE, from the launch OWNER only — the
+    review launch in loop.py and the improvement-pass gate — never from a
+    read-only projection or the predicates themselves. One live typed event;
+    its registered supervisor handler persists the canonical events.jsonl row,
+    so no direct append is made here (that would be the duplicate row)."""
+    payload = launch_at_floor_payload(snapshot, gate=gate, estimated_sec=estimated_sec, profile=profile)
     try:
         from ouroboros.tools.review_helpers import emit_review_event
 
-        emit_review_event(ctx, row)
+        emit_review_event(ctx, {
+            "type": DISCLOSURE_LAUNCHED_AT_FLOOR, "task_id": str(getattr(ctx, "task_id", "") or ""), **payload,
+        })
     except Exception:
-        log.debug("floor-launch disclosure could not be emitted live", exc_info=True)
+        log.debug("floor-launch disclosure could not be emitted", exc_info=True)
+    return payload
 
 
 def _native_rounds_per_row(event: Dict[str, Any]) -> Optional[float]:
@@ -393,7 +407,7 @@ def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None)
 
 
 def review_launch_allowed(
-    snapshot: BudgetSnapshot, *, estimated_sec: Optional[float] = None, ctx: Any = None,
+    snapshot: BudgetSnapshot, *, estimated_sec: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """Gate 1: run an acceptance review only when it fits ABOVE the reserve.
 
@@ -403,8 +417,9 @@ def review_launch_allowed(
     estimate raises the reserve but never refuses what the configured floor
     admits — when the spendable window does not exceed the estimate but does
     exceed the floor, the review launches and the typed
-    ``DISCLOSURE_LAUNCHED_AT_FLOOR`` fact is the returned reason (recorded
-    durably and live when ``ctx`` is supplied)."""
+    ``DISCLOSURE_LAUNCHED_AT_FLOOR`` fact is the returned reason. PURE: a
+    read-only projection may ask; only the launch owner records the fact
+    (``record_launch_at_floor``)."""
     if not snapshot.has_deadline:
         return True, ""
     floor = _acceptance_floor_sec()
@@ -412,8 +427,6 @@ def review_launch_allowed(
     if snapshot.spendable_sec > estimate:
         return True, ""
     if snapshot.spendable_sec > floor:
-        _disclose_launch_at_floor(ctx, gate="review_launch", estimated_sec=estimate, floor_sec=floor,
-                                  spendable_sec=snapshot.spendable_sec)
         return True, DISCLOSURE_LAUNCHED_AT_FLOOR
     return False, "review_skipped_deadline_reserve"
 
@@ -490,13 +503,12 @@ def improvement_pass_allowed(
         return True, ""
     floor = _acceptance_floor_sec()
     est = float(estimated_sec) if estimated_sec is not None else floor
-    scale = 2.0 if profile.get("improvement_policy") == "adaptive" else 1.0
+    scale = _window_scale(profile)
     if snapshot.spendable_sec > est * scale:
         return True, ""
     if snapshot.spendable_sec > floor * scale:
         # R36: the history-derived reserve never refuses what the floor admits.
-        _disclose_launch_at_floor(ctx, gate="improvement_pass", estimated_sec=est * scale,
-                                  floor_sec=floor * scale, spendable_sec=snapshot.spendable_sec)
+        # Pure here; the improvement-pass owner records the fact once.
         return True, DISCLOSURE_LAUNCHED_AT_FLOOR
     return False, "improvement_window_inside_reserve"
 

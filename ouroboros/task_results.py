@@ -227,12 +227,17 @@ def project_task_acceptance_review_capacity(
         budget = task_pacing.build_budget_snapshot(
             ctx, profile=task_pacing.resolve_budget_profile(ctx),
         )
+        # Observe only: the predicate is pure; recording a floor launch belongs
+        # to the launch owner (loop.py / the improvement-pass gate), never to a
+        # projection that every poll calls.
         launch_ok, launch_reason = task_pacing.review_launch_allowed(
-            budget, ctx=ctx,
+            budget,
             estimated_sec=task_pacing.acceptance_review_estimate_sec(
                 ctx, passes_done=claimed,
             ),
         )
+        if launch_ok and launch_reason:
+            projection["launch_disclosure"] = launch_reason  # would launch at the floor (R36)
         if not launch_ok:
             projection.update({"state": "unavailable", "reason": launch_reason})
         elif remaining == 0:
