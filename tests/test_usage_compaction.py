@@ -53,9 +53,7 @@ def data_root_any_tier(tmp_path, monkeypatch):
 
 @pytest.fixture
 def data_root(data_root_any_tier):
-    if platform_layer.IS_WINDOWS:  # 7.0 ships Windows on the name tier: the pass REFUSES there by design
-        pytest.skip("compaction never lands on Windows in 7.0 (name tier); tier-agnostic pins use data_root_any_tier")
-    return data_root_any_tier
+    return data_root_any_tier  # the pass runs on every OS since the 7.0 Windows kernel tier
 
 
 def _request(data_root, **overrides):

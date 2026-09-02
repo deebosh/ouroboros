@@ -209,11 +209,10 @@ def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
     refuse that tier; an unprobeable directory answers enforced for that call and is probed
     again next time (not cached); every other answer is the enforced tier, where a refused live
     lock fails closed.  Name-tier locks run the O_EXCL name protocol alone (re-check-then-unlink
-    eviction, no kernel exclusion): disclosed best effort — the monetary compaction pass refuses to run there, appends continue."""
-    if IS_WINDOWS:  # 7.0 ships Windows on the NAME tier: the LockFileEx tier below is implemented but
-        return False  # disabled — a mandatory byte-range lock blocks contenders from reading the owner
-    #                   stamp, so waiting for a held lock degenerated into timeouts on the CI matrix
-    #                   (run 33654743857). Post-release: lock a range beyond the stamp, then re-enable.
+    eviction, no kernel exclusion): disclosed best effort — the monetary compaction pass refuses to run there, appends continue.
+    Windows answers this probe like POSIX since 7.0: the LockFileEx range sits beyond the owner
+    stamp (:data:`_WIN32_LOCK_OFFSET`), so a mandatory hold no longer refuses a contender the read
+    that lets it judge the hold — the defect that made this predicate answer False there."""
     directory = os.path.realpath(str(pathlib.Path(lock_path).parent))
     with _KERNEL_LOCK_TIER_LOCK:
         tier, refused = _KERNEL_LOCK_TIER.get(directory, (None, None))
@@ -268,10 +267,15 @@ def acquire_exclusive_file_lock(
     still recovers through the stale-age path.  POSIX evicts a stale lock
     only UNDER a held flock on the very fd it judged, re-checking that the
     path still names that inode: of two racing reclaimers at most one can
-    evict.  Windows cannot unlink an open file: it re-checks the path after
-    closing its probe, and a freshly won lock — held open by its owner — is
-    undeletable there.  The name tier re-checks then unlinks with no hold:
-    best effort, disclosed."""
+    evict.  Windows takes the SAME kernel hold on the judged fd before it may
+    evict, but cannot unlink an open file, so it unlinks after closing its
+    probe — the hold it just released is what proves nobody else holds the
+    file, and the identity re-check plus Windows' own refusal to delete a file
+    the new owner holds open is what keeps the shape exclusive across that gap
+    (it does not give the POSIX "at most one may evict" by the kernel alone:
+    two reclaimers may both re-check, and the loser's unlink is refused by the
+    winner's open handle rather than by the lock).  The name tier re-checks
+    then unlinks with no hold at all: best effort, disclosed."""
     lock_path = pathlib.Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     enforced = kernel_file_locks_enforced(lock_path)
@@ -313,6 +317,8 @@ def acquire_exclusive_file_lock(
                     os.close(fd)
                     log.warning("Lock identity unreadable at %s: no lock taken", lock_path)
                     return None
+            if IS_WINDOWS:  # a lock goes before its handle (see _win32_unlock)
+                file_unlock(fd)
             os.close(fd)  # the file we created was kernel-locked by a racing
             time.sleep(poll_sec)  # evictor's probe, or evicted: the name alone is
             continue  # not ownership — stand down and re-contend
@@ -333,19 +339,22 @@ def acquire_exclusive_file_lock(
                     # while flock-holding it: between judgement and unlink the
                     # owner may release and a third writer re-create the lock —
                     # removing THAT file puts two writers on one authority.
-                    if stale and enforced and not IS_WINDOWS:
+                    if stale and enforced:
                         try:
                             file_lock_exclusive_nb(probe)
                         except OSError as exc:  # a live kernel hold, or a refusal:
                             stale = False  # either way, never evict without the hold
                             refused = None if exc.errno in _LOCK_HELD_ERRNOS else exc
                         else:
-                            if _lock_identity(lock_path) == judged:
-                                os.unlink(str(lock_path))  # under the held flock
-                            continue
+                            if not IS_WINDOWS:  # Windows deletes no open file: it unlinks
+                                if _lock_identity(lock_path) == judged:  # below, after
+                                    os.unlink(str(lock_path))  # under the held flock
+                                continue
                 finally:
+                    if IS_WINDOWS:  # the probe's hold goes before its handle
+                        file_unlock(probe)
                     os.close(probe)
-                if stale and (IS_WINDOWS or not enforced) and _lock_identity(lock_path) == judged:
+                if stale and _lock_identity(lock_path) == judged:
                     lock_path.unlink()
                     continue
             except Exception:
@@ -416,14 +425,18 @@ def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int])
     not delete the new owner's lock on its way out).  POSIX unlinks BEFORE the
     close — under the still-held kernel lock on the enforced tier, so no
     reclaimer can be evicting the same file between re-check and unlink.
-    Windows cannot unlink an open file: it re-checks the path after the close,
-    protected by the new owner's open handle, and retries a contender's
-    transient sharing refusal (:func:`_unlink_lock_path`)."""
+    Windows cannot unlink an open file: it releases the kernel hold FIRST (a
+    handle closed with an outstanding lock leaves the release undefined), then
+    closes, then re-checks the path — protected by the new owner's open
+    handle — retrying a contender's transient sharing refusal
+    (:func:`_unlink_lock_path`)."""
     lock_path = pathlib.Path(lock_path)
     if lock_fd is None:
         return
     held = _lock_identity(lock_fd)[:2]
-    if not IS_WINDOWS:
+    if IS_WINDOWS:
+        file_unlock(lock_fd)
+    else:
         _unlink_lock_path(lock_path, held)
     try:
         os.close(lock_fd)
@@ -644,8 +657,16 @@ def pid_provably_gone(pid: int) -> bool:
 
 # Windows locking via LockFileEx: unlike msvcrt.locking(), works on empty files.
 
-# Per-fd OVERLAPPED storage for unlock.
-_win32_overlapped: dict = {}
+# WHERE the lock is taken, and why it is not the whole file.  A Win32 byte-range lock is
+# MANDATORY: bytes inside it cannot even be READ by another handle.  The whole-file range this
+# used to take (offset 0, length 0xFFFFFFFFFFFFFFFF) therefore refused every contender the read
+# of the owner stamp the lock protocol needs to judge a hold, and every wait ran to its timeout
+# (the C6 Windows matrix, run 33654743857: eight monetary writers answered "lock unavailable").
+# So the hold is ONE byte at an offset no lock file can reach — the common Win32 idiom — leaving
+# the stamp bytes [0, 512) readable by anyone.  A lock file this long is not writable by this
+# protocol (its stamp is one short line), and a lock BEYOND end-of-file is legal on Windows.
+_WIN32_LOCK_OFFSET = 0x7FFFFFFF00000000
+_WIN32_LOCK_LENGTH = 1
 
 
 _OVERLAPPED_CLS = None  # cached once per process
@@ -674,7 +695,9 @@ def _win32_overlapped_class():
 
 
 def _win32_lock(fd: int, *, exclusive: bool = True, blocking: bool = True) -> None:
-    """Lock a file descriptor using Win32 LockFileEx. Works on empty files."""
+    """Lock a file descriptor using Win32 LockFileEx, on the one byte at
+    :data:`_WIN32_LOCK_OFFSET` — never the whole file, whose stamp bytes a
+    mandatory lock would make unreadable to the contenders that must judge it."""
     import ctypes
     from ctypes import wintypes
     import msvcrt as _msvcrt
@@ -693,11 +716,9 @@ def _win32_lock(fd: int, *, exclusive: bool = True, blocking: bool = True) -> No
     flags = (_LOCKFILE_EXCLUSIVE_LOCK if exclusive else 0) | (0 if blocking else _LOCKFILE_FAIL_IMMEDIATELY)
 
     ov = OVERLAPPED()
-    # Win32 whole-file lock pattern: huge range from offset 0.
-    if not kernel32.LockFileEx(hfile, flags, 0, 0xFFFFFFFF, 0xFFFFFFFF, ctypes.byref(ov)):
+    ov.Offset, ov.OffsetHigh = _WIN32_LOCK_OFFSET & 0xFFFFFFFF, _WIN32_LOCK_OFFSET >> 32
+    if not kernel32.LockFileEx(hfile, flags, 0, _WIN32_LOCK_LENGTH, 0, ctypes.byref(ov)):
         raise _win32_lock_error(ctypes.get_last_error())
-
-    _win32_overlapped[fd] = (hfile, ov)
 
 
 def _win32_lock_error(err: int) -> OSError:
@@ -718,13 +739,16 @@ def _win32_lock_error(err: int) -> OSError:
 
 
 def _win32_unlock(fd: int) -> None:
-    """Unlock a file descriptor previously locked by _win32_lock."""
+    """Release the fixed range _win32_lock takes on this descriptor, if any.
+
+    The range is a constant, so the OVERLAPPED is rebuilt rather than remembered
+    per fd: no map to leak, and none to answer for a descriptor number the
+    process has since recycled onto another file.  An fd holding nothing is
+    ERROR_NOT_LOCKED, which this ignores like every other refusal — a release
+    is best effort by construction, and the handle's close is the backstop."""
     import ctypes
     from ctypes import wintypes
-
-    entry = _win32_overlapped.pop(fd, None)
-    if entry is None:
-        return
+    import msvcrt as _msvcrt
 
     OVERLAPPED = _win32_overlapped_class()
 
@@ -733,9 +757,10 @@ def _win32_unlock(fd: int) -> None:
                                       wintypes.DWORD, ctypes.POINTER(OVERLAPPED)]
     kernel32.UnlockFileEx.restype = wintypes.BOOL
 
-    hfile, ov = entry
-    with contextlib.suppress(OSError):
-        kernel32.UnlockFileEx(hfile, 0, 0xFFFFFFFF, 0xFFFFFFFF, ctypes.byref(ov))
+    ov = OVERLAPPED()
+    ov.Offset, ov.OffsetHigh = _WIN32_LOCK_OFFSET & 0xFFFFFFFF, _WIN32_LOCK_OFFSET >> 32
+    with contextlib.suppress(Exception):
+        kernel32.UnlockFileEx(_msvcrt.get_osfhandle(fd), 0, _WIN32_LOCK_LENGTH, 0, ctypes.byref(ov))
 
 
 # Process management.
