@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULES = ROOT / "web" / "modules"
@@ -28,6 +29,47 @@ def test_available_subagents_is_one_canonical_settings_editor() -> None:
     assert 'data-subagent-field="name"' not in editor
     for action in ("data-subagent-add", "data-subagent-duplicate", "data-subagent-remove"):
         assert action in editor
+
+
+def test_every_list_editor_reveals_its_added_entry_through_the_shared_helper() -> None:
+    """docs/DESIGN.md "List editors": a new entry is scrolled into view and takes
+    the caret through ONE seam, `ui_helpers.revealNewRow` — a local
+    scrollIntoView/focus pair in an add path is the class this pins closed
+    (DEVELOPMENT.md § Design System). The class is every Settings list editor,
+    not the panel the owner happened to report."""
+    helper = _read(MODULES / "ui_helpers.js")
+    assert "export function revealNewRow(row, field)" in helper
+    assert "scrollIntoView?.({ block: 'nearest' })" in helper
+    assert "focus?.({ preventScroll: true })" in helper
+    for name in ("subagents_settings.js", "reviewer_slots.js", "mcp_settings.js", "settings.js"):
+        source = _read(MODULES / name)
+        assert re.search(r"import \{[^}]*\brevealNewRow\b[^}]*\} from './ui_helpers\.js'", source), name
+        assert "revealNewRow(" in source, f"{name} never calls the shared reveal"
+    for name in ("subagents_settings.js", "reviewer_slots.js", "mcp_settings.js"):
+        assert "scrollIntoView" not in _read(MODULES / name), f"{name} rolls its own reveal"
+
+
+def test_a_fresh_subagent_row_invites_and_only_a_save_attempt_makes_it_red() -> None:
+    """docs/DESIGN.md "List editors": the section-level line and the row-local
+    tint appear only after the owner tried to save; Save and Finish say so
+    through `noteSaveAttempt`, which judges the rows that existed then (a row
+    added afterwards is fresh again), and `validate()` stays pure."""
+    editor = _read(MODULES / "subagents_settings.js")
+    primitives = _read(MODULES / "subagent_status_primitives.js")
+    assert "noteSaveAttempt" in editor
+    assert "validate: validationErrors," in editor
+    assert "row._uiAttempted = true" in editor
+    assert "Boolean(row._uiAttempted) && " in editor
+    assert "row._uiAttempted && errors.length" in primitives
+    assert "Choose how this subagent runs: an API model or an agent session." in primitives
+    host = _read(MODULES / "settings.js")
+    # Every Save click is an attempt — including one another field's validation
+    # then aborts — so the stamp precedes the cadence check's early return.
+    assert host.index("noteSubagentsSaveAttempt();") < host.index("Every-N cadence needs")
+    assert "agentsStep?.noteSaveAttempt?.();" in _read(MODULES / "onboarding_wizard.js")
+    # Errors name the card the way its heading does, never a bare "Row N".
+    assert "`Subagent ${index + 1} ${text}`" in editor
+    assert "`Row ${index + 1}`" not in editor
 
 
 def test_route_editor_extraction_does_not_merge_reviewer_semantics() -> None:
@@ -132,3 +174,11 @@ def test_effort_choice_mirrors_track_the_python_scale() -> None:
     values = re.findall(r"value: '([a-z]+)'", block.group(1))
     # `minimal` is deliberately not an owner-facing standing default (see EFFORT_OPTIONS).
     assert values == [tier for tier in EFFORT_SCALE if tier != "minimal"]
+
+
+def test_every_status_tone_the_card_emits_has_a_rule_in_both_sheets() -> None:
+    # The card head puts data-tone="neutral" on .settings-inline-status. A tone the
+    # code emits must have a rule (docs/DESIGN.md §4) — in the main sheet and in the
+    # wizard's standalone sheet alike — or it silently falls through to body text.
+    for sheet in ("style.css", "onboarding.css"):
+        assert '.settings-inline-status[data-tone="neutral"]' in _read(ROOT / "web" / sheet), sheet

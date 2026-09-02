@@ -81,7 +81,7 @@ _MANAGED_SKIP_NOTE = "cannot be split into smaller commits"
 
 
 ADVISORY_REVIEW_CHOICE_GUIDANCE = (
-    "Normally the LLM runs the cheap advisory_review immediately before "
+    "Normally the LLM runs the cheap preflight_review immediately before "
     "commit_reviewed. When advisory review is slow, unhealthy, unavailable, or "
     "low-value, the LLM may deliberately choose skip_advisory_review=True; the "
     "choice is durably audited. This skip bypasses only the requirements for "
@@ -1692,7 +1692,7 @@ def _next_step_guidance(latest: Optional["AdvisoryRunRecord"], state: "AdvisoryR
         )
 
     if latest and latest.status == "bypassed":
-        return "Advisory was bypassed (audited). No open obligations — commit_reviewed should proceed. Consider running advisory_review for a proper review."
+        return "Advisory was bypassed (audited). No open obligations — commit_reviewed should proceed. Consider running preflight_review for a proper review."
 
     fresh_critical = [
         i for i in (latest.items if latest else []) or []

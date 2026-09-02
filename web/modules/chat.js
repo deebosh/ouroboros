@@ -3,7 +3,7 @@ import { destroyChatMarkdown, enhanceChatMarkdown, renderChatMarkdown } from './
 import { renderPageHeader } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
-import { createSystemMessageAction } from './ui_helpers.js';
+import { createSystemMessageAction, renderProjectChip } from './ui_helpers.js';
 import { cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { createChatDecision } from './chat_decision.js';
 import { clientSurfaceField } from './client_surface.js';
@@ -38,7 +38,6 @@ import {
     resumeTaskAction,
     taskControlBusy,
 } from './task_control_menu.js';
-import { BoundedDetailMap, createChatLedgers } from './chat_ledgers.js';
 import { openConfirmDialog } from './confirm_dialog.js';
 import {
     captureLiveCardPhaseState,
@@ -100,6 +99,9 @@ import {
     isTerminalTaskPhase,
     loadChatInputHistory,
     liveLineRowToggleKey,
+    bindContentButton,
+    subagentIdentityTitle,
+    subagentTwin,
     mergeStickyCostMeta,
     partitionLocalEchoJournal,
     pendingAttachmentBytes,
@@ -164,7 +166,7 @@ export function createChatInstance({
     stateSnapshots,
     chatId = 1, projectId = '', idPrefix = 'chat', mountEl = null,
     asPanel = false, title = 'Chat', initialScrollState = null,
-    // perf2 P4.2: app.js signal "a project panel is opening right now" — Main
+    // app.js signal "a project panel is opening right now" — Main
     // defers its first hydration to it (bounded by an unconditional deadline).
     isProjectOpening = null,
 }) {
@@ -439,7 +441,7 @@ export function createChatInstance({
 
     // Pass 1 builds live cards in memory; pass 2 inserts them in transcript order.
     let _syncPass1Active = false;
-    // perf2 P4 follow-up (double-fetch fix): true while syncHistory replays the
+    // Double-fetch fix: true while syncHistory replays the
     // fetched rows into cards — pass 1, pass 2 AND the terminal-resolution
     // sweep (both the rebuildAll and the routine branch). Finished transitions
     // raised inside that replay must not schedule the 700ms post-completion
@@ -459,24 +461,24 @@ export function createChatInstance({
     let historySyncPromise = null;
     let lastHistorySyncSucceeded = false;
     let historyPaintGeneration = 0;
-    // perf2 P4.1 [GPT#12 + Fable#1]: STICKY single-flight hydration promise.
+    // STICKY single-flight hydration promise.
     // Unlike historySyncPromise it survives success, so hydration triggers
     // (bootstrap IIFE, first non-reconnect socket open, refreshHistory without
     // a new revision) short-circuit instead of refetching. Any FAILED sync
     // resets it; scheduleHistorySync and the reconnect path never consult it.
     let initialHydrationPromise = null;
-    // perf2 P4.1 [GPT#17]: the offline bootstrap painted the sessionStorage
+    // the offline bootstrap painted the sessionStorage
     // fallback and set historyLoaded=true — the first successful sync after
     // the server comes back must still rebuild the feed from durable history.
     let offlineBootstrapPainted = false;
-    // perf2 P4.1: highest project revision whose history has been fetched;
+    // highest project revision whose history has been fetched;
     // refreshHistory only bypasses the sticky promise for a NEWER revision.
     let lastLoadedHistoryRevision = 0;
-    // perf2 P4.2: one-shot idle gate for Main's deferred first hydration.
+    // one-shot idle gate for Main's deferred first hydration.
     let hydrationGatePromise = null;
     // Detached rebuild batch; live/routine syncs leave it null.
     let _rebuildBatch = null;
-    // perf2 P4.5: server window verdict + the explicit Load-older quotas.
+    // server window verdict + the explicit Load-older quotas.
     let historyWindow = null;
     let historyQuotaOverride = null;
     let loadingOlderHistory = false;
@@ -494,7 +496,7 @@ export function createChatInstance({
     const markReviewAnchor = (r, on = false) => setReviewAnchor(r, on, setLiveCardPhase);
     const explicitCardExpansion = new Map();
     const reviewDisclosureByTask = new Map();
-    const skillReviewDetailStore = new BoundedDetailMap();
+    const skillReviewDetailStore = new Map();
     const reviewHydrator = createReviewHydrator({
         fetchDetail: fetchTaskDetailStrict,
         applyDetail: (id, detail) => !destroyed && attachTaskDetailReviews(id, detail),
@@ -514,6 +516,7 @@ export function createChatInstance({
     // Bounded conclusions block late root typing and stale state snapshots; reusable
     // logical task slots are cleared whenever their cycle settles.
     const concludedDirectActivities = new Map();
+    const CONCLUDED_ACTIVITY_LEDGER_MAX = 200;
     // Retryable queue-loss candidates plus process-local single-flight reads.
     const missingManagedTaskIds = new Set();
     const managedTaskDetailReads = new Set();
@@ -529,43 +532,27 @@ export function createChatInstance({
         }
     }
 
+    function recordConcludedActivity(activityId) {
+        const aid = taskKey(activityId);
+        if (!aid) return;
+        missingManagedTaskIds.delete(aid);
+        concludedDirectActivities.delete(aid);
+        concludedDirectActivities.set(aid, Date.now());
+        while (concludedDirectActivities.size > CONCLUDED_ACTIVITY_LEDGER_MAX) {
+            const oldest = concludedDirectActivities.keys().next().value;
+            concludedDirectActivities.delete(oldest);
+        }
+    }
+    function recordTerminalActivity(taskId) {
+        const id = taskKey(taskId);
+        if (!id) return;
+        activeDirectActivities.delete(id);
+        missingManagedTaskIds.delete(id);
+        if (REUSABLE_TASK_IDS.has(id)) concludedDirectActivities.delete(id);
+        else recordConcludedActivity(id);
+    }
     // Finished task ids hidden from routine syncs until reload/reconnect rebuilds history.
     const retiredTaskIds = new Set();
-    // `cancelable` marker (queue tasks the cancel endpoint can genuinely reach).
-    // Learned from live WS frames and history replay alike, possibly before the
-    // card exists, so it lives beside the card records rather than on them.
-    const cancelableTaskIds = new Set();
-    // Bounded per-task ledger keepers (issue #135), extracted to chat_ledgers.js
-    // at chat.js's shrink-only byte-ratchet boundary; destructuring keeps the
-    // original call names.
-    const subagentChildParents = new Map();
-    const subagentTerminalChildren = new Set();
-    const {
-        recordConcludedActivity, recordTerminalActivity,
-        scheduleTaskUiCleanup, evictFinishedCardsOverCap,
-    } = createChatLedgers({
-        taskKey,
-        liveCardRecords,
-        taskUiStates,
-        retiredTaskIds,
-        explicitCardExpansion,
-        reviewDisclosureByTask,
-        skillReviewDetailStore,
-        pendingSuggestedNames,
-        cancelableTaskIds,
-        concludedDirectActivities,
-        activeDirectActivities,
-        missingManagedTaskIds,
-        subagentChildParents,
-        reviewHydrator,
-    });
-    function runLedgerEviction() {
-        withStableViewport(() => {
-            for (const evictedId of evictFinishedCardsOverCap()) {
-                if (activeLiveGroupId === evictedId) activeLiveGroupId = '';
-            }
-        });
-    }
     // The owner's last main-chat request, handed to the next live card it spawns so a
     // "turn into project" conversion can name the project from it (P1).
     let _pendingCardObjective = '';
@@ -628,7 +615,7 @@ export function createChatInstance({
     }
 
     function setStatus(kind, text) {
-        // perf2 P4.3: replay frames never touch the badge; the reducer
+        // replay frames never touch the badge; the reducer
         // (syncChatStatus) writes it once after the batch.
         if (_rebuildBatch || !statusBadge) return;
         statusBadge.className = `status-badge ${kind}`;
@@ -783,7 +770,7 @@ export function createChatInstance({
 
     function insertMessageNode(node, options = {}) {
         if (!node) return false;
-        // perf2 P4.3 (rebuildAll only): collect into the detached batch. One
+        // rebuildAll only: collect into the detached batch. One
         // stable sort + one fragment mount replace per-row chronological
         // insertion; the end-of-sync anchor restore replaces the per-row
         // insertedAboveViewport compensation. Routine syncs and live frames
@@ -828,6 +815,19 @@ export function createChatInstance({
         if (!taskId) return null;
         if (taskUiStates.has(taskId)) return taskUiStates.get(taskId);
         return createIfMissing ? createTaskUiState(taskId) : null;
+    }
+
+    function scheduleTaskUiCleanup(taskState, delayMs = 120000) {
+        if (!taskState) return;
+        if (taskState.cleanupTimer) clearTimeout(taskState.cleanupTimer);
+        taskState.cleanupTimer = setTimeout(() => {
+            taskUiStates.delete(taskState.taskId);
+            // Keep the finished card interactive, but mark it retired so routine
+            // syncs do not rebuild duplicates. Reload/reconnect clears this set.
+            if (!REUSABLE_TASK_IDS.has(taskState.taskId) && taskState.taskId !== '') {
+                retiredTaskIds.add(taskState.taskId);
+            }
+        }, delayMs);
     }
 
     function bufferLiveUpdate(taskState, summary, ts, dedupeKey = '', rawTs = '') {
@@ -966,7 +966,12 @@ export function createChatInstance({
         if (phase) taskState.completedPhase = phase;
     }
 
-    // v6.82 (P5): task ids whose progress carried the supervisor's host-attested
+    // P5: task ids whose progress carried the supervisor's host-attested
+    // `cancelable` marker (queue tasks the cancel endpoint can genuinely reach).
+    // Learned from live WS frames and history replay alike, possibly before the
+    // card exists, so it lives beside the card records rather than on them.
+    const cancelableTaskIds = new Set();
+
     function queueTaskLiveUpdate(summary, taskId, ts, dedupeKey = '', rawTs = '') {
         return withStableViewport(() => queueTaskLiveUpdateMutation(
             summary, taskId, ts, dedupeKey, rawTs,
@@ -1238,32 +1243,17 @@ export function createChatInstance({
     // so the main chat is freed — the card stops being a busy red task and
     // recolors to the project fuchsia. Plain wording (no "ack"); click opens the panel.
     function markCardConverted(record, project) {
-        const result = withStableViewport(() => markCardConvertedMutation(record, project));
-        runLedgerEviction();
-        return result;
+        return withStableViewport(() => markCardConvertedMutation(record, project));
     }
 
     function markCardConvertedMutation(record, project) {
         delete record.root.dataset.projectCreating;
         record.root.dataset.projectCreated = '1';
         record.root.dataset.projectId = project.id || '';
-        const name = String(project.name || project.id || 'Project').trim();
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'chat-live-project-card-btn';
-        const icon = document.createElement('span');
-        icon.className = 'chat-live-project-icon';
-        icon.setAttribute('aria-hidden', 'true');
-        icon.textContent = '📁';
-        const nameEl = document.createElement('span');
-        nameEl.className = 'chat-live-project-name';
-        nameEl.textContent = name;  // textContent — no HTML injection from a project name
-        const status = document.createElement('span');
-        status.className = 'chat-live-project-status';
-        status.textContent = 'running in background ↗';
-        chip.append(icon, nameEl, status);
-        chip.addEventListener('click', () => {
-            window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: { project } }));
+        const chip = renderProjectChip({
+            name: String(project.name || project.id || 'Project').trim(),
+            status: 'running in background ↗',
+            onClick: () => window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: { project } })),
         });
         // Atomic detach-and-reparent (C4.5): replaceChildren swaps the whole live
         // timeline (subagent cards, working bubble) for the chip in one paint.
@@ -1417,15 +1407,15 @@ export function createChatInstance({
             ? `<div class="chat-live-actions"><button type="button" class="btn btn-xs btn-default" data-turn-into-project>Turn into project</button></div>`
             : '';
         root.innerHTML = `
-            <button type="button" class="chat-live-summary-button" data-live-summary-button aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
+            <div class="chat-live-summary-button" role="button" tabindex="0" data-live-summary-button aria-expanded="false" aria-controls="${escapeHtmlAttr(timelineId)}">
                 <div class="chat-live-summary">
                     <div class="chat-live-summary-main">
                         <span class="chat-live-phase working" data-live-phase role="status" aria-live="polite" aria-atomic="true" aria-label="${options.isSubagent ? 'Subagent' : 'Task'} status: Working">Working</span>
                         <div class="chat-live-typing" data-live-typing aria-hidden="true">
                             <span></span><span></span><span></span>
                         </div>
-                        <span class="chat-live-title" data-live-title>Waiting for work</span>
                     </div>
+                    <span class="chat-live-title" data-live-title>Waiting for work</span>
                     <div class="chat-live-summary-side">
                         <span class="chat-live-count" data-live-count hidden>2 notes</span>
                         <span class="chat-live-toggle" data-live-toggle>Show details</span>
@@ -1437,7 +1427,7 @@ export function createChatInstance({
                 <div class="chat-live-activity" data-live-activity></div>
                 <div class="chat-live-meta" data-live-meta></div>
                 <div class="chat-live-review-summary" data-live-review-summary hidden></div>
-            </button>
+            </div>
             ${projectActionHtml}
             <div class="chat-live-timeline" data-live-timeline id="${escapeHtmlAttr(timelineId)}"></div>
             <div data-live-reviews-host></div>
@@ -1470,10 +1460,10 @@ export function createChatInstance({
             subagentRole: String(options.role || ''),
             subagentsEl: null,
             _anchorOrderDirty: false,
-            // perf2 P4.4: collapsed timelines defer DOM building; the flag says
+            // collapsed timelines defer DOM building; the flag says
             // the rendered timeline DOM is stale relative to record.items.
             _timelineDirty: false,
-            // perf2 P4.3: last frame's summary meta strings — meta renders from
+            // last frame's summary meta strings — meta renders from
             // record state (renderLiveCardMeta), once per card in a batch.
             _lastFrameMeta: [],
             // The owner's request that spawned this card (main, non-subagent only),
@@ -1482,7 +1472,7 @@ export function createChatInstance({
             objectiveHint: (isMain && !options.isSubagent) ? _pendingCardObjective : '',
             // The proactively-coined LLM name; becomes the card title when set.
             suggestedName: '',
-            // P1 (v6.82): last bounded activity projection (remembered even while
+            // P1: last bounded activity projection (remembered even while
             // the collapsed line is suppressed on unnamed root cards) + sticky cost.
             collapsedActivity: '',
             costMeta: null,
@@ -1511,7 +1501,7 @@ export function createChatInstance({
             onDomWrite: withStableViewport,
         });
         if (isMain && !options.isSubagent) _pendingCardObjective = '';
-        record.summaryButtonEl?.addEventListener('click', () => {
+        bindContentButton(record.summaryButtonEl, () => {
             const nowExpanded = record.root.dataset.expanded !== '1';
             explicitCardExpansion.set(record.groupId, nowExpanded);
             setLiveCardExpanded(record, nowExpanded);
@@ -1523,7 +1513,7 @@ export function createChatInstance({
         });
         record.timelineEl?.addEventListener('click', (event) => {
             const button = event.target.closest('[data-live-line-toggle]');
-            // Row-surface disclosure (v6.71.0): any click on the line's
+            // Row-surface disclosure: any click on the line's
             // NON-interactive surface toggles it (guards live in the pure
             // helper: nested interactive elements, active text selection).
             const lineKey = button
@@ -1549,8 +1539,7 @@ export function createChatInstance({
             }
         });
         liveCardRecords.set(normalizedGroupId, record);
-        runLedgerEviction();
-        // Cluster B: apply a name that arrived (task_named) before this card existed.
+        // apply a name that arrived (task_named) before this card existed.
         const _pendingName = pendingSuggestedNames.get(normalizedGroupId);
         if (_pendingName && !record.isSubagent) {
             pendingSuggestedNames.delete(normalizedGroupId);
@@ -1750,7 +1739,7 @@ export function createChatInstance({
     }
 
     function updateLiveCardCount(record) {
-        // perf2 P4.3: one count render per card at the end of a replay batch.
+        // one count render per card at the end of a replay batch.
         if (_rebuildBatch) {
             _rebuildBatch.touch(record);
             return;
@@ -1778,10 +1767,10 @@ export function createChatInstance({
     window.addEventListener('ouro:page-shown', handlePageShown);
     document.addEventListener('visibilitychange', handlePageShown);
 
-    // P3: fetch the genuinely-full output for a server-truncated timeline line (the WS
-    // preview was capped at 4000 chars), cache it on the item, then re-render if the line
-    // is still expanded. The full text is fetched on demand (not pushed over the socket)
-    // and shown in a bounded-scroll box. Best-effort — the capped preview stays on failure.
+    // P3: fetch the genuinely-full text of a server-truncated timeline line (the WS
+    // preview is capped at 4000 chars) on demand, not over the socket; cache it on
+    // the item, re-render if the line is still expanded, and show it in a
+    // bounded-scroll box. Best-effort: the capped preview stays on failure.
     async function fetchFullLineOutput(item, record) {
         item._fetchingFull = true;
         let changed = false;
@@ -1846,7 +1835,7 @@ export function createChatInstance({
         };
     }
 
-    // perf2 P4.3: the ONE meta-line renderer, fed entirely from record state,
+    // the ONE meta-line renderer, fed entirely from record state,
     // so a replay batch renders it exactly once per card.
     function renderLiveCardMeta(record) {
         if (!record?.metaEl) return false;
@@ -1862,19 +1851,17 @@ export function createChatInstance({
             record.groupId === 'bg-consciousness' ? 'Background thinking' : '',
             ...(Array.isArray(record._lastFrameMeta) ? record._lastFrameMeta : []),
             ...((record.costMeta && Array.isArray(record.costMeta.meta)) ? record.costMeta.meta : []),
-            record.latestActivityTs ? `Latest ${record.latestActivityTs}` : '',
-        ].filter(Boolean).map((item) => `<span class="chat-live-meta-text">${escapeHtml(item)}</span>`).join('');
+            record.latestActivityTs ? `updated ${record.latestActivityTs}` : '',
+        ].filter(Boolean).map((item) => `<span class="chat-live-meta-text">${escapeHtml(item)}</span>`).join(' · ');
         if (record.metaEl.innerHTML === html) return false;
         record.metaEl.innerHTML = html;
         return Boolean(record.metaEl.isConnected);
     }
 
     function applyLiveCardState(summary, groupId, ts, dedupeKey = '', options = {}) {
-        const result = withStableViewport(() => applyLiveCardStateMutation(
+        return withStableViewport(() => applyLiveCardStateMutation(
             summary, groupId, ts, dedupeKey, options,
         ));
-        runLedgerEviction();
-        return result;
     }
 
     function applyLiveCardStateMutation(summary, groupId, ts, dedupeKey = '', { suppressDomInsert = false, rawTs = '' } = {}) {
@@ -1930,10 +1917,9 @@ export function createChatInstance({
 
         const desiredPhase = desiredLiveCardPhase(record, activePhase);
         setLiveCardPhase(record, desiredPhase.phase, desiredPhase.text, desiredPhase.className);
-        // Cluster B: a coined project name takes the title slot; the live activity
-        // headline still renders in the timeline lines below. Falls back to the
-        // activity headline until the proactive namer has produced a name.
-        const title = record.suggestedName || activeHeadline;
+        // A coined project name takes the title slot (the activity headline stays in the
+        // timeline); a child's title is its lineage identity; otherwise the activity headline.
+        const title = record.suggestedName || (record.isSubagent ? childTitle(record) : activeHeadline);
         if (record.titleEl.textContent !== title) record.titleEl.textContent = title;
         // The collapsed line is a compact presentation projection, while the
         // complete latest activity remains independently reachable through the
@@ -2073,11 +2059,7 @@ export function createChatInstance({
     }
 
     function finishLiveCard(groupId = '', phase = '') {
-        const result = withStableViewport(() => finishLiveCardMutation(groupId, phase));
-        // A settle can push the finished population over the cap without any
-        // new card being created; keep the bound maintained, not edge-triggered.
-        runLedgerEviction();
-        return result;
+        return withStableViewport(() => finishLiveCardMutation(groupId, phase));
     }
 
     function finishLiveCardMutation(groupId = '', phase = '') {
@@ -2101,7 +2083,8 @@ export function createChatInstance({
         const presentation = taskPresentation(phase || 'done');
         const activePhase = presentation.phase;
         setLiveCardPhase(record, activePhase, presentation.headline);
-        if (!record.suggestedName && !record.lastHumanHeadline
+        if (record.isSubagent) record.titleEl.textContent = childTitle(record);
+        else if (!record.suggestedName && !record.lastHumanHeadline
                 && record.titleEl.textContent !== presentation.headline) {
             record.titleEl.textContent = presentation.headline;
         }
@@ -2177,24 +2160,30 @@ export function createChatInstance({
         return changed;
     }
 
-    // child task_id -> { parentId, role }, learned from subagent lifecycle pings.
-    // Child cards are mounted under the parent card, but their phase/terminal
-    // state is independent so a finished child cannot mark the parent done.
+    // child task_id -> { parentId, role, model } from subagent lifecycle pings. Child
+    // cards mount under the parent, but their phase/terminal state is independent
+    // (a finished child never marks the parent done); a later model-less event keeps
+    // the previously seen model so the "role · model" headline survives.
+    const subagentChildParents = new Map();
+    // Children whose card reached a terminal phase: late non-lifecycle progress
+    // must NOT revive it back to "working".
+    const subagentTerminalChildren = new Set();
 
-    // Children whose card has reached a terminal phase — late non-lifecycle
-    // progress for these must NOT revive it back to "working".
-
-
-    // E2 (v6.39 UI): merge a subagent's parent/role/model, PRESERVING a previously-seen model
-    // when a later (model-less) event — e.g. a synthesized terminal — updates the entry, so the
-    // "role · model" headline survives the child's lifecycle.
     function setSubagentParent(childId, { parentId = '', role = '', model = '' } = {}) {
         const prev = subagentChildParents.get(childId) || {};
-        subagentChildParents.set(childId, {
+        const next = {
             parentId: parentId || prev.parentId || '',
             role: role || prev.role || '',
             model: taskKey(model) || prev.model || '',
-        });
+        };
+        if (['parentId', 'role', 'model'].every((k) => next[k] === prev[k])) return;
+        subagentChildParents.set(childId, next);
+        for (const sid of subagentChildParents.keys()) {
+            const rec = liveCardRecords.get(sid);
+            // Write only on change: a rewrite would destroy a selection being copied.
+            const next = rec?.isSubagent ? childTitle(rec) : '';
+            if (next && rec.titleEl.textContent !== next) rec.titleEl.textContent = next;
+        }
     }
 
     function learnSubagentLineage(msg) {
@@ -2215,15 +2204,29 @@ export function createChatInstance({
         return childId;
     }
 
-    function summarizeSubagentCardFrame(evt, overrides = {}, rawTs = '') {
+    function summarizeSubagentCardFrame(evt, childId, overrides = {}, rawTs = '') {
+        const { parentId = '', role = '', model = '' } = subagentChildParents.get(childId) || {};
         const summary = summarizeChatLiveEvent({
             ...evt,
             type: 'send_message',
             is_progress: true,
             delegation_role: 'subagent',
+            subagent_task_id: childId,
+            parent_task_id: parentId,
+            subagent_role: role,
+            model,
             ...overrides,
         });
         return summary ? withTaskCostMeta(summary, evt, { rawTs }) : null;
+    }
+
+    // A child's title is its lineage identity plus, for twins (same displayed identity
+    // under one parent), the short id; re-projected on every title write and lineage
+    // change (terminal children included).
+    function childTitle(record) {
+        const twin = subagentTwin(subagentChildParents, record.groupId);
+        return subagentIdentityTitle(subagentChildParents.get(record.groupId))
+            + (twin ? ` (${record.groupId.slice(0, 8)})` : '');
     }
 
     function updateLiveCardFromProgressMessage(msg, { grantCancelAuthority = true } = {}) {
@@ -2313,14 +2316,8 @@ export function createChatInstance({
         ].includes(event)) {
             return routeSubagentProgressToCard(childId, evt);
         }
-        const { model } = subagentChildParents.get(childId) || {};
         const rawTs = tsValue || new Date().toISOString();
-        const summary = summarizeSubagentCardFrame(evt, {
-            subagent_task_id: childId,
-            parent_task_id: parentId,
-            subagent_role: role,
-            model,
-        }, rawTs);
+        const summary = summarizeSubagentCardFrame(evt, childId, {}, rawTs);
         if (!summary) return false;
         summary.dedupeKey = `subagent-lifecycle:${childId}`;
         // Interrupted is retryable and therefore non-terminal; the canonical
@@ -2345,7 +2342,7 @@ export function createChatInstance({
     function routeSubagentProgressToCard(childId, msg) {
         const info = subagentChildParents.get(childId);
         if (!info) return false;
-        const { parentId, role, model } = info;
+        const { parentId, role } = info;
         const content = String(msg?.content || msg?.text || '').trim();
         if (!content) return false;
         const rawTs = msg?.ts || new Date().toISOString();
@@ -2354,14 +2351,10 @@ export function createChatInstance({
         if (childState && !childState.completed) childState.forceCard = true;
         const record = getSubagentCardRecord(childId, parentId, role);
         const preserveTerminal = Boolean(record?.finished && subagentTerminalChildren.has(childId));
-        const summary = summarizeSubagentCardFrame(msg, {
+        const summary = summarizeSubagentCardFrame(msg, childId, {
             content,
             text: content,
             subagent_event: 'running',
-            subagent_task_id: childId,
-            parent_task_id: parentId,
-            subagent_role: role,
-            model,
             // A replayed progress row may follow a terminal record because the
             // history pre-pass already knows the child's final state. Do not add
             // contradictory `status=running` metadata in that case.
@@ -2371,8 +2364,6 @@ export function createChatInstance({
         summary.dedupeKey = `subagent-progress:${childId}`;
         if (preserveTerminal) {
             summary.phase = String(record.phaseEl?.dataset?.phase || 'done');
-            summary.headline = String(record.titleEl?.textContent || summary.headline);
-            summary.fullHeadline = summary.headline;
             summary.terminal = true;
         }
         return queueTaskLiveUpdate(
@@ -2384,29 +2375,23 @@ export function createChatInstance({
         const childId = taskKey(taskId);
         const info = subagentChildParents.get(childId);
         if (!childId || !info) return false;
-        const { parentId, role, model } = info;
+        const { parentId, role } = info;
         const text = String(msg?.content || msg?.text || '').trim();
         const rawTs = msg?.ts || new Date().toISOString();
         forceTaskCard(parentId, rawTs);
         forceTaskCard(childId, rawTs);
         const record = getSubagentCardRecord(childId, parentId, role);
         const priorTerminalPhase = record?.finished ? String(record.phaseEl?.dataset?.phase || '') : '';
-        const summary = summarizeSubagentCardFrame(msg, {
+        const summary = summarizeSubagentCardFrame(msg, childId, {
             content: '',
             text: '',
             result: text,
             subagent_event: 'completed',
-            subagent_task_id: childId,
-            parent_task_id: parentId,
-            subagent_role: role,
-            model,
         }, rawTs);
         if (!summary) return false;
         summary.dedupeKey = `subagent-result:${childId}`;
         if (priorTerminalPhase) {
             summary.phase = priorTerminalPhase;
-            summary.headline = String(record.titleEl?.textContent || summary.headline);
-            summary.fullHeadline = summary.headline;
             summary.terminal = true;
         }
         return queueTaskLiveUpdate(
@@ -2583,7 +2568,7 @@ export function createChatInstance({
             if (persistedHistory.length > 200) {
                 persistedHistory.splice(0, persistedHistory.length - 200);
             }
-            // perf2 P4.3: a rebuildAll replay serializes the sessionStorage
+            // a rebuildAll replay serializes the sessionStorage
             // snapshot ONCE at the end of the batch, not per historical row.
             if (!_rebuildBatch) persistVisibleHistory();
         }
@@ -2776,7 +2761,7 @@ export function createChatInstance({
                     return false;
                 }
                 const messages = Array.isArray(data.messages) ? data.messages : [];
-                // perf2 P4.5: the server's window verdict (P3.2 additive field)
+                // the server's window verdict (P3.2 additive field)
                 // drives the Load-older button/notice after this sync lands.
                 historyWindow = (data && typeof data.window === 'object' && data.window)
                     ? data.window
@@ -2789,9 +2774,9 @@ export function createChatInstance({
 
                 // First load/reconnect trusts server history and fully rebuilds the
                 // feed; routine post-completion syncs only fold in new task cards.
-                // perf2 P4: a Load-older refetch (forceRebuild) and the first
+                // a Load-older refetch (forceRebuild) and the first
                 // successful sync after an offline sessionStorage bootstrap
-                // [GPT#17] rebuild fully too.
+                // rebuild fully too.
                 const rebuildAll = !historyLoaded || fromReconnect || forceRebuild
                     || offlineBootstrapPainted;
                 // On a soft reconnect the module (and its dedupe set)
@@ -2805,12 +2790,12 @@ export function createChatInstance({
                 // replay everything too, so retirement resets with them.
                 if (rebuildAll) retiredTaskIds.clear();
 
-                // perf2 P4.3: the ENTIRE mutation below (clear -> pass 1 ->
+                // the ENTIRE mutation below (clear -> pass 1 ->
                 // pass 2 -> terminal resolution -> sweep) is one synchronous
                 // closure. On rebuildAll it runs inside ONE outer
                 // withStableViewport with a detached batch collecting the
                 // top-level nodes; NO awaits may occur between the feed
-                // clearing and the batch mount [GPT#14]. The routine path
+                // clearing and the batch mount. The routine path
                 // (rebuildAll=false) calls it directly — unchanged behavior.
                 const applySyncedMessages = () => {
                 // Server-confirmed rows retire their journal copy; the rest
@@ -3051,7 +3036,7 @@ export function createChatInstance({
                 }
                 };  // end applySyncedMessages
 
-                // perf2 P4 follow-up (double-fetch fix): the replay below marks
+                // Double-fetch fix: the replay below marks
                 // historical cards finished; those transitions must not
                 // schedule the post-completion resync (the rows just arrived
                 // from this very fetch). The flag spans BOTH branches and is
@@ -3060,7 +3045,7 @@ export function createChatInstance({
                 _historyReplayActive = true;
                 try {
                     if (rebuildAll) {
-                        // perf2 P4.3 [GPT#14]: one outer withStableViewport for
+                        // one outer withStableViewport for
                         // the whole rebuild (inner wrappers collapse on the
                         // _viewportMutationDepth gate — no per-frame layout
                         // storm); one stable sort, one fragment mount, ONE
@@ -3129,10 +3114,10 @@ export function createChatInstance({
                 lastHistorySyncSucceeded = true;
                 // The durable rebuild superseded the offline fallback paint.
                 offlineBootstrapPainted = false;
-                // perf2 P4.1: ANY successful sync leaves the instance hydrated
+                // ANY successful sync leaves the instance hydrated
                 // — later hydration triggers ride this sticky promise.
                 initialHydrationPromise = historySyncPromise;
-                // perf2 P4.5: reflect the server's window verdict in the
+                // reflect the server's window verdict in the
                 // Load-older control now that the feed matches this response.
                 syncLoadOlderControl();
                 // A recreated project instance restores its predecessor's stashed
@@ -3188,9 +3173,9 @@ export function createChatInstance({
     async function refreshHistory({ revision = 0 } = {}) {
         const generation = ++historyPaintGeneration;
         const targetRevision = Math.max(0, Number(revision) || 0);
-        // perf2 P4.1: only a NEW revision (or a never-hydrated instance)
+        // only a NEW revision (or a never-hydrated instance)
         // forces a real fetch; otherwise the sticky hydration promise answers
-        // and the paint receipt below still runs [GPT#12].
+        // and the paint receipt below still runs.
         if (targetRevision > lastLoadedHistoryRevision || !initialHydrationPromise) {
             await syncHistory({ includeUser: true });
         } else {
@@ -3207,7 +3192,7 @@ export function createChatInstance({
         // visible. Two frames cover layout followed by paint/composite. A
         // destroyed page reports hidden===false, so the paint receipt must also
         // consult the lifecycle flag — a late paint on a torn-down instance
-        // would otherwise acknowledge a revision that was never shown (GPT#15).
+        // would otherwise acknowledge a revision that was never shown.
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         return {
             painted: !destroyed && generation === historyPaintGeneration && !page.hidden,
@@ -3217,7 +3202,7 @@ export function createChatInstance({
 
     (async () => {
         await loadUiPreferences();
-        // perf2 P4.2: Main waits for the (bounded) idle hydration window;
+        // Main waits for the (bounded) idle hydration window;
         // project instances pass straight through. The sticky single-flight
         // below folds this trigger with the first socket open / refreshHistory.
         await waitForHydrationWindow();
@@ -3240,7 +3225,7 @@ export function createChatInstance({
             }
         } catch {}
         historyLoaded = true;
-        // GPT#17: this offline fallback sets historyLoaded=true, which would
+        // this offline fallback sets historyLoaded=true, which would
         // make the first successful post-outage sync a NON-rebuilding routine
         // fold over stale sessionStorage bubbles. Flag it so that sync
         // rebuilds from durable history instead.
@@ -3697,7 +3682,7 @@ export function createChatInstance({
     typingEl.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
     messagesDiv.appendChild(typingEl);
 
-    // perf2 P4.5: "Load older" atop the feed. Server truth (window.complete /
+    // "Load older" atop the feed. Server truth (window.complete /
     // truncated_by, P3.2) picks refetch button vs honest boundary notice;
     // excluded from viewport anchoring; mounted ONLY with content — a hidden
     // permanent node would break child-order consumers (ui-smoke chronology).
@@ -3751,7 +3736,7 @@ export function createChatInstance({
         syncLoadOlderControl();
         // Anchor the current first visible timestamped node (the control
         // itself is excluded from capture, like .typing-bubble) so the reader
-        // does not drift when older rows land above the viewport [GPT#13].
+        // does not drift when older rows land above the viewport.
         const anchor = isNearBottom() ? null : captureVisibleTimelineAnchor();
         const previousQuota = historyQuotaOverride;
         historyQuotaOverride = next;
@@ -3855,7 +3840,7 @@ export function createChatInstance({
     }
 
     function hideTypingIndicatorOnly() {
-        // perf2 P4.3: one typing-indicator write per replay batch.
+        // one typing-indicator write per replay batch.
         if (_rebuildBatch) {
             _rebuildBatch.typingHidden = true;
             return true;
@@ -4177,7 +4162,7 @@ export function createChatInstance({
         withRemoteActivity(() => updateLiveCardFromLogEvent(msg.data));
     });
 
-    // Cluster B: the proactive namer coined a project name for a fresh card — show it
+    // the proactive namer coined a project name for a fresh card — show it
     // as the card title up front (turn-into-project then reuses the same name). Not
     // thread-gated on chat_id: the broadcast carries only task_id, and applySuggestedName
     // no-ops unless THIS thread already holds that card.
@@ -4224,7 +4209,7 @@ export function createChatInstance({
         }
         refreshHeaderControlState(true);
         syncChatStatus();
-        // perf2 P4.1 [Gemini#3]: reconnect truth comes from the ws CLIENT
+        // Reconnect truth comes from the ws CLIENT
         // (previouslyConnected rides the open event) — a project instance
         // created while the socket was already open must still treat the next
         // open as a reconnect. The per-instance flag stays only as a fallback
