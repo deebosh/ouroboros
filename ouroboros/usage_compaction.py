@@ -222,9 +222,13 @@ def _archive_dir_fds(root: pathlib.Path, *, create: bool) -> list:
     ``UsageLedgerCorrupt``.
     """
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    fds = [os.open(str(root), os.O_RDONLY | os.O_DIRECTORY)]
+    fds: list = []
     level = root
     try:
+        try:  # the anchor of the chain: an unreadable root (permissions, fd
+            fds.append(os.open(str(root), os.O_RDONLY | os.O_DIRECTORY))
+        except OSError as exc:  # exhaustion) must be typed too, or it escapes
+            raise UsageLedgerCorrupt(f"usage archive root is not readable: {root}") from exc
         for name in ARCHIVE_SEGMENT_DIR_REL.parts:
             level = level / name
             if create:
