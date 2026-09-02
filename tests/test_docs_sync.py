@@ -19,6 +19,50 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def test_settings_docs_name_every_key_owner_and_what_startup_persists():
+    """Three settings-layer claims the code contradicts (all red pre-fix).
+
+    1. The Default settings table skipped two live `SETTINGS_DEFAULTS` keys
+       (`OUROBOROS_CONTEXT_MODE_AUTO_LOW`, `OUROBOROS_CLAWHUB_REGISTRY_URL`).
+    2. Startup was described as persisting NOTHING, while the server lifespan's
+       `load_settings()` runs `normalize_and_persist_context_mode_compat`,
+       which rewrites the compat pair when it changed under a held lock.
+    3. Invariant 3 and the README pointed at the `config.py` facade as the
+       owner of defaults, after the v7next split moved the vocabularies into
+       sibling leaves.
+    """
+    arch = _read("docs/ARCHITECTURE.md")
+    arch_flat = " ".join(arch.split())
+    readme_flat = " ".join(_read("README.md").split())
+    development = _read("docs/DEVELOPMENT.md")
+
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+    for key in ("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "OUROBOROS_CLAWHUB_REGISTRY_URL"):
+        assert key in SETTINGS_DEFAULTS
+        assert f"| {key} |" in arch, f"{key} is missing from the settings table"
+
+    # Startup persistence: the compat migration is a real write, not "nothing".
+    # (Other "persists nothing" statements in this document are about the
+    # onboarding failure path and a no-change owner transform, both true.)
+    assert "boot provider normalization in-process and persists nothing" not in arch_flat
+    assert "Startup is a read, with one exception" in arch_flat
+    assert "normalize_and_persist_context_mode_compat" in arch_flat
+
+    # Ownership: the leaves own the vocabularies; config.py stays the facade.
+    owners = ("settings_defaults", "settings_scales", "model_slots",
+              "review_model_routes", "runtime_limits", "settings_integrity")
+    invariant = next(
+        line for line in arch.splitlines()
+        if line.startswith("3. **Configuration and messaging have single owners.**")
+    )
+    assert all(owner in invariant for owner in owners), invariant
+    assert "exact settings and defaults live in" not in readme_flat
+    assert "settings_defaults.py" in readme_flat
+    assert "an SSOT in `config.py` `SETTINGS_DEFAULTS`" not in development
+    assert "`settings_defaults.py`" in development
+
+
 def test_architecture_deep_review_has_no_compact_manifest_retry_rung():
     """The compact-manifest retry rung was removed; the doc still promised it.
 

@@ -2100,9 +2100,12 @@ Before every commit, verify the following:
   terminal fact must match task-attempt plus execution/round/call identity before
   it clears the row. Do not reuse `external_wait_lease`, a transport timeout, or a
   heartbeat as this authority, and do not add an elapsed-time stall detector.
-- [ ] New numeric timeout constants are an SSOT in `config.py` `SETTINGS_DEFAULTS`
-  with a getter and env registration; do not scatter magic wait numbers across
-  call sites.
+- [ ] New numeric timeout constants are an SSOT in the owning settings leaf, not
+  in the `config.py` facade: the key and its shipped default go into
+  `settings_defaults.py` `SETTINGS_DEFAULTS`, and the clamped getter into
+  `runtime_limits.py` (re-exported through `ouroboros.config`, which stays the
+  one import surface). Register the env key; do not scatter magic wait numbers
+  across call sites.
 - [ ] Cognitive waits use separate axes. A transport timeout only bounds a dead
   socket; it is not a reasoning cutoff. The shared no-proxy LLM transport bound
   is `OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC` (2700s), while review slots,
