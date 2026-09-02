@@ -215,6 +215,10 @@ OWNER_ATTESTATION: List[str] = [
     "No workflow depends on the removed fail_tasks budget-drain batch "
     "terminalizer or on the removed until_deadline/stall_rounds_threshold "
     "pacing knobs (external config templates must drop them).",
+    "No out-of-tree extension or automation imports the removed compatibility "
+    "module ouroboros.contracts.api_v1 (ABI-3/ABI-6д): the frozen HTTP/WS "
+    "envelope is owned by ouroboros.gateway.contracts alone, and an import of "
+    "the old name fails at load time after the upgrade.",
     "The owner accepts the Q8=B consequence: pre-7.0 task-result history is "
     "quarantined after the upgrade, BY DESIGN, with no converter — recovery "
     "is a manual re-stamp of each file moved back out of "
