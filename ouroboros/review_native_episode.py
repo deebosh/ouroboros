@@ -410,15 +410,14 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     if transcript_chars > transcript_cap:
                         break  # even the notice would not fit: the bound has landed
                 round_idx += 1
-                if landed and not landing_sent:
-                    landing_sent = True  # this send carries the notice
                 chat_kwargs = self._chat_kwargs(messages, schemas, max_tokens)
                 transport = review_transport_timeout(
                     slot.model, getattr(slot, "transport_timeout_sec", None), deadline_at,
                 )
                 if logical_deadline is not None:
-                    # One send never outlives the slot's window.
-                    remaining = max(1.0, float(logical_deadline) - time.monotonic())
+                    # One send never outlives the slot's window (no floor: the
+                    # session executor clamps the same way).
+                    remaining = max(0.001, float(logical_deadline) - time.monotonic())
                     transport = remaining if transport is None else min(float(transport), remaining)
                 if transport is not None:
                     chat_kwargs["timeout"] = transport
@@ -436,11 +435,13 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                             # came back: its receipt keys and custody must not
                             # read as a zero-send refusal.
                             self._rounds_used = round_idx
+                            landing_sent = landing_sent or landed  # the dispatched send carried the notice
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
                         if isinstance(exc, BudgetExceeded) and shape == "report" and last_content:
                             break  # nothing was sent; a report keeps its draft
                         raise
                 self._rounds_used = round_idx
+                landing_sent = landing_sent or landed  # a returned send carried the notice
                 tool_calls = (msg.get("tool_calls") or []) if isinstance(msg, dict) else []
                 usage = dict(usage or {})
                 # Pop the wire-validation sidecar BEFORE accumulation, exactly
@@ -507,7 +508,16 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         registry, tc, validation_by_id, round_idx=round_idx,
                         room=transcript_cap - _LANDING_RESERVE_CHARS - transcript_chars,
                     )
-                    transcript_chars += len(json.dumps(tool_message, ensure_ascii=False, default=str))
+                    envelope = len(json.dumps(tool_message, ensure_ascii=False, default=str))
+                    if transcript_chars + envelope > transcript_cap:
+                        # Even the mandatory envelope (the provider's exact call
+                        # id must be echoed) no longer fits under the bound: the
+                        # round cannot be answered within it, so the episode
+                        # ends HERE, typed — no over-bound send is ever made.
+                        end_reason = "transcript_bound"
+                        transcript_chars = transcript_cap + 1
+                        break
+                    transcript_chars += envelope
                     messages.append(tool_message)
             if shape == "report" and not final_answer and last_content:
                 # A report is a product, not a verdict: the collected draft is
@@ -634,9 +644,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         if room < _RESULT_ROOM_FLOOR_CHARS:
             # The round's earlier calls spent the room below the bound: a read
             # whose result could not be returned is not performed at all. The
-            # stub itself is charged against the room — once even a stub would
-            # not fit, the tool message is empty, so a round of many calls can
-            # never spend the landing reserve and jump the bound.
+            # stub itself is charged against the room and is empty once even a
+            # stub would not fit; every call still costs its message envelope
+            # (each call must be answered) — the caller measures the complete
+            # serialized envelope and ends the episode typed when even that
+            # cannot fit, so no over-bound send is ever made.
             outcome = "withheld"
             stub = (
                 "⚠️ RESULT WITHHELD: the episode transcript budget is spent; "
@@ -720,10 +732,10 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 try:
                     parsed = json.loads(value)
                 except (TypeError, ValueError):
-                    return redact_projection(value).value
+                    parsed = None
                 if isinstance(parsed, (dict, list)):
                     return json.dumps(redact_projection(parsed).value, ensure_ascii=False, default=str)
-                return value
+                return redact_projection(value).value  # plain text or a JSON scalar: redacted as text
             return redact_projection(value).value
 
         tail: List[Dict[str, Any]] = []
@@ -764,7 +776,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             "messages": bounded, "omitted_tool_results": len(results) - len(kept),
             "trailing_host_notice": trailing_notice,
         }
-        return json.dumps(doc, ensure_ascii=False, default=str)
+        # Defense in depth: the whole bounded document passes the projection
+        # redactor once more before it becomes a durable custody row.
+        return json.dumps(redact_projection(doc).value, ensure_ascii=False, default=str)
 
     def failure_custody(self) -> Dict[str, Any]:
         """The proven facts of a refused or errored episode for the error actor:

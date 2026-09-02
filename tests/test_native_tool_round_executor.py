@@ -439,7 +439,10 @@ def test_terminal_round_is_kept_on_a_bound_end(subject_repo, tmp_path, monkeypat
     fact = _episode_rows(tmp_path / "custody")[0]
     terminal = json.loads(fact["native_terminal_round"])  # structurally valid JSON, always
     messages = terminal["messages"]
-    assert messages[0]["role"] == "assistant" and messages[-1]["role"] == "tool"
+    # The decision-ending envelope leads; its tool results follow only when
+    # they fitted under the bound (an unfittable envelope ends the episode
+    # before it is appended).
+    assert messages[0]["role"] == "assistant" and all(m["role"] in {"assistant", "tool"} for m in messages)
     assert "greeting.txt" in json.dumps(terminal)
     assert len(fact["native_terminal_round"]) <= 8_000 and terminal["omitted_tool_results"] == 0
     # A delivered episode keeps no terminal-round copy: the answer IS the record.
@@ -486,6 +489,7 @@ def test_terminal_round_is_kept_when_the_landing_notice_is_the_last_message(subj
         NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
     fact = _episode_rows(tmp_path / "custody")[0]
     assert fact["native_end_reason"] == "transport_error" and fact["native_landing_notified"] is True
+    assert fact["native_landing_sent"] is False  # the notice was posted, but no send physically carried it
     terminal = json.loads(fact["native_terminal_round"])
     assert "chunk.txt" in fact["native_terminal_round"] and terminal["trailing_host_notice"] is True
     assert all(m["role"] in {"assistant", "tool"} for m in terminal["messages"])  # the notice is never relabelled
@@ -511,6 +515,33 @@ def test_terminal_round_is_kept_when_the_landing_notice_is_the_last_message(subj
     assert fact["native_landing_notified"] is True
     assert "greeting.txt" in fact.get("native_terminal_round", "")
     assert json.loads(fact["native_terminal_round"])["trailing_host_notice"] is True
+
+
+def test_unfittable_envelope_ends_the_episode_without_another_send(subject_repo, monkeypatch):
+    """The serialized-size invariant holds on EVERY outcome: when even the
+    mandatory envelope of a withheld call (the provider's exact call id) no
+    longer fits under the bound, the episode ends typed — no over-bound send
+    is ever made — and a report keeps its draft."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    huge_id = "call-" + "i" * 3_000
+    calls = [_tool_call("read_file", {"path": "big.txt"}, "c0")] + [
+        _tool_call("read_file", {"path": "greeting.txt"}, huge_id + str(i)) for i in range(3)
+    ]
+    llm = _ScriptedLLM([{"content": "# Draft\n", "tool_calls": calls}, {"content": _VERDICT}])
+    assignment = _assignment(subject_repo, llm)
+    assignment.request.surface = "deep_self_review"
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
+    result = executor.execute()
+    assert result.raw_text == "# Draft\n" and result.usage["native_incomplete"] == "transcript_bound"
+    assert len(llm.calls) == 1 and llm.script  # the over-bound send was never made
+    outcomes = [r["outcome"] for r in result.usage["native_tool_receipts"]]
+    assert outcomes[0] == "executed" and "withheld" in outcomes
+    # Verdict shape: the same end is a typed refusal.
+    llm = _ScriptedLLM([{"tool_calls": calls}, {"content": _VERDICT}])
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute()
+    assert exc.value.code == "native_transcript_cap_exceeded" and len(llm.calls) == 1
 
 
 def test_transcript_counter_covers_withheld_tool_message_envelopes(subject_repo, monkeypatch):
@@ -615,6 +646,15 @@ def test_terminal_round_masks_secrets_structurally(subject_repo):
     assert "hunter2" not in doc
     parsed = json.loads(doc)
     assert parsed["messages"][2]["content"] == "plain text, no secret"
+    # A JSON SCALAR string (a quoted secret) and an assistant prose secret are
+    # redacted as text — every shape the text redactor masks.
+    from ouroboros.observability import redact_projection
+
+    token = "sk-ant-api03-" + "A" * 40
+    if token not in str(redact_projection(token).value):  # the text redactor knows this shape
+        scalar = [{"role": "assistant", "content": f"found {token} in config", "tool_calls": []},
+                  {"role": "tool", "tool_call_id": "c1", "content": json.dumps(token)}]
+        assert token not in NativeToolRoundReviewExecutor._terminal_round_fact(scalar)
 
 
 def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path):
@@ -650,7 +690,7 @@ def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path):
     llm.chat = slow_chat
     result = executor.execute()
     assert result.raw_text == "# Draft\n" and result.usage["native_incomplete"] == "deadline_exhausted"
-    assert llm.calls[0]["timeout"] <= 1.0  # one send never outlives the window (floor 1s)
+    assert llm.calls[0]["timeout"] <= 0.2  # one send never outlives the window: no floor above it
 
 
 def test_round_without_progress_is_a_typed_malformed_end(subject_repo):
