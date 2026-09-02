@@ -3620,4 +3620,5 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
 
 
 # The in-flight indicator lifecycle smoke test lives in
-# tests/test_ui_smoke_inflight_indicator.py (size-ratchet byte gate on this module).
+# tests/test_ui_smoke_inflight_indicator.py and the Settings → Agents list-editor
+# acceptance in tests/test_ui_smoke_agents_panel.py (size-ratchet byte gate on this module).
