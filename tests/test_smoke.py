@@ -620,7 +620,7 @@ class TestStagedOversizedFunction:
         assert _find_oversized_functions(content, "fake.py") == []
 
     def test_grandfather_exemption_respected(self):
-        """An oversized function whose (basename, name) IS in GRANDFATHERED is exempt.
+        """An oversized function whose (repo-relative path, name) IS in GRANDFATHERED is exempt.
 
         This is the structural guarantee that future maintainers will not be tempted
         to drop the allowlist and re-introduce the very bypass class this fix closes.
@@ -633,27 +633,27 @@ class TestStagedOversizedFunction:
             "the gate would either block legitimate oversized functions or rot silently."
         )
         # Pick one real grandfathered entry and synthesize an oversized function with
-        # that exact (basename, name) pair; the gate must NOT report it as a violation.
-        grand_fname, grand_funcname = next(iter(GRANDFATHERED_OVERSIZED_FUNCTIONS))
+        # that exact (path, name) pair; the gate must NOT report it as a violation.
+        grand_path, grand_funcname = next(iter(GRANDFATHERED_OVERSIZED_FUNCTIONS))
         body = "\n".join(f"    x_{i} = {i}" for i in range(400))
         content = f"def {grand_funcname}():\n{body}\n"
-        violations = _find_oversized_functions(content, grand_fname)
+        violations = _find_oversized_functions(content, grand_path)
         assert violations == [], (
             f"grandfather exemption must silence oversized function "
-            f"{grand_fname}:{grand_funcname}, got {violations}"
+            f"{grand_path}:{grand_funcname}, got {violations}"
         )
 
-    def test_grandfather_basename_mismatch_still_flags(self):
-        """An oversized function whose name is grandfathered but basename is NOT is still flagged."""
+    def test_grandfather_path_mismatch_still_flags(self):
+        """An oversized function whose name is grandfathered but PATH is not is still flagged."""
         from ouroboros.tools.review_helpers import _find_oversized_functions
         from ouroboros.review import GRANDFATHERED_OVERSIZED_FUNCTIONS
 
-        # Pick the first real grandfathered (basename, funcname) pair, then submit
-        # the same funcname but a different basename. The gate must still flag it.
-        grand_fname, grand_funcname = next(iter(GRANDFATHERED_OVERSIZED_FUNCTIONS))
+        # Pick the first real grandfathered (path, funcname) pair, then submit the
+        # same funcname under a different path. The gate must still flag it.
+        _grand_path, grand_funcname = next(iter(GRANDFATHERED_OVERSIZED_FUNCTIONS))
         body = "\n".join(f"    x_{i} = {i}" for i in range(400))
         content = f"def {grand_funcname}():\n{body}\n"
-        violations = _find_oversized_functions(content, "different_file.py")
+        violations = _find_oversized_functions(content, "ouroboros/some_other_module.py")
         assert len(violations) == 1
         assert violations[0][0] == grand_funcname
 
@@ -662,6 +662,125 @@ class TestStagedOversizedFunction:
         from ouroboros.tools.review_helpers import _find_oversized_functions
         # Unparseable: missing colon, broken indent.
         assert _find_oversized_functions("def broken(\n    pass\n", "fake.py") == []
+
+    def _mk_func(self, name, body_lines):
+        body = "\n".join(f"    x_{i} = {i}" for i in range(body_lines))
+        return f"def {name}():\n{body}\n"
+
+    def test_staged_gate_is_delta_only_against_head(self, tmp_path):
+        """The staged gate flags a function ADDED oversized or GROWN past the cap,
+        but NOT one already oversized at HEAD at the same size (regression for the
+        managed-merge / tracked-debt false positive)."""
+        import subprocess
+
+        from ouroboros.tools.review_helpers import _check_staged_oversized_functions
+
+        def git(*args):
+            subprocess.run(["git", *args], cwd=tmp_path, check=True,
+                           capture_output=True, text=True)
+
+        git("init", "-q")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        src = tmp_path / "ouroboros"
+        src.mkdir()
+        mod = src / "mod.py"
+
+        # HEAD: one already-oversized function (320 lines).
+        mod.write_text(self._mk_func("already_big", 320), encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+
+        # Stage the SAME oversized function unchanged -> no violation.
+        mod.write_text(self._mk_func("already_big", 320) + "\nY = 1\n", encoding="utf-8")
+        git("add", "-A")
+        assert _check_staged_oversized_functions(tmp_path) is None
+
+        # Grow it past where HEAD had it -> violation.
+        mod.write_text(self._mk_func("already_big", 420), encoding="utf-8")
+        git("add", "-A")
+        out = _check_staged_oversized_functions(tmp_path)
+        assert out is not None and "ouroboros/mod.py:already_big" in out
+
+        # Brand-new oversized function in a new file -> violation (no HEAD baseline).
+        (src / "fresh.py").write_text(self._mk_func("fresh_big", 401), encoding="utf-8")
+        git("add", "-A")
+        out = _check_staged_oversized_functions(tmp_path)
+        assert out is not None and "ouroboros/fresh.py:fresh_big" in out
+
+    def test_staged_gate_same_name_functions_compared_positionally(self, tmp_path):
+        """A second oversized function sharing a name with a pre-existing one is not
+        grandfathered by it (ast.walk yields bare names; the baseline is per-name)."""
+        import subprocess
+
+        from ouroboros.tools.review_helpers import _check_staged_oversized_functions
+
+        def git(*args):
+            subprocess.run(["git", *args], cwd=tmp_path, check=True,
+                           capture_output=True, text=True)
+
+        git("init", "-q")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        src = tmp_path / "ouroboros"
+        src.mkdir()
+        mod = src / "mod.py"
+
+        # HEAD: ONE oversized `run` (a method on class A), 330 lines.
+        head = "class A:\n" + "".join(
+            f"    y_{i} = {i}\n" for i in range(2)
+        ) + "    def run(self):\n" + "".join(f"        z_{i} = {i}\n" for i in range(330))
+        mod.write_text(head, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+
+        # Stage: keep A.run, ADD a second oversized `run` on class B (310 lines).
+        staged = head + "\n\nclass B:\n    def run(self):\n" + "".join(
+            f"        w_{i} = {i}\n" for i in range(310)
+        )
+        mod.write_text(staged, encoding="utf-8")
+        git("add", "-A")
+        out = _check_staged_oversized_functions(tmp_path)
+        assert out is not None and "ouroboros/mod.py:run" in out, out
+
+    def test_staged_gate_skips_devtools_and_tests_paths(self, tmp_path):
+        """A staged oversized function under devtools/ or tests/ is out of scope."""
+        import subprocess
+
+        from ouroboros.tools.review_helpers import _check_staged_oversized_functions
+
+        def git(*args):
+            subprocess.run(["git", *args], cwd=tmp_path, check=True,
+                           capture_output=True, text=True)
+
+        git("init", "-q")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        (tmp_path / "devtools").mkdir()
+        (tmp_path / "devtools" / "bench.py").write_text(self._mk_func("huge", 400), encoding="utf-8")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_x.py").write_text(self._mk_func("huge", 400), encoding="utf-8")
+        git("add", "-A")
+        assert _check_staged_oversized_functions(tmp_path) is None
+
+    def test_staged_gate_scope_matches_canonical_ratchet(self):
+        """The staged pre-commit gate skips exactly what the canonical function
+        ratchet skips: devtools/, tests/ and the one-shot entry-point files.
+
+        Regression for the managed-update false positive — staging hundreds of
+        upstream devtools/ and tests/ files must not trip OVERSIZED_FUNCTIONS_BLOCKED
+        on functions that are pre-existing and green under the (identical) upstream
+        ratchet.
+        """
+        from ouroboros.review import is_function_gated_path
+
+        assert is_function_gated_path("ouroboros/loop.py") is True
+        assert is_function_gated_path("supervisor/workers.py") is True
+        # Out of function-gate scope — same skip set the canonical iterator uses.
+        assert is_function_gated_path("devtools/benchmarks/cybergym/run_cybergym.py") is False
+        assert is_function_gated_path("tests/test_smoke.py") is False
+        assert is_function_gated_path("launcher.py") is False
+        assert is_function_gated_path("ouroboros/review.py.txt") is False
 
 
 # ── Pre-push gate tests ──────────────────────────────────────────────

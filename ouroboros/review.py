@@ -135,6 +135,26 @@ def _is_gated_module_path(path: str) -> bool:
     return path.endswith(".py") or is_gated_js_module(path)
 
 
+def is_function_gated_path(path: str) -> bool:
+    """Return whether a repo-relative path is in scope for the >MAX_FUNCTION_LINES gate.
+
+    The function inventory is deliberately narrower than the module inventory: it
+    preserves the pre-v7 runtime-health scope by also skipping ``devtools/`` and
+    ``tests/`` and the one-shot entry-point files. This is the SSOT for that
+    scope — the canonical inventory iterators AND the fast-fail pre-commit staged
+    check (``ouroboros.tools.review_helpers._check_staged_oversized_functions``)
+    both consult it so they cannot drift. The drift this closes: a managed update
+    stages upstream ``devtools/``/``tests/`` files whose (pre-existing, upstream-
+    green) >300-line functions falsely tripped the commit gate.
+    """
+    if not path.endswith(".py"):
+        return False
+    posix = pathlib.PurePosixPath(path)
+    if posix.name in FUNCTION_COUNT_EXCLUDED_FILES:
+        return False
+    return not any(part in _FUNCTION_SKIP_DIR_NAMES for part in posix.parts[:-1])
+
+
 def _filesystem_repo_paths(repo_dir: pathlib.Path) -> Iterator[str]:
     for raw_root, dirs, files in os.walk(repo_dir, topdown=True, followlinks=False):
         dirs[:] = sorted(name for name in dirs if name not in _MODULE_SKIP_DIR_NAMES)
@@ -265,12 +285,7 @@ def _module_functions(module: GatedModule) -> tuple[GatedFunction, ...]:
 def _iter_gated_functions_from_modules(modules: Iterable[GatedModule]) -> Iterator[GatedFunction]:
     seen_keys: set[tuple[str, str]] = set()
     for module in modules:
-        posix = pathlib.PurePosixPath(module.path)
-        if not module.path.endswith(".py"):
-            continue
-        if posix.name in FUNCTION_COUNT_EXCLUDED_FILES:
-            continue
-        if any(part in _FUNCTION_SKIP_DIR_NAMES for part in posix.parts[:-1]):
+        if not is_function_gated_path(module.path):
             continue
         for function in _module_functions(module):
             key = (function.path, function.qualname)
@@ -959,12 +974,7 @@ def compute_complexity_metrics(sections: List[Tuple[str, str]]) -> Dict[str, Any
             continue
         raw = content.encode("utf-8")
         modules.append(GatedModule(rel, len(content.splitlines()), len(raw)))
-        posix = pathlib.PurePosixPath(rel)
-        if (
-            rel.endswith(".py")
-            and posix.name not in FUNCTION_COUNT_EXCLUDED_FILES
-            and not any(part in _FUNCTION_SKIP_DIR_NAMES for part in posix.parts[:-1])
-        ):
+        if is_function_gated_path(rel):
             try:
                 tree = ast.parse(content, filename=rel)
             except SyntaxError as exc:
