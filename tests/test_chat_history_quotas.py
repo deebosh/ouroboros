@@ -977,3 +977,24 @@ def test_recent_child_final_keeps_lineage_fields(tmp_path):
     row = next(m for m in _run(tmp_path, {}) if m.get("task_id") == "child2")
     assert row["delegation_role"] == "subagent"
     assert row["parent_task_id"] == "root"
+
+
+def test_legacy_limit_governs_human_quota_when_n_human_absent(tmp_path):
+    """The legacy `limit` parameter is the n_human DEFAULT, so shipped CLIs that
+    always sent it stop getting a placebo; non-positive = absent; explicit n_human wins."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    chat_lines = [
+        json.dumps({"ts": f"2026-06-05T00:00:0{i}Z",
+                    "direction": "in" if i % 2 == 0 else "out", "text": f"human-{i}"})
+        for i in range(5)
+    ]
+    (logs / "chat.jsonl").write_text("\n".join(chat_lines) + "\n", encoding="utf-8")
+
+    legacy_only = _run(tmp_path, {"limit": "2"})
+    assert [m["text"] for m in legacy_only] == ["human-3", "human-4"]
+
+    explicit_wins = _run(tmp_path, {"limit": "2", "n_human": "3"})
+    assert [m["text"] for m in explicit_wins] == ["human-2", "human-3", "human-4"]
+    for non_positive in ({"limit": "0"}, {"limit": "-5"}):   # never an empty conversation
+        assert _run(tmp_path, non_positive) == _run(tmp_path, {})

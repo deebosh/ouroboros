@@ -152,7 +152,6 @@ class LocalChatBridge:
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         self._inbox = queue.Queue()   # user -> agent
-        self._log_queue: queue.Queue = queue.Queue(maxsize=1000)
         self._update_counter = 0
         self._broadcast_fn = None  # set by server.py for WebSocket streaming
         # A2A response subscriptions: {subscription_id: (chat_id, callback)}
@@ -903,17 +902,6 @@ class LocalChatBridge:
 
     def push_log(self, event: dict):
         """Stream append_jsonl events to UI."""
-        try:
-            self._log_queue.put_nowait(event)
-        except queue.Full:
-            try:
-                self._log_queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self._log_queue.put_nowait(event)
-            except queue.Full:
-                pass
         if self._broadcast_fn and not is_a2a_chat_id(event.get("chat_id")):
             # Task-scoped events arrive already addressed
             # (supervisor/log_addressing.py); an unaddressable event keeps the
@@ -922,16 +910,6 @@ class LocalChatBridge:
             frame = {"type": "log", "data": event, "chat_id": int(event.get("chat_id") or 0)}
             stamp_project_thread(DATA_DIR, frame)
             self._broadcast_fn(frame)
-
-    def ui_poll_logs(self) -> list:
-        """Drain pending log events for the web UI."""
-        batch = []
-        for _ in range(50):
-            try:
-                batch.append(self._log_queue.get_nowait())
-            except queue.Empty:
-                break
-        return batch
 
     def ui_send(
         self,
