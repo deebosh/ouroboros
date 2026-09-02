@@ -299,7 +299,7 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
     assert body == _REPORT
     assert header.startswith(
         "<!-- deep-review provenance: delivery=native_tool_rounds, model=openai/fake-deep, memory=3/7, "
-        "memory_omitted=missing:registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
+        "memory_missing=registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
         "coverage=BIBLE.md:read, incomplete=none, attestation=host_observed, rounds=3, tool_calls=2, receipts=2, "
         "end_reason=final_answer, transcript=")
     assert "_Deep self-review: native inspection episode on openai/fake-deep — 3 rounds, 2 tool calls" in header
@@ -447,7 +447,7 @@ def test_session_row_runs_through_the_session_executor_with_the_report_contract(
     assert text.endswith(_REPORT)
     assert text.startswith(
         "<!-- deep-review provenance: delivery=agent_session, model=gpt-5.6-sol, memory=3/7, "
-        "memory_omitted=missing:registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
+        "memory_missing=registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
         "coverage=BIBLE.md:unobserved, incomplete=unobserved, attestation=unobserved -->\n"
         "_Deep self-review: agent session codex=gpt-5.6-sol (model gpt-5.6-sol) — reads not host-observed "
         "(coverage unobserved); memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, "
@@ -703,6 +703,15 @@ def test_header_sanitizes_hostile_values_and_builds_session_facts_by_constructio
     assert "model=gpt-> injected -> xxxx" in comment and "OMISSION NOTE" in comment  # bounded, disclosed
     assert "rounds=" not in comment and "receipts=" not in comment and "attestation=unobserved" in comment
     assert human.startswith("_") and human.endswith("_") and "\n" not in human
+    # The HUMAN line is bounded and sanitized too: the hostile model rides it
+    # through `_header_value` (no comment terminator, bounded with the disclosed marker).
+    assert "-->" not in human and "OMISSION NOTE" in human and "x" * 121 not in human
+    # A hostile session TARGET on the row is bounded the same way.
+    hostile_row = ConfiguredReviewerSlot(slot_id=DEEP_REVIEW_SLOT_ID, kind="agent_session",
+                                         target_id="codex=" + "t" * 200 + "-->\nx", session_target="codex=" + "t" * 200 + "-->\nx")
+    text2, _u = run_deep_self_review(review_repo, review_drive, object(), lambda _m: None, slot=hostile_row)
+    human2 = text2.split("\n")[1]
+    assert "-->" not in human2 and "\n" not in human2 and "OMISSION NOTE" in human2 and "t" * 121 not in human2
 
 
 def test_packed_incomplete_follows_the_provider_finish_reason(review_repo, review_drive, monkeypatch):
@@ -754,7 +763,12 @@ def test_memory_dispositions_are_disclosed_per_whitelisted_entry(review_repo, tm
     assert usage["deep_review_memory"]["dispositions"] == expected
     comment = text.split("\n")[0]
     assert "memory=1/7" in comment
-    assert "memory_omitted=missing:registry.md,index-full.md,patterns.md,improvement-backlog.md;empty:scratchpad.md;oversized:WORLD.md" in comment
+    assert ("memory_missing=registry.md,index-full.md,patterns.md,improvement-backlog.md, "
+            "memory_empty=scratchpad.md, memory_oversized=WORLD.md, coverage=") in comment
+    # Worst case — every whitelisted file omitted under ONE disposition — still fits the value bound.
+    from ouroboros.deep_self_review import _HEADER_VALUE_MAX_CHARS, _MEMORY_WHITELIST
+    worst = ",".join(rel.rsplit("/", 1)[-1] for rel in _MEMORY_WHITELIST)
+    assert len(worst) <= _HEADER_VALUE_MAX_CHARS
     assert "memory 1/7 inlined (omitted: scratchpad.md empty, registry.md missing, WORLD.md oversized" in text.split("\n")[1]
     # The packed pack states the same dispositions in its omission section.
     dulwich_index = mock.Mock(); dulwich_index.__iter__ = mock.Mock(return_value=iter([b"ouroboros/loop.py", b"BIBLE.md"]))

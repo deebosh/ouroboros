@@ -691,16 +691,18 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
     """R9: the host's provenance header (machine-readable comment + one human
     line) prepended to every delivered report. The fact set is built PER
     DELIVERY (a session never carries rounds/receipts; its attestation is
-    `unobserved` by construction); every value is sanitized and bounded."""
+    `unobserved` by construction); every comment value goes through
+    `_header_value` (bounded, sanitized), and the human line — whose external
+    values the callers pass through `_header_value` too — is kept to one line
+    with no comment terminator in it."""
     facts: Dict[str, Any] = {"delivery": delivery, "model": model, "memory": f"{memory['inlined']}/{memory['total']}"}
-    # Grouped by disposition so the worst case (every whitelisted file
-    # omitted) stays inside the value bound by construction.
-    groups = [
-        f"{d}:" + ",".join(rel.rsplit("/", 1)[-1] for rel, got in memory["dispositions"].items() if got == d)
-        for d in ("missing", "empty", "oversized", "read_error") if d in memory["dispositions"].values()
-    ]
-    if groups:
-        facts["memory_omitted"] = ";".join(groups)
+    # One value PER disposition (`memory_missing=…`, `memory_empty=…`, …): each
+    # lists at most the seven whitelisted basenames (≈91 chars worst case), so
+    # it fits the value bound; `_header_value` bounds it regardless.
+    for d in ("missing", "empty", "oversized", "read_error"):
+        names = [rel.rsplit("/", 1)[-1] for rel, got in memory["dispositions"].items() if got == d]
+        if names:
+            facts[f"memory_{d}"] = ",".join(names)
     facts["coverage"] = ",".join(f"{rel}:{state}" for rel, state in coverage.items())
     facts["incomplete"] = _delivery_incomplete(delivery, usage)
     if delivery == "native_tool_rounds":
@@ -719,6 +721,8 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
     facts.update(extra or {})
     comment = ", ".join(f"{key}={_header_value(value)}" for key, value in facts.items())
     line = str(human).replace("\r", " ").replace("\n", " ")
+    while "--" in line:  # the callers bound each external value; the line itself never carries a terminator
+        line = line.replace("--", "-")
     return f"<!-- deep-review provenance: {comment} -->\n_{line}_\n\n"
 
 
@@ -884,22 +888,25 @@ def _run_retrieving_review(
     usage["deep_review_memory"] = task_facts["memory"]
     incomplete = _delivery_incomplete(delivery, usage)
     model = str(usage.get("resolved_model") or row.target_id)
+    # Every external value on the HUMAN line is bounded and sanitized too.
+    shown_model, shown_reason = _header_value(model), _header_value(incomplete)
+    shown_target = _header_value(row.session_target or row.target_id)
     completeness = "complete" if incomplete == "none" else (
-        "completeness not host-observed" if incomplete == "unobserved" else f"INCOMPLETE ({incomplete})")
+        "completeness not host-observed" if incomplete == "unobserved" else f"INCOMPLETE ({shown_reason})")
     if delivery == "native_tool_rounds":
         reads = "; ".join(
             f"{rel} " + (f"{c['fraction']:.0%} read ({c['covered_lines']}/{c['total_lines']} lines)" if c["state"] == "partial"
                          else {"read": "read in full", "missing": "NOT read"}.get(c["state"], "read extent unobserved"))
             for rel, c in detail.items())
         human = (
-            f"Deep self-review: native inspection episode on {model} — {usage.get('native_rounds', 0)} rounds, "
-            f"{usage.get('native_tool_calls', 0)} tool calls ({len(usage.get('native_tool_receipts') or [])} host-observed receipts); "
+            f"Deep self-review: native inspection episode on {shown_model} — {int(usage.get('native_rounds') or 0)} rounds, "
+            f"{int(usage.get('native_tool_calls') or 0)} tool calls ({len(usage.get('native_tool_receipts') or [])} host-observed receipts); "
             f"{reads}; {_memory_line(task_facts['memory'])}; {completeness}"
         )
     else:
         human = (
-            f"Deep self-review: agent session {row.session_target or row.target_id}"
-            + (f" (model {model})" if model and model != (row.session_target or row.target_id) else "")
+            f"Deep self-review: agent session {shown_target}"
+            + (f" (model {shown_model})" if model and model != (row.session_target or row.target_id) else "")
             + f" — reads not host-observed (coverage unobserved); {_memory_line(task_facts['memory'])}; {completeness}"
         )
     emit_progress(f"Deep self-review complete ({len(text):,} chars; {delivery}, incomplete={incomplete}).")
@@ -1052,7 +1059,7 @@ def _run_packed_review(
     window_label = f"{deep_window}" if int(window_fact.window_tokens) > 0 else f"assumed_{deep_window}"
     header = _provenance_header(
         "api_packet", model, usage, memory, {"pack": f"{stats['file_count']}_files"},
-        f"Deep self-review: one packed API review on {model} — {stats['file_count']} files; "
+        f"Deep self-review: one packed API review on {_header_value(model)} — {stats['file_count']} files; "
         f"{_memory_line(memory)}; window {deep_window:,}" + (" (unknown, full window assumed)" if int(window_fact.window_tokens) <= 0 else "")
         + "; " + ("complete" if incomplete == "none" else f"INCOMPLETE ({incomplete}: the report hit the output reserve)"),
         extra={"window": window_label},
