@@ -50,7 +50,14 @@ from ouroboros.utils import atomic_write_json, estimate_tokens, utc_now_iso  # n
 from ouroboros.config import get_context_mode  # noqa: E402
 from ouroboros.provider_models import provider_for_model, provider_has_credentials  # noqa: E402
 from ouroboros.context_layout import generate_doc_nav_map  # noqa: E402
-from ouroboros.reviewer_slot_config import ConfiguredReviewerSlot, deep_review_slot, row_effort  # noqa: E402
+from ouroboros.reviewer_slot_config import (  # noqa: E402
+    ROUTE_KIND_API,
+    ROUTE_KIND_SESSION,
+    ConfiguredReviewerSlot,
+    deep_review_slot,
+    row_effort,
+)
+from ouroboros.usage_accounting import BudgetExceeded  # noqa: E402
 from ouroboros.triad_review import REVIEW_REPORT_CONTRACT  # noqa: E402
 
 # Output reservation inside the reviewer's 1M window (same class of fix as
@@ -490,6 +497,10 @@ def deep_review_route(row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str
         row = row or deep_review_slot()
     except ValueError as exc:
         return str(exc), None
+    if row.kind not in (ROUTE_KIND_API, ROUTE_KIND_SESSION):
+        return f"deep_review row has an unknown route kind {row.kind!r}", None
+    if not str(row.target_id or "").strip():
+        return "deep_review row has no target (empty model id / session target)", None
     if not row.retrieves:
         return _packed_route(row.target_id)
     if row.is_session:
@@ -787,13 +798,23 @@ def _run_retrieving_review(
         _record_execution(slot, executor.failure_custody(), status="error", error=f"{type(exc).__name__}: {exc}")
         raise
     usage = dict(attempt.usage or {})
+    # The executor's own list is never mutated (shallow copy): the coverage
+    # deltas below are appended to THIS record's copy.
+    usage["capability_delta"] = list(usage.get("capability_delta") or [])
+    text = str(attempt.raw_text or "")
+    if not text.strip():
+        # An empty product is an ERROR row in «Выполняется как», exactly like
+        # the packed path — never recorded as a responded review.
+        _record_execution(slot, usage, status="error", error="empty response")
+        return _failed("⚠️ Model returned an empty response for the deep self-review.",
+                       reason_code="deep_self_review_error", usage=usage)
     if delivery == "native_tool_rounds":
         detail = _native_read_coverage(usage, repo_dir)
         coverage = {rel: (f"partial({c['fraction']:.2f})" if c["state"] == "partial" else c["state"])
                     for rel, c in detail.items()}
         for rel, c in detail.items():
             if c["state"] != "read":
-                usage.setdefault("capability_delta", []).append({
+                usage["capability_delta"].append({
                     "kind": "capability_delta",
                     "requested": f"mandatory full read of {rel}",
                     "effective": {
@@ -816,10 +837,8 @@ def _run_retrieving_review(
         )
     except Exception:
         log.debug("deep self-review response custody write failed", exc_info=True)
-    text = str(attempt.raw_text or "")
-    if not text.strip():
-        return _failed("⚠️ Model returned an empty response for the deep self-review.",
-                       reason_code="deep_self_review_error", usage=usage)
+    if not usage.get("capability_delta"):
+        usage.pop("capability_delta", None)  # an empty list is not a disclosure
     if not usage.get("resolved_model"):
         usage["resolved_model"] = row.target_id
     usage["deep_review_memory"] = task_facts["memory"]
@@ -1024,6 +1043,11 @@ def run_deep_self_review(
                 repo_dir, drive_root, llm, emit_progress, row, task_id=task_id, deadline_at=deadline_at,
             )
         return _run_packed_review(repo_dir, drive_root, llm, emit_progress, row, str(model or ""))
+    except BudgetExceeded:
+        # The paid ledger's refusal is BUDGET vocabulary, not a review error:
+        # it propagates so the agent's own `except BudgetExceeded` rail (the
+        # budget-pause checkpoint) stays live for the deep review too.
+        raise
     except Exception as e:
         log.error("Deep self-review failed: %s", e, exc_info=True)
         return _failed(f"❌ Deep self-review failed: {type(e).__name__}: {e}", reason_code="deep_self_review_error")

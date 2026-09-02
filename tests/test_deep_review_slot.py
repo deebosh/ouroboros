@@ -809,3 +809,91 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
     assert "RESULT TRUNCATED" in tool_msg and f"line {receipt['end_line']:05d}" in tool_msg
     assert f"line {receipt['end_line'] + 1:05d} " + "b" * 60 + "\n" not in tool_msg  # the first cut line is not counted
     assert "coverage=BIBLE.md:partial(" in text
+
+
+
+# ---------------------------------------------------------------------------
+# Fix batch №1 — custody / ownership (items 4, 14, 8, 17).
+# ---------------------------------------------------------------------------
+
+
+def test_empty_retrieving_response_is_an_error_row_never_a_responded_review(review_repo, review_drive, monkeypatch):
+    import ouroboros.review_execution as review_execution
+
+    class _Empty(_FakeSessionExecutor):
+        def execute(self):
+            result = super().execute()
+            return ReviewAttemptResult(message={"content": "  "}, usage=result.usage, raw_text="  ")
+
+    monkeypatch.setattr(review_execution, "_review_route_executor", _Empty)
+    monkeypatch.setattr(deep_self_review, "_session_route_reason", lambda row: "")
+    text, usage = run_deep_self_review(review_repo, review_drive, object(), lambda _m: None, slot=_session_row())
+    assert text.startswith("⚠️ Model returned an empty response")
+    assert usage["execution_status"] == "infra_failed" and usage["reason_code"] == "deep_self_review_error"
+    last = reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]
+    assert last["status"] == "error" and last["surface"] == "deep_self_review"
+
+
+def test_coverage_deltas_never_mutate_the_executors_usage(review_repo, review_drive, monkeypatch):
+    """Item 14: `dict(attempt.usage)` is shallow — the appended coverage delta
+    must land on THIS record's copy, never on the list the executor owns."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    import ouroboros.review_native_episode as native_episode
+
+    executors = []
+    original = native_episode.NativeToolRoundReviewExecutor.execute
+
+    def spy(self):
+        executors.append(self)
+        return original(self)
+
+    monkeypatch.setattr(native_episode.NativeToolRoundReviewExecutor, "execute", spy)
+    llm = _ScriptedLLM([{"content": _REPORT}])  # no BIBLE.md read → a coverage delta is appended
+    _text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    assert [d["reason"] for d in usage["capability_delta"]] == ["deep_review_mandatory_read_missing"]
+    executor_usage = executors[0]._episode_usage
+    assert "capability_delta" not in executor_usage or executor_usage["capability_delta"] == []
+    assert executor_usage is not usage and usage["capability_delta"] is not executor_usage.get("capability_delta")
+
+
+def test_budget_exhaustion_propagates_out_of_the_review(review_repo, review_drive, monkeypatch):
+    """Item 8: the paid ledger's refusal is budget vocabulary, not a review
+    error — it must reach agent.py's `except BudgetExceeded: raise` rail."""
+    import ouroboros.review_execution as review_execution
+    from ouroboros.usage_accounting import BudgetExceeded
+
+    class _Broke(_FakeSessionExecutor):
+        def execute(self):
+            raise BudgetExceeded("root budget exhausted")
+
+    monkeypatch.setattr(review_execution, "_review_route_executor", _Broke)
+    monkeypatch.setattr(deep_self_review, "_session_route_reason", lambda row: "")
+    with pytest.raises(BudgetExceeded):
+        run_deep_self_review(review_repo, review_drive, object(), lambda _m: None, slot=_session_row())
+    # ...while any other executor failure stays a typed, returned review error.
+    class _Boom(_FakeSessionExecutor):
+        def execute(self):
+            raise RuntimeError("socket reset")
+
+    monkeypatch.setattr(review_execution, "_review_route_executor", _Boom)
+    text, usage = run_deep_self_review(review_repo, review_drive, object(), lambda _m: None, slot=_session_row())
+    assert text.startswith("❌ Deep self-review failed: RuntimeError: socket reset")
+    assert usage["reason_code"] == "deep_self_review_error"
+
+
+def test_slot_override_with_an_empty_target_or_unknown_kind_is_refused_typed(review_repo, review_drive, monkeypatch):
+    """Item 17: a caller-built row never buys a paid call with `model=""`."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    llm = mock.Mock()
+    for row, fragment in (
+        (_row(target=""), "has no target"),
+        (_row(target="   "), "has no target"),
+        (_row("agent_session", "", session_target=""), "has no target"),
+        (ConfiguredReviewerSlot(slot_id=DEEP_REVIEW_SLOT_ID, kind="bogus", target_id="openai/x"), "unknown route kind 'bogus'"),
+    ):
+        reason, identity = deep_review_route(row)
+        assert fragment in reason and identity is None, (row, reason)
+        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=row)
+        assert text.startswith("❌ Deep self-review unavailable: ") and fragment in text
+        assert usage["reason_code"] == "deep_self_review_unavailable"
+    assert not llm.chat.called
