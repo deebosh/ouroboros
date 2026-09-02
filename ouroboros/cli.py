@@ -558,8 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_history = chat_sub.add_parser("history")
     chat_history.add_argument(
         "--limit", type=int, default=None,
-        help="conversation rows to fetch (server quota n_human: non-progress rows, "
-             "task summaries included); omitted = the server's own window, server-capped",
+        help="conversation rows to fetch (server-capped; omitted = the server's default window)",
     )
     chat_history.set_defaults(func=_chat_history_command)
 
