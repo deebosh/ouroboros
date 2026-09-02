@@ -381,18 +381,6 @@ def _startup_custody_sweep() -> None:
         log.debug("Boot custody-disclosure backfill failed", exc_info=True)
     _cursor_refresh_settled_terminals()
     try:
-        # Phase A boot migration: legacy ``cancel_requested`` status latches
-        # become ordinary durable cancel intents; the supervisor watchdog then
-        # drives each through custody to a real settled outcome.
-        from ouroboros.cancel_intents import migrate_legacy_cancel_latches
-
-        migrated = migrate_legacy_cancel_latches(DATA_DIR)
-        if migrated:
-            log.info("Migrated %d legacy cancel latch(es) to durable intents: %s",
-                     len(migrated), migrated)
-    except Exception:
-        log.debug("Legacy cancel-latch migration failed", exc_info=True)
-    try:
         # Boot half of the durable terminal outbox: an answer that was registered
         # as owed but whose send never completed (crash between settle and send)
         # is re-enqueued exactly once — the delivered registry suppresses a copy
@@ -530,9 +518,31 @@ def _run_startup_task_recovery(
     *,
     skip_live_data: bool,
 ) -> None:
-    """Reconcile durable task phases once, after the prior process is gone."""
+    """Reconcile durable task phases once, after the prior process is gone.
+
+    The cancel-latch migration goes FIRST, ahead of every other durable
+    task-result read this boot performs. Under ABI-2 a pre-redesign latch file
+    is unstamped, so whichever read reaches it first quarantines it: the
+    orphan reconcile below used to win that race and the wedged task then
+    reached no terminal at all. The migration carries the one carve-out that
+    admits those rows (see ``cancel_intents.migrate_legacy_cancel_latches``),
+    so it must run before the readers whose quarantine it is exempting them
+    from — every OTHER unstamped row still quarantines on the next read.
+    """
     if skip_live_data:
         return
+    try:
+        # Phase A boot migration: legacy ``cancel_requested`` status latches
+        # become ordinary durable cancel intents; the supervisor watchdog then
+        # drives each through custody to a real settled outcome.
+        from ouroboros.cancel_intents import migrate_legacy_cancel_latches
+
+        migrated = migrate_legacy_cancel_latches(drive_root)
+        if migrated:
+            log.info("Migrated %d legacy cancel latch(es) to durable intents: %s",
+                     len(migrated), migrated)
+    except Exception:
+        log.debug("Legacy cancel-latch migration failed", exc_info=True)
     try:
         from ouroboros.task_status import reconcile_orphaned_running_tasks
 

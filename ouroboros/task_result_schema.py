@@ -14,6 +14,13 @@ notice): ONE ``task_results_quarantined`` event per read/scan batch, never
 one per file. Retention/GC never touches the quarantine namespace; recovery
 is a manual owner action (re-stamp and move the file back).
 
+Exactly ONE carve-out is admitted (owner 4A), and it lives outside this module
+in ``cancel_intents.migrate_legacy_cancel_latches``: unstamped rows still
+LATCHED at ``cancel_requested`` are re-stamped in place at boot before any
+ordinary read, because quarantining them stranded the wedged task with no
+terminal at all. It re-writes, it does not convert — the status and every
+field are unchanged — and nothing else escapes the quarantine.
+
 Split out of ``ouroboros/task_results.py`` (module-size discipline); the
 facade re-exports every name here, and callers keep importing through it.
 """

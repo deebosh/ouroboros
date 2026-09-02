@@ -1257,8 +1257,60 @@ def migrate_legacy_cancel_latches(drive_root: Any) -> List[str]:
     incident's wedged shape). Each becomes an ordinary active intent so the
     supervisor watchdog drives it through custody to a settled outcome. The file
     itself is left untouched here (legacy read-path; custody writes the terminal).
+
+    ABI-2 CARVE-OUT (owner 4A) — the ONE exception to the Q8=B wholesale
+    quarantine, and the reason this function opens with a scan of its own. A
+    pre-redesign latch file is by definition UNSTAMPED, so under ABI-2 the first
+    ordinary read moves it byte-unchanged into ``task_results/quarantine/``:
+    the scan below stopped finding wedged tasks, and custody's own fail-soft
+    read then saw no durable result and settled ``not_found`` — the task
+    disappeared without ever reaching a terminal. Boot therefore performs, for
+    the LATCHED rows and nothing else, the same stamp-on-write that a live
+    pre-upgrade task performs on its next lifecycle write (the transition
+    ``require_writable_task_result_schema`` already admits as lawful, and a
+    wedged task has no worker left to make it): same status, same fields, no
+    conversion — not a converter, and deliberately not a general one. The row
+    is then an ordinary latch, this scan adopts it, and custody drives it to
+    the ``cancelled`` terminal. Every other unstamped row still quarantines on
+    the very next read, including the one below. Applying the carve-out is ONE
+    typed durable events row per boot (never one per file), the same log-only
+    visibility owner decision 6.3=B gives the quarantine itself.
     """
-    from ouroboros.task_results import STATUS_CANCEL_REQUESTED, list_task_results
+    from ouroboros.task_result_schema import task_result_schema_refusal
+    from ouroboros.task_results import (
+        STATUS_CANCEL_REQUESTED, list_task_results, task_results_dir,
+        write_task_result,
+    )
+    from ouroboros.utils import read_json_dict
+
+    admitted: List[str] = []
+    for path in sorted(task_results_dir(drive_root, create=False).glob("*.json")):
+        raw = read_json_dict(path)
+        if task_result_schema_refusal(raw) != "unstamped_pre_7_0":
+            continue
+        if (
+            str(raw.get("status") or "") != STATUS_CANCEL_REQUESTED
+            or str(raw.get("task_id") or "") != path.stem
+        ):
+            continue  # not a latch, or an identity this write would rewrite
+        try:
+            write_task_result(drive_root, path.stem, STATUS_CANCEL_REQUESTED)
+        except Exception:
+            log.warning("cancel-latch schema admission failed for %s", path.name,
+                        exc_info=True)
+            continue
+        admitted.append(path.stem)
+    if admitted:
+        try:
+            append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "task_result_cancel_latch_admitted",
+                "count": len(admitted),
+                "task_ids": admitted,
+                "reason": "unstamped_pre_7_0",
+            })
+        except Exception:
+            log.warning("failed to record the cancel-latch admission", exc_info=True)
 
     migrated: List[str] = []
     try:

@@ -14,10 +14,13 @@ from __future__ import annotations
 import json
 import pytest
 from ouroboros import cancel_intents as ci
+from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
 from ouroboros.task_results import (
     STATUS_CANCEL_REQUESTED,
+    STATUS_CANCELLED,
     STATUS_COMPLETED,
     STATUS_RUNNING,
+    TASK_RESULT_SCHEMA_VERSION,
     load_task_result,
     write_task_result,
 )
@@ -267,6 +270,102 @@ def test_cancel_state_fields_and_migration(tmp_path):
     assert load_task_result(tmp_path, "legacy1")["status"] == STATUS_CANCEL_REQUESTED
     # Idempotent at the next boot.
     assert ci.migrate_legacy_cancel_latches(tmp_path) == []
+
+def _durable_events(root, event_type: str):
+    path = root / "logs" / "events.jsonl"
+    if not path.is_file():
+        return []
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+    return [row for row in rows if row.get("type") == event_type]
+
+def _write_pre_7_0_row(root, task_id: str, status: str, **fields):
+    """A genuine pre-7.0 file: no ``_schema_version`` stamp anywhere."""
+    results = root / "task_results"
+    results.mkdir(parents=True, exist_ok=True)
+    (results / f"{task_id}.json").write_text(
+        json.dumps({"task_id": task_id, "status": status, **fields}), encoding="utf-8")
+
+def test_boot_migration_admits_the_unstamped_latch_and_quarantines_the_rest(tmp_path):
+    """ABI-2 carve-out (owner 4A) — the one exception to the Q8=B wholesale
+    quarantine. A pre-7.0 result file is UNSTAMPED, so the first ordinary read
+    moves it into ``task_results/quarantine/``; this scan therefore stopped
+    seeing tasks wedged in the legacy ``cancel_requested`` latch and they
+    reached no terminal at all. Boot now performs, for the LATCHED rows only,
+    the same stamp-on-write a live pre-upgrade task performs on its next
+    lifecycle write. Every other unstamped row still quarantines, and applying
+    the carve-out is one typed durable fact."""
+    _write_pre_7_0_row(tmp_path, "latched", STATUS_CANCEL_REQUESTED, note="pre-7.0")
+    _write_pre_7_0_row(tmp_path, "finished", STATUS_COMPLETED, result="pre-7.0")
+
+    assert ci.migrate_legacy_cancel_latches(tmp_path) == ["latched"]
+
+    stored = load_task_result(tmp_path, "latched")
+    assert stored["status"] == STATUS_CANCEL_REQUESTED and stored["note"] == "pre-7.0"
+    assert stored[SCHEMA_VERSION_KEY] == TASK_RESULT_SCHEMA_VERSION
+    assert ci.active_intent(tmp_path, "latched")["source"] == "boot_migration"
+    # No latch, no carve-out: ordinary pre-7.0 history is quarantined as before.
+    assert load_task_result(tmp_path, "finished") is None
+    quarantined = (tmp_path / "task_results" / "quarantine").glob("*.json")
+    assert [path.name for path in quarantined] == ["finished.json"]
+
+    admitted = _durable_events(tmp_path, "task_result_cancel_latch_admitted")
+    assert len(admitted) == 1
+    assert admitted[0]["count"] == 1 and admitted[0]["task_ids"] == ["latched"]
+    assert admitted[0]["reason"] == "unstamped_pre_7_0"
+    # The next boot admits nothing and records no second fact.
+    assert ci.migrate_legacy_cancel_latches(tmp_path) == []
+    assert len(_durable_events(tmp_path, "task_result_cancel_latch_admitted")) == 1
+
+def test_boot_migrates_the_latch_before_any_quarantining_read():
+    """The carve-out is an ORDER as much as a write: whichever durable
+    task-result read reaches a pre-7.0 latch first quarantines it, so the
+    migration has to get there before them. The orphan reconcile used to win
+    that race — it is the first such read of the boot — and the migration ran
+    only later, in the custody sweep."""
+    import inspect
+
+    from ouroboros import server_maintenance
+
+    recovery = inspect.getsource(server_maintenance._run_startup_task_recovery)
+    assert recovery.index("migrate_legacy_cancel_latches") < recovery.index(
+        "reconcile_orphaned_running_tasks"), recovery
+    assert "migrate_legacy_cancel_latches" not in inspect.getsource(
+        server_maintenance._startup_custody_sweep), (
+        "the migration must not ALSO run from the later custody sweep, whose "
+        "own reads would already have quarantined the latch"
+    )
+
+def test_the_admitted_latch_reaches_the_cancelled_terminal(tmp_path, monkeypatch):
+    """The carve-out's whole point. Once admitted, the latch is an ORDINARY
+    intent, so the existing custody miss lane (neither queued nor running)
+    writes the durable ``cancelled`` terminal and settles the intent. Before
+    it, that lane's own fail-soft read quarantined the row, found no durable
+    result, and settled ``not_found`` — the task vanished without a terminal."""
+    import supervisor.queue as q
+    from supervisor import cancel_publication, task_lifecycle, terminal_delivery, workers
+
+    _write_pre_7_0_row(tmp_path, "wedged", STATUS_CANCEL_REQUESTED,
+                       description="wedged in the pre-redesign cancel latch")
+    monkeypatch.setattr(q, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(q, "PENDING", [])
+    monkeypatch.setattr(q, "RUNNING", {}, raising=False)
+    monkeypatch.setattr(q, "persist_queue_snapshot", lambda reason="": None)
+    monkeypatch.setattr(q, "_emit_cancel_task_done", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(workers, "WORKERS", {}, raising=False)
+    monkeypatch.setattr(terminal_delivery, "deliver_miss_lane_outcome",
+                        lambda *a, **kw: True, raising=False)
+    monkeypatch.setattr(task_lifecycle, "CANCELLED_ROOT_FENCES", {}, raising=False)
+    monkeypatch.setattr(task_lifecycle, "_ACTIVE_CASCADE_FENCES", {}, raising=False)
+
+    assert ci.migrate_legacy_cancel_latches(tmp_path) == ["wedged"]
+    intent = ci.active_intent(tmp_path, "wedged")
+
+    outcome = cancel_publication._finalize_cancel_intent_on_miss(q, "wedged", intent=intent)
+
+    assert outcome == cancel_publication.CANCEL_CANCELLED
+    assert load_task_result(tmp_path, "wedged")["status"] == STATUS_CANCELLED
+    assert ci.active_intent(tmp_path, "wedged") is None
 
 def test_effective_read_projects_pending_for_intent_and_legacy_latch(tmp_path):
     from ouroboros.task_status import load_effective_task_result
