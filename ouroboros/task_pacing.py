@@ -72,11 +72,11 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # the review-launch gate hands its decision into THIS panel's context; an
 # improvement pass admitted at the floor under the adaptive 2x window is NOT
 # separately projected — the capacity projection evaluates
-# `review_launch_allowed` alone (1x window) and carries no
-# `launch_disclosure` for it; that admission only enables the next pass,
-# whose own panel discloses its floor admission here), by money (`wave_at_floor`, wave prices) or both. The
-# per-send wallet binding at dispatch and the review's
-# logical window remain the protection, and the honest event of the dispatched
+# `review_launch_allowed` alone (1x window) and carries no `launch_disclosure`
+# for it; that admission only enables the next pass, whose own panel discloses
+# its floor admission here), by money (`wave_at_floor`, wave prices) or both.
+# The per-send wallet binding at dispatch and the review's logical window
+# remain the protection, and the honest event of the dispatched
 # panel decays the estimate (its excess halves per panel).
 # 64 is the plan's measured deep-review ceiling (Б2-2), far above the 3–5 rounds a
 # verdict-shaped episode takes.
