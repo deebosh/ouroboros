@@ -641,7 +641,9 @@ def test_pacing_estimate_follows_the_configured_panels_delivery_class(structured
     _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds="six", native_rows=1)
     assert task_pacing.acceptance_native_rounds_estimate(ctx) == 5
     _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=100000, native_rows=1)
-    assert task_pacing.acceptance_native_rounds_estimate(ctx) == task_pacing.ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP == 64
+    # The bogus count enters the EWMA clamped to the cap (64), not as 100000:
+    # ceil(0.5*64 + 0.5*4.5) = 35, and the result can never exceed the cap.
+    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 35 <= task_pacing.ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP
 
 
 def test_timing_event_names_the_deliveries_and_the_native_rounds(monkeypatch, tmp_path):
@@ -713,6 +715,106 @@ def test_native_projection_never_turns_a_malformed_manifest_into_its_keys():
     # A well-formed manifest is extended, never replaced.
     kept = _retrieving_packet_projection({**_ACCEPTANCE_PACKET, "omissions_manifest": [{"section": "x", "reason": "y"}]})
     assert kept["omissions_manifest"][0] == {"section": "x", "reason": "y"} and len(kept["omissions_manifest"]) == 3
+
+
+def _raw_timing(events, fields: str):
+    """Append ONE raw `task_acceptance_review_timing` row. `json.dumps` cannot
+    emit the token `1e999`, and a poisoned durable row is exactly what the real
+    JSONL reader will hand back — so the row is written as text."""
+    events.parent.mkdir(parents=True, exist_ok=True)
+    with events.open("a", encoding="utf-8") as fh:
+        fh.write('{"type": "task_acceptance_review_timing", "duration_sec": 30, "delivery": "native_tool_rounds", '
+                 + fields + "}\n")
+
+
+_POISON_TOKENS = ("1e999", '"Infinity"', "NaN", "-3", "0", "true", '"six"', "null", "[]")
+
+
+@pytest.mark.parametrize("poison", _POISON_TOKENS)
+def test_native_counters_that_are_not_finite_positive_numbers_are_skipped_by_the_real_reader(tmp_path, poison):
+    from ouroboros import task_pacing
+
+    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
+    events = task_pacing.acceptance_timing_events_path(ctx)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=4, native_rows=2)  # honest: 2/row
+    _raw_timing(events, f'"native_rounds": {poison}, "native_rows": 1')
+    _raw_timing(events, f'"native_rows": {poison}, "native_rounds": 1')
+    estimate = task_pacing.acceptance_native_rounds_estimate(ctx)
+    assert type(estimate) is int and estimate == 2
+
+
+def test_a_finite_bogus_count_is_clamped_before_the_ewma_and_forgotten_within_the_documented_tail(tmp_path):
+    from ouroboros import task_pacing
+
+    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
+    events = task_pacing.acceptance_timing_events_path(ctx)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=2, native_rows=1)
+    _raw_timing(events, '"native_rounds": 1e300, "native_rows": 1')  # finite, absurd: clamped to 64, not inf
+    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 33  # ceil(0.5*64 + 0.5*2), never above the cap
+    honest = 0
+    while task_pacing.acceptance_native_rounds_estimate(ctx) != 2:
+        _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=2, native_rows=1)
+        honest += 1
+        assert honest <= 64, "the poisoned row must be forgotten within the documented tail"
+    assert 50 <= honest <= 60  # ≈57 at alpha 0.5: the number the cap comment and ARCHITECTURE state
+
+
+@pytest.mark.parametrize("rows", [(_ROW_API,), (_ROW_NATIVE,), (_ROW_API, _ROW_SESSION, _ROW_NATIVE)])
+def test_a_poisoned_timing_row_never_refuses_or_crashes_a_later_acceptance_panel(monkeypatch, tmp_path, rows):
+    """Leg (a): the rounds estimator runs for ANY paid row, before the panel's
+    defensive try — so the poison must be harmless at the reader, not caught
+    downstream. Packet-only, native-only and mixed panels all proceed and the
+    gate receives a bounded integer multiplier."""
+    from ouroboros import loop as loop_mod, task_pacing
+    from ouroboros.tools import review_helpers
+
+    if _ROW_SESSION in rows:
+        _fake_session(monkeypatch)
+    _offline_env(monkeypatch, *rows)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 2)
+    _real_panel(monkeypatch, llm)
+    gate = []
+    monkeypatch.setattr(review_helpers, "review_wave_budget_gate", lambda _ctx, **kw: gate.append(kw))
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    events = task_pacing.acceptance_timing_events_path(ctx.tools._ctx)
+    for token in _POISON_TOKENS:
+        _raw_timing(events, f'"native_rounds": {token}, "native_rows": {token}')
+    _raw_timing(events, '"native_rounds": 1e999, "native_rows": 1')
+    _raw_timing(events, '"native_rounds": 1e300, "native_rows": 1e300')  # finite ratio 1.0
+    result = loop_mod._execute_task_acceptance_panel(ctx)
+    assert result.aggregate_signal == "PASS"
+    estimate = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
+    assert type(estimate) is int and 1 <= estimate <= 64
+    (kw,) = gate
+    assert 1 <= len(kw["models"]) <= len(rows) * 64 and all(isinstance(m, str) and m for m in kw["models"])
+
+
+@pytest.mark.parametrize("poison", ("1e999", '"Infinity"', "NaN", "-5", '"long"'))
+def test_a_poisoned_duration_keeps_the_review_estimate_finite_and_a_finite_deadline_panel_admissible(tmp_path, poison):
+    """Leg (b): the wall-clock EWMA reads the same durable rows. A non-finite or
+    non-positive duration is skipped — the estimate stays finite (honest rows
+    or the floor) and `review_launch_allowed` still admits a later panel with a
+    finite deadline instead of silently suppressing it."""
+    import math
+
+    from ouroboros import task_pacing
+
+    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
+    events = task_pacing.acceptance_timing_events_path(ctx)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    _raw_timing(events, f'"native_rows": 0, "native_rounds": 0, "duration_sec": {poison}, "delivery": "api_chat"')
+    floor_only = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
+    assert floor_only == 200.0
+    _timing(events, duration_sec=100, delivery="api_chat")
+    estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
+    assert math.isfinite(estimate) and estimate == 200.0  # 1.5 × 100 sits under the floor: the poison never entered
+    snapshot = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=3600.0, elapsed_sec=600.0,
+                                          remaining_sec=3000.0, reserve_sec=300.0)
+    assert task_pacing.review_launch_allowed(snapshot, estimated_sec=estimate) == (True, "")
 
 
 # ---------------------------------------------------------------------------

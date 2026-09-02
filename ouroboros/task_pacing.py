@@ -45,10 +45,15 @@ from ouroboros.utils import append_jsonl, iter_jsonl_objects, utc_now_iso
 _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC = 200.0
 _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # Ceiling on the native-rounds ESTIMATE the acceptance wave gate multiplies into
-# its pricing (P13: the episode itself has no round cap; the floor stays 1). It
-# only keeps one poisoned durable timing row from refusing every later wave;
-# 64 is the plan's measured deep-review ceiling (Б2-2), far above the 3–5
-# rounds a verdict-shaped episode takes.
+# its pricing (P13: the episode itself has no round cap; the floor stays 1).
+# Every timing reader skips counters that are non-numeric, non-finite (the JSON
+# token 1e999, "Infinity", NaN) or non-positive; a numeric but bogus per-row
+# count is clamped to this cap BEFORE the EWMA and the ceil'ed estimate AFTER,
+# so one poisoned durable row can only over-price the next waves — the excess
+# halves per honest panel (≈33, 17, 9, …) and the ceil keeps the estimate one
+# round above the honest baseline until ≈57 honest panels have landed (alpha
+# 0.5) — never lose a panel. 64 is the plan's measured deep-review ceiling
+# (Б2-2), far above the 3–5 rounds a verdict-shaped episode takes.
 ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP = 64
 
 # Proportional nanny-economics reminder thresholds (poltergeist phase B; owner
@@ -163,17 +168,31 @@ def _acceptance_timing_events(ctx: Any):
             yield event
 
 
+def _finite_positive(raw: Any) -> Optional[float]:
+    """``raw`` as a float when it is a FINITE, POSITIVE number; None otherwise.
+    A durable row comes back as whatever JSON parsed: the token ``1e999`` is
+    +inf, the strings ``"Infinity"``/``"NaN"`` pass ``float()`` as inf/nan, a
+    bool is an int — none of them is a measurement, and each would otherwise
+    poison an EWMA or overflow ``math.ceil``."""
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) and value > 0.0 else None
+
+
 def _ewma(values: Any) -> Optional[float]:
-    """EWMA (alpha 0.5) over positive numbers; None when nothing positive was seen."""
+    """EWMA (alpha 0.5) over the finite, positive numbers among ``values``
+    (`_finite_positive`); None when there were none."""
     ewma: Optional[float] = None
     for raw in values:
-        try:
-            value = float(raw or 0.0)
-        except (TypeError, ValueError):
+        value = _finite_positive(raw)
+        if value is None:
             continue
-        if value > 0.0:
-            ewma = value if ewma is None else (
-                _ACCEPTANCE_REVIEW_EWMA_ALPHA * value + (1.0 - _ACCEPTANCE_REVIEW_EWMA_ALPHA) * ewma)
+        ewma = value if ewma is None else (
+            _ACCEPTANCE_REVIEW_EWMA_ALPHA * value + (1.0 - _ACCEPTANCE_REVIEW_EWMA_ALPHA) * ewma)
     return ewma
 
 
@@ -217,15 +236,16 @@ def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: 
     return configured if ewma is None else max(configured, 1.5 * ewma)
 
 
-def _native_rounds_per_row(event: Dict[str, Any]) -> float:
-    """Rounds per native row of ONE timing event — 0.0 (which `_ewma` skips)
-    when the panel ran no native row or the durable counters are malformed, so
-    one bad row cannot degrade every later panel."""
-    try:
-        rows = int(event.get("native_rows") or 0)
-        return float(event.get("native_rounds") or 0) / rows if rows > 0 else 0.0
-    except (TypeError, ValueError):
-        return 0.0
+def _native_rounds_per_row(event: Dict[str, Any]) -> Optional[float]:
+    """Rounds per native row of ONE timing event, clamped to the cap — None
+    (which `_ewma` skips) when the panel ran no native row or either counter is
+    not a finite positive number, so one bad durable row cannot degrade, let
+    alone crash, every later panel."""
+    rows = _finite_positive(event.get("native_rows"))
+    rounds = _finite_positive(event.get("native_rounds"))
+    if rows is None or rounds is None:
+        return None
+    return min(float(ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP), rounds / rows)
 
 
 def acceptance_native_rounds_estimate(ctx: Any) -> int:
@@ -233,10 +253,13 @@ def acceptance_native_rounds_estimate(ctx: Any) -> int:
     cost is rounds × the price of a send): the EWMA of observed per-row rounds
     over EVERY recorded panel that ran a native row — whatever its slowest-class
     stamp, a mixed session+native panel teaches as much as a native-only one —
-    at least 1 (the first native panel is priced as one send) and at most
-    ``ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP``."""
+    guaranteed an int in [1, ``ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP``]: the
+    first native panel is priced as one send, each contribution is finite and
+    clamped before the EWMA, and the ceil'ed result is clamped again."""
     ewma = _ewma(_native_rounds_per_row(event) for event in _acceptance_timing_events(ctx))
-    return 1 if ewma is None else min(ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP, max(1, math.ceil(ewma)))
+    if ewma is None:
+        return 1
+    return int(min(ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP, max(1, math.ceil(ewma))))
 
 
 def acceptance_timing_events_path(ctx: Any) -> pathlib.Path:
