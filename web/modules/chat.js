@@ -47,7 +47,6 @@ import {
     setLiveCardPhase,
 } from './task_phase_chip.js';
 import {
-    BoundedDetailMap,
     loadSkillReviewDetail,
     nestedSkillReviewRef,
     renderSkillReviewDisclosure,
@@ -497,7 +496,7 @@ export function createChatInstance({
     const markReviewAnchor = (r, on = false) => setReviewAnchor(r, on, setLiveCardPhase);
     const explicitCardExpansion = new Map();
     const reviewDisclosureByTask = new Map();
-    const skillReviewDetailStore = new BoundedDetailMap();
+    const skillReviewDetailStore = new Map();
     const reviewHydrator = createReviewHydrator({
         fetchDetail: fetchTaskDetailStrict,
         applyDetail: (id, detail) => !destroyed && attachTaskDetailReviews(id, detail),
