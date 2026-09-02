@@ -6102,3 +6102,162 @@ face, the managed-update "apply" face (isolated checkout has no managed
 remote), the OuroborosHub tab and the Widgets page. Files and manifest:
 operator scratchpad `ui_evidence/a70747cf/` (session 3ab25cbc); the owner's
 manual test on the STOP tree is the release-grade 2(i) evidence.
+## From the D03 settings-read-seam lane (owner batch №11 2=A, base 1072a317)
+
+The remainder of semantic delta D03 (§4.3.5): MIGRATION rows 913-917 and
+1080-1081, hot-deferred since the D11/D12/D17/D18 lanes. Landed as the tip's own
+code, re-derived on tip bytes — the delta is NOT span-shaped for
+`scripts/v7next_transplant.py` (four of the six rows are rewritten bodies
+against a read path, `settings_integrity`, that the oracle does not have; the one
+pure relocation, row 913, is byte-identical and needed no tool proof).
+
+1. Row 914 (`config.load_settings_lock_held` -> `config.normalize_settings_raw`)
+   — LANDED. The loader's inline raw-stage block (coerce, retention fold,
+   review-cycle seed, retired purge, slot rename, secret repair) collapsed onto
+   the one pure seam; the loader keeps the tip's
+   `settings_integrity.read_settings_json_verified` / `SettingsIntegrityError`
+   raise-through UNDER the seam (the D12/D17 re-prove trap: replaying the oracle
+   verbatim would have reverted the integrity feature). Docstring re-derived, not
+   copied: the oracle's "singular scope pin promoted before the plural"
+   ordering clause is DEAD on this tree (both comma spellings are
+   `RETIRED_SETTING_KEYS`, ABI-10); the load-bearing order here is pass-count-
+   before-purge (`OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES` is itself a
+   retired key and must seed `OUROBOROS_REVIEW_MAX_CYCLES` before the purge
+   drops it) and purge-before-rename. `_owner_read_settings_raw` applies the
+   same seam before its defaults merge; the context-fit route resolver and the
+   generic save inherit the fix through it.
+2. Row 916 (`config.serialize_settings`) — LANDED. `config.save_settings` (both
+   the atomic path and its OSError fallback) and `packaged_cli._save_settings`
+   emit through it; `utils.atomic_write_json` already produced that text on the
+   owner writer, so the function names bytes one writer already had. Visible
+   change: a non-ASCII owner value is written as UTF-8 by all three rather than
+   `\uXXXX`-escaped by two.
+3. Row 913 (`gateway/onboarding._settings_fingerprint` ->
+   `gateway/owner_settings.settings_document_digest`) — relocated byte-identical
+   (same absent / never-equal-unreadable sentinels). DEVIATION from the row
+   note: the onboarding one-line delegating wrapper was NOT kept — the tip's
+   no-passthrough rule; both onboarding call sites (the pre-derive read and the
+   locked precondition) call the digest directly, and the unreadable-sentinel
+   pin moved with the function (`tests/test_onboarding_complete_endpoint.py::
+   test_an_unreadable_settings_file_can_never_compare_equal` ->
+   `tests/test_settings_read_seam.py::test_an_unreadable_settings_file_never_compares_equal`).
+4. Row 915 (`_owner_write_settings` -> `_owner_update_settings`) — LANDED.
+   `_owner_update_settings(transform, expected_digest, ...)` reads (through the
+   normalized owner reader), transforms and persists inside ONE settings lock,
+   with the persistence prologue now genuinely under the lock; a transform
+   returning `None` writes nothing; a digest mismatch refuses with the typed
+   `SettingsPreconditionFailed` before the transform runs (`STALE_SETTINGS_READ_REFUSAL`).
+   `_owner_write_settings` keeps its name, signature and refusal types as the
+   whole-document caller (generic save, onboarding, tests). The tip has FOUR
+   single-decision endpoints, not the oracle's five (the scope-review floor is
+   retired, ABI 7.0 Q10=A): runtime mode (digest before the deciding read),
+   context mode (digest before the idle check, idle re-proved under the lock —
+   the digest cannot see the queue), safety mode (digest under the document
+   lock beside the audit read), auto-grant (no digest: the body carries the
+   whole decision). The tip's `settings_document_mutation()` + `asyncio.to_thread`
+   `_sync` structure is kept; the closed reader inventory is pinned at FIVE names
+   (`_api_settings_post_locked` plus the four `_sync` bodies).
+5. Row 917 (`packaged_cli._save_settings`) — LANDED through the shared prologue
+   and serializer; the prologue tripwire now sees the parameter-path writer
+   shape (`tests/test_runtime_mode_elevation.py::test_every_settings_writer_routes_through_the_shared_prologue`
+   widened to the oracle's form: a function name carrying "settings" plus the
+   `settings.json` literal trigger; routed owner = `_owner_update_settings`;
+   the packaged saver asserted routed; the Colab generator exempted with the
+   oracle's reason). The oracle's extra exemption for
+   `tools/registry_guard_process._restore_owner_files` was not needed here (the
+   widened scan does not flag it on this tree) and was not copied. DISCLOSED:
+   `BootstrapContext.save_settings` has NO caller in `bootstrap_repo` on this
+   tree (nor on the oracle) — the callback is bound by both `launcher.py` and
+   `packaged_cli.py` and never invoked. Routing it keeps the writer inventory
+   honest for the day it is called; retiring the dead field is a
+   `launcher_bootstrap` contract change shared with the launcher, outside this
+   lane — candidate cleanup row.
+6. Rows 1080-1081 (`server.py::lifespan`) — LANDED. The guarded boot write
+   (`if provider_defaults_changed and _settings_path.exists(): save_settings(...)`)
+   and the lifespan's `SETTINGS_PATH` import are gone; the apply -> env-apply
+   -> `initialize_runtime_mode_baseline()` order is unchanged. Pins flipped:
+   `tests/test_onboarding_host.py::test_server_boot_normalization_carries_the_same_guard`
+   -> `test_server_boot_never_writes_the_settings_file` (oracle bytes, asserted
+   on the lifespan's syntax, not its text); `tests/test_server_runtime.py`'s
+   server clause -> `"save_settings(" not in server_src` (the oracle's
+   both-sides form the D17 lane deferred). `save_settings` stays imported in
+   `server.py` for the gateway compatibility shim
+   (`_gateway_settings.save_settings = save_settings`), which tests monkeypatch.
+7. Pin port notes (`tests/test_settings_read_seam.py`, 18 tests): the oracle's
+   `test_the_three_retired_timeout_knobs_are_gone_from_every_owner_surface`
+   was NOT ported — D04's `tests/test_legacy_timeout_retirement.py` already
+   carries that pin on this tree and a second copy would be a parallel pin;
+   `test_a_live_setting_cannot_be_retired_by_accident` re-derived without the
+   oracle's inert `ouroboros.contracts` import; `test_the_packaged_bootstrap_writes_the_path_the_prologue_reads`
+   re-pinned on the tip's per-call `resolve_app_root` / `resolve_data_dir`
+   (the D13 form) instead of the oracle's module-constant strings; the golden
+   document carries the retired acceptance-pass count instead of the dead
+   singular scope pin; `test_every_owner_endpoint_reaches_the_same_normalized_read`
+   pins five readers. The write-seam suite's future-writer scan now also
+   catches `_owner_update_settings(` call sites outside the locked writers.
+8. Red-first table (isolated root, `1072a317` pre-fix tree, command:
+   `pytest tests/test_settings_read_seam.py -rA`; output kept in the lane's
+   scratch as `d03_red_first_prefix.txt`):
+
+   | test | pre-fix | post-fix |
+   |---|---|---|
+   | test_owner_read_settings_raw_applies_the_same_normalization_as_load_settings | FAILED (owner reader served shipped defaults over legacy keys) | PASSED |
+   | test_one_owner_endpoint_write_preserves_every_owner_customization | FAILED (auto-grant POST changed 6 keys, ghost survived) | PASSED |
+   | test_every_owner_endpoint_reaches_the_same_normalized_read | FAILED (no locked primitive; reader inventory open) | PASSED |
+   | test_normalize_settings_raw_is_idempotent | FAILED (AttributeError: no normalizer) | PASSED |
+   | test_a_stale_owner_read_cannot_overwrite_a_change_it_never_saw | FAILED (ImportError: no digest / no primitive) | PASSED |
+   | test_a_transform_that_returns_nothing_writes_nothing | FAILED (ImportError) | PASSED |
+   | test_an_unreadable_settings_file_never_compares_equal | FAILED (ImportError: digest lived in onboarding) | PASSED |
+   | test_all_three_writers_serialize_a_document_to_the_same_bytes | FAILED (config/packaged escaped non-ASCII; packaged skipped the prologue) | PASSED |
+   | test_the_three_settings_writers_are_exactly_these_three | FAILED (owner write was `_owner_write_settings`, prologue outside the lock) | PASSED |
+   | test_a_retired_key_is_dropped_by_every_reader | FAILED (owner reader served every retired key) | PASSED |
+   | test_a_retired_key_leaves_the_file_on_the_next_owner_write | FAILED (ghosts written straight back) | PASSED |
+   | test_load_settings_migrates_every_renamed_key_and_drops_the_retired_one | PASSED (golden: the loader already did this) | PASSED |
+   | test_load_settings_coerces_declared_types_before_the_defaults_merge | PASSED (golden) | PASSED |
+   | test_reading_settings_writes_nothing_to_disk | PASSED (golden) | PASSED |
+   | test_the_one_read_that_writes_is_the_context_compatibility_migration | PASSED (golden) | PASSED |
+   | test_the_packaged_bootstrap_writes_the_path_the_prologue_reads | PASSED (golden: path identity the routing relies on) | PASSED |
+   | test_a_retired_key_is_absent_from_the_defaults_that_offer_it | PASSED (golden) | PASSED |
+   | test_a_live_setting_cannot_be_retired_by_accident | PASSED (golden) | PASSED |
+
+   11 of 18 observed RED before the fix; the 7 goldens characterize behaviour the
+   seam must keep producing and cannot be red on a tree whose loader already
+   migrates. The scout's two repro scripts confirmed the three defect shapes on
+   the pre-fix tree (6 keys changed by one auto-grant POST; ghost and legacy key
+   both persisted; `config == owner` bytes False) and both come out clean on the
+   fixed tree.
+9. Adapted pins with no weakening: `tests/test_onboarding_host.py` (docstring
+   bullet: never WRITES, not merely never CREATES), `tests/test_server_runtime.py`,
+   `tests/test_runtime_mode_elevation.py` (tripwire), `tests/test_owner_settings_write_seam.py`
+   (membership wording; the future-writer scan), `tests/test_onboarding_complete_endpoint.py`
+   (the moved sentinel pin). ARCHITECTURE: rows for `server.py`, `config.py`,
+   `packaged_cli.py`, `gateway/onboarding.py`, `gateway/owner_settings.py`,
+   `gateway/settings.py`, the owner-settings prose paragraph, the §7 function
+   list, and a new "Reading and writing the settings document" section (oracle
+   text re-derived for four endpoints and the tip's ordering claim).
+10. Residuals, disclosed: (a) the digest deliberately over-refuses (a write
+    landing between digest and lock, or a formatting-only rewrite, answers 409
+    `settings_precondition_failed` — one retry; the oracle's accepted D03
+    trade-off, previously the endpoint re-read under the document lock and
+    silently won); (b) `launcher.py::_save_settings` and
+    `tools/control_runtime._set_tool_timeout` persist through
+    `config.save_settings` (routed, file lock only) and stay outside the
+    in-process document lock — pre-existing, unchanged by this lane; (c) the
+    dead `BootstrapContext.save_settings` callback (item 5).
+11. Gates (each a separate command, isolated root): targeted suites green
+    (`tests/test_settings_read_seam.py` 18 passed; the settings/owner/onboarding
+    family incl. `test_config_extraction.py`, `test_onboarding_host.py`,
+    `test_owner_settings_write_seam.py`, `test_runtime_mode_elevation.py`,
+    `test_runtime_mode_core.py`, `test_onboarding_complete_endpoint.py`,
+    `test_cybergym_server.py` (the strict-snapshot refusal on the writer),
+    `test_settings_budget_hotreload.py`, `test_settings_env_on_disk.py`,
+    `test_ws5_carryover.py`, `test_mcp_api.py`, `test_scope_review.py`,
+    `test_domain_manifest.py`, `test_generated_inventories.py`,
+    `test_repo_health_smoke.py`, `test_smoke.py`); `ruff check . --select F`
+    rc=0; `scripts/check_domains.py` rc=0 (no module row moved, no `--write`);
+    `scripts/regenerate_size_ratchet.py --check` rc=0 (config.py 945/1000,
+    owner_settings.py 364, gateway/settings.py 1429 inside its band, server.py
+    1647 -> 1639 giant shrink-only); `scripts/regenerate_inventories.py --check`
+    rc=0 (facade inventory unchanged); `scripts/v7next_adoption.py` rc=0;
+    `--release` refuses exactly one row now (CPL-4 `in-progress`, the owner
+    checkpoint — not this lane's); `git diff --check` rc=0.
