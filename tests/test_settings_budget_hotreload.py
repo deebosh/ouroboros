@@ -257,7 +257,7 @@ def test_context_mode_compat_migration_write_failure_is_honest_and_nonfatal(
     def fail_atomic_write(*_args, **_kwargs):
         raise OSError("simulated migration write failure")
 
-    monkeypatch.setattr(context_mode_compat, "atomic_write_json", fail_atomic_write)
+    monkeypatch.setattr(context_mode_compat, "write_text_atomic", fail_atomic_write)
     caplog.set_level(logging.WARNING, logger=context_mode_compat.__name__)
 
     loaded = cfg.load_settings()
@@ -284,7 +284,7 @@ def test_context_mode_compat_migration_does_not_rewrite_unchanged_raw_pair(
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
     monkeypatch.setattr(
         context_mode_compat,
-        "atomic_write_json",
+        "write_text_atomic",
         lambda *_args, **_kwargs: writes.append((_args, _kwargs)),
     )
 
