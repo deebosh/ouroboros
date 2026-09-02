@@ -312,10 +312,35 @@ def test_metadata_omits_web_search_when_web_disabled(monkeypatch):
     assert not any("web_search" in r for r in roles_off.values())
 
 
+def test_metadata_declares_the_structured_reviewer_panel_over_stale_legacy_keys(monkeypatch):
+    """The container runs the structured panel when the operator env carries
+    one (the adapter forwards OUROBOROS_REVIEWER_SLOTS); metadata must declare
+    THOSE rows, not a stale legacy comma key that the runtime never executes.
+    A hosted-session row declares its harness target with the route in its role."""
+    monkeypatch.delenv("OUROBOROS_WEBSEARCH_MODEL", raising=False)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "foreign/stale-triad")
+    monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_MODELS", "foreign/stale-scope")
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+        "triad": [
+            {"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/gpt-5.5"}},
+            {"slot_id": "t2", "route": {"kind": "agent_session", "target_id": "codex=gpt-5.6-sol"}},
+        ],
+        "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "google/gemini-3.5-pro"}}],
+        "advisory": {"enabled": False},
+    }))
+    roles = dict(run_tb._effective_helper_models("openai/gpt-5.5", "google/gemini-3.5-flash", disable_agent_web=True))
+    assert "foreign/stale-triad" not in roles and "foreign/stale-scope" not in roles
+    assert roles["openai/gpt-5.5"] == "agent+commit_review_triad"
+    assert roles["codex=gpt-5.6-sol"] == "commit_review_triad_agent_session"
+    assert roles["google/gemini-3.5-pro"] == "scope_review"
+    assert roles["google/gemini-3.5-flash"] == "light_safety_post_task_synthesis"
+
+
 def test_metadata_never_declares_the_retired_claude_code_role(monkeypatch):
     """The Claude-SDK transport (claude_code_edit) is retired: a stale
     CLAUDE_CODE_MODEL in the operator env must not add a metadata role."""
     monkeypatch.delenv("OUROBOROS_WEBSEARCH_MODEL", raising=False)
+    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
     monkeypatch.setenv("CLAUDE_CODE_MODEL", "anthropic/claude-opus-4.8")
     monkeypatch.setenv("OUROBOROS_SCOPE_REVIEW_MODELS", "google/gemini-3.5-flash")
     monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "google/gemini-3.5-flash")

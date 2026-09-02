@@ -130,24 +130,39 @@ def _effective_helper_models(measured_model: str, light_model: str, *, disable_a
     task-acceptance review whose feedback re-enters the measured agent's
     context, so the review triad / scope / light / web-search models genuinely
     assist the run. Declaring only the measured model in metadata.yaml would
-    misrepresent the submission. Values mirror what the container resolves
-    (env override else the shipped config defaults) so the declared set matches
-    reality. Returns ordered (model_id, role) pairs, deduped by model id.
+    misrepresent the submission. Values mirror what the container resolves —
+    the structured reviewer panel (``OUROBOROS_REVIEWER_SLOTS``) when the
+    operator env carries one, exactly as the container adapter forwards it;
+    otherwise the legacy comma keys (env override else the shipped config
+    defaults) — so the declared set matches reality. A hosted-session row has
+    no model of its own (the harness resolves it): its ``harness[=model]``
+    target is declared with the route named in its role. Returns ordered
+    (model_id, role) pairs, deduped by model id.
     """
+    from ouroboros.reviewer_slot_config import REVIEWER_SLOTS_ENV, parse_reviewer_slots
+
     review_default = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
     websearch_default = str(SETTINGS_DEFAULTS["OUROBOROS_WEBSEARCH_MODEL"])
     scope_default = str(SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODELS"])
-    review = os.environ.get("OUROBOROS_REVIEW_MODELS", review_default) or review_default
-    scope = (os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS")
-             or os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL") or scope_default)
     websearch = os.environ.get("OUROBOROS_WEBSEARCH_MODEL", websearch_default) or websearch_default
     ordered: list[tuple[str, str]] = [(measured_model, "agent")]
-    for m in review.split(","):
-        if m.strip():
-            ordered.append((m.strip(), "commit_review_triad"))
-    for m in scope.split(","):
-        if m.strip():
-            ordered.append((m.strip(), "scope_review"))
+    structured = str(os.environ.get(REVIEWER_SLOTS_ENV, "") or "").strip()
+    if structured:
+        panel = parse_reviewer_slots(structured)
+        for role, rows in (("commit_review_triad", panel.triad), ("scope_review", panel.scope)):
+            for row in rows:
+                suffix = "_agent_session" if row.is_session else ""
+                ordered.append((row.target_id, role + suffix))
+    else:
+        review = os.environ.get("OUROBOROS_REVIEW_MODELS", review_default) or review_default
+        scope = (os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS")
+                 or os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL") or scope_default)
+        for m in review.split(","):
+            if m.strip():
+                ordered.append((m.strip(), "commit_review_triad"))
+        for m in scope.split(","):
+            if m.strip():
+                ordered.append((m.strip(), "scope_review"))
     if light_model.strip():
         ordered.append((light_model.strip(), "light_safety_post_task_synthesis"))
     # Only declare a web_search model if web tools are actually available this run. With
