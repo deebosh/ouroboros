@@ -102,16 +102,21 @@ DEFERRED_OUT_OF_V70 = {
 }
 # Post-cutoff upstream adoption trains: id -> (upstream tip, campaign merge).
 # A frozen inventory rather than a git derivation, and the history is the
-# reason. Of the three recorded sync merges only f4abe0a5 has an upstream
-# commit (a76961de) as its literal second parent: 0aa74e9f and 0f9a8daf merge
-# CAMPAIGN commits (816e7b82, 4c32691e) that had already absorbed 8d13373b and
-# f3fbfdbb, because the re-tie merge f61ea3c2 reshaped the first-parent line. A
-# rule reading second parents would therefore demand a row for one train of
-# three and stay blind to the other two — exactly the hole that lost
-# TRAIN-F6b-f3fbfdbb; widened to "second parent descends from a recorded
-# upstream tip" it would demand a train row for every lane merge, the C6 lane
-# 8fb08d44 included. Neither is honest, and both need a subprocess. Adding a
-# train here is the same edit as merging one, and a deleted row is red at once.
+# reason. Each sync's absorb merge does take its upstream tip as the literal
+# second parent (20850191<-8d13373b, b9ceed6e<-f3fbfdbb, f4abe0a5<-a76961de),
+# but only f4abe0a5 sits on this branch's first-parent line: the other two were
+# made on lane lines and reached mainline as the second parent of a lane
+# integration merge over a CAMPAIGN commit (0aa74e9f over 816e7b82, 0f9a8daf
+# over 4c32691e). So a rule walking --first-parent merges and reading second
+# parents would police one train of three and stay blind to the other two —
+# exactly the hole that lost TRAIN-F6b-f3fbfdbb; widened to "second parent
+# descends from a recorded upstream tip" it would demand a train row for every
+# lane merge made after a sync (35 / 15 / 6 merges on this tree for the three
+# tips), the C6 lane merge 9faccf31 over 8fb08d44 included. Neither is honest,
+# and both need a subprocess. Sync #1 is recorded by its mainline carrier
+# 0aa74e9f and names absorb merge 20850191 in the row text too; syncs #2 and #3
+# are recorded by the absorb merge itself. Adding a train here is the same edit
+# as merging one, and a deleted row is red at once.
 REQUIRED_TRAINS = {
     "TRAIN-F6-8d13373b": ("8d13373b", "0aa74e9f"),
     "TRAIN-F6b-f3fbfdbb": ("f3fbfdbb", "b9ceed6e"),
@@ -255,9 +260,9 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
     # a genuine disclosure on a shipped row stays sayable.
     for r in rows:
         errors.extend(_honesty_errors(r))
-        # Hook resolution follows the rule the manifest already states in its
-        # Notes ("for a `done` row the validator resolves every token"): it is
-        # a property of a shipped row, not of the release invocation.
+        # Hook resolution is a property of a shipped row, not of the release
+        # invocation, so it runs in both modes and its messages say `hook:`.
+        # The manifest's own Notes state the same rule for its readers.
         if r["status"] == "done":
             errors.extend(_hook_resolution_errors(r))
     # Phase pinning of the required inventory.
@@ -341,29 +346,32 @@ def _hook_nodeid_errors(row: dict[str, str], hook: str) -> list[str]:
         try:
             defined = _defined_names(path)
         except SyntaxError as exc:  # unparseable file: say so, do not pass it
-            errors.append(f"release: {row['id']} hook file {rel} does not parse ({exc})")
+            errors.append(f"hook: {row['id']} hook file {rel} does not parse ({exc})")
             continue
         for part in tail.split("::"):
             if part and part not in defined:
-                errors.append(f"release: {row['id']} hook names {rel}::{part}, "
+                errors.append(f"hook: {row['id']} hook names {rel}::{part}, "
                               f"which {rel} does not define")
     return errors
 
 
 def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
-    """Release-bar hook contract (F0 review rounds 1-4): a shipped row's
+    """Shipped-row hook contract (F0 review rounds 1-4): a shipped row's
     verification hook must RESOLVE — prose alone cannot pass. At least one
     repo-path reference must be present, EVERY referenced token must exist
     (any extension — a smuggled bogus reference next to a valid one is an
     error, not ignored), and the path must stay inside its top directory
-    (`tests/../x` traversal is rejected). Outside --release hooks stay free
-    prose (they name future suites while the work is pending)."""
+    (`tests/../x` traversal is rejected). This runs for every `done` row in
+    BOTH modes — it is a property of a shipped row, not of the --release
+    invocation — so the messages are prefixed `hook:`, not `release:`. A row
+    that is not yet `done` keeps a free-prose hook, naming the suite the work
+    will land in."""
     hook = row["verification hook"]
     paths = _HOOK_PATH_RE.findall(hook.replace("\\|", "|"))
     errors: list[str] = []
     if not paths:
         errors.append(
-            f"release: {row['id']} hook has no resolvable repo-path reference "
+            f"hook: {row['id']} hook has no resolvable repo-path reference "
             "(tests/, scripts/ or docs/ file) — prose-only hooks cannot ship")
     for p in paths:
         top = p.split("/", 1)[0]
@@ -373,9 +381,9 @@ def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
         # separators (round 5: the "/"-suffix check broke on Windows).
         inside = candidate == top_root or top_root in candidate.parents
         if ".." in p.split("/") or not inside:
-            errors.append(f"release: {row['id']} hook path escapes {top}/: {p}")
+            errors.append(f"hook: {row['id']} hook path escapes {top}/: {p}")
         elif not candidate.is_file():
-            errors.append(f"release: {row['id']} hook references missing file {p}")
+            errors.append(f"hook: {row['id']} hook references missing file {p}")
     errors.extend(_hook_nodeid_errors(row, hook))
     return errors
 

@@ -87,12 +87,19 @@ reads that feed source-text regexes are touched.
    read «no green windows leg exists yet on any frozen SHA», which the run table
    below has contradicted since run 33568728122 (`f5a94675`, first green Windows
    leg) and, for the full matrix, since run 33569841899 (`8b27b507`) — four
-   consecutive green 3-OS matrices are logged there, and three more on the later
-   branch tips. Class 17 is decided, fixed and proved. What is genuinely open is
-   FRESHNESS, not colour: the matrix dispatched on the sync #3 merge `f4abe0a5`
-   (run 33644668074) reported green on all three OS with `system-e2e-mock` green
-   on its first attempt (verdict read 2026-09-02 15:00Z); the tips after it (C6
-   merge, the stage-2 fix lanes) await their own dispatch on the release candidate.
+   consecutive first-attempt-green 3-OS matrices are logged there (33569841899,
+   33570328266, 33571681398, 33572515529), and on the later branch tips two more
+   whose Windows `full-test` leg went green only on a RERUN (33579445704 on
+   `1072a317`, 33624546416 on `ac17fa03` — attempt-1 detail under the run table)
+   plus two more first-attempt greens: 33626834806 on `43dcc1d2`, where all three
+   `full-test` legs passed on attempt 1, and 33644668074 on the sync #3 merge
+   `f4abe0a5`, green on every job on attempt 1. Class 17 is decided, fixed and
+   proved. What is genuinely open is FRESHNESS, not colour: 33644668074 is the
+   newest verdict (read 2026-09-02 15:00Z); the tips after it (C6 merge, the
+   stage-2 fix lanes) await their own dispatch on the release candidate. Second,
+   narrower open point: the attempt-1 Windows failure of 33579445704 has no
+   landed root-cause fix and is carried below as an intermittent class — that is
+   the open O3 question to the owner, not a decided row.
 
 ## 3-OS matrix runs
 
@@ -110,9 +117,9 @@ The row's re-prove needs a green full-test 3-OS matrix on a frozen branch SHA
 | [33570328266](https://github.com/razzant/ouroboros/actions/runs/33570328266) | `285ab66d` | green | green | green | re-prove holds |
 | [33571681398](https://github.com/razzant/ouroboros/actions/runs/33571681398) | `9238cc2d` | green | green | green | re-prove holds |
 | [33572515529](https://github.com/razzant/ouroboros/actions/runs/33572515529) | `c0029d45` | green | green | green | re-prove holds |
-| [33574822693](https://github.com/razzant/ouroboros/actions/runs/33574822693) | `d21806d8` (first run of the scheduled `system-e2e-mock` job on dispatch) | pending | pending | pending | pending at the time of writing |
-| [33579445704](https://github.com/razzant/ouroboros/actions/runs/33579445704) | `1072a317` | green | green | green | re-prove holds |
-| [33624546416](https://github.com/razzant/ouroboros/actions/runs/33624546416) | `ac17fa03` | green | green | green | re-prove holds |
+| [33574822693](https://github.com/razzant/ouroboros/actions/runs/33574822693) | `d21806d8` (first run of the scheduled `system-e2e-mock` job on dispatch) | success | success | **failure** | **not a re-prove** — verdict read 2026-09-02: `full-test (windows-latest)` red, the run never rerun (`run_attempt` 1, run conclusion `failure`); every other job green, the new `system-e2e-mock` included. The failing subtests are not attributable from here — job logs need repo-admin rights — so no class is claimed for it; the later tips carry green Windows legs |
+| [33579445704](https://github.com/razzant/ouroboros/actions/runs/33579445704) | `1072a317` | success | success | success **on rerun** | re-prove holds **on attempt 2, not on attempt 1** — `full-test (windows-latest)` failed first and was rerun green; every other job green on attempt 1. Named cause and its open residual below |
+| [33624546416](https://github.com/razzant/ouroboros/actions/runs/33624546416) | `ac17fa03` | success | success | success **on rerun** | re-prove holds **on attempt 2, not on attempt 1** — `full-test (windows-latest)` failed first and was rerun green; every other job green on attempt 1. A code fix followed (`43dcc1d2`), so this one is rooted, not intermittent |
 | [33626834806](https://github.com/razzant/ouroboros/actions/runs/33626834806) | `43dcc1d2` | green | green | green | re-prove holds — full-test 3-OS green on the FIRST attempt; the separate `system-e2e-mock` job was red 2/57 on attempt 1 and green on rerun (see below) |
 | [33644668074](https://github.com/razzant/ouroboros/actions/runs/33644668074) | `f4abe0a5` (the sync #3 merge) | success | success | success | **green** — full-test on all three OS, `system-e2e-mock` green on the first attempt, integration-test green (verdict read 2026-09-02 15:00Z) |
 
@@ -142,6 +149,46 @@ the same job on the same SHA was green, and the full 57-scenario lane passed
 twice locally on that tree. Recorded here so the attempt-1 red is not read later
 as a cross-OS class: it is lane flakiness on ubuntu, disclosed, and it belongs to
 the E2E lane's own ledger rather than to this row.
+
+### The two rerun-greens, per row
+
+Two «re-prove holds» rows above were reruns, not first-attempt greens, and each
+is recorded with its attempt-1 outcome, its attempt-2 outcome, the named cause,
+and whether a code fix followed.
+
+- **33579445704 (`1072a317`).** Attempt 1: `full-test (windows-latest)`
+  **failure**, every other job green. Attempt 2 (rerun of the failed job):
+  green. Named cause, **operator-read**: two Windows failures —
+  `tests/test_phase3c_observability_gc` on its copy-back step (intermittent) and
+  `tests/test_preflight_runner` on an xdist worker timeout. **No code fix
+  followed** either one, so the class stands as **intermittent, unrooted**. That
+  is the open **O3** question to the owner: root the observability copy-back
+  race, or accept it as a disclosed CI-flake class. Until then this SHA's
+  Windows leg is a rerun-green and must not be cited as a first-attempt green.
+- **33624546416 (`ac17fa03`).** Attempt 1: `full-test (windows-latest)`
+  **failure**, every other job green. Attempt 2: green. Named cause,
+  operator-read and independently corroborated by the fix commit's own message:
+  the session-engine horizon is the ceiling of the seconds left to the deadline,
+  and a sub-second remainder on the coarse Windows clock made the pin read 301
+  for a deadline 300 s away. **A code fix followed** — `43dcc1d2` («tests: the
+  session-engine horizon pin tolerates the coarse-clock ceiling (Windows
+  full-test)», `tests/test_review_agent_session_route.py`, naming this run id) —
+  so this class is **rooted and closed**, and the next run on `43dcc1d2`
+  (33626834806) has all three `full-test` legs green on attempt 1.
+
+How the attempt structure was read: read-only against the public GitHub API —
+`GET /repos/razzant/ouroboros/actions/runs/<id>` for `run_attempt` and
+`conclusion`, and `.../attempts/<n>/jobs` for the per-job conclusions. `gh` is
+installed on this host but not authenticated and nobody logged in for this read;
+unauthenticated requests answered both endpoints because the repository is
+public. Job **logs** are not readable that way (403, «Must have admin rights to
+Repository»), and the check-run annotations carry only «Process completed with
+exit code 1» — which is why the failing test names above are recorded as
+operator-read facts rather than as facts re-derived here. Attempt counts as
+read: 33569841899, 33570328266, 33571681398, 33572515529 and 33644668074 are
+`run_attempt` 1 with conclusion `success`; 33579445704, 33624546416 and
+33626834806 are `run_attempt` 2; 33574822693 is `run_attempt` 1 with conclusion
+`failure`.
 
 (Written on the adoption lane's own worktree, where `a0b35fcd` and `196438c9`
 were not yet ancestors; on the integrated branch both are, and the run table
