@@ -80,6 +80,26 @@ Do not repair a semantic tool-choice failure by adding one more keyword hint to
 typed affordance at the point of need. SYSTEM accretion trains around one
 incident, bloats the resident prefix, and forks the authority.
 
+What belongs in `prompts/SYSTEM.md` (tier-0 for every Main/task profile in both
+context modes — Background Consciousness and the safety supervisor carry their
+own prompts — and competing with the task for context): identity and tone, the decision
+loop (answer / promote / route / delegate / do it myself), cross-tool policy
+(which class of tool or lane for which situation, root semantics, memory only
+through its own tools, untrusted external data), prohibitions and safety
+invariants stated once, and the memory contract. What does NOT belong there:
+how a tool or mechanism works. A tool's parameters, signatures, recipes,
+typed outcomes, and "when to choose it" live in its `get_tools()` schema — the
+schema is sent every round to every profile, so a prompt sentence about it is a
+second copy that drifts; mechanism documentation lives in ARCHITECTURE or here;
+runtime facts (capabilities, queue, catalog, receipts, health) are injected per
+turn. A new tool therefore requires NO SYSTEM.md mention. Before adding a
+sentence to a prompt, check that the schema or runtime block does not already
+carry it; before removing one, check that they do (or add the missing fact to
+the schema without growing it into a paragraph). Local-model compaction keeps
+only the text before the first `## ` heading (plus the BIBLE section), so the
+load-bearing floor rules stay in that preamble. Every prompt change reports the before/after byte size
+in the commit or PR.
+
 Recoverable tool failures are evidence for the next LLM turn, not triggers for
 a host-authored recovery workflow. Return a typed, redacted result naming the
 failed stage, already-completed external effects, and an actionable repair
