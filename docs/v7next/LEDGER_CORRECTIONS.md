@@ -8790,7 +8790,8 @@ of the owner stamp → every wait times out) — **7.0 ships Windows on the name
 lane pins encode the POSIX eviction/fsync protocol and skip on Windows with the reason; one
 regex pin accepts the path shape's typed text; `force_kill_pid` spells SIGKILL portably. The
 re-enable of the Windows tier (stamp-safe byte range + a Windows-executed pin) is a
-post-release item (DEFER-C6-RESIDUALS names it). Verified by the next dispatched matrix.
+post-release item (DEFER-C6-RESIDUALS names it). NOT verified by the next matrices: the two
+concurrency tests stayed red on every name-tier leg — see «From the Windows CI matrix on 35b82db0».
 
 ## From the macOS full-test 33658408570 and the platform guard (candidate follow-ups after 5ae7f357)
 
@@ -8798,3 +8799,40 @@ post-release item (DEFER-C6-RESIDUALS names it). Verified by the next dispatched
 2. **The platform guard refused the first shape** (`os.kill` directly in workspace_executor, abe93702 → CI 33661022574 red on every OS at `test_no_platform_specific_apis_outside_platform_layer`): the primitive moved into the platform layer, which is where the question belongs.
 3. **Residual (root).** Under root every live pid is signalable, so the forged-record pin is a non-root property (`skipif(geteuid()==0)`) and a hash-less stale record naming a recycled pid is killable — exactly the v6-line exposure, which C6 never narrowed and 504bb20c narrowed for two hours. Forging a record needs write access to `data/state/`; disclosed, no product gate.
 4. **Windows and the compaction suite.** On the name tier the pass refuses by design, so `tests/test_usage_compaction.py` cannot land a compaction on Windows: under an emulated name tier 32 tests fail and 23 error (not only the 12–15 fixture errors CI showed). The suite's `data_root` fixture skips on Windows; the four tests whose subject is tier-agnostic (`test_the_pass_refuses_on_the_name_tier_while_appends_continue` — the Windows production path itself, `test_every_ledger_writer_refuses_when_the_lock_cannot_be_taken`, the two structural validator pins) run everywhere through `data_root_any_tier`. Three probe pins in `tests/test_lockfile_helpers.py` whose mechanics the Windows short-circuit never reaches are `skipif(IS_WINDOWS)` with the reason; the Windows-executed lock coverage that remains: name protocol, non-contention fail-closed, Win32 error classification, `pid_is_signalable`.
+
+## From the Windows CI matrix on 35b82db0 (run 33663258606; the stage-2 delta review's HIGH)
+
+1. **The name-tier disposition of abea91ec did not close the class.** windows-latest full-test on
+   `35b82db0` was red on exactly two tests, both concurrency shapes, both green on the pre-C6 tip
+   43dcc1d2 and red on every C6-bearing Windows leg (33654743857, 33658408570, 33658966160,
+   33661022574, 33663258606): `test_concurrent_writers_keep_monotonic_sequence` («usage accounting
+   lock unavailable» at `usage_import.lock`) and
+   `test_terminal_projection_dedup_does_not_lose_concurrent_chat_append` (8 of 24 appended rows
+   missing). The stage-2 verifier (lens e2e-and-ci, `ADVERSARIAL_windows_name_tier_finding.md`)
+   named the mechanism and the operator confirmed it from the code: the name tier since round 3
+   opens the lock file on EVERY poll (`os.open` → `fstat` → 512-byte read → close) to judge identity
+   and owner pid; pre-C6 a contender only `stat`ed it. CPython's `os.open` on Windows shares
+   read/write but not delete, so the owner's release `os.unlink` fails with ERROR_SHARING_VIOLATION
+   whenever a contender's probe is open — swallowed at debug level, the lock is orphaned with the
+   owner's LIVE pid: `_named_lock` (owner-aware) refuses every later monetary writer for the life
+   of the process; `append_jsonl` waits its 2 s timeout on every call and appends UNLOCKED, which on
+   Windows (no atomic O_APPEND) interleaves and loses rows. One mechanism, both symptoms, only under
+   contention — which is why two legs happened to pass one of the two tests.
+2. **Reproduced without a Windows host.** The verifier's simulator (Linux shim of the delete
+   semantics, `mega_review/stage2/verify_win_orphan/sim.py`, 12 writers × 20 s of
+   `append_jsonl`-shaped acquire/release): candidate — 1 refusal → orphan → 19 acquisitions, 120
+   timeouts; fixed — 288 refusals absorbed, 70 238 acquisitions, no orphan.
+3. **Fix (class, not instance):** `platform_layer._unlink_lock_path` — the unlink of OUR lock (release,
+   both orders) and of a path-only lock (`unlink_lockfile`) retries a `PermissionError` on Windows for
+   a bounded 2 s window (5 ms poll) while the path still names the held inode; POSIX does not retry
+   (a PermissionError there is the directory's mode, permanent). The contender's probe is unchanged:
+   the refusal is transient by construction (every handle this protocol opens on a lock lives
+   microseconds), so the release is where the class is closed for every caller at once.
+4. **Red-first pins** (`tests/test_lockfile_helpers.py`): `test_windows_release_retries_a_contenders_transient_sharing_refusal`
+   (fails on 35b82db0: the lock survives the release; passes now — the next acquirer wins at once),
+   `test_windows_release_gives_up_a_refusal_that_never_clears` (bounded window, file left, no hang),
+   `test_posix_release_does_not_retry_a_permission_refusal` (one attempt). The Windows-executed proof
+   is the matrix on the SHA carrying the fix; recorded in WINWAVE_CLASS_REGISTRY «3-OS matrix runs».
+5. **Prose corrected:** packet §10 addendum and DESIGN §8 no longer claim the Windows name tier is
+   «the protocol it always ran»; the earlier ledger line «Verified by the next dispatched matrix»
+   is withdrawn above.

@@ -382,6 +382,34 @@ def refresh_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int])
     return True
 
 
+def _unlink_lock_path(lock_path: pathlib.Path, held: Optional[tuple]) -> None:
+    """Unlink a lock file while the path still names ``held`` (``None``: unconditionally).
+    Windows refuses to delete a file any other handle has open (CPython opens without
+    FILE_SHARE_DELETE), and the name protocol's contenders open the lock on every poll to
+    read its identity and owner stamp — a refusal at the owner's release is therefore
+    routine and TRANSIENT (each such handle lives microseconds), so it is retried for a
+    bounded window rather than swallowed: a swallowed refusal orphaned the lock with the
+    owner's LIVE pid stamped in it, which no owner-aware acquirer would ever evict (the
+    Windows matrices after the C6 merge, last 33663258606 on 35b82db0: monetary writers
+    refused until restart, chat appends falling to the unlocked lane).  POSIX never refuses for a reader, so it does not retry."""
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            if held is None or (held and _lock_identity(lock_path)[:2] == held):
+                os.unlink(str(lock_path))
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if not IS_WINDOWS or time.monotonic() >= deadline:
+                log.debug("Failed to unlink lock file %s", lock_path, exc_info=True)
+                return
+            time.sleep(0.005)
+        except Exception:
+            log.debug("Failed to unlink lock file %s", lock_path, exc_info=True)
+            return
+
+
 def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int]) -> None:
     """Release a lock acquired by :func:`acquire_exclusive_file_lock`: unlink
     OUR lock file or nothing at all (a hold evicted as stale and re-taken must
@@ -389,35 +417,26 @@ def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int])
     close — under the still-held kernel lock on the enforced tier, so no
     reclaimer can be evicting the same file between re-check and unlink.
     Windows cannot unlink an open file: it re-checks the path after the close,
-    protected by the new owner's open handle."""
+    protected by the new owner's open handle, and retries a contender's
+    transient sharing refusal (:func:`_unlink_lock_path`)."""
     lock_path = pathlib.Path(lock_path)
     if lock_fd is None:
         return
     held = _lock_identity(lock_fd)[:2]
-
-    def unlink_ours() -> None:
-        try:
-            if held and _lock_identity(lock_path)[:2] == held:
-                os.unlink(str(lock_path))
-        except Exception:
-            log.debug("Failed to unlink lock file %s", lock_path, exc_info=True)
-
     if not IS_WINDOWS:
-        unlink_ours()
+        _unlink_lock_path(lock_path, held)
     try:
         os.close(lock_fd)
     except Exception:
         log.debug("Failed to close lock fd %s for %s", lock_fd, lock_path, exc_info=True)
     if IS_WINDOWS:
-        unlink_ours()
+        _unlink_lock_path(lock_path, held)
 
 
 def unlink_lockfile(lock_path: pathlib.Path) -> None:
-    """Best-effort cleanup for path-only locks whose fd was closed after acquire."""
-    try:
-        pathlib.Path(lock_path).unlink(missing_ok=True)  # no exists() race in between
-    except OSError:
-        log.debug("Failed to unlink lock file %s", lock_path, exc_info=True)
+    """Best-effort cleanup for path-only locks whose fd was closed after acquire
+    (the same transient Windows refusal is retried, see :func:`_unlink_lock_path`)."""
+    _unlink_lock_path(pathlib.Path(lock_path), None)
 
 
 def open_path_external(path: pathlib.Path) -> None:

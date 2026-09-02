@@ -587,3 +587,75 @@ def test_pid_is_signalable_is_the_kill_question():
     if not platform_layer.IS_WINDOWS and getattr(os, "geteuid", lambda: 1)() != 0:
         assert platform_layer.pid_is_alive(1) is True
         assert platform_layer.pid_is_signalable(1) is False
+
+
+def _refusing_unlink(monkeypatch, lock_path, *, refusals):
+    """Windows delete semantics on any host: ``os.unlink`` of ``lock_path`` answers
+    a sharing violation ``refusals`` times (a contender's probe handle still open —
+    ``None``: forever), then behaves.  Returns the attempt counter."""
+    real_unlink, attempts = os.unlink, []
+
+    def unlink(path, *args, **kwargs):
+        if pathlib.Path(path) == lock_path:
+            attempts.append(time.monotonic())
+            if refusals is None or len(attempts) <= refusals:
+                raise PermissionError(errno.EACCES, "[WinError 32] sharing violation", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(platform_layer.os, "unlink", unlink)
+    return attempts
+
+
+def test_windows_release_retries_a_contenders_transient_sharing_refusal(tmp_path, monkeypatch):
+    """The name protocol's contenders open the lock on every poll; on Windows that
+    handle makes the owner's unlink fail with a sharing violation for a moment.
+    Swallowing it orphaned the lock with the owner's LIVE pid inside (the Windows
+    matrices after the C6 merge: every later monetary writer refused, chat appends
+    fell to the unlocked lane), so the release retries until the handle is gone
+    and the next acquirer wins at once instead of waiting out its timeout."""
+    monkeypatch.setattr(platform_layer, "IS_WINDOWS", True)
+    lock_path = tmp_path / "state.lock"
+    fd = acquire_exclusive_file_lock(lock_path)
+    assert fd is not None
+    attempts = _refusing_unlink(monkeypatch, lock_path, refusals=3)
+
+    release_exclusive_file_lock(lock_path, fd)
+
+    assert len(attempts) == 4 and not lock_path.exists()
+    fd2 = acquire_exclusive_file_lock(lock_path, timeout_sec=0.2, owner_aware_stale=True)
+    assert fd2 is not None
+    release_exclusive_file_lock(lock_path, fd2)
+    assert not lock_path.exists()
+
+
+def test_windows_release_gives_up_a_refusal_that_never_clears(tmp_path, monkeypatch):
+    """The retry is bounded: a handle that never closes (an indexer, a foreign
+    reader) cannot pin the releasing writer forever — it logs and returns
+    within the window, leaving the file it could not remove."""
+    monkeypatch.setattr(platform_layer, "IS_WINDOWS", True)
+    lock_path = tmp_path / "state.lock"
+    fd = acquire_exclusive_file_lock(lock_path)
+    assert fd is not None
+    attempts = _refusing_unlink(monkeypatch, lock_path, refusals=None)
+    started = time.monotonic()
+
+    release_exclusive_file_lock(lock_path, fd)
+
+    assert 1.5 < time.monotonic() - started < 6.0 and len(attempts) > 10
+    assert lock_path.exists()
+
+
+def test_posix_release_does_not_retry_a_permission_refusal(tmp_path, monkeypatch):
+    """POSIX never refuses an unlink for a reader's open handle: a
+    PermissionError there is the directory's mode, permanent — retrying would
+    only delay the writer by the whole window."""
+    monkeypatch.setattr(platform_layer, "IS_WINDOWS", False)
+    lock_path = tmp_path / "state.lock"
+    fd = acquire_exclusive_file_lock(lock_path)
+    assert fd is not None
+    attempts = _refusing_unlink(monkeypatch, lock_path, refusals=None)
+
+    release_exclusive_file_lock(lock_path, fd)
+
+    assert len(attempts) == 1 and lock_path.exists()
+    lock_path.unlink()

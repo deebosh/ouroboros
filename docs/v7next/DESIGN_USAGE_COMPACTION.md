@@ -238,9 +238,13 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   hold, and waits until its timeout — eight concurrent monetary writers all
   answered «lock unavailable», `update_json_locked` timed out, a concurrent chat
   append was lost. `kernel_file_locks_enforced` therefore answers False on
-  Windows: every lock there runs the O_EXCL name protocol it ran before this
-  design, and the compaction pass refuses (disclosed, typed) exactly as on any
-  name-tier filesystem. Post-release: lock a byte range BEYOND the stamp (the
+  Windows: every lock there runs the O_EXCL name protocol — with this design's
+  per-poll identity/stamp probe, which is NOT the pre-C6 stat-only protocol: on
+  Windows a contender's probe handle refuses the owner's unlink for a moment
+  (no FILE_SHARE_DELETE), so the release retries that transient refusal for a
+  bounded window (`_unlink_lock_path`; a swallowed refusal orphaned the lock
+  with a live pid, run 33663258606) — and the compaction pass refuses
+  (disclosed, typed) exactly as on any name-tier filesystem. Post-release: lock a byte range BEYOND the stamp (the
   common Win32 idiom) so reads stay possible, then re-enable the tier under a
   Windows-executed pin.
   *Enforced tier* (POSIX `fcntl.flock`; Windows `LockFileEx` once re-enabled —

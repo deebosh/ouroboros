@@ -899,6 +899,25 @@ after the merge was red on windows-latest only, in one class plus two test shape
   False on Windows — 7.0 ships Windows on the name tier it always ran (compaction
   refuses there, typed and disclosed); the tier code stays for the post-release
   re-enable with a stamp-safe byte range and a Windows-executed pin.
+  **Correction (stage-2 delta review, lens e2e-and-ci; run 33663258606 on `35b82db0`):**
+  the mandatory byte-range lock explained the bf8b6549 leg only; the same two tests
+  (`test_concurrent_writers_keep_monotonic_sequence`,
+  `test_terminal_projection_dedup_does_not_lose_concurrent_chat_append`) stayed red on
+  every name-tier leg after it, because the name tier is NOT «the protocol it always
+  ran»: since round 3 a contender opens the lock on every poll to read identity and
+  owner stamp, and on Windows (CPython opens without FILE_SHARE_DELETE) that handle
+  makes the owner's release unlink fail with a sharing violation — swallowed at debug,
+  the lock is orphaned with the owner's LIVE pid, which no owner-aware acquirer evicts:
+  the monetary lock refuses every later writer until restart, `append_jsonl` waits its
+  2 s and lands unlocked (non-atomic append on Windows → lost rows). Reproduced on Linux
+  by the verifier's delete-semantics simulator (1 refusal → orphan → 120 timeouts in
+  20 s). **Fix:** `_unlink_lock_path` retries a transient Windows refusal for a bounded
+  window at release and in `unlink_lockfile` (simulator: 288 refusals absorbed, 70 238
+  acquisitions, no orphan); red-first pins
+  `test_windows_release_retries_a_contenders_transient_sharing_refusal`,
+  `test_windows_release_gives_up_a_refusal_that_never_clears`,
+  `test_posix_release_does_not_retry_a_permission_refusal`. Verified by the matrix on
+  the SHA carrying the fix (see LEDGER «From the Windows CI matrix on 35b82db0»).
 - **Test shape (lane pins, POSIX protocol):** five lock-ownership pins unlink or
   rewrite a HELD lock file (impossible on Windows) and two swap pins assert
   directory fsync/inode identity — `skipif(IS_WINDOWS)` with the reason stated;
