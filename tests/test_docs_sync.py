@@ -365,11 +365,11 @@ def doc_residue_counts(rel: str, text: str) -> dict:
 DOC_RESIDUE_BASELINE = {
     "docs/ARCHITECTURE.md": {
         "## 1. High-Level Architecture": {
-            "version_stamp": 42,
-            "version_narrative": 1,
-            "narrative": 8,
-            "codename_paren": 24,
-            "codename_word": 14
+            "version_stamp": 0,
+            "version_narrative": 0,
+            "narrative": 0,
+            "codename_paren": 0,
+            "codename_word": 0
         },
         "## 2. Startup / Onboarding Flow": {
             "version_stamp": 0,
@@ -407,23 +407,23 @@ DOC_RESIDUE_BASELINE = {
             "codename_word": 15
         },
         "## 7. Configuration (ouroboros/config.py)": {
-            "version_stamp": 17,
-            "version_narrative": 1,
-            "narrative": 3,
+            "version_stamp": 0,
+            "version_narrative": 0,
+            "narrative": 0,
             "codename_paren": 0,
             "codename_word": 0
         },
         "## 11. Frozen Contracts v1 (`ouroboros/contracts/`)": {
-            "version_stamp": 3,
+            "version_stamp": 0,
             "version_narrative": 0,
             "narrative": 0,
             "codename_paren": 0,
-            "codename_word": 3
+            "codename_word": 0
         },
         "## 13. External Skills Layer": {
             "version_stamp": 0,
             "version_narrative": 0,
-            "narrative": 1,
+            "narrative": 0,
             "codename_paren": 0,
             "codename_word": 0
         }
