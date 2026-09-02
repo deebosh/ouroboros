@@ -248,7 +248,11 @@ def _parse_model_experience(raw: Any) -> Optional[Dict[str, str]]:
     if raw in (None, ""):
         return None
     if isinstance(raw, str):
-        return {"what_model_sees": raw.strip()}
+        # The string form IS the one-key mapping form; routing it through the
+        # mapping branch is what makes the two shapes refuse identically — a
+        # whitespace-only section used to be stored as empty prose, so every
+        # model-visible surface rendered the label with no sentence after it.
+        raw = {"what_model_sees": raw}
     if isinstance(raw, dict):
         unknown = sorted(set(raw) - set(MODEL_EXPERIENCE_KEYS))
         if unknown:
