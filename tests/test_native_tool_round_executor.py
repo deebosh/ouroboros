@@ -213,13 +213,15 @@ def test_transcript_bound_is_the_window_capacity_never_above_the_ceiling(monkeyp
 def _ignores_landing(surface="multi_model_review", draft=""):
     """A reviewer that reads a 60K file under a 50K ceiling and then keeps
     calling tools after the landing notice: the first read is clamped to the
-    room below the bound, the notice is posted, the next tool round crosses
-    the bound — the only way a transcript can now exceed it."""
+    room below the bound, the notice is posted, later results are withheld
+    (empty) and only the reviewer's own envelopes grow the transcript until
+    it crosses the bound — the only way a transcript can now exceed it."""
     return [
         {**({"content": draft} if draft else {}),
          "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, "c1")]},
-        {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c2")]},
-        {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c3")]},
+    ] + [
+        {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, f"c{i}")]}
+        for i in range(2, 10)
     ]
 
 
@@ -242,7 +244,7 @@ def test_transcript_bound_fails_closed_for_verdict_shapes(subject_repo, monkeypa
     # The settled failure replays; no second paid episode.
     with pytest.raises(ReviewRouteUnavailable):
         executor.execute()
-    assert len(llm.calls) < 3 and llm.script  # the bound landed before the script ran out
+    assert 2 <= len(llm.calls) < 9 and llm.script  # the bound landed before the script ran out
 
 
 def test_one_read_can_never_jump_over_the_landing_notice_and_the_bound(subject_repo, monkeypatch):
@@ -363,8 +365,32 @@ def test_multi_call_round_withholds_reads_once_the_room_is_spent(subject_repo, m
     # finds no useful room and is withheld without being executed.
     assert "RESULT TRUNCATED" not in tool_msgs[0]["content"]
     assert "RESULT TRUNCATED" in tool_msgs[1]["content"]
-    assert "RESULT WITHHELD" in tool_msgs[2]["content"]
+    assert tool_msgs[2]["content"] == "" or "RESULT WITHHELD" in tool_msgs[2]["content"]
     assert outcomes == ["executed", "executed", "withheld"]
+
+
+def test_many_withheld_calls_never_spend_the_landing_reserve(subject_repo, monkeypatch):
+    """A round of many calls: withheld stubs are charged against the room and
+    become empty once even a stub would not fit, so the transcript stays
+    under the bound, the landing notice is still posted and the reviewer's
+    next send delivers — never a cap refusal the reviewer was not warned of."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (subject_repo / "chunk.txt").write_text("q" * 8_000, encoding="utf-8")
+    llm = _ScriptedLLM([
+        {"tool_calls": [_tool_call("read_file", {"path": "chunk.txt"}, f"c{i}") for i in range(12)]},
+        {"content": _VERDICT},
+    ])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    result = executor.execute()
+    assert result.raw_text == _VERDICT
+    usage = result.usage
+    assert usage["native_transcript_chars"] <= usage["native_transcript_bound"] == 50_000
+    assert usage["native_landing_notified"] is True and usage["native_end_reason"] == "final_answer"
+    outcomes = [r["outcome"] for r in usage["native_tool_receipts"]]
+    assert outcomes.count("withheld") >= 5 and outcomes[0] == "executed"
+    tool_msgs = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"]
+    assert any(m["content"] == "" for m in tool_msgs)  # stubs beyond the room are empty
+    assert llm.calls[1]["messages"][-1]["role"] == "user"  # the landing notice rode the final send
     assert usage["native_landing_notified"] is True
 
 
@@ -380,14 +406,64 @@ def test_terminal_round_is_kept_on_a_bound_end(subject_repo, tmp_path, monkeypat
     with pytest.raises(ReviewRouteUnavailable):
         executor.execute()
     fact = _episode_rows(tmp_path / "custody")[0]
-    terminal = json.loads(fact["native_terminal_round"])
-    assert terminal[0]["role"] == "assistant" and terminal[-1]["role"] == "tool"
+    terminal = json.loads(fact["native_terminal_round"])  # structurally valid JSON, always
+    messages = terminal["messages"]
+    assert messages[0]["role"] == "assistant" and messages[-1]["role"] == "tool"
     assert "greeting.txt" in json.dumps(terminal)
-    assert len(fact["native_terminal_round"]) <= 8_000
+    assert len(fact["native_terminal_round"]) <= 8_000 and terminal["omitted_tool_results"] == 0
     # A delivered episode keeps no terminal-round copy: the answer IS the record.
     llm = _ScriptedLLM([{"content": _VERDICT}])
     usage = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute().usage
     assert "native_terminal_round" not in usage
+    # A huge terminal round (many big results) stays valid JSON under the cap:
+    # fields are bounded BEFORE serialization and old results are dropped with
+    # their count disclosed.
+    big = [{"role": "assistant", "content": "x" * 50_000, "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, f"c{i}") for i in range(9)]}]
+    big += [{"role": "tool", "tool_call_id": f"c{i}", "content": "y" * 60_000} for i in range(9)]
+    doc = NativeToolRoundReviewExecutor._terminal_round_fact(big)
+    parsed = json.loads(doc)
+    assert len(doc) <= 8_000 and parsed["omitted_tool_results"] == 5 and len(parsed["messages"]) == 5
+    assert "OMISSION NOTE" in parsed["messages"][0]["content"]
+
+
+def test_report_keeps_its_draft_on_a_deadline_or_ledger_end(subject_repo, monkeypatch):
+    """A report is a product: an owner deadline or the paid ledger landing
+    after a paid round delivers the collected draft marked incomplete instead
+    of discarding it; verdict shapes still refuse."""
+    import ouroboros.review_native_episode as native_episode
+    from ouroboros.usage_accounting import BudgetExceeded
+
+    draft = "# Draft\n\n- read greeting\n"
+    ticks = iter([False, True])
+    monkeypatch.setattr(native_episode, "owner_deadline_exhausted", lambda **_: next(ticks))
+    llm = _ScriptedLLM([{"content": draft, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}])
+    assignment = _assignment(subject_repo, llm)
+    assignment.request.surface = "deep_self_review"
+    result = NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    assert result.raw_text == draft and result.usage["native_incomplete"] == "deadline_exhausted"
+    assert result.usage["native_terminal_round"]  # the evidence of the interrupted round is kept
+    # Verdict shape: the same deadline is a typed refusal.
+    ticks = iter([False, True])
+    monkeypatch.setattr(native_episode, "owner_deadline_exhausted", lambda **_: next(ticks))
+    llm = _ScriptedLLM([{"content": "reading", "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}])
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute()
+    assert exc.value.code == "deadline_exhausted"
+    # The paid ledger refusing the next send: the report keeps its draft too.
+    monkeypatch.setattr(native_episode, "owner_deadline_exhausted", lambda **_: False)
+
+    class _BrokeLLM(_ScriptedLLM):
+        def chat(self, **kwargs):
+            if len(self.calls) == 1:
+                self.calls.append(kwargs)
+                raise BudgetExceeded("root budget exhausted")
+            return super().chat(**kwargs)
+
+    llm = _BrokeLLM([{"content": draft, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}])
+    assignment = _assignment(subject_repo, llm)
+    assignment.request.surface = "deep_self_review"
+    result = NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    assert result.raw_text == draft and result.usage["native_incomplete"] == "budget_exhausted"
 
 
 def test_round_without_progress_is_a_typed_malformed_end(subject_repo):
@@ -540,7 +616,7 @@ def test_episode_fact_is_custodied_on_every_end_including_exceptions(subject_rep
     fact = _episode_rows(tmp_path / "bound")
     assert len(fact) == 1
     assert fact[0]["native_end_reason"] == "transcript_bound"
-    assert fact[0]["native_rounds"] == 2 and fact[0]["slot_id"] == "t1"
+    assert fact[0]["native_rounds"] >= 2 and fact[0]["slot_id"] == "t1"
     assert fact[0]["native_transcript_chars"] > fact[0]["native_transcript_bound"] == 50_000
 
     # Owner deadline exhausted mid-episode (after one paid round).
@@ -556,6 +632,29 @@ def test_episode_fact_is_custodied_on_every_end_including_exceptions(subject_rep
     fact = _episode_rows(tmp_path / "deadline")
     assert len(fact) == 1 and fact[0]["native_end_reason"] == "deadline_exhausted"
     assert fact[0]["native_rounds"] == 1 and fact[0]["native_tool_calls"] == 1
+    # The terminal round is kept on an exception end too (P1).
+    assert "greeting.txt" in fact[0]["native_terminal_round"]
+
+    # The paid ledger refusing the next send is the MONEY floor, not a transport fault.
+    from ouroboros.usage_accounting import BudgetExceeded
+
+    monkeypatch.setattr(native_episode, "owner_deadline_exhausted", lambda **_: False)
+
+    class _BrokeLLM(_ScriptedLLM):
+        def chat(self, **kwargs):
+            if len(self.calls) == 1:
+                self.calls.append(kwargs)
+                raise BudgetExceeded("global budget exhausted")
+            return super().chat(**kwargs)
+
+    llm = _BrokeLLM([{"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "budget")
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
+    with pytest.raises(BudgetExceeded):
+        executor.execute()
+    fact = _episode_rows(tmp_path / "budget")
+    assert len(fact) == 1 and fact[0]["native_end_reason"] == "budget_exhausted"
+    assert executor.failure_custody()["native_end_reason"] == "budget_exhausted"
 
     # Transport failure on the second send.
     monkeypatch.setattr(native_episode, "owner_deadline_exhausted", lambda **_: False)
@@ -574,6 +673,37 @@ def test_episode_fact_is_custodied_on_every_end_including_exceptions(subject_rep
     fact = _episode_rows(tmp_path / "transport")
     assert len(fact) == 1 and fact[0]["native_end_reason"] == "transport_error"
     assert fact[0]["native_rounds"] == 1
+
+
+def test_a_dispatched_first_send_that_fails_is_still_a_round(subject_repo):
+    """A send the ledger saw dispatched (its capture is positive) is a round of
+    this episode even when the response never came back: the receipt keys
+    stay filled so the public wire keeps the execution, unlike a proven
+    zero-send refusal."""
+    from ouroboros.review_execution_projection import review_executions_from_actor_usage
+
+    class _Capture:
+        state = "dispatched"
+        attempt_id = "attempt-1"
+        provider_status_code = None
+
+    class _DispatchedFailureLLM(_ScriptedLLM):
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            exc = RuntimeError("socket reset after dispatch")
+            exc.physical_attempt_capture = _Capture()
+            raise exc
+
+    llm = _DispatchedFailureLLM([])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    with pytest.raises(RuntimeError):
+        executor.execute()
+    custody = executor.failure_custody()
+    assert custody["native_rounds"] == 1 and custody["native_end_reason"] == "transport_error"
+    assert custody["resolved_model"] == "openai/fake-reviewer"
+    assert review_executions_from_actor_usage([{"usage": custody}]) == [
+        {"kind": "native", "model": "openai/fake-reviewer"},
+    ]
 
 
 def test_transcript_counter_includes_system_schemas_and_args(subject_repo, monkeypatch):

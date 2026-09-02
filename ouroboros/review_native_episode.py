@@ -32,9 +32,9 @@ from ouroboros.deadline_utils import owner_deadline_exhausted, review_transport_
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.review_verdict_extraction import canonicalize_session_verdict
 from ouroboros.triad_review import default_output_contract, review_output_shape
-from ouroboros.utils import truncate_review_artifact
 from ouroboros.usage_accounting import (
     POSITIVE_PHYSICAL_ATTEMPT_STATES,
+    BudgetExceeded,
     physical_attempt_limit,
 )
 
@@ -158,10 +158,6 @@ _EPISODE_TOOL_RESULT_CHAR_CAP = 120_000
 # Room kept below the bound for the landing notice itself: the notice must
 # always fit under the send bound it announces.
 _LANDING_RESERVE_CHARS = 512
-
-# Bound on the terminal-round copy kept on the episode facts (P1 forensics of
-# a bound/deadline end): a disclosure, never a second transcript.
-_TERMINAL_ROUND_FACT_CHARS = 8_000
 
 # Below this much room a tool result could carry nothing but its truncation
 # marker: the call is WITHHELD (not executed) instead of read-and-discarded.
@@ -345,6 +341,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         round_idx = 0
         transcript_chars = 0
         episode: Dict[str, Any] = {}
+        messages: List[Dict[str, Any]] = []
         try:
             end_reason = "registry_unavailable"
             registry, schemas = self._inspection_registry(root, data_root or scratch)
@@ -361,7 +358,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 + len(_NATIVE_REVIEW_INSTRUCTIONS)
                 + len(json.dumps(schemas, ensure_ascii=False, default=str))
             )
-            messages: List[Dict[str, Any]] = [
+            messages = [
                 {"role": "system", "content": _NATIVE_REVIEW_INSTRUCTIONS},
                 {"role": "user", "content": self.episode_prompt},
             ]
@@ -380,6 +377,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
                 ):
                     end_reason = "deadline_exhausted"
+                    if shape == "report" and last_content:
+                        break  # a report keeps its draft (marked incomplete below)
                     raise _deadline_exhausted_error(
                         "owner deadline exhausted mid native review episode")
                 # The bound is a SEND bound: it is enforced BEFORE every
@@ -427,8 +426,18 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     try:
                         msg, usage = chat(**chat_kwargs)
                     except BaseException as exc:
-                        end_reason = "transport_error"
+                        # The paid ledger refusing the NEXT send is the money
+                        # floor landing, not a transport fault: name it.
+                        end_reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "transport_error"
                         capture = getattr(exc, "physical_attempt_capture", None)
+                        if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
+                            # A send that was physically dispatched IS a round
+                            # of this episode, even when its response never
+                            # came back: its receipt keys and custody must not
+                            # read as a zero-send refusal.
+                            self._rounds_used = round_idx
+                        if isinstance(exc, BudgetExceeded) and shape == "report" and last_content:
+                            break  # nothing was sent; a report keeps its draft
                         if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
                         raise
@@ -495,23 +504,6 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     messages.append({
                         "role": "tool", "tool_call_id": call_id, "content": result,
                     })
-            if final_answer is None and messages and messages[-1].get("role") != "user":
-                # The terminal round — the exact assistant envelope and the
-                # tool results that led to a bound/deadline end — is not
-                # reconstructible from the receipts alone (P1): keep a bounded
-                # copy of it on the episode facts, redacted like every other
-                # projected review artifact.
-                from ouroboros.observability import redact_projection
-
-                tail = []
-                for msg_item in reversed(messages):
-                    tail.insert(0, msg_item)
-                    if msg_item.get("role") == "assistant":
-                        break
-                episode["native_terminal_round"] = truncate_review_artifact(
-                    json.dumps(redact_projection(tail).value, ensure_ascii=False, default=str),
-                    _TERMINAL_ROUND_FACT_CHARS,
-                )
             if shape == "report" and not final_answer and last_content:
                 # A report is a product, not a verdict: the collected draft is
                 # delivered marked INCOMPLETE rather than discarded (the bound
@@ -525,6 +517,14 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             # Only the host's own scratch is removed; an opted-in data root
             # belongs to the caller and survives a failed episode untouched.
             shutil.rmtree(scratch, ignore_errors=True)
+            if (final_answer is None or episode.get("native_incomplete")) and messages and messages[-1].get("role") != "user":
+                # The terminal round — the exact assistant envelope and the
+                # tool results that led to a bound, deadline or transport end
+                # — is not reconstructible from the receipts alone (P1): keep
+                # a bounded copy on the episode facts, redacted like every
+                # other projected review artifact. Assembled HERE so every
+                # non-delivering end carries it, exception ends included.
+                episode["native_terminal_round"] = self._terminal_round_fact(messages)
             # One typed custody row per episode END — including the ends that
             # leave through an exception (deadline, transport, registry): a
             # refused episode used to leave no trace of how far it got. The
@@ -602,12 +602,16 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         verdict = validation_by_id.get(call_id)
         if room < _RESULT_ROOM_FLOOR_CHARS:
             # The round's earlier calls spent the room below the bound: a read
-            # whose result could not be returned is not performed at all.
+            # whose result could not be returned is not performed at all. The
+            # stub itself is charged against the room — once even a stub would
+            # not fit, the tool message is empty, so a round of many calls can
+            # never spend the landing reserve and jump the bound.
             outcome = "withheld"
-            result = (
+            stub = (
                 "⚠️ RESULT WITHHELD: the episode transcript budget is spent; "
                 "answer now from what you have read."
             )
+            result = stub if room >= len(stub) else ""
         elif verdict is not None and not getattr(verdict, "allows_execution", True):
             outcome = "refused"
             result = f"⚠️ TOOL_ARG_ERROR: {getattr(verdict, 'error', 'invalid arguments')}"
@@ -660,6 +664,37 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             receipt["outcome"] = outcome
             self._tool_receipts.append(receipt)
         return call_id, result
+
+    @staticmethod
+    def _terminal_round_fact(messages: List[Dict[str, Any]]) -> str:
+        """The terminal round (last assistant envelope + its tool results) as
+        ONE bounded, structurally valid JSON document: every field is bounded
+        BEFORE serialization with the strict in-budget marker, and only the
+        last few tool results are kept (the omitted count is disclosed) — a
+        serialized document cut mid-syntax would be no record at all."""
+        from ouroboros.observability import redact_projection
+        from ouroboros.utils import truncate_within_limit
+
+        tail: List[Dict[str, Any]] = []
+        for msg_item in reversed(messages):
+            tail.insert(0, msg_item)
+            if msg_item.get("role") == "assistant":
+                break
+        assistant, results = tail[0], tail[1:]
+        bounded: List[Dict[str, Any]] = [{
+            "role": "assistant",
+            "content": truncate_within_limit(str(assistant.get("content") or ""), 1_600),
+            "tool_calls": truncate_within_limit(
+                json.dumps(assistant.get("tool_calls") or [], ensure_ascii=False, default=str), 1_600),
+        }]
+        kept = results[-4:]
+        for item in kept:
+            bounded.append({
+                "role": "tool", "tool_call_id": str(item.get("tool_call_id") or ""),
+                "content": truncate_within_limit(str(item.get("content") or ""), 1_000),
+            })
+        doc = {"messages": bounded, "omitted_tool_results": len(results) - len(kept)}
+        return json.dumps(redact_projection(doc).value, ensure_ascii=False, default=str)
 
     def failure_custody(self) -> Dict[str, Any]:
         """The proven facts of a refused or errored episode for the error actor:
