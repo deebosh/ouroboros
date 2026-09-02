@@ -234,6 +234,36 @@ def extract_fenced_json(text: str) -> Any:
     return None
 
 
+# Output SHAPE per surface — the ONE form fact the retrieving-route canonicalizer,
+# the session output schema and the strict parser branch on. Shape is FORM only
+# (no surface policy lives here: acceptance rules, tier classification and
+# quorum authority stay with their owners). Every surface not listed returns
+# the findings ARRAY contract; ``object`` is the whole-object acceptance verdict
+# (verdict/outcome_tier/criteria_used/dialogue_status/findings/summary), which
+# the array-only canonicalizer used to reduce to its findings list; ``report``
+# is a free-form markdown product that is never canonicalized or extracted.
+REVIEW_OUTPUT_SHAPES: Dict[str, str] = {
+    "task_acceptance": "object",
+    "deep_self_review": "report",
+}
+OBJECT_VERDICT_REQUIRED_KEYS = ("verdict",)
+
+
+def review_output_shape(surface: str) -> str:
+    """``array`` | ``object`` | ``report`` for one review surface."""
+    return REVIEW_OUTPUT_SHAPES.get(str(surface or ""), "array")
+
+
+def object_verdict_payload(payload: Any) -> Optional[Dict[str, Any]]:
+    """The WHOLE object verdict when ``payload`` carries the required keys and a
+    list-shaped ``findings`` (or none), else None. Shape only: semantic demotion
+    (tier/coach/criteria) stays with ``review_actor_aggregation``."""
+    if not isinstance(payload, dict) or not all(key in payload for key in OBJECT_VERDICT_REQUIRED_KEYS):
+        return None
+    findings = payload.get("findings")
+    return payload if findings is None or isinstance(findings, list) else None
+
+
 def parse_review_findings(raw_text: str) -> tuple[Any, List[Dict[str, Any]], str]:
     """Reviewer response -> (parsed, findings, signal), by the object/array ladder."""
     text = str(raw_text or "").strip()

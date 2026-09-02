@@ -26,7 +26,7 @@ from ouroboros.config import get_finalization_grace_sec
 from ouroboros.deadline_utils import owner_deadline_exhausted, review_transport_timeout
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.review_verdict_extraction import canonicalize_session_verdict
-from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT
+from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT, review_output_shape
 from ouroboros.usage_accounting import (
     POSITIVE_PHYSICAL_ATTEMPT_STATES,
     physical_attempt_limit,
@@ -463,6 +463,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             llm=self.llm,
             deadline_at=getattr(self.assignment.request, "deadline_at", "") or "",
             transport_timeout_sec=getattr(self.assignment.slot, "transport_timeout_sec", None),
+            shape=review_output_shape(self.assignment.request.surface),
         )
         usage = dict(self._episode_usage)
         deltas: List[Dict[str, Any]] = []

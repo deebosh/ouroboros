@@ -1030,7 +1030,11 @@ transport or empty-response rail may make one bounded second physical send. A
 hosted agent-session slot is one multistep execution; local extraction reuses
 its collected transcript rather than launching another session. Actor transport,
 parse status, semantic verdict, model and route, coverage, cost, and capability
-delta remain distinct durable facts.
+delta remain distinct durable facts. A retrieving delivery canonicalizes its
+answer by the surface's output SHAPE (`triad_review.review_output_shape`:
+`array` | `object` | `report`), never by surface-name branches inside the
+canonicalizer: the shape table is form only, and a new object- or report-shaped
+surface registers there instead of teaching the extraction rail another `if`.
 
 One shared owner knob bounds PAID review cycles across the gates:
 `OUROBOROS_REVIEW_MAX_CYCLES` (SSOT `ouroboros/review_cycles.py`; a STRING —

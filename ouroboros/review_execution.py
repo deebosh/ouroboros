@@ -33,6 +33,7 @@ from ouroboros.triad_review import (
     ACCEPTANCE_SURFACE_RULES,
     REVIEW_JSON_ARRAY_CONTRACT,
     TIER_CLASSIFICATION_RULES,
+    review_output_shape,
 )
 from ouroboros.deadline_utils import (
     bounded_seconds, owner_deadline_exhausted,
@@ -116,6 +117,10 @@ def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str,
     refs = json.dumps(request.evidence_refs, ensure_ascii=False, indent=2, default=str)
     policy = json.dumps(request.policy, ensure_ascii=False, indent=2, default=str)
     classify_tier = bool(request.policy.get("classify_outcome_tier"))
+    # Acceptance-only prompt POLICY (criteria/dialogue/obligation keys and the
+    # surface rules) keys on the surface; the output SHAPE those keys imply is
+    # the separate form fact `review_output_shape` the canonicalizer consumes.
+    acceptance = request.surface == "task_acceptance"
     # The tier keys belong in the REQUIRED key list, not trailing prose — models
     # honor the explicit "Return JSON with keys" list and otherwise drop them,
     # which silently kills the best_effort/completion-coach lexicon.
@@ -142,7 +147,7 @@ def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str,
         'or HOST-ATTESTED top-level packet section names (the agent-supplied sections — reasoning_notes, '
         'candidate_answers, agent_supplied — and task_contract itself are NOT evidence: cite the exhibit '
         'that proves the work instead) — a ref that resolves to nothing cannot support a criterion)'
-        if request.surface == "task_acceptance"
+        if acceptance
         else ""
     )
     # v6.74.0 acceptance-dialogue keys (A3/A5): reviewer-authored obligation
@@ -150,19 +155,17 @@ def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str,
     # list for the same reason as the tier keys above.
     dialogue_key = (
         ', dialogue_status ("continue_actionable"|"unreachable_here"|"stable_disagreement")'
-        if request.surface == "task_acceptance"
+        if acceptance
         else ""
     )
     findings_shape = (
         '[{severity, item, evidence, recommendation, disposition_kind ("new"|"re_raise"), '
         'obligation_id (required when disposition_kind="re_raise")}]'
-        if request.surface == "task_acceptance"
+        if acceptance
         else "[{severity, item, evidence, recommendation}]"
     )
     tier_rules = TIER_CLASSIFICATION_RULES if classify_tier else ""
-    acceptance_rules = (
-        ACCEPTANCE_SURFACE_RULES if request.surface == "task_acceptance" else ""
-    )
+    acceptance_rules = ACCEPTANCE_SURFACE_RULES if acceptance else ""
     stable = (
         "You are an independent Ouroboros reviewer slot.\n"
         f"Surface: {request.surface}\n"
@@ -510,6 +513,53 @@ REVIEW_SESSION_OUTPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
+# The OBJECT contract's schema (task acceptance): the whole verdict object. The
+# host keeps exact evidence-ref resolution and tier/coach demotion for itself
+# (an enum of every exhibit key would mint a schema larger than the packet), so
+# the schema pins only the shape the canonicalizer preserves whole.
+ACCEPTANCE_SESSION_OUTPUT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "required": ["verdict", "findings", "summary"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["PASS", "FAIL", "DEGRADED"]},
+        "outcome_tier": {"type": "string", "enum": ["solved", "best_effort", "blocked_with_evidence"]},
+        "completion_coach": {"type": "string"},
+        "criteria_used": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["criterion", "status"],
+                "properties": {
+                    "criterion": {"type": "string"},
+                    "status": {"type": "string", "enum": ["supported", "missing", "partial", "rejected"]},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        "dialogue_status": {
+            "type": "string",
+            "enum": ["continue_actionable", "unreachable_here", "stable_disagreement"],
+        },
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["severity", "item", "evidence", "recommendation"],
+                "properties": {
+                    "severity": {"type": "string"},
+                    "item": {"type": "string"},
+                    "evidence": {"type": "string"},
+                    "recommendation": {"type": "string"},
+                    "disposition_kind": {"type": "string", "enum": ["new", "re_raise"]},
+                    "obligation_id": {"type": "string"},
+                },
+            },
+        },
+        "summary": {"type": "string"},
+    },
+}
+
+
 def review_session_output_schema(surface: str) -> Dict[str, Any]:
     """The session verdict schema, shaped to the SURFACE's own clean contract.
 
@@ -517,8 +567,11 @@ def review_session_output_schema(surface: str) -> Dict[str, Any]:
     triad or ordinary advisory reviewer. Scope's coverage contract requires all
     checklist rows (PASS included); Skill Review has the same matrix shape. Their
     schemas demand ``minItems: 1`` so an engine cannot conform with an empty answer;
-    each surface's downstream parser still verifies exact item coverage.
+    each surface's downstream parser still verifies exact item coverage. An
+    ``object``-shaped surface (task acceptance) asks for the whole verdict object.
     """
+    if review_output_shape(surface) == "object":
+        return ACCEPTANCE_SESSION_OUTPUT_SCHEMA
     if surface == "plan_review":
         # plan review's own element contract (4e133c8a): the generic item/verdict shape
         # would conform-and-launder — an unknown class demotes to a note.
@@ -1312,6 +1365,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             llm=self.llm,
             deadline_at=getattr(self.assignment.request, "deadline_at", "") or "",
             transport_timeout_sec=getattr(self.assignment.slot, "transport_timeout_sec", None),
+            shape=review_output_shape(self.assignment.request.surface),
         )
         usage = dict(self._session_usage)
         deltas = list(self._deltas)
