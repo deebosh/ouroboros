@@ -48,6 +48,9 @@ class _Api:
     def get_skill_token(self):
         return self.token
 
+    def get_settings(self, _keys):
+        return {"TELEGRAM_BOT_TOKEN": "token"}
+
     def log(self, _level, _message, **_fields):
         pass
 
@@ -400,7 +403,7 @@ def test_telegram_http_clients_follow_the_constructor_trust_env(monkeypatch, tru
     [(False, False, False), (True, True, False), (False, True, False), (True, False, True)],
 )
 def test_plugin_honours_env_proxies_only_in_a_proxy_routed_server_process(
-    monkeypatch, proxied, worker, expected,
+    tmp_path, monkeypatch, proxied, worker, expected,
 ):
     """The proxy decision is made once, at plugin import in the server process:
     True only when the install routes through a proxy (``env_proxies_configured``)
@@ -413,3 +416,21 @@ def test_plugin_honours_env_proxies_only_in_a_proxy_routed_server_process(
     plugin, _telegram_api = _load_skill()
 
     assert plugin._HONOR_ENV_PROXIES is expected
+
+    # The decision is only worth making if it is wired: an outbound handler must
+    # hand it to every TelegramClient it builds.
+    built: list[dict] = []
+
+    class _Recorder:
+        def __init__(self, _token, **kwargs):
+            built.append(kwargs)
+
+        async def send_message(self, *_args, **_kwargs):
+            return 1
+
+    monkeypatch.setattr(plugin, "TelegramClient", _Recorder)
+    (tmp_path / "settings.json").write_text(json.dumps({"TELEGRAM_CHAT_ID": "42"}), encoding="utf-8")
+    quiz = plugin._make_quiz(_Api(tmp_path))
+    asyncio.run(quiz({"question": "q?", "options": [{"label": "a"}, {"label": "b"}]}))
+
+    assert built == [{"trust_env": expected}]
