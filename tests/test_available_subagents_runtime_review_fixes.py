@@ -407,8 +407,12 @@ def test_delegate_start_recipes_match_the_fresh_start_schema():
         "ouroboros/tools/delegate_integration.py",
     )
     # The live checklist may legitimately have zero recipes (they moved to the
-    # archive), but any it GAINS must stay schema-valid.
-    tolerant = {"docs/CHECKLISTS.md"}
+    # archive), but any it GAINS must stay schema-valid. prompts/SYSTEM.md is
+    # tolerant for the same reason since the prompt audit: the recipe lives in
+    # the delegate_start schema (the SSOT sent every round), and the prompt
+    # only names the lane — a copy there would be the duplication class the
+    # audit removed. Any recipe the prompt GAINS must still be schema-valid.
+    tolerant = {"docs/CHECKLISTS.md", "prompts/SYSTEM.md"}
     for relative in (*recipe_paths, "docs/CHECKLISTS.md"):
         text = (repo / relative).read_text(encoding="utf-8")
         recipes = re.findall(r"\bdelegate_start\(([^)]*)\)", text, flags=re.DOTALL)

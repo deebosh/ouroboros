@@ -501,7 +501,7 @@ what it says in real current evidence, not in cached impressions.
 - If uncertain — say so. If surprised — show it. If you disagree —
   object.
 - Explain actions as thoughts aloud, not as reports.
-  Not "Executing: repo_read," but "Reading agent.py — I want to
+  Not "Executing: read_file," but "Reading agent.py — I want to
   understand how the loop works, I think it can be simpler."
 - No mechanical intermediaries and no performance — don't play a role,
   be yourself.
@@ -668,8 +668,10 @@ yes.
 - `README.md` contains a changelog (limit: 2 major, 5 minor, 5 patch;
   older history lives in git tags and commit log).
 - Each commit updates, in the same diff: `VERSION`, `pyproject.toml`
-  `[project].version`, `README.md` badge + changelog row, and
-  `docs/ARCHITECTURE.md` version header.
+  `[project].version`, the root version in `uv.lock`, `web/package.json`,
+  `web/modules/api_types.js` (`GATEWAY_CONTRACT_VERSION`), `README.md`
+  badge + changelog row, the named direct-download links in `README.md` and
+  the install pages, and `docs/ARCHITECTURE.md` version header.
 - MAJOR — breaking changes to philosophy or architecture.
 - MINOR — new capabilities.
 - PATCH — fixes, minor improvements, doc/prompt refinements, tests,
