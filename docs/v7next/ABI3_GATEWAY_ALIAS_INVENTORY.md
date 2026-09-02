@@ -35,8 +35,12 @@ below), so no alias itself is deferred.
   name is present" and answered null, freezing a subagent card on
   "cost pending" for the rest of the run. Presence there now means a DEFINED
   value; an explicit `null` is still present (Python parity with `old in src`)
-  and a mirrored legacy amount still wins its pair. JSDoc typedefs at
-  `api_types.js:288/:291` already name the honest fields.
+  and a mirrored legacy amount still wins its pair. The JSDoc typedefs already
+  name the honest fields: `accounted_upper_bound_usd` and
+  `accounted_upper_bound_usd_with_children` at `api_types.js:287` and `:290`
+  on this tree (this sentence was written in the stage-2 fix wave, so unlike
+  the frozen-base citations elsewhere in this file it names current lines;
+  `:288/:291` were the two description lines under them).
 - producer: `cost_projection.py` is the one author of the emitted pair;
   `gateway/tasks.py:227` stamps `cost_usd=0.0` into the stored
   admission-failure record; hand literals (`agent_task_pipeline.py`,

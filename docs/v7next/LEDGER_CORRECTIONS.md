@@ -7788,12 +7788,13 @@ serializes them away on that path: `costMetaKeys` output goes straight into
 no JSON round-trip in between. Both readers tested presence with bare
 `hasOwnProperty`, so a key with no value counted as a value.
 
-Live path (`task_done` on the log channel -> `routeSubagentTerminalToCard`
-chat.js:2412-2443 -> `summarizeSubagentCardFrame` -> `withTaskCostMeta` ->
-`taskCostProjection`): the terminal frame arrives AFTER the honest progress
-frame, projects `final: true`, and therefore outranks it in
-`mergeStickyCostMeta` for the rest of the run. The reload path (chat.js:3005)
-calls the same `routeSubagentTerminalToCard`, so it froze identically.
+Live path (`task_done` on the log channel ->
+`chat.js::routeSubagentTerminalToCard`, chat.js:2399-2430 on this base ->
+`summarizeSubagentCardFrame` -> `withTaskCostMeta` -> `taskCostProjection`):
+the terminal frame arrives AFTER the honest progress frame, projects
+`final: true`, and therefore outranks it in `mergeStickyCostMeta` for the rest
+of the run. The reload path (chat.js:2992) calls the same
+`routeSubagentTerminalToCard`, so it froze identically.
 
 Class fix, both readers, presence now means a DEFINED value:
 
