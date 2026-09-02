@@ -39,6 +39,10 @@ from ouroboros.tools.output_export_policy import (  # noqa: F401 — re-exported
 )
 from ouroboros.tools.result_envelope import annotate as _annotate_result
 from ouroboros.shell_parse import is_absolute_path_text, recover_stringified_argv
+from ouroboros.tools.shell_and_chain import (
+    _maybe_split_single_element_and_chain,
+    _maybe_wrap_single_element_pipeline,
+)
 from ouroboros.tools.registry import (
     ToolContext,
     ToolEntry,
@@ -1014,6 +1018,12 @@ def _run_shell(
         )
 
     cmd, autocorrect_note = _maybe_autocorrect_grep_backslash_pipe(cmd)
+    cmd, and_chain_note = _maybe_split_single_element_and_chain(cmd)
+    if and_chain_note:
+        autocorrect_note = (autocorrect_note + and_chain_note) if autocorrect_note else and_chain_note
+    cmd, pipeline_note = _maybe_wrap_single_element_pipeline(cmd)
+    if pipeline_note:
+        autocorrect_note = (autocorrect_note + pipeline_note) if autocorrect_note else pipeline_note
     autocorrect_note += _literal_argv_notes(cmd)
 
     try:
