@@ -15,7 +15,6 @@ from supervisor.state import (
     load_state,
     append_jsonl,  # noqa: F401 -- queue_snapshot leaf reads it via the _queue() handle
     atomic_write_text,  # noqa: F401 -- queue_snapshot leaf reads it via the _queue() handle
-    QUEUE_SNAPSHOT_PATH,  # noqa: F401 -- queue_snapshot leaf reads it via the _queue() handle
     budget_remaining, EVOLUTION_BUDGET_RESERVE,
     reconstruct_task_cost as reconstruct_task_cost,
 )
@@ -56,6 +55,10 @@ log = logging.getLogger(__name__)
 
 
 DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
+# The queue snapshot path has ONE authority (MIGRATION row 1030, D18): this
+# module. init() rebinds it per drive root; the queue_snapshot leaf reads it
+# through the _queue() handle.
+QUEUE_SNAPSHOT_PATH: pathlib.Path = DRIVE_ROOT / "state" / "queue_snapshot.json"
 HEARTBEAT_STALE_SEC: int = 120
 QUEUE_MAX_RETRIES: int = 1
 FINALIZATION_GRACE_SEC: int = FINALIZATION_GRACE_DEFAULT_SEC

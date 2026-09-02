@@ -560,3 +560,15 @@ def test_no_leaf_reads_a_parent_owned_name_directly(leaf: str) -> None:
         and node.id in parent_defs and node.id not in own
     }
     assert direct == set(), f"{leaf} reads {sorted(direct)} directly instead of through the handle"
+
+
+def test_queue_snapshot_path_has_a_single_authority():
+    """MIGRATION row 1030 (D18): the queue snapshot path is owned by
+    ``supervisor.queue`` alone. ``supervisor.state`` used to carry a second
+    global that only agreed with it because both ``init()`` calls received the
+    same drive root — an addressing split for durable state."""
+    from supervisor import queue as queue_mod
+    from supervisor import state as state_mod
+
+    assert hasattr(queue_mod, "QUEUE_SNAPSHOT_PATH")
+    assert not hasattr(state_mod, "QUEUE_SNAPSHOT_PATH")

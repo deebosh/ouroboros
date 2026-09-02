@@ -28,7 +28,6 @@ DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
 STATE_PATH: pathlib.Path = DRIVE_ROOT / "state" / "state.json"
 STATE_LAST_GOOD_PATH: pathlib.Path = DRIVE_ROOT / "state" / "state.last_good.json"
 STATE_LOCK_PATH: pathlib.Path = DRIVE_ROOT / "locks" / "state.lock"
-QUEUE_SNAPSHOT_PATH: pathlib.Path = DRIVE_ROOT / "state" / "queue_snapshot.json"
 
 # Explicit marker a benchmark/evolution driver writes into its THROWAWAY data root. A live
 # data root (the default ~/Ouroboros/data OR a custom/Drive-backed OUROBOROS_DATA_DIR) never
@@ -38,12 +37,11 @@ ISOLATED_BENCHMARK_SENTINEL = ".ouroboros_isolated_benchmark"
 
 
 def init(drive_root: pathlib.Path, total_budget_limit: float = 0.0) -> None:
-    global DRIVE_ROOT, STATE_PATH, STATE_LAST_GOOD_PATH, STATE_LOCK_PATH, QUEUE_SNAPSHOT_PATH
+    global DRIVE_ROOT, STATE_PATH, STATE_LAST_GOOD_PATH, STATE_LOCK_PATH
     DRIVE_ROOT = drive_root
     STATE_PATH = drive_root / "state" / "state.json"
     STATE_LAST_GOOD_PATH = drive_root / "state" / "state.last_good.json"
     STATE_LOCK_PATH = drive_root / "locks" / "state.lock"
-    QUEUE_SNAPSHOT_PATH = drive_root / "state" / "queue_snapshot.json"
     set_budget_limit(total_budget_limit)
 
 
