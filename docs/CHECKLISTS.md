@@ -295,7 +295,8 @@ mismatch as **critical**, the mismatch MUST live in one of these categories:
    (`ToolContextProtocol`, `ToolEntryProtocol`, `SkillManifest`,
    `schema_versions`) plus the browser gateway contract in
    `ouroboros/gateway/contracts.py` (canonical HTTP/WS envelope and
-   endpoint index; `ouroboros/contracts/api_v1.py` is compatibility only).
+   endpoint index; the `ouroboros/contracts/api_v1.py` compatibility re-export
+   was removed in ABI 7.0 — an import of the old name fails at load time).
    Removing a field, renaming a TypedDict key that the runtime already
    emits, removing an endpoint token that the router still mounts, or
    breaking the `parse_skill_manifest_text` tolerance contract is critical,
