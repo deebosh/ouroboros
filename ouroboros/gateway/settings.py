@@ -25,7 +25,6 @@ from ouroboros.gateway.owner_settings import (
     CommitBoundary,
     SettingsLockUnavailable,
     _CONTEXT_MODE_KEYS,
-    _TEMPERATURE_KEYS,
     _owner_audit,
     _owner_read_settings_raw,
     _owner_write_settings,
@@ -745,112 +744,6 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
         {"context_mode": next_mode, "previous_context_mode": previous_mode},
     )
     return JSONResponse({"ok": True, "context_mode": next_mode})
-
-
-# Closed set of task_type values the owner temperature endpoint accepts. Mirrors the
-# `OUROBOROS_EFFORT_*` keys: only the two documented task types are owner-settable.
-# An unknown task_type is a 400 (per the context_mode endpoint's rejection of unknown values).
-_VALID_TEMPERATURE_TASK_TYPES = {"task", "consciousness"}
-
-
-@owner_write_guard
-async def api_owner_temperature(request: Request) -> JSONResponse:
-    """Persist an owner-configured LLM sampling temperature per task type.
-
-    Owner-only, audited, additive. Mirrors ``api_owner_context_mode`` end-to-end:
-    same settings-lock precondition (held inside the threaded sync body), same
-    ``_owner_audit`` audit row, same ``unsaved_error`` envelope on invalid bodies.
-
-    Wire contract (the desktop client is built against this — keep it stable):
-      POST /api/owner/temperature
-      body: {"task_type": "task"|"consciousness", "temperature": float|null|""}
-            - ``null`` and ``""`` and missing field all mean "clear the override";
-              the resolver returns ``None`` and the LLM layer omits the wire key.
-            - a float in [0.0, 2.0] is the closed valid range; out-of-range,
-              non-numeric, NaN, inf, or any other JSON value returns 400.
-      response: {"ok": true, "task_type": <str>, "temperature": <float|null>}
-    """
-    body = await _json_body_or_empty(request)
-    # Off the event loop, under the document lock (held inside): a slow
-    # generic save must not be able to freeze the loop THROUGH this
-    # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_temperature_sync, request, body)
-
-
-def _api_owner_temperature_sync(request: Request, body: Any) -> JSONResponse:
-    task_type = str((body or {}).get("task_type") or "").strip().lower()
-    if task_type not in _VALID_TEMPERATURE_TASK_TYPES:
-        return unsaved_error(
-            "'task_type' must be one of: task, consciousness", 400
-        )
-    # ``temperature`` accepts three "clear" shapes: JSON null, the empty string,
-    # and a missing key (the default of `.get()`). Anything else is parsed as a float
-    # and validated against the closed range.
-    raw_temperature = (body or {}).get("temperature", None)
-    from ouroboros.temperature_settings import (
-        TEMPERATURE_SCALE_MAX,
-        TEMPERATURE_SCALE_MIN,
-        resolve_temperature,
-    )
-
-    if raw_temperature is None or raw_temperature == "":
-        next_value: Optional[float] = None
-    else:
-        try:
-            numeric = float(raw_temperature)
-        except (TypeError, ValueError):
-            return unsaved_error(
-                "'temperature' must be a number in [0.0, 2.0] or null", 400
-            )
-        import math
-        if math.isnan(numeric) or math.isinf(numeric):
-            return unsaved_error(
-                "'temperature' must be a number in [0.0, 2.0] or null", 400
-            )
-        if numeric < TEMPERATURE_SCALE_MIN or numeric > TEMPERATURE_SCALE_MAX:
-            return unsaved_error(
-                "'temperature' must be a number in [0.0, 2.0] or null", 400
-            )
-        next_value = numeric
-
-    env_key = (
-        "OUROBOROS_TEMPERATURE_CONSCIOUSNESS"
-        if task_type == "consciousness"
-        else "OUROBOROS_TEMPERATURE_TASK"
-    )
-    with settings_document_mutation():
-        previous_value = resolve_temperature(task_type)
-        current = _owner_read_settings_raw()
-        # Mirror context_mode: store the authored value verbatim (None and "" both clear
-        # the settings.json slot AND pop the env entry on the next apply_settings_to_env
-        # via config_io.py:381's `if val is None or val == "": os.environ.pop(k, None)`).
-        if next_value is None:
-            current[env_key] = ""
-        else:
-            # Store the float in its canonical Python repr (str(float)) so JSON round-trip
-            # is stable and the next load_settings -> apply_settings_to_env round carries
-            # the exact value through to env.
-            current[env_key] = next_value
-        _owner_write_settings(current, authored_keys=_TEMPERATURE_KEYS)
-        # Same-lock projection: see api_owner_auto_grant / api_owner_context_mode. The
-        # settings lock's write side already applied env via apply_settings_to_env, so
-        # we read after-write and stamp env to the just-resolved value (the empty
-        # settings.json slot above already popped env; we set it back to "" for
-        # consistency with the cleared state).
-        if next_value is None:
-            os.environ.pop(env_key, None)
-        else:
-            os.environ[env_key] = str(next_value)
-    _owner_audit(
-        request,
-        "temperature",
-        {
-            "task_type": task_type,
-            "temperature": next_value,
-            "previous_temperature": previous_value,
-        },
-    )
-    return JSONResponse({"ok": True, "task_type": task_type, "temperature": next_value})
 
 
 _SCOPE_REVIEW_FLOOR_DEPRECATION_NOTICE = (

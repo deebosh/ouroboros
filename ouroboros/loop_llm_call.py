@@ -919,7 +919,6 @@ def _persist_llm_request_observability(
     use_local: bool,
     allow_server_web_search: bool,
     response_cache_bypass_requested: bool,
-    temperature: Optional[float],
     task_id: str,
     llm_call_id: str,
     execution_id: str,
@@ -945,7 +944,6 @@ def _persist_llm_request_observability(
                 "use_local": bool(use_local),
                 "allow_server_web_search": bool(allow_server_web_search),
                 "response_cache_bypass_requested": response_cache_bypass_requested,
-                "temperature": temperature,
             }),
             manifest={
                 "execution_id": execution_id,
@@ -981,7 +979,6 @@ def call_llm_with_retry(
     deadline_ts: Optional[float] = None,
     attempt_cap: Optional[int] = None,
     allow_server_web_search: bool = False,
-    temperature: Optional[float] = None,
     physical_context: Optional[PhysicalAttemptContext] = None,
     candidate_predicate: Optional[Callable[[Any], Any]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
@@ -1030,12 +1027,6 @@ def call_llm_with_retry(
                 "allow_server_web_search": bool(allow_server_web_search),
                 "bypass_response_cache": response_cache_bypass_requested,
             }
-            # Owner-configurable LLM sampling temperature (POST /api/owner/temperature).
-            # None means "no override" — the LLM layer omits the wire key (see llm.py),
-            # so the provider default applies. Closed range [0.0, 2.0] is validated by
-            # ``config.resolve_temperature`` upstream; this call site just forwards.
-            if temperature is not None:
-                kwargs["temperature"] = temperature
             if tools:
                 kwargs["tools"] = tools
             request_ref = _persist_llm_request_observability(
@@ -1043,7 +1034,7 @@ def call_llm_with_retry(
                 model=model, effort=effort, use_local=use_local,
                 allow_server_web_search=allow_server_web_search,
                 response_cache_bypass_requested=response_cache_bypass_requested,
-                temperature=temperature, task_id=task_id, llm_call_id=llm_call_id,
+                task_id=task_id, llm_call_id=llm_call_id,
                 execution_id=execution_id, round_id=round_id, round_idx=round_idx,
                 attempt=attempt, context_fit_event_fields=context_fit_event_fields,
             )

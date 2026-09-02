@@ -55,13 +55,6 @@ log = logging.getLogger(__name__)
 # the owner endpoint, never by a generic save (see prepare_settings_for_persist).
 _CONTEXT_MODE_KEYS = ("OUROBOROS_CONTEXT_MODE", "OUROBOROS_CONTEXT_MODE_AUTO_LOW")
 
-# The two per-task-type temperature keys are authored together by the owner temperature
-# endpoint. They ride the same owner-write envelope as context_mode (settings lock
-# precondition, _owner_audit row, unsaved_error on invalid body). The pair is the
-# complete surface for temperature: there is no companion auto-low bit (the resolver
-# itself decides None vs the float; an owner-null POST clears both).
-_TEMPERATURE_KEYS = ("OUROBOROS_TEMPERATURE_TASK", "OUROBOROS_TEMPERATURE_CONSCIOUSNESS")
-
 
 # In-PROCESS serialization for every read-merge-write on the settings document.
 # The FILE lock inside ``_owner_write_settings`` serializes only the WRITES: a

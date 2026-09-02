@@ -758,10 +758,10 @@ def test_retired_swarm_keys_are_dropped_on_settings_load(tmp_path, monkeypatch):
 def test_ratchet_module_sizes():
     repo = pathlib.Path(pr.__file__).resolve().parents[2]
     assert len((repo / "ouroboros" / "tools" / "plan_review.py").read_text(encoding="utf-8").splitlines()) < 1000
-    # Disclosed bump 1600 -> 1620 (upstream-sync merge, 2026-08-23): resolve_temperature/
-    # get_temperatures were extracted to ouroboros/temperature_settings.py, leaving only
-    # the irreducible SETTINGS_DEFAULTS registry rows for OUROBOROS_TEMPERATURE_* and
-    # OUROBOROS_GEMINI_BASE_URL (the SSOT registry itself cannot be split out further).
+    # Disclosed bump 1600 -> 1620 (upstream-sync merge, 2026-08-23): the config module
+    # carries the irreducible SETTINGS_DEFAULTS registry (the SSOT registry itself cannot
+    # be split out further). Ceiling kept after the per-task-type temperature feature was
+    # removed (v6.110.2) — the module only shrank.
     assert len((repo / "ouroboros" / "config.py").read_text(encoding="utf-8").splitlines()) <= 1620
 
 

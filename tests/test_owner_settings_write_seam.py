@@ -495,7 +495,7 @@ def test_settings_save_body_runs_off_the_event_loop():
         if isinstance(node, ast.FunctionDef) and node.name == "_api_settings_post_sync":
             sync_text = ast.unparse(node)
     assert "settings_document_mutation" in sync_text
-    # Named per writer, not a substring count: a seventh writer added without
+    # Named per writer, not a substring count: a sixth writer added without
     # the lock must FAIL this pin, and a refactor must not satisfy it by
     # accident.
     writers = {
@@ -505,14 +505,13 @@ def test_settings_save_body_runs_off_the_event_loop():
         "_api_owner_context_mode_sync",
         "_api_owner_scope_review_floor_sync",
         "_api_owner_safety_mode_sync",
-        "_api_owner_temperature_sync",
     }
     # The loop must NEVER hold the document lock: every async settings writer
     # delegates its locked body to a worker thread.
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name in {
             "api_owner_runtime_mode", "api_owner_auto_grant", "api_owner_context_mode",
-            "api_owner_scope_review_floor", "api_owner_safety_mode", "api_owner_temperature",
+            "api_owner_scope_review_floor", "api_owner_safety_mode",
         }:
             assert "asyncio.to_thread" in ast.unparse(node), (
                 f"{node.name} must run its locked body off the event loop"

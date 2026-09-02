@@ -16,7 +16,6 @@ import logging
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, add_usage
 from ouroboros import task_pacing
 from ouroboros.config import adaptive_quorum, get_chat_model, get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode, resolve_effort
-from ouroboros.temperature_settings import resolve_temperature
 from ouroboros.review_cycles import REASON_REVIEW_CYCLES_EXHAUSTED
 from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_BYPASS_REASONS, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_ACCEPTANCE_REVIEW_SKIPPED_DEADLINE_RESERVE, REASON_DELIVERY_CONTROL_DEGRADED, REASON_OWNER_REQUESTED_FINALIZATION, RESULT_INFRA_FAILED, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects
 from ouroboros.observability import new_execution_id
@@ -2503,7 +2502,6 @@ def _run_cross_model_fallback_chain(
                 active_use_local=fallback_use_local,
                 active_context_mode=candidate_mode,
                 drive_root=pathlib.Path(drive_logs).parent,
-                active_temperature=resolve_temperature(task_type),
                 attempt_cap=attempt_cap,
             )
         )
@@ -6302,7 +6300,6 @@ class _RoundModelCallContext:
     active_use_local: bool
     active_context_mode: str
     drive_root: Optional[pathlib.Path]
-    active_temperature: Optional[float] = None
     attempt_cap: Optional[int] = None
 
 
@@ -6403,7 +6400,6 @@ def _dispatch_round_model(
         deadline_ts=_task_deadline_epoch(ctx.tools),
         attempt_cap=attempt_cap,
         allow_server_web_search=_server_web_allowed_by_task(ctx.tools._ctx),
-        temperature=ctx.active_temperature,
         physical_context=(
             _physical_context_for_fit(disposition) if disposition is not None else None
         ),
@@ -7137,7 +7133,6 @@ def run_llm_loop(
                     active_use_local=active_use_local,
                     active_context_mode=active_context_mode,
                     drive_root=drive_root,
-                    active_temperature=resolve_temperature(task_type),
                 )
             )
             tools._ctx._current_llm_call_meta = dict(accumulated_usage.get("_last_llm_call_meta") or {})

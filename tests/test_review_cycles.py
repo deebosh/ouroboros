@@ -440,8 +440,8 @@ def test_docs_describe_shared_key_and_new_module_size():
     # Brief-level target for this module (the repo ratchet is 1000/1600).
     assert len(module_lines) <= 200
     config_lines = (REPO / "ouroboros" / "config.py").read_text(encoding="utf-8").splitlines()
-    # Disclosed bump 1600 -> 1620 (upstream-sync merge, 2026-08-23): resolve_temperature/
-    # get_temperatures were extracted to ouroboros/temperature_settings.py, leaving only
-    # the irreducible SETTINGS_DEFAULTS registry rows for OUROBOROS_TEMPERATURE_* and
-    # OUROBOROS_GEMINI_BASE_URL (the SSOT registry itself cannot be split out further).
+    # Disclosed bump 1600 -> 1620 (upstream-sync merge, 2026-08-23): the config module
+    # carries the irreducible SETTINGS_DEFAULTS registry (the SSOT registry itself cannot
+    # be split out further). Ceiling kept after the per-task-type temperature feature was
+    # removed (v6.110.2) — the module only shrank.
     assert len(config_lines) <= 1620

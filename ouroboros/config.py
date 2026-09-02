@@ -303,14 +303,6 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_EFFORT_SCOPE_REVIEW": "high",
     "OUROBOROS_EFFORT_DEEP_SELF_REVIEW": "high",
     "OUROBOROS_EFFORT_CONSCIOUSNESS": "high",
-    # Owner-configurable LLM sampling temperature, set independently per task type.
-    # The first None-typed numeric knob in SETTINGS_DEFAULTS: a temperature default
-    # IS itself a value the owner should consciously set, so shipping a nonzero
-    # default (e.g. 0.7) would silently change every LLM call's behavior on install.
-    # The None default follows OUROBOROS_PROMPT_CACHE_TTL's "shipped default lives in
-    # SETTINGS_DEFAULTS" pattern, with the value None instead of "1h".
-    "OUROBOROS_TEMPERATURE_TASK": None,
-    "OUROBOROS_TEMPERATURE_CONSCIOUSNESS": None,
     "OUROBOROS_RETURN_REASONING": True,
     "OUROBOROS_REASONING_SUMMARY": "auto",
     "GITHUB_TOKEN": "",
@@ -1325,6 +1317,11 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
+    # v6.110.2: owner-configurable per-task-type LLM sampling temperature removed
+    # (feature 3bbe8656). Dropped on load so a settings document that still carries
+    # the cleared ("") slots does not surface them as unknown keys.
+    "OUROBOROS_TEMPERATURE_TASK",
+    "OUROBOROS_TEMPERATURE_CONSCIOUSNESS",
 )
 
 

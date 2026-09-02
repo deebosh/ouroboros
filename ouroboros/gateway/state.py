@@ -337,7 +337,6 @@ async def api_state(request: Request) -> JSONResponse:
             get_safety_mode,
             get_skills_repo_path,
         )
-        from ouroboros.temperature_settings import get_temperatures
 
         snap = await asyncio.to_thread(_state_snapshot, request)
         st = snap["st"]
@@ -384,7 +383,6 @@ async def api_state(request: Request) -> JSONResponse:
             "context_mode": get_context_mode(),
             # Frozen one-window compatibility field. Persistent auto-Low is retired.
             "context_mode_auto_low": False,
-            "temperatures": get_temperatures(),
             "safety_mode": get_safety_mode(),
             "skills_repo_configured": bool(get_skills_repo_path()),
             "github_token_configured": snap["github_token_configured"],
