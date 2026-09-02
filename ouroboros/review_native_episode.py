@@ -381,17 +381,6 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 if refused_chars or transcript_chars > transcript_cap:
                     refused_chars = refused_chars or transcript_chars  # the next send this bound refused
                     break
-                # Two clocks bound an episode that could still send: the owner's
-                # deadline and the coordinator's logical window for THIS slot (the
-                # window the session executor honours) — past either, a paid
-                # round would buy an answer the wave can no longer use.
-                if owner_deadline_exhausted(
-                    deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
-                ) or (logical_deadline is not None and time.monotonic() >= float(logical_deadline)):
-                    end_reason = "deadline_exhausted"
-                    if shape == "report" and last_content:
-                        break  # a report keeps its draft (marked incomplete below)
-                    raise _deadline_exhausted_error("owner deadline exhausted mid native review episode")
                 if not landed and transcript_chars >= landing_at:
                     # Once: the host's budget fact, so the reviewer lands on
                     # the next send instead of walking into the bound.
@@ -404,6 +393,17 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     if transcript_chars > transcript_cap:
                         refused_chars = transcript_chars  # even the notice would not fit: the bound has landed
                         break
+                # Two clocks bound an episode that could still send (its landing
+                # notice is materialized above, so a landed bound is never misread
+                # as a clock end): the owner's deadline and the slot's logical
+                # window — past either, a paid round buys an unusable answer.
+                if owner_deadline_exhausted(
+                    deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
+                ) or (logical_deadline is not None and time.monotonic() >= float(logical_deadline)):
+                    end_reason = "deadline_exhausted"
+                    if shape == "report" and last_content:
+                        break  # a report keeps its draft (marked incomplete below)
+                    raise _deadline_exhausted_error("owner deadline exhausted mid native review episode")
                 round_idx += 1
                 chat_kwargs = self._chat_kwargs(messages, schemas, max_tokens)
                 transport = review_transport_timeout(

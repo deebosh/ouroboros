@@ -838,6 +838,39 @@ def test_last_send_fact_commits_only_on_a_physical_send(subject_repo):
         assert custody["native_transcript_chars"] == _wire(llm.calls[0])
 
 
+@pytest.mark.parametrize("surface", ["multi_model_review", "deep_self_review"])
+def test_notice_overflow_is_resolved_before_the_clock(subject_repo, monkeypatch, surface):
+    """The landing notice is materialized BEFORE the clocks: a transcript that
+    lands within a notice of the bound ends `transcript_bound` with the refused
+    fact even when the owner deadline expires in the same instant — for the
+    verdict shape (typed refusal) and the report shape (draft kept, incomplete)."""
+    import ouroboros.review_native_episode as native_episode
+
+    prose = "p" * 2_500
+    round1 = {"content": prose, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: 900_000)
+    probe = _ScriptedLLM([round1, {"content": _VERDICT}])
+    after_one_round = NativeToolRoundReviewExecutor(_assignment(subject_repo, probe), llm=probe).execute().usage["native_transcript_chars"]
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: after_one_round + 200)
+    llm = _ScriptedLLM([round1, {"content": _VERDICT}])
+    assignment = _assignment(subject_repo, llm)
+    assignment.request.surface = surface
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
+    monkeypatch.setattr(native_episode, "owner_deadline_exhausted", lambda **_: executor._rounds_used >= 1)
+    if surface == "deep_self_review":
+        result = executor.execute()
+        usage = result.usage
+        assert result.raw_text == prose and usage["native_incomplete"] == "transcript_bound"
+    else:
+        with pytest.raises(ReviewRouteUnavailable) as exc:
+            executor.execute()
+        assert exc.value.code == "native_transcript_cap_exceeded"
+        usage = executor.failure_custody()
+    assert usage["native_end_reason"] == "transcript_bound" and usage["native_landing_notified"] is True
+    assert usage["native_transcript_refused_chars"] > after_one_round + 200 >= usage["native_transcript_chars"]
+    assert len(llm.calls) == 1 and llm.script
+
+
 def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypatch):
     """The coordinator's logical window for the slot is a bound like the owner
     deadline: past it, a verdict episode refuses typed and a report keeps its
@@ -1128,6 +1161,26 @@ def test_a_dispatched_first_send_that_fails_is_still_a_round(subject_repo):
     assert review_executions_from_actor_usage([{"usage": custody}]) == [
         {"kind": "native", "model": "openai/fake-reviewer"},
     ]
+    # A LATER dispatched failure commits the captured attempt's own wire size
+    # — it differs from the send before it — as the last physical send.
+
+    class _SecondDispatchFails(_ScriptedLLM):
+        def chat(self, **kwargs):
+            if self.calls:
+                self.calls.append({**kwargs, "messages": copy.deepcopy(kwargs.get("messages"))})
+                exc = RuntimeError("socket reset after dispatch")
+                exc.physical_attempt_capture = _Capture()
+                raise exc
+            return super().chat(**kwargs)
+
+    llm = _SecondDispatchFails([{"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"})]}])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    with pytest.raises(RuntimeError):
+        executor.execute()
+    custody = executor.failure_custody()
+    wire = [len(json.dumps(c["messages"], ensure_ascii=False, default=str))
+            + len(json.dumps(c["tools"], ensure_ascii=False, default=str)) for c in llm.calls]
+    assert custody["native_rounds"] == 2 and custody["native_transcript_chars"] == wire[1] != wire[0]
 
 
 def test_transcript_counter_includes_system_schemas_and_args(subject_repo, monkeypatch):
