@@ -290,7 +290,8 @@ exact real task that owns their presentation. Harness and neutral API marks
 identify the delivery channel alongside explicit execution evidence; they are
 not child-task cards and never prove execution by themselves.
 
-- A collapsed task card shows only a quiet `Reviews N` line, optionally with an
+- A collapsed task card shows only a quiet `Reviews N` count, docked on the
+  metadata row (it wraps under the metadata on a narrow card), optionally with an
   active count. It has no aggregate pass/fail alert, no synthesized verdict, and
   no review dollars.
 - Expanding `Reviews` reveals one row per currently admitted review group

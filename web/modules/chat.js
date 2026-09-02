@@ -3,7 +3,7 @@ import { destroyChatMarkdown, enhanceChatMarkdown, renderChatMarkdown } from './
 import { renderPageHeader } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
-import { createSystemMessageAction } from './ui_helpers.js';
+import { createSystemMessageAction, renderProjectChip } from './ui_helpers.js';
 import { cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
 import { createChatDecision } from './chat_decision.js';
 import { clientSurfaceField } from './client_surface.js';
@@ -1247,23 +1247,10 @@ export function createChatInstance({
         delete record.root.dataset.projectCreating;
         record.root.dataset.projectCreated = '1';
         record.root.dataset.projectId = project.id || '';
-        const name = String(project.name || project.id || 'Project').trim();
-        const chip = document.createElement('button');
-        chip.type = 'button';
-        chip.className = 'chat-live-project-card-btn';
-        const icon = document.createElement('span');
-        icon.className = 'chat-live-project-icon';
-        icon.setAttribute('aria-hidden', 'true');
-        icon.textContent = '📁';
-        const nameEl = document.createElement('span');
-        nameEl.className = 'chat-live-project-name';
-        nameEl.textContent = name;  // textContent — no HTML injection from a project name
-        const status = document.createElement('span');
-        status.className = 'chat-live-project-status';
-        status.textContent = 'running in background ↗';
-        chip.append(icon, nameEl, status);
-        chip.addEventListener('click', () => {
-            window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: { project } }));
+        const chip = renderProjectChip({
+            name: String(project.name || project.id || 'Project').trim(),
+            status: 'running in background ↗',
+            onClick: () => window.dispatchEvent(new CustomEvent('ouro:open-project', { detail: { project } })),
         });
         // Atomic detach-and-reparent (C4.5): replaceChildren swaps the whole live
         // timeline (subagent cards, working bubble) for the chip in one paint.
@@ -1424,8 +1411,8 @@ export function createChatInstance({
                         <div class="chat-live-typing" data-live-typing aria-hidden="true">
                             <span></span><span></span><span></span>
                         </div>
-                        <span class="chat-live-title" data-live-title>Waiting for work</span>
                     </div>
+                    <span class="chat-live-title" data-live-title>Waiting for work</span>
                     <div class="chat-live-summary-side">
                         <span class="chat-live-count" data-live-count hidden>2 notes</span>
                         <span class="chat-live-toggle" data-live-toggle>Show details</span>
@@ -1861,8 +1848,8 @@ export function createChatInstance({
             record.groupId === 'bg-consciousness' ? 'Background thinking' : '',
             ...(Array.isArray(record._lastFrameMeta) ? record._lastFrameMeta : []),
             ...((record.costMeta && Array.isArray(record.costMeta.meta)) ? record.costMeta.meta : []),
-            record.latestActivityTs ? `Latest ${record.latestActivityTs}` : '',
-        ].filter(Boolean).map((item) => `<span class="chat-live-meta-text">${escapeHtml(item)}</span>`).join('');
+            record.latestActivityTs ? `updated ${record.latestActivityTs}` : '',
+        ].filter(Boolean).map((item) => `<span class="chat-live-meta-text">${escapeHtml(item)}</span>`).join(' · ');
         if (record.metaEl.innerHTML === html) return false;
         record.metaEl.innerHTML = html;
         return Boolean(record.metaEl.isConnected);

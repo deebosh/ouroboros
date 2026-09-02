@@ -22,7 +22,7 @@ import { initDashboard } from './modules/dashboard.js';
 import { hydrateNavIcons } from './modules/page_icons.js';
 
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
-import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from './modules/ui_helpers.js';
+import { installAltMenuSuppression, installDesktopShellLinkInterceptor, renderProjectChip } from './modules/ui_helpers.js';
 
 const state = {
     messages: [],
@@ -560,7 +560,10 @@ function applyTaskBindings(bindings) {
     const entries = window.__ouroTaskBindings;
     const bound = new Set(Object.keys(entries));
     if (!bound.size) return;
-    document.querySelectorAll('.chat-live-card[data-task-id]').forEach((card) => {
+    // The pointer is a Main ROOT card affordance: a card inside a project panel
+    // is already in that project (its pointer would only close the panel), and a
+    // nested subagent card is not the task the binding names.
+    document.querySelectorAll('#page-chat .chat-live-card[data-task-id]:not(.subagent)').forEach((card) => {
         const tid = card.dataset.taskId;
         // A converted card (projectCreated) already shows its own project chip.
         if (!bound.has(tid) || card.dataset.projectCreated === '1') return;
@@ -583,20 +586,14 @@ function renderBoundProjectPointer(card, projectId, chatId = 0) {
         || { id: projectId, name: projectId, chat_id: chatId };
     let ptr = card.querySelector('.chat-live-bound-pointer');
     if (!ptr) {
-        ptr = document.createElement('button');
-        ptr.type = 'button';
-        ptr.className = 'chat-live-project-card-btn chat-live-bound-pointer';
-        const icon = document.createElement('span');
-        icon.className = 'chat-live-project-icon';
-        icon.setAttribute('aria-hidden', 'true');
-        icon.textContent = '📁';
-        const nameEl = document.createElement('span');
-        nameEl.className = 'chat-live-project-name';
-        const status = document.createElement('span');
-        status.className = 'chat-live-project-status';
-        status.textContent = 'in project ↗';
-        ptr.append(icon, nameEl, status);
-        ptr.addEventListener('click', () => openProjectPanel(project));
+        ptr = renderProjectChip({
+            name: project.name || project.id,
+            status: 'in project ↗',
+            className: 'chat-live-bound-pointer',
+            // Open-or-noop: openProjectPanel toggles, and a pointer must never close
+            // the panel it points at.
+            onClick: () => { if (navState.activeProjectId !== project.id) openProjectPanel(project); },
+        });
         card.appendChild(ptr);
     }
     card.dataset.projectBound = '1';

@@ -8,6 +8,7 @@ import {
     projectCollapsedActivity,
 } from '../modules/chat.js';
 import { summarizeChatLiveEvent } from '../modules/log_events.js';
+import { plainActivityText } from '../modules/chat_activity.js';
 
 test('named root card shows the latest activity headline under the coined title', () => {
     assert.equal(projectCollapsedActivity({
@@ -66,7 +67,7 @@ test('whitespace-only frames fall back to the previous activity', () => {
 test('clearStickyCardState resets the recycled record activity + cost (reusable slots)', () => {
     const record = {
         collapsedActivity: 'Old cycle activity',
-        costMeta: { meta: ['cost=$1.00'], ts: 1, final: true },
+        costMeta: { meta: ['$1.00'], ts: 1, final: true },
         executorChip: { harness: 'codex', icon: '◇', label: 'codex · no run yet' },
         // Models the real element closely enough for attribute handling.
         activityEl: {
@@ -143,4 +144,25 @@ test('subagent projection keeps identity, compact facts and complete disclosure'
     assert.match(summary.fullBody, /UNIQUE_CHILD_TAIL$/);
     assert.deepEqual(summary.meta, ['write=workspace', 'status=running']);
     assert.doesNotMatch(summary.meta.join(' '), /subagent|role=|parent=|root=/);
+});
+
+test('the collapsed activity line is plain text: the renderer\'s markdown inventory', () => {
+    // The expanded timeline renders the same headline through renderMarkdown, so
+    // the compact line strips that marker inventory (line by line, over-strip
+    // preferred to a leaked marker).
+    assert.equal(plainActivityText('**Planning a network update** I need `git fetch`'),
+        'Planning a network update I need git fetch');
+    assert.equal(plainActivityText('### Title\n- one\n- two [link](http://x)'), 'Title\none\ntwo link');
+    assert.equal(plainActivityText('~~old~~ *new*'), 'old new');
+    assert.equal(plainActivityText('```js\nlet a = 1;\n```'), 'let a = 1;');
+    assert.equal(boundActivityPreview('| a | b |\n|---|---|\n| 1 | 2 |'), 'a b 1 2');
+    // Markers-only text keeps its source: an empty projection would flip the
+    // reserved activity band's :empty rules on the card.
+    assert.equal(plainActivityText('---'), '---');
+    // Whitespace-only narration projects to nothing: the band's :empty rules
+    // (reserve while running, fold when finished) need a truly empty node.
+    assert.equal(boundActivityPreview(' \n\t '), '');
+    assert.equal(plainActivityText(''), '');
+    // Composition: the bound preview is built on the plain projection.
+    assert.equal(boundActivityPreview('  **Reading**\n  the   ledger  '), 'Reading the ledger');
 });
