@@ -197,6 +197,21 @@ def _raced_row(attempt_id):
     }
 
 
+def _snapshot_looks(monkeypatch, on_look=lambda looks: None):
+    """Record every snapshot verdict the pass asks for, in order; ``on_look``
+    runs right after each answer — the instant an intrusion would land on it."""
+    looks: list = []
+    real = uc._snapshot_intact
+
+    def counting(path, raw):
+        looks.append(real(path, raw))
+        on_look(looks)
+        return looks[-1]
+
+    monkeypatch.setattr(uc, "_snapshot_intact", counting)
+    return looks
+
+
 def _projection_snapshot(data_root):
     return (
         ua.usage_projection(data_root),
@@ -609,20 +624,15 @@ def test_an_append_between_the_recheck_and_the_replace_aborts_without_loss(
     refused. A row that lands after the outer re-check therefore survives."""
     _seed_mixed_ledger(data_root)
     before_money = _decimal_money(_ledger_rows(data_root))
-    real_check = uc._snapshot_intact
     injected: dict = {}
-    calls: list = []
 
-    def racing_check(path, raw):
-        verdict = real_check(path, raw)
-        calls.append(verdict)
-        if len(calls) == 2 and verdict:
+    def land_after_the_recheck(looks):
+        if len(looks) == 2 and looks[-1]:
             # The charge lands AFTER the outer pre-swap re-check answered
             # "intact" and BEFORE the rename trusts that answer.
             injected.update(_append_raw_row(data_root, _raced_row("sess-last-instant")))
-        return verdict
 
-    monkeypatch.setattr(uc, "_snapshot_intact", racing_check)
+    _snapshot_looks(monkeypatch, land_after_the_recheck)
     assert _compact(data_root) is None  # the replace was refused
     rows = _ledger_rows(data_root)
     assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
@@ -644,14 +654,7 @@ def test_a_hold_lost_at_the_archive_is_seen_before_the_snapshot_is_trusted(
     ledger_path = data_root / ua.LEDGER_REL
     before = ledger_path.read_bytes()
     archive_dir = data_root / "archive" / "usage_ledger"
-    checks: list = []
-    real_check = uc._snapshot_intact
-
-    def counting_check(path, raw):
-        checks.append(1)
-        return real_check(path, raw)
-
-    monkeypatch.setattr(uc, "_snapshot_intact", counting_check)
+    looks = _snapshot_looks(monkeypatch)
 
     def heartbeat():
         # Ownership dies at the exact moment the archive segment lands.
@@ -660,7 +663,7 @@ def test_a_hold_lost_at_the_archive_is_seen_before_the_snapshot_is_trusted(
     with ua._locked(data_root):
         assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
     assert ledger_path.read_bytes() == before
-    assert len(checks) == 1  # the post-archive re-check never ran
+    assert len(looks) == 1  # the post-archive re-check never ran
     assert list(archive_dir.glob("segment_*.jsonl"))  # the orphan stays, disclosed
 
 def test_a_hold_lost_before_the_first_commit_look_writes_no_orphan(data_root, monkeypatch):
@@ -672,26 +675,20 @@ def test_a_hold_lost_before_the_first_commit_look_writes_no_orphan(data_root, mo
     _seed_mixed_ledger(data_root)
     ledger_path = data_root / ua.LEDGER_REL
     before = ledger_path.read_bytes()
-    checks: list = []
     lost = {"hold": False}
-    real_check = uc._snapshot_intact
     real_bound = uc._archive_dir_bounded
-
-    def counting_check(path, raw):
-        checks.append(1)
-        return real_check(path, raw)
 
     def losing_bound(root):
         lost["hold"] = True  # ownership dies as the commit section is entered
         return real_bound(root)
 
-    monkeypatch.setattr(uc, "_snapshot_intact", counting_check)
+    looks = _snapshot_looks(monkeypatch)
     monkeypatch.setattr(uc, "_archive_dir_bounded", losing_bound)
     with ua._locked(data_root):
         assert uc.compact_usage_ledger_locked(
             data_root, heartbeat=lambda: not lost["hold"]) is None
     assert ledger_path.read_bytes() == before
-    assert checks == []  # the pre-archive look was never asked
+    assert looks == []  # the pre-archive look was never asked
     assert not (data_root / "archive").exists()  # and no orphan was written
 
 
@@ -703,18 +700,11 @@ def test_a_hold_lost_after_the_recheck_aborts_before_the_swap(data_root, monkeyp
     _seed_mixed_ledger(data_root)
     ledger_path = data_root / ua.LEDGER_REL
     before = ledger_path.read_bytes()
-    state = {"checks": 0}
-    real_check = uc._snapshot_intact
-
-    def counting_check(path, raw):
-        state["checks"] += 1
-        return real_check(path, raw)
-
-    monkeypatch.setattr(uc, "_snapshot_intact", counting_check)
+    looks = _snapshot_looks(monkeypatch)
 
     def heartbeat():
         # Ownership dies the moment the pre-swap re-check has answered.
-        return state["checks"] < 2
+        return len(looks) < 2
 
     with ua._locked(data_root):
         assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
