@@ -33,6 +33,10 @@ _MOVED_OWNERS = {
     # ABI 7.0 (ABI-7b): the comma-list classification INSIDE the retirement
     # SSOT, born in this leaf (not an extraction) for the RC auditor to snap.
     "RETIRED_COMMA_LIST_SETTING_KEYS": settings_defaults,
+    # The stage-2 close-out's second classification inside that same SSOT: the
+    # retired keys whose successor SETTING the table states, so the first-boot
+    # notice can name it instead of claiming there is none.
+    "RETIRED_SETTING_SUCCESSORS": settings_defaults,
     "SETTINGS_DEFAULTS": settings_defaults,
     "SETTINGS_KEYS_NOT_EXPORTED_TO_ENV": settings_defaults,
     "SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC": settings_defaults,

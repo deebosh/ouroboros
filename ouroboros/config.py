@@ -34,6 +34,7 @@ from ouroboros.settings_defaults import (
     PACING_INTERVAL_DEFAULT_SEC,  # noqa: F401
     RETIRED_COMMA_LIST_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
+    RETIRED_SETTING_SUCCESSORS,  # noqa: F401
     SETTINGS_DEFAULTS,  # noqa: F401
     SETTINGS_KEYS_NOT_EXPORTED_TO_ENV,  # noqa: F401
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,  # noqa: F401
@@ -748,19 +749,22 @@ def normalize_settings_raw(raw: dict) -> dict:
         loaded.pop(_retired, None)
     if dropped and dropped not in _RETIREMENT_NOTICE_SEEN:
         _RETIREMENT_NOTICE_SEEN.add(dropped)
-        comma = [key for key in dropped if key in RETIRED_COMMA_LIST_SETTING_KEYS]
+        comma = [k for k in dropped if k in RETIRED_COMMA_LIST_SETTING_KEYS]
+        clauses = []
         if comma:
-            replacement = (
+            clauses.append(
                 "the reviewer comma-lists (%s) are replaced by the structured "
-                "OUROBOROS_REVIEWER_SLOTS, so this install now runs the SHIPPED "
-                "default reviewer panel until that setting is authored"
-                % ", ".join(comma)
-            )
-        else:
-            replacement = (
-                "no replacement setting: what they used to configure is fixed "
-                "behavior in this release"
-            )
+                "OUROBOROS_REVIEWER_SLOTS, so this install now runs the SHIPPED default "
+                "reviewer panel until that setting is authored" % ", ".join(comma))
+        if named := [k for k in dropped if k in RETIRED_SETTING_SUCCESSORS]:
+            clauses.append("the retirement table names a successor setting: %s" % "; ".join(
+                "%s -> %s" % (k, ", ".join(RETIRED_SETTING_SUCCESSORS[k])) for k in named))
+        if rest := [k for k in dropped if k not in comma and k not in named]:
+            clauses.append(
+                "the retirement table names no successor setting for %s: they are "
+                "removed, not honored — see the release notes for the surface that "
+                "replaced them" % ", ".join(rest))
+        replacement = "; ".join(clauses)
         log.warning(
             "settings: retired key(s) %s are present in the settings document and "
             "are NOT honored; %s",

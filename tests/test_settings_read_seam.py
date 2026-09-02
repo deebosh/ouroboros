@@ -773,6 +773,101 @@ def test_a_retired_comma_list_triad_is_not_dropped_silently(isolated_settings, c
     assert "shipped" in notices[0].lower()
 
 
+def test_the_retirement_notice_names_the_successor_the_table_states(
+    isolated_settings, caplog,
+):
+    """The FIRST of the notice's two non-comma shapes. Any dropped set without
+    comma-list keys used to get one fixed sentence: "no replacement setting:
+    what they used to configure is fixed behavior in this release". That is
+    false for a retired key this retirement table gives a successor — the flat
+    wall-clock pair was superseded by the activity model, and the acceptance
+    pass count is migrated into the shared review-cycle cap — so an owner told
+    there is no replacement stops looking for the setting that took over.
+    RETIRED_SETTING_SUCCESSORS is the decision table the notice reads, and a key
+    absent from it gets the neutral clause instead (sibling test), never an
+    invented successor.
+    """
+    import logging
+
+    from ouroboros import config as cfg
+    from ouroboros.settings_defaults import (
+        RETIRED_SETTING_KEYS,
+        RETIRED_SETTING_SUCCESSORS,
+    )
+
+    # The map classifies INSIDE the retirement tuple: a successor for a key that
+    # is not retired would name a migration nothing performs.
+    assert set(RETIRED_SETTING_SUCCESSORS) <= set(RETIRED_SETTING_KEYS)
+    # And a MIGRATED key is not a reportable loss: the acceptance pass count is
+    # consumed into the shared cap before the purge computes the dropped set, so
+    # an entry for it would promise a notice line nothing can emit.
+    assert "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES" not in RETIRED_SETTING_SUCCESSORS
+
+    # The document is DERIVED from the table, not spelled out: the D04 grep gate
+    # (tests/test_legacy_timeout_retirement.py) lets the retired wall-clock pair
+    # appear only in the retirement SSOT and its own audits, and this pin is
+    # about the CLASS "a retired key whose successor the table states", not about
+    # one key's spelling.
+    successor_bearing = sorted(RETIRED_SETTING_SUCCESSORS)
+    assert successor_bearing, "the notice's successor shape needs a member"
+    document = dict.fromkeys(successor_bearing, 900)
+    document["OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES"] = 3
+    document["TOTAL_BUDGET"] = 10.0
+
+    cfg._RETIREMENT_NOTICE_SEEN.clear()
+    with caplog.at_level(logging.WARNING, logger="ouroboros.config"):
+        loaded = cfg.normalize_settings_raw(document)
+
+    for key in successor_bearing:
+        assert key not in loaded, key
+    assert loaded["TOTAL_BUDGET"] == 10.0
+    # Migrated, hence unreported: cycles = passes + 1, and the notice is silent.
+    assert loaded["OUROBOROS_REVIEW_MAX_CYCLES"] == "4"
+    notices = [r.getMessage() for r in caplog.records if "retired" in r.getMessage()]
+    assert len(notices) == 1, notices
+    assert "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES" not in notices[0]
+    for key in successor_bearing:
+        for successor in RETIRED_SETTING_SUCCESSORS[key]:
+            assert successor in notices[0], successor
+    assert "fixed behavior" not in notices[0]
+
+
+def test_the_retirement_notice_invents_no_successor_when_the_table_states_none(
+    isolated_settings, caplog,
+):
+    """The SECOND shape, and the reason the two are separate clauses rather than
+    one sentence about the whole dropped set. The observability retention knob
+    really has no successor setting (manifests and blobs are preserved
+    indefinitely by contract) and the plan-task swarm timeouts have none this
+    table states per key, so the notice says they are gone and points at the
+    release notes — without promising a replacement key, and without the older
+    claim that their effect is now fixed behavior, which for the swarm timeouts
+    was never established.
+    """
+    import logging
+
+    from ouroboros import config as cfg
+    from ouroboros.settings_defaults import RETIRED_SETTING_SUCCESSORS
+
+    cfg._RETIREMENT_NOTICE_SEEN.clear()
+    with caplog.at_level(logging.WARNING, logger="ouroboros.config"):
+        cfg.normalize_settings_raw({
+            "OUROBOROS_OBSERVABILITY_RETENTION_DAYS": 30,
+            "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC": 60,
+        })
+
+    notices = [r.getMessage() for r in caplog.records if "retired" in r.getMessage()]
+    assert len(notices) == 1, notices
+    assert "OUROBOROS_OBSERVABILITY_RETENTION_DAYS" in notices[0]
+    assert "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC" in notices[0]
+    assert "removed, not honored" in notices[0]
+    assert "release notes" in notices[0]
+    assert "fixed behavior" not in notices[0]
+    for successors in RETIRED_SETTING_SUCCESSORS.values():
+        for successor in successors:
+            assert successor not in notices[0], successor
+
+
 def test_the_retirement_notice_stays_quiet_for_a_document_without_ghosts(
     isolated_settings, caplog,
 ):
