@@ -310,11 +310,12 @@ class _EpisodeLLM:
     native episode bind the acceptance stamp around that crossing — so the
     wallet claim fires exactly where production fires it."""
 
-    def __init__(self, drive_root, script, native_script=None, scoped=False):
+    def __init__(self, drive_root, script, native_script=None, scoped=False, reservation_usd=0.0):
         self.drive_root = drive_root
         self.script = list(script)
         self.native_script = None if native_script is None else list(native_script)
         self.scoped = scoped  # True: the bound usage scope owns task/root ids and the root limit
+        self.reservation_usd = float(reservation_usd)  # a PRICED send: reserved against the root wallet, then settled
         self.calls = []
 
     def _reply(self, kwargs):
@@ -322,14 +323,19 @@ class _EpisodeLLM:
         script = self.native_script if ("tools" in kwargs and self.native_script is not None) else self.script
         if not script:
             raise AssertionError("script exhausted — an extra reviewer send was made")
-        return script.pop(0), {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0}
+        return script.pop(0), {"prompt_tokens": 10, "completion_tokens": 5, "cost": self.reservation_usd}
 
     def chat(self, **kwargs):
         from ouroboros import usage_accounting as ua
 
         ids = {} if self.scoped else {"task_id": "review", "root_task_id": "review"}
+        # A PRICED send runs under the priced identity (the seeded catalog row), so
+        # reservation and settlement follow the real wallet path; an unpriced send
+        # keeps the free local identity the older ledger-shape pins expect.
+        identity = ({"model": "openai/fake-reviewer", "provider": "openrouter"} if self.reservation_usd > 0
+                    else {"model": "local-review-test", "provider": "local"})
         request = ua.AttemptRequest(
-            model="local-review-test", provider="local", reservation_usd=0.0, drive_root=self.drive_root, **ids,
+            reservation_usd=self.reservation_usd, drive_root=self.drive_root, **identity, **ids,
         )
         return ua.execute_physical_attempt(request, lambda: self._reply(kwargs))
 
@@ -924,18 +930,21 @@ def test_a_poisoned_duration_keeps_the_review_estimate_finite_and_a_finite_deadl
 
 
 @pytest.mark.parametrize("poison", ("1e12", "1e300", "1.3e308", "1.797e308"))
-def test_a_finite_absurd_duration_is_bounded_to_the_task_ceiling_before_the_ewma(tmp_path, poison):
+def test_a_finite_absurd_duration_is_bounded_to_the_task_ceiling_before_the_ewma(monkeypatch, tmp_path, poison):
     """A finite but absurd `duration_sec` contributes at most the task's absolute
     wall-clock ceiling (the one limit an honest panel cannot outlive — the
     configurable 3600 s clamp of the initial estimate is not a bound on
-    observations), so the reserve is finite and at most 1.5 × that ceiling."""
+    observations), so the reserve is finite and at most 1.5 × that ceiling.
+    Hermetic: the shell's `OUROBOROS_TASK_ABS_CEILING_SEC` is dropped and every
+    number derives from the getter."""
     import math
 
     from ouroboros import task_pacing
     from ouroboros.config import get_task_abs_ceiling_sec
 
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
     ceiling = float(get_task_abs_ceiling_sec())
-    assert ceiling == 21600.0  # the shipped default; the bound follows the setting, not a literal
+    assert ceiling >= 300.0  # the setting's floor; the bound follows the getter, never a literal
     ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
     events = task_pacing.acceptance_timing_events_path(ctx)
     events.parent.mkdir(parents=True, exist_ok=True)
@@ -944,8 +953,9 @@ def test_a_finite_absurd_duration_is_bounded_to_the_task_ceiling_before_the_ewma
     estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
     assert math.isfinite(estimate) and estimate == 1.5 * (0.5 * 100 + 0.5 * ceiling) <= 1.5 * ceiling
     # An honest agent-session panel beyond an hour is a real observation, not a poison.
-    _timing(events, duration_sec=4000, delivery="agent_session")
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="agent_session") == 6000.0
+    session = min(4000.0, ceiling)
+    _timing(events, duration_sec=session, delivery="agent_session")
+    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="agent_session") == 1.5 * session
 
 
 def test_honest_timing_streams_are_priced_exactly_as_before(tmp_path):
@@ -1058,23 +1068,27 @@ def test_the_floor_priced_wave_that_does_not_fit_is_still_refused(monkeypatch, t
     assert any(e.get("type") == "review_wave_budget_insufficient" for e in ctx.tools._ctx.pending_events)
 
 
-def test_a_poisoned_reserve_still_launches_a_shorter_deadline_at_the_floor(tmp_path):
+def test_a_poisoned_reserve_still_launches_a_shorter_deadline_at_the_floor(monkeypatch, tmp_path):
     """R36 for the deadline reserve, through the real `review_launch_allowed`
     and `improvement_pass_allowed`: a bounded-but-inflated reserve (a poisoned
     duration contributes the task ceiling) launches a 24 h deadline silently;
     a spendable window shorter than the reserve but longer than the configured
-    floor STILL launches — with the typed disclosure recorded durably and live;
-    only a window below the floor is refused."""
+    floor STILL launches, returning the typed fact for the launch owner to
+    record; only a window at or below the floor is refused. Hermetic: the
+    ceiling comes from the getter with the shell's override dropped."""
     from ouroboros import task_pacing
+    from ouroboros.config import get_task_abs_ceiling_sec
     from ouroboros.utils import iter_jsonl_objects
 
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    ceiling = float(get_task_abs_ceiling_sec())
     ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={}, task_id="root-delivery", pending_events=[])
     events = task_pacing.acceptance_timing_events_path(ctx)
     events.parent.mkdir(parents=True, exist_ok=True)
     _raw_timing(events, '"native_rows": 0, "native_rounds": 0, "duration_sec": 1e300, "delivery": "api_chat"')
     _timing(events, duration_sec=100, delivery="api_chat")
     estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
-    assert estimate == 1.5 * (0.5 * 100 + 0.5 * 21600)  # 16275 s: bounded, finite, inflated
+    assert estimate == 1.5 * (0.5 * 100 + 0.5 * ceiling) > 1000.0  # bounded, finite, inflated past the window
     day = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=86400.0, elapsed_sec=0.0,
                                      remaining_sec=86400.0, reserve_sec=3600.0)
     assert task_pacing.review_launch_allowed(day, estimated_sec=estimate) == (True, "")
@@ -1087,7 +1101,7 @@ def test_a_poisoned_reserve_still_launches_a_shorter_deadline_at_the_floor(tmp_p
     # owner/projection cardinality test), never by asking.
     assert [e for e in iter_jsonl_objects(events) if e.get("type") == fact] == [] and ctx.pending_events == []
     assert task_pacing.launch_at_floor_payload(short, gate="review_launch", estimated_sec=estimate) == {
-        "gate": "review_launch", "estimated_sec": 16275.0, "floor_sec": 200.0, "spendable_sec": 1000.0}
+        "gate": "review_launch", "estimated_sec": round(estimate, 3), "floor_sec": 200.0, "spendable_sec": 1000.0}
     tiny = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=300.0, elapsed_sec=0.0,
                                       remaining_sec=300.0, reserve_sec=150.0)  # spendable 150 s < floor
     assert task_pacing.review_launch_allowed(tiny, estimated_sec=estimate) == (
@@ -1300,6 +1314,44 @@ def test_a_refused_panel_in_the_floor_band_leaves_no_dispatched_at_floor_fact(mo
     assert result.aggregate_signal == "DEGRADED" and fact not in result.actors[0]["usage"]
     assert not any(e.get("type") == fact for e in _drain_to_supervisor(s.event_queue, s.sup_ctx))
     assert _rows(s.events, fact) == [] and len(s.llm.calls) == sends
+
+
+def test_the_per_send_wallet_fence_still_binds_after_a_floor_admitted_dispatch(monkeypatch, tmp_path):
+    """Item 11: "the per-send wallet binding at dispatch still protects money" —
+    proven with PRICED sends. On a nearly spent wallet the floor wave is
+    admitted (one send fits), the native episode's first send is reserved and
+    settled, its second send is refused by the ledger (`budget_exhausted`),
+    and the accounted total never exceeds the root limit."""
+    from ouroboros import loop as loop_mod, task_pacing
+    from ouroboros import usage_accounting as ua
+
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    _offline_env(monkeypatch, _ROW_NATIVE)
+    _priced_offline_model(monkeypatch)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(
+        tmp_path, [], scoped=True, reservation_usd=0.06,
+        native_script=[{"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"})]},
+                       {"content": json.dumps(_CLEAN_VERDICT)}],
+    )
+    _real_panel(monkeypatch, llm, stub_gate=False)
+    limit = 0.1  # one priced send (0.06) fits; the second (0.12 cumulative) does not
+    scope = _root_scope(tmp_path, root_limit_usd=limit)
+    _seed_root_ledger(scope)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    events = task_pacing.acceptance_timing_events_path(ctx.tools._ctx)
+    _raw_timing(events, '"native_rounds": 1e300, "native_rows": 1')  # the rounds wave (64×) can never fit: floor band
+    with ua.usage_scope(scope):
+        result = loop_mod._execute_task_acceptance_panel(ctx)
+    (actor,) = result.actors
+    assert task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR in actor["usage"]  # admitted and dispatched at the floor
+    assert len(llm.calls) == 1  # the first send went out; the second never reached the model
+    assert actor["usage"]["native_end_reason"] == "budget_exhausted"
+    assert result.aggregate_signal == "DEGRADED"
+    projection = ua.usage_projection(tmp_path, root_task_id="root-delivery")
+    spent = float(projection["limit_usd"]) - float(projection["remaining_known_usd"])
+    assert projection["limit_usd"] == limit and 0.06 <= spent <= limit
 
 
 # ---------------------------------------------------------------------------
