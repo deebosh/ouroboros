@@ -1033,9 +1033,11 @@ export async function reloadReviewerSlots() {
         // the advisory select away and back restores it (finding #7c).
         advisoryRouteMemory[state.advisory.route?.kind === ROUTE_KIND_SESSION ? 'session' : 'api']
             = { ...(state.advisory.route || {}) };
-        // The deep self-review singleton: the server always answers with the
-        // effective row (saved, or synthesized from the legacy model key and
-        // labeled so); the label rides the state, never the saved bytes.
+        // The deep self-review singleton: the server answers with the saved row
+        // or, unsaved, the row synthesized from the legacy model key (labeled
+        // so); beside a config_error that synthesized row is a legacy-derived
+        // REPAIR PLACEHOLDER — no row is effective until the setting is repaired.
+        // The label rides the state, never the saved bytes.
         const deep = data.deep_review ? rowIn(data.deep_review) : {};
         state.deepReview = {
             route: deep.route?.kind === ROUTE_KIND_SESSION ? deep.route : { ...(deep.route || {}), kind: ROUTE_KIND_API },

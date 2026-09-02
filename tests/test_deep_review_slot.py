@@ -709,8 +709,10 @@ def test_agent_keeps_the_previous_report_when_the_review_fails(tmp_path, monkeyp
 
 def test_endpoint_carries_the_synthesized_row_beside_a_config_error(env):
     """A malformed structured value must not blank the deep-review editor: the
-    EFFECTIVE row (synthesized from the model key) rides beside the typed
-    config_error so the repair save shows a real row, never a placeholder."""
+    legacy-derived REPAIR PLACEHOLDER (the row synthesized from the model key,
+    labeled `synthesized_from`) rides beside the typed config_error so the
+    repair save starts from a real row — it is NOT an effective row: none is
+    effective until the setting is repaired (`deep_review_slot()` raises)."""
     env.setenv(REVIEWER_SLOTS_ENV, "{broken")
     body = _get_endpoint()
     assert "not valid JSON" in body["config_error"]

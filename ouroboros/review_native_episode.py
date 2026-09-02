@@ -279,8 +279,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         ``drive_root`` is the data plane the inspection tools may read: an
         empty scratch directory by default, or the surface's opt-in
         ``policy["native_data_root"]`` (task acceptance reads task results and
-        receipts there; deep self-review reads memory) — the read-only
-        constraint applies to it exactly as to the repository.
+        receipts there; deep self-review exposes the runtime root while its
+        memory whitelist arrives inline) — the read-only constraint applies to
+        it exactly as to the repository.
         """
         import pathlib as _pathlib
 
@@ -773,7 +774,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         the first complete line, ``body_start`` where the body begins in the
         returned text, ``line_ends`` the end offsets of the body's complete
         lines on the renderer's own line definition) — nothing is parsed back
-        from the header and no newline is recounted here. The stamp's binding
+        from the header and no newline is recounted here. The stamped offsets
+        hold on the returned text because every host note (``_annotate_reread``'s
+        re-read hint, the registry's route/safety notes via
+        ``_compose_execute_result``) TRAILS the rendered view — a prepended note
+        would shift ``body_start``. The stamp's binding
         to THIS call is structural, not a comparison: the reader resets it on
         entry, the caller clears it before every dispatch, the context is
         instance-local and dispatch is synchronous — so a call refused before

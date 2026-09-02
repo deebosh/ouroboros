@@ -9,9 +9,10 @@ surface, has THREE deliveries chosen by the row's ``retrieves`` predicate:
   whitelist, assembled fail-closed (a required artifact that does not fit is
   a refusal, never a smaller pack);
 * a configured-subagent api row is a NATIVE inspection episode — the reviewer
-  reads the repository and the runtime memory itself through the host's
-  read-only tools, so every read is host-observed and the mandatory BIBLE.md
-  read is checked against the receipts afterwards;
+  reads the repository through the host's read-only tools (the runtime root
+  is its readable data plane) while the memory whitelist reaches it inline
+  byte-exact; every repository read is host-observed and the mandatory
+  BIBLE.md read is checked against the receipts afterwards;
 * an ``agent_session`` row is a delegated read-only session — the same task,
   reads not host-observed (disclosed as ``unobserved``).
 
