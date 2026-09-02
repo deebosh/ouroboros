@@ -423,19 +423,26 @@ def build_review_pack(
 # ---------------------------------------------------------------------------
 
 
-def _packed_window_reason(model: str) -> str:
-    """The ≥1M floor of the PACKED delivery, from the shared reviewer-window
-    resolver: a route whose Capability Evidence puts its window BELOW the full
-    window cannot hold the pack that IS this delivery's guarantee, so it is
-    refused typed (a native or session deep_review row serves a sub-1M route).
-    An UNKNOWN window (no evidence) keeps the documented full-window assumption
-    every packet surface shares (`reviewer_window`: guessing small is a certain
-    loss of review on every cold-evidence install) and is disclosed in the
-    report header; '' = the floor holds or is assumed."""
+def _resolve_packed_window(model: str) -> Any:
+    """ONE `ReviewerWindow` for the packed model from the shared resolver — the
+    caller validates the floor on THIS object and sizes with THIS object."""
     from ouroboros import reviewer_window as _rw
     from ouroboros.config import review_model_uses_local
 
-    window = _rw.resolve_reviewer_window(model, use_local=review_model_uses_local(model))
+    return _rw.resolve_reviewer_window(model, use_local=review_model_uses_local(model))
+
+
+def _packed_window_reason(window: Any, model: str) -> str:
+    """The ≥1M floor of the PACKED delivery on an already-resolved window: a
+    route whose Capability Evidence puts its window BELOW the full window
+    cannot hold the pack that IS this delivery's guarantee, so it is refused
+    typed (a native or session deep_review row serves a sub-1M route). An
+    UNKNOWN window (no evidence) keeps the documented full-window assumption
+    every packet surface shares (`reviewer_window`: guessing small is a
+    certain loss of review on every cold-evidence install) and is disclosed in
+    the report header; '' = the floor holds or is assumed."""
+    from ouroboros import reviewer_window as _rw
+
     if 0 < int(window.window_tokens) < _rw.REVIEWER_FULL_WINDOW:
         return (
             f"the packed deep review needs a ≥{_rw.REVIEWER_FULL_WINDOW:,}-token window and {model} is "
@@ -458,7 +465,7 @@ def _packed_route(configured: str) -> Tuple[str, Optional[str]]:
     reason, model = _packed_credentials(configured)
     if reason:
         return reason, None
-    reason = _packed_window_reason(str(model))
+    reason = _packed_window_reason(_resolve_packed_window(str(model)), str(model))
     return (reason, None) if reason else ("", model)
 
 
@@ -914,17 +921,19 @@ def _run_packed_review(
     no_proxy=True avoids macOS fork-safety SIGSEGV by using a one-shot httpx
     client with trust_env=False in llm.py; regular task calls are unaffected.
     """
-    # The reviewer's REAL window (Capability Evidence): a confirmed sub-1M
-    # route is refused typed HERE too (the availability check ran earlier, but
-    # evidence can land between the two reads) — the pack is never silently
-    # shrunk to a smaller window; an unknown window keeps the documented
-    # full-window assumption and is disclosed in the header.
+    # ONE window fact for this run (Capability Evidence): the floor is judged
+    # on THIS object and the pack is sized with THIS object — a second
+    # resolution could disagree with the one that was validated. A confirmed
+    # sub-1M route is refused typed here too (the availability check ran
+    # earlier, but evidence can land between the reads); the pack is never
+    # silently shrunk; an unknown window keeps the documented full-window
+    # assumption and is disclosed in the header.
     from ouroboros import reviewer_window as _rw
 
-    sub_floor = _packed_window_reason(model)
+    window_fact = _resolve_packed_window(model)
+    sub_floor = _packed_window_reason(window_fact, model)
     if sub_floor:
         return _failed(deep_review_unavailable_text(sub_floor), reason_code="deep_self_review_unavailable")
-    window_fact = _rw.resolve_reviewer_window(model)
     deep_window = window_fact.sizing_window()
     deep_output_reserve, deep_margin = _rw.window_scaled_reserves(
         deep_window,
