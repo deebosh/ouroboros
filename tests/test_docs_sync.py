@@ -19,6 +19,29 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def test_recent_abi_retirements_section_carries_the_abi_70_window():
+    """Section 11.4 documented a 5.25.0-rc.4 banner API and nothing since.
+
+    ABI 7.0 is the largest retirement window in the project's history — five
+    gateway aliases, the reviewer comma-list configuration keys, two wall-clock
+    timeout keys, a plugin-API major, and a durable task-row schema stamp with
+    no legacy converter — and an upgrading operator read "recent retirements"
+    as though none of it happened. Every key of
+    `RETIRED_COMMA_LIST_SETTING_KEYS` must be named there, because those are
+    the ones whose migration must happen BEFORE the upgrade.
+    """
+    arch = _read("docs/ARCHITECTURE.md")
+    section = arch.split("### 11.4 Recent ABI Retirements", 1)[1].split("\n## ", 1)[0]
+
+    from ouroboros.settings_defaults import RETIRED_COMMA_LIST_SETTING_KEYS
+
+    assert "**ABI 7.0**" in section
+    assert "5.25.0-rc.4" in section, "older entries stay: this is a history"
+    missing = [key for key in RETIRED_COMMA_LIST_SETTING_KEYS if key not in section]
+    assert not missing, f"11.4 does not name the retired comma-list keys: {missing}"
+    assert "OUROBOROS_REVIEWER_SLOTS" in section, "the migration target must be named"
+
+
 def test_model_send_design_note_matches_the_landed_observability_contract():
     """The CPL-5 note still said DESIGN ONLY and demanded fail-closed dispatch.
 

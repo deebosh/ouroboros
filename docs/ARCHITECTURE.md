@@ -3567,6 +3567,61 @@ a version bump + a migration note in the release row.
 
 ### 11.4 Recent ABI Retirements
 
+- **ABI 7.0** (the v7next package; `ADOPTION_v7next.md` rows ABI-1..ABI-10 carry
+  the per-item disposition and its tests). One deliberate window, so the breaks
+  land together instead of one per minor:
+  - **Gateway envelopes (ABI-3, ABI-6д).** The five compatibility aliases are
+    gone: `cost_usd` / `cost_usd_with_children` (stripped at the cost SSOT
+    seams; stored rows are still READ tolerantly), `telegram_chat_id` from the
+    four outbound frames and the history mapper, and
+    `project_last_viewed` / `project_hidden` from `UiPreferencesResponse` and
+    its endpoint — which now answers 400 on an unknown key. The
+    `contracts/api_v1.py` re-export was removed with them. The contract also
+    became EXECUTABLE: `gateway/schema.py` validates ingress against JSON
+    Schema derived from the TypedDicts.
+  - **Settings keys (ABI-5, ABI-10, D04).** `RETIRED_SETTING_KEYS` in
+    `settings_defaults.py` is the machine-readable list (it also carries
+    earlier releases' retirements — read the tuple, not this paragraph, for
+    membership), and `load_settings` strips its members off disk. What this
+    window added to it: `OUROBOROS_SCOPE_REVIEW_FLOOR`, the flat
+    `OUROBOROS_SOFT_TIMEOUT_SEC`/`OUROBOROS_HARD_TIMEOUT_SEC` pair (long since
+    superseded by the activity model, kept only as no-ops a save reported as
+    retired), `OUROBOROS_OBSERVABILITY_RETENTION_DAYS`, and — classified
+    separately as `RETIRED_COMMA_LIST_SETTING_KEYS` — the reviewer comma lists
+    and phase-5 route envs (`OUROBOROS_REVIEW_MODELS`,
+    `OUROBOROS_SCOPE_REVIEW_MODELS`, `OUROBOROS_SCOPE_REVIEW_MODEL`,
+    `OUROBOROS_REVIEW_ROUTES`, `OUROBOROS_SCOPE_REVIEW_ROUTES`,
+    `OUROBOROS_ADVISORY_REVIEW_ROUTE`). Their migration note is: move the
+    configuration into the structured `OUROBOROS_REVIEWER_SLOTS` BEFORE
+    upgrading — an install carrying only comma keys comes up on the shipped
+    default panel. A comma-spelled ENV projection still exists, but only as
+    the derived runtime plane, never as configuration.
+  - **Plugin ABI (ABI-1).** `PLUGIN_API_VERSION` is `"2.0"` with manifest
+    negotiation (major strict, minor minimum, closed-set capabilities, typed
+    educational refusals) checked BEFORE plugin import or out-of-process
+    cataloging. An absent field means legacy `"1.3"` by construction, and a
+    hash-bound PASS is grandfathered.
+  - **Durable task rows (ABI-2).** Every `task_results/<id>.json` write is
+    stamped `_schema_version: 1`. There is deliberately NO legacy converter
+    (owner Q8=B): an unstamped, future, malformed or retired-key row is
+    QUARANTINED with log-only visibility — one batched durable event, no UI
+    counter and no chat notice — and an inadmissible stored row keeps its id
+    occupied (409) rather than being quarantined by an identity probe.
+  - **Typed internals that changed shape with them.** `ResolvedModelTarget`
+    (ABI-4) is the frozen model-target dataclass at the existing resolution
+    seams, extension registrations publish atomically with a per-publication
+    generation digest (ABI-9), and the dead `_call_llm_with_retry`,
+    `compute_cost_with_children` and `format_handoff_message` surfaces are gone
+    (ABI-6).
+  - **The migration note is a program.** `scripts/rc_audit.py` (ABI-7) is a
+    READ-ONLY pre-upgrade scan of a third-party install that emits a
+    machine-readable scope document naming every ABI-7.0 incompatibility it
+    finds across the five frozen classes (gateway alias, retired setting,
+    comma list, plugin API, schema stamp), snapping the retired-key lists at
+    execution time instead of hardcoding them.
+  - **Deliberately NOT in this window:** the handler ABI (tool handlers
+    returning `ToolResult` instead of `str`, ABI-8) is post-release backlog,
+    so handler signatures are unchanged by 7.0.
 - `5.25.0-rc.4`: retired the native skill upgrade migration banner API
   (`GET /api/migrations`, `POST /api/migrations/{key}/dismiss`, and
   `MigrationsResponse`). The release row is the migration note: old
