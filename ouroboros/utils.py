@@ -246,8 +246,13 @@ def _atomic_overwrite(path: pathlib.Path, write_temp: Callable[[pathlib.Path], N
     Note: a symlink at ``path`` is REPLACED with a regular file (os.replace acts on the
     link, not its target). This is intentional and confinement-preserving — writing
     THROUGH a symlink could escape the caller's allowed root — so the write always lands
-    inside ``path``'s directory rather than wherever a link points."""
+    inside ``path``'s directory rather than wherever a link points.
+
+    Being that SSOT is also why the pytest live-data guard sits here rather than on each
+    writer: every full-file overwrite in the tree replaces through this seam, so the next
+    writer added is guarded by construction instead of by remembering (RES-14b)."""
     path = pathlib.Path(path)
+    assert_test_data_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         # 0o7777 keeps the special bits (setuid/setgid/sticky) too, not just rwx.
@@ -291,12 +296,7 @@ def _write_fd_fully(fd: int, data: bytes, target: pathlib.Path) -> None:
         view = view[written:]
 
 
-def write_bytes_atomic(
-    path: pathlib.Path,
-    content: bytes,
-    *,
-    fsync: bool = False,
-) -> None:
+def write_bytes_atomic(path: pathlib.Path, content: bytes, *, fsync: bool = False) -> None:
     """Atomically overwrite ``path`` with exact bytes."""
 
     def _write(tmp: pathlib.Path) -> None:
@@ -314,12 +314,7 @@ def write_bytes_atomic(
     _atomic_overwrite(path, _write)
 
 
-def write_text_atomic(
-    path: pathlib.Path,
-    content: str,
-    *,
-    fsync: bool = False,
-) -> None:
+def write_text_atomic(path: pathlib.Path, content: str, *, fsync: bool = False) -> None:
     """Atomically overwrite ``path`` with ``content`` encoded UTF-8, BYTE-EXACT.
 
     The file receives exactly ``content.encode("utf-8")`` on every platform:
@@ -338,13 +333,8 @@ def write_text_atomic(
     write_bytes_atomic(pathlib.Path(path), content.encode("utf-8"), fsync=fsync)
 
 
-def atomic_write_json(
-    path: pathlib.Path,
-    payload: Any,
-    *,
-    trailing_newline: bool = False,
-    fsync: bool = False,
-) -> None:
+def atomic_write_json(path: pathlib.Path, payload: Any, *, trailing_newline: bool = False,
+                      fsync: bool = False) -> None:
     """Atomically persist a JSON value (object or list) via a sibling temp file."""
     content = json.dumps(payload, ensure_ascii=False, indent=2)
     if trailing_newline:
@@ -488,16 +478,23 @@ def jsonl_append_lock_path(path: pathlib.Path) -> pathlib.Path:
 def assert_test_data_path(path: pathlib.Path) -> None:
     """Fail closed when pytest resolves a writer into the live data tree.
 
-    Lives here (the no-ouroboros-imports leaf) so BOTH durable-write helpers
-    guard the same roots: supervisor.state.atomic_write_text and append_jsonl
-    below — the jsonl side was the unguarded half that let the issue #455
+    Lives here (the no-ouroboros-imports leaf) so the whole durable-write
+    surface guards the same roots from two seams: ``append_jsonl`` below for
+    appends, and ``_atomic_overwrite`` above for every full-file replace
+    (``supervisor.state.atomic_write_text`` included, which also calls it
+    directly). The jsonl side was the unguarded half that let the issue #455
     supervisor.jsonl leak land silently. Outside pytest this is one env read.
     """
     if os.environ.get("OUROBOROS_PYTEST_ACTIVE") != "1":
         return
     if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") == "1":
         return
-    roots = {pathlib.Path.home() / "Ouroboros" / "data"}
+    # ``expanduser``, not ``Path.home()``: this guards the tree of the operator
+    # RUNNING pytest, which the environment fixes. A suite that redirects
+    # ``Path.home`` into its own tmp dir is hermetic by construction, and reading
+    # the patched attribute made those writes look live; redirecting ``$HOME``
+    # itself still moves the guard, as the hermetic subprocess pin needs.
+    roots = {pathlib.Path(os.path.expanduser("~")) / "Ouroboros" / "data"}
     configured = str(os.environ.get("OUROBOROS_TEST_LIVE_DATA_ROOT") or "").strip()
     if configured:
         roots.add(pathlib.Path(configured))

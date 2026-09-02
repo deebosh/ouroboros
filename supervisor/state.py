@@ -50,9 +50,9 @@ def atomic_write_text(path: pathlib.Path, content: str) -> None:
 
     Rides the utils atomic SSOT — its write loop survives a short ``os.write``
     (the old single call could publish a truncated ``state.json`` behind a
-    successful rename) — with the pytest live-data guard kept in front.
+    successful rename), and the pytest live-data guard now sits on that same
+    seam, so every writer through it is guarded rather than this one alone.
     """
-    assert_test_data_path(path)
     write_bytes_atomic(path, content.encode("utf-8"), fsync=True)
 
 
