@@ -2582,7 +2582,10 @@ their actual HTML contexts, constrain media to extension routes or safe data
 URLs, and keep charts accessible through a semantic table.
 
 Rare `kind: "module"` UI runs only in a sandboxed opaque-origin iframe, with no
-`allow-same-origin`; its parent bridge proxies only the owning extension route.
+`allow-same-origin`; its parent bridge proxies only the owning extension route,
+and its document policy admits scripts, images, media and fonts only from that
+skill's own prefix (plus `data:`/`blob:`; `connect-src` closed). The route
+iframe (`kind: iframe`) shares the sandbox and permissions set and has no bridge.
 Both framed mounts (the extension-route iframe and the module `srcdoc` iframe
 with its CSP/sandbox constants and parent bridge) live in
 `web/modules/widget_module.js` and return their disposer to the `mountTab`

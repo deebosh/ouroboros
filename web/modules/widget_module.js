@@ -1,6 +1,7 @@
 /* Framed widget mounts: the extension-route iframe and the reviewed module srcdoc iframe
-   (CSP/sandbox constants, the parent side of the one streaming bridge — fetch relay, abort,
-   skill WebSocket event forwarding — plus the resize bridge and source-load timeout).
+   (the shared sandbox / permissions set, the module document CSP, the parent side of the one
+   streaming bridge — fetch relay, abort, skill WebSocket event forwarding — plus the resize
+   bridge and source-load timeout).
    widgets.js keeps the page host, the mountTab dispatcher, the card registry and the
    declarative renderer; every mount here returns its disposer to that dispatcher. */
 
@@ -12,6 +13,43 @@ import { boundedNumber, WIDGET_DISPOSE_ACK_TIMEOUT_MS, WIDGET_REQUEST_TIMEOUT_MS
 export const WIDGET_FRAME_DEFAULT_HEIGHT = 320;
 export const WIDGET_FRAME_MAX_HEIGHT = 8192;
 export const WIDGET_FRAME_BORDER_RESERVE = 2;
+
+// One capability set for both framed mounts (route iframe and module srcdoc):
+// scripts, pointer lock and downloads; autoplay, fullscreen and clipboard
+// writes through the permissions policy. Never the same-origin token (the frame
+// stays an opaque origin without the SPA's cookies, storage or DOM), never top
+// navigation, popups, forms, modals or clipboard reads.
+export const WIDGET_FRAME_SANDBOX = 'allow-scripts allow-pointer-lock allow-downloads';
+export const WIDGET_FRAME_ALLOW = 'autoplay; fullscreen; clipboard-write';
+
+function createWidgetFrame() {
+    const iframe = document.createElement('iframe');
+    iframe.className = 'widgets-frame';
+    iframe.setAttribute('sandbox', WIDGET_FRAME_SANDBOX);
+    iframe.setAttribute('allow', WIDGET_FRAME_ALLOW);
+    iframe.setAttribute('allowfullscreen', '');
+    return iframe;
+}
+
+// The module frame's document policy. Sources are absolute: an opaque frame's
+// `'self'` matches nothing, so the page origin is spelled out. Scripts run
+// inline, from `blob:` and from this skill's module prefix (`'wasm-unsafe-eval'`
+// lets them instantiate WebAssembly); workers come from `blob:`; images, media
+// and fonts load passively from `data:`, `blob:` and this skill's route prefix.
+// Everything else falls to `default-src 'none'` — the frame has no scriptable
+// network of its own, the parent bridge is its one request path.
+export function moduleFrameCsp(skill, origin = window.location.origin) {
+    const prefix = `${origin}${extensionRoutePrefix(skill)}`;
+    return [
+        "default-src 'none'",
+        `script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: ${prefix}module/`,
+        'worker-src blob:',
+        "style-src 'unsafe-inline'",
+        `img-src data: blob: ${prefix}`,
+        `media-src data: blob: ${prefix}`,
+        `font-src data: blob: ${prefix}`,
+    ].join('; ');
+}
 
 export function frameHeight(render, fallback = WIDGET_FRAME_DEFAULT_HEIGHT) {
     return boundedNumber(render?.height, fallback, WIDGET_FRAME_DEFAULT_HEIGHT, WIDGET_FRAME_MAX_HEIGHT);
@@ -31,8 +69,13 @@ export function setFrameHeight(node, height) {
 export function mountRouteIframeWidget(mount, tab, render) {
     const src = extensionRoutePath(tab.skill, render.route);
     if (!src) throw new Error('invalid widget iframe route');
-    mount.innerHTML = `<iframe class="widgets-frame" sandbox="" src="${src}"></iframe>`;
-    const iframe = mount.querySelector('iframe');
+    // The skill's own page in a sandboxed opaque-origin frame with the same
+    // capability set as a module frame and no bridge: its scripts may use the
+    // network as the skill's backend already can, without the SPA's cookies
+    // or DOM. The URL goes in through the property, never an attribute string.
+    const iframe = createWidgetFrame();
+    iframe.src = src;
+    mount.replaceChildren(iframe);
     setFrameHeight(iframe, frameHeight(render));
     let disposed = false;
     return () => {
@@ -45,9 +88,11 @@ export function mountRouteIframeWidget(mount, tab, render) {
 // `messageHandlers` is the page's Set of WebSocket message handlers (fanned from
 // `ctx.ws.on('message')`); the frame's event subscription registers into it.
 export async function mountModuleWidget(mount, tab, render, mountSignal = null, messageHandlers = null) {
-    // Reviewed JS runs in an opaque iframe; the parent bridge is its only I/O
-    // path and only reaches this skill's extension route prefix and this
-    // skill's namespaced WebSocket events, preserving route IO without cookies.
+    // Reviewed JS runs in an opaque iframe; the parent bridge is its only
+    // scriptable I/O path and only reaches this skill's extension route prefix
+    // and this skill's namespaced WebSocket events, preserving route IO without
+    // cookies. Passive image / media / font loads and sibling scripts come
+    // straight from that prefix under the document policy (moduleFrameCsp).
     const entryName = String(render.entry).replace(/[^A-Za-z0-9._-]/g, '');
     const entryUrl = `${extensionRoutePrefix(tab.skill)}module/${encodeURIComponent(entryName)}`;
     const sourceController = new AbortController();
@@ -84,12 +129,7 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
     const expectedPrefix = extensionRoutePrefix(tab.skill);
     const wsPrefix = String(tab.ws_prefix || '').trim();
     const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const csp = [
-        "default-src 'none'",
-        "script-src 'unsafe-inline'",
-        "style-src 'unsafe-inline'",
-        "img-src data:",
-    ].join('; ');
+    const csp = moduleFrameCsp(tab.skill);
     const escapeScript = (value) => String(value || '')
         .replace(/<\/script/gi, '<\\/script')
         .replace(/<!--/g, '<\\!--');
@@ -103,11 +143,9 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
         : '';
     const srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"></head><body><div id="root"></div><script>${bridge}</script><script>${resizeBridge}</script><script>${escapeScript(moduleSource)}</script></body></html>`;
     // The document goes in through the `srcdoc` property (no attribute
-    // escaping round-trip of a module-sized payload); the sandbox stays the
-    // one token `allow-scripts` — nothing that would re-expose the SPA origin.
-    const iframe = document.createElement('iframe');
-    iframe.className = 'widgets-frame';
-    iframe.setAttribute('sandbox', 'allow-scripts');
+    // escaping round-trip of a module-sized payload); the frame carries the
+    // shared sandbox / permissions set — nothing that re-exposes the SPA origin.
+    const iframe = createWidgetFrame();
     iframe.srcdoc = srcdoc;
     mount.replaceChildren(iframe);
     let appliedHeight = frameHeight(render);

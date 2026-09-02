@@ -158,41 +158,64 @@ def test_widgets_treat_head_as_no_body_request():
 
 
 def test_widgets_keep_iframe_sandbox_locked_down():
-    """The legacy ``kind: "iframe"`` widget surface mounts an extension
-    route inside a <iframe> with the *empty* sandbox attribute (no
-    permissions at all). v5.7.0 added ``kind: "module"``, which mounts
-    extension-supplied JS inside a separate <iframe srcdoc> with
-    ``sandbox="allow-scripts"`` BUT no ``allow-same-origin`` token —
-    so the iframe is still an opaque origin (no SPA cookie / storage
-    access) and is further constrained by a strict CSP. We check both
-    invariants here:
-
-    1. The legacy iframe path still uses the empty sandbox.
-    2. The module iframe path adds ``allow-scripts`` but never adds
-       ``allow-same-origin`` (the only token that would re-expose
-       parent storage). Since the cycle-A fix round the module frame is a
-       created ``<iframe>`` whose document is assigned through the ``srcdoc``
-       PROPERTY (no attribute-escaping round-trip of a module-sized payload)
-       and whose sandbox is set as the one token ``allow-scripts``.
+    """Both framed mounts — the ``kind: "iframe"`` route frame and the
+    ``kind: "module"`` ``srcdoc`` frame — carry ONE decided capability set
+    (widgets lifecycle sprint, Q14=B / Q16=A): ``sandbox="allow-scripts
+    allow-pointer-lock allow-downloads"``, ``allow="autoplay; fullscreen;
+    clipboard-write"`` and ``allowfullscreen``. The route frame's former empty
+    sandbox is gone deliberately (its page is the skill's own, reviewed as
+    payload; the opaque origin still keeps the SPA's cookies and DOM away). The
+    tokens that would re-expose the SPA origin or widen the frame beyond the
+    decision never appear in the framed sources: no ``allow-same-origin`` (the
+    only token that re-exposes parent storage), no top navigation, popups,
+    forms (``form-action`` does not fall back to ``default-src``) or modals,
+    and no clipboard read. The module frame is a created ``<iframe>`` whose
+    document is assigned through the ``srcdoc`` PROPERTY (no attribute-escaping
+    round-trip of a module-sized payload); the route frame's URL goes in
+    through the ``src`` property the same way (never an interpolated
+    attribute string).
     """
     source = _framed_widget_sources()
-    assert 'sandbox=""' in source
-    # ``allow-scripts`` is now legitimately present, but only inside the
-    # ``kind === 'module'`` branch. The dangerous combined sandbox token
-    # must never appear in an actual iframe attribute — nor, since the
-    # property form, anywhere in the framed sources at all.
-    assert "iframe.setAttribute('sandbox', 'allow-scripts');" in source
+    module = _read("web/modules/widget_module.js")
+    assert "export const WIDGET_FRAME_SANDBOX = 'allow-scripts allow-pointer-lock allow-downloads';" in module
+    assert "export const WIDGET_FRAME_ALLOW = 'autoplay; fullscreen; clipboard-write';" in module
+    assert "iframe.setAttribute('sandbox', WIDGET_FRAME_SANDBOX);" in module
+    assert "iframe.setAttribute('allow', WIDGET_FRAME_ALLOW);" in module
+    assert "iframe.setAttribute('allowfullscreen', '');" in module
+    assert 'sandbox=""' not in source, "the route iframe shares the module frame's capability set now"
+    assert "iframe.setAttribute('sandbox', 'allow-scripts');" not in source
     assert "iframe.srcdoc = srcdoc;" in source
     assert 'srcdoc="' not in source
-    assert 'sandbox="allow-scripts allow-same-origin"' not in source
-    assert 'sandbox="allow-scripts allow-forms allow-same-origin"' not in source
-    assert "allow-same-origin" not in source
+    assert "iframe.src = src;" in module
+    assert 'src="${src}"' not in source
+    for forbidden in (
+        "allow-same-origin",
+        "allow-top-navigation",
+        "allow-popups",
+        "allow-forms",
+        "allow-modals",
+        "clipboard-read",
+    ):
+        assert forbidden not in source, forbidden
     assert "render.kind === 'module'" in source
-    # Verify the module iframe carries a CSP that does NOT grant network
-    # access directly. The parent injects a postMessage fetch bridge instead,
-    # restricted to /api/extensions/<skill>/... from the parent side.
-    assert "default-src 'none'" in source
-    assert "script-src 'unsafe-inline'" in source
+    # The module document CSP: sources are ABSOLUTE (an opaque frame's 'self' is
+    # nothing), scripts run inline / from blob: / from this skill's module
+    # prefix with 'wasm-unsafe-eval', workers from blob:, passive image / media
+    # / font loads from data: / blob: / this skill's route prefix — and nothing
+    # else: no connect-src (falls to default-src 'none'; the parent bridge is the
+    # frame's one request path) and never plain 'unsafe-eval'.
+    assert "export function moduleFrameCsp(skill, origin = window.location.origin)" in module
+    assert "const prefix = `${origin}${extensionRoutePrefix(skill)}`;" in module
+    assert "default-src 'none'" in module
+    assert "script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: ${prefix}module/" in module
+    assert "'worker-src blob:'" in module
+    assert "style-src 'unsafe-inline'" in module
+    assert "img-src data: blob: ${prefix}" in module
+    assert "media-src data: blob: ${prefix}" in module
+    assert "font-src data: blob: ${prefix}" in module
+    assert "const csp = moduleFrameCsp(tab.skill);" in module
+    assert "connect-src" not in source
+    assert "'unsafe-eval'" not in source
     assert "window.OuroborosWidget = { fetch: request, onEvent };" in source
     assert "module widget fetch outside extension route prefix" in source
 

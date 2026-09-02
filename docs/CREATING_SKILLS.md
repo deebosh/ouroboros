@@ -756,10 +756,11 @@ ui_tab:
 ```
 
 The host fetches reviewed JS through `GET /api/extensions/<skill>/module/<entry>`,
-embeds it in an opaque-origin iframe (`sandbox="allow-scripts"`, no
-`allow-same-origin`), and injects the host bridge (`window.OuroborosWidget`,
-below) that forwards only `/api/extensions/<skill>/...` requests and the skill's
-own WebSocket events. The `widget_module_safety` review item still checks the
+embeds it in an opaque-origin iframe (`sandbox="allow-scripts allow-pointer-lock
+allow-downloads"`, never `allow-same-origin`; see "What the frame may do"
+below), and injects the host bridge (`window.OuroborosWidget`, below) that
+forwards only `/api/extensions/<skill>/...` requests and the skill's own
+WebSocket events. The `widget_module_safety` review item still checks the
 source; do not rely on the sandbox alone.
 
 Framed render declarations may add a bounded `height` (320–8,192 pixels).
@@ -790,9 +791,11 @@ reachable.
 
 #### The in-frame bridge (`window.OuroborosWidget`)
 
-The frame has no network of its own: `connect-src` stays closed, there is no
-`WebSocket` and no `EventSource` in the frame, and all network goes through the
-parent over one nonce-bound message grammar. Two calls cover it:
+The frame has no scriptable network of its own: `connect-src` stays closed, so
+`XMLHttpRequest`, `WebSocket`, `EventSource` and beacons are refused by the
+document policy, and every request goes through the parent over one nonce-bound
+message grammar (passive image, media and font loads from your own route prefix
+are the one exception — "What the frame may do" below). Two calls cover it:
 
 - **`OuroborosWidget.fetch(url, init)`** (also installed as the frame's
   `fetch`). `url` must resolve under `/api/extensions/<skill>/...`; anything
@@ -825,6 +828,75 @@ chunk; and the out-of-process / companion WS push (`POST /ui/ws-message`) is
 capped at 60 messages per 60 seconds per skill, so throttle progress events or
 fall back to poll-based status for bursts.
 
+#### What the frame may do
+
+Both framed mounts — the module `srcdoc` frame and a `kind: iframe` route frame
+— carry one capability set, decided for all installs: `sandbox="allow-scripts
+allow-pointer-lock allow-downloads"`, `allow="autoplay; fullscreen;
+clipboard-write"` and `allowfullscreen`. Never `allow-same-origin` (the frame
+stays an opaque origin: no SPA cookies, storage or DOM), never top navigation,
+popups, forms (`form-action` does not fall back to `default-src`, so a form
+submit would be an exfiltration channel), modals or clipboard read.
+
+The module frame's document policy, built by the host from the page origin
+(an opaque frame's `'self'` matches nothing, so sources are absolute):
+
+```
+default-src 'none';
+script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: <origin>/api/extensions/<skill>/module/;
+worker-src blob:;
+style-src 'unsafe-inline';
+img-src data: blob: <origin>/api/extensions/<skill>/;
+media-src data: blob: <origin>/api/extensions/<skill>/;
+font-src data: blob: <origin>/api/extensions/<skill>/
+```
+
+What that gives you, verified on Chromium and WebKit through
+`tests/test_widgets_ui_browser_capabilities.py`:
+
+- **Sibling scripts** from your module prefix, classic (`<script src>`) or
+  `import()` — "Loading more than one file" below.
+- **WebAssembly**: `'wasm-unsafe-eval'` admits `WebAssembly.instantiate` and
+  `instantiateStreaming` on bytes your own route serves — the recipe below.
+- **Workers** from `blob:` URLs (`new Worker(URL.createObjectURL(new Blob([src])))`);
+  `importScripts` inside one may load from your module prefix.
+- **Images, audio, video and fonts** from your own route prefix and from
+  `data:` / `blob:` URLs — "Assets" below, including the CORS rule for fonts.
+- **Clipboard write** (`navigator.clipboard.writeText`) from a user click; the
+  clipboard is never readable from the frame.
+- **Downloads**: an `<a download>` or `blob:` link clicked by the owner
+  downloads in browsers (`allow-downloads`). The desktop shell's link
+  interceptor runs in the parent document only and the frame cannot reach the
+  shell bridge, so a download started inside the frame may be ignored there.
+  A download that must also work in the desktop shell stays host-side today:
+  serve the file from a skill route and let a declarative widget's `file`
+  component or a chat-delivered file offer it — both go through the host's
+  `downloadViaHostBridge` path. A module-frame download call over the bridge
+  is not built yet (disclosed).
+- **Pointer lock** (`allow-pointer-lock`) and **fullscreen**
+  (`allowfullscreen` + `allow="fullscreen"`) for games and emulators. Both need
+  a user gesture and a focused window; feature-detect with
+  `document.fullscreenEnabled`, which is `true` in Chromium-based engines
+  (browsers; the Windows shell's WebView2) but `false` in WebKit (the macOS
+  desktop shell): WebKit fails the Fullscreen permission-policy check for an
+  opaque-origin frame.
+- **Autoplay** is allowed by the frame's policy; the browser's own autoplay
+  rules (a user gesture for audible playback) still apply.
+
+A `kind: iframe` route frame is your own page under the same sandbox and
+permissions set, with no bridge and no host CSP: its scripts may use the
+network exactly as your skill's backend already can, without the SPA's cookies
+or DOM. Because its origin is opaque, its `fetch` calls are cross-origin: a
+route it reads must answer with `Access-Control-Allow-Origin: *` (or be
+requested with `mode: "no-cors"` for a fire-and-forget opaque response), and
+on a network install its requests carry no session cookie either.
+
+What the module frame does not give you, by design: a scriptable network (`connect-src` is
+closed — use `OuroborosWidget.fetch`), `eval`/`new Function` (there is no
+`'unsafe-eval'`; WebAssembly is the sanctioned compiled-code path), and any
+load from another skill's prefix or a foreign origin (the document policy
+refuses it and dispatches a `securitypolicyviolation` event you can observe).
+
 #### Launch policy (`render.start`)
 
 A widget card declares how it starts with `render.start`. The validator in
@@ -849,7 +921,10 @@ Rules every module author follows:
   simulation that should not run all the time is `manual`; only a program that
   genuinely must keep running while the owner is elsewhere — and that stays
   cheap while hidden — is `retain`. Omitting the key gives a framed widget
-  `manual`.
+  `manual`. An existing `module` or `iframe` widget whose declaration omits
+  `start` therefore now renders as a stopped facade with a Start button until
+  either the author republishes it with `start: "auto"` or the owner selects
+  Auto in the card's menu.
 - **The owner always wins, and Stop always wins.** The owner can change any
   card's mode from the card; that choice is stored in
   `ui_preferences.widget_start_mode` (`"<skill>:<tab_id>"` → mode) and
@@ -924,12 +999,12 @@ const bytes = await (await OuroborosWidget.fetch('/api/extensions/<skill>/core.w
 const { instance } = await WebAssembly.instantiate(bytes, imports);
 ```
 
-The module endpoint (`GET /api/extensions/<skill>/module/...`) stays
-JavaScript-only; binary assets always travel through the skill's own routes.
-Today this is admission only: the file installs and reviews, but the frame CSP
-token that permits `WebAssembly.instantiate` (`'wasm-unsafe-eval'`) and the
-binary-safe body of the bridged `fetch` land with the Widgets host's frontend
-slices.
+`WebAssembly.instantiateStreaming(OuroborosWidget.fetch(url))` works too
+(the bridge hands back a real `Response`; serve the module as
+`application/wasm`). The module endpoint (`GET /api/extensions/<skill>/module/...`)
+stays JavaScript-only; binary assets always travel through the skill's own
+routes. The frame CSP admits this with `'wasm-unsafe-eval'` — there is no plain
+`'unsafe-eval'`, so WebAssembly is the one compiled-code path.
 
 #### Assets: fonts, audio, video, images
 
@@ -947,9 +1022,30 @@ at 5 MiB each (`ouroboros/marketplace/ouroboroshub.py`). A large runtime image
 the skill download it at runtime (with the `net` permission) into its state
 directory (`state_dir` from `api.get_runtime_info()`) and serve it from there.
 Locally installed skills have no per-file cap; the review pack budget is the
-only bound. The frame's `img-src`/`media-src`/`font-src` entries for your
-skill's route prefix land with the Widgets host's frontend slice; the hub
-admission and review posture above are in place now.
+only bound. The frame's `img-src`/`media-src`/`font-src` admit your skill's
+route prefix, so `<img src="/api/extensions/<skill>/logo.png">`,
+`<audio src>` / `<video src>` and `@font-face { src: url(...) }` load straight
+from your routes. Two rules come with that:
+
+- **Fonts need the CORS header.** The frame is an opaque origin, so
+  `@font-face` (like `import()`) is a CORS-mode fetch: a font route must answer
+  with `Access-Control-Allow-Origin: *` or Chromium-based browsers refuse the
+  face (`FontFace.status === "error"`; WebKit is lenient, so test on Chromium).
+  Images and media are plain no-cors loads and need no header; the module
+  endpoint already sends it for scripts.
+- **Passive loads carry no session on network installs.** On a
+  password-protected install reached over the network (not loopback, not the
+  desktop shell), the owner's session cookie is `SameSite=Lax` and an opaque
+  frame's `<img>`/`<audio>`/`<video>`/`@font-face` requests are cross-site, so
+  they arrive without it and get 401. Loopback and the desktop shell are exempt.
+  For an asset that must work everywhere, go through the bridge — the parent
+  sends the session — and hand the bytes to the element as a `blob:` URL, which
+  `img-src`/`media-src`/`font-src` admit:
+
+  ```js
+  const blob = await (await OuroborosWidget.fetch('/api/extensions/<skill>/logo.png')).blob();
+  img.src = URL.createObjectURL(blob);
+  ```
 
 #### Loading more than one file
 
@@ -981,9 +1077,10 @@ frame needs for `import()`; relative specifiers inside a module loaded this way
 resolve against its URL, so `import './y.mjs'` reaches `module/lib/y.mjs`. The
 declared `entry` itself still executes as a classic script even when it is named
 `.mjs`, so keep `import`/`export` statements in the files you load with
-`import()`, not in the entry. The `script-src` prefix that permits these loads
-lands with the Widgets host's frontend slice; until then the declared entry is
-the only file the frame executes. Hub packages are bounded by the caps above; a
+`import()`, not in the entry. The frame's `script-src` admits exactly your
+module prefix (`<origin>/api/extensions/<skill>/module/`), `blob:` URLs and
+inline scripts — a script from any other path or skill is refused by the
+document policy. Hub packages are bounded by the caps above; a
 locally installed skill has no per-file cap, so its captured JavaScript is
 bounded only by what you ship.
 
