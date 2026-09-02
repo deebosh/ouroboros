@@ -4,8 +4,11 @@
 // transaction a reconnect already runs — instead of evicting cards one by one:
 // the next sync (in practice the debounced post-completion resync; here a
 // refreshHistory(), which awaits the same syncHistory) replaces every live card
-// with durable history, once. A Load-older window is the owner's explicit
-// request and is never cut back by the cap.
+// with durable history, once. The cap is RELATIVE to the population the last
+// rebuild produced, because a history window mints cards itself (progress rows,
+// task_summary rows, lineage rows) and can exceed the cap on its own; an
+// absolute cap would rebuild on every later sync. A Load-older window is
+// rebuilt with its own quota, not cut back to the default one.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -233,20 +236,34 @@ function sealCard(handlers, id, second) {
 }
 const taskCards = (messages) => messages.children.filter((node) => node.dataset.taskId);
 
-// Durable history stays empty; the server reports a quota-truncated window so
-// the Load-older control is offered.
-function historyFetch(historyCalls) {
+// The server reports a quota-truncated window so the Load-older control is
+// offered; `rows` is the durable history it returns for that request.
+function historyFetch(historyCalls, rows = () => []) {
     return async (url) => {
         const value = String(url);
         if (value.startsWith('/api/chat/history')) {
             historyCalls.push(value);
             return { ok: true, json: async () => ({
-                messages: [], window: { complete: false, truncated_by: ['quota'] },
+                messages: rows(value), window: { complete: false, truncated_by: ['quota'] },
             }) };
         }
         return { ok: true, json: async () => ({ active_direct_turns: [] }) };
     };
 }
+
+// Durable rows that mint a card on replay: a finished task's chat summary (the
+// n_human slice carries these) and a progress row (the n_progress slice).
+const summaryRow = (id, second) => ({
+    chat_id: 2, role: 'system', system_type: 'task_summary', task_id: id,
+    content: 'done', tool_calls: 2, rounds: 2, task_terminal_status: 'completed',
+    outcome_axes: { execution: 'ok' }, ts: historyTs(second),
+});
+const progressRow = (id, second) => ({
+    chat_id: 2, role: 'system', is_progress: true, task_id: id,
+    content: 'working', ts: historyTs(second),
+});
+const historyTs = (second) => `2026-09-01T00:${String(Math.floor(second / 60)).padStart(2, '0')}`
+    + `:${String(second % 60).padStart(2, '0')}Z`;
 
 async function sync(instance, revision) {
     await instance.refreshHistory({ revision });
@@ -293,9 +310,18 @@ test('exactly at the cap a sync stays routine', async () => {
     }
 });
 
-test('a Load-older window is never cut back by the cap', async () => {
+// A durable row mints a live-card RECORD on replay, but this DOM stub reports
+// every fresh node as already connected, so the pass-2 sweep never inserts it:
+// the cards visible below are the LIVE ones. That is the observable this suite
+// needs — a rebuild drops every live card, a routine sync keeps it.
+test('after Load older the cap is relative to the wider window and its rebuild keeps the owner quota', async () => {
     const historyCalls = [];
-    const { prior, mount } = installDom(historyFetch(historyCalls));
+    // The default window is empty; the escalated one carries 50 durable cards.
+    const { prior, mount } = installDom(historyFetch(historyCalls, (url) => (
+        url.includes('n_human=400')
+            ? Array.from({ length: 50 }, (_all, i) => summaryRow(`older-t${i}`, i))
+            : []
+    )));
     // The stub reports every fresh element as connected, so the Load-older
     // control is never (re)prepended; capture its button at creation instead.
     const created = [];
@@ -309,11 +335,48 @@ test('a Load-older window is never cut back by the cap', async () => {
         button.listeners.get('click')[0]();
         await new Promise((resolve) => setTimeout(resolve, 10));
         assert.match(historyCalls.at(-1), /n_human=400/, 'the escalated window is in force');
-        for (let i = 0; i < 201; i += 1) sealCard(handlers, `wide-t${i}`, i);
+
+        // 200 live cards on top of a 50-record window: over the absolute cap,
+        // but not yet 200 PAST the population that rebuild produced.
+        for (let i = 0; i < 200; i += 1) sealCard(handlers, `wide-t${i}`, i);
         await sync(instance, 2);
         assert.match(historyCalls.at(-1), /n_human=400/);
-        assert.equal(taskCards(messages).length, 201,
-            'the owner asked for the wide window; the cap does not rebuild it away');
+        assert.equal(taskCards(messages).length, 200, 'the sync folded in routinely');
+
+        // One more crosses the relative bound. The window is wide, so the
+        // rebuild replays the OWNER's quota instead of skipping the cap.
+        sealCard(handlers, 'wide-t200', 200);
+        await sync(instance, 3);
+        assert.match(historyCalls.at(-1), /n_human=400/, 'the rebuild kept the owner quota');
+        assert.equal(taskCards(messages).length, 0, 'the rebuild replaced every live card');
+    } finally {
+        instance.destroy();
+        restoreDom(prior);
+    }
+});
+
+test('a window that itself exceeds the cap does not rebuild on every later sync', async () => {
+    // The convergence case: 150 task_summary rows in the n_human slice plus 60
+    // progress rows in the n_progress slice already mint 210 records, so an
+    // ABSOLUTE cap is re-armed by the first live task after every rebuild — a
+    // rebuild on every post-completion sync. Against the relative bound each
+    // sync below stays routine and keeps the live cards it has folded in.
+    const historyCalls = [];
+    const rows = [
+        ...Array.from({ length: 150 }, (_all, i) => summaryRow(`hist-s${i}`, i)),
+        ...Array.from({ length: 60 }, (_all, i) => progressRow(`hist-p${i}`, 200 + i)),
+    ];
+    assert.equal(rows.length, 210, 'the default window alone exceeds LIVE_CARD_CAP');
+    const { prior, mount } = installDom(historyFetch(historyCalls, () => rows));
+    const { instance, handlers, messages } = makeInstance(mount);
+    try {
+        await sync(instance, 1);
+        for (let revision = 2; revision <= 5; revision += 1) {
+            sealCard(handlers, `live-t${revision}`, 300 + revision);
+            await sync(instance, revision);
+            assert.equal(taskCards(messages).length, revision - 1,
+                `sync ${revision} folded in routinely instead of rebuilding`);
+        }
     } finally {
         instance.destroy();
         restoreDom(prior);

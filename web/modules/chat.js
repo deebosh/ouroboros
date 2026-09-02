@@ -468,8 +468,10 @@ export function createChatInstance({
     // resets it; scheduleHistorySync and the reconnect path never consult it.
     let initialHydrationPromise = null;
     // The next successful sync fully rebuilds the feed: the offline bootstrap
-    // painted the sessionStorage fallback, or live cards passed LIVE_CARD_CAP.
+    // painted the sessionStorage fallback, or live cards passed LIVE_CARD_CAP
+    // beyond the population the last rebuild left behind.
     let fullRebuildPending = false;
+    let liveCardFloor = 0;
     // highest project revision whose history has been fetched;
     // refreshHistory only bypasses the sticky promise for a NEWER revision.
     let lastLoadedHistoryRevision = 0;
@@ -1539,9 +1541,8 @@ export function createChatInstance({
             }
         });
         liveCardRecords.set(normalizedGroupId, record);
-        // Issue #135: past the cap the next resync rebuilds from durable history
-        // like a reconnect does; a Load-older window is the owner's and is kept.
-        if (liveCardRecords.size > LIVE_CARD_CAP && !historyQuotaOverride) fullRebuildPending = true;
+        // Issue #135: 200 live cards past the last rebuild arm a full rebuild from durable history (like a reconnect).
+        if (liveCardRecords.size > liveCardFloor + LIVE_CARD_CAP) fullRebuildPending = true;
         // apply a name that arrived (task_named) before this card existed.
         const _pendingName = pendingSuggestedNames.get(normalizedGroupId);
         if (_pendingName && !record.isSubagent) {
@@ -2459,26 +2460,29 @@ export function createChatInstance({
             root.setAttribute('data-owner-hurry', '1');
             return true;
         }
+        // Tool counts and the error shapes that force a visible card are
+        // classified the same way for a subagent child and for its owner.
+        const applyEventTelemetry = () => {
+            if (eventType === 'tool_call_started') return markTaskToolCall(taskId, 1, false, rawTs);
+            if ((eventType === 'task_metrics_event' || eventType === 'task_eval') && Number.isFinite(Number(evt.tool_calls))) {
+                return markTaskToolCall(taskId, Number(evt.tool_calls), true, rawTs);
+            }
+            if (
+                eventType === 'tool_call_timeout'
+                || eventType === 'tool_timeout'
+                || eventType === 'llm_round_error'
+                || eventType === 'llm_api_error'
+                || (eventType === 'tool_call_finished' && evt.is_error)
+            ) return forceTaskCardVisibleChange(taskId, rawTs);
+            return false;
+        };
         // A known subagent child's log events update its linked child card.
         if (subagentChildParents.has(taskId)) {
             if (eventType === 'task_done') {
                 return routeSubagentTerminalToCard(taskId, evt);
             }
             if (subagentTerminalChildren.has(taskId)) return false;
-            let changed = false;
-            if (eventType === 'tool_call_started') {
-                changed = markTaskToolCall(taskId, 1, false, rawTs) || changed;
-            } else if ((eventType === 'task_metrics_event' || eventType === 'task_eval') && Number.isFinite(Number(evt.tool_calls))) {
-                changed = markTaskToolCall(taskId, Number(evt.tool_calls), true, rawTs) || changed;
-            } else if (
-                eventType === 'tool_call_timeout'
-                || eventType === 'tool_timeout'
-                || eventType === 'llm_round_error'
-                || eventType === 'llm_api_error'
-                || (eventType === 'tool_call_finished' && evt.is_error)
-            ) {
-                changed = forceTaskCardVisibleChange(taskId, rawTs) || changed;
-            }
+            let changed = applyEventTelemetry();
             const summary = summarizeChatLiveEvent(evt);
             if (!summary) return changed;
             const info = subagentChildParents.get(taskId);
@@ -2493,20 +2497,7 @@ export function createChatInstance({
             );
             return Boolean(changed || queued);
         }
-        let changed = false;
-        if (eventType === 'tool_call_started') {
-            changed = markTaskToolCall(taskId, 1, false, rawTs) || changed;
-        } else if ((eventType === 'task_metrics_event' || eventType === 'task_eval') && Number.isFinite(Number(evt.tool_calls))) {
-            changed = markTaskToolCall(taskId, Number(evt.tool_calls), true, rawTs) || changed;
-        } else if (
-            eventType === 'tool_call_timeout'
-            || eventType === 'tool_timeout'
-            || eventType === 'llm_round_error'
-            || eventType === 'llm_api_error'
-            || (eventType === 'tool_call_finished' && evt.is_error)
-        ) {
-            changed = forceTaskCardVisibleChange(taskId, rawTs) || changed;
-        }
+        let changed = applyEventTelemetry();
         changed = attachTaskDetailReviews(taskId, evt) || changed;
         const summary = summarizeChatLiveEvent(evt);
         if (!summary) return changed;
@@ -3113,6 +3104,7 @@ export function createChatInstance({
                 historyLoaded = true;
                 lastHistorySyncSucceeded = true;
                 fullRebuildPending = false;
+                if (rebuildAll) liveCardFloor = liveCardRecords.size;
                 // ANY successful sync leaves the instance hydrated
                 // — later hydration triggers ride this sticky promise.
                 initialHydrationPromise = historySyncPromise;
