@@ -2744,8 +2744,8 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults stay canonical in `conf
 | OUROBOROS_OBSERVABILITY_RETENTION_DAYS | unset | Env-only: observability retention (absent = preserved indefinitely; the reader never deletes) |
 | OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC | (unset) | Env-only: logical review timeout (absent = route-owned behavior; late in-flight results stay in custody) |
 | OUROBOROS_REVIEW_MAX_TOKENS | 65536 | Env-only: reviewer output budget, clamped to the 8192 floor |
-| OUROBOROS_REVIEW_ENFORCEMENT | advisory | Review enforcement: advisory/required |
-| OUROBOROS_PREFLIGHT_TIMEOUT_SEC | 900 | TOTAL wall-clock budget for the hermetic pre-commit pytest preflight (node lane + both passes; teardown + containment semantics in `preflight_runner.py`/`process_containment.py`) |
+| OUROBOROS_REVIEW_ENFORCEMENT | advisory | Review enforcement: advisory/blocking (closed enum; anything else coerces to the default) |
+| OUROBOROS_PREFLIGHT_TIMEOUT_SEC | 900 | Env-only: TOTAL wall-clock budget for the hermetic pre-commit pytest preflight (node lane + both passes; teardown + containment semantics in `preflight_runner.py`/`process_containment.py`) |
 | OUROBOROS_PREFLIGHT_SERIAL | unset | Env-only: `1` selects one serial pytest pass; scrubbed from the candidate environment |
 | OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS | true | Auto-grant manifest-declared permissions to cleanly reviewed skills (hash-bound; blocking findings never grant) |
 | OUROBOROS_TRUST_NATIVE_SEEDED_SKILLS | true | Launcher seed/resync writes hash-pinned `native_seed` verdicts; acts only at seed/resync, no runtime grant endpoint |
@@ -2824,7 +2824,7 @@ The local `ouroboros-stable` ref is also a recovery fallback maintained by expli
 |---|---|---|
 | Fork-safe PR validation | `quick-test`, `betterleaks-platform-smoke` | `ouroboros` pushes, pull requests into `ouroboros`, manual runs; read-only, no provider secrets, never `pull_request_target` |
 | Stable/tag matrix | `full-test` (no secrets), `skill-smoke` (`OPENROUTER_API_KEY`) | `ouroboros-stable` pushes, manual runs, `v*` tags — never pull requests |
-| Trusted provider run | `integration-test` | provider secrets; `main`/`ouroboros`/`ouroboros-stable` pushes and manual runs only — never pull requests |
+| Trusted provider run | `integration-test` | provider secrets; `main`/`ouroboros`/`ouroboros-stable` pushes, manual runs and `v*` tags (the release chain needs it) — never pull requests |
 | Tag-only gates and release chain | `marker-guards`, `ui-smoke`, `docker-ui-smoke`, `docker-portable-test` (manual runs or tags, no secrets); `release-preflight` (needs `full-test` + `integration-test`) → `build` (signing secrets) → `release` (needs `build`, `release-preflight`, `skill-smoke` and the four tag-only gates); `vendor-package-smoke` needs `build` and stays informational | tag-triggered; a reproducible provider-contract failure blocks tag builds, a typed inconclusive provider outage does not |
 
 Quick and full jobs each run a dedicated blocking `size_ratchet` pytest step — the ONLY enforcing surface for the repository size gates (local runs exclude the marker and warn): manifest exactness on the tip plus the pairwise shrink-only transition against the event base in `OURO_SIZE_RATCHET_BASE_REF`; an unresolvable base degrades to the tip's parent manifest verified against the parent's own tree — never a skip — while a resolvable base without a manifest fails closed. Both jobs also run the browser-module suite (`cd web && node --test tests/*.test.js`), the same node lane the hermetic commit gate executes through `ouroboros/preflight_node.py`. Secret-bearing skill review runs before any step that imports downloaded plugin code — untrusted payload code must never share a process with provider credentials — and a missing required key is red rather than skipped.
