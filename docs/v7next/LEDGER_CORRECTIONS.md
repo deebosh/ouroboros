@@ -6705,3 +6705,19 @@ pure relocation, row 913, is byte-identical and needed no tool proof).
     serializer". (g) The round-3 table (item 32) is left as written: verdict 2's remark that it
     recorded only shapes the old markers already saw is answered by item 41, not by rewriting
     history. (h) Everything in items 10, 22 and 34 stands.
+
+### D03 fix round 5 (operator, after the round-4 lenses)
+
+44. The unified writer predicate had lost the ``os.replace`` commit shape and never
+    carried ``replace_atomic`` / ``shutil.copy*``: an unrouted writer naming
+    ``SETTINGS_PATH`` and committing through a rename or a copy passed both pins
+    (lens probes P7/P8 on an export of b3ec2f1f). The shape alternation now names
+    them; on the real tree the widened predicate flags the same functions (no new
+    exemption). The shape half is disclosed as a finite list in the predicate
+    docstring and in ARCHITECTURE, replacing the absolute «a sixth writer anywhere in
+    those roots fails the tripwire». ``serialize_settings``'s docstring scopes «every
+    writer» to the scanned roots (the benchmark harness under devtools/ derives its
+    own JSON text for an isolated install and is outside the inventory).
+45. Ledger item 42's full-suite count is the default lane plus the serial lane as the
+    fixer ran them; the per-lane counts are the gate manifests of the operator's
+    script run on b3ec2f1f (non-serial 0 FAILED/ERROR, serial 0 FAILED/ERROR).

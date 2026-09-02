@@ -728,8 +728,10 @@ def normalize_settings_raw(raw: dict) -> dict:
 def serialize_settings(settings: dict) -> str:
     """THE bytes a settings document is persisted as, for every writer that persists one.
 
-    Every writer of this document puts exactly ``serialize_settings(document).encode("utf-8")``
-    on disk on EVERY platform: each of the five calls this function and commits through a
+    Every writer of this document under the scanned runtime roots (``ouroboros/**``,
+    ``supervisor/**``, ``server.py``, ``launcher.py``) puts exactly
+    ``serialize_settings(document).encode("utf-8")`` on disk on EVERY platform: each of
+    the five calls this function and commits through a
     byte-exact helper (``ouroboros.utils.write_text_atomic``, or ``Path.write_bytes`` on
     ``save_settings``'s rename-less fallback), which does not translate newlines. Both halves
     are load-bearing: without one serializer the writers disagreed on ``ensure_ascii``, and

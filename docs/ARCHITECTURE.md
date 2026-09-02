@@ -3022,11 +3022,14 @@ byte-exact commit keeps the newlines it wrote. The inventory is closed over
 when it CALLS `serialize_settings()`, or when it names
 the settings path or file (`SETTINGS_PATH`, a `settings_path` parameter, `settings.json`)
 or carries "settings" in its own name AND does a write-shaped thing — a `.write_text`,
-`.write_bytes`, `.write` or `json.dump` call, or one of the atomic helpers. It counts as
-routed only when it CALLS the prologue; naming either in prose is neither. The flagged
-set must equal the five writers plus the scan's declared non-writer matches, so a sixth
-writer anywhere in those roots fails the tripwire whether or not it is routed, and the
-byte pin drives all five through their real entry points and pins the spelling itself.
+`.write_bytes`, `.write` or `json.dump` call, one of the atomic helpers, or a rename/copy
+commit (`os.replace`, `replace_atomic`, `shutil.copy*`/`move`). It counts as routed only
+when it CALLS the prologue; naming either in prose is neither. The flagged set must equal
+the five writers plus the scan's declared non-writer matches, so a sixth writer in those
+roots that names the path or file and commits through one of the listed shapes fails the
+tripwire whether or not it is routed (the shape list is finite: a commit through a shape
+outside it is invisible to the scan), and the byte pin drives all five through their real
+entry points and pins the spelling itself.
 
 An owner endpoint changes one decision inside a document it does not otherwise own, so it
 must write the whole document back. `_owner_update_settings(transform, expected_digest)`

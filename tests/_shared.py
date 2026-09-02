@@ -32,6 +32,10 @@ SETTINGS_WRITERS = (
 _SETTINGS_WRITE_SHAPES = re.compile(
     r"\.write_text\(|\.write_bytes\(|\.write\(|json\.dump\("
     r"|atomic_write_json\(|write_text_atomic\(|write_bytes_atomic\("
+    # A rename or copy that lands on the settings path is a commit too (the
+    # packaged saver once committed through replace_atomic); bare `.replace(` /
+    # `.rename(` are NOT here — str.replace matches unrelated functions.
+    r"|os\.replace\(|replace_atomic\(|shutil\.(?:copy|copyfile|copy2|move)\("
 )
 
 
@@ -53,7 +57,10 @@ def settings_writers(repo: pathlib.Path) -> dict[tuple[str, str], bool]:
     by definition), or when it names the settings path or file — ``SETTINGS_PATH``, a
     ``settings_path`` parameter, the ``settings.json`` literal — or carries "settings" in
     its own name, AND does a write-shaped thing: a ``.write_text`` / ``.write_bytes`` /
-    ``.write`` / ``json.dump`` call or one of the atomic helpers. Both halves read the
+    ``.write`` / ``json.dump`` call, one of the atomic helpers, or a rename/copy commit
+    (``os.replace``, ``replace_atomic``, ``shutil.copy*``/``move``). The shape half is a
+    finite list: a writer that names the path but commits through a shape outside it is
+    invisible to the scan. Both halves read the
     function's whole source, so prose can only ADD a candidate. Routing is read from the
     CALLS the function makes, never from its text: a docstring that merely named the
     prologue once vouched for a writer that never called it, which is the fail-open
