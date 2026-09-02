@@ -10,13 +10,18 @@ enumerated here; it gets its own train rows when the owner signals.
 
 Sources (frozen reference, read-only):
 
-- `ouroboros_v7_wip @ 9f691656` — `MIGRATION_v7.md` (3902 rows) and its
+- `ouroboros_v7_wip @ 9f691656` — `MIGRATION_v7.md` (3901 rows by the oracle's
+  own parser; the "3902" this bullet read until 2026-09-02 counted the header) and its
   `APPROVED_SEMANTIC_DELTAS` registry (`scripts/v7_migration.py:130`):
   18 delta families `D02–D09, D11, D13, D18, D31, D33–D38` (the count read
   "17" from the F0 skeleton to 2026-09-01; the list and the validator's
   `REQUIRED_DELTAS` always held 18 — the word was wrong, not the inventory).
 - `~/.claude/plans/v7next/V7NEXT_PLAN.md` — §2 mandatory returns, §6 ABI
   package 7.0, §7 completeness, §5.4 three-column rule, v1.0 decision digest.
+
+Projection of the oracle's 3901 rows onto the families below — every row family
+accounted for, with the residuals the family form does not prove — is the one-off
+report `docs/v7next/MIGRATION_PROJECTION.md` (owner batch №13 item 12 = A).
 
 Validator: `scripts/v7next_adoption.py` (unique ids; all 18 delta families
 present; enum-valid disposition/status/phase; `--release` refuses any

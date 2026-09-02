@@ -8948,3 +8948,56 @@ Gates: `tests/test_usage_compaction.py` + `tests/test_usage_compaction_archive.p
 `--collect-only` node-id sets identical before/after (64 = 64);
 `ruff check . --select F` rc 0; `scripts/v7next_adoption.py` rc 0 and
 `--release` rc 0; `scripts/regenerate_size_ratchet.py --check` rc 0.
+
+## From the migration projection lane (owner 12 = A)
+
+1. **The one-off projection report exists: `docs/v7next/MIGRATION_PROJECTION.md`.**
+   Owner batch №13 item 12 = A kept the family-level `ADOPTION_v7next.md` as the
+   proof of the v7 transplant and asked for a report projecting the oracle's
+   row-level ledger onto it. The report quotes the spec clauses that demanded the
+   row-level ledger (§3.2 «единственная parseable migration-таблица … CI проверяет
+   уникального owner, полноту moved symbols, валидность facade/test references»,
+   §8.0-2, §8.4, §8.5) and the reverse checker they imply
+   (`scripts/v7_migration.py::validate_migration`, reverse arm, driven by
+   `tests/test_v7_migration_ledger.py`), then accounts for every oracle row.
+2. **Row-count correction.** `MIGRATION_v7.md` on `ouroboros_v7_wip @ 9f691656` has
+   **3901** rows by its own parser (table lines minus header minus separator), not
+   3902. The `ADOPTION_v7next.md` Sources bullet carried the header-inclusive figure
+   from the F0 skeleton; it is corrected in place with the cause named. No test or
+   script read the number.
+3. **Grouping key.** The oracle groups its own rows by the semantic-delta id in
+   column 4; the 18 non-`none` ids are exactly this manifest's 18
+   `kind=semantic-delta` rows (290 oracle rows). The 3611 `{"id":"none"}` verbatim
+   moves have no id, so the report groups them by source stream: ouroboros 599,
+   ouroboros/tools 491, supervisor 106, server.py 47, launcher.py 3, tests 2070,
+   web 170, devtools 84, skills 41. 290 + 3611 = 3901; `pending` 3876 + `retired`
+   25 = 3901.
+4. **Residuals the projection surfaces, none of them new defects but none of them
+   previously stated in one place.** 1461 oracle rows have no destination module of
+   the declared name on this tip. 1282 of those sit on files this tree still carries
+   as `GIANT_PATHS` entries (23 giants; the oracle reached 0, and spec §8.5 makes an
+   empty `GIANT_PATHS` part of formal completion): the 15 test giants (1006 rows),
+   `web/modules/chat.js` + `web/tests/harness_accounts.test.js` (148), the two
+   OSWorld bench runners (84), `skills/unix_computer_use/plugin.py` (41),
+   `supervisor/workers.py` (3). The remaining 179 are covered work that landed under
+   different leaf names (D36/D37 renames, `claude_advisory_review.py`,
+   `review_execution.py`, `task_lifecycle.py`, `chat_activity.js`) and are already
+   recorded lane by lane above.
+5. **The W (web) stream has no family row at all.** 157 of its 170 rows have no
+   destination here; the oracle's `chat.js` decomposition into ~20 modules did not
+   come across, and its hook `web/tests/chat_facade.test.js` does not exist on this
+   tree. Stated as an untransplanted stream, not as covered. The oracle's own
+   disclosed anonymous-source residual (12 unnamed handler/IIFE bodies that
+   structurally cannot carry a `path::symbol` row) carries over unproven with it.
+6. **What the family form does not prove, named in the report §4.** Nothing on this
+   tree walks `merge-base..HEAD` and demands a row for each moved symbol: the
+   manifest is a manifest of decisions, not of motions. A verbatim extraction with
+   no family row and no facade change passes every current gate
+   (`scripts/v7next_adoption.py --release`, the owner-facade suites,
+   `tests/test_generated_inventories.py::test_facade_inventory_is_byte_identical`,
+   `ouroboros/domains.toml` completeness, the size ratchet). The report says so
+   instead of implying coverage from the word "family".
+7. **No new gate, no new script.** The table is re-derivable from two frozen inputs
+   by the commands printed in report §5 (a `git show` of the oracle ledger and a
+   ~25-line inline reader); adding a checker would contradict the owner's own
+   decision to stop at a one-off report.
