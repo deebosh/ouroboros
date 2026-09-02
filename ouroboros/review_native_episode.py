@@ -353,7 +353,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         landing_sent = False  # the notice was posted AND a send carried it
         end_reason = "not_started"  # the true reason is set by whichever end the episode takes
         round_idx = 0
-        transcript_chars = 0
+        transcript_chars = last_send_chars = refused_chars = 0  # live list size / last send / refused next send
         episode: Dict[str, Any] = {}
         messages: List[Dict[str, Any]] = []
         try:
@@ -382,15 +382,15 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     end_reason = "deadline_exhausted"
                     if shape == "report" and last_content:
                         break  # a report keeps its draft (marked incomplete below)
-                    raise _deadline_exhausted_error(
-                        "owner deadline exhausted mid native review episode")
+                    raise _deadline_exhausted_error("owner deadline exhausted mid native review episode")
                 # The bound is a SEND bound: it is enforced BEFORE every
                 # provider call, because the transcript IS the growing context
                 # the next send would carry. A final content-only answer that
                 # lands past the number is accepted — no further send exists
                 # for it to poison, and refusing a completed verdict would
                 # protect nothing.
-                if transcript_chars > transcript_cap:
+                if refused_chars or transcript_chars > transcript_cap:
+                    refused_chars = refused_chars or transcript_chars  # the next send this bound refused
                     break
                 if not landed and transcript_chars >= landing_at:
                     # Once: the host's budget fact, so the reviewer lands on
@@ -402,7 +402,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     messages.append({"role": "user", "content": notice})
                     transcript_chars = _wire_size(messages, schemas)
                     if transcript_chars > transcript_cap:
-                        break  # even the notice would not fit: the bound has landed
+                        refused_chars = transcript_chars  # even the notice would not fit: the bound has landed
+                        break
                 round_idx += 1
                 chat_kwargs = self._chat_kwargs(messages, schemas, max_tokens)
                 transport = review_transport_timeout(
@@ -418,11 +419,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         end_reason = "deadline_exhausted"
                         if shape == "report" and last_content:
                             break
-                        raise _deadline_exhausted_error(
-                            "slot logical window exhausted before the native review send")
+                        raise _deadline_exhausted_error("slot logical window exhausted before the native review send")
                     transport = remaining if transport is None else min(float(transport), remaining)
                 if transport is not None:
                     chat_kwargs["timeout"] = transport
+                last_send_chars = transcript_chars  # what THIS send carries: the custody fact
                 with bind_api_review_paid_stamp(self.assignment.dispatch_stamp):
                     try:
                         msg, usage = chat(**chat_kwargs)
@@ -444,9 +445,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         raise
                 self._rounds_used = round_idx
                 landing_sent = landing_sent or landed  # a returned send carried the notice
-                tool_calls = (msg.get("tool_calls") or []) if isinstance(msg, dict) else []
-                # a non-list container is malformed output: one progress-floor entry, never a TypeError
-                tool_calls = tool_calls if isinstance(tool_calls, list) else [tool_calls]
+                raw_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+                # absent = no calls; a list = calls; ANY other value (falsy too) = one malformed entry
+                tool_calls = [] if raw_calls is None else (raw_calls if isinstance(raw_calls, list) else [raw_calls])
                 usage = dict(usage or {})
                 # Pop the wire-validation sidecar BEFORE accumulation, exactly
                 # like the existing bounded loops — receipts are per-round
@@ -518,7 +519,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         # round cannot be answered within it, so the episode
                         # ends HERE, typed — no over-bound send is ever made.
                         end_reason = "transcript_bound"
-                        transcript_chars = transcript_cap + 1
+                        refused_chars = with_result  # disclosed as its own fact, never a fake counter
                         break
                     messages.append(tool_message)
                     transcript_chars = with_result
@@ -561,8 +562,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             episode.update({
                 "native_rounds": self._rounds_used,
                 "native_tool_calls": self._tool_calls_total,
-                "native_transcript_chars": transcript_chars,
+                "native_transcript_chars": last_send_chars,  # the wire size of the LAST physical send
                 "native_transcript_bound": transcript_cap,
+                **({"native_transcript_refused_chars": refused_chars} if refused_chars else {}),
                 "native_landing_notified": landed,  # posted to the transcript
                 "native_landing_sent": landing_sent,  # a provider send carried it
                 "native_end_reason": end_reason,
@@ -591,7 +593,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     "— a zero-progress round would re-enter the paid send forever",
                     code="native_round_without_progress")
             raise ReviewRouteUnavailable(
-                f"native review episode transcript ({transcript_chars} chars) "
+                f"native review episode transcript ({refused_chars or transcript_chars} chars) "
                 f"exceeded its bound ({transcript_cap}) before a final answer; "
                 "the episode fails closed — compaction would review a "
                 "fabricated cut", code="native_transcript_cap_exceeded")
@@ -808,7 +810,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         raw_calls = assistant.get("tool_calls")
         # Total over provider output: a non-list container is kept as ONE
         # bounded redacted value, never iterated.
-        for tc in (raw_calls if isinstance(raw_calls, list) else ([raw_calls] if raw_calls else [])):
+        for tc in (raw_calls if isinstance(raw_calls, list) else ([] if raw_calls is None else [raw_calls])):
             calls.append(_redacted(tc))
         bounded: List[Dict[str, Any]] = [{
             "role": "assistant",

@@ -579,7 +579,7 @@ def test_transcript_counter_covers_withheld_tool_message_envelopes(subject_repo,
         executor.execute()
     assert exc.value.code == "native_transcript_cap_exceeded"
     custody = executor.failure_custody()
-    assert custody["native_transcript_chars"] > custody["native_transcript_bound"] == 50_000
+    assert custody["native_transcript_chars"] <= custody["native_transcript_bound"] == 50_000 < custody["native_transcript_refused_chars"]
     assert len(llm.calls) == 1 and llm.script  # refused before the over-bound send was paid for
 
 
@@ -676,7 +676,7 @@ def test_terminal_round_masks_secrets_structurally(subject_repo):
         {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"wrapped": json.dumps({"api_key": "hunter2"})})}]
     assert "hunter2" not in NativeToolRoundReviewExecutor._terminal_round_fact(nested)
     # A non-list tool_calls container (malformed provider output) never breaks the record.
-    for container in (7, {"id": "x", "password": "hunter2"}, "junk"):
+    for container in (7, {"id": "x", "password": "hunter2"}, "junk", 0, ""):
         doc = json.loads(NativeToolRoundReviewExecutor._terminal_round_fact(
             [{"role": "assistant", "content": "", "tool_calls": container}]))
         assert "hunter2" not in json.dumps(doc) and doc["messages"][0]["role"] == "assistant"
@@ -746,12 +746,18 @@ def test_every_send_is_measured_exactly_on_the_wire(subject_repo, monkeypatch):
     monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", str(bound))
     (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
     llm = _ScriptedLLM(_ignores_landing())
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
     with pytest.raises(ReviewRouteUnavailable) as exc:
-        NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute()
+        executor.execute()
     assert exc.value.code == "native_transcript_cap_exceeded"
     sends = [len(json.dumps(c["messages"], ensure_ascii=False, default=str))
              + len(json.dumps(c["tools"], ensure_ascii=False, default=str)) for c in llm.calls]
     assert len(sends) > 5 and max(sends) <= bound
+    # The bound-end facts are truthful: the counter IS the last send's wire
+    # size (never a sentinel) and the refused next send is its own number.
+    custody = executor.failure_custody()
+    assert custody["native_transcript_chars"] == sends[-1] <= bound
+    assert custody["native_transcript_refused_chars"] > bound and custody["native_end_reason"] == "transcript_bound"
 
 
 def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypatch):
@@ -803,7 +809,7 @@ def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypa
     assert exc.value.code == "deadline_exhausted" and not llm.calls
 
 
-@pytest.mark.parametrize("container", [["junk", {"id": "x"}], 7, True, "junk", {"id": "x"}])
+@pytest.mark.parametrize("container", [["junk", {"id": "x"}], 7, True, "junk", {"id": "x"}, 0, False, "", {}])
 def test_round_without_progress_is_a_typed_malformed_end(subject_repo, container):
     """PROGRESS FLOOR: a round with neither prose nor one well-formed tool call
     adds nothing and would re-enter the paid send forever — whatever container
@@ -957,7 +963,7 @@ def test_episode_fact_is_custodied_on_every_end_including_exceptions(subject_rep
     assert len(fact) == 1
     assert fact[0]["native_end_reason"] == "transcript_bound"
     assert fact[0]["native_rounds"] >= 2 and fact[0]["slot_id"] == "t1"
-    assert fact[0]["native_transcript_chars"] > fact[0]["native_transcript_bound"] == 50_000
+    assert fact[0]["native_transcript_chars"] <= fact[0]["native_transcript_bound"] == 50_000 < fact[0]["native_transcript_refused_chars"]
 
     # Owner deadline exhausted mid-episode (after one paid round).
     import ouroboros.review_native_episode as native_episode

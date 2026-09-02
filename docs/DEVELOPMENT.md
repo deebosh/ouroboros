@@ -1034,9 +1034,10 @@ is likewise one multistep episode with no send count: its bounds are the
 window-derived transcript bound (measured on the serialized messages of the
 next send — each appended element charged as envelope plus list separator, so
 the counter equals the wire size), the owner deadline together with the slot's
-logical window (each send's transport timeout is clamped to the remainder; the
-LLM client's recovery ladder reuses that timeout per recovery send — a
-disclosed residual), and the paid ledger; exhaustion is a typed refusal (`native_transcript_cap_exceeded`)
+logical window (each send's transport timeout is clamped to the remainder and
+a spent window refuses before dispatch; the LLM client's recovery ladder
+reuses that timeout per recovery send — a disclosed residual), and the paid
+ledger; exhaustion is a typed refusal (`native_transcript_cap_exceeded`)
 for verdict shapes or a disclosed `native_incomplete` product for the report
 shape, and every end leaves its facts on the actor usage and custody row. Actor transport,
 parse status, semantic verdict, model and route, coverage, cost, and capability
