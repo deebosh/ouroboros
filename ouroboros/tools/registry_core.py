@@ -226,16 +226,6 @@ _LIGHT_START_SERVICE_RESULT = ToolResult(
 
 
 
-def _resolve_node_postgates_predispatch(registry, name, args, runtime_mode, effective_constraint, resolved_binding):
-    """Node post-gates resolution (A-F4), off the hot dispatch body for the function-size gate."""
-    from ouroboros.process_interpreters import resolve_node_postgates
-
-    return resolve_node_postgates(
-        registry._ctx, name, args, runtime_mode=runtime_mode,
-        effective_constraint=effective_constraint, resolved_binding=resolved_binding,
-    )
-
-
 def _unknown_tool_result(entries: Dict[str, Any], name: str, extension_unavailable: bool) -> str | ToolResult:
     """The unknown-name answer, typed EXTENSION_UNAVAILABLE for a dead extension.
 
@@ -1080,12 +1070,7 @@ class ToolRegistry:
         if _eph is not None:
             return _eph
         _resource_gate = registry_guards._capability_resource_guard_result(
-            self._ctx,
-            name,
-            args,
-            ext_tool,
-            is_mcp,
-        )
+            self._ctx, name, args, ext_tool, is_mcp)
         if _resource_gate is not None:
             return _resource_gate
         # Cover the full repo-mutating surface explicitly (CODE_TOOLS ∪ _REPO_MUTATION_TOOLS):
@@ -1121,13 +1106,7 @@ class ToolRegistry:
         heal_no_enable = bool(task_constraint and task_constraint.mode == "skill_repair")
         if heal_no_enable:
             heal_block = registry_guards._heal_mode_guard_result(
-                self._ctx,
-                name,
-                args,
-                task_constraint,
-                ext_tool,
-                is_mcp,
-            )
+                self._ctx, name, args, task_constraint, ext_tool, is_mcp)
             if heal_block is not None:
                 return heal_block
         workspace_mode = bool(getattr(self._ctx, "is_workspace_mode", lambda: False)())
@@ -1153,16 +1132,15 @@ class ToolRegistry:
                 operation = tool_resolution._target_binding_operation(name, args)
                 if operation in {"shell", "service"}:
                     return shell_cwd_block_message(
-                        self._ctx,
-                        str(args.get("cwd") or ""),
-                        operation=operation,
-                        error=exc,
-                    )
+                        self._ctx, str(args.get("cwd") or ""), operation=operation, error=exc)
                 return tool_resolution._binding_error_text(
-                    name,
-                    str(args.get("root") or "active_workspace"),
-                    exc,
-                )
+                    name, str(args.get("root") or "active_workspace"), exc)
+        # Asked three times below (light start_service, protected writes, the
+        # light repo tripwire snapshot) and always with the same answer: an
+        # acting child's own worktree counts as the system repo.
+        targets_system_repo = (
+            _binding_set_targets_system_repo(self._ctx, resolved_binding) or acting_self_worktree
+        )
         if not _presence_binding_allowed(self._ctx, resolved_binding):
             return (
                 "⚠️ PRESENCE_RESOURCE_BLOCKED: the resolved target is outside "
@@ -1200,24 +1178,17 @@ class ToolRegistry:
         )
         light_skill_scoped_str_replace = resolved_binding is None and (
             registry_guards._light_mode_payload_mutation_allowed(
-                ctx=self._ctx,
-                tool_name=name,
-                args=args,
-                runtime_mode=_runtime_mode,
+                ctx=self._ctx, tool_name=name, args=args, runtime_mode=_runtime_mode,
                 effective_constraint=effective_constraint,
-                implicit_skill_cwd_allowed=bool(
-                    task_constraint and task_constraint.mode == "skill_repair"
-                ),
+                implicit_skill_cwd_allowed=heal_no_enable,
                 allow_short_relative=allow_short_relative,
-            )
-        )
-        if resolved_binding is not None and name not in _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS:
-            light_targets_system = (
-                _binding_set_is_light_restricted(self._ctx, resolved_binding)
-                or acting_self_worktree
-            )
-        elif name in _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS:
+            ))
+        if name in _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS:
             light_targets_system = True
+        elif resolved_binding is not None:
+            light_targets_system = (
+                _binding_set_is_light_restricted(self._ctx, resolved_binding) or acting_self_worktree
+            )
         else:
             light_targets_system = not workspace_mode or acting_self_worktree
         if (
@@ -1252,14 +1223,10 @@ class ToolRegistry:
                 for p in tool_resolution._payload_write_paths(name, args)
             ]
             if resolved_binding is not None:
-                protected_target = (
-                    _binding_set_targets_system_repo(self._ctx, resolved_binding)
-                    or acting_self_worktree
-                )
+                protected_target = targets_system_repo
             else:
-                protected_root = root_name in {"active_workspace", "system_repo"}
-                protected_target = (
-                    (not workspace_mode or acting_self_worktree) and protected_root
+                protected_target = (not workspace_mode or acting_self_worktree) and (
+                    root_name in {"active_workspace", "system_repo"}
                 )
             protected_matches = (
                 protected_paths_in(protected_write_paths) if protected_target else []
@@ -1277,14 +1244,7 @@ class ToolRegistry:
                 )
 
         if _shell_guard_required(name, args):
-            if (
-                name == "start_service"
-                and _runtime_mode == "light"
-                and (
-                    _binding_set_targets_system_repo(self._ctx, resolved_binding)
-                    or acting_self_worktree
-                )
-            ):
+            if name == "start_service" and _runtime_mode == "light" and targets_system_repo:
                 return _LIGHT_START_SERVICE_RESULT
             block_result = registry_guard_process._run_shell_safety_check(
                 self,
@@ -1308,14 +1268,7 @@ class ToolRegistry:
             return ToolResult(status="blocked", code="SAFETY_VIOLATION", text=safety_msg)
         light_repo_before = (
             registry_guard_process._light_repo_snapshot(system_repo_dir_for(self._ctx))
-            if (
-                name in _PROCESS_COMMAND_TOOLS
-                and _runtime_mode == "light"
-                and (
-                    _binding_set_targets_system_repo(self._ctx, resolved_binding)
-                    or acting_self_worktree
-                )
-            )
+            if name in _PROCESS_COMMAND_TOOLS and _runtime_mode == "light" and targets_system_repo
             else None
         )
         workspace_refs_before = (
@@ -1326,8 +1279,12 @@ class ToolRegistry:
         worktree_before = self._worktree_status_snapshot() if entry.mutates_worktree else None
         settings_before = registry_guard_process._owner_settings_snapshot() if name in _PROCESS_COMMAND_TOOLS else None
         if interpreter_resolution is None:  # node: post-gates (A-F4)
-            args, interpreter_resolution = _resolve_node_postgates_predispatch(
-                self, name, args, _runtime_mode, effective_constraint, resolved_binding)
+            from ouroboros.process_interpreters import resolve_node_postgates
+
+            args, interpreter_resolution = resolve_node_postgates(
+                self._ctx, name, args, runtime_mode=_runtime_mode,
+                effective_constraint=effective_constraint, resolved_binding=resolved_binding,
+            )
         early_error, result = self._invoke_builtin_handler(
             name, entry, args, resolved_binding, interpreter_resolution, worktree_before,
         )

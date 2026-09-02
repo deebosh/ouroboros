@@ -1,27 +1,24 @@
-"""Owner-chat media and document delivery helpers."""
+"""The verbs a task uses to put something in front of a human.
+
+Photo, video and document delivery to the owner chat; link buttons; and
+``escalate``, the one question verb — an owner quiz card at the root, a
+parent mailbox frame below it. The payload validators for the two structured
+frames (link actions, quiz) live here with the verbs that emit them, because
+they define those wire shapes; ``supervisor.message_bus`` re-validates
+through the same functions on the delivery side.
+"""
 
 from __future__ import annotations
 
+import base64
 import ipaddress
-import uuid
+import mimetypes
 import pathlib
+import uuid
 from typing import Any, Dict, List
 
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
-
-
-def _core():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from ouroboros.tools import core
-
-    return core
 
 
 _MAX_PHOTO_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -59,7 +56,7 @@ def _send_photo(ctx: ToolContext, file_path: str = "", image_base64: str = "",
         try:
             raw = fp.read_bytes()
             mime = _detect_image_mime(raw)
-            actual_b64 = __import__("base64").b64encode(raw).decode()
+            actual_b64 = base64.b64encode(raw).decode()
         except Exception as e:
             return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to read image file: {e}"))
     elif image_base64:
@@ -96,7 +93,7 @@ def _detect_video_mime(file_path: str, data: bytes) -> str:
         return "video/mp4"
     if data[:4] == b'\x1a\x45\xdf\xa3':
         return "video/webm"
-    mime, _ = __import__("mimetypes").guess_type(file_path)
+    mime, _ = mimetypes.guess_type(file_path)
     if mime and str(mime).lower().startswith("video/"):
         return mime
     return "video/mp4"
@@ -119,7 +116,7 @@ def _send_video(ctx: ToolContext, file_path: str = "", caption: str = "") -> str
     try:
         raw = fp.read_bytes()
         mime = _detect_video_mime(str(fp), raw)
-        actual_b64 = __import__("base64").b64encode(raw).decode()
+        actual_b64 = base64.b64encode(raw).decode()
     except Exception as e:
         return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to read video file: {e}"))
 
@@ -140,7 +137,7 @@ _MAX_DOCUMENT_FILE_BYTES = 50 * 1024 * 1024  # 50 MB (Telegram bot sendDocument 
 
 def _detect_document_mime(file_path: str) -> str:
     """Best-effort MIME for an arbitrary document/file from its extension."""
-    mime, _ = __import__("mimetypes").guess_type(file_path)
+    mime, _ = mimetypes.guess_type(file_path)
     return mime or "application/octet-stream"
 
 
@@ -161,7 +158,7 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
     try:
         raw = fp.read_bytes()
         mime = _detect_document_mime(str(fp))
-        actual_b64 = __import__("base64").b64encode(raw).decode()
+        actual_b64 = base64.b64encode(raw).decode()
     except Exception as e:
         return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to read file: {e}"))
 
@@ -363,8 +360,6 @@ def _send_links(
     if mode == "live":
         return "OK: link buttons sent to owner chat."
     return "OK: link buttons queued for delivery to owner."
-
-
 
 
 def _escalate(
