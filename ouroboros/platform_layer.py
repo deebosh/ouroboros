@@ -688,15 +688,8 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
-    for dpid in reversed(descendants):
-        try:
-            os.kill(dpid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    for dpid in [*reversed(descendants), pid]:
+        force_kill_pid(dpid)
 
 
 def terminate_process_tree(proc: subprocess.Popen) -> None:
@@ -885,19 +878,9 @@ def kill_pid_tree(pid: int, exclude_pids: "set[int] | None" = None) -> None:
         sub: list[int] = []
         _collect_descendants(ep, sub)
         spared.update(sub)
-    for dpid in reversed(descendants):
-        if dpid in spared:
-            continue
-        try:
-            os.kill(dpid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    if pid in spared:
-        return
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+    for dpid in [*reversed(descendants), pid]:
+        if dpid not in spared:
+            force_kill_pid(dpid)
 
 
 def _collect_descendants(pid: int, result: list[int]) -> None:
