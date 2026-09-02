@@ -5829,3 +5829,74 @@ continuation; the closing table below records how):
    `GIT_OPS_FAMILY_PATHS` set is unchanged and remains wholly absorbed by
    `RELEASE_INVARIANT_PATHS` and the contributor release inventory. D35 is
    `done`; its adoption hooks are the module-handle and owner-facade suites.
+## From the E9 carve-out + scheduled E2E CI lane (owner 4A/9A, base bef13f5e)
+
+1. ABI-2 CARVE-OUT (owner 4A, one commit). Q8=B quarantines every unstamped
+   `task_results` row on the first ordinary read — including the rows the
+   cancellation redesign exists to rescue. A pre-redesign task wedged in the
+   `cancel_requested` latch is unstamped BY DEFINITION, so the first reader
+   moved it into `task_results/quarantine/`; `migrate_legacy_cancel_latches`
+   then found nothing to migrate, and custody's own fail-soft read (which also
+   quarantines) saw no durable result and settled `not_found`. The wedged task
+   disappeared without ever reaching a terminal — E9 red. The migration now
+   OPENS with a pre-pass that re-writes exactly those rows through the ordinary
+   writer: same status, same fields, no conversion. That is the identical
+   stamp-on-write `require_writable_task_result_schema` already admits as
+   lawful for a live pre-upgrade task on its next lifecycle write; the only
+   thing special about a wedged task is that it has no worker left to perform
+   it. The row is then an ordinary latch, the existing scan adopts it, and the
+   existing intent -> custody path drives it to the `cancelled` terminal — the
+   carve-out buys admission, not an outcome, and no terminal-writing code was
+   added. Scope is deliberately narrow on four axes at once: refusal reason
+   must be `unstamped_pre_7_0` (future/malformed still quarantine), status must
+   be the latch, `task_id` must equal the filename stem (a mismatch would make
+   this write a DIFFERENT file), and everything else quarantines on the very
+   next read — including the migration's own scan one line below.
+2. THE CARVE-OUT IS AN ORDER, NOT ONLY A WRITE — and this is what kept E9 red
+   after the write was correct and its unit pins were green. Whichever durable
+   read reaches the latch first quarantines it, so the exemption is worthless
+   unless it runs before all of them. The migration lived in
+   `_startup_custody_sweep`; the orphan reconcile in
+   `_run_startup_task_recovery` is an earlier read and won the race every boot.
+   Moved to the head of `_run_startup_task_recovery`, ahead of the reconcile,
+   and pinned there by source order (`test_boot_migrates_the_latch_before_any_
+   quarantining_read`) — including the negative half, that it must not ALSO
+   still run from the later sweep. Worth recording how the race was found: the
+   unit pins call the function directly, so they were green while E9 was red,
+   and E9 runs against a `git clone` of the tree, so uncommitted work is
+   invisible to it. Both facts hide an ordering bug; instrumenting
+   `quarantine_task_result` with a stack dump was what actually located it.
+3. VISIBILITY: applying the carve-out is ONE typed durable
+   `task_result_cancel_latch_admitted` event per boot (count + task_ids +
+   reason), never one per file — the same log-only shape owner decision 6.3=B
+   gives the quarantine itself. A second boot admits nothing and writes no
+   second row, which is pinned.
+4. SCHEDULED SYSTEM-E2E LANE (owner 9A, one commit, protected `ci.yml`).
+   `tests/system_e2e/` is gated three ways — `integration` + `serial` markers
+   plus `OUROBOROS_E2E_DEEP` — precisely so no existing pass can trigger it,
+   which left a suite nobody executes. The plan's §8 pull-request lane is
+   REPLACED by a daily `system-e2e-mock` job (cron `37 4 * * *`, off the hour
+   because GitHub's cron queue is deepest at :00, plus `workflow_dispatch`),
+   ubuntu-latest, `timeout-minutes: 40`, the standard `setup-python-env`, and
+   `python -m pytest tests/system_e2e/ -o addopts="" -q` with the four
+   `OUROBOROS_*` roots under `runner.temp`. Owner rationale for schedule over
+   PR: each scenario spawns a real isolated server, so the cost belongs on a
+   nightly rather than on every review. Keyless by construction — the job
+   names no secret, which is the only way a job gets one.
+5. THE COSTLY PART OF 9A WAS THE TRIGGER, NOT THE JOB. Three of
+   `integration-test`'s conditions match a branch ref, and a scheduled run
+   carries the DEFAULT BRANCH in `github.ref` — so merely adding `schedule:`
+   to this workflow would have woken the PAID provider lane every night. It
+   now leads with `github.event_name != 'schedule' && (...)`, and the added
+   parenthesis matters: without it the guard would only have bound the first
+   alternative. Pinned in `tests/test_system_e2e_ci_lane.py` alongside the
+   job's own shape (schedule present and off-peak, `if` admits only schedule
+   and dispatch, the four temp roots, no `secrets.` anywhere in the block).
+6. AN EXISTING PIN HAD TO CHANGE, AND ONLY ONE.
+   `test_pull_request_ci_is_fork_safe_and_does_not_enable_provider_jobs`
+   asserted `"\n  schedule:" not in workflow` — a blanket ban standing in for
+   the real invariant, that no unattended trigger reaches a paid job. With the
+   owner sanctioning a schedule, the ban was replaced by that invariant stated
+   directly (the `!= 'schedule'` guard is present in the `integration-test`
+   block), which is strictly stronger than what the ban bought: the ban would
+   have passed a workflow whose schedule existed but whose guard did not.
