@@ -159,12 +159,14 @@ class PluginAPI(Protocol):
         the Widgets page is shown and stops when the owner leaves; ``"manual"``
         shows a Start button and leaving the page is an ordered Stop; ``"retain"``
         starts on the first Widgets visit and keeps running while the owner is on
-        other pages until Stop, skill disable/unload/delete, app reload, or server
-        restart — it never outlives Ouroboros. Defaults: ``module``/``iframe`` →
-        ``"manual"``; ``declarative`` → ``"auto"`` and accepts nothing else. The
-        validator (``ouroboros/extension_ui_validation.py::WIDGET_START_MODES``) is
-        the SSOT and fills the default into the stored declaration; the owner's
-        per-card override (``ui_preferences.widget_start_mode``) always wins.
+        other pages until Stop, skill disable/unload/delete, app reload, or closing
+        Ouroboros — it never outlives the window; a same-SHA server reconnect keeps
+        a retained frame whose skill is live again with the same revision. Defaults:
+        ``module``/``iframe`` → ``"manual"``; ``declarative`` → ``"auto"`` and
+        accepts nothing else. The validator
+        (``ouroboros/extension_ui_validation.py::WIDGET_START_MODES``) is the SSOT
+        and fills the default into the stored declaration; the owner's per-card
+        override (``ui_preferences.widget_start_mode``) always wins.
         """
         ...
 

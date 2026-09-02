@@ -79,7 +79,7 @@ class SkillBinaryPayload(RuntimeError):
 
 def binary_file_descriptor(relpath: str, data: bytes, *, filename: str = "") -> Dict[str, Any]:
     """Typed descriptor for a binary (non-UTF-8 or WebAssembly), non-executable payload file: the review
-    pack carries ``{path,size,mime,sha256}`` instead of raw bytes."""
+    pack carries ``{path,size,mime_from_name,sha256}`` instead of raw bytes."""
     import mimetypes
 
     return {

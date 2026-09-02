@@ -734,10 +734,12 @@ promises no earlier release. For a kept widget card the force-destroy
 boundaries are the owner's Stop, its skill leaving the live list (also while
 hidden), Refresh, a window reload and closing Ouroboros; a server reconnect
 with the same served SHA keeps the frame when its skill is live again with the
-same `revision` (a changed revision stops it in order and re-mounts it). The
-untyped shape "hide the DOM node, keep the handlers" remains the leak this
-invariant forbids. Late async continuations check a `destroyed` flag before
-touching state or re-arming loops.
+same `revision` (a changed revision stops it in order and re-mounts it — at
+once while Widgets is visible, at the next Widgets entry while the page is
+hidden, where the pass compares presence only). The untyped shape "hide the
+DOM node, keep the handlers" remains the leak this invariant forbids. Late
+async continuations check a `destroyed` flag before touching state or
+re-arming loops.
 
 A module widget's disposer (`kind: module`) is the ordered dispose with
 acknowledgement (ARCHITECTURE "Skills and Widgets"): it posts the dispose

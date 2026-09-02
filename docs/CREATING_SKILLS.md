@@ -970,7 +970,11 @@ on leaving the page, and when your skill's revision changes while the card
 runs (the old frame flushes first, then the fresh card mounts). A `kind: iframe`
 route frame has no bridge and is removed at once. Autosave while running plus the one-second flush
 is still the whole durable path — nothing survives a reload or Ouroboros
-closing, kept-running cards included.
+closing, kept-running cards included. When the owner disables your skill while
+its widget runs, the dispose hook still runs, but the server unregisters the
+skill's routes before the lifecycle event reaches the page, so a bridged
+request to your own route from that hook may already answer 409 — autosave
+while running remains the durable path.
 
 #### WebAssembly (`.wasm`) in the payload
 

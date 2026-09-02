@@ -428,7 +428,8 @@ const widgetDisposers = new Map();
 // key → settle promise of an ordered stop still waiting for the child's
 // acknowledgement (its frame is still in the card until then).
 const widgetDisposing = new Map();
-// key → the mount in flight for it: one per key, a second request joins it.
+// key → the mount in flight for it, `{card, isCurrent, promise}`: one per key;
+// a second request for the same card joins it (`mountTrackedTab`).
 const widgetMounting = new Map();
 const widgetMountControllers = new Set();
 const widgetMessageHandlers = new Set();
@@ -1101,17 +1102,24 @@ function patchWidgetCards(list, previousTabs, nextTabs) {
     }
 }
 
-// One mount in flight per key: a second request for the same key (the policy
-// menu's Auto / Keep running while the card is `starting`) joins the first
-// instead of racing it for the body and the disposer.
+// One mount in flight per key: a second request for the same card while it is
+// `starting` (the policy menu's Auto / Keep running) joins the mount under way
+// instead of racing it for the body and the disposer. A request for another
+// card node (the fresh card of a changed entry) or from a later page generation
+// (leave → return inside the ack window) never joins a mount that bails as
+// stale: it waits for that mount to finish, then runs its own `mountTabOnce`,
+// which re-checks `isCurrent()` and the node's connection before it mounts.
 function mountTrackedTab(card, tab, isCurrent = () => true) {
     const key = widgetKey(tab);
     const inFlight = widgetMounting.get(key);
-    if (inFlight) return inFlight;
-    const mounting = mountTabOnce(card, tab, key, isCurrent).finally(() => {
-        if (widgetMounting.get(key) === mounting) widgetMounting.delete(key);
+    if (inFlight && inFlight.card === card && inFlight.isCurrent()) return inFlight.promise;
+    const started = inFlight
+        ? inFlight.promise.catch(() => {}).then(() => mountTabOnce(card, tab, key, isCurrent))
+        : mountTabOnce(card, tab, key, isCurrent);
+    const mounting = started.finally(() => {
+        if (widgetMounting.get(key)?.promise === mounting) widgetMounting.delete(key);
     });
-    widgetMounting.set(key, mounting);
+    widgetMounting.set(key, { card, isCurrent, promise: mounting });
     return mounting;
 }
 
@@ -1354,8 +1362,10 @@ export function initWidgets(ctx = {}) {
     }
 
     // A framed card that is not to run now: let an ordered stop still in flight
-    // finish (its frame is still in the card), then show the facade — unless a
-    // mount for the key is already under way or running.
+    // finish (its frame is still in the card), and let a mount under way for
+    // the key (another card node, or a stale one about to bail) decide the body
+    // first, then show the facade — unless the key ended up running. The card
+    // never ends with an empty body behind a mount that bailed.
     async function settleStopped(card, tab) {
         const key = widgetKey(tab);
         const mode = effectiveStartMode(tab, uiPreferences);
@@ -1363,7 +1373,8 @@ export function initWidgets(ctx = {}) {
             syncWidgetCardControls(card, 'stopping', mode);
             await widgetDisposing.get(key);
         }
-        if (widgetDisposers.has(key) || widgetMounting.has(key) || !card.isConnected) return;
+        if (widgetMounting.has(key)) await widgetMounting.get(key).promise.catch(() => {});
+        if (widgetDisposers.has(key) || !card.isConnected) return;
         renderWidgetFacade(card.querySelector('[data-widget-mount]'), tab);
         syncWidgetCardControls(card, 'stopped', mode);
     }

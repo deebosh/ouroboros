@@ -308,9 +308,13 @@ def test_widgets_framed_dispose_is_ordered_and_acknowledged():
     assert "else if (!settling) card.replaceWith(fresh);" in changed_branch
     assert "card.after(fresh);" in changed_branch
     assert "retireCard(card, settling);" in changed_branch
-    # CA-3: one mount in flight per key — a second request joins the first.
+    # CA-3: one mount in flight per key — a second request for the SAME card
+    # joins it. CA-19 / A3-10: never a stale one (another card node, or a mount
+    # whose page generation moved on) — wait for it, then mount on your own.
     assert "const widgetMounting = new Map();" in page
-    assert "if (inFlight) return inFlight;" in page
+    assert "if (inFlight && inFlight.card === card && inFlight.isCurrent()) return inFlight.promise;" in page
+    assert "? inFlight.promise.catch(() => {}).then(() => mountTabOnce(card, tab, key, isCurrent))" in page
+    assert "widgetMounting.set(key, { card, isCurrent, promise: mounting });" in page
     assert "if (!isCurrent() || !card.isConnected) return;" in page
 
 
@@ -401,7 +405,11 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     start_widget = page.split("async function startWidget(card, tab, isCurrent) {", 1)[1].split("async function settleStopped", 1)[0]
     assert "if (isFramedWidget(tab)) renderWidgetFacade(mount, tab);" in start_widget
     assert "else if (isFramedWidget(tab)) await settleStopped(card, tab);" in start_widget
-    assert "if (widgetDisposers.has(key) || widgetMounting.has(key) || !card.isConnected) return;" in page
+    # CA-20: a mount under way for the key decides the body first — wait for it
+    # and re-check; never an empty body behind a mount that bailed.
+    settle = page.split("async function settleStopped(card, tab) {", 1)[1].split("async function stopWidgetByOwner", 1)[0]
+    assert "if (widgetMounting.has(key)) await widgetMounting.get(key).promise.catch(() => {});" in settle
+    assert "if (widgetDisposers.has(key) || !card.isConnected) return;" in settle
     # Hidden reconcile force-stops vanished kept frames even mid-sync (CA-18).
     assert "if (!widgetsVisible) stopVanishedRetainedWidgets();" in page
     assert "localStorage" not in _framed_widget_sources()
