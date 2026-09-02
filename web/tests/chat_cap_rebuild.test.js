@@ -382,3 +382,31 @@ test('a window that itself exceeds the cap does not rebuild on every later sync'
         restoreDom(prior);
     }
 });
+
+test('an arm raised while a routine replay is running survives to the next sync', async () => {
+    // The window itself mints the cap-crossing cards, so the arm goes up AFTER
+    // this sync already decided it is routine. Clearing it unconditionally at the
+    // end of every successful sync would discard that request and let growth that
+    // only ever arrives through history run unbounded.
+    const historyCalls = [];
+    let rows = [];
+    const { prior, mount } = installDom(historyFetch(historyCalls, () => rows));
+    const { instance, handlers, messages } = makeInstance(mount);
+    try {
+        await sync(instance, 1); // bootstrap rebuild over an empty window: floor 0
+        sealCard(handlers, 'live-before', 1);
+        rows = Array.from({ length: 201 }, (_all, i) => summaryRow(`grown-t${i}`, i));
+        await sync(instance, 2);
+        assert.deepEqual(taskCards(messages).map((node) => node.dataset.taskId), ['live-before'],
+            'the cap-crossing sync itself stayed routine');
+        await sync(instance, 3);
+        assert.equal(taskCards(messages).length, 0, 'the armed rebuild ran on the next sync');
+        sealCard(handlers, 'after-rebuild', 400);
+        await sync(instance, 4);
+        assert.deepEqual(taskCards(messages).map((node) => node.dataset.taskId), ['after-rebuild'],
+            'that rebuild set the new floor: later syncs are routine again');
+    } finally {
+        instance.destroy();
+        restoreDom(prior);
+    }
+});

@@ -1541,7 +1541,7 @@ export function createChatInstance({
             }
         });
         liveCardRecords.set(normalizedGroupId, record);
-        // Issue #135: 200 live cards past the last rebuild arm a full rebuild from durable history (like a reconnect).
+        // Issue #135: >200 live cards past the last rebuild arm a full rebuild (like a reconnect); only a rebuild clears the arm.
         if (liveCardRecords.size > liveCardFloor + LIVE_CARD_CAP) fullRebuildPending = true;
         // apply a name that arrived (task_named) before this card existed.
         const _pendingName = pendingSuggestedNames.get(normalizedGroupId);
@@ -2768,8 +2768,7 @@ export function createChatInstance({
 
                 // First load/reconnect trusts server history and fully rebuilds the
                 // feed; routine post-completion syncs only fold in new task cards.
-                // a Load-older refetch (forceRebuild) and a pending full
-                // rebuild (offline bootstrap / card cap) rebuild fully too.
+                // Load-older (forceRebuild) and a pending arm (offline bootstrap / card cap) rebuild fully too.
                 const rebuildAll = !historyLoaded || fromReconnect || forceRebuild
                     || fullRebuildPending;
                 // On a soft reconnect the module (and its dedupe set)
@@ -3103,8 +3102,7 @@ export function createChatInstance({
                 const wasFirstLoad = !historyLoaded;
                 historyLoaded = true;
                 lastHistorySyncSucceeded = true;
-                fullRebuildPending = false;
-                if (rebuildAll) liveCardFloor = liveCardRecords.size;
+                if (rebuildAll) { fullRebuildPending = false; liveCardFloor = liveCardRecords.size; }
                 // ANY successful sync leaves the instance hydrated
                 // — later hydration triggers ride this sticky promise.
                 initialHydrationPromise = historySyncPromise;
