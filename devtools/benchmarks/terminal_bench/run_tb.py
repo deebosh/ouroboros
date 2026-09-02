@@ -123,6 +123,40 @@ class HarborCommandConfig:
     harbor_env: str = ""
 
 
+def _container_triad(measured_model: str, settings: Mapping[str, Any] | None):
+    """The structured triad rows the container adapter forwards (operator env,
+    else the host settings file), parsed under the container's one-model
+    roster; ``None`` when no structured panel is configured."""
+    from devtools.benchmarks.common.model_slots import single_model_subagents_setting
+    from ouroboros.reviewer_slot_config import (
+        REVIEWER_SLOTS_ENV,
+        parse_reviewer_slots,
+        roster_env_override,
+    )
+
+    structured = os.environ.get(REVIEWER_SLOTS_ENV)
+    if structured is None and settings:
+        structured = settings.get(REVIEWER_SLOTS_ENV)
+    structured = str(structured or "").strip()
+    if not structured:
+        return None
+    with roster_env_override(single_model_subagents_setting(measured_model)):
+        return list(parse_reviewer_slots(structured).triad)
+
+
+def triad_rows_not_executable_in_container(
+    measured_model: str, settings: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Typed provenance disclosure: the configured triad rows a Terminal-Bench
+    task container structurally cannot run — the agent-session rows (no harness
+    CLI/daemon in the image, no harness credentials in the forwarded-env
+    allowlist, container secret policy) — as their `harness[=model]` targets in
+    row order. Recorded on the run manifest and as a comment in metadata.yaml;
+    never declared as a used model. Their acceptance seat degrades typed inside
+    the container, so a TB run should configure api/native rows."""
+    return [row.target_id.strip() for row in _container_triad(measured_model, settings) or [] if row.is_session]
+
+
 def _effective_helper_models(
     measured_model: str, light_model: str, *, disable_agent_web: bool = False,
     settings: Mapping[str, Any] | None = None,
@@ -133,46 +167,34 @@ def _effective_helper_models(
     task-acceptance review whose feedback re-enters the measured agent's
     context, so the acceptance triad / light / web-search models genuinely
     assist the run. Scope review and the advisory pre-review are commit-time
-    gates that never fire inside a task and are NOT declared. Declaring only the measured model in metadata.yaml would
-    misrepresent the submission. Values mirror what the container EXECUTES:
-    the structured reviewer panel (``OUROBOROS_REVIEWER_SLOTS``) is read the
-    way the container adapter forwards it — operator env first, else the host
-    settings file — and parsed under the container's one-model roster (a row
-    bound to an operator-roster subagent does not resolve there and is a typed
-    refusal, never a declared-but-never-run model). Inside a Terminal-Bench task
-    nothing commits: the panel reaches the run through task acceptance, which
-    executes EVERY triad row on its configured delivery (owner R2, 2026-09-01) —
-    so every row is declared: an api row by its model id, a configured-subagent
-    row by its roster model id (a native inspection episode on that model), an
-    agent-session row by its opaque ``harness[=model]`` target under the role
-    ``commit_review_triad_agent_session`` (the harness, not an API provider,
-    serves it). Without a panel the legacy comma keys apply (env override else
-    the shipped config defaults). Returns ordered (model_id, role) pairs,
-    deduped by model id.
+    gates that never fire inside a task and are NOT declared. Declaring only
+    the measured model in metadata.yaml would misrepresent the submission.
+    Values mirror what the container EXECUTES: the structured reviewer panel
+    (``OUROBOROS_REVIEWER_SLOTS``) is read the way the container adapter
+    forwards it — operator env first, else the host settings file — and parsed
+    under the container's one-model roster (a row bound to an operator-roster
+    subagent does not resolve there and is a typed refusal, never a
+    declared-but-never-run model). Inside a Terminal-Bench task nothing
+    commits: the panel reaches the run through task acceptance, which runs
+    every row on its own delivery (owner R2, 2026-09-01) — an api packet row
+    and a configured-subagent native inspection row execute in the container
+    and are declared by model id; an agent-session row structurally cannot
+    (the image has no harness CLI/daemon and the forwarded-env allowlist
+    carries no harness credentials), so it is never declared as a used model
+    and is carried by `triad_rows_not_executable_in_container` instead.
+    Without a panel the legacy comma keys apply (env override else the shipped
+    config defaults). Returns ordered (model_id, role) pairs, deduped by model
+    id.
     """
-    from devtools.benchmarks.common.model_slots import single_model_subagents_setting
-    from ouroboros.reviewer_slot_config import (
-        REVIEWER_SLOTS_ENV,
-        parse_reviewer_slots,
-        roster_env_override,
-    )
-
     review_default = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
     websearch_default = str(SETTINGS_DEFAULTS["OUROBOROS_WEBSEARCH_MODEL"])
     websearch = os.environ.get("OUROBOROS_WEBSEARCH_MODEL", websearch_default) or websearch_default
     ordered: list[tuple[str, str]] = [(measured_model, "agent")]
-    structured = os.environ.get(REVIEWER_SLOTS_ENV)
-    if structured is None and settings:
-        structured = settings.get(REVIEWER_SLOTS_ENV)
-    structured = str(structured or "").strip()
-    if structured:
-        with roster_env_override(single_model_subagents_setting(measured_model)):
-            panel = parse_reviewer_slots(structured)
-        for row in panel.triad:
-            ordered.append((
-                row.target_id.strip(),
-                "commit_review_triad_agent_session" if row.is_session else "commit_review_triad",
-            ))
+    triad = _container_triad(measured_model, settings)
+    if triad is not None:
+        for row in triad:
+            if not row.is_session:  # a session row cannot run in the container: disclosed, never declared
+                ordered.append((row.target_id.strip(), "commit_review_triad"))
     else:
         review = os.environ.get("OUROBOROS_REVIEW_MODELS", review_default) or review_default
         for m in review.split(","):
@@ -219,10 +241,6 @@ def leaderboard_metadata(
     ):
         if "/" in model_id:
             provider, display = model_id.split("/", 1)
-        elif "agent_session" in role:
-            # An agent-session row: the harness serves the model (`harness[=model]`).
-            provider, _, display = model_id.partition("=")
-            display = display or provider
         else:
             provider, display = "openrouter", model_id
         lines.append(f"  - model_name: {json.dumps(model_id)}")
@@ -230,6 +248,11 @@ def leaderboard_metadata(
         lines.append(f"    model_display_name: {json.dumps(display)}")
         lines.append(f"    model_org_display_name: {json.dumps(provider)}")
         lines.append(f"    role: {json.dumps(role)}")
+    not_executable = triad_rows_not_executable_in_container(model, settings)
+    if not_executable:
+        # A comment, not a key: the leaderboard schema owns metadata.yaml's keys;
+        # the typed field lives on run_manifest.json.
+        lines.append(f"# triad_rows_not_executable_in_container: {json.dumps(not_executable)}")
     return "\n".join(lines) + "\n"
 
 
@@ -1151,11 +1174,15 @@ def main(argv: list[str] | None = None) -> int:
         # roster cannot resolve, is a typed refusal recorded on the durable
         # manifest — never a traceback, never a half-built submission tree.
         try:
+            host_settings = _host_settings(settings_path)
             metadata_text = leaderboard_metadata(
                 agent_name=args.agent_name, org_name=args.org_name, model=args.model,
                 light_model=args.light_model, disable_agent_web=bool(args.disable_agent_web),
-                settings=_host_settings(settings_path),
+                settings=host_settings,
             )
+            # Typed provenance: the configured triad rows this container cannot run.
+            final["triad_rows_not_executable_in_container"] = triad_rows_not_executable_in_container(
+                args.model, host_settings)
         except ValueError as exc:
             final.update({
                 "outcome": "refused", "exit_code": 1,
