@@ -216,7 +216,7 @@ OWNER_ATTESTATION: List[str] = [
     "terminalizer or on the removed until_deadline/stall_rounds_threshold "
     "pacing knobs (external config templates must drop them).",
     "No out-of-tree extension or automation imports the removed compatibility "
-    "module ouroboros.contracts.api_v1 (ABI-3/ABI-6д): the frozen HTTP/WS "
+    "module ouroboros.contracts.api_v1 (ABI-3/ABI-6d): the frozen HTTP/WS "
     "envelope is owned by ouroboros.gateway.contracts alone, and an import of "
     "the old name fails at load time after the upgrade.",
     "The owner accepts the Q8=B consequence: pre-7.0 task-result history is "
@@ -778,6 +778,11 @@ def render(report: Dict[str, Any]) -> str:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # A Windows console/pipe may not encode every character the report carries
+    # (cp1252); an audit must never die on its own prose.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("data_root", type=pathlib.Path,
                         help="the audited install's data root (holds settings.json)")
