@@ -1059,7 +1059,7 @@ def project_reviewer_slots_into_env() -> None:
 # ---------------------------------------------------------------------------
 
 LAST_EXECUTION_FILENAME = "reviewer_slot_last_execution.json"
-_LAST_EXECUTION_CAP = 64  # slots are ≤ 10+4+1; the cap only bounds junk growth
+_LAST_EXECUTION_CAP = 64  # slots are ≤ 10+4+1+1 (triad, scope, advisory, deep review); the cap only bounds junk growth
 
 
 def _last_execution_path() -> "pathlib.Path":

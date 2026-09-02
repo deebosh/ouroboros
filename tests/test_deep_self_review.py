@@ -11,7 +11,7 @@ import pytest
 from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS
 from ouroboros.deep_self_review import (
     build_review_pack,
-    is_review_available,
+    deep_review_route,
     run_deep_self_review,
 )
 from ouroboros.reviewer_slot_config import DEEP_REVIEW_SLOT_ID, ConfiguredReviewerSlot
@@ -120,8 +120,8 @@ class TestBuildReviewPack:
         assert stats["memory"]["dispositions"]["memory/identity.md"] == "inlined"
 
 
-class TestIsReviewAvailable:
-    """Availability of the SYNTHESIZED packed row: no `deep_review` row saved,
+class TestPackedRouteAvailability:
+    """Availability (`deep_review_route`) of the SYNTHESIZED packed row: no `deep_review` row saved,
     so the legacy model key is the migration source and the packed rules
     (credentials, the -pro rewrite, the OPENAI_BASE_URL trust rule) apply."""
 
@@ -131,7 +131,8 @@ class TestIsReviewAvailable:
             {"OPENROUTER_API_KEY": "sk-or-test", "OUROBOROS_MODEL_DEEP_SELF_REVIEW": "openai/gpt-5.5-pro"},
             clear=True,
         ):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
         assert available is True
         assert model == "openai/gpt-5.5-pro"
 
@@ -141,7 +142,8 @@ class TestIsReviewAvailable:
             # Ensure OPENROUTER_API_KEY and OPENAI_BASE_URL are not set
             os.environ.pop("OPENROUTER_API_KEY", None)
             os.environ.pop("OPENAI_BASE_URL", None)
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
         assert available is True
         # The direct route lands on the PROVIDER default, not a mechanical
         # `openai::` + router-slug rewrite: `-pro` is an OpenRouter routing slug
@@ -151,7 +153,8 @@ class TestIsReviewAvailable:
 
     def test_none(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
         assert available is False
         assert model is None
 
@@ -161,7 +164,8 @@ class TestIsReviewAvailable:
             {"OPENROUTER_API_KEY": "sk-or-test", "OUROBOROS_MODEL_DEEP_SELF_REVIEW": "anthropic::claude-opus-4.8"},
             clear=True,
         ):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
 
         assert available is False
         assert model is None
@@ -172,7 +176,8 @@ class TestIsReviewAvailable:
             {"ANTHROPIC_API_KEY": "sk-ant-test", "OUROBOROS_MODEL_DEEP_SELF_REVIEW": "anthropic::claude-opus-4.8"},
             clear=True,
         ):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
 
         assert available is True
         assert model == "anthropic::claude-opus-4.8"
@@ -836,11 +841,13 @@ def test_direct_fallback_preserves_an_explicit_real_model_pin():
         os.environ.pop("OPENAI_BASE_URL", None)
         os.environ.pop("OUROBOROS_REVIEWER_SLOTS", None)
         with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_DEEP_SELF_REVIEW": "openai/gpt-5.5"}):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
         assert available is True
         assert model == "openai::gpt-5.5", "an explicit real-model pin survives"
         with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_DEEP_SELF_REVIEW": "openai/gpt-5.5-pro"}):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
         assert available is True
         assert model == OPENAI_DIRECT_DEFAULTS["deep_self_review"], (
             "a router-only -pro slug lands on the provider default"

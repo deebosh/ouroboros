@@ -513,12 +513,6 @@ def deep_review_route(row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str
     return f"no provider credentials for {row.target_id}", None
 
 
-def is_review_available(row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[bool, Optional[str]]:
-    """Whether the configured deep-review row can run now, and on what."""
-    reason, identity = deep_review_route(row)
-    return (not reason), (identity if not reason else None)
-
-
 def deep_review_unavailable_text(reason: str) -> str:
     """The ONE unavailable message (prefix classified by ``outcomes``)."""
     return (

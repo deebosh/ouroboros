@@ -207,7 +207,6 @@ from ouroboros.deep_self_review import (  # noqa: E402
     _REPORT_CONTRACT,
     _SYSTEM_PROMPT,
     deep_review_route,
-    is_review_available,
     run_deep_self_review,
 )
 from ouroboros.review_execution import ReviewAttemptResult, ReviewRouteKind, ReviewRouteUnavailable  # noqa: E402
@@ -489,10 +488,11 @@ def test_retrieving_failure_is_typed_and_recorded_never_a_report(review_repo, re
 
 
 def test_availability_follows_the_row_not_the_model_key(env, monkeypatch):
-    """Route-aware availability: the packed row keeps the ≥1M/OPENAI_BASE_URL
-    rule, a native row needs its model's credentials, a session row needs a
-    healthy delegated route (the substrate's own reader), and a malformed
-    setting is the typed reason — never a fallback onto the key."""
+    """Route-aware availability (`deep_review_route`, the ONE availability
+    reader — agent, tool and runner all call it): the packed row keeps the
+    ≥1M/OPENAI_BASE_URL rule, a native row needs its model's credentials, a
+    session row needs a healthy delegated route (the substrate's own reader),
+    and a malformed setting is the typed reason — never a fallback onto the key."""
     for key in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     reason, identity = deep_review_route(_row())
@@ -501,7 +501,6 @@ def test_availability_follows_the_row_not_the_model_key(env, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     assert deep_review_route(_row()) == ("", "openai/fake-deep")
     assert deep_review_route(_native_row()) == ("", "openai/fake-deep")
-    assert is_review_available(_native_row()) == (True, "openai/fake-deep")
 
     import ouroboros.claudexor_daemon as daemon
     import ouroboros.subagents as subagents
@@ -523,7 +522,6 @@ def test_availability_follows_the_row_not_the_model_key(env, monkeypatch):
     assert seen == [("codex", "gpt-5.6-sol", "koshak")]  # the pin narrows the quota judgement
     health["answer"] = ("subscription_window_exhausted", "2026-09-03T00:00:00Z")
     assert deep_review_route(_session_row()) == ("subscription_window_exhausted", None)
-    assert is_review_available(_session_row()) == (False, None)
     monkeypatch.setattr(daemon, "ensure_owned_gateway", lambda **_k: (_ for _ in ()).throw(RuntimeError("daemon down")))
     assert deep_review_route(_session_row())[0].startswith("agent_service_unavailable: RuntimeError")
     assert deep_review_route(_row("agent_session", "=bad", session_target="=bad")) == ("session_target_unparsable", None)
