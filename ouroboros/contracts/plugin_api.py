@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import inspect
 import json
 import pathlib
 import re
@@ -157,18 +158,36 @@ def api_generation(manifest: Any) -> str:
 
 
 def plugin_api_surface_fingerprint() -> str:
-    """Canonical digest of the live versioned PluginAPI surface."""
+    """Canonical digest of the live versioned PluginAPI surface.
+
+    The digest covers what an extension author can actually collide with: each
+    public method's NAME **and full signature text**, and each ``RuntimeInfo``
+    key **and its annotation**. Names and keys alone were not the surface this
+    module's header promises — reordering a parameter, dropping a default,
+    tightening ``Sequence[str]`` to ``list[str]`` or turning ``server_port``
+    from ``int`` into ``str`` all break a reviewed ``register()`` while leaving
+    the recorded digest byte-identical, which is the one thing the
+    fail-closed-both-directions contract below is supposed to make impossible.
+
+    ``from __future__ import annotations`` is active here, so both halves are
+    the SOURCE text of the annotation (``ForwardRef.__forward_arg__`` for the
+    TypedDict, the stringified annotations inside ``str(signature)``): stable
+    across interpreter versions, and exactly what a reviewer reads.
+    """
     methods = sorted(
         m for m in dir(PluginAPI)
         if not m.startswith("_") and callable(getattr(PluginAPI, m, None))
     )
     payload = json.dumps({
         "version": PLUGIN_API_VERSION,
-        "methods": methods,
+        "methods": {m: str(inspect.signature(getattr(PluginAPI, m))) for m in methods},
         "matrix": sorted(MATRIX_CAPABILITIES),
         "always": sorted(ALWAYS_AVAILABLE_CAPABILITIES),
         "out_of_process_unavailable": sorted(OUT_OF_PROCESS_UNAVAILABLE_CAPABILITIES),
-        "runtime_info": sorted(RuntimeInfo.__annotations__),
+        "runtime_info": {
+            key: getattr(annotation, "__forward_arg__", None) or str(annotation)
+            for key, annotation in RuntimeInfo.__annotations__.items()
+        },
     }, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -179,7 +198,7 @@ def plugin_api_surface_fingerprint() -> str:
 # change without a version bump) refuses negotiation until the version is
 # bumped and the new fingerprint recorded here.
 PLUGIN_API_SURFACE_FINGERPRINTS: Dict[str, str] = {
-    "2.0": "4b391ba5efbfb24233fbda6ab49767c4086d1140a233dc50a19cc2d38f097820",
+    "2.0": "03fabdf4334e6b2bde217b4cb83a80faaebc773ddce870546dd2108b75de17ca",
 }
 
 
