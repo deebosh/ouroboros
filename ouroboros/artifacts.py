@@ -573,7 +573,17 @@ def store_actor_source_bytes(
         f"{safe_id}-{digest}.{safe_extension}",
     )
     target = artifact_dir.joinpath(*relative.parts)
-    write_bytes_atomic(target, bytes(data))
+    # WRITE-ONCE. The name carries the digest, so an existing file with exactly
+    # these bytes IS this handle: rewriting it would only republish identical
+    # content while racing another writer for the same path (on Windows an
+    # os.replace over a destination a concurrent reader holds open is a sharing
+    # violation, which is how a second copy-back of the same handle used to fail).
+    try:
+        already_stored = not target.is_symlink() and target.read_bytes() == bytes(data)
+    except OSError:
+        already_stored = False
+    if not already_stored:
+        write_bytes_atomic(target, bytes(data))
     return {
         "kind": "task_source",
         "root": "artifact_store",

@@ -62,6 +62,7 @@ import uuid
 
 import pytest
 
+from tests.system_e2e import harness
 from tests.system_e2e.harness import (
     LANE_MOCK,
     MOCK_SLUG,
@@ -80,6 +81,7 @@ from tests.system_e2e.harness import (
     start_server,
     submit_running,
     wait_durable_result,
+    wait_pid_env_value,
     wait_until,
 )
 
@@ -134,14 +136,40 @@ def test_replay_model_callable_steps_and_explicit_model_ids():
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc environ scan is Linux-only")
 def test_pids_with_env_value_sees_and_loses_a_marked_child():
+    """Both directions of the /proc environ oracle, each through its own contract:
+    the positive claim waits a bounded window for the just-execed child's environ
+    (``wait_pid_env_value``), the no-orphans postcondition keeps its single scan."""
     marker = f"e2e-w2-marker-{uuid.uuid4().hex}"
     child = subprocess.Popen(["sleep", "30"], env={**os.environ, "E2E_W2_MARK": marker})
     try:
+        assert wait_pid_env_value(child.pid, marker)
         assert child.pid in pids_with_env_value(marker)
     finally:
         child.kill()
         child.wait(timeout=10)
     assert child.pid not in pids_with_env_value(marker)
+
+
+def test_pid_env_wait_rides_out_the_post_exec_empty_environ_window(monkeypatch):
+    """The exact CI interleaving (33671108287): ``Popen`` has returned — the exec
+    succeeded — but the kernel has not published the new image's env_start/env_end
+    yet, so the environ reads EMPTY for a live, correctly marked pid. A single scan
+    misses it (and that is what the positive assertion used to be); the bounded
+    per-pid wait rides the window out and still returns True."""
+    marker = "e2e-w2-window-marker"
+    reads = {"n": 0}
+    real = harness._read_proc_environ_bytes
+
+    def _windowed(pid):
+        if str(pid) != str(os.getpid()):
+            return real(pid)
+        reads["n"] += 1
+        return b"" if reads["n"] <= 3 else f"E2E_W2_MARK={marker}\x00".encode()
+
+    monkeypatch.setattr(harness, "_read_proc_environ_bytes", _windowed)
+    assert os.getpid() not in pids_with_env_value(marker)      # the single scan misses it
+    assert wait_pid_env_value(os.getpid(), marker, timeout=5)  # the bounded wait does not
+    assert reads["n"] > 3
 
 
 # ===========================================================================

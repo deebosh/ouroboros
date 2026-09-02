@@ -731,6 +731,46 @@ def process_tree_pids(root_pid: int) -> list:
     return pids
 
 
+def _read_proc_environ_bytes(pid) -> bytes:
+    """Raw ``/proc/<pid>/environ`` bytes, or ``b""`` when it cannot be read.
+
+    The single read seam of both /proc environ oracles below, so the empty-window
+    behaviour they must survive can be pinned deterministically.
+    """
+    try:
+        return pathlib.Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return b""
+
+
+def wait_pid_env_value(pid: int, value: str, timeout: float = 10.0) -> bool:
+    """True once ``/proc/<pid>/environ`` carries *value*, within a bounded window.
+
+    THE POSITIVE ORACLE. ``Popen`` returns as soon as the exec SUCCEEDED — the
+    CLOEXEC error pipe closes inside ``execve`` — but the kernel publishes the NEW
+    image's ``env_start``/``env_end`` later in that same exec path, so a read that
+    lands in that window sees an EMPTY environ for a live, correctly marked child.
+    A positive claim ("this child carries the marker") must therefore poll THE ONE
+    pid until its environ becomes readable or a deadline passes; scanning all of
+    /proc again would only re-roll the same window against a moving target.
+
+    The negative oracle (``pids_with_env_value`` as the no-orphans postcondition)
+    deliberately keeps its SINGLE scan: an orphan that survived a teardown was
+    execed long before the scan, so the post-exec window cannot hide it, while a
+    wait there would only slow every clean teardown down.
+    """
+    needle = str(value).encode()
+    deadline = time.monotonic() + float(timeout)
+    while True:
+        if needle in _read_proc_environ_bytes(pid):
+            return True
+        if not pathlib.Path(f"/proc/{pid}").exists():
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+
+
 def pids_with_env_value(value: str) -> list:
     """Every live pid whose /proc environ carries *value* (readable procs only).
 
@@ -741,17 +781,17 @@ def pids_with_env_value(value: str) -> list:
     teardown would show up here reparented outside it. Same-uid procs only by
     construction (/proc environ of other users is unreadable), which covers the
     whole tree an isolated server can have spawned.
+
+    NEGATIVE-USE ORACLE: one scan, no waiting (see ``wait_pid_env_value`` for why
+    a positive claim about a just-spawned child needs a bounded wait instead).
     """
     needle = str(value).encode()
     found = []
     for pid_dir in pathlib.Path("/proc").iterdir():
         if not pid_dir.name.isdigit():
             continue
-        try:
-            if needle in (pid_dir / "environ").read_bytes():
-                found.append(int(pid_dir.name))
-        except OSError:
-            continue
+        if needle in _read_proc_environ_bytes(pid_dir.name):
+            found.append(int(pid_dir.name))
     return found
 
 
