@@ -493,7 +493,7 @@ async def _multi_model_review_async(content: str, prompt: str,
                                      session_policy: dict = None,
                                      usage_attribution: dict = None,
                                      retry_key: str = ""):
-    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
 
     row_routes = list(routes or []) + [ReviewRouteKind.API_CHAT] * max(0, len(models) - len(routes or []))
     # Per-row strength/target/identity vectors (6.1). Absent tails keep the
@@ -511,7 +511,7 @@ async def _multi_model_review_async(content: str, prompt: str,
     # api-route row bound to a configured subagent retrieves with its own
     # tools and must never trigger (or be counted into) the assembled pack.
     any_api_rows = any(
-        route is ReviewRouteKind.API_CHAT and not row_actors[idx]
+        not delivery_retrieves(route, row_actors[idx])
         for idx, route in enumerate(row_routes[:len(models)])
     )
     if not content:

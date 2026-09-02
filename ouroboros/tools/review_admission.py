@@ -158,7 +158,7 @@ def triad_not_dispatched_records(
     restricts the records to the api rows (the Q28-A oversize drop); the
     default covers every row (the Q25-A admission block). ``slot`` keeps each
     seat's ORIGINAL 1-based position in the configured plan."""
-    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_execution import delivery_retrieves
 
     models = list(row_plan.get("models") or [])
     routes = list(row_plan.get("routes") or [])
@@ -167,10 +167,11 @@ def triad_not_dispatched_records(
     records = []
     for index, model in enumerate(models):
         if only_api and (
-            index >= len(routes) or routes[index] is not ReviewRouteKind.API_CHAT
-            # A configured-subagent api row retrieves; the packet drop is not
-            # its withholding and it keeps its live seat.
-            or (index < len(actors) and actors[index])
+            # A retrieving row (session, or configured-subagent api row) never
+            # received the packet; the packet drop is not its withholding and
+            # it keeps its live seat.
+            index >= len(routes)
+            or delivery_retrieves(routes[index], actors[index] if index < len(actors) else "")
         ):
             continue
         records.append({

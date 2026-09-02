@@ -135,7 +135,7 @@ class ReviewSlot:
     @property
     def native_retrieval(self) -> bool:
         # An api-route actor row: bounded native tool rounds, never the packet.
-        return bool(self.subagent_id) and self.route is ReviewRouteKind.API_CHAT
+        return bool(str(self.subagent_id or "").strip()) and str(getattr(self.route, "value", self.route) or "") == ReviewRouteKind.API_CHAT.value
 
     @property
     def retrieves(self) -> bool:

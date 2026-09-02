@@ -28,6 +28,12 @@ def test_slot_properties_and_plan_review_facade_share_the_predicate():
     assert [s.retrieves for s in (api, native, session)] == [False, True, True]
     assert [slot_retrieves(s) for s in (api, native, session)] == [False, True, True]
     assert native.native_retrieval is True and session.native_retrieval is False
+    # The executor-selecting property and the delivery predicate can never
+    # disagree: wire-string routes and whitespace ids normalize the same way.
+    stringy = ReviewSlot(slot_id="t4", model="m", effort="low", route="api_chat", subagent_id="api-critic")
+    blank = ReviewSlot(slot_id="t5", model="m", effort="low", subagent_id="   ")
+    assert stringy.retrieves is True and stringy.native_retrieval is True
+    assert blank.retrieves is False and blank.native_retrieval is False
 
     rows = [
         ConfiguredReviewerSlot(slot_id="a", kind="api_chat", target_id="m", effort="low"),
