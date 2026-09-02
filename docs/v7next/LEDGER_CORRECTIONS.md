@@ -8804,8 +8804,9 @@ concurrency tests stayed red on every name-tier leg — see «From the Windows C
 
 1. **The name-tier disposition of abea91ec did not close the class.** windows-latest full-test on
    `35b82db0` was red on exactly two tests, both concurrency shapes, both green on the pre-C6 tip
-   43dcc1d2 and red on every C6-bearing Windows leg (33654743857, 33658408570, 33658966160,
-   33661022574, 33663258606): `test_concurrent_writers_keep_monotonic_sequence` («usage accounting
+   43dcc1d2; on the five C6-bearing Windows legs (33654743857, 33658408570, 33658966160,
+   33661022574, 33663258606) the chat-append test was red on all five and the 16-writer test on
+   four (it passed once, on 33661022574 — a race, not a fix): `test_concurrent_writers_keep_monotonic_sequence` («usage accounting
    lock unavailable» at `usage_import.lock`) and
    `test_terminal_projection_dedup_does_not_lose_concurrent_chat_append` (8 of 24 appended rows
    missing). The stage-2 verifier (lens e2e-and-ci, `ADVERSARIAL_windows_name_tier_finding.md`)
@@ -8833,6 +8834,13 @@ concurrency tests stayed red on every name-tier leg — see «From the Windows C
    `test_windows_release_gives_up_a_refusal_that_never_clears` (bounded window, file left, no hang),
    `test_posix_release_does_not_retry_a_permission_refusal` (one attempt). The Windows-executed proof
    is the matrix on the SHA carrying the fix; recorded in WINWAVE_CLASS_REGISTRY «3-OS matrix runs».
-5. **Prose corrected:** packet §10 addendum and DESIGN §8 no longer claim the Windows name tier is
+5. **Residual (LOW, delta lens 35b82db0..d0bb839e):** the «identity unreadable» branch of
+   `acquire_exclusive_file_lock` unlinks its own file BEFORE closing the descriptor — on Windows
+   always a sharing violation, so that (practically unreachable on NTFS, pre-existing) branch
+   would leave a file stamped with our live pid; the stale-eviction unlink is deliberately not
+   retried — the poll loop re-judges and retries it. The delta lens also measured a contender
+   probe under `owner_aware_stale` at milliseconds (OpenProcess), not microseconds — inside the
+   2 s window either way.
+6. **Prose corrected:** packet §10 addendum and DESIGN §8 no longer claim the Windows name tier is
    «the protocol it always ran»; the earlier ledger line «Verified by the next dispatched matrix»
    is withdrawn above.

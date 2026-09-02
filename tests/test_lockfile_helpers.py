@@ -658,4 +658,5 @@ def test_posix_release_does_not_retry_a_permission_refusal(tmp_path, monkeypatch
     release_exclusive_file_lock(lock_path, fd)
 
     assert len(attempts) == 1 and lock_path.exists()
+    monkeypatch.undo()  # 3.11+ pathlib.unlink calls os.unlink live: the refuser must be gone first
     lock_path.unlink()
