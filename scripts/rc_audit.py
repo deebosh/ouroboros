@@ -104,6 +104,7 @@ from ouroboros.contracts.skill_manifest import (  # noqa: E402
 from ouroboros.settings_defaults import (  # noqa: E402
     RETIRED_COMMA_LIST_SETTING_KEYS,
     RETIRED_SETTING_KEYS,
+    RETIRED_SETTING_SUCCESSORS,
 )
 from ouroboros.skill_loader import (  # noqa: E402
     SkillPayloadUnreadable,
@@ -285,8 +286,13 @@ def build_scope() -> Dict[str, Any]:
             "key": key,
             "since": ABI if key in RETIRED_IN_THIS_ABI else "pre-7.0",
             "behavior": "stripped-on-load",
-            "migration": "remove the key; the surface is retired with no replacement "
-                         "knob — a stored value never reaches effective settings",
+            "migration": (
+                "remove the key; the successor settings are %s — move the value there "
+                "before upgrading" % ", ".join(RETIRED_SETTING_SUCCESSORS[key])
+                if key in RETIRED_SETTING_SUCCESSORS else
+                "remove the key; the surface is retired with no replacement knob — a "
+                "stored value never reaches effective settings"
+            ),
         })
     for key in RETIRED_COMMA_LIST_SETTING_KEYS:
         checks.append({
@@ -367,7 +373,12 @@ def _audit_settings(data_root: pathlib.Path, findings: List[Dict[str, str]]) -> 
                 "retired-setting", SEV_INCOMPATIBLE, f"settings.json:{key}",
                 "retired settings key present; stripped on load after upgrade "
                 "(the stored value becomes inert)",
-                "remove the key; the surface is retired with no replacement knob",
+                (
+                    "remove the key; the successor settings are %s — move the value "
+                    "there before upgrading" % ", ".join(RETIRED_SETTING_SUCCESSORS[key])
+                    if key in RETIRED_SETTING_SUCCESSORS else
+                    "remove the key; the surface is retired with no replacement knob"
+                ),
             ))
 
 

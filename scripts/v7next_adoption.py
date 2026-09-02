@@ -124,7 +124,7 @@ DEFERRED_OUT_OF_V70 = {
 # reason. Each sync's absorb merge does take its upstream tip as the literal
 # second parent (20850191<-8d13373b, b9ceed6e<-f3fbfdbb, f4abe0a5<-a76961de),
 # but only f4abe0a5 sits on this branch's first-parent line: the other two were
-# made on lane lines and reached mainline as the second parent of a lane
+# made on lane lines and reached mainline on the second-parent side of a lane
 # integration merge over a CAMPAIGN commit (0aa74e9f over 816e7b82, 0f9a8daf
 # over 4c32691e). So a rule walking --first-parent merges and reading second
 # parents would police one train of three and stay blind to the other two —

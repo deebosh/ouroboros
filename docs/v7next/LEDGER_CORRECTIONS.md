@@ -8473,10 +8473,12 @@ change below is pinned RED on the pre-fix shape first, then green.
 
 Findings 5 and 6 are prose-only, so their red evidence is the pin predicates
 evaluated against `git show HEAD:docs/ARCHITECTURE.md` rather than a pytest
-run: reverting the file in the worktree to drive pytest twice produced a
-hanging run both times, and by the repeated-failure rule the shape was
-abandoned rather than retried a third time. The predicates are the exact
-expressions the committed pins assert.
+run: reverting the file in the worktree to drive pytest twice produced a run
+that did not finish in the time allowed, both times — the cause (found by the
+close-out lens) is pytest's assertion introspection over the ~810 KB flattened
+document on a failing `not in`: `--assert=plain` fails the same pin in 0.13 s,
+so the pins are not flaky, only slow to EXPLAIN a red. The predicates are the
+exact expressions the committed pins assert.
 
 ### Dispositions
 
@@ -8746,7 +8748,9 @@ Dispositions beyond the plain fix:
    (setup) | closed=True | RuntimeError: Event loop is closed`, and the warnings
    summary of that same run carried
    `tests/test_extensions_api.py::test_api_extensions_index_lists_extension_skills
-   / ws.py:184: RuntimeWarning: coroutine 'broadcast_ws' was never awaited` —
+   / ws.py:184: RuntimeWarning: coroutine 'broadcast_ws' was never awaited` (the
+   line is in the INSTRUMENTED copy; the committed pre-fix line is the `pass`
+   at f52fcec7^:ouroboros/gateway/ws.py:183) —
    the innocent-bystander attribution, exactly as claimed. It is NOT
    deterministic: a second full run under the same markers did not take that
    path, and a single-file run of `tests/test_extensions_api.py` never does.

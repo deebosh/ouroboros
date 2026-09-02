@@ -49,8 +49,9 @@ def test_a_closed_loop_does_not_leak_the_unawaited_broadcast_coroutine(monkeypat
     reported against an innocent bystander. On the pre-fix code that mechanism
     reproduces only under the CI-shaped FULL run — not from that file alone,
     and not on every full run: the loop is left behind deterministically (by
-    the `with TestClient(server.app)` lifespan tests, which are the only
-    writers of the module global), but whether a broadcast then fires, and
+    the three `with TestClient(srv.app)` lifespan tests — `server.lifespan` is
+    the only caller of `ws.set_event_loop` and never resets it to None; this
+    test's own monkeypatch write is restored), but whether a broadcast then fires, and
     which test is running when the object is collected, is not. Hence a pin on
     the leaking line itself rather than on the bystander.
 

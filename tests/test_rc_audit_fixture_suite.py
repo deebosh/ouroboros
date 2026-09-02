@@ -856,3 +856,20 @@ def test_non_object_ui_preferences_still_audits_clean(tmp_path):
     (data / "state" / "ui_preferences.json").write_text("[1, 2]", encoding="utf-8")
     result = _run(data, isolated_root=tmp_path / "isol")
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_retired_setting_migration_names_the_successor_when_the_table_has_one():
+    """A retired key whose retirement table names a successor must not be told
+    «no replacement knob»: the wall-clock pair points at the activity model (the
+    same truth the first-boot notice states), the truly knob-less keys keep the
+    knob-less text."""
+    from ouroboros.settings_defaults import RETIRED_SETTING_SUCCESSORS
+
+    rc_audit = _load_module()
+    checks = {c["key"]: c for c in rc_audit.build_scope()["checks"] if c["id"] == "retired-setting"}
+    for key, successors in RETIRED_SETTING_SUCCESSORS.items():
+        assert "no replacement knob" not in checks[key]["migration"], key
+        for successor in successors:
+            assert successor in checks[key]["migration"], (key, successor)
+    knobless = [k for k in checks if k not in RETIRED_SETTING_SUCCESSORS]
+    assert knobless and all("no replacement knob" in checks[k]["migration"] for k in knobless)

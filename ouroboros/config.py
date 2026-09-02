@@ -762,7 +762,7 @@ def normalize_settings_raw(raw: dict) -> dict:
         if rest := [k for k in dropped if k not in comma and k not in named]:
             clauses.append(
                 "the retirement table names no successor setting for %s: they are "
-                "removed, not honored — see the release notes for the surface that "
+                "removed, not honored — see the release notes for what, if anything, "
                 "replaced them" % ", ".join(rest))
         replacement = "; ".join(clauses)
         log.warning(
