@@ -2,8 +2,8 @@
    signatures the page compares after every `GET /api/widgets`, and the keyed
    patch plan it applies to the existing <article> nodes when the list changed.
    Card order is deliberately NOT part of the list signature — `widget_order`
-   is a separate, cheap fact the page applies by moving nodes, never by
-   rebuilding them. */
+   is a separate, cheap fact the page applies through the masonry key order,
+   never by moving or rebuilding nodes. */
 
 export function widgetKey(tab) {
     return tab.key || `${tab.skill}:${tab.tab_id}`;

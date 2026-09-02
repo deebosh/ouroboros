@@ -722,14 +722,21 @@ The resource kinds this covers:
 
 An instance that can be closed, hidden, or replaced (project chat panels are
 the canonical case) must be destroyable without leaving any acquisition
-behind; "hide the DOM node, keep the handlers" is the leak shape this
-invariant forbids. Late async continuations check a `destroyed` flag before
-touching state or re-arming loops.
+behind. A UI instance may survive being hidden only under an explicit,
+owner-visible retention reason — a project chat with pending work (staged
+attachments, an upload in flight), a widget card the owner set to Keep running
+— and even then it still owns its disposer, and Stop / unload / reload /
+shutdown remain force-destroy boundaries. The untyped shape "hide the DOM node,
+keep the handlers" remains the leak this invariant forbids. Late async
+continuations check a `destroyed` flag before touching state or re-arming
+loops.
 
 A framed widget's disposer is the ordered dispose with acknowledgement
 (ARCHITECTURE "Skills and Widgets"): it posts the dispose message, keeps the
 bridge answering the child's hooks, and finishes — abort, unlisten, remove the
 iframe — on the child's acknowledgement or after `WIDGET_DISPOSE_ACK_TIMEOUT_MS`.
+The Widgets masonry (`applyMasonry`) returns an idempotent disposer for its two
+`ResizeObserver`s, its `MutationObserver` and its pending animation frame.
 That bounded wait is not the forbidden shape: the handlers live only until a
 settle promise the page tracks per card key resolves, and a remount of the same
 key waits on that promise instead of racing it.
@@ -1833,7 +1840,7 @@ Before every commit, verify the following:
 - A new top-level page that scrolls its header together with content violates the architecture mirror: fix the layout, not the symptom.
 - Top-level tab/pill buttons are a single design-system control: `renderTabStrip` + `.app-tab-strip` + `.app-tab` + the `--pill-*` CSS variables in `web/style.css`. Do not redeclare per-page tab padding, font size, border radius, or active styling in page CSS files.
 - Scrollable page bodies use the shared `.scroll-fade-y` mask when content can pass under fixed page chrome. Do not copy/paste custom gradient masks into page modules; extend the shared class if the fade rhythm changes.
-- Masonry-style widget packing uses `web/modules/masonry.js::applyMasonry`. Do not reintroduce CSS Grid row packing (`align-items: start`) for unequal-height widget cards; it leaves row gaps under shorter cards.
+- Masonry-style widget packing uses `web/modules/masonry.js::applyMasonry`. Do not reintroduce CSS Grid row packing (`align-items: start`) for unequal-height widget cards; it leaves row gaps under shorter cards. It packs in the page's explicit key order and writes only `--masonry-*` custom properties (the static rules in `web/style.css` apply them); never move `<article>` nodes to reorder — a moved `<iframe>` reloads.
 - Widget card ordering and the owner's per-card launch-policy override (`widget_start_mode`, values from `extension_ui_validation.WIDGET_START_MODES`) are host UI preferences. Persist them through `/api/ui/preferences` and `data/state/ui_preferences.json`; never rewrite extension manifests or widget declarations to store owner layout or owner overrides.
 - New visual dimensions should become CSS variables first (`--pill-*`, `--button-*`, `--page-header-*`, etc.) and then be consumed by shared classes. Hardcoded page-local dimensions are review debt unless the component is genuinely unique.
 
@@ -2546,6 +2553,10 @@ stealing usable text space. Use the shared responsive component before adding a
 page-specific layout. A visible change is inspected with vision in at least one
 relevant real consumer flow. A stored screenshot alone is not verification;
 mobile or WebKit is not a universal requirement and is selected from risk.
+Disclosed residual: a Widgets reorder changes the visible order without moving
+DOM nodes (a moved frame would reload), so after a reorder the Tab/focus order
+may differ from the visible order until the hard reset rebuilds the cards;
+keyboard reorder through the card handle follows the key order.
 
 ### Browser dialogs
 
@@ -2568,13 +2579,19 @@ with its CSP/sandbox constants and parent bridge) live in
 `web/modules/widget_module.js` and return their disposer to the `mountTab`
 dispatcher in `widgets.js`, which keeps the card registry and the declarative
 renderer. The framed card's chrome — the effective launch policy (owner override
-> author `render.start` > kind default), the one primary Start / Stop control,
-the launch-policy menu and the stopped card's facade — lives in
+> author `render.start` > kind default), whether it keeps the card running while
+Widgets is hidden (`retain`, framed cards only), the one primary Start / Stop
+control, the launch-policy menu, the stopped card's facade and the Refresh
+confirmation that counts the cards kept running — lives in
 `web/modules/widget_card.js`; the card reorder handles live in
-`web/modules/widget_reorder.js`. The pure list helpers — per-card and order-independent list change
-signatures plus the keyed patch plan — live in `web/modules/widget_list.js`;
-the page compares the signature after every `GET /api/widgets` and touches no
-existing card when it is unchanged.
+`web/modules/widget_reorder.js` (a reorder is a pure move in the key order handed
+back to the page; no node moves); the declarative `chart` helpers and the shared
+dotted-path reader live in `web/modules/widget_chart.js`; the masonry
+(`web/modules/masonry.js`) packs the cards in that key order through
+`--masonry-*` custom properties and returns a disposer. The pure list helpers —
+per-card and order-independent list change signatures plus the keyed patch plan
+— live in `web/modules/widget_list.js`; the page compares the signature after
+every `GET /api/widgets` and touches no existing card when it is unchanged.
 Never load skill JavaScript into the SPA origin. Long-running actions use a
 durable job id and resumable status polling rather than a foreground request
 lost on remount.

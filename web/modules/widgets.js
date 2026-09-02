@@ -8,12 +8,15 @@ import {
     boundedNumber,
     withWidgetRequestTimeout,
 } from './widget_job.js';
+import { chartConfig, getPath, renderChartDataTable } from './widget_chart.js';
 import { mountModuleWidget, mountRouteIframeWidget } from './widget_module.js';
 import { planWidgetListPatch, widgetKey, widgetTabsSignature } from './widget_list.js';
 import {
     bindWidgetCardMenus,
+    confirmWidgetsRestart,
     effectiveStartMode,
     isFramedWidget,
+    isRetainedWidget,
     renderWidgetCardControls,
     renderWidgetFacade,
     syncWidgetCardControls,
@@ -99,16 +102,6 @@ function createCardElement(tab) {
     const template = document.createElement('template');
     template.innerHTML = renderCardHtml(tab).trim();
     return template.content.firstElementChild;
-}
-
-function getPath(root, path, fallback = '') {
-    if (!path) return root ?? fallback;
-    let current = root;
-    for (const part of String(path).split('.').filter(Boolean)) {
-        if (current == null || typeof current !== 'object') return fallback;
-        current = current[part];
-    }
-    return current ?? fallback;
 }
 
 function safeMediaSrc(tab, spec, state, effectiveTarget = '') {
@@ -247,63 +240,6 @@ function renderTableCell(row, column) {
         return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || href)}</a>`;
     }
     return escapeHtml(raw ?? '');
-}
-
-const CHART_PALETTE = [
-    ['#e85d6f', 'rgba(232, 93, 111, 0.22)'],
-    ['#60a5fa', 'rgba(96, 165, 250, 0.22)'],
-    ['#34d399', 'rgba(52, 211, 153, 0.22)'],
-    ['#fbbf24', 'rgba(251, 191, 36, 0.22)'],
-];
-
-export function finiteChartValue(value) {
-    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-    if (typeof value !== 'string' || !value.trim()) return null;
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : null;
-}
-
-function chartConfig(component, data) {
-    const type = ['line', 'bar'].includes(component.chart_type) ? component.chart_type : 'line';
-    const labels = component.labels || getPath(data, component.labels_path || 'labels', []);
-    const datasets = component.datasets || getPath(data, component.datasets_path || 'datasets', []);
-    const unit = String(component.unit || '');
-    return {
-        type,
-        data: {
-            labels: Array.isArray(labels) ? labels.map((item) => String(item ?? '')) : [],
-            datasets: Array.isArray(datasets) ? datasets.map((dataset, idx) => {
-                const [borderColor, backgroundColor] = CHART_PALETTE[idx % CHART_PALETTE.length];
-                return {
-                    label: String(dataset?.label ?? 'Series'),
-                    data: Array.isArray(dataset?.data) ? dataset.data.map(finiteChartValue) : [],
-                    borderColor,
-                    backgroundColor,
-                    spanGaps: false,
-                };
-            }) : [],
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            spanGaps: false,
-            plugins: { legend: { display: true } },
-            scales: {
-                x: { grid: { color: 'rgba(255, 255, 255, 0.06)' } },
-                y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.06)' },
-                    title: { display: Boolean(unit), text: unit },
-                },
-            },
-        },
-    };
-}
-
-function renderChartDataTable(config, label, expanded) {
-    const labels = config.data.labels || [];
-    const datasets = config.data.datasets || [];
-    const rows = labels.map((item, idx) => `<tr><th scope="row">${escapeHtml(item)}</th>${datasets.map((dataset) => `<td data-label="${escapeHtml(dataset.label)}">${escapeHtml(dataset.data[idx] ?? '—')}</td>`).join('')}</tr>`).join('');
-    return `<details class="widget-chart-data"${expanded ? ' open' : ''}><summary>View ${escapeHtml(label)} data</summary><div class="widget-table-wrap"><table class="widget-table"><thead><tr><th>Label</th>${datasets.map((dataset) => `<th>${escapeHtml(dataset.label)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div></details>`;
 }
 
 function renderComponent(tab, component, view, treePath, inheritedTarget = '') {
@@ -1145,12 +1081,16 @@ function disposeWidgetByKey(key) {
     }
 }
 
-// Issue the stop for every mounted card; resolves once every ordered stop in
+// Issue the stop for every mounted card except the keys `keep` answers true for
+// (the frames the owner keeps running while Widgets is hidden; the hard reset
+// passes nothing and stops them too); resolves once every ordered stop in
 // flight has settled (they run in parallel, each bounded by the ack timeout).
-function disposeMountedWidgets() {
+function disposeMountedWidgets(keep = null) {
     widgetMountControllers.forEach((controller) => controller.abort());
     widgetMountControllers.clear();
-    Array.from(widgetDisposers.keys()).forEach(disposeWidgetByKey);
+    Array.from(widgetDisposers.keys()).forEach((key) => {
+        if (!keep?.(key)) disposeWidgetByKey(key);
+    });
     return Promise.allSettled(Array.from(widgetDisposing.values()));
 }
 
@@ -1161,16 +1101,11 @@ function liveCardFor(list, key) {
     return list.querySelector(`[data-widget-key="${CSS.escape(key)}"]:not([data-widget-removed])`);
 }
 
-function previousLiveCard(card) {
-    let node = card.previousElementSibling;
-    while (node?.hasAttribute('data-widget-removed')) node = node.previousElementSibling;
-    return node;
-}
-
 // Keyed patch over the existing <article> nodes: vanished cards go (their mounted
 // work disposed first, their session state evicted), cards whose own entry
-// changed are replaced, new cards are inserted, every other card keeps its DOM
-// node. Order follows `nextTabs`; only a node that is out of place moves.
+// changed are replaced, new cards are appended, every other card keeps its DOM
+// node. No node ever moves: the visible order is the masonry key order, and a
+// moved <iframe> would reload. The list's masonry relayouts on the mutation.
 function patchWidgetCards(list, previousTabs, nextTabs) {
     const plan = planWidgetListPatch(previousTabs, nextTabs);
     for (const key of plan.removed) {
@@ -1185,28 +1120,16 @@ function patchWidgetCards(list, previousTabs, nextTabs) {
         }
         card.setAttribute('data-widget-removed', '');
         syncWidgetCardControls(card, 'stopping');
-        settling.then(() => {
-            card.remove();
-            applyMasonry(list);
-        });
+        settling.then(() => card.remove());
     }
-    let anchor = null;
     for (const tab of nextTabs) {
         const key = widgetKey(tab);
-        let card = liveCardFor(list, key);
-        if (!card || plan.changed.includes(key)) {
-            disposeWidgetByKey(key);
-            const fresh = createCardElement(tab);
-            if (card) card.replaceWith(fresh);
-            else if (anchor) anchor.after(fresh);
-            else list.prepend(fresh);
-            card = fresh;
-        }
-        if (previousLiveCard(card) !== anchor) {
-            if (anchor) anchor.after(card);
-            else list.prepend(card);
-        }
-        anchor = card;
+        const card = liveCardFor(list, key);
+        if (card && !plan.changed.includes(key)) continue;
+        disposeWidgetByKey(key);
+        const fresh = createCardElement(tab);
+        if (card) card.replaceWith(fresh);
+        else list.append(fresh);
     }
 }
 
@@ -1265,11 +1188,19 @@ export function initWidgets(ctx = {}) {
     const hasCards = () => Boolean(list.querySelector('[data-widget-key]:not([data-widget-removed])'));
     const isCurrentFor = (generation) => () => widgetsVisible && generation === renderGeneration;
     const tabByKey = (key) => (lastTabs || []).find((tab) => widgetKey(tab) === key) || null;
+    // A framed card the owner keeps running (effective policy `retain`) holds
+    // its frame while Widgets is hidden; every other mounted card is stopped.
+    const retainsWhileHidden = (key) => isRetainedWidget(tabByKey(key), uiPreferences);
+    const keptRunning = () => Array.from(widgetDisposers.keys()).filter(retainsWhileHidden);
+    // The complete visible key order (`lastTabs` already carries `widget_order`):
+    // masonry packs the cards in it; no DOM node is ever moved for it.
+    const currentWidgetOrder = () => (lastTabs || []).map(widgetKey);
+    const relayout = () => applyMasonry(list, { order: currentWidgetOrder() });
 
     function paintShell(tabs) {
         renderShell(list, tabs);
-        bindWidgetCardReorder(list, persistWidgetOrder);
-        applyMasonry(list);
+        bindWidgetCardReorder(list, currentWidgetOrder, persistWidgetOrder);
+        relayout();
     }
 
     // Page entry, or the hard reset behind Refresh (`force`): the shell is on
@@ -1291,19 +1222,43 @@ export function initWidgets(ctx = {}) {
         } else if (force || !hasCards()) {
             paintShell(lastTabs);
         } else {
-            applyMasonry(list);
+            relayout();
         }
         await syncWidgets(generation);
     }
 
     // WS-driven reconcile: visible → sync now (or mark dirty while one runs);
-    // hidden → dirty flag, consumed by the next entry's unconditional fetch.
+    // hidden → dirty flag, consumed by the next entry's unconditional fetch —
+    // plus the force-stop of kept-running frames whose skill left the list.
     function reconcileWidgetList() {
-        if (!widgetsVisible || activeSync) {
+        if (activeSync) {
             listDirty = true;
             return;
         }
-        syncWidgets(renderGeneration);
+        if (widgetsVisible) {
+            syncWidgets(renderGeneration);
+            return;
+        }
+        listDirty = true;
+        stopVanishedRetainedWidgets();
+    }
+
+    // Lifecycle event while Widgets is hidden and frames are kept running: a
+    // skill that left the live list (disable / unload / delete) must not keep
+    // its frame alive until the next visit. Stop those frames now, in order;
+    // the card itself goes with the next entry's sync (the list is dirty).
+    async function stopVanishedRetainedWidgets() {
+        const kept = keptRunning();
+        if (!kept.length) return;
+        let data;
+        try {
+            data = await apiClient.widgets();
+        } catch {
+            return;
+        }
+        if (widgetsVisible) return;
+        const live = new Set((Array.isArray(data.ui_tabs) ? data.ui_tabs : []).map(widgetKey));
+        kept.filter((key) => !live.has(key)).forEach(disposeWidgetByKey);
     }
 
     // One list sync: GET /api/widgets (+ preferences), compare signatures, patch
@@ -1348,8 +1303,8 @@ export function initWidgets(ctx = {}) {
                 }
                 lastTabs = tabs;
                 lastSignature = signature;
-                bindWidgetCardReorder(list, persistWidgetOrder);
-                applyMasonry(list);
+                bindWidgetCardReorder(list, currentWidgetOrder, persistWidgetOrder);
+                relayout();
                 widgetsMounted = true;
                 for (const tab of tabs) {
                     if (!isCurrent()) return;
@@ -1362,9 +1317,9 @@ export function initWidgets(ctx = {}) {
                     }
                     if (isFramedWidget(tab) && !startsOnShow(tab)) await settleStopped(card, tab);
                     else await startWidget(card, tab, isCurrent);
-                    applyMasonry(list);
+                    relayout();
                 }
-                applyMasonry(list);
+                relayout();
             } while (listDirty && isCurrent());
         } catch (err) {
             if (!isCurrent()) return;
@@ -1382,19 +1337,22 @@ export function initWidgets(ctx = {}) {
         }
     }
 
+    // A reorder (handle drag / keys) hands over the next key order: remember it,
+    // re-sort the last good list, relayout in place, persist. No node moves.
     function persistWidgetOrder(order) {
         const normalized = normalizeWidgetOrder(order);
         uiPreferences = { ...uiPreferences, widget_order: normalized };
         if (lastTabs) {
             lastTabs = sortTabsByWidgetOrder(lastTabs, normalized);
         }
+        relayout();
         apiClient.saveUiPreferences({ widget_order: normalized }).catch((err) => {
             console.warn('Failed to save widget order', err);
         });
     }
 
-    // Framed card, effective policy `auto` (or `retain`, which behaves as `auto`
-    // until the keep-alive phase), and the owner has not stopped it this session.
+    // Framed card, effective policy `auto` or `retain` (both start on show; only
+    // `retain` survives leaving), and the owner has not stopped it this session.
     const startsOnShow = (tab) => effectiveStartMode(tab, uiPreferences) !== 'manual'
         && !stoppedByOwner.has(widgetKey(tab));
 
@@ -1432,13 +1390,13 @@ export function initWidgets(ctx = {}) {
         syncWidgetCardControls(card, 'stopping', effectiveStartMode(tab, uiPreferences));
         await disposeWidgetByKey(widgetKey(tab));
         await settleStopped(card, tab);
-        applyMasonry(list);
+        relayout();
     }
 
     async function startWidgetByOwner(card, tab) {
         stoppedByOwner.delete(widgetKey(tab));
         await startWidget(card, tab, isCurrentFor(renderGeneration));
-        applyMasonry(list);
+        relayout();
     }
 
     // Launch-policy change from the card menu: whole-map replace through the
@@ -1475,16 +1433,25 @@ export function initWidgets(ctx = {}) {
         else startWidgetByOwner(card, tab);
     });
 
-    refreshBtn.addEventListener('click', () => render(true));
+    // Refresh is the hard reset; it asks first only while a kept-running card
+    // would be stopped by it (`confirmWidgetsRestart` — strict boolean; Cancel
+    // changes nothing).
+    async function refreshWidgets() {
+        if (await confirmWidgetsRestart(keptRunning().length)) render(true);
+    }
+
+    refreshBtn.addEventListener('click', refreshWidgets);
     window.addEventListener('ouro:page-shown', (event) => {
         if (event.detail?.page === 'widgets') {
             render();
         } else {
-            // Leaving disposes the mounted work and stops stale paints; the cards
-            // stay in the DOM so the next entry mounts into them instead of rebuilding.
+            // Leaving disposes the mounted work — except the frames the owner
+            // keeps running, which stay mounted in the hidden page — and stops
+            // stale paints; the cards stay in the DOM so the next entry mounts
+            // into them instead of rebuilding.
             widgetsVisible = false;
             widgetsMounted = false;
-            disposeMountedWidgets();
+            disposeMountedWidgets(retainsWhileHidden);
         }
     });
 }

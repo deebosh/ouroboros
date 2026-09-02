@@ -1,9 +1,13 @@
 /* Widgets card order: the owner's `widget_order` preference applied to the card
-   list, and the drag / keyboard reorder handles on the cards. Moved out of
-   widgets.js unchanged (phase 2 of the widgets lifecycle sprint); widgets.js
-   still owns persisting the order through `/api/ui/preferences`. */
+   list, the pure key-order move behind a reorder, and the drag / keyboard
+   reorder handles on the cards. A reorder never moves an <article>: the visual
+   order is the masonry key order (web/modules/masonry.js), so a running frame —
+   retained or not — is never reloaded by it. widgets.js owns persisting the
+   order through `/api/ui/preferences` and relayouting with it. Disclosed
+   residual: the Tab / focus order follows the DOM, so after a visual reorder it
+   can differ from the visible order until the hard reset rebuilds the cards;
+   keyboard reorder through the handle follows the key order. */
 
-import { applyMasonry } from './masonry.js';
 import { widgetKey } from './widget_list.js';
 
 export function normalizeWidgetOrder(value) {
@@ -28,10 +32,22 @@ export function sortTabsByWidgetOrder(tabs, order) {
     }).map((item) => item.tab);
 }
 
-export function currentWidgetOrderFromDom(list) {
-    return Array.from(list.querySelectorAll('[data-widget-key]'))
-        .map((card) => card.dataset.widgetKey || '')
-        .filter(Boolean);
+/**
+ * Pure key-order move: `key` leaves its slot and re-enters at `toIndex`
+ * (clamped to the list). A drop onto another card passes that card's index,
+ * which lands the dragged key after a target it was before and before a target
+ * it was after. Returns the SAME array when nothing changes, so callers test
+ * identity for "moved".
+ */
+export function moveWidgetKey(order, key, toIndex) {
+    const from = order.indexOf(key);
+    if (from < 0 || !order.length) return order;
+    const target = Math.max(0, Math.min(order.length - 1, Math.trunc(Number(toIndex) || 0)));
+    if (target === from) return order;
+    const next = order.slice();
+    next.splice(from, 1);
+    next.splice(target, 0, key);
+    return next;
 }
 
 // Cards keep their DOM node across list patches, so binding is per card, once;
@@ -39,7 +55,12 @@ export function currentWidgetOrderFromDom(list) {
 const reorderBoundCards = new WeakSet();
 let draggedKey = '';
 
-export function bindWidgetCardReorder(list, onOrderChange) {
+/**
+ * Drag and keyboard reorder on the card handles. `currentOrder()` returns the
+ * complete visible key order; a move hands the next order to `onOrderChange`
+ * and touches no node.
+ */
+export function bindWidgetCardReorder(list, currentOrder, onOrderChange) {
     if (!list) return;
     const clearDragState = () => {
         list.querySelectorAll('.widgets-card.dragging, .widgets-card.drag-over').forEach((card) => {
@@ -47,9 +68,12 @@ export function bindWidgetCardReorder(list, onOrderChange) {
         });
         draggedKey = '';
     };
-    const finishReorder = () => {
-        applyMasonry(list);
-        onOrderChange(currentWidgetOrderFromDom(list));
+    const move = (key, toIndex) => {
+        const order = currentOrder();
+        const next = moveWidgetKey(order, key, toIndex);
+        if (next === order) return false;
+        onOrderChange(next);
+        return true;
     };
     list.querySelectorAll('[data-widget-reorder-handle]').forEach((handle) => {
         const card = handle.closest('[data-widget-key]');
@@ -66,37 +90,18 @@ export function bindWidgetCardReorder(list, onOrderChange) {
         });
         handle.addEventListener('dragend', clearDragState);
         handle.addEventListener('keydown', (event) => {
-            let moved = false;
-            if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-                const previous = card.previousElementSibling;
-                if (previous?.classList.contains('widgets-card')) {
-                    previous.before(card);
-                    moved = true;
-                }
-            } else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-                const next = card.nextElementSibling;
-                if (next?.classList.contains('widgets-card')) {
-                    next.after(card);
-                    moved = true;
-                }
-            } else if (event.key === 'Home') {
-                const first = list.querySelector('.widgets-card');
-                if (first && first !== card) {
-                    first.before(card);
-                    moved = true;
-                }
-            } else if (event.key === 'End') {
-                const cards = list.querySelectorAll('.widgets-card');
-                const last = cards[cards.length - 1];
-                if (last && last !== card) {
-                    last.after(card);
-                    moved = true;
-                }
-            }
-            if (!moved) return;
+            const key = card.dataset.widgetKey || '';
+            const from = currentOrder().indexOf(key);
+            if (from < 0) return;
+            let toIndex = from;
+            if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') toIndex = from - 1;
+            else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') toIndex = from + 1;
+            else if (event.key === 'Home') toIndex = 0;
+            else if (event.key === 'End') toIndex = Number.MAX_SAFE_INTEGER;
+            else return;
+            if (!move(key, toIndex)) return;
             event.preventDefault();
             clearDragState();
-            finishReorder();
             handle.focus();
         });
     });
@@ -113,16 +118,10 @@ export function bindWidgetCardReorder(list, onOrderChange) {
         card.addEventListener('drop', (event) => {
             if (!draggedKey || card.dataset.widgetKey === draggedKey) return;
             event.preventDefault();
-            const dragged = list.querySelector(`[data-widget-key="${CSS.escape(draggedKey)}"]`);
-            if (!dragged) return;
-            const cards = Array.from(list.querySelectorAll('.widgets-card'));
-            const draggedIdx = cards.indexOf(dragged);
-            const targetIdx = cards.indexOf(card);
-            if (draggedIdx < 0 || targetIdx < 0) return;
-            if (draggedIdx < targetIdx) card.after(dragged);
-            else card.before(dragged);
+            const key = draggedKey;
+            const targetIndex = currentOrder().indexOf(card.dataset.widgetKey || '');
             clearDragState();
-            finishReorder();
+            if (targetIndex >= 0) move(key, targetIndex);
         });
     });
 }

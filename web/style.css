@@ -5218,17 +5218,24 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     padding: 0;
 }
 
-/* Widgets page. */
+/* Widgets page. Masonry (web/modules/masonry.js) measures and packs the cards
+   and writes the result ONLY as custom properties — `--masonry-h` on the list,
+   `--masonry-w/-x/-y` on each card; these static rules apply them. Cards are
+   positioned by transform in the owner's key order, so a reorder never moves a
+   DOM node (a moved <iframe> would reload). */
 
 .widgets-list {
     position: relative;
     margin-top: 16px;
+    height: var(--masonry-h, auto);
 }
 
 .widgets-card {
     position: absolute;
     left: 0;
     top: 0;
+    width: var(--masonry-w, auto);
+    transform: translate(var(--masonry-x, 0px), var(--masonry-y, 0px));
     padding: 14px;
     backdrop-filter: blur(12px);
 }

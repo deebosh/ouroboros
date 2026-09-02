@@ -1,10 +1,13 @@
 /* Widgets card chrome for framed (module / route-iframe) cards: the effective
-   launch policy, the card's ONE primary control (Start / Stop), the secondary
-   launch-policy menu, and the facade a stopped card shows in place of its frame.
-   widgets.js owns the registry and decides WHEN a card mounts; this module only
-   renders and reads the card's controls. Declarative cards are host-drawn and
-   get none of this. */
+   launch policy (and whether it keeps the card running while Widgets is
+   hidden), the card's ONE primary control (Start / Stop), the secondary
+   launch-policy menu, the facade a stopped card shows in place of its frame,
+   and the page-level Refresh confirmation that counts the cards kept running.
+   widgets.js owns the registry and decides WHEN a card mounts or stops; this
+   module only renders and reads the controls. Declarative cards are host-drawn
+   and get none of this. */
 
+import { openConfirmDialog } from './confirm_dialog.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { widgetKey } from './widget_list.js';
@@ -33,8 +36,8 @@ export function isFramedWidget(tab) {
  * (`ui_preferences.widget_start_mode[key]`) wins over the author's validated
  * `render.start`, which wins over the kind default (module/iframe → manual,
  * declarative → auto) for payloads registered before the validator filled it.
- * `retain` is a valid answer; until the keep-alive phase the host treats it
- * exactly like `auto`.
+ * `retain` starts like `auto` and additionally keeps the card running while
+ * the owner is on other pages (`isRetainedWidget`).
  */
 export function effectiveStartMode(tab, prefs) {
     const owner = prefs?.widget_start_mode?.[widgetKey(tab)];
@@ -42,6 +45,33 @@ export function effectiveStartMode(tab, prefs) {
     const author = tab?.render?.start;
     if (WIDGET_START_MODES.includes(author)) return author;
     return KIND_DEFAULT_START[tab?.render?.kind] || 'auto';
+}
+
+/**
+ * A framed card the owner keeps running while Widgets is hidden. Only a frame
+ * can be kept: a declarative card is host-drawn and always disposes on leave,
+ * whatever an owner override says.
+ */
+export function isRetainedWidget(tab, prefs) {
+    return isFramedWidget(tab) && effectiveStartMode(tab, prefs) === 'retain';
+}
+
+/**
+ * Refresh is the hard reset: every card restarts, including the ones the owner
+ * keeps running. Ask first only while such a card is running — with none there
+ * is nothing to lose and no dialog. Confirm mode returns a strict boolean, and
+ * anything but `true` (Cancel, Close, Escape, backdrop, supersession) keeps
+ * every frame as it is.
+ */
+export async function confirmWidgetsRestart(keptRunning, { dialogImpl = openConfirmDialog } = {}) {
+    const count = Math.max(0, Math.trunc(Number(keptRunning) || 0));
+    if (!count) return true;
+    const confirmed = await dialogImpl({
+        title: 'Restart all widgets?',
+        body: `${count} ${count === 1 ? 'program' : 'programs'} kept running in the background will be stopped.`,
+        confirmLabel: 'Restart',
+    });
+    return confirmed === true;
 }
 
 /** Whole-map replace payload for `POST /api/ui/preferences` (the `widget_order` shape). */
@@ -77,6 +107,9 @@ const STATUS_TEXT = { starting: 'Starting…', running: 'Running', stopping: 'St
  * Keep the head controls truthful. `state` is one of stopped | starting |
  * running | stopping — expressed through the button label, `disabled` while a
  * transition is in flight, and the status sentence; no state machine object.
+ * A running card kept alive across pages (`mode === 'retain'`) says so: the
+ * frame really keeps running while Widgets is hidden (the browser, not the
+ * host, may pause its animation frames meanwhile — see CREATING_SKILLS).
  */
 export function syncWidgetCardControls(card, state, mode = '') {
     const power = card?.querySelector('[data-widget-power]');
@@ -87,7 +120,9 @@ export function syncWidgetCardControls(card, state, mode = '') {
     if (status) {
         status.hidden = state === 'stopped';
         status.dataset.tone = state === 'running' ? 'ok' : 'neutral';
-        status.textContent = STATUS_TEXT[state] || 'Stopped';
+        status.textContent = state === 'running' && mode === 'retain'
+            ? 'Keeps running'
+            : (STATUS_TEXT[state] || 'Stopped');
     }
     if (!mode) return;
     card.querySelectorAll('[data-widget-start-mode]').forEach((item) => {

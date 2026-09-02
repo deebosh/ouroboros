@@ -306,14 +306,17 @@ _WIDGET_TEMPORAL_TRACE_SCRIPT = r"""
     const start = () => {
         const observer = new MutationObserver((records) => {
             records.forEach((row) => {
-                const target = row.target.nodeType === 1 ? row.target : row.target.parentElement;
-                if (target?.matches?.('style[id^="masonry-style-"]')) {
-                    record('masonry', target, {css: target.textContent});
+                // Masonry writes its plan as custom properties (widgets lifecycle
+                // phase 3): `--masonry-h` on the list is the one write per layout.
+                if (row.type === 'attributes' && row.target.matches?.('.widgets-list')) {
+                    record('masonry', row.target, {height: row.target.style.getPropertyValue('--masonry-h')});
                 }
             });
             scan();
         });
-        observer.observe(document.documentElement, {subtree: true, childList: true});
+        observer.observe(document.documentElement, {
+            subtree: true, childList: true, attributes: true, attributeFilter: ['style'],
+        });
         scan();
     };
     if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start, {once: true});

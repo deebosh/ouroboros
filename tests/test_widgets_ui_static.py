@@ -16,15 +16,17 @@ def _widgets_js() -> str:
 def _framed_widget_sources() -> str:
     """widgets.js (page host, dispatcher, declarative renderer) plus the framed
     mounts split out of it (widget_module.js), the in-frame bootstrap
-    (widget_frame.js), the framed-card chrome (widget_card.js) and the card
-    reorder handles (widget_reorder.js). Negative pins run against this union
-    so the moved code never leaves their coverage."""
+    (widget_frame.js), the framed-card chrome (widget_card.js), the card
+    reorder handles (widget_reorder.js) and the declarative chart helpers
+    (widget_chart.js). Negative pins run against this union so the moved code
+    never leaves their coverage."""
     return (
         _widgets_js()
         + _read("web/modules/widget_module.js")
         + _read("web/modules/widget_frame.js")
         + _read("web/modules/widget_card.js")
         + _read("web/modules/widget_reorder.js")
+        + _read("web/modules/widget_chart.js")
     )
 
 
@@ -46,12 +48,14 @@ def test_widgets_support_declarative_schema_components():
     assert "type === 'action'" in source
     assert "type === 'table'" in source
     assert "type === 'markdown'" in source
-    # Lifecycle / cleanup discipline
+    # Lifecycle / cleanup discipline: the hard reset stops everything; leaving
+    # stops everything except the frames the owner keeps running (phase 3).
     assert "disposeMountedWidgets();" in source
     assert "let widgetsMounted = false;" in source
     assert "let renderGeneration = 0;" in source
     page_shown_branch = source.split("window.addEventListener('ouro:page-shown'")[1]
-    assert "disposeMountedWidgets();" in page_shown_branch
+    assert "disposeMountedWidgets(retainsWhileHidden);" in page_shown_branch
+    assert "disposeMountedWidgets();" not in page_shown_branch
 
 
 def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
@@ -63,7 +67,9 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     patch (``web/modules/widget_list.js`` holds the pure helpers). The same
     sync runs on a visible ``extension_lifecycle`` event and on every WebSocket
     (re)connect, never on a timer. Refresh keeps the hard-reset semantics
-    (dispose everything, refetch, rebuild all) and says so in its tooltip."""
+    (dispose everything, refetch, rebuild all) and says so in its tooltip; since
+    phase 3 it asks first — through the shared confirm dialog, strict boolean —
+    only while a kept-running (`retain`) card would be stopped by it."""
     source = _widgets_js()
     helpers = _read("web/modules/widget_list.js")
     assert "apiClient.widgets()" in source
@@ -85,7 +91,12 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     force_branch = source.split("if (force) {", 1)[1].split("}", 1)[0]
     assert "stoppedByOwner.clear();" in force_branch
     assert "await disposeMountedWidgets();" in force_branch
-    assert "refreshBtn.addEventListener('click', () => render(true));" in source
+    assert "refreshBtn.addEventListener('click', refreshWidgets);" in source
+    assert "if (await confirmWidgetsRestart(keptRunning().length)) render(true);" in source
+    card = _read("web/modules/widget_card.js")
+    assert "export async function confirmWidgetsRestart(keptRunning, { dialogImpl = openConfirmDialog } = {})" in card
+    assert "if (!count) return true;" in card
+    assert "return confirmed === true;" in card
     assert 'title="Reload the list and restart all widgets"' in source
 
 
@@ -259,11 +270,26 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     the frame's own custom property. Owner Stop is remembered for the page
     session only; Start, a policy change to Auto / Keep running, and Refresh
     forget it. A vanished card is stopped in order and evicts its session
-    state. Retain is accepted and behaves as auto until the keep-alive phase."""
+    state. Phase 3: a FRAMED card whose effective policy is `retain` keeps its
+    frame mounted in the hidden page when the owner leaves (declarative cards
+    always dispose), its badge says "Keeps running", a lifecycle event while
+    hidden force-stops a kept frame whose skill left the list, and the hard
+    reset still stops everything."""
     page = _widgets_js()
     card = _read("web/modules/widget_card.js")
     style = _read("web/style.css")
     assert "export function effectiveStartMode(tab, prefs)" in card
+    assert "export function isRetainedWidget(tab, prefs)" in card
+    assert "return isFramedWidget(tab) && effectiveStartMode(tab, prefs) === 'retain';" in card
+    assert "? 'Keeps running'" in card
+    assert "const retainsWhileHidden = (key) => isRetainedWidget(tabByKey(key), uiPreferences);" in page
+    assert "if (!keep?.(key)) disposeWidgetByKey(key);" in page
+    hidden_branch = page.split("async function stopVanishedRetainedWidgets() {", 1)[1].split("async function syncWidgets", 1)[0]
+    assert "if (widgetsVisible) return;" in hidden_branch
+    assert "kept.filter((key) => !live.has(key)).forEach(disposeWidgetByKey);" in hidden_branch
+    reconcile = page.split("function reconcileWidgetList() {", 1)[1].split("async function stopVanishedRetainedWidgets", 1)[0]
+    assert "stopVanishedRetainedWidgets();" in reconcile
+    assert reconcile.index("listDirty = true;") < reconcile.index("stopVanishedRetainedWidgets();")
     assert "const KIND_DEFAULT_START = { declarative: 'auto', module: 'manual', iframe: 'manual' };" in card
     assert "if (!isFramedWidget(tab)) return '';" in card
     assert card.count("btn btn-primary") == 1
@@ -287,7 +313,7 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     assert "bindWidgetCardMenus(list, setWidgetStartMode);" in page
     assert "event.target.closest('[data-widget-power]')" in page
     # Force-stop + eviction on a vanished card; the frame keeps its ack window.
-    removed_branch = page.split("for (const key of plan.removed) {", 1)[1].split("let anchor = null;", 1)[0]
+    removed_branch = page.split("for (const key of plan.removed) {", 1)[1].split("for (const tab of nextTabs) {", 1)[0]
     assert "disposeWidgetByKey(key)" in removed_branch
     assert "widgetSessionState.delete(key);" in removed_branch
     assert "stoppedByOwner.delete(key);" in removed_branch
@@ -326,20 +352,40 @@ def test_widgets_refresh_button_shows_loading_state():
 
 
 def test_widgets_cards_do_not_stretch_to_row_height():
+    """Masonry packs unequal cards by absolute position. Phase 3: `layout()`
+    packs the cards in the page's explicit key order (`widget_order`), never the
+    DOM order, and writes the plan back only as narrow custom properties
+    (`--masonry-w/-x/-y` per card, `--masonry-h` on the list) that one static
+    rule set in web/style.css applies; the generated per-container `<style>`
+    with `:nth-child` rules is gone, and `applyMasonry` returns an idempotent
+    disposer for its three observers and the pending frame."""
     source = _widgets_js()
     css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")
     masonry = (REPO_ROOT / "web" / "modules" / "masonry.js").read_text(encoding="utf-8")
     assert "const span = Number(tab.span || tab.grid_span || 1);" in source
     assert "widgets-card-span-2" in source
-    assert "applyMasonry(list)" in source
+    assert "const relayout = () => applyMasonry(list, { order: currentWidgetOrder() });" in source
     assert "function layout(container, config)" in masonry
     assert "item.classList.contains(spanClass) ? 2 : 1" in masonry
     assert "Math.min(desiredColumns, availableColumns)" in masonry
     assert "itemResizeObserver" in masonry
     assert "observeItems()" in masonry
+    # Custom properties in, static CSS out; no generated stylesheet, no DOM id.
+    for name in ("--masonry-w", "--masonry-x", "--masonry-y", "--masonry-h"):
+        assert f"setProperty('{name}'" in masonry, name
+    for gone in ("createElement('style')", "document.head", "getElementById", "data-masonry-id", "masonryId", "nth-child", "textContent"):
+        assert gone not in masonry, gone
+    assert "resizeObserver.disconnect();" in masonry
+    assert "itemResizeObserver.disconnect();" in masonry
+    assert "mutationObserver.disconnect();" in masonry
+    assert "cancelAnimationFrame(frame)" in masonry
     widgets_block = css.split(".widgets-list {", 1)[1].split("}", 1)[0]
     assert "display: grid" not in widgets_block
     assert "position: relative;" in widgets_block
+    assert "height: var(--masonry-h, auto);" in widgets_block
+    card_block = css.split("height: var(--masonry-h, auto);", 1)[1].split(".widgets-card {", 1)[1].split("}", 1)[0]
+    assert "width: var(--masonry-w, auto);" in card_block
+    assert "transform: translate(var(--masonry-x, 0px), var(--masonry-y, 0px));" in card_block
     assert ".widgets-card-span-2" in css
 
 
@@ -361,9 +407,13 @@ def test_widget_json_wraps_inside_its_host_card():
 
 
 def test_widgets_card_order_is_owner_ui_preference():
-    """The reorder handles moved unchanged into ``widget_reorder.js`` (phase 2
-    made room in widgets.js); the card markup and the preference write stay
-    in the page host."""
+    """The reorder handles live in ``widget_reorder.js``; the card markup and
+    the preference write stay in the page host. Phase 3: a reorder (drag or
+    keys) is a pure move in the KEY order (``moveWidgetKey``) handed back to the
+    page, which re-sorts, relayouts through masonry and persists — no
+    ``<article>`` is ever moved, so a running frame never reloads on reorder.
+    Disclosed residual: the Tab/focus order follows the DOM and may differ from
+    the visible order until the hard reset rebuilds the cards."""
     source = _widgets_js()
     reorder = _read("web/modules/widget_reorder.js")
     css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")
@@ -379,7 +429,15 @@ def test_widgets_card_order_is_owner_ui_preference():
     assert "event.key === 'ArrowUp'" in reorder
     assert "apiClient.uiPreferences()" in source
     assert "apiClient.saveUiPreferences({ widget_order: normalized })" in source
-    assert "currentWidgetOrderFromDom(list)" in reorder
+    assert "export function moveWidgetKey(order, key, toIndex)" in reorder
+    assert "export function bindWidgetCardReorder(list, currentOrder, onOrderChange)" in reorder
+    assert "bindWidgetCardReorder(list, currentWidgetOrder, persistWidgetOrder);" in source
+    for moved in (".before(", ".after(", ".prepend(", ".append(", "insertBefore", "appendChild", "replaceWith"):
+        assert moved not in reorder, moved
+    # The keyed patch inserts and replaces nodes but never moves one.
+    assert "anchor.after(" not in source
+    assert "list.prepend(" not in source
+    assert "previousLiveCard" not in source
     assert ".widgets-card-drag" in css
     assert ".widgets-card.drag-over" in css
     assert "uiPreferences: () => fetchJson('/api/ui/preferences'" in api_client
@@ -440,16 +498,24 @@ def test_widgets_schema_v1_composition_uses_stable_tree_keys():
 
 
 def test_widgets_forms_charts_and_kanban_keep_host_owned_contracts():
+    """The chart helpers (config, finite-value coercion, accessible data table)
+    and the shared dotted-path reader moved unchanged into
+    ``widget_chart.js`` (phase 3 made room in widgets.js)."""
     source = _widgets_js()
     helper = _read("web/modules/ui_helpers.js")
+    chart = _read("web/modules/widget_chart.js")
     assert "renderSafeField(" in source
     assert "collectSafeFieldValues(" in source
     assert "includePasswords: false" in source
     assert "pendingActions.has(key)" in source
-    assert "spanGaps: false" in source
-    assert "finiteChartValue" in source
+    assert "from './widget_chart.js'" in source
+    assert "export function getPath(root, path, fallback = '')" in chart
+    assert "spanGaps: false" in chart
+    assert "export function finiteChartValue" in chart
+    assert "data.map(finiteChartValue)" in chart
     assert "aria-label=" in source
-    assert "renderChartDataTable" in source
+    assert "renderChartDataTable(config, label, !chartAvailable)" in source
+    assert "export function renderChartDataTable" in chart
     assert "data-widget-kanban-move" in source
     assert "widget-kanban-empty" in source
     assert "mount.querySelectorAll('[data-widget-kanban-key]')" in source
