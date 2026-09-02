@@ -472,6 +472,26 @@ const state = {
 // seeded from the LOADED setting so a kind round-trip restores the saved target.
 const advisoryRouteMemory = { api: null, session: null };
 
+// The multi-row categories the editor paints. ONE table drives rendering,
+// lookup, adding and removal — a category is a table entry, never another
+// `group === 'scope' ? … : …` ternary (three of those used to encode it).
+export const CATEGORIES = {
+    triad: {
+        stateKey: 'triad', limitKey: 'triad', idPrefix: 'triad',
+        rowsId: 'reviewer-triad-rows', limitId: 'reviewer-triad-limit', addId: 'btn-add-triad-slot',
+        surfaceDefault: 'review effort', empty: 'No triad slots configured.',
+    },
+    scope: {
+        stateKey: 'scope', limitKey: 'scope', idPrefix: 'scope',
+        rowsId: 'reviewer-scope-rows', limitId: 'reviewer-scope-limit', addId: 'btn-add-scope-slot',
+        surfaceDefault: 'scope review effort', empty: 'No scope slots configured.',
+    },
+};
+
+function categoryRows(group) {
+    return state[CATEGORIES[group].stateKey];
+}
+
 export function renderReviewerSlotsSection() {
     return `
         <div class="form-section" id="reviewer-slots-section">
@@ -612,7 +632,7 @@ function rowHtml(row, group) {
     const modelsGap = session ? modelsGapNote(harness, catalogKnown) : '';
     if (modelsGap) metaParts.push(modelsGap);
     if (lastText) metaParts.push(`Last run: ${lastText}`);
-    const surfaceDefault = group === 'scope' ? 'scope review effort' : 'review effort';
+    const surfaceDefault = CATEGORIES[group]?.surfaceDefault || 'review effort';
     return `
         <div class="reviewer-slot-row" data-slot-group="${group}" data-slot-id="${escapeHtml(row.slot_id)}">
             ${reviewerRouteIdentityMarkup(row.route, harnessesById(), { catalogKnown })}
@@ -712,36 +732,30 @@ function renderRows() {
         pinsBox.hidden = !text;
         pinsBox.textContent = text;
     }
-    const triadBox = document.getElementById('reviewer-triad-rows');
-    const scopeBox = document.getElementById('reviewer-scope-rows');
     const advisoryBox = document.getElementById('reviewer-advisory-row');
-    if (!triadBox || !scopeBox || !advisoryBox) return;
-    triadBox.innerHTML = state.triad.map((row) => rowHtml(row, 'triad')).join('')
-        || '<div class="muted">No triad slots configured.</div>';
-    scopeBox.innerHTML = state.scope.map((row) => rowHtml(row, 'scope')).join('')
-        || '<div class="muted">No scope slots configured.</div>';
+    const boxes = Object.entries(CATEGORIES).map(([group, cat]) => [group, cat, document.getElementById(cat.rowsId)]);
+    if (!advisoryBox || boxes.some(([, , box]) => !box)) return;
+    for (const [group, cat, box] of boxes) {
+        box.innerHTML = categoryRows(group).map((row) => rowHtml(row, group)).join('')
+            || `<div class="muted">${cat.empty}</div>`;
+        // The count stays in the heading; what the limit MEANS moved to the
+        // span's title (owner feedback: headers carried parenthetical jargon).
+        const limitEl = document.getElementById(cat.limitId);
+        if (limitEl) limitEl.textContent = `${categoryRows(group).length}/${state.limits[cat.limitKey]}`;
+        const addEl = document.getElementById(cat.addId);
+        if (addEl) addEl.disabled = categoryRows(group).length >= state.limits[cat.limitKey];
+    }
     advisoryBox.innerHTML = advisoryHtml();
     const datalist = document.getElementById('reviewer-api-model-catalog');
     if (datalist) {
         datalist.innerHTML = state.catalogModels
             .map((id) => `<option value="${escapeHtml(id)}"></option>`).join('');
     }
-    // The count stays in the heading; what the limit MEANS moved to the span's
-    // title (owner feedback: headers carried parenthetical jargon).
-    const triadLimit = document.getElementById('reviewer-triad-limit');
-    if (triadLimit) triadLimit.textContent = `${state.triad.length}/${state.limits.triad}`;
-    const scopeLimit = document.getElementById('reviewer-scope-limit');
-    if (scopeLimit) scopeLimit.textContent = `${state.scope.length}/${state.limits.scope}`;
-    const addTriad = document.getElementById('btn-add-triad-slot');
-    if (addTriad) addTriad.disabled = state.triad.length >= state.limits.triad;
-    const addScope = document.getElementById('btn-add-scope-slot');
-    if (addScope) addScope.disabled = state.scope.length >= state.limits.scope;
     bindRowEvents();
 }
 
 function findRow(group, slotId) {
-    const rows = group === 'scope' ? state.scope : state.triad;
-    return rows.find((row) => row.slot_id === slotId) || null;
+    return (categoryRows(group) || []).find((row) => row.slot_id === slotId) || null;
 }
 
 function bindRowEvents() {
@@ -796,7 +810,7 @@ function bindRowEvents() {
             state.onChange();
         });
         rowEl.querySelector('[data-slot-remove]')?.addEventListener('click', () => {
-            const rows = group === 'scope' ? state.scope : state.triad;
+            const rows = categoryRows(group);
             const index = rows.indexOf(row);
             if (index >= 0) rows.splice(index, 1);
             renderRows();
@@ -863,12 +877,13 @@ function bindRowEvents() {
 }
 
 function addRow(group) {
-    const rows = group === 'scope' ? state.scope : state.triad;
-    const limit = group === 'scope' ? state.limits.scope : state.limits.triad;
-    if (rows.length >= limit) return;
-    const taken = [...state.triad, ...state.scope].map((row) => row.slot_id);
+    const cat = CATEGORIES[group];
+    const rows = categoryRows(group);
+    if (rows.length >= state.limits[cat.limitKey]) return;
+    // Ids are unique across EVERY category: one identity space, one history per row.
+    const taken = Object.keys(CATEGORIES).flatMap((g) => categoryRows(g)).map((row) => row.slot_id);
     rows.push({
-        slot_id: mintSlotId(group === 'scope' ? 'scope' : 'triad', taken),
+        slot_id: mintSlotId(cat.idPrefix, taken),
         route: { kind: ROUTE_KIND_API, target_id: '' },
         subagent_id: '',
         effort: '',
@@ -981,8 +996,9 @@ export function initReviewerSlots({ onChange, store = claudexorStatus } = {}) {
             renderRows();
         },
     }));
-    document.getElementById('btn-add-triad-slot')?.addEventListener('click', () => addRow('triad'));
-    document.getElementById('btn-add-scope-slot')?.addEventListener('click', () => addRow('scope'));
+    for (const [group, cat] of Object.entries(CATEGORIES)) {
+        document.getElementById(cat.addId)?.addEventListener('click', () => addRow(group));
+    }
     const onCatalog = (event) => {
         const items = event?.detail?.items || [];
         state.catalogModels = items.map((item) => String(item.value || item.id || '')).filter(Boolean);

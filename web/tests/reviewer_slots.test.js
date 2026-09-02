@@ -6,6 +6,7 @@ import { serviceBannerLine } from '../modules/harness_accounts.js';
 
 import {
     API_ROUTE_CHOICE,
+    CATEGORIES,
     ROUTE_KIND_API,
     ROUTE_KIND_SESSION,
     advisoryRouteTransition,
@@ -58,6 +59,24 @@ test('reviewer routes reuse the shared visible harness identity without claiming
     assert.match(api, />API</);
 });
 
+
+test('the category table is the one driver of the multi-row editor and matches its markup', () => {
+    // ONE table replaced three `group === 'scope' ? … : …` ternaries (lookup,
+    // add, remove): a new multi-row category is a table entry, and every id
+    // the table names must exist in the static section it paints into.
+    const markup = renderReviewerSlotsSection();
+    assert.deepEqual(Object.keys(CATEGORIES), ['triad', 'scope']);
+    for (const [group, cat] of Object.entries(CATEGORIES)) {
+        assert.equal(cat.stateKey, group);
+        assert.equal(cat.limitKey, group);
+        for (const id of [cat.rowsId, cat.limitId, cat.addId]) {
+            assert.match(markup, new RegExp(`id="${id}"`), `${group}: ${id} missing from the section markup`);
+        }
+        assert.ok(cat.idPrefix && cat.surfaceDefault && cat.empty, `${group}: incomplete table entry`);
+    }
+    assert.equal(CATEGORIES.scope.surfaceDefault, 'scope review effort');
+    assert.equal(CATEGORIES.triad.surfaceDefault, 'review effort');
+});
 
 test('the standing note states the POLICY, never the current routing', () => {
     // The section's inline note is STATIC markup: it renders identically for an
