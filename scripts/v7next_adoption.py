@@ -59,9 +59,9 @@ REQUIRED_PHASE = {
     # seam's rows 913-917/1080-1081 still hot-deferred, so the pin named a dead
     # phase. F6 is the live phase. This is an OPERATOR scheduling correction, not
     # an owner decision — disclosed in the manifest row and the ledger so the
-    # owner can overturn it. Sibling rows D04/D05/D06/D35 have the same stale F1
-    # pin with owner-scheduled lanes still owed; they were deliberately left
-    # alone here (one decision per class, and nobody has decided this one).
+    # owner can overturn it. Sibling rows D04/D05/D06/D35 landed through their
+    # owner-decided lanes and read done; their F1 pins were deliberately left
+    # alone (one decision per class, and nobody has decided this one).
     "D02": "F3", "D03": "F6", "D04": "F1", "D05": "F1", "D06": "F1",
     "D07": "F2", "D08": "F2", "D09": "F1", "D11": "F1", "D13": "F1",
     "D18": "F1", "D31": "F2", "D33": "F1", "D34": "F2", "D35": "F1",

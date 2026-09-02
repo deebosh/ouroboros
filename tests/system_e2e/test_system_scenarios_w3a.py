@@ -1,10 +1,10 @@
-"""S11-S14 — Ф4 wave 3a of the deep-integration suite (v7next plan §8).
+"""S14-S17 — Ф4 wave 3a of the deep-integration suite (v7next plan §8).
 
 Review surfaces and acceptance, keyless throughout, on the wave-1/2 skeleton.
 Every scenario asserts DURABLE artifacts (never an HTTP 200 alone, never a
 harness exit code) and synchronizes by durable-event polling:
 
-* S11 — PLAN REVIEW: a scripted task drives ``plan_task`` through a real
+* S14 — PLAN REVIEW: a scripted task drives ``plan_task`` through a real
   REVISE→ACCEPT cycle (cycle 1: every triad slot returns a blocking finding →
   REVISE_PLAN; cycle 2: a CHANGED spec → all-clean → GREEN closed), the durable
   chronicle is honest (``plan_review_state`` on the stored task row: paid-cycle
@@ -13,14 +13,14 @@ harness exit code) and synchronizes by durable-event polling:
   respected: a third paid cycle is refused with the typed
   ``PLAN_REVIEW_CYCLES_EXHAUSTED`` result at $0 (no reviewer dispatched) plus
   the durable ``review_cycles_exhausted`` escalation event.
-* S12 — COMMIT TRIAD+SCOPE, ADVISORY enforcement class: the same red triad
+* S15 — COMMIT TRIAD+SCOPE, ADVISORY enforcement class: the same red triad
   verdict that BLOCKS a blocking install is recorded and waved through — the
   commit lands, and the wave-through leaves the constitutional loud trace
   (``review_advisory_override`` event + ``state/advisory_overrides.json``
   counter + the verdicts on the durable commit-attempt row). Effect asserted BY
-  CLASS (AGENTS.md directive): S12+S13 are the same organ under the two
+  CLASS (AGENTS.md directive): S15+S16 are the same organ under the two
   enforcement values.
-* S13 — COMMIT TRIAD+SCOPE, BLOCKING enforcement class: a critical triad FAIL
+* S16 — COMMIT TRIAD+SCOPE, BLOCKING enforcement class: a critical triad FAIL
   blocks the commit (repo HEAD does not move), a byte-identical resubmission is
   refused FREE with the typed ``IDENTICAL_DIFF_REFUSED`` (no reviewer paid
   twice for the same bytes), and a fixed diff passes clean review and lands.
@@ -37,7 +37,7 @@ harness exit code) and synchronizes by durable-event polling:
         STILL refused (``REVIEW_REVALIDATION_FAILED``, block_reason
         ``revalidation_failed``, fingerprint_status ``mismatch``): a verdict
         for other bytes is never carried forward.
-* S14 — ACCEPTANCE LOOP (required + blocking): the terminal runs the real
+* S17 — ACCEPTANCE LOOP (required + blocking): the terminal runs the real
   acceptance dialogue — panel 1 rejects with an actionable capsule, the loop
   feeds the improvement note back, the agent reworks, panel 2 accepts clean
   (``accepted``/clean pass, both paid identities on the durable wallet). The
@@ -46,9 +46,10 @@ harness exit code) and synchronizes by durable-event polling:
   panel (``finalized_unaccepted`` / identical refusal, acceptance stub calls
   unchanged) — the keyless instance of the $0-refusal class.
 
-Deferred to a later wave (disclosed, wave-4 remainder): self-evolution absorb
-with kill-mid-absorb recovery, delegated-transport (FakeClaudexorDaemon),
-gateway/UI truth (Playwright), skills lifecycle.
+Covered by the other waves (manifest in ``tests/system_e2e/harness.py``):
+delegated transport S11-S12, skills lifecycle S13 (wave 3b), self-evolution
+absorb and the update variations in wave 4. Still deferred: gateway/UI truth
+(Playwright).
 """
 
 from __future__ import annotations
@@ -245,7 +246,7 @@ def _head(clone) -> str:
 
 
 # ===========================================================================
-# S11 — plan review: REVISE→ACCEPT cycle, honest chronicle, cycle cap
+# S14 — plan review: REVISE→ACCEPT cycle, honest chronicle, cycle cap
 # ===========================================================================
 
 S11_GOAL = "Write the w3a plan-review smoke note."
@@ -382,7 +383,7 @@ def test_s14_plan_review_cycle_cap_refuses_third_paid_cycle(e2e_clone, tmp_path_
 
 
 # ===========================================================================
-# S12 — commit triad+scope, ADVISORY enforcement class
+# S15 — commit triad+scope, ADVISORY enforcement class
 # ===========================================================================
 
 S12_DOC = "docs/notes/system_e2e_w3a_advisory.md"
@@ -457,7 +458,7 @@ def test_s15_advisory_class_red_verdict_recorded_and_commit_lands(
 
 
 # ===========================================================================
-# S13 — commit triad+scope, BLOCKING enforcement class + freshness staleness
+# S16 — commit triad+scope, BLOCKING enforcement class + freshness staleness
 # ===========================================================================
 
 S13_DOC = "docs/notes/system_e2e_w3a_blocking.md"
@@ -556,7 +557,7 @@ def test_s16_blocking_class_red_blocks_identical_refused_free_then_green_lands(
             server.stop()
 
 
-# --- S13 freshness stale-rejection (private clone: the scenario mutates the
+# --- S16 freshness stale-rejection (private clone: the scenario mutates the
 # staged index mid-review, which must never leak into the shared session clone).
 
 S13B_DOC = "docs/notes/system_e2e_w3a_freshness.md"
@@ -693,7 +694,7 @@ def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
 
 
 # ===========================================================================
-# S14 — acceptance loop (required + blocking)
+# S17 — acceptance loop (required + blocking)
 # ===========================================================================
 
 S14_ANSWER_V1 = "Final answer: the summary is drafted (first pass)."

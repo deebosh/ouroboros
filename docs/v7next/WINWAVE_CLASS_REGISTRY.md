@@ -93,7 +93,15 @@ The row's re-prove needs a green full-test 3-OS matrix on a frozen branch SHA
 | run id | SHA | ubuntu | macos | windows | verdict |
 |---|---|---|---|---|---|
 | [33555971481](https://github.com/razzant/ouroboros/actions/runs/33555971481) | `9a28e58f` (branch `ouroboros_v7next`, 2026-09-01 20:33Z) | green | green | **RED** (class 17) | not a re-prove |
-| [33563498919](https://github.com/razzant/ouroboros/actions/runs/33563498919) | `196438c9` (branch `ouroboros_v7next`, carries the class-17 fix `a0b35fcd`) | pending | pending | pending | **pending** — no result at the time of writing |
+| [33563498919](https://github.com/razzant/ouroboros/actions/runs/33563498919) | `196438c9` (carries the class-17 fix `a0b35fcd`) | green | green | **RED** — 16 tests, nine platform classes (chmod probes, open-file unlink, signal.alarm, separators, shlex backslashes, cp1252, simulated O_BINARY, byte-exact writer vs os.linesep, host-only signal names) | not a re-prove; classes fixed in 20afdbb7..e0aee1ac |
+| [33567328254](https://github.com/razzant/ouroboros/actions/runs/33567328254) | `9754cc95` | green | **RED** (two scheduler-sensitive pins, hardened in 455c9a1e) | **RED** (one: the listing pin's own fold of the JSON-escaped separator, fixed d0d52677) | not a re-prove |
+| [33568284121](https://github.com/razzant/ouroboros/actions/runs/33568284121) | `7c93e8b7` | green | green | **RED** (the same single pin) | not a re-prove |
+| [33568728122](https://github.com/razzant/ouroboros/actions/runs/33568728122) | `f5a94675` | green | **RED** (custody pin, gated in 8b27b507) | **green** — first green Windows leg | not a re-prove (macOS) |
+| [33569841899](https://github.com/razzant/ouroboros/actions/runs/33569841899) | `8b27b507` | green | green | green | **RE-PROVE** — full matrix green |
+| [33570328266](https://github.com/razzant/ouroboros/actions/runs/33570328266) | `285ab66d` | green | green | green | re-prove holds |
+| [33571681398](https://github.com/razzant/ouroboros/actions/runs/33571681398) | `9238cc2d` | green | green | green | re-prove holds |
+| [33572515529](https://github.com/razzant/ouroboros/actions/runs/33572515529) | `c0029d45` | green | green | green | re-prove holds |
+| [33574822693](https://github.com/razzant/ouroboros/actions/runs/33574822693) | `d21806d8` (first run of the scheduled `system-e2e-mock` job on dispatch) | pending | pending | pending | pending at the time of writing |
 
 The windows failure in run 33555971481, read from the run's own log rather than
 from its exit code: two subtests of `web/tests/chat_plain_system_rows.test.js`
