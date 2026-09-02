@@ -399,7 +399,12 @@ def test_server_boot_leaves_the_settings_bytes_alone(tmp_path, monkeypatch):
     normalization replaces — the exact case the retired boot write persisted) leaves
     the file's bytes and mtime untouched. The syntactic pin is the fast tripwire; this
     one also catches a boot write that reaches the disk through some helper other
-    than the named saver."""
+    than the named saver.
+
+    The boot managed-update thread is the one lifespan job stubbed for a reason of its
+    own rather than for scope: it is a daemon whose work races this assertion anyway,
+    and it reaches for the MANAGED REPO — running it would have this pin fetch from
+    whatever ``REPO_DIR`` resolves to in the process that happens to run pytest."""
     import server as srv
     from ouroboros import config as cfg
     from ouroboros.server_runtime import (
@@ -434,6 +439,7 @@ def test_server_boot_leaves_the_settings_bytes_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "has_startup_ready_provider", lambda *_a, **_k: False)
     monkeypatch.setattr("ouroboros.server_runtime.has_local_routing", lambda *_a, **_k: False)
     monkeypatch.setattr(srv, "_start_supervisor_if_needed", lambda *_a, **_k: None)
+    monkeypatch.setattr(srv, "_boot_managed_update_tasks", lambda *_a, **_k: None)
     monkeypatch.setattr(srv.uvicorn, "Server", _NoServer)
     monkeypatch.setattr("ouroboros.launcher_bootstrap.ensure_data_skills_seeded", lambda: None)
     monkeypatch.setattr("ouroboros.server_auth.get_configured_network_password", lambda: "")

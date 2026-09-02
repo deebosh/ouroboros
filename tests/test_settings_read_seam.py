@@ -23,8 +23,10 @@ carries the VOCABULARY normalization only; the context-fit route resolver reads 
 provider-normalized EFFECTIVE document — the route the loop runs — not the owner-raw
 one. These tests pin the golden it must keep producing, the property that lets a
 locked read-modify-write apply it on every save (idempotence), the fact that a read
-writes nothing, and the closed inventory of readers and writers that keeps the seam
-single.
+writes nothing, the closed inventory of every writer in the tree, and the inventory of
+the owner endpoints that read — closed over the two modules that own the owner write
+seam, which is where an endpoint could grow a second reader; `gateway/onboarding.py`
+calls the same reader for its preview, legitimately and through the same seam.
 """
 
 from __future__ import annotations
@@ -360,7 +362,10 @@ def test_one_owner_endpoint_write_preserves_every_owner_customization(isolated_s
 def test_every_owner_endpoint_reaches_the_same_normalized_read(isolated_settings):
     """The fix is one seam, not five patches: each single-decision owner endpoint,
     and the generic save, take their document from ``_owner_read_settings_raw`` —
-    directly, or through the locked read-modify-write primitive built on it.
+    directly, or through the locked read-modify-write primitive built on it. The set is
+    closed over the two modules that own the owner write seam, which is where a second
+    reader could appear; `gateway/onboarding.py` calls the same reader for its subagent
+    preview, which is that reader used as intended rather than a bypass of it.
 
     The names are the SYNCHRONOUS bodies: every settings writer hands its body to a
     worker thread (the event loop must not freeze for a save), so the async endpoint
