@@ -188,7 +188,7 @@ def test_child_task_handoff_results_never_truncated():
 # ---------------------------------------------------------------------------
 
 def test_repo_read_default_max_lines_is_2000(tmp_path):
-    """Default max_lines must be 2000 so ARCHITECTURE.md (~1285 lines) fits in one call."""
+    """Default max_lines must be 2000 so ARCHITECTURE.md fits in one call."""
     import inspect
     from ouroboros.tools.core import _repo_read
     sig = inspect.signature(_repo_read)
