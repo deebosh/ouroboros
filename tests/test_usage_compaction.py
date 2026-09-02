@@ -978,11 +978,13 @@ def test_an_orphan_segment_of_the_live_generation_is_not_a_rollback(data_root, m
 )
 def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root, monkeypatch):
     """The chain walk and the anchor scan must look at the SAME directory: a
-    directory swapped between them (renamed away, a look-alike holding only
-    the older generations put in its place) hides the newer generation from
-    a path-based scan and admits a forged rollback. The scan therefore runs
-    through the dir-fd the walk held — the renamed directory is still the one
-    that handle names."""
+    directory swapped between them (renamed away, a look-alike put in its
+    place) hides the newer generation from a path-based scan and admits a
+    forged rollback. Listing through the held dir-fd is only half of it: the
+    entries must be OPENED relative to that handle too, or a look-alike that
+    carries the epoch-3 NAME with the forged live header as its leading row
+    is admitted by the orphan exemption. The renamed directory is still the
+    one the handle names, so the real epoch-3 segment is what gets read."""
     _seed_mixed_ledger(data_root)
     assert _compact(data_root) is not None
     for generation in ("gen2", "gen3"):
@@ -990,23 +992,28 @@ def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root,
         assert _compact(data_root) is not None
     header3 = _ledger_rows(data_root)[0]
     header2 = _embedded_header(data_root, header3)
-    _rewrite_header(
-        data_root, {**header3, **{key: header2[key] for key in _SOURCE_PROVENANCE_KEYS}})
+    forged = {**header3, **{key: header2[key] for key in _SOURCE_PROVENANCE_KEYS}}
+    _rewrite_header(data_root, forged)
     archive_dir = data_root / "archive" / "usage_ledger"
     hidden = archive_dir.with_name("usage_ledger.hidden")
+    seg3_name = pathlib.PurePosixPath(header3["archive_rel"]).name
     real_anchor = uc._no_newer_archived_epoch
 
     def swapping_anchor(*args, **kwargs):
         # After the walk, before the anchor: the real directory goes away and a
-        # look-alike without the epoch-3 segment takes its name.
+        # look-alike takes its name — the older generations copied, and under
+        # the epoch-3 NAME a segment whose leading row is the forged live
+        # header, which the orphan exemption admits if the scan opens by path.
         archive_dir.rename(hidden)
         archive_dir.mkdir()
         for segment in hidden.glob("segment_ep000[12]_*.jsonl"):
             shutil.copy2(segment, archive_dir / segment.name)
+        body = (hidden / seg3_name).read_bytes().split(b"\n", 1)[1]
+        (archive_dir / seg3_name).write_bytes(json.dumps(forged, sort_keys=True).encode() + b"\n" + body)
         return real_anchor(*args, **kwargs)
 
     monkeypatch.setattr(uc, "_no_newer_archived_epoch", swapping_anchor)
-    with pytest.raises(UsageLedgerCorrupt):
+    with pytest.raises(UsageLedgerCorrupt, match="generation newer"):
         uc.archived_attempt_ids(data_root)
 
 
