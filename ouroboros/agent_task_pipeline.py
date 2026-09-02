@@ -13,16 +13,14 @@ from typing import Any, Callable, Dict, List
 
 from ouroboros.cost_projection import cost_projection
 from ouroboros.task_results import (
-    STATUS_COMPLETED,
-    STATUS_FAILED,
+    STATUS_COMPLETED,  # noqa: F401 — re-exported for tests / callers
+    STATUS_FAILED,  # noqa: F401 — re-exported for tests / callers
     load_task_result,
     write_task_result,
 )
 from ouroboros.artifacts import collect_task_artifact_records, merge_artifact_records
 from ouroboros.outcomes import (
     EXECUTION_BEST_EFFORT,
-    EXECUTION_FAILED,
-    EXECUTION_INFRA_FAILED,
     EXECUTION_OK,
     apply_receipt_absent_flag,
     artifact_bundle_from_result,
@@ -55,6 +53,7 @@ from ouroboros.task_finalization import (
     sealed_final_prompt_section, terminal_result_fields,
 )
 from ouroboros.dialogue_provenance import is_presence_task, presence_provenance_fields
+from ouroboros.work_uncommitted import downgrade_outcome_for_uncommitted_work, work_uncommitted_task_eval_ok, work_uncommitted_terminal_status
 from ouroboros.presence_runner import build_presence_result_event
 
 log = logging.getLogger(__name__)
@@ -601,6 +600,7 @@ def _derive_host_bound_loop_outcome(
     """Derive once from the current durable mutation-evidence binding."""
     _attach_host_mutation_projection(env, task, llm_trace)
     loop_outcome = apply_skill_publish_receipt_veto(derive_loop_outcome(text or "", usage, llm_trace), task, llm_trace)
+    loop_outcome = downgrade_outcome_for_uncommitted_work(loop_outcome, env, task, llm_trace)
     return _apply_terminal_custody_outcome(env, task, loop_outcome)
 
 
@@ -707,7 +707,7 @@ def emit_task_results(
     if not _ephemeral:
         try:
             append_jsonl(drive_logs / "events.jsonl", {
-                "ts": utc_now_iso(), "type": "task_eval", "ok": execution_status not in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED},
+                "ts": utc_now_iso(), "type": "task_eval", "ok": work_uncommitted_task_eval_ok(execution_status, reason_code, task),
                 "task_id": task.get("id"), "task_type": task.get("type"),
                 "outcome_axes": outcome_axes,
                 "reason_code": reason_code,
@@ -1019,11 +1019,8 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             )
         execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
         reason_code = str(loop_outcome.get("reason_code") or "")
-        status = (
-            STATUS_FAILED
-            if str(existing.get("status") or "") == STATUS_FAILED
-            or execution_status in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}
-            else STATUS_COMPLETED
+        status = work_uncommitted_terminal_status(
+            str(existing.get("status") or ""), execution_status, reason_code, task,
         )
         task_contract = build_task_contract(task)
         task = {**task, "task_contract": task_contract}
