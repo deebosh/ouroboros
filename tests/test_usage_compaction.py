@@ -359,6 +359,7 @@ def test_crash_at_the_ledger_rename_leaves_ledger_intact(data_root, monkeypatch)
     assert _compact(data_root) is not None
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="directory fsync and inode identity are POSIX (the ARCHITECTURE row discloses the Windows no-op)")
 def test_archive_directory_chain_is_durable_before_the_swap(data_root, monkeypatch):
     _seed_mixed_ledger(data_root)
     archive_dir = data_root / "archive" / "usage_ledger"
@@ -422,6 +423,7 @@ def test_the_directory_chain_is_re_synced_on_the_retry_after_a_failed_pass(data_
     test_archive_directory_chain_is_durable_before_the_swap(data_root, monkeypatch)
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="directory fsync and inode identity are POSIX (the ARCHITECTURE row discloses the Windows no-op)")
 def test_the_swap_fsyncs_the_candidate_before_the_rename_and_its_directory_after(data_root, monkeypatch):
     """"A crash during the swap leaves the old file or the new one, both valid"
     rests on two calls: the candidate temp fsync'd BEFORE the replace (without
@@ -915,7 +917,7 @@ def test_warm_segment_cache_revalidates_the_file_it_cached(data_root, compacted)
         uc.archived_attempt_ids(data_root)
     segment.unlink()
     segment.mkdir()  # a directory where the header names a segment: typed, never a bare IsADirectoryError
-    with pytest.raises(UsageLedgerCorrupt, match="not a regular file"):
+    with pytest.raises(UsageLedgerCorrupt, match="not a regular file|could not complete|cannot be inspected"):  # the path shape (Windows) types the refused open, not the fstat
         uc.archived_attempt_ids(data_root)
 
 
@@ -1397,12 +1399,10 @@ def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch
             _lock_path(data_root), timeout_sec=0.05, stale_sec=3600.0, poll_sec=0.01,
             owner_aware_stale=True,
         )
-        # ... and the hold is WIRED THROUGH: without the heartbeat every ownership
-        # proof inside the pass — the commit beats, the beat/look/beat around the
-        # rename — becomes a no-op and the swap runs unproven. This is the only
-        # production caller, so the wire is pinned exactly where it is made — and
-        # pinned to THIS lock: a constant-True stub is callable and proves nothing
-        # (judged outside the call: the trigger contains any exception raised in here).
+        # ... and the hold is WIRED THROUGH: without the heartbeat every ownership proof
+        # inside the pass (commit beats, the beat/look/beat around the rename) is a no-op
+        # and the swap runs unproven. The only production caller, so the wire is pinned where
+        # it is made — to THIS lock: a constant-True stub proves nothing (judged outside the call).
         os.utime(_lock_path(data_root), (0.0, 0.0))
         renewed.append(kwargs["heartbeat"]() is True and _lock_path(data_root).stat().st_mtime > time.time() - 60)
         holds.append(probe is None)

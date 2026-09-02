@@ -56,6 +56,7 @@ def test_path_only_git_lock_cleanup_remains_available(tmp_path):
 # --- Ownership: a lock is only ever OURS to renew or remove -------------------
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
 def test_release_never_unlinks_a_lock_that_was_stolen(tmp_path):
     """A hold evicted as stale must not delete the new owner's lock on exit."""
     lock_path = tmp_path / "state.lock"
@@ -68,6 +69,7 @@ def test_release_never_unlinks_a_lock_that_was_stolen(tmp_path):
     assert lock_path.read_text(encoding="utf-8") == "pid=1 ts=stolen\n"
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
 def test_stale_eviction_never_removes_a_lock_re_created_under_it(tmp_path, monkeypatch):
     """Judge one file, unlink that same file — or none at all.
 
@@ -133,6 +135,7 @@ def test_a_pid_that_refuses_our_signal_is_alive_and_its_lock_is_not_reclaimed(tm
     assert platform_layer.pid_is_alive(4242) is False and platform_layer.pid_provably_gone(4242) is True
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
 def test_heartbeat_reports_lost_ownership_instead_of_renewing(tmp_path):
     """The renewal is an OWNERSHIP statement: a stolen lock renews nothing."""
     lock_path = tmp_path / "state.lock"
@@ -146,6 +149,7 @@ def test_heartbeat_reports_lost_ownership_instead_of_renewing(tmp_path):
     os.close(fd)
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
 def test_heartbeat_on_a_deleted_lock_reports_lost_ownership(tmp_path):
     lock_path = tmp_path / "state.lock"
     fd = acquire_exclusive_file_lock(lock_path, metadata="pid=old ts=0\n")
@@ -312,6 +316,7 @@ def test_a_kernel_refusal_that_is_not_contention_fails_closed(tmp_path, monkeypa
     assert not lock_path.exists()
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
 def test_a_stale_lock_is_never_evicted_without_the_kernel_hold(tmp_path, monkeypatch):
     """Eviction happens only under a held kernel lock on the judged fd: a
     refusal of that hold that is not contention leaves the stale file where

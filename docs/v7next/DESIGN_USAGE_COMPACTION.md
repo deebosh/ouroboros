@@ -230,8 +230,21 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   probes that could disagree — except a directory where the scratch probe
   cannot be created, which answers enforced for that call and is probed again
   next time (not cached).
-  *Enforced tier* (POSIX `fcntl.flock`, Windows `LockFileEx` — both held on
-  the lock fd): every other hold of this lock is milliseconds; a compaction
+  **Windows in 7.0 takes the name tier.** The `LockFileEx` tier is implemented
+  (the Win32 error mapping above, the byte-range lock on the fd) but the 3-OS
+  matrix on `bf8b6549` (run 33654743857) showed why it cannot ship as written:
+  a Windows byte-range lock is MANDATORY, so a contender that opens the held
+  lock file to read the owner's stamp is refused the read, can never judge the
+  hold, and waits until its timeout — eight concurrent monetary writers all
+  answered «lock unavailable», `update_json_locked` timed out, a concurrent chat
+  append was lost. `kernel_file_locks_enforced` therefore answers False on
+  Windows: every lock there runs the O_EXCL name protocol it ran before this
+  design, and the compaction pass refuses (disclosed, typed) exactly as on any
+  name-tier filesystem. Post-release: lock a byte range BEYOND the stamp (the
+  common Win32 idiom) so reads stay possible, then re-enable the tier under a
+  Windows-executed pin.
+  *Enforced tier* (POSIX `fcntl.flock`; Windows `LockFileEx` once re-enabled —
+  both held on the lock fd): every other hold of this lock is milliseconds; a compaction
   pass over a multi-megabyte ledger can legitimately exceed its 90 s
   staleness window, and a lock evicted purely by age would put a second
   writer on the same authority. So the acquisition takes a **kernel lock on

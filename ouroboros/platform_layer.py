@@ -210,6 +210,10 @@ def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
     again next time (not cached); every other answer is the enforced tier, where a refused live
     lock fails closed.  Name-tier locks run the O_EXCL name protocol alone (re-check-then-unlink
     eviction, no kernel exclusion): disclosed best effort — the monetary compaction pass refuses to run there, appends continue."""
+    if IS_WINDOWS:  # 7.0 ships Windows on the NAME tier: the LockFileEx tier below is implemented but
+        return False  # disabled — a mandatory byte-range lock blocks contenders from reading the owner
+    #                   stamp, so waiting for a held lock degenerated into timeouts on the CI matrix
+    #                   (run 33654743857). Post-release: lock a range beyond the stamp, then re-enable.
     directory = os.path.realpath(str(pathlib.Path(lock_path).parent))
     with _KERNEL_LOCK_TIER_LOCK:
         tier, refused = _KERNEL_LOCK_TIER.get(directory, (None, None))
@@ -883,7 +887,7 @@ def force_kill_pid(pid: int) -> None:
             pass
     else:
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, getattr(signal, "SIGKILL", 9))  # spelled portably: a test may drive this branch on Windows
         except (ProcessLookupError, PermissionError, OSError):
             pass
 

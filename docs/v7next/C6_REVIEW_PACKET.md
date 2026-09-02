@@ -885,3 +885,25 @@ Verdicts: 3 × NEEDS_FIXES, no HIGH; 3 MEDIUM + 7 LOW. Fixed here (base `b4938c3
 | LOW R8e — the socket qualification introduced its own absolute: a UNIX socket is corruption on the dir-fd shape only; the path shape's stat-before-open skips it | **docs**: DESIGN §10/§12.5, packet §5.9, ARCHITECTURE row | — |
 
 Sizes after the close-out: `platform_layer.py` 1500/1500 (band ceiling; net +3 on the policy, paid by rewrapping two prose blocks — no contract text dropped), `usage_compaction.py` 1262 (band), `tests/test_usage_compaction.py` **1600/1600** (owner decision still owed: the next pin in this suite needs either the archive-reader tests moved to their own module — a natural organ boundary, `archived_attempt_ids` vs the pass — or a cap decision), `tests/test_lockfile_helpers.py` 568.
+
+### §10 addendum — the Windows matrix (run 33654743857 on bf8b6549)
+
+The lane never ran on Windows (not pushed until integrated). The first 3-OS matrix
+after the merge was red on windows-latest only, in one class plus two test shapes:
+
+- **Class (product):** the `LockFileEx` tier held a MANDATORY byte-range lock on the
+  lock file, so a contender's `_lock_identity(probe)` read was refused and it could
+  never judge the hold — `test_concurrent_writers_keep_monotonic_sequence` («usage
+  accounting lock unavailable»), four `update_json_locked` timeouts, one lost
+  concurrent chat append. **Disposition:** `kernel_file_locks_enforced` answers
+  False on Windows — 7.0 ships Windows on the name tier it always ran (compaction
+  refuses there, typed and disclosed); the tier code stays for the post-release
+  re-enable with a stamp-safe byte range and a Windows-executed pin.
+- **Test shape (lane pins, POSIX protocol):** five lock-ownership pins unlink or
+  rewrite a HELD lock file (impossible on Windows) and two swap pins assert
+  directory fsync/inode identity — `skipif(IS_WINDOWS)` with the reason stated;
+  `test_warm_segment_cache_revalidates_the_file_it_cached` accepts the path
+  shape's typed refusal text.
+- **Bystander:** `kill_process_on_port`'s POSIX branch, now routed through
+  `force_kill_pid`, spelled `signal.SIGKILL`, which Windows lacks — the port-sweep
+  tests drive that branch with `IS_WINDOWS` patched False; spelled portably.

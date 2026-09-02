@@ -8776,3 +8776,14 @@ rc 0 (after the regeneration named in disposition 4);
 `scripts/v7next_adoption.py` rc 0 and `--release` rc 0; `git diff --check` rc 0,
 `git diff --check f3fbfdbb..HEAD` rc 0 and `git diff --check bf8b6549..HEAD`
 rc 0.
+
+## From the Windows CI matrix on bf8b6549 (run 33654743857; C6 lane's first Windows execution)
+
+windows-latest full-test red, 12 tests, three classes (packet §10 addendum): the `LockFileEx`
+kernel tier is unusable as written (a mandatory byte-range lock refuses contenders the read
+of the owner stamp → every wait times out) — **7.0 ships Windows on the name tier**
+(`kernel_file_locks_enforced` → False on Windows; compaction refuses there, disclosed); seven
+lane pins encode the POSIX eviction/fsync protocol and skip on Windows with the reason; one
+regex pin accepts the path shape's typed text; `force_kill_pid` spells SIGKILL portably. The
+re-enable of the Windows tier (stamp-safe byte range + a Windows-executed pin) is a
+post-release item (DEFER-C6-RESIDUALS names it). Verified by the next dispatched matrix.
