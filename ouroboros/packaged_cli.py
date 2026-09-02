@@ -218,7 +218,12 @@ def _save_settings(path: pathlib.Path, settings: dict) -> None:
     it writes is the path the prologue reads: the packaged runtime resolves its data
     dir to ``~/Ouroboros/data``, which is exactly what ``config`` resolves in a
     process that was given no path overrides — pinned by
-    tests/test_settings_read_seam.py."""
+    tests/test_settings_read_seam.py. That identity is CONDITIONAL on the outer
+    packaged process carrying no ``OUROBOROS_*`` path override: the packaged runtime
+    ignores the environment by design (the inner CLI child is handed the packaged
+    paths explicitly), while the prologue proves against ``config.SETTINGS_PATH``,
+    which honours one. Dormant today — ``BootstrapContext.save_settings`` has no
+    caller — and disclosed rather than papered over."""
     from ouroboros.config import prepare_settings_for_persist, serialize_settings
     from ouroboros.utils import replace_atomic
 

@@ -1954,8 +1954,9 @@ Before every commit, verify the following:
   pre-commit refusals answer through `unsaved_error`, or a client cannot tell
   "nothing was written" from an envelope that simply predates the field.
   `owner_write_guard` belongs only on an endpoint that calls
-  `_owner_write_settings`; on any other it translates unraisable exceptions
-  while advertising a lock the endpoint never takes.
+  `_owner_update_settings` (directly with a transform, or through
+  `_owner_write_settings` with a whole document); on any other it translates
+  unraisable exceptions while advertising a lock the endpoint never takes.
 - A setting only an ENDPOINT may author is disk-only in BOTH directions.
   `config.ENDPOINT_AUTHORED_SETTINGS` is consulted by the loader and by the
   environment projection, so the value is never read from `os.environ` and never

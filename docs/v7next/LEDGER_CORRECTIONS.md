@@ -6261,3 +6261,134 @@ pure relocation, row 913, is byte-identical and needed no tool proof).
     rc=0 (facade inventory unchanged); `scripts/v7next_adoption.py` rc=0;
     `--release` refuses exactly one row now (CPL-4 `in-progress`, the owner
     checkpoint — not this lane's); `git diff --check` rc=0.
+
+### Fix round 2 (review findings on the lane, same base 1072a317)
+
+12. Colab reader (MEDIUM) — LANDED. `colab_bootstrap.build_colab_settings` folds
+    the Drive document it re-reads through `config.normalize_settings_raw` BEFORE
+    the defaults merge (it applied `migrate_legacy_slot_keys` alone: the retired
+    ghost survived, the folded retention and review-cycle customizations were
+    replaced by their defaults and written back to Drive as owner choices — the
+    §4.3.5 defect, one reader over); `write_colab_settings` emits
+    `serialize_settings` bytes through `write_text_atomic` (it wrote
+    `atomic_write_json(..., trailing_newline=True)`, a second spelling). The
+    prologue exemption stays (foreign root: the prologue proves ratchets against
+    THIS process's `SETTINGS_PATH`); its docstring no longer names the prologue
+    function literally — the first draft did, and the tripwire read the
+    docstring as routing, which made the exemption dead. Pin: spec §4.3.5-7's
+    Colab fixture, `test_the_colab_re_run_reads_the_drive_document_through_the_same_normalization`.
+    The oracle carries the same gap; parity is exceeded here, disclosed.
+13. Boot-write claim corrected (MEDIUM) — LANDED at the route consumers. Item 6
+    ("every reader re-derives it from the same seam") was false for the PROVIDER
+    normalization: `normalize_settings_raw` carries the vocabulary normalization
+    only and `_owner_read_settings_raw` never applied
+    `apply_runtime_provider_defaults`, so `context_fit.resolve_context_fit_route`
+    and `_failed_route_evidence` (through `_active_main_route`) probed the
+    owner-raw route — on a direct-provider install with no explicit model the
+    OpenRouter-form shipped default instead of the `anthropic::…` / `openai::…`
+    route the loop runs; the base tree agreed from the first boot on only because
+    the retired boot write had persisted the normalization, the tip never agreed
+    until a generic POST or onboarding rewrote the file. Both resolvers now read
+    `apply_runtime_provider_defaults(load_settings())[0]` — the derivation the
+    task-start projection (`subagent_runtime.apply_task_start_settings`), the
+    settings GET and the onboarding reads already make; nothing new. NOT changed:
+    `_owner_read_settings_raw` (carrying provider defaults there would change
+    what the four single-decision endpoints write back — an owner fork, see
+    residual (a)). server.py's boot comment, ARCHITECTURE (the server row, the
+    context_fit row, the seam section and its closing sentence) now say which
+    normalization the read seam carries and who re-derives the other. Item 1's
+    clause "the context-fit route resolver … inherit[s] the fix through it" is
+    superseded: the resolver no longer reads through the owner reader at all.
+    Pin: `test_the_context_fit_route_is_the_provider_normalized_effective_route`.
+14. Owner reader through the verified primitive (LOW) — LANDED.
+    `_owner_read_settings_raw` reads via
+    `settings_integrity.read_settings_json_verified` and re-raises
+    `SettingsIntegrityError` past its defaults fallback (it read
+    `json.loads(SETTINGS_PATH.read_text())` under a broad except, so a mismatched
+    `OUROBOROS_SETTINGS_SHA256` pin served the unverified file while
+    `load_settings` refused). Pin:
+    `test_a_pinned_snapshot_that_changed_refuses_every_reader` (both readers and
+    the context-fit route refuse; the matching digest serves through all three).
+15. Writer tripwires (LOW) — LANDED. Both scans see `write_text_atomic(` and
+    `.write_bytes(`; the prologue tripwire scans `launcher.py` and
+    `supervisor/**` too, the seam inventory scans `launcher.py` (its
+    `_save_settings` delegates to `config.save_settings`; no direct writer
+    exists in either root today). Red-first by injection: a synthetic
+    `write_text_atomic(SETTINGS_PATH, serialize_settings(...))` function appended
+    to an export's `config.py` passed BOTH old scans (2 passed) and fails BOTH new
+    scans naming it.
+16. Pins made behavioural (LOW) — LANDED. (1) the three-writer bytes test drives
+    `_owner_update_settings(lambda _c: dict(document))` rather than calling the
+    writer's helper itself; (2) the packaged path identity is the computed
+    property (`resolve_packaged_runtime().data_dir / settings.json ==
+    config.resolve_data_dir() / settings.json` with the four path variables
+    deleted and the bundle finders stubbed) plus the bootstrap wiring proven by
+    capturing the `BootstrapContext` and driving its saver; (3)
+    `tests/test_onboarding_host.py::test_server_boot_leaves_the_settings_bytes_alone`
+    boots the REAL `server.lifespan` (TestClient; the extension-suite stub set —
+    no supervisor, no host-service uvicorn, no skills seeding; the settings
+    read, the provider normalization and every writer stay real) over a document
+    carrying a retired model default and asserts bytes and mtime unchanged — red
+    on base 1072a317 ("boot rewrote the settings document"), green on the tip.
+    The syntactic pin stays as the fast tripwire.
+17. DEVELOPMENT.md (LOW) — membership sentence synced with the module docstring
+    and ARCHITECTURE: `_owner_update_settings`, directly or through
+    `_owner_write_settings`.
+18. Packaged saver path identity (LOW) — DISCLOSED, not re-derived. The
+    `packaged_cli._save_settings` docstring now states the identity holds for an
+    outer packaged process carrying no `OUROBOROS_*` path override: the packaged
+    runtime ignores the environment by design (the inner CLI child is handed the
+    packaged paths explicitly) while the prologue proves against
+    `config.SETTINGS_PATH`, which honours one. Deriving the saver's target from
+    `config.SETTINGS_PATH` was rejected: the OUTER process would then write the
+    env-overridden path while the inner child reads the packaged one — a worse
+    split than the disclosed one. Dormant (item 5: the callback has no caller).
+19. ARCHITECTURE "three surfaces" (LOW) — qualified: three writers of THIS
+    process's document through prologue and serializer; the two exempt writers
+    named (the raw context-pair migration under the load lock; the Colab
+    generator for the Drive root, serializer bytes, no prologue); the scanned
+    roots stated.
+20. Red-first table, round 2 (isolated roots; "pre-fix" = the lane HEAD 1b80a38a
+    exported with the new pins overlaid, i.e. before the round-2 code; the boot
+    pin additionally against the base export; outputs kept in the lane scratch as
+    `d03_r2_*.txt`):
+
+    | test | pre-fix | post-fix |
+    |---|---|---|
+    | test_the_colab_re_run_reads_the_drive_document_through_the_same_normalization | FAILED (OUROBOROS_GC_RETENTION_DAYS 7 != 30: the folded retention customization replaced by its default) | PASSED |
+    | test_the_context_fit_route_is_the_provider_normalized_effective_route | FAILED (route == the owner-raw openrouter route, not the anthropic one) | PASSED |
+    | test_a_pinned_snapshot_that_changed_refuses_every_reader | FAILED (DID NOT RAISE SettingsIntegrityError: the owner reader served the unverified file) | PASSED |
+    | test_server_boot_leaves_the_settings_bytes_alone | FAILED on base 1072a317 ("boot rewrote the settings document"); PASSED on the lane HEAD | PASSED |
+    | test_every_settings_writer_routes_through_the_shared_prologue / test_the_three_settings_writers_are_exactly_these_three, injected `write_text_atomic` writer | old scans: 2 PASSED (blind); new scans: 2 FAILED naming `_fourth_settings_writer_probe` | (injection removed) PASSED |
+    | test_all_three_writers_serialize_a_document_to_the_same_bytes (real locked writer) | PASSED (golden, strengthened) | PASSED |
+    | test_the_packaged_bootstrap_writes_the_path_the_prologue_reads (property) | PASSED (golden, strengthened) | PASSED |
+
+21. Gates, round 2 (each a separate command, isolated root):
+    `tests/test_settings_read_seam.py` (21) + `test_onboarding_host.py` +
+    `test_colab_bootstrap.py` + `test_model_slot_role_model.py` +
+    `test_context_fit_v664.py` + `test_owner_settings_write_seam.py` = 174
+    passed; the settings/owner/onboarding/server family of item 11 plus
+    `test_startup_hygiene.py`, `test_extensions_api.py`, `test_launcher_sync.py`,
+    `test_launcher_headless_fallback.py`, `test_settings_secret_mask.py`,
+    `test_max_context_gate.py`, `test_settings_honesty.py`,
+    `test_onboarding_wizard.py`, `test_packaged_runtime_and_lifecycle.py`,
+    `test_legacy_timeout_retirement.py`, `test_server_extraction.py` = 1174
+    passed, 1 skipped; `ruff check . --select F` rc=0; `scripts/check_domains.py`
+    rc=0; `scripts/regenerate_size_ratchet.py --check` rc=0 (the giant
+    `tests/test_runtime_mode_elevation.py` stays at 2222 lines);
+    `scripts/regenerate_inventories.py --check` rc=0; `scripts/v7next_adoption.py`
+    rc=0 (`--release` still refuses exactly CPL-4); `git diff --check` rc=0.
+22. Residuals, disclosed: (a) whether `_owner_read_settings_raw` should ALSO
+    carry the provider normalization (which would persist it as owner choices on
+    every owner-endpoint write) is an owner fork, not taken — the fix stands at
+    the consumers; (b) under a mismatched benchmark pin `_failed_route_evidence`
+    now raises `SettingsIntegrityError` instead of answering a route from the
+    unverified document, so a pinned child whose snapshot changed fails its task
+    loudly (fail-closed under the trust root; unreachable outside a strict pin);
+    (c) the behavioural boot pin stubs the supervisor, host-service and
+    skills-seeding halves of the lifespan — the segment under test is the settings
+    read, the normalization and the absence of a write, which is what the pin is
+    about; (d) the Colab quickstart's own pre-import read of the Drive file
+    (`notebooks/colab_quickstart.py`, the update-channel bootstrap) stays raw by
+    necessity — it runs before the runtime is importable and only feeds the
+    document to `build_colab_settings`, which now normalizes it.
