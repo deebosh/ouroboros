@@ -42,8 +42,9 @@ def test_legacy_tool_names_are_not_public_schemas(tmp_path):
 
     # D10: the external coding gateway tool was retired; delegate_start is its
     # successor. The dead name must be gone from the public schema surface.
-    # (Not folded into LEGACY_PUBLIC_TOOL_NAMES because prompts/SYSTEM.md keeps
-    # one deliberate retirement note that mentions the old name.)
+    # (Not folded into LEGACY_PUBLIC_TOOL_NAMES: docs/DEVELOPMENT.md keeps the
+    # D10 retirement record that mentions the old name; the runtime prompts no
+    # longer do — the prompt audit removed the retirement note from SYSTEM.md.)
     assert "claude_code_edit" not in names
     assert registry.get_schema_by_name("claude_code_edit") is None
     assert registry.execute("claude_code_edit", {}).startswith("⚠️ Unknown tool")

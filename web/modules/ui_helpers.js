@@ -1,4 +1,5 @@
 import { apiFetch } from './api_client.js';
+import { PAGE_ICONS } from './page_icons.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 // Cycle note: toast.js imports normalizeTone from this module. Both edges only
 // call the imported function inside function bodies (never at module eval), so
@@ -129,11 +130,50 @@ export function createSystemMessageAction({ label, onClick, disabled = false, ar
     return btn;
 }
 
+/**
+ * The one project chip: the bound-task footer in Main (`in project ↗`) and the
+ * whole converted card (`running in background ↗`) share this exact DOM so the
+ * two states of one element cannot drift apart. The icon is the shared Projects
+ * vector (never an emoji); the name is written as text, never as HTML.
+ */
+export function renderProjectChip({ name, status, onClick, className = '' } = {}) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = ['chat-live-project-card-btn', className].filter(Boolean).join(' ');
+    const icon = document.createElement('span');
+    icon.className = 'chat-live-project-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = PAGE_ICONS.projects;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'chat-live-project-name';
+    nameEl.textContent = String(name || '');
+    const statusEl = document.createElement('span');
+    statusEl.className = 'chat-live-project-status';
+    statusEl.textContent = String(status || '');
+    btn.append(icon, nameEl, statusEl);
+    if (typeof onClick === 'function') btn.addEventListener('click', onClick);
+    return btn;
+}
+
 export function setInlineStatus(el, text, tone = 'muted') {
     if (!el) return;
     const next = text || '';
     if (el.textContent !== next) el.textContent = next;
     el.dataset.tone = normalizeTone(tone);
+}
+
+/**
+ * A list editor's freshly added entry is shown where it landed and takes the
+ * caret (docs/DESIGN.md "List editors"). The row is scrolled the SHORTEST
+ * distance into view with no animation — a WebKit shell's smooth scroll would
+ * race the focus below, and a browser test must see the final geometry at once
+ * — and the caller's named field receives focus without a second scroll. Both
+ * arguments are the caller's: every add path knows its row and its first
+ * field, so no heuristic picks one. Detached or stub nodes are tolerated.
+ */
+export function revealNewRow(row, field) {
+    row?.scrollIntoView?.({ block: 'nearest' });
+    field?.focus?.({ preventScroll: true });
 }
 
 /**

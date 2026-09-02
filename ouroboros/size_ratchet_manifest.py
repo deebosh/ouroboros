@@ -205,6 +205,7 @@ BAND_PATHS = {
     "tests/test_telegram_miniapp_lifecycle.py": None,
     "tests/test_terminal_durability_v664.py": "Entered the band from 974 lines: terminal durability coverage now pins retry-admission failure custody so an unpersisted terminal row cannot publish task_done or lose the retry marker.",
     "tests/test_timeout_policy.py": "Adaptive timeout and custody regression suite covers raw-deadline admission, explicit finalization reserve, transport bounds, and late-result reconciliation.",
+    "tests/test_ui_smoke_project_continuity.py": "Playwright smoke of the Project continuity contracts (panel/Main re-homing, lifecycle rows, the Main-root project pointer): each test drives one end-to-end owner flow across both surfaces, so the cross-surface assertions cannot be split into smaller files without losing what they prove.",
     "tests/test_usage_accounting.py": None,
     "tests/test_v6730_origin_invariant.py": None,
     "tests/test_v678_receipt_reconciliation.py": None,
@@ -234,5 +235,5 @@ BYTE_DEBT = {
     "ouroboros/loop.py": 284435,
     "tests/test_delegated_subagent_transport.py": 320337,
     "tests/test_devtools_benchmarks.py": 328116,
-    "web/modules/chat.js": 208394,
+    "web/modules/chat.js": 207612,
 }

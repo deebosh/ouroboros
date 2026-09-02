@@ -80,6 +80,29 @@ Do not repair a semantic tool-choice failure by adding one more keyword hint to
 typed affordance at the point of need. SYSTEM accretion trains around one
 incident, bloats the resident prefix, and forks the authority.
 
+What belongs in `prompts/SYSTEM.md` (tier-0 for every Main/task profile in both
+context modes — Background Consciousness and the safety supervisor carry their
+own prompts — and competing with the task for context): identity and tone, the decision
+loop (answer / promote / route / delegate / do it myself), cross-tool policy
+(which class of tool or lane for which situation, root semantics, memory only
+through its own tools, untrusted external data), prohibitions and safety
+invariants stated once, and the memory contract. What does NOT belong there:
+how a tool or mechanism works. A tool's parameters, signatures, recipes,
+typed outcomes, and "when to choose it" live in its `get_tools()` schema — each
+profile receives its own visible schema set on every round (delegated, repair,
+ephemeral, credential and contract filters narrow it), so the schema is the SSOT
+of the per-tool contract and a prompt sentence about it is a second copy that
+drifts, while SYSTEM.md stays the cross-tool selection policy; mechanism
+documentation lives in ARCHITECTURE or here;
+runtime facts (capabilities, queue, catalog, receipts, health) are injected per
+turn. A new tool therefore requires NO SYSTEM.md mention. Before adding a
+sentence to a prompt, check that the schema or runtime block does not already
+carry it; before removing one, check that they do (or add the missing fact to
+the schema without growing it into a paragraph). Local-model compaction keeps
+only the text before the first `## ` heading (plus the BIBLE section), so the
+load-bearing floor rules stay in that preamble. Every prompt change reports the before/after byte size
+in the commit or PR.
+
 Recoverable tool failures are evidence for the next LLM turn, not triggers for
 a host-authored recovery workflow. Return a typed, redacted result naming the
 failed stage, already-completed external effects, and an actionable repair
@@ -1136,7 +1159,7 @@ latest Version History row, the named direct-download links in README and both
 install pages, and the Architecture header byte-identical to its target. At
 integration,
 `ouroboros/tools/release_sync.py::sync_release_metadata()` projects the chosen
-version and `version_carrier_desyncs()` verifies those carriers; changelog prose
+version and `version_carrier_desyncs()` verifies the file carriers (the history row is pinned by the packaging-sync test); changelog prose
 remains a deliberate maintainer edit. The same projection owns the seven public
 installer filename templates and rewrites the named direct-download links in
 README, the source install page, and its generated Pages copy. Those links use
@@ -1635,13 +1658,22 @@ Before every commit, verify the following:
 - The canonical/replica terminal post-task/accounting field-custody projection
   must live in one pure reducer reused by both physical copy-back and effective
   reads; never blanket-overlay the replica over canonical truth. Every change
-  to that projection must add a stale-replica regression at both seams.
+  to that projection must add a stale-replica regression at both seams. The
+  same reducer owns the reconciliation-disclosure pair and protects a canonical
+  terminal delegation receipt only when its durable `started`/`settled` counts
+  do not regress the replica; equal counts may enrich cost/access/substrate,
+  while a dispatch-only canonical envelope still accepts the first child
+  receipt. Historical top-level `delegated_runs_*` counters are not rewritten.
 - Push/live events are wakeups and a fast path, not terminal authority. Durable
   task detail/history and authoritative snapshots must converge terminal UI
   state through the existing refresh/reconnect seams. Shared snapshot consumers
   mutate projections only for a request generation newer than the last applied,
   while the request-start barrier protects later live frames; lifecycle changes must
   exercise lost/reordered terminal frames and reversed snapshot completion.
+  History replay projects a durable delegation receipt onto the latest emitted
+  terminal progress row even when a separate task summary survives, because
+  that progress row is the executor-chip consumer; absent durable evidence
+  never erases a receipt already present on the row.
 - Effective task status belongs in `ouroboros/task_status.py`. Do not duplicate
   child-drive merge or terminality in gateways/tools. Task waits use
   `SETTLED_STATUSES`. Cancel INTENT is never a status value (Poltergeist phase A):
@@ -2466,6 +2498,15 @@ existing token, not declaring a new one.
   shared toast host unless status belongs to a permanently reserved control
   row. Working, warning, error, and destructive states keep consistent meaning
   across Chat, Logs, Settings, and Skills.
+- A list editor reveals the entry it just added through
+  `ui_helpers.revealNewRow(row, field)` — the one seam for "scrolled into
+  view, caret in the first field" (`docs/DESIGN.md` "List editors"). A local
+  `scrollIntoView`/`focus` pair in a list editor's add path is review debt, and a freshly
+  added entry shows no error before the owner tries to save — an attempt
+  judges the entries that existed then, never one added afterwards.
+  `tests/test_available_subagents_ui_static.py` pins the seam; the
+  `ui_browser` acceptance in `tests/test_ui_smoke_agents_panel.py` pins the
+  behaviour.
 - Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
   `taskTerminalPhase`; `taskPresentation` is the one compact factual projection
   consumed by task chips, live completion, history replay, and child terminal

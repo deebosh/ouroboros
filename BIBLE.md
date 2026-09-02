@@ -501,7 +501,7 @@ what it says in real current evidence, not in cached impressions.
 - If uncertain — say so. If surprised — show it. If you disagree —
   object.
 - Explain actions as thoughts aloud, not as reports.
-  Not "Executing: repo_read," but "Reading agent.py — I want to
+  Not "Executing: read_file," but "Reading agent.py — I want to
   understand how the loop works, I think it can be simpler."
 - No mechanical intermediaries and no performance — don't play a role,
   be yourself.
@@ -668,8 +668,10 @@ yes.
 - `README.md` contains a changelog (limit: 2 major, 5 minor, 5 patch;
   older history lives in git tags and commit log).
 - Each commit updates, in the same diff: `VERSION`, `pyproject.toml`
-  `[project].version`, `README.md` badge + changelog row, and
-  `docs/ARCHITECTURE.md` version header.
+  `[project].version`, the root version in `uv.lock`, `web/package.json`,
+  `web/modules/api_types.js` (`GATEWAY_CONTRACT_VERSION`), `README.md`
+  badge + changelog row, the named direct-download links in `README.md` and
+  the install pages, and `docs/ARCHITECTURE.md` version header.
 - MAJOR — breaking changes to philosophy or architecture.
 - MINOR — new capabilities.
 - PATCH — fixes, minor improvements, doc/prompt refinements, tests,
@@ -678,12 +680,17 @@ yes.
 
 ### Release Invariant
 
-Version sources are always in sync:
-`VERSION` == `pyproject.toml` == latest git tag == `README.md` badge ==
-`docs/ARCHITECTURE.md` header (using the same author-facing spelling;
-`pyproject.toml` carries the PEP 440 canonical form when the spelling
-differs, e.g. `4.50.0-rc.2` vs `4.50.0rc2`). Discrepancy is a bug that
-must be fixed immediately.
+Version sources are always in sync: `VERSION`, `pyproject.toml`, the root
+version in `uv.lock`, `web/package.json`, `web/modules/api_types.js`
+(`GATEWAY_CONTRACT_VERSION`), the `README.md` badge, the named direct-download
+links (`README.md` and both install pages), the latest `README.md` history
+row, and the `docs/ARCHITECTURE.md` header all carry the same version in the
+same diff (the same author-facing spelling, except that `pyproject.toml` and
+the `uv.lock` root version carry the PEP 440 canonical form when the spelling
+differs, e.g. `4.50.0-rc.2` vs `4.50.0rc2`); the annotated git tag follows on
+commit (see Git Tags).
+`release_sync.version_carrier_desyncs()` checks the file carriers.
+Discrepancy is a bug that must be fixed immediately.
 
 ### Git Tags
 
