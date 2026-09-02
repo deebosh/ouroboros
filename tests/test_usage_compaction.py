@@ -1386,6 +1386,7 @@ def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch
     # while the ledger lock is held: prove the hold at the moment of the call
     # rather than trusting where the call site sits.
     holds: list = []
+    renewed: list = []
     original = uc.compact_usage_ledger_locked
 
     def observing(root, **kwargs):
@@ -1396,8 +1397,11 @@ def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch
         # ... and the hold is WIRED THROUGH: without the heartbeat every ownership
         # proof inside the pass — the commit beats, the beat/look/beat around the
         # rename — becomes a no-op and the swap runs unproven. This is the only
-        # production caller, so the wire is pinned exactly where it is made.
-        assert callable(kwargs.get("heartbeat")), "the pass was entered without the lock's heartbeat"
+        # production caller, so the wire is pinned exactly where it is made — and
+        # pinned to THIS lock: a constant-True stub is callable and proves nothing
+        # (judged outside the call: the trigger contains any exception raised in here).
+        os.utime(_lock_path(data_root), (0.0, 0.0))
+        renewed.append(kwargs["heartbeat"]() is True and _lock_path(data_root).stat().st_mtime > time.time() - 60)
         holds.append(probe is None)
         if probe is not None:
             platform_layer.release_exclusive_file_lock(_lock_path(data_root), probe)
@@ -1412,8 +1416,9 @@ def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch
     assert holds == []  # below threshold: the stat fast-path never enters the pass
     monkeypatch.setattr("ouroboros.config.USAGE_LEDGER_COMPACT_BYTES", 1)
     _settle(data_root, cost=0.1, cost_final=True)
-    assert any(row.get("kind") == "usage_baseline" for row in _ledger_rows(data_root))
+    assert renewed == [True], "a stub, not the held lock's heartbeat"
     assert holds == [True]
+    assert any(row.get("kind") == "usage_baseline" for row in _ledger_rows(data_root))
 
 
 def test_unprofitable_pass_is_throttled(data_root, monkeypatch):
