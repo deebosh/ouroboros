@@ -401,6 +401,7 @@ def test_project_lifecycle_rows_render_design_system_action_static_contract():
     chat = (root / "web" / "modules" / "chat.js").read_text(encoding="utf-8")
     style = (root / "web" / "style.css").read_text(encoding="utf-8")
     helpers = (root / "web" / "modules" / "ui_helpers.js").read_text(encoding="utf-8")
+    app = (root / "web" / "app.js").read_text(encoding="utf-8")
 
     # One shared set drives render, history replay, and live fan-out.
     assert (
@@ -424,6 +425,11 @@ def test_project_lifecycle_rows_render_design_system_action_static_contract():
     # shared by the converted card (chat.js) and the bound-task footer (app.js).
     assert "chat-live-project-card-btn" in helpers
     assert "renderProjectChip(" in chat
+    assert "renderProjectChip(" in app
+    # The project pointer is a Main-root affordance: applyTaskBindings walks
+    # only Main root cards, never the Project panel's copy or nested subagents
+    # (D15; the browser flow is pinned by the marker-gated continuity smoke).
+    assert "'#page-chat .chat-live-card[data-task-id]:not(.subagent)'" in app
 
     # Layout-only container CSS; the helper owns the one semantic button role.
     assert ".system-message-actions {" in style
