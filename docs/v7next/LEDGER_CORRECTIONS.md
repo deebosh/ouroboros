@@ -5164,3 +5164,153 @@ Cross-cutting disclosures:
      EXIT=0, 661 outcomes (622 passed, 39 skipped, zero FAILED/ERROR).
    With this recorded, round 5 is executed and verified on this host; the
    Windows-only pin remains owed to the 3-OS CI matrix (item 3a).
+
+## From the C6 fix-round 5.2 (base 2dd3e017)
+
+1. An independent adversarial pass over the round-5 tree (`2dd3e017`; PoCs
+   executed on scratch copies) left five HIGH/MEDIUM findings open and six
+   LOW. All eleven ACCEPTED: nine fixed in code, each red-first; two closed
+   by the disclosure the finding asked for. Full disposition:
+   `docs/v7next/C6_REVIEW_PACKET.md` §9, "Round 5.2".
+   - **A creator evicted while still lock-less never returns a descriptor**
+     (HIGH): between its O_EXCL create and its kernel lock the creator's file
+     was EMPTY and held nothing an evictor had to respect; stalled there past
+     `stale_sec` (SIGSTOP, a suspend, a debugger, NFS clock skew) it was
+     evicted and its flock then SUCCEEDED on the unlinked inode — two
+     descriptors believed to be one monetary lock (PoC `HOLDERS: 2`), and the
+     ordinary append transaction never heartbeats. The owner pid is now
+     written BEFORE the kernel lock and a won lock is returned only while the
+     path still names the descriptor — both tiers, every caller of the
+     primitive (the age-only non-monetary locks included). Commit `7923e624`.
+   - **LockFileEx refusals classify by their Win32 error** (LOW): winerror
+     5/32/33 all map onto EACCES, which sat in the busy set, so on Windows a
+     genuine access-denied re-contended until the 45 s timeout. Only
+     ERROR_LOCK_VIOLATION reads as EAGAIN; the busy set is {EAGAIN,
+     EWOULDBLOCK} on both platforms. Commit `f2b118a4` (the errno arithmetic
+     is pinned and executed here; the LockFileEx call itself stays owed to
+     the 3-OS matrix).
+   - **Ownership proven on both sides of the in-swap look** (MEDIUM): the
+     last proof of ownership preceded a full-file read (≈1.8 ms on an 8 MB
+     ledger) and an fsync'd append (≈0.2 ms) by an out-of-protocol holder
+     landed after the look answered True and before `os.replace` (PROBE-1:
+     receipt returned, the row erased); the documented ownership-FIRST order
+     was load-bearing for no pin. `owned_and_intact` now beats, looks, and
+     beats again, so the only interval between the last proof and the rename
+     is the syscall. Commits `ff6bb399` (one snapshot-look recorder for the
+     hold/append pins, no pin weakened) and `79a1b9fb`.
+   - **The suite fold** (repair, not a finding): `79a1b9fb` left
+     `tests/test_usage_compaction.py` at 1512 lines — past the 1500-line band
+     ceiling, the manifest stale (`regenerate_size_ratchet.py --check` exit 1
+     at that tree) — the session limit hit before the check ran. There is no
+     committed-history replay on this line (`ouroboros/review.py`: the local
+     surface warns), so the linear repair stands: three verbatim scaffolding
+     duplicates folded in place (the raced-charge-survived assertion block,
+     five copies → `_charge_survived`; the retry-durability pin re-running
+     the first-pass proof instead of carrying a second fsync recorder; the
+     single-caller `_lock_is_held` inlined) and PEP 8 spacing, 1512 → 1461,
+     no new abstraction, every folded pin still red under the
+     swap-precondition-removed mutation. Commit `6ad110e9`; the round's pins
+     bring the suite to 1499 and `24b410d8` removes three no-op cache clears
+     and hoists an import for headroom: 1492 at the tip.
+   - **Non-regular archive entries are classified, a FIFO cannot hang the
+     question, a named segment that is not a regular file is typed**
+     (MEDIUM + two LOW): round 5's fail-closed rule made a stray `backup/`
+     directory typed-corrupt for every history question (`os.read` → EISDIR;
+     `13af62c5` answered) — an availability regression with no correctness
+     gain; a FIFO blocked the open indefinitely (pre-existing: the path-based
+     open blocked the same way); a directory standing where the header names
+     a segment escaped as a bare `IsADirectoryError`. `_open_archive_entry`
+     opens `O_NONBLOCK` through the held dir-fd, `_no_newer_archived_epoch`
+     fstat-classifies (non-regular → no segment, skipped; cannot
+     list/open/read → corruption), `_load_segment` raises typed on a
+     non-regular named segment or any `OSError` of its fstat/read. Commit
+     `503a0dd6`.
+   - **The anchor-swap pin covers the open-through-fd half** (MEDIUM): under
+     "list via the held fd, OPEN BY PATH" the round-5 pin stayed green for the
+     wrong reason (`FileNotFoundError` → "could not complete") while a
+     look-alike carrying the epoch-3 NAME with the forged live header as its
+     leading row was admitted by the orphan exemption. The look-alike now
+     carries that segment; the pin requires `generation newer`. Commit
+     `95a53ad2`.
+   - **The name-tier refusal is a typed, durable event; the 20 MB tripwire
+     names the tier** (MEDIUM): the refusal was a throttled log line folded
+     into the same `False` as "nothing foldable", and the round-5 claim that
+     "the 20 MB tripwire names the case" was false (the text named only a
+     broken compaction or a large residue). One `usage_ledger_compaction_refused`
+     row per process per data root in `logs/events.jsonl` (existing
+     `append_jsonl`, contained); the tripwire text and the threshold comment
+     name the third cause and the event; no return-type change. Commit
+     `208fe5ac`.
+   - **Doc absolutes bounded; residuals named** (LOW ×2, no code): «cannot
+     finish while robbed» and «a hold lost anywhere abandons» become the
+     bounded contract (a concurrent holder only after an out-of-protocol
+     removal of the lock file; caught at the next proof; the irreducible
+     residual is the one syscall between the last proof and the rename); the
+     dir-fd is held from the handle open AFTER the live-header read, not
+     "for the whole question"; the orphan exemption admits a verbatim restore
+     of the previous generation; the mixed-tier residual names by-name
+     eviction of the enforced-tier process's appends; packet §5.9 rewritten
+     (a garbage REGULAR file cannot deny service; non-regular entries are
+     skipped; cannot list/open/read = corruption); packet §8 row 1 and the
+     round-4 residual paragraph carry the correction marker. DESIGN §8/§10/
+     §12, ARCHITECTURE, PERSISTENCE, the packet and this section: the docs
+     commit that lands this section.
+2. Red observed, not argued (each pin run on a scratch copy against the exact
+   pre-fix shape or mutation it names, then green with the fix):
+
+   | pin | mutation / base | red observed |
+   |---|---|---|
+   | `test_a_creator_evicted_while_lock_less_never_returns_a_descriptor` | `platform_layer.py` @ `2dd3e017` | `assert 2 == 1`: two descriptors believed to be one lock |
+   | `test_lockfileex_refusals_classify_by_the_win32_error` | same | `assert 13 not in frozenset({11, 13})` |
+   | `test_a_hold_lost_after_the_last_snapshot_look_refuses_the_rename` | `owned_and_intact` in the `2dd3e017` order (beat → look → replace) | a receipt returned while robbed (`… is None` failed) |
+   | `test_a_hold_lost_after_the_recheck_aborts_before_the_swap` (look-count clause) | snapshot-first / beat-second (mutation M3) | `assert 3 == 2` |
+   | `test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in` | anchor opens entries by path (listing through the held fd kept) | `DID NOT RAISE UsageLedgerCorrupt`; the previous pin shape passed under the same mutation |
+   | `test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption` (subdirectory) | `79a1b9fb` | `anchor scan could not complete: [Errno 21] Is a directory` |
+   | same, FIFO half alone | `79a1b9fb` | `TimeoutError: FIFO open blocked` — the open hung until the 5 s alarm |
+   | `test_warm_segment_cache_revalidates_the_file_it_cached` (directory shape) | `79a1b9fb` | bare `IsADirectoryError: [Errno 21] Is a directory` from `os.read` |
+   | `test_the_pass_refuses_on_the_name_tier_while_appends_continue` (event + tripwire clauses) | `79a1b9fb` | no `events.jsonl` row at all (`FileNotFoundError`); the tripwire note named no tier |
+   | the five folded raced-charge pins (control for the fold) | swap precondition removed, on `6ad110e9`'s suite | all five red |
+
+3. Disclosed, not fixed: (a) the LockFileEx call and the Windows-only
+   contention pin stay unexecuted on this host (owed to the 3-OS matrix); the
+   path-based Windows anchor scan keeps round 5's fail-closed rule without
+   the `S_ISREG`/`O_NONBLOCK` classification — a directory in the archive is
+   corruption there — and the FIFO/dangling-link pin is POSIX-only
+   (`skipif(IS_WINDOWS)`). (b) The bounded ownership residual: a charge landed
+   by an out-of-protocol holder inside the one syscall between the last proof
+   and the rename is erased, then surfaced as `UsageLedgerCorrupt` by the
+   post-swap re-read or quarantined seq-misnumbered at the next read —
+   reachable only after a hand removal of the lock file or from a name-tier
+   process of a mixed-tier install. (c) In that mixed mode the name-tier
+   process also evicts by name with no kernel hold, so the two-writer class
+   returns for the enforced-tier process's heartbeat-less appends, not only
+   for compaction. (d) The orphan exemption admits a verbatim restore of the
+   previous generation (the same power as truncating the live tail; it hides
+   no id from the join). (e) A UNIX socket in the archive directory cannot be
+   opened at all (ENXIO) and therefore reads as corruption, not as a skipped
+   special file. (f) `ouroboros/usage_compaction.py` grew 1124 → 1158 inside
+   its band (rationale immutable between adjacent manifests; growth recorded
+   here); `platform_layer.py` stays at 1499, `agent_startup_checks.py` at
+   1490.
+4. Gate evidence (this host, isolated env roots per invocation, venv python
+   3.10.12; `git rev-parse HEAD` verified unmoved after every pytest; the
+   battery ran on a scratch clone checked out at the code tip `24b410d8` with
+   these docs copied in, so the git-recovery tests could not move the lane's
+   HEAD):
+   - targeted suites at `24b410d8` (`test_usage_compaction.py` 56,
+     `test_lockfile_helpers.py` 17 with one Windows-only skip, the other four
+     `test_usage_*.py` suites, `test_context.py`, `test_startup_hygiene.py`,
+     `test_persistence_inventory.py`, `test_atomic_write_v639.py`, and the
+     lock consumers `test_bughunt_fixes.py`, `test_task_status_flow.py`,
+     `test_evolution_commit_receipt.py`, `test_skill_lifecycle_queue.py`):
+     348 passed, 1 skipped, exit 0;
+   - `ruff check . --select F` exit 0; `scripts/check_domains.py` exit 0;
+     `scripts/regenerate_size_ratchet.py --check` exit 0;
+     `scripts/regenerate_inventories.py --check` exit 0; `git diff --check`
+     exit 0; the CI `size_ratchet` pytest lane 5 passed, exit 0;
+   - CI-shape non-serial battery (round 5's marker expression and flags,
+     `-n 16`): EXIT=0, 13501 outcomes (13497 passed, 4 skipped, 28 warnings, 113 s) on the scratch clone at `24b410d8` with these docs copied in;
+   - `-m serial` pass (`--timeout=600 --timeout-method=thread`): three runs at `24b410d8` and one control, all on scratch clones: run 1 — 1 failed / 621 passed / 19 skipped, the failure `tests/test_workspace_executor_services.py::test_executor_services_participate_in_task_and_global_cleanup` (a service-start/cleanup timing test that iterates the executor's in-memory registry; outside this lane's files; 3/3 green when rerun in isolation on the same tree); run 2 — 125 setup ERRORS / 497 passed, the host's per-user inotify-instance ceiling (128/128 held, 124 of them by containerd shims of this user's rootless TB/cybergym docker daemons — the same exhaustion that made `tail -f` fall back to polling during the battery), disclosed as environment, not tree; control on the pre-round base `2dd3e017` in the next window — 622 passed / 19 skipped, EXIT=0 (320 s); run 3 at `24b410d8` — 622 passed / 19 skipped, EXIT=0 (288 s), the same outcome set as the control;
+   - hermeticity of the battery against the live data root: `find ~/ouro/data -newermt <battery start>` names only `claudexor/daemon/journal/global-…/journal.bin` — the live Claudexor daemons' own journal, held open by six daemon processes with 3–13 day uptimes — no pytest write; every pytest data root was an isolated mktemp under /tmp/claude-1006, and the lane's HEAD (`24b410d8`) and each clone's HEAD were unmoved after every run.
+   With this recorded, round 5.2 is executed and verified on this host; the
+   Windows LockFileEx mechanics remain owed to the 3-OS CI matrix (item 3a).

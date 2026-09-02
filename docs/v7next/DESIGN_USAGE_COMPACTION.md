@@ -233,20 +233,44 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   atomically (the path never absent). Windows cannot unlink an open file: its
   eviction re-checks the path after closing the probe, and a freshly won
   lock — held open by its owner — is undeletable there, which is what keeps
-  that shape exclusive. On this tier we do not claim a pass can never be
-  robbed. What we claim is that it cannot finish while robbed: ownership is
-  proven at every checkpoint and immediately before every rename attempt,
-  and a `False` heartbeat — or one that cannot be answered at all — aborts
-  the pass, leaving the ledger byte-identical.
+  that shape exclusive. The acquisition is identity-checked too: a creator
+  stalled between its O_EXCL create and its kernel lock (SIGSTOP, a suspend,
+  a debugger, clock skew) can be judged abandoned and evicted, and its lock
+  then lands on an inode the path no longer names — not a hold: a won lock is
+  returned only while the path still names its descriptor, else the creator
+  closes it and re-contends, and the owner pid is written BEFORE the lock so
+  an owner-aware reclaimer never judges a live creator's fresh file empty
+  (every caller of the primitive gets this, the age-only non-monetary locks
+  included: at most one descriptor ever answers, the cost is a re-contention).
+  On this tier we do not claim a pass can never be robbed. The bounded claim:
+  a concurrent holder can exist only after the lock file is removed by an
+  actor OUTSIDE the lock protocol — a hand repair, a foreign helper, a
+  name-tier process of a mixed-tier install — because in-protocol eviction
+  is impossible under the held flock and the heartbeat-fresh mtime; such a
+  robbery is caught at the next proof, and ownership is proven at every
+  checkpoint, immediately before every rename attempt and once more AFTER
+  the in-swap snapshot look, so the irreducible residual is the interval
+  between that last proof and the rename syscall: a charge the robber lands
+  inside it is erased by the swap, then surfaced as `UsageLedgerCorrupt` by
+  the post-swap re-read or quarantined seq-misnumbered at the next read. A
+  `False` heartbeat — or one that cannot be answered at all — aborts the
+  pass, leaving the ledger byte-identical.
   *Name tier* (a filesystem the kernel says cannot lock — bare NFS and
   friends): the O_EXCL name protocol runs alone with re-check-then-unlink
   eviction. There is no kernel exclusion, so a heartbeat there is an identity
   check, not a proof. The pass therefore **refuses to run at all** on the
-  name tier (`usage_compaction.NAME_TIER_REFUSAL`, logged; the ledger stays
-  uncompacted and the 20 MB tripwire names the case), while ordinary
-  monetary appends continue under the name protocol as a disclosed best
-  effort: on that tier the appends are only as exclusive as the name
-  protocol, which is exactly why the whole-file rewrite is withheld.
+  name tier (`usage_compaction.NAME_TIER_REFUSAL`: logged, and written ONCE
+  per process per data root as a typed `usage_ledger_compaction_refused`
+  event to `logs/events.jsonl`; the ledger stays uncompacted and the 20 MB
+  tripwire names this tier as a cause), while ordinary monetary appends
+  continue under the name protocol as a disclosed best effort: on that tier
+  the appends are only as exclusive as the name protocol, which is exactly
+  why the whole-file rewrite is withheld. Residual, disclosed: the tier is
+  decided per process per lock directory, so a lockd dying mid-run can leave
+  one process on each tier until restart — the name-tier process never
+  compacts, but it evicts by NAME with no kernel hold, so in that mixed mode
+  the two-writer class returns for the enforced-tier process's heartbeat-less
+  APPENDS (its compaction pass is still guarded by its proofs).
 - **The swap re-proves its snapshot — before, at the last instant, and
   after.** Because the swap replaces the WHOLE file, the pass re-reads the
   live ledger under the same held lock before the archive write and again
@@ -256,13 +280,16 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   (`utils.replace_atomic` retries a Windows sharing violation with pauses,
   and a proof taken before a refused attempt is stale by the next one), the
   last instant each replace can still be refused, with the ownership
-  heartbeat asked FIRST and the snapshot compare only under a proven hold —
-  so a hold lost while the temp was written, or between two attempts,
-  refuses the replace, and a row that lands after the outer re-check or
-  between attempts survives too. The
-  cost of any lost race is one skipped pass, never a charge. (Belt to the
-  lock's braces: it also covers a lock broken by a hand repair or an older
-  build.) The compare→replace window is closed structurally as well: EVERY
+  heartbeat asked FIRST, the snapshot compare only under a proven hold, and
+  the heartbeat asked AGAIN after that compare — so a hold lost while the
+  temp was written, between two attempts, or during the compare itself
+  refuses the replace, a row that lands after the outer re-check or between
+  attempts survives too, and the only interval left between the last proof
+  and the rename is the syscall, not the milliseconds of a full-file
+  compare. The cost of any lost race is one skipped pass, never a charge.
+  (Belt to the lock's braces: it also covers a lock broken by a hand repair
+  or an older build — up to that last proof; the bounded claim above names
+  the residual.) The compare→replace window is closed structurally as well: EVERY
   writer of this ledger appends under this same owner-aware lock — kernel-held
   on the enforced tier, the only tier the pass runs on — and there is no
   unlocked fallback: an acquisition that times out, or that the kernel
@@ -351,14 +378,26 @@ the live replay, so this lane ships the join surface the sweep must use:
     from each segment's own embedded header rather than from its name. The one
     legal newer case is an uncommitted orphan of the CURRENT generation (a
     lost snapshot race, a crash before the swap), recognised because its
-    embedded leading row is the live header itself. The anchor scan runs in
-    the directory the chain was walked in — on POSIX through the
-    `O_DIRECTORY|O_NOFOLLOW` dir-fd held for the whole question, so a
-    directory swapped after the walk cannot hide a generation from it — and
-    an entry the scan cannot list, open or read is `UsageLedgerCorrupt`: the
-    scan did not complete, so the question is UNKNOWN. A first row that reads
-    but does not parse is a torn segment from a crashed write: no evidence of
-    any generation, left to the walk;
+    embedded leading row is the live header itself — which also admits a
+    rollback that restores the previous generation VERBATIM (the live header
+    byte-identical to the newest segment's leading row): indistinguishable
+    from an uncommitted orphan, the same power as truncating the live tail,
+    and it hides no id from the join, since the restored rows are live again
+    — disclosed, not a hole. The anchor scan runs in the directory the chain
+    was walked in — on POSIX through the `O_DIRECTORY|O_NOFOLLOW` dir-fd
+    held from the moment the handles are opened, after the live header is
+    read, for the rest of the question, entries opened relative to it — so a
+    directory swapped after the walk cannot hide a generation from it (a
+    directory swapped BEFORE the handles open is the same power as deleting
+    the newer segments: disclosed, out of the anchor's reach), and an entry
+    the scan cannot list, open or read is `UsageLedgerCorrupt`: the scan did
+    not complete, so the question is UNKNOWN. An entry that opens but is not
+    a regular file — a stray `backup/` directory, a FIFO (opened
+    `O_NONBLOCK`, so a writer-less FIFO cannot hang the question) — is no
+    segment: segments are regular files by construction, no generation lives
+    there, and it is skipped. A first row that reads but does not parse is a
+    torn segment from a crashed write: no evidence of any generation, left to
+    the walk;
   - the archive directory must be **this data root's own**: neither
     `archive/` nor `archive/usage_ledger` may be a symlink, the resolved
     directory must be exactly the resolved root's archive path, and no segment
@@ -366,12 +405,15 @@ the live replay, so this lane ships the join surface the sweep must use:
     directory" is a tautology — both sides resolve through the same link. On
     POSIX the reader enforces this **at the open**: the segment is opened
     `O_NOFOLLOW` through the same `O_DIRECTORY|O_NOFOLLOW` `dir_fd` handles
-    the writer uses — held once for the whole question, chain walk and epoch
-    anchor alike — and is fingerprinted and read from that fd — so a link
-    planted after any path-based look is an open error, never a read through
-    it (a byte-identical copy behind a link hashes perfectly; only refusing
-    the traversal itself defends). Windows keeps the path-based checks, best
-    effort, by the platform predicate;
+    the writer uses — opened once, after the live header read, and held for
+    the rest of the question, chain walk and epoch anchor alike — and is
+    fingerprinted and read from that fd — so a link planted after any
+    path-based look is an open error, never a read through it (a
+    byte-identical copy behind a link hashes perfectly; only refusing the
+    traversal itself defends); a named segment that opens but is not a
+    regular file, or whose read fails, is typed `UsageLedgerCorrupt`, never a
+    bare `OSError` the sweep's UNKNOWN mapping would miss. Windows keeps the
+    path-based checks, best effort, by the platform predicate;
   - per-segment results are cached by path, but the hit requires the file's
     fingerprint (inode/device/size/mtime_ns) to match, so a segment deleted
     or rewritten after a warm read surfaces as `UsageLedgerCorrupt` instead
@@ -443,11 +485,14 @@ byte authority.
    behind a warm cache, a same-size rewrite once the cache window closes, an
    out-of-archive reference, a symlinked archive directory, an epoch-skipping
    chain, a rollback the archive out-anchors, a directory swapped between the
-   chain walk and the anchor scan, an archive entry the anchor cannot open,
-   and an unreadable leading row are each typed corruption (UNKNOWN/skip),
-   never silent absence; an
-   uncommitted orphan segment of the live generation is NOT corruption; the
-   chain union is built once per chain.
+   chain walk and the anchor scan (a look-alike carrying the newest NAME with
+   the forged live header included), an archive entry the anchor cannot open,
+   a named segment that is not a regular file, and an unreadable leading row
+   are each typed corruption (UNKNOWN/skip), never silent absence and never a
+   bare `OSError`; an uncommitted orphan segment of the live generation is
+   NOT corruption, a stray directory or FIFO in the archive is no segment and
+   is skipped (the FIFO cannot hang the question), and the chain union is
+   built once per chain.
 6. **Idempotency survives**: subscription/external replays after compaction
    dedup (no double charge) and still conflict-check; legacy import stays
    correct with and without its watermark.
@@ -467,7 +512,9 @@ byte authority.
    predicate — on the enforced tier it is kernel-held (flock / LockFileEx on
    the lock fd) and a kernel refusal that is not contention fails the
    acquisition closed rather than degrading to the name protocol, on the
-   name tier the pass refuses to run while appends continue — owner-aware,
+   name tier the pass refuses to run while appends continue (a typed
+   `usage_ledger_compaction_refused` event, once per process per data root)
+   — owner-aware,
    and heartbeaten through the long span, with ownership proven immediately
    before each snapshot re-check — including inside the atomic writer, once
    the temp is durable and right before EVERY rename attempt, retries
@@ -475,10 +522,15 @@ byte authority.
    before the pre-archive look and writes no orphan; a loss at the archive
    aborts before the re-check is even asked; a loss while the temp is
    written, or between two rename attempts, refuses the replace — as does a
-   charge that lands between them); a pass that loses the hold abandons its
-   work instead of swapping; of two reclaimers racing
-   over a stale lock at most one can evict (eviction only under the held
-   flock on the judged fd); a heartbeat after an atomic replacement of the
+   charge that lands between them, and a hold lost the instant the in-swap
+   look answered True refuses it too, so the last proof precedes the rename
+   by one syscall); a pass that loses the hold abandons its work at its next
+   proof instead of swapping (bounded, not absolute: a charge landed by an
+   out-of-protocol holder inside that one syscall is erased, then surfaced by
+   the post-swap re-read or quarantined at the next read); of two reclaimers
+   racing over a stale lock at most one can evict (eviction only under the
+   held flock on the judged fd); a creator evicted while still lock-less
+   never returns a descriptor; a heartbeat after an atomic replacement of the
    lock file answers False; a writer that cannot take the lock refuses in
    typed form rather than appending without it; and the swap reports a
    receipt only for bytes it re-read at the path.
@@ -487,10 +539,12 @@ byte authority.
     own, through no symlink — enforced on POSIX at the open/create itself via
     `O_NOFOLLOW` `dir_fd` handles for both writer and reader, so a link
     planted after any check can neither receive nor serve history; the epoch
-    anchor is scanned through the very handle the chain was walked in, so a
-    directory swapped in between cannot hide a generation; and no archived
-    segment carries a generation newer than the live stamp (bar an
-    uncommitted orphan of that stamp).
+    anchor is scanned through the very handle the chain was walked in,
+    entries opened relative to it, so a directory swapped in between cannot
+    hide a generation; and no archived segment carries a generation newer
+    than the live stamp (bar an uncommitted orphan of that stamp — an
+    exemption that also admits a verbatim restore of the previous generation,
+    disclosed in §10).
 
 ## 13. Explicitly out of scope
 
