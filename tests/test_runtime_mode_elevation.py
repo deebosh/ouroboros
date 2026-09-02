@@ -1011,8 +1011,8 @@ def test_env_forwarded_modes_survive_the_documented_startup_path(isolated_settin
 
     from ouroboros import config as cfg
 
-    # Own the WHOLE environment: apply_settings_to_env writes ~122 keys, so a real copy is the only
-    # honest ownership boundary here (the same technique the auto-low regression test uses).
+    # Own every mode key: apply_settings_to_env writes ~122 keys, and the autouse
+    # os.environ snapshot restores the rest after the test.
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_CONTEXT_MODE"] = "low"
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"

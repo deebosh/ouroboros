@@ -330,8 +330,8 @@ def test_skill_lifecycle_timeout_setting_reaches_the_queue(monkeypatch):
     from ouroboros import skill_lifecycle_queue
 
     # XG-7B.4: apply_settings_to_env pops every other settings-default key and
-    # injects review defaults. A hermetic copy keeps that off the LIVE environ,
-    # where it leaked into sibling tests on the same worker.
+    # injects review defaults. The autouse os.environ snapshot in conftest
+    # restores the live environ afterwards, so nothing leaks into sibling tests.
     monkeypatch.delenv("OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC", raising=False)
     assert skill_lifecycle_queue._lifecycle_deadline_sec() == float(
         config.SETTINGS_DEFAULTS["OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC"]

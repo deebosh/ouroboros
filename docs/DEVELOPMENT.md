@@ -2717,7 +2717,7 @@ that:
   failures in unrelated files. Mark such a test `@pytest.mark.serial` (or add its file to
   `_SERIAL_TEST_FILES` in `tests/conftest.py`) so it runs in the serial pass instead.
 - **Keep every other test parallel-safe** so it stays in the fast pass: use `tmp_path` (never a fixed
-  path like `/tmp/foo.pid`); use `monkeypatch.setenv` / `monkeypatch.setattr` for environment
+  path like `/tmp/foo.pid`); use `monkeypatch.setenv` / `monkeypatch.delenv` for environment
   changes — the autouse conftest snapshot (`_os_environ_isolation`) restores `os.environ` at every
   test boundary, so a bare `os.environ[...] = ...` no longer leaks, but monkeypatch stays the rule
   because it reverses exactly the named change inside the test (its undo runs last, after the
