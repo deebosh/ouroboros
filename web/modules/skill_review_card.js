@@ -14,6 +14,19 @@ import { escapeHtmlAttr, renderMarkdown } from './utils.js';
 
 const writeDirectly = (mutate) => mutate();
 
+// The per-instance detail store handed to loadSkillReviewDetail holds heavy
+// rendered markdown per exact job, so it is bounded FIFO (issue #135). It stays
+// a Map SUBCLASS on purpose: the consumer type-gates on `instanceof Map` and
+// would silently discard a wrapper object, disabling both cache and cap.
+export const SKILL_REVIEW_DETAIL_CAP = 200;
+export class BoundedDetailMap extends Map {
+    set(key, value) {
+        super.set(key, value);
+        while (this.size > SKILL_REVIEW_DETAIL_CAP) this.delete(this.keys().next().value);
+        return this;
+    }
+}
+
 // escapeHtmlAttr (pure string, node-safe) is used for text content too:
 // over-escaping quotes renders identically in the browser.
 
