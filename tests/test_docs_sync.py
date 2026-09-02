@@ -19,6 +19,24 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def _names_basename(text: str, basename: str) -> bool:
+    """Whether ``text`` names this module file as its own token.
+
+    The boundary is stated as "not a file-name character" rather than a list
+    of allowed delimiters: the component map introduces modules after a space,
+    a backtick, a path separator AND an opening parenthesis (``(clawhub.py
+    registry client``), so an allow-list of delimiters would report a module
+    the document does name. What must NOT precede the basename is a character
+    that could be part of a longer file name — a word character, a dot or a
+    hyphen — which is exactly how ``test_s3_task_control_browser.py`` used to
+    answer for ``browser.py``. A trailing word character is refused too, so
+    ``x.py`` never answers for ``x.pyi``.
+    """
+    return re.search(
+        r"(?<![\w.\-])" + re.escape(basename) + r"(?!\w)", text
+    ) is not None
+
+
 def test_the_domain_quotient_report_ends_without_a_blank_line():
     """The report generator wrote a blank line at EOF, so the whitespace gate
     (`git diff --check`) was red on the one file nobody edits by hand.
@@ -122,6 +140,12 @@ def test_settings_docs_name_every_key_owner_and_what_startup_persists():
     assert "boot provider normalization in-process and persists nothing" not in arch_flat
     assert "Startup is a read, with one exception" in arch_flat
     assert "normalize_and_persist_context_mode_compat" in arch_flat
+    # 4. What retired is the persistent auto-Low MECHANISM, not the key: the
+    #    startup sentence called `OUROBOROS_CONTEXT_MODE` itself retired while
+    #    the settings table right below it documents the same key as the live
+    #    owner-selected horizon.
+    assert "retired `OUROBOROS_CONTEXT_MODE`" not in arch_flat
+    assert "left by the RETIRED persistent auto-Low mechanism" in arch_flat
 
     # Ownership: the leaves own the vocabularies; config.py stays the facade.
     owners = ("settings_defaults", "settings_scales", "model_slots",
@@ -135,6 +159,26 @@ def test_settings_docs_name_every_key_owner_and_what_startup_persists():
     assert "settings_defaults.py" in readme_flat
     assert "an SSOT in `config.py` `SETTINGS_DEFAULTS`" not in development
     assert "`settings_defaults.py`" in development
+
+
+def test_architecture_does_not_claim_usage_response_is_the_only_usage_reader():
+    """`_usage_response` normalizes for accounting; it does not own the block.
+
+    The row claimed "The only reader of a provider's usage block", but every
+    provider adapter reads the raw `usage` dict for its own response envelope
+    (`llm_openai_compatible.py:285`, `llm_anthropic.py`, `llm_local.py`,
+    `local_model.py`). A false absolute in the component map is how the next
+    author "consolidates" a read that was never centralized here; the honest
+    claim is the narrower one the two importers support.
+    """
+    arch_flat = " ".join(_read("docs/ARCHITECTURE.md").split())
+
+    assert "The only reader of a provider's usage block" not in arch_flat
+    assert "the one NORMALIZER of a provider's usage block" in arch_flat
+    assert "Not the only READER of that block" in arch_flat
+    for module in ("ouroboros/usage_accounting.py", "ouroboros/loop_llm_call.py"):
+        assert "from ouroboros._usage_response import" in _read(module), module
+    assert 'resp_dict.get("usage")' in _read("ouroboros/llm_openai_compatible.py")
 
 
 def test_architecture_deep_review_has_no_compact_manifest_retry_rung():
@@ -166,6 +210,13 @@ def test_architecture_component_map_covers_every_live_runtime_module():
     document against the tree. Population comes from the domain manifest's own
     SSOT helper (``scripts/domain_graph.tracked_population``) so this pin and
     the domain gates can never disagree about what "live module" means.
+
+    The basename must appear as its OWN token, not as a substring. A plain
+    ``name in arch`` accepted a basename buried inside a longer name — so
+    ``browser.py`` was "documented" by ``test_s3_task_control_browser.py``,
+    ``health.py`` by ``extension_health.py`` and ``vision.py`` by
+    ``delegate_supervision.py``, while those three modules had no row of any
+    kind.
     """
     from scripts.domain_graph import tracked_population
 
@@ -174,7 +225,7 @@ def test_architecture_component_map_covers_every_live_runtime_module():
         path for path in tracked_population(REPO)
         if not path.endswith("__init__.py")
         and path not in arch
-        and pathlib.PurePosixPath(path).name not in arch
+        and not _names_basename(arch, pathlib.PurePosixPath(path).name)
     )
     assert not missing, (
         "docs/ARCHITECTURE.md names no owner for these live modules: "

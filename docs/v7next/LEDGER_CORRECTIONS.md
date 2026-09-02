@@ -8453,6 +8453,196 @@ Run as separate commands with the return code printed:
   `tests/test_legacy_timeout_retirement.py` (it scans `ADOPTION_v7next.md`) +
   `tests/test_gateway_abi3_removals.py` + `tests/test_comma_list_remnant_sweep.py`
   — **63 passed, rc 0**;
+## From the stage-2 close-out, lane persistdocs (base bf8b6549)
+
+Six lens findings against the two verify pairs the stage-2 wave had just
+rewritten: three on the persistence inventory's scanner and its two matching
+directions, three on the architecture document's own truth. Every behaviour
+change below is pinned RED on the pre-fix shape first, then green.
+
+### Red-first table
+
+| # | Sev | Pin | Red on the pre-fix shape | Green after |
+| --- | --- | --- | --- | --- |
+| 1 | HIGH | `test_persistence_inventory.py::test_parent_of_a_helper_returned_path_is_a_named_root` | `AssertionError: assert 'state/reviewer_slot_api_fallback.json' in frozenset({...})` — the path is in the population under no spelling at all | resolved via `_base_prefix`, and `test_every_scanned_path_has_an_inventory_row` then went red on the missing row (`['state/reviewer_slot_api_fallback.json']`) until the PERSISTENCE.md §2 row landed |
+| 2 | MEDIUM | `test_persistence_inventory.py::test_a_fabricated_inventory_row_is_caught_as_stale` | `TypeError: _covers() got an unexpected keyword argument 'scan_prefix_ok'` — the directional matcher the backward check needs did not exist; with the old matcher the fabricated row `state/does_not_exist.json` was silently absorbed by the bare `state` token | directional `_match`/`_covers`; the mutant row is reported and the honest document adds nothing beyond its one audited exemption |
+| 3 | LOW | `test_persistence_inventory.py::test_no_parameter_rooted_spelling_lands_at_the_data_ROOT` | `AssertionError: parameter-rooted spellings left at the data root: ['__extension_imports/*-*', '__extension_imports/*-*/skill', '__extension_imports/*-*/skill/*', 'uninstalled.json']` | four `SUBROOT_ALIASES` entries with their call-site audits |
+| 4 | HIGH | `test_docs_sync.py::test_architecture_component_map_covers_every_live_runtime_module` | with the token matcher in place and the doc unchanged: `names no owner for these live modules: ['ouroboros/tools/browser.py', 'ouroboros/tools/health.py', 'ouroboros/tools/vision.py']` | three component-map rows written from each module's own source |
+| 5 | MEDIUM | `test_docs_sync.py::test_architecture_does_not_claim_usage_response_is_the_only_usage_reader` | all three predicates red against `HEAD:docs/ARCHITECTURE.md` (absolute claim present, normalizer claim absent, residual undisclosed) | reworded row + pin |
+| 6 | LOW | `test_docs_sync.py::test_settings_docs_name_every_key_owner_and_what_startup_persists` (clauses 4) | both predicates red against `HEAD:docs/ARCHITECTURE.md` (`retired \`OUROBOROS_CONTEXT_MODE\`` present, mechanism phrasing absent) | reworded startup sentence + pin |
+
+Findings 5 and 6 are prose-only, so their red evidence is the pin predicates
+evaluated against `git show HEAD:docs/ARCHITECTURE.md` rather than a pytest
+run: reverting the file in the worktree to drive pytest twice produced a
+hanging run both times, and by the repeated-failure rule the shape was
+abandoned rather than retried a third time. The predicates are the exact
+expressions the committed pins assert.
+
+### Dispositions
+
+1. **`state/reviewer_slot_api_fallback.json` — fixed (HIGH).**
+   `reviewer_slot_config._record_api_fallback_substitution` (:833) writes
+   `_last_execution_path().parent / "reviewer_slot_api_fallback.json"`. The
+   chain base was an unresolved `.parent` attribute, so the file entered the
+   population under no name: a live durable disclosure record invisible to the
+   forward check and absent from the inventory. `_base_prefix` now reads
+   `.parent` as an operation on an already-named path (path minus its leaf; a
+   single-segment path has no named parent — that is the data root — and still
+   yields nothing), which is a fact the source states, not an alias. Chosen
+   over an audited alias precisely because the fact is derivable: an alias
+   would have been a human promise where the AST already has the answer, and
+   it would not have caught the next writer of this shape. The scan gained ten
+   spellings, nine of them already documented (`state/cx/*`, `projects/*`).
+   The new PERSISTENCE.md §2 row names the writer, the atomic-text write with
+   its swallowed `OSError`, `schema_version: none` with the reason (never read
+   back — verified by grep: the only other mentions of the name are the
+   writer, its `__all__`, and the save-time warning
+   `reviewer_slot_api_fallback_warning`, which re-derives its text from the
+   config and not from this file), retention (one object, last substitution
+   wins) and reset (delete with `state/`).
+2. **The backward check — fixed (MEDIUM), and it cost three rows.**
+   `_match` accepted an exhausted SCAN path as "named by a deeper row" in
+   BOTH directions. Since the population also holds bare top-level tokens
+   (`state`, `logs`, `memory`, `archive`, `skills`, `uploads` …), `state`
+   certified any invented `state/<name>.json` row: the no-stale-rows direction
+   proved nothing. The prefix rule is now directional — the forward check
+   keeps it (`state` genuinely IS answered by the deeper rows under it), the
+   backward check drops it, and a trailing `**` still matches zero segments so
+   a `dir/**` row needs the row's own depth, not one more. Three rows fell out
+   of the stricter direction and each was disposed of separately, NOT by one
+   exemption list:
+   - `logs/server.log` (+`.1..3`) and `logs/launcher.log` — real writers the
+     scan could not see: both stdlib `RotatingFileHandler`s are built at
+     module import time from `_log_dir = DATA_DIR / "logs"` (server.py:122,
+     launcher.py:123), and module scope was the one scope the resolver ran
+     with an EMPTY locals map. Module scope now gets its own local flow, the
+     same fact function scope already had. +2 spellings, both matching the
+     existing row.
+   - `logs/tasks/task_<id>.txt` — a real writer whose root arrives as a
+     parameter: `sanitize_task_for_event(task, drive_logs, …)` writes
+     `drive_logs / "tasks" / f"task_{id}.txt"` (utils.py:1160). Adding
+     `drive_logs` to `DATA_ROOT_MARKERS` was rejected: it would have rooted
+     `drive_logs / "events.jsonl"` and its siblings AT the data root — the
+     exact mis-rooting defect finding 3 is about — and then needed three
+     relocating aliases to undo. Instead one audited `PARAM_SUBROOTS` entry
+     names the plane up front (`drive_logs` -> `logs`); every binding in the
+     tree is `env.drive_path("logs")` (agent.py:442/795,
+     agent_startup_checks.py:860) or `ctx.drive_logs`/`drive_root / "logs"`
+     (commit_gate.py:907) threaded down unchanged, and nothing else binds the
+     name. +1 spelling.
+   - `state/project_source_locks/` — the only genuine orphan: the row itself
+     reads "none in this tree — orphan plane seen in live layouts (removed
+     feature leftover)", and `rg project_source_locks` finds the string in no
+     `.py` file. Exempted BY NAME in `STALE_ROW_EXEMPTIONS`, asserted by
+     equality, so a row that acquires a writer surfaces too. The
+     `test_every_inventory_row_is_still_real` docstring claimed resolution had
+     retired the exemption list; that claim is replaced by what is now true.
+3. **Mis-rooted per-skill spellings — fixed (LOW).** `state_dir` matches
+   `DATA_ROOT_MARKERS`, so a chain hanging off that parameter was correctly
+   seen as data-relative and wrongly placed at the data ROOT.
+   `uninstalled.json` (skill_uninstall_state.py:65, `state_dir` bound by the
+   sweep's own `drive_root / "state" / "skills"` listing) and the
+   `__extension_imports/*-*` family (extension_import_staging.py:84-88, whose
+   ONE caller extension_loader.py:649 passes the
+   `state_dir = skill_state_dir(drive_root, skill.name)` bound at :581) passed
+   only through the basename and bare-token fallbacks — covered by accident,
+   documented nowhere they actually live. Four `SUBROOT_ALIASES` entries with
+   the call-site audit written beside them, in the shape
+   `auth_token.json`/`jobs/*` already use. Both families have a second,
+   already-resolved spelling through `skill_state_dir(...)`, which is what
+   makes the aliases checkable rather than asserted: the tombstone collapses
+   onto that spelling (pin 284 -> 283) and the staged-import paths sit under
+   the `state/skills/*/__extension_imports` the sweep resolves.
+4. **The component-map substring hole — fixed (HIGH).** The pin tested
+   `PurePosixPath(path).name in arch`, so a basename buried inside a longer
+   file name counted as a row: `browser.py` was "documented" by
+   `test_s3_task_control_browser.py` (line 3534), `health.py` by
+   `extension_health.py`/`worker_health.py`/`context_health.py`, `vision.py`
+   by `delegate_supervision.py`. All three modules had no mention of any kind.
+   The replacement states the boundary as "not a file-name character"
+   (`(?<![\w.\-])name(?!\w)`) rather than an allow-list of delimiters: the
+   first draft allowed only start/space/backtick/slash and reported
+   `ouroboros/marketplace/clawhub.py` as missing, because the map introduces
+   it after an opening parenthesis (`(clawhub.py registry client`). A lexical
+   boundary on a file name in prose is not a semantic gate (BIBLE P5): it
+   replaces a weaker lexical test in a documentation pin, and no runtime
+   decision reads it. The three rows were written from each module's own
+   source, not from the finding text: the Playwright per-ToolContext session
+   with thread affinity, its engine/bundle resolution and out-of-band cleanup
+   of retired generations, plus the browser-side trust boundary
+   (`_is_subagent_blocked_browser_url`, the control-plane loopback ports, the
+   private/link-local/metadata address and resolving-hostname denials, the
+   workspace-only `file://` carve, and the route/in-page-script guards against
+   self-lowering context or safety mode, mutative and post-task-evolution
+   toggles, owner settings self-elevation and owner skill self-attestation);
+   the three VLM tools plus `attach_local_image_to_context` with the vision
+   slot resolution, the deadline-aware wait, the local-file trust boundary its
+   `media.py` siblings reuse and the 20 MB / 6 MB / 1600 px / magic-byte
+   bounds; and the read-only P7 report whose findings — including the
+   size-ratchet validator's — are warnings against the enforcing CI lane.
+5. **"The only reader of a provider's usage block" — fixed (MEDIUM).** False:
+   `llm_openai_compatible.py:285`, `llm_anthropic.py:318`,
+   `llm_local.py:271`, `local_model.py:678` and `tools/vision.py:192` all read
+   a raw `usage` dict for their own envelopes. The replacement was derived
+   from an exhaustive scan of the class (`rg 'get\("usage"\)|\["usage"\]'` over
+   `ouroboros/` and `supervisor/`), not from the fixed sentence, so one false
+   absolute is not swapped for another: the row now claims the one
+   NORMALIZER of that block into reported token counts and a provider-declared
+   cost, names its exactly two importers (`usage_accounting.py`,
+   `loop_llm_call.py` — verified by `rg 'from ouroboros._usage_response'`),
+   and DISCLOSES the residual in the same sentence rather than leaving a
+   consolidation invitation for the next author.
+6. **`OUROBOROS_CONTEXT_MODE` called retired — fixed (LOW).** The startup
+   sentence (:19) called the key retired while the settings table (:3212)
+   documents it as the live owner-selected context horizon; the module row
+   (:87) already had it right ("the RETIRED persistent auto-Low context
+   state"). The sentence now says what retired is the mechanism, names the
+   pair as its compat residue and `OUROBOROS_CONTEXT_MODE_AUTO_LOW` as its
+   provenance tombstone. Pinned as a fourth clause of the existing
+   settings-docs test rather than as a new test, because that test already
+   owns the startup-persistence claim about the same seam.
+
+### Rejected
+
+1. **An audited alias for `reviewer_slot_api_fallback.json` instead of
+   teaching the resolver `.parent` — rejected.** The finding offered either.
+   The parent of a resolved path is derivable from the AST, and an alias would
+   have bought one entity while leaving every future `<helper>().parent /
+   "name"` writer invisible. Aliases stay for roots that arrive as parameters,
+   where only a call-site audit can answer.
+2. **One exemption list for all three rows the strict backward check exposed —
+   rejected.** Two of the three had real writers; excusing them would have
+   re-created, in the exemption table, exactly the vacuity the fix removed. A
+   writer must be SEEN, not excused, and only the documented orphan is
+   exempted.
+3. **Adding `drive_logs` to `DATA_ROOT_MARKERS` — rejected.** It resolves
+   `logs/tasks/*` at the price of mis-rooting `events.jsonl`, `tools.jsonl`
+   and their siblings at the data root, i.e. manufacturing three new instances
+   of finding 3 and then aliasing them back.
+4. **An allow-list of delimiters for the basename boundary — rejected after
+   measurement.** start/space/backtick/slash reported
+   `ouroboros/marketplace/clawhub.py` as undocumented although the map names
+   it; the negative-lookbehind form is the same intent stated over the right
+   alphabet.
+5. **Rewriting the `logs/tasks/` retention disclosure — out of scope.** The
+   row already discloses that no retention sweep names the directory
+   (recorded by the stage-2 wave). This lane made the writer visible; whether
+   that plane gets a sweep is a separate owner decision.
+
+### Gate evidence
+
+This host, isolated env roots per invocation (`OUROBOROS_APP_ROOT`/`_REPO_DIR`/
+`_DATA_DIR`/`_SETTINGS_PATH` + a private `TMPDIR` under a fresh `mktemp -d`),
+venv python, `-p no:cacheprovider -o addopts=""`, at most `-n 6`;
+`git rev-parse HEAD` verified unmoved after every pytest run; author and
+committer `Ouroboros <311266734+ouroboros-agent@users.noreply.github.com>`;
+five single-intent commits; no push. Each gate its own command with its rc
+printed:
+
+- `tests/test_persistence_inventory.py tests/test_docs_sync.py
+  tests/test_architecture_facts.py tests/test_reviewer_slot_config.py
+  tests/test_size_ratchet_ci_shape.py tests/test_domain_manifest.py`
+  128 passed, rc 0;
 - `ruff check . --select F` rc 0;
 - `scripts/check_domains.py` rc 0;
 - `scripts/regenerate_inventories.py --check` rc 0;
@@ -8468,3 +8658,10 @@ program text this lane changes is five f-string prefixes and two docstrings in
 module. Everything else is prose. A release candidate still owes its own full
 battery and its own 3-OS matrix — and, per item 2, that matrix is now the place
 where the 1072a317 intermittent class either recurs or does not.
+- `scripts/v7next_adoption.py` rc 0 and `scripts/v7next_adoption.py --release`
+  rc 0;
+- `git diff --check` rc 0 and `git diff --check f3fbfdbb..HEAD` rc 0.
+
+No runtime module changed in this lane: the diff is one test module, one
+architecture document, one persistence inventory and this ledger. The
+CI-shape battery and the `-m serial` pass are therefore not re-run here.
