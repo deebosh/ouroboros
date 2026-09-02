@@ -1087,23 +1087,15 @@ export function createReviewHydrator({ fetchDetail, applyDetail, onState = () =>
             .then((detail) => {
                 // The strict seam rejects failures; null means genuinely absent (404).
                 if (detail === null || detail === undefined) return false;
-                // drop() may have evicted this task mid-flight: applying a
-                // detached request would repaint (or recreate) a card the
-                // caller just removed.
-                if (states.get(taskId) !== state) return false;
                 return write(() => applyDetail(taskId, detail));
             })
             .then((applied) => {
-                if (states.get(taskId) !== state) return applied;
                 if (applied !== false && revision !== null) state.appliedRevision = revision;
                 state.everApplied = true;
                 notify('idle');
                 return applied;
             })
             .catch(() => {
-                // Same identity bail as the success path: a dropped/evicted
-                // task's failing fetch must not flip a recreated card to error.
-                if (states.get(taskId) !== state) return false;
                 notify('error');
                 return false;
             })
@@ -1122,13 +1114,6 @@ export function createReviewHydrator({ fetchDetail, applyDetail, onState = () =>
     };
 
     return {
-        drop(taskIdValue) {
-            // Eviction hook for callers that bound their per-task presentation
-            // state: forget this task's hydration state entirely, so a later
-            // recreated card hydrates fresh instead of short-circuiting on a
-            // stale appliedRevision.
-            states.delete(text(taskIdValue));
-        },
         hydrate(taskIdValue, revisionValue = null, { onDomWrite = null } = {}) {
             const taskId = text(taskIdValue);
             if (!taskId) return Promise.resolve(false);
