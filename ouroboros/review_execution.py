@@ -120,17 +120,17 @@ def _poll_detail(gateway: Any, run_id: str, seconds: float) -> Dict[str, Any]:
         return bounded_poll(gateway, run_id, seconds, strict=True)
     return expiring_poll(gateway, run_id, strict=True) or {}
 
-def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str, str, str]:
-    """Return (stable_governance, task_stable, dynamic_evidence) for one slot.
+# Policy keys a retrieving executor consumes itself (`review_native_episode`,
+# `AgentSessionReviewExecutor`); the rendered Policy JSON omits them so the api
+# pack states the review contract once, in its governance segment.
+ROUTE_OWNED_POLICY_KEYS = frozenset({"output_contract", "native_data_root"})
 
-    Cache segmentation (v6.74.0, B1): the byte-stable governance instruction and
-    the task-stable contract (goal/scope/checklist/policy — stable across the
-    improvement passes of ONE task) are the two cache-marked segments; the
-    mutable tail (subject, evidence, refs) is never marked, and the slot label
-    lives at its TAIL so concurrent same-model slots share a warm prefix."""
-    evidence = json.dumps(request.evidence, ensure_ascii=False, indent=2, default=str)
-    refs = json.dumps(request.evidence_refs, ensure_ascii=False, indent=2, default=str)
-    policy = json.dumps(request.policy, ensure_ascii=False, indent=2, default=str)
+
+def review_output_contract(request: ReviewRequest) -> str:
+    """The surface's output contract — required keys, tier and acceptance rules,
+    the DEGRADED escape hatch — as ONE text every delivery honours: the api pack
+    renders it into its byte-stable governance segment, and a surface hands the
+    same text to its retrieving rows as ``policy["output_contract"]``."""
     classify_tier = bool(request.policy.get("classify_outcome_tier"))
     # Acceptance-only prompt POLICY (criteria/dialogue/obligation keys and the
     # surface rules) keys on the surface; the output SHAPE those keys imply is
@@ -181,16 +181,35 @@ def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str,
     )
     tier_rules = TIER_CLASSIFICATION_RULES if classify_tier else ""
     acceptance_rules = ACCEPTANCE_SURFACE_RULES if acceptance else ""
-    stable = (
-        "You are an independent Ouroboros reviewer slot.\n"
-        f"Surface: {request.surface}\n"
-        f"Role hint: {slot.role_hint or 'general reviewer'}\n\n"
-        "The review subject and evidence packet arrive in the user message.\n\n"
+    return (
         f"Return JSON with keys: verdict (PASS|FAIL|DEGRADED){tier_keys}{criteria_key}{dialogue_key}, findings "
         f"({findings_shape}), and summary. "
         + tier_rules
         + acceptance_rules
         + "If you cannot judge because evidence is missing, return DEGRADED and explain."
+    )
+
+
+def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str, str, str]:
+    """Return (stable_governance, task_stable, dynamic_evidence) for one slot.
+
+    Cache segmentation (v6.74.0, B1): the byte-stable governance instruction and
+    the task-stable contract (goal/scope/checklist/policy — stable across the
+    improvement passes of ONE task) are the two cache-marked segments; the
+    mutable tail (subject, evidence, refs) is never marked, and the slot label
+    lives at its TAIL so concurrent same-model slots share a warm prefix."""
+    evidence = json.dumps(request.evidence, ensure_ascii=False, indent=2, default=str)
+    refs = json.dumps(request.evidence_refs, ensure_ascii=False, indent=2, default=str)
+    policy = json.dumps(
+        {k: v for k, v in request.policy.items() if k not in ROUTE_OWNED_POLICY_KEYS},
+        ensure_ascii=False, indent=2, default=str,
+    )
+    stable = (
+        "You are an independent Ouroboros reviewer slot.\n"
+        f"Surface: {request.surface}\n"
+        f"Role hint: {slot.role_hint or 'general reviewer'}\n\n"
+        "The review subject and evidence packet arrive in the user message.\n\n"
+        + review_output_contract(request)
         + "\n\n"  # trailing separator: block-flattening providers glue segments
     )
     task_stable = (
@@ -1145,13 +1164,16 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
 
     @property
     def session_prompt(self) -> str:
-        """The compact task this route sends — the SAME task, criteria and
-        output contract as the api pack, minus the assembled evidence: a
-        delegated reviewer retrieves context on the fly with its tools (D12),
-        so the giant pack the session replaces is never built here (plan 5.2)."""
+        """The compact task this route sends — the slot's own work order when the
+        surface supplies one (``slot_session_tasks``), else the shared
+        ``session_task``: the SAME task, criteria and output contract as the api
+        pack, minus the assembled evidence unless the surface chose to include
+        it — a delegated reviewer retrieves context with its tools (D12), so
+        the api pack is never assembled here (plan 5.2)."""
         if self._session_prompt is None:
             request, slot = self.assignment.request, self.assignment.slot
-            task = str(request.session_task or "").strip()
+            task = str((getattr(request, "slot_session_tasks", None) or {}).get(slot.slot_id)
+                       or request.session_task or "").strip()
             if not task:
                 raise ReviewRouteUnavailable(
                     "agent_session slot has no session task: the surface must supply "

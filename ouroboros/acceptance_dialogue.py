@@ -27,6 +27,7 @@ material.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -891,6 +892,112 @@ def _total_paid_acceptance_cycles(ctx: Any) -> Any:
     ).get("claimed_cycles")
 
 
+_RETRIEVING_ACCESS_DISCLOSURE = (
+    "Access outside the task workspace is not guaranteed on this delivery: a refused or "
+    "failed read is absence of evidence, not absence of the artifact — report it as a gap "
+    "you could not verify instead of inferring the artifact does not exist."
+)
+
+
+def _retrieving_packet_projection(evidence: Dict[str, Any]) -> Dict[str, Any]:
+    """The packet a NATIVE row receives (R4/R15): the same host-attested exhibits
+    WITHOUT the freely degradable tail the api ladder spends first — the
+    tool-trajectory rows and artifact previews — because that row reads those
+    sources itself at the pointers. Every section key survives, so an
+    `evidence_ref` naming it still resolves against the FULL dict (the ref
+    authority never changes), and the omission is manifested like every other."""
+    packet = dict(evidence)
+    omissions = list(packet.get("omissions_manifest") or [])
+    trajectory = packet.get("tool_trajectory")
+    if isinstance(trajectory, list) and trajectory:
+        packet["tool_trajectory"] = [{
+            "retrieve": "tool-trajectory rows withheld from this delivery; read the trajectory log at the pointer",
+            "calls": len(trajectory),
+        }]
+        omissions.append({"section": "tool_trajectory", "omitted": len(trajectory), "reason": "retrieving_delivery"})
+    artifacts = packet.get("artifacts")
+    if isinstance(artifacts, list):
+        rows = [
+            {k: v for k, v in row.items() if k != "preview"} if isinstance(row, dict) and row.get("preview") else row
+            for row in artifacts
+        ]
+        stripped = sum(1 for before, after in zip(artifacts, rows) if before is not after)
+        if stripped:
+            packet["artifacts"] = rows
+            omissions.append({"section": "artifact_previews", "omitted": stripped, "reason": "retrieving_delivery"})
+    if omissions:
+        packet["omissions_manifest"] = omissions
+    return packet
+
+
+def acceptance_retrieving_work_order(
+    request: Any, slots: List[Any], *, session_root: str, data_root: pathlib.Path,
+) -> None:
+    """Attach the route-owned work order of ONE acceptance panel's retrieving
+    rows (owner R1/R4/R5/R15, 2026-09-01) to ``request`` in place.
+
+    Every retrieving row receives the same task, criteria and output contract
+    as the packet rows — rendered by the same `_render_prompt_parts` — plus
+    absolute retrieval pointers. A SESSION row gets the FULL packet (its run is
+    unobserved by the host, so the packet is its only attested view) and the
+    access disclosure; a NATIVE row gets the packet without its freely
+    degradable tail and the real data root (R5), because its episode reads
+    task results and artifacts itself. The FULL packet stays on
+    ``request.evidence``: evidence_refs resolve against it, never against a
+    rendered projection."""
+    from ouroboros.artifacts import task_artifact_dir_path
+    from ouroboros.outcome_receipt_store import verification_receipts_path
+    from ouroboros.review_execution import ReviewRouteKind, _render_prompt_parts, review_output_contract
+
+    request.session_root = session_root
+    request.policy["output_contract"] = review_output_contract(request)
+    request.policy["native_data_root"] = str(data_root)
+    task_id = str(request.task_id or "")
+    root = pathlib.Path(data_root)
+    try:
+        artifacts_dir, receipts = task_artifact_dir_path(root, task_id), verification_receipts_path(root, task_id)
+    except Exception:  # an unusual task id: name the canonical layout instead of refusing the work order
+        artifacts_dir = root / "task_results" / "artifacts" / task_id
+        receipts = artifacts_dir / "verification_receipts.jsonl"
+    pointers = "\n".join((
+        "RETRIEVAL POINTERS (absolute paths; the packet below is the host's attested projection of these sources):",
+        f"- task workspace — the active tree the task worked in (your root): {session_root}",
+        f"- task result record (contract, status, children): {root / 'task_results' / (task_id + '.json')}",
+        f"- task artifacts named by the packet's `artifacts` manifest: {artifacts_dir}/",
+        f"- host-attested verification receipts: {receipts}",
+        f"- tool trajectory log (rows with task_id={task_id}): {root / 'logs' / 'tools.jsonl'}",
+    ))
+    native_packet: Optional[Dict[str, Any]] = None
+    for slot in slots:
+        if getattr(slot, "route", None) is ReviewRouteKind.AGENT_SESSION:
+            preamble = (
+                "You review as a read-only agent session in the task workspace. The host's FULL evidence "
+                "packet follows; verify its claims against the sources at the pointers with your own tools. "
+                + _RETRIEVING_ACCESS_DISCLOSURE
+            )
+            packet = request.evidence
+        else:
+            preamble = (
+                "You review as a bounded read-only native inspection episode; the host data root at the "
+                "pointers is readable. The evidence packet follows WITHOUT its tool-trajectory rows and "
+                "artifact previews — read those sources yourself at the pointers."
+            )
+            if native_packet is None:
+                native_packet = _retrieving_packet_projection(request.evidence)
+            packet = native_packet
+        _stable, task_stable, dynamic = _render_prompt_parts(dataclasses.replace(request, evidence=packet), slot)
+        slot_line = f"Slot: {slot.slot_id}"
+        if dynamic.endswith(slot_line):  # the executor labels the slot itself
+            dynamic = dynamic[: -len(slot_line)].rstrip()
+        request.slot_session_tasks[slot.slot_id] = "\n\n".join((
+            preamble,
+            pointers,
+            "Every evidence_ref must be an EXACT member of the packet's host-attested exhibit vocabulary; "
+            "the FULL packet is the host's resolution authority whatever you read at the pointers.",
+            task_stable.rstrip() + "\n\n" + dynamic,
+        ))
+
+
 def _execute_task_acceptance_panel(ctx: Any) -> Any:
     """Perform the one substantive host panel over the pre-bound evidence."""
     from ouroboros.review_evidence import task_acceptance_evidence_revision
@@ -898,9 +1005,11 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
         HARDNESS_ADVISORY_VISIBLE,
         ReviewRequest,
         ReviewRunResult,
+        review_repo_dirs_for,
         run_review_request,
         triad_delivery_slots,
     )
+    from ouroboros.tools.review import _owner_deadline_at
     from ouroboros.review_dispatch import (
         TaskAcceptanceDispatchUnavailable,
         bind_task_acceptance_paid_dispatch,
@@ -943,36 +1052,59 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
             "max_physical_attempts_per_actor": 2,
         },
         task_id=ctx.task_id, retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
+        deadline_at=_owner_deadline_at(ctx.tools._ctx),  # R23: the owner window bounds every row
     )
     if not slots:
         return _refused("no_review_slots")
+    drive_root = pathlib.Path(ctx.drive_root if ctx.drive_root is not None else ctx.tools._ctx.drive_root)
+    retrieving = [slot for slot in slots if getattr(slot, "retrieves", False)]
+    if retrieving:
+        # R1/R4/R15: a retrieving row (native episode, agent session) gets the
+        # route-owned work order over the task's ACTIVE workspace — the tree it
+        # worked in, never the governance repo — and the real data root (R5).
+        # An unresolvable root leaves the row its own typed `session_root_missing`.
+        try:
+            session_root = str(review_repo_dirs_for(ctx.tools._ctx)[1])
+        except Exception:
+            session_root = ""
+        acceptance_retrieving_work_order(request, retrieving, session_root=session_root, data_root=drive_root)
     # Budget admission for the whole acceptance wave (v6.69.0): a wave that
     # cannot fit the remaining root budget is declined up front as a terminal
-    # DEGRADED (no-quorum semantics) instead of dying mid-wave. The estimate
-    # renders the REAL per-slot message pair; the rare second physical
-    # attempt is not multiplied in — fail-open coarse filter, no reservation.
+    # DEGRADED (no-quorum semantics) instead of dying mid-wave. Route-aware: a
+    # session row rides the owner's subscription, not API money, so it is not
+    # priced; a native row IS paid API, estimated as one episode send of its
+    # work order (its rounds are unknown up front); a packet row renders its
+    # REAL message pair. The rare second physical attempt is not multiplied
+    # in — fail-open coarse filter, no reservation.
+    from ouroboros.review_execution import ReviewRouteKind
     from ouroboros.tools.review_helpers import review_wave_budget_gate
 
-    try:
-        from ouroboros.review_substrate import _messages_char_count, _request_messages
+    paid = [slot for slot in slots if getattr(slot, "route", None) is not ReviewRouteKind.AGENT_SESSION]
+    if paid:
+        try:
+            from ouroboros.review_substrate import _messages_char_count, _request_messages
 
-        _prompt_chars = _messages_char_count(_request_messages(request, slots[0])) if slots else 0
-    except Exception:
-        _prompt_chars = len(json.dumps(evidence, ensure_ascii=False, default=str))
-    _admission = review_wave_budget_gate(
-        ctx.tools._ctx,
-        surface="task_acceptance",
-        models=[getattr(slot, "model", "") for slot in slots],
-        prompt_chars=_prompt_chars,
-    )
-    if _admission is not None:
-        return _refused(
-            "review_wave_budget_insufficient: estimated "
-            f"~${_admission.get('estimated_wave_usd')} > remaining "
-            f"${_admission.get('remaining_usd')} (no reviewer was called)"
+            _prompt_chars = max(
+                len(request.slot_session_tasks.get(slot.slot_id, "")) + len(request.policy["output_contract"])
+                if getattr(slot, "retrieves", False)
+                else _messages_char_count(_request_messages(request, slot))
+                for slot in paid
+            )
+        except Exception:
+            _prompt_chars = len(json.dumps(evidence, ensure_ascii=False, default=str))
+        _admission = review_wave_budget_gate(
+            ctx.tools._ctx,
+            surface="task_acceptance",
+            models=[getattr(slot, "model", "") for slot in paid],
+            prompt_chars=_prompt_chars,
         )
-    free_result = _free_dispatch(
-        request, slots, drive_root=ctx.drive_root or ctx.tools._ctx.drive_root, usage_ctx=ctx.tools._ctx)
+        if _admission is not None:
+            return _refused(
+                "review_wave_budget_insufficient: estimated "
+                f"~${_admission.get('estimated_wave_usd')} > remaining "
+                f"${_admission.get('remaining_usd')} (no reviewer was called)"
+            )
+    free_result = _free_dispatch(request, slots, drive_root=drive_root, usage_ctx=ctx.tools._ctx)
     if free_result is not None:
         return free_result
     refusal = task_acceptance_preclaim_refusal(ctx)
@@ -983,12 +1115,7 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     started = time.monotonic()
     try:
         with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
-            result = run_review_request(
-                request, slots=slots,
-                drive_root=(pathlib.Path(ctx.drive_root) if ctx.drive_root is not None
-                            else pathlib.Path(ctx.tools._ctx.drive_root)),
-                usage_ctx=usage_ctx,
-            )
+            result = run_review_request(request, slots=slots, drive_root=drive_root, usage_ctx=usage_ctx)
     except TaskAcceptanceDispatchUnavailable as exc:
         return _refused(f"{exc} (no reviewer was called)")
     duration_sec = round(time.monotonic() - started, 3)

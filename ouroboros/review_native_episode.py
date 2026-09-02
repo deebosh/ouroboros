@@ -223,12 +223,15 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
 
     @property
     def episode_prompt(self) -> str:
-        """The SAME compact work-order the session route sends (D12): task,
-        criteria and output contract, minus any assembled evidence — the actor
-        retrieves context itself, so the packet is never built here."""
+        """The SAME compact work-order the session route sends (D12) — the slot's
+        own (``slot_session_tasks``) or the shared ``session_task``: task,
+        criteria and output contract, with only the evidence the surface chose
+        to include — the actor retrieves context itself; the api pack is never
+        assembled here."""
         if self._episode_prompt is None:
             request, slot = self.assignment.request, self.assignment.slot
-            task = str(request.session_task or "").strip()
+            task = str((getattr(request, "slot_session_tasks", None) or {}).get(slot.slot_id)
+                       or request.session_task or "").strip()
             if not task:
                 raise ReviewRouteUnavailable(
                     "native tool-round slot has no session task: the surface must "

@@ -164,6 +164,7 @@ class ReviewRequest:
     # It is the same criteria without the pack because the agent retrieves it.
     session_root: str = ""
     session_task: str = ""
+    slot_session_tasks: Dict[str, str] = field(default_factory=dict)  # per-slot work order over session_task
     session_threads: Dict[str, str] = field(default_factory=dict)
     usage_attribution: Dict[str, str] = field(default_factory=dict)
     deadline_at: str = ""
@@ -965,8 +966,7 @@ from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
 )
 
 
-# reviewer_slots()/triad_delivery_slots() live in reviewer_slot_config (altitude,
-# P7); re-exported because acceptance surfaces and tests import them from here.
+# reviewer_slots()/triad_delivery_slots() live in reviewer_slot_config (altitude, P7); re-exported for callers here.
 from ouroboros.reviewer_slot_config import reviewer_slots, triad_delivery_slots  # noqa: F401,E402
 
 
@@ -1320,7 +1320,7 @@ class ReviewCoordinator:
         except Exception:
             prompt_ref = {}
         free_refusal = (
-            task_acceptance_zero_physical_refusal(request.evidence)
+            task_acceptance_zero_physical_refusal(request.evidence, retrieving=bool(slot.retrieves))
             if request.surface == "task_acceptance"
             else {}
         )
@@ -1383,9 +1383,9 @@ class ReviewCoordinator:
             acceptance_actor = request.surface == "task_acceptance"
             actor_attempts = 2 if (p3_actor or acceptance_actor) else 1
             # Acceptance and P3 share one two-send rail: transport/empty retry
-            # or same-route format repair; a native tool-round slot carries no
-            # send count — its episode is bounded by transcript, deadline and
-            # ledger (its second actor attempt repairs format locally).
+            # or same-route format repair for PACKET rows; a retrieving row
+            # (native episode, agent session) carries no send count — its
+            # executor canonicalizes its own answer, so no repair resend below.
             from ouroboros.review_native_episode import native_or_packet_attempt_rail
 
             attempt_rail = native_or_packet_attempt_rail(
@@ -1457,7 +1457,7 @@ class ReviewCoordinator:
                     _last_msg, _last_usage, _last_text, _has_prior = msg, usage, raw_text, True
                     if raw_text.strip():
                         if (
-                            acceptance_actor
+                            acceptance_actor and not slot.retrieves
                             and actor_attempt + 1 < actor_attempts
                             and parse_review_findings(raw_text)[0] is None
                         ):

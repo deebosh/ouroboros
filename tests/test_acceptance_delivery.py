@@ -53,7 +53,8 @@ def structured_env(monkeypatch):
     return monkeypatch
 
 
-def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, **tool_ctx_fields):
+def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, content="deliverable",
+                    fresh_result=True, **tool_ctx_fields):
     """A root acceptance context whose wallet claim can be exercised for real."""
     from ouroboros import loop as loop_mod
     from ouroboros.contracts.task_contract import build_task_contract
@@ -71,19 +72,20 @@ def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, **tool_ctx_f
         task_contract=contract, task_metadata=metadata, pending_events=[],
         **tool_ctx_fields,
     )
-    write_task_result(
-        tmp_path, "root-delivery", STATUS_RUNNING, root_task_id="root-delivery",
-        delegation_role="root", task_contract=contract,
-    )
+    if fresh_result:
+        write_task_result(
+            tmp_path, "root-delivery", STATUS_RUNNING, root_task_id="root-delivery",
+            delegation_role="root", task_contract=contract,
+        )
     evidence = evidence if evidence is not None else {"evidence": "complete"}
     return loop_mod._TaskAcceptanceContext(
-        tools=SimpleNamespace(_ctx=tool_ctx), content="deliverable", task_id="root-delivery",
+        tools=SimpleNamespace(_ctx=tool_ctx), content=content, task_id="root-delivery",
         task_type="task", llm_trace={"tool_calls": []}, drive_root=tmp_path,
         messages=[{"role": "system", "content": "policy"}, {"role": "user", "content": "goal"}],
         emit_progress=lambda _text: None, mode="required", subtree_statuses=[],
         budget_profile=contract["budget_profile"], passes_done=0, evidence=evidence,
         review_binding=build_review_binding(
-            candidate="deliverable", evidence=evidence, fence_token_or_state="delivery-test",
+            candidate=content, evidence=evidence, fence_token_or_state="delivery-test",
         ),
     )
 
@@ -240,3 +242,339 @@ def test_child_and_off_acceptance_run_packet_rows_only(structured_env, tmp_path)
     payload = json.loads(_handle_task_acceptance_review(ctx, claim="root done"))
     assert payload["status"] == "not_dispatched" and "invalid reviewer-slot configuration" in payload["error"]
     assert calls == [["t_api"]]
+
+
+# ---------------------------------------------------------------------------
+# The retrieving work order (R1/R4/R5/R15/R23) and the route-aware gates.
+# ---------------------------------------------------------------------------
+
+_ACCEPTANCE_PACKET = {
+    "task_contract": {"objective": "ship it", "acceptance_claims": [{"id": "claim_1", "claim": "game boots"}]},
+    "acceptance_support_refs": [{
+        "criterion_id": "claim_1", "support_status": "supported",
+        "support_refs": [{"ref": "verification_receipts[0]", "status": "pass"}],
+    }],
+    "verification_summary": {"count": 1, "failed_count": 0},
+    "verification_receipts": [{
+        "ref": "verification_receipts[0]", "status": "pass", "matched": True,
+        "provenance": "host_attested", "criterion_id": "claim_1", "check": "pytest -q",
+    }],
+    "acceptance_obligations": [],
+    "artifacts": [{"name": "report/summary.md", "size": 10, "preview": "PREVIEW-BYTES-OF-THE-ARTIFACT"}],
+    "repo_diff": "diff --git a/x b/x",
+    "tool_trajectory": [{"tool": "run_command", "status": "ok", "result": "TRAJECTORY-RESULT-3-passed"}],
+    "reasoning_notes": "I believe the feature works.",
+    "__provenance__": {
+        "task_contract": "host_attested", "acceptance_support_refs": "host_attested",
+        "verification_summary": "host_attested", "verification_receipts": "host_attested",
+        "acceptance_obligations": "host_attested", "repo_diff": "host_attested",
+        "artifacts": "artifact", "tool_trajectory": "tool_result", "reasoning_notes": "agent_supplied",
+    },
+}
+
+_CLEAN_VERDICT = {
+    "verdict": "PASS", "outcome_tier": "solved", "completion_coach": "",
+    "criteria_used": [
+        {"criterion": "game boots", "status": "supported", "evidence_refs": ["verification_receipts[0]"]},
+        {"criterion": "receipt beside a fabricated ref", "status": "supported",
+         "evidence_refs": ["verification_receipts[0]", "made_up_ref"]},
+    ],
+    "dialogue_status": "unreachable_here",
+    "findings": [], "summary": "verified against the receipts",
+}
+
+_FAKE_ROSTER = {
+    "enabled": True,
+    "items": [{
+        "subagent_id": "api-critic", "name": "API critic", "recommended_use": "Exact reviewer.",
+        "route": {"kind": "api_model", "target_id": "openai/fake-reviewer"},
+    }],
+}
+_ROW_API = {"slot_id": "t_api", "route": {"kind": "api_chat", "target_id": "openai/fake-reviewer"}}
+_ROW_NATIVE = {"slot_id": "t_actor", "subagent_id": "api-critic"}
+_ROW_SESSION = {"slot_id": "t_sess", "route": {"kind": "agent_session", "target_id": "fake-review=fake-small"}}
+_ROW_SCOPE = {"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai/fake-reviewer"}}
+
+
+def _offline_env(monkeypatch, *rows):
+    """An offline structured triad (fake model ids never reach a provider)."""
+    monkeypatch.setenv("OUROBOROS_SUBAGENTS", json.dumps(_FAKE_ROSTER))
+    monkeypatch.setenv(REVIEWER_SLOTS_ENV, json.dumps({"triad": list(rows), "scope": [_ROW_SCOPE]}))
+    for key in ("OUROBOROS_REVIEW_MODELS", "OUROBOROS_REVIEW_ROUTES", "OUROBOROS_REVIEW_SESSION_ROUTE"):
+        monkeypatch.delenv(key, raising=False)
+
+
+class _EpisodeLLM:
+    """Scripted `chat()` that crosses the real durable attempt ledger on every
+    send — the production `LLMClient` does, and both the packet row and the
+    native episode bind the acceptance stamp around that crossing — so the
+    wallet claim fires exactly where production fires it."""
+
+    def __init__(self, drive_root, script):
+        self.drive_root = drive_root
+        self.script = list(script)
+        self.calls = []
+
+    def _reply(self, kwargs):
+        self.calls.append(dict(kwargs))
+        if not self.script:
+            raise AssertionError("script exhausted — an extra reviewer send was made")
+        return self.script.pop(0), {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0}
+
+    def chat(self, **kwargs):
+        from ouroboros import usage_accounting as ua
+
+        request = ua.AttemptRequest(
+            model="local-review-test", provider="local", reservation_usd=0.0,
+            drive_root=self.drive_root, task_id="review", root_task_id="review",
+        )
+        return ua.execute_physical_attempt(request, lambda: self._reply(kwargs))
+
+
+def _real_panel(monkeypatch, llm):
+    """Run the REAL substrate under the panel with a scripted LLM; capture requests."""
+    import ouroboros.review_substrate as rs
+    from ouroboros.tools import review_helpers
+
+    seen = []
+    original = rs.run_review_request
+
+    def _run(request, **kwargs):
+        seen.append(request)
+        return original(request, llm=llm, **kwargs)
+
+    monkeypatch.setattr(rs, "run_review_request", _run)
+    monkeypatch.setattr(review_helpers, "review_wave_budget_gate", lambda *_a, **_k: None)
+    return seen
+
+
+def _roots(tmp_path):
+    governance, workspace = tmp_path / "governance", tmp_path / "workspace"
+    governance.mkdir(exist_ok=True)
+    workspace.mkdir(exist_ok=True)
+    return governance, workspace
+
+
+def test_trap_retrieving_row_receipt_ref_resolves_against_the_full_packet(monkeypatch, tmp_path):
+    """THE trap (brief §6.2 item 6): a retrieving row that cites a real receipt
+    ref is resolved CLEAN — against the FULL packet the host built, never against
+    the tail-less projection it was sent."""
+    from ouroboros import loop as loop_mod
+    from ouroboros.review_substrate import task_acceptance_is_clean
+
+    _offline_env(monkeypatch, _ROW_NATIVE)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}])
+    seen = _real_panel(monkeypatch, llm)
+    governance, workspace = _roots(tmp_path)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    result = loop_mod._execute_task_acceptance_panel(ctx)
+
+    (actor,) = result.actors
+    assert actor["status"] == "ok" and result.aggregate_signal == "PASS"
+    assert task_acceptance_is_clean(result) is True
+    (row,) = actor["criteria_refs_unresolved"]  # only the criterion carrying the fabricated ref
+    assert row["supported_evidence_resolves"] is True
+    assert row["refs"][0]["ref"] == "verification_receipts[0]" and row["refs"][0]["resolved_as"]
+    assert row["refs"][1] == {"ref": "made_up_ref", "resolved_as": ""}
+    assert actor["usage"]["host_file_read_attestation"] == "host_observed"
+
+    (request,) = seen
+    order = request.slot_session_tasks["t_actor"]
+    assert "TRAJECTORY-RESULT-3-passed" not in order and "PREVIEW-BYTES" not in order  # tail withheld
+    assert "verification_receipts[0]" in order and "RETRIEVAL POINTERS" in order and str(tmp_path) in order
+    assert request.evidence["tool_trajectory"][0]["result"] == "TRAJECTORY-RESULT-3-passed"  # FULL dict intact
+    assert request.policy["native_data_root"] == str(tmp_path)
+    assert request.session_root == str(workspace)
+    sent = json.dumps(llm.calls[0]["messages"])
+    assert "RETRIEVAL POINTERS" in sent and "TRAJECTORY-RESULT-3-passed" not in sent
+
+
+def test_acceptance_request_carries_the_route_owned_work_order(structured_env, tmp_path):
+    from ouroboros import loop as loop_mod
+    from ouroboros.review_execution import (
+        ReviewAssignment,
+        _render_prompt_parts,
+        _review_route_executor,
+        review_output_contract,
+    )
+    from ouroboros.triad_review import ACCEPTANCE_SURFACE_RULES
+
+    captured = _capture_panel(structured_env)
+    governance, workspace = _roots(tmp_path)
+    deadline = "2030-01-01T00:00:00+00:00"
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), task_metadata={"deadline_at": deadline},
+                          repo_dir=str(governance), workspace_root=str(workspace), workspace_mode="project")
+    loop_mod._execute_task_acceptance_panel(ctx)
+    (request, kwargs), = captured
+    api, sess, actor = kwargs["slots"]
+    # R23, R5 and the carried Ф1 finding: owner deadline, real data root, THE acceptance contract.
+    assert request.deadline_at == deadline
+    assert request.session_root == str(workspace)  # the ACTIVE workspace, not the governance repo
+    assert request.policy["native_data_root"] == str(tmp_path)
+    contract = request.policy["output_contract"]
+    assert contract == review_output_contract(request)
+    assert ACCEPTANCE_SURFACE_RULES in contract and "criteria_used" in contract and "dialogue_status" in contract
+    for slot in (sess, actor):
+        executor = _review_route_executor(ReviewAssignment(request=request, slot=slot, call_id="c"))
+        assert executor._output_contract() == contract
+    # Session row: the FULL packet, absolute pointers and the access disclosure.
+    order = request.slot_session_tasks
+    assert set(order) == {"t_sess", "t_actor"}  # packet rows carry no work order
+    assert "TRAJECTORY-RESULT-3-passed" in order["t_sess"] and "PREVIEW-BYTES" in order["t_sess"]
+    assert "not guaranteed" in order["t_sess"] and str(workspace) in order["t_sess"]
+    # Native row: the same packet minus its freely degradable tail, manifested.
+    assert "TRAJECTORY-RESULT-3-passed" not in order["t_actor"] and "PREVIEW-BYTES" not in order["t_actor"]
+    assert "retrieving_delivery" in order["t_actor"] and "report/summary.md" in order["t_actor"]
+    assert "verification_receipts[0]" in order["t_actor"]
+    # Both carry the task-stable contract the packet rows render; the FULL packet stays the authority.
+    _stable, task_stable, _dynamic = _render_prompt_parts(request, api)
+    assert task_stable.rstrip() in order["t_sess"] and task_stable.rstrip() in order["t_actor"]
+    assert request.evidence["tool_trajectory"][0]["result"] == "TRAJECTORY-RESULT-3-passed"
+    # The api pack states the contract once: route-owned keys never enter its rendered Policy JSON.
+    assert "native_data_root" not in task_stable and "output_contract" not in task_stable
+
+
+def test_wave_budget_gate_prices_only_the_api_money(structured_env, tmp_path):
+    import ouroboros.review_substrate as rs
+    from ouroboros import loop as loop_mod
+    from ouroboros.tools import review_helpers
+
+    gate_calls = []
+    structured_env.setattr(
+        rs, "run_review_request", lambda request, **kw: SimpleNamespace(aggregate_signal="PASS", actors=[]))
+    structured_env.setattr(review_helpers, "review_wave_budget_gate", lambda _ctx, **kw: gate_calls.append(kw))
+    governance, workspace = _roots(tmp_path)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    loop_mod._execute_task_acceptance_panel(ctx)
+    (kw,) = gate_calls
+    # The session row is subscription, not API money; the native row is one episode send.
+    assert kw["models"] == ["openai/gpt-5.6-luna", "openai/gpt-5.6-terra"] and kw["prompt_chars"] > 0
+    # An all-session panel spends no API money: the gate is not consulted at all.
+    structured_env.setenv(REVIEWER_SLOTS_ENV, json.dumps({**_TRIAD, "triad": [_TRIAD["triad"][1]]}))
+    loop_mod._execute_task_acceptance_panel(ctx)
+    assert len(gate_calls) == 1
+
+
+def test_partial_source_refusal_spares_retrieving_rows_and_core_overflow_refuses_all(monkeypatch, tmp_path):
+    from ouroboros import loop as loop_mod
+
+    _offline_env(monkeypatch, _ROW_API, _ROW_NATIVE)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}])
+    _real_panel(monkeypatch, llm)
+    partial = {**_ACCEPTANCE_PACKET, "__unresolved_partial_artifacts__": True}
+    result = loop_mod._execute_task_acceptance_panel(_acceptance_ctx(
+        tmp_path, evidence=partial, repo_dir=str(governance),
+        workspace_root=str(workspace), workspace_mode="project"))
+    by_id = {a["slot_id"]: a for a in result.actors}
+    # The packet row is refused free (a partial PROJECTION is not complete evidence);
+    # the native row reads the exact source itself and runs.
+    assert by_id["t_api"]["parsed"]["verdict"] == "DEGRADED" and "partial" in by_id["t_api"]["parsed"]["summary"]
+    assert by_id["t_actor"]["parsed"]["verdict"] == "PASS"
+    assert len(llm.calls) == 1 and "tools" in llm.calls[0]
+    # The immutable-core overflow refuses EVERY delivery: no owner requirement is truncated for anyone.
+    overflow = {**_ACCEPTANCE_PACKET, "__immutable_core_overflow__": True}
+    result = loop_mod._execute_task_acceptance_panel(_acceptance_ctx(
+        tmp_path, evidence=overflow, repo_dir=str(governance),
+        workspace_root=str(workspace), workspace_mode="project"))
+    assert [a["parsed"]["verdict"] for a in result.actors] == ["DEGRADED", "DEGRADED"]
+    assert len(llm.calls) == 1  # nothing further was sent
+
+
+def test_retrieving_row_gets_no_format_repair_resend(monkeypatch, tmp_path):
+    """A retrieving row canonicalizes its own answer (strict parse, then
+    extraction over the collected transcript); the packet rows' second send for
+    format repair never buys it a second episode."""
+    from ouroboros import loop as loop_mod
+
+    _offline_env(monkeypatch, _ROW_NATIVE)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": "I looked around and it seems fine; no structured verdict."},
+                                 {"content": "{}"}, {"content": "{}"}, {"content": "{}"}])
+    _real_panel(monkeypatch, llm)
+    result = loop_mod._execute_task_acceptance_panel(_acceptance_ctx(
+        tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+        workspace_root=str(workspace), workspace_mode="project"))
+    assert result.aggregate_signal == "DEGRADED"
+    assert sum(1 for call in llm.calls if "tools" in call) == 1  # one episode; no repair resend
+
+
+@pytest.mark.parametrize("rows", [(_ROW_API,), (_ROW_NATIVE,), (_ROW_API, _ROW_NATIVE)])
+def test_wallet_stamp_claims_once_per_panel_on_api_native_and_mixed_rows(monkeypatch, tmp_path, rows):
+    """R11: the paid identity is material, not route. One strict claim per
+    panel whatever the rows' deliveries, and a spent wallet refuses a NEW paid
+    identity before any reviewer is sent — on every delivery alike."""
+    from ouroboros import loop as loop_mod
+    from ouroboros.acceptance_dialogue import _total_paid_acceptance_cycles
+
+    _offline_env(monkeypatch, *rows)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * len(rows))
+    _real_panel(monkeypatch, llm)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    result = loop_mod._execute_task_acceptance_panel(ctx)
+    assert result.aggregate_signal == "PASS"
+    assert _total_paid_acceptance_cycles(ctx) == 1
+    assert len(llm.calls) == len(rows)
+    # max_improvement_passes=0 → the tree may buy ONE panel: a changed candidate
+    # (new paid identity) is refused fail-closed before any send.
+    again = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), content="deliverable v2",
+                            fresh_result=False, repo_dir=str(governance),
+                            workspace_root=str(workspace), workspace_mode="project")
+    refused = loop_mod._execute_task_acceptance_panel(again)
+    assert refused.aggregate_signal == "DEGRADED"
+    assert len(llm.calls) == len(rows) and _total_paid_acceptance_cycles(again) == 1
+
+
+def test_session_row_claims_the_same_wallet_and_receives_the_full_packet(monkeypatch, tmp_path):
+    from tests.test_review_agent_session_route import FakeGateway, _terminal_detail
+    from ouroboros import claudexor_daemon
+    from ouroboros import delegate_custody as custody
+    from ouroboros import loop as loop_mod
+    from ouroboros.acceptance_dialogue import _total_paid_acceptance_cycles
+    from ouroboros.gateways import claudexor as gateway_module
+    from ouroboros.review_substrate import task_acceptance_is_clean
+
+    FakeGateway.reset()
+    FakeGateway.detail = _terminal_detail(json.dumps(_CLEAN_VERDICT), conformance="passed")
+    monkeypatch.setattr("ouroboros.gateways.claudexor.ClaudexorGateway", FakeGateway)
+    monkeypatch.setattr(claudexor_daemon, "ensure_owned_gateway", lambda: gateway_module.ClaudexorGateway())
+    custody._CUSTODY.clear()
+    _offline_env(monkeypatch, _ROW_SESSION)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [])
+    _real_panel(monkeypatch, llm)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    result = loop_mod._execute_task_acceptance_panel(ctx)
+    assert result.aggregate_signal == "PASS" and task_acceptance_is_clean(result)
+    assert _total_paid_acceptance_cycles(ctx) == 1
+    assert llm.calls == []  # a conformant verdict: no extraction, no api pack
+    (start,) = FakeGateway.instances[0].start_requests
+    wire = json.dumps(start)
+    assert "RETRIEVAL POINTERS" in wire and "TRAJECTORY-RESULT-3-passed" in wire and "not guaranteed" in wire
+    assert str(workspace) in wire
+
+
+def test_replayed_panel_keeps_the_delivery_it_actually_ran_on(monkeypatch, tmp_path):
+    """Re-routing the triad after a panel does not re-buy it: the identical
+    submission replays the recorded run, whose actors still say how they
+    were executed (a native episode), not what the rows say today."""
+    from ouroboros import loop as loop_mod
+    from ouroboros.acceptance_dialogue import _prior_acceptance_run
+
+    _offline_env(monkeypatch, _ROW_NATIVE)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}])
+    _real_panel(monkeypatch, llm)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    record = loop_mod._record_host_acceptance_run(ctx, loop_mod._execute_task_acceptance_panel(ctx))
+    assert record["actors"][0]["usage"]["delivery"] == "native_tool_rounds"
+    monkeypatch.setenv(REVIEWER_SLOTS_ENV, json.dumps({"triad": [_ROW_API], "scope": [_ROW_SCOPE]}))
+    _cache, prior = _prior_acceptance_run(ctx.tools._ctx, ctx.llm_trace, ctx.review_binding["binding_hash"])
+    assert prior is record and prior["actors"][0]["usage"]["delivery"] == "native_tool_rounds"
+    assert len(llm.calls) == 1
