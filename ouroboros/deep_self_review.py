@@ -423,14 +423,47 @@ def build_review_pack(
 # ---------------------------------------------------------------------------
 
 
+def _packed_window_reason(model: str) -> str:
+    """The ≥1M floor of the PACKED delivery, from the shared reviewer-window
+    resolver: a route whose Capability Evidence puts its window BELOW the full
+    window cannot hold the pack that IS this delivery's guarantee, so it is
+    refused typed (a native or session deep_review row serves a sub-1M route).
+    An UNKNOWN window (no evidence) keeps the documented full-window assumption
+    every packet surface shares (`reviewer_window`: guessing small is a certain
+    loss of review on every cold-evidence install) and is disclosed in the
+    report header; '' = the floor holds or is assumed."""
+    from ouroboros import reviewer_window as _rw
+    from ouroboros.config import review_model_uses_local
+
+    window = _rw.resolve_reviewer_window(model, use_local=review_model_uses_local(model))
+    if 0 < int(window.window_tokens) < _rw.REVIEWER_FULL_WINDOW:
+        return (
+            f"the packed deep review needs a ≥{_rw.REVIEWER_FULL_WINDOW:,}-token window and {model} is "
+            f"{window.status or 'evidenced'} at {int(window.window_tokens):,} tokens — pick a native or "
+            "session deep_review row for a sub-1M route"
+        )
+    return ""
+
+
 def _packed_route(configured: str) -> Tuple[str, Optional[str]]:
     """The packed delivery's ``(unavailable_reason, sendable_model)``.
 
-    Provider/credential knowledge comes from the provider registry SSOT; the
-    one deliberate deep-review-specific rule kept here: ``openai::`` is only
+    Provider/credential knowledge comes from the provider registry SSOT; two
+    deliberate deep-review-specific rules live here: ``openai::`` is only
     trusted when ``OPENAI_BASE_URL`` is unset (a redirected endpoint cannot be
-    assumed to honor the 1M-context contract the packed review depends on).
+    assumed to honor the 1M-context contract the packed review depends on),
+    and the payable model must not be EVIDENCED below the ≥1M floor
+    (`_packed_window_reason`).
     """
+    reason, model = _packed_credentials(configured)
+    if reason:
+        return reason, None
+    reason = _packed_window_reason(str(model))
+    return (reason, None) if reason else ("", model)
+
+
+def _packed_credentials(configured: str) -> Tuple[str, Optional[str]]:
+    """The packed row's payable spelling, or the typed credentials reason."""
     provider = provider_for_model(configured)
     if provider == "openai":
         if provider_has_credentials("openai") and not os.environ.get("OPENAI_BASE_URL"):
@@ -642,7 +675,7 @@ def _delivery_incomplete(delivery: str, usage: Dict[str, Any]) -> str:
 
 
 def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory: Dict[str, Any],
-                       coverage: Dict[str, str], human: str) -> str:
+                       coverage: Dict[str, str], human: str, *, extra: Optional[Dict[str, Any]] = None) -> str:
     """R9: the host's provenance header (machine-readable comment + one human
     line) prepended to every delivered report. The fact set is built PER
     DELIVERY (a session never carries rounds/receipts; its attestation is
@@ -671,6 +704,7 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
         facts["attestation"] = "packed"
     else:
         facts["attestation"] = "unobserved"
+    facts.update(extra or {})
     comment = ", ".join(f"{key}={_header_value(value)}" for key, value in facts.items())
     line = str(human).replace("\r", " ").replace("\n", " ")
     return f"<!-- deep-review provenance: {comment} -->\n_{line}_\n\n"
@@ -875,16 +909,19 @@ def _run_packed_review(
     no_proxy=True avoids macOS fork-safety SIGSEGV by using a one-shot httpx
     client with trust_env=False in llm.py; regular task calls are unaffected.
     """
-    # Resolve the reviewer's REAL window (Capability Evidence), not the
-    # assumed 1M: the configured deep-review model may be a 200K route, and
-    # sizing its pack for 1M loses the whole review to a prompt-too-long 400.
-    from ouroboros.reviewer_window import (
-        reviewer_context_window,
-        window_scaled_reserves,
-    )
+    # The reviewer's REAL window (Capability Evidence): a confirmed sub-1M
+    # route is refused typed HERE too (the availability check ran earlier, but
+    # evidence can land between the two reads) — the pack is never silently
+    # shrunk to a smaller window; an unknown window keeps the documented
+    # full-window assumption and is disclosed in the header.
+    from ouroboros import reviewer_window as _rw
 
-    deep_window = reviewer_context_window(model)
-    deep_output_reserve, deep_margin = window_scaled_reserves(
+    sub_floor = _packed_window_reason(model)
+    if sub_floor:
+        return _failed(deep_review_unavailable_text(sub_floor), reason_code="deep_self_review_unavailable")
+    window_fact = _rw.resolve_reviewer_window(model)
+    deep_window = window_fact.sizing_window()
+    deep_output_reserve, deep_margin = _rw.window_scaled_reserves(
         deep_window,
         output_reserve=_DEEP_MAX_OUTPUT_TOKENS,
         tokenizer_margin=_DEEP_OUTPUT_MARGIN_TOKENS,
@@ -998,10 +1035,13 @@ def _run_packed_review(
     _record_execution(slot, usage, status="responded")
     incomplete = _delivery_incomplete("api_packet", usage)
     emit_progress(f"Deep self-review complete ({len(text):,} chars; incomplete={incomplete}).")
+    window_label = f"{deep_window}" if int(window_fact.window_tokens) > 0 else f"assumed_{deep_window}"
     header = _provenance_header(
         "api_packet", model, usage, memory, {"pack": f"{stats['file_count']}_files"},
         f"Deep self-review: one packed API review on {model} — {stats['file_count']} files; "
-        f"{_memory_line(memory)}; " + ("complete" if incomplete == "none" else f"INCOMPLETE ({incomplete}: the report hit the output reserve)"),
+        f"{_memory_line(memory)}; window {deep_window:,}" + (" (unknown, full window assumed)" if int(window_fact.window_tokens) <= 0 else "")
+        + "; " + ("complete" if incomplete == "none" else f"INCOMPLETE ({incomplete}: the report hit the output reserve)"),
+        extra={"window": window_label},
     )
     return header + text, usage
 

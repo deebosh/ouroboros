@@ -564,8 +564,9 @@ def test_packed_row_keeps_the_wire_shape_and_records_its_execution(review_repo, 
     assert kwargs["reasoning_effort"] == "xhigh"  # the row's effort outranks the surface key (R6)
     assert text == (
         "<!-- deep-review provenance: delivery=api_packet, model=openai/fake-deep, memory=0/7, "
-        "coverage=pack:3_files, incomplete=none, attestation=packed -->\n"
-        "_Deep self-review: one packed API review on openai/fake-deep — 3 files; memory 0/7 inlined; complete_\n\n"
+        "coverage=pack:3_files, incomplete=none, attestation=packed, window=assumed_1000000 -->\n"
+        "_Deep self-review: one packed API review on openai/fake-deep — 3 files; memory 0/7 inlined; "
+        "window 1,000,000 (unknown, full window assumed); complete_\n\n"
         "Review result."
     )
     assert usage["deep_review_memory"] == {"inlined": 0, "total": 7, "dispositions": {}}  # the mocked pack carried no memory fact
@@ -895,3 +896,57 @@ def test_slot_override_with_an_empty_target_or_unknown_kind_is_refused_typed(rev
         assert text.startswith("❌ Deep self-review unavailable: ") and fragment in text
         assert usage["reason_code"] == "deep_self_review_unavailable"
     assert not llm.chat.called
+
+
+
+# ---------------------------------------------------------------------------
+# Fix batch №1 — the packed delivery's ≥1M floor (codex sol, item 22).
+# ---------------------------------------------------------------------------
+
+
+def test_packed_row_refuses_a_confirmed_sub_1m_window_and_discloses_an_unknown_one(review_repo, review_drive, monkeypatch):
+    """A packed review's guarantee IS its ≥1M pack: a route whose evidence puts
+    the window below the floor is refused typed (never a silently shrunk
+    pack); an unknown window keeps the documented full-window assumption and
+    says so in the header; a confirmed ≥1M route runs unlabeled."""
+    from ouroboros import reviewer_window
+    from ouroboros.reviewer_window import REVIEWER_FULL_WINDOW, ReviewerWindow
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    llm = mock.Mock()
+    llm.chat.return_value = ({"content": "Review result."}, {"cost": 0.0})
+    pack = "y" * 200
+    stats = {"file_count": 2, "total_chars": len(pack), "skipped": [], "memory": {"inlined": 0, "total": 7, "dispositions": {}}}
+    windows = {"answer": ReviewerWindow(window_tokens=200_000, status="confirmed", model="openai/fake-deep")}
+    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", lambda model_id, **_k: windows["answer"])
+
+    reason, identity = deep_review_route(_row())
+    assert identity is None and "needs a ≥1,000,000-token window" in reason
+    assert "openai/fake-deep is confirmed at 200,000 tokens" in reason and "native or session deep_review row" in reason
+    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
+        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
+    assert text.startswith("❌ Deep self-review unavailable: the packed deep review needs a ≥1,000,000-token window")
+    assert usage["reason_code"] == "deep_self_review_unavailable" and not llm.chat.called
+
+    # Evidence landing between the availability read and the run is caught by the runner itself.
+    calls = iter([ReviewerWindow(window_tokens=0), ReviewerWindow(window_tokens=131_072, status="confirmed")])
+    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", lambda model_id, **_k: next(calls))
+    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
+        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
+    assert "131,072 tokens" in text and not llm.chat.called
+
+    # Unknown window: dispatched on the full-window assumption, disclosed.
+    windows["answer"] = ReviewerWindow(window_tokens=0)
+    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", lambda model_id, **_k: windows["answer"])
+    assert deep_review_route(_row()) == ("", "openai/fake-deep")
+    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
+        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
+    assert llm.chat.call_count == 1 and f"window=assumed_{REVIEWER_FULL_WINDOW}" in text.split("\n")[0]
+    assert "window 1,000,000 (unknown, full window assumed)" in text.split("\n")[1]
+
+    # Confirmed ≥1M: available, the window stated as a fact.
+    windows["answer"] = ReviewerWindow(window_tokens=REVIEWER_FULL_WINDOW, status="confirmed")
+    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
+        text, _usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
+    assert llm.chat.call_count == 2 and f"window={REVIEWER_FULL_WINDOW}" in text.split("\n")[0]
+    assert "(unknown" not in text
