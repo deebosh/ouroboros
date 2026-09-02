@@ -450,3 +450,30 @@ def test_auto_low_source_inventory_has_no_true_writer_or_ghost_reader():
     assert "context_mode_downgraded" not in settings_source
     assert "_active_route_confirms_max" not in settings_source
     assert "SWITCH_BLOCKED" not in control_source
+
+
+def test_the_worker_pool_carries_no_third_budget_limit_copy():
+    """Owner batch #6 item 3=A, second SSOT fix.
+
+    ``supervisor/workers.py`` declared its own ``TOTAL_BUDGET_LIMIT`` and
+    ``workers.init`` took a ``total_budget_limit`` to write it, and NOTHING in
+    the module or outside it ever read the result. A module-global spelled like
+    the live limit, hot-reloaded by nobody, reads as a live tunable to anyone
+    grepping for the budget — the same misleading-surface class the retired
+    timeout pair was. The two copies that ARE read stay: ``supervisor.state``
+    (the authority every budget decision reads through ``budget_remaining``)
+    and ``supervisor.message_bus`` (the reporting plane), both fed by the save
+    endpoint above.
+    """
+    import inspect
+
+    from supervisor import state, workers
+
+    assert not hasattr(workers, "TOTAL_BUDGET_LIMIT")
+    assert "total_budget_limit" not in inspect.signature(workers.init).parameters
+    assert "TOTAL_BUDGET_LIMIT" not in inspect.getsource(workers)
+    # The live limit still has exactly one authority, and it is the one the
+    # dispatch gate reads.
+    state.set_budget_limit(41.0)
+    assert state.TOTAL_BUDGET_LIMIT == 41.0
+    assert "TOTAL_BUDGET_LIMIT" in inspect.getsource(state.budget_remaining)

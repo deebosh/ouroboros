@@ -685,7 +685,6 @@ def _run_supervisor(settings: dict) -> None:
         _workers_branch_dev, _workers_branch_stable = _runtime_branch_defaults()
         workers_init(
             repo_dir=REPO_DIR, drive_root=DATA_DIR, max_workers=max_workers,
-            total_budget_limit=float(settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])),
             branch_dev=_workers_branch_dev, branch_stable=_workers_branch_stable,
         )
 
