@@ -8841,6 +8841,13 @@ concurrency tests stayed red on every name-tier leg — see «From the Windows C
    retried — the poll loop re-judges and retries it. The delta lens also measured a contender
    probe under `owner_aware_stale` at milliseconds (OpenProcess), not microseconds — inside the
    2 s window either way.
-6. **Prose corrected:** packet §10 addendum and DESIGN §8 no longer claim the Windows name tier is
+6. **Windows proof.** Runs 33668287491 (d0bb839e) and 33669250620 (4c7c5aed): both concurrency tests
+   green on both legs. Red there: the POSIX release pin (`IS_WINDOWS` patched False makes the
+   enforced-tier probe import `fcntl`) — `skipif(IS_WINDOWS)`; and once, on d0bb839e only,
+   `test_proactive_namer_late_settlement_refreshes_cost_without_late_name` (0.0 == 0.25 inside its
+   2 s poll window) — green on the next leg with byte-identical runtime code; intermittent, unrooted,
+   recorded in the registry table (the retry cannot lengthen an uncontended release, and before this
+   commit any refused unlink orphaned the lock and failed that test the same way).
+7. **Prose corrected:** packet §10 addendum and DESIGN §8 no longer claim the Windows name tier is
    «the protocol it always ran»; the earlier ledger line «Verified by the next dispatched matrix»
    is withdrawn above.

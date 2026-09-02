@@ -645,6 +645,7 @@ def test_windows_release_gives_up_a_refusal_that_never_clears(tmp_path, monkeypa
     assert lock_path.exists()
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX release order under test: with IS_WINDOWS patched False the enforced-tier probe imports fcntl, which Windows lacks")
 def test_posix_release_does_not_retry_a_permission_refusal(tmp_path, monkeypatch):
     """POSIX never refuses an unlink for a reader's open handle: a
     PermissionError there is the directory's mode, permanent — retrying would
