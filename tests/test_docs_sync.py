@@ -19,6 +19,26 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def test_model_send_design_note_matches_the_landed_observability_contract():
+    """The CPL-5 note still said DESIGN ONLY and demanded fail-closed dispatch.
+
+    `ouroboros/model_send_seal.py` landed with the opposite rule, pinned by
+    `tests/test_model_send_seal.py`: a reconstruction mismatch is a typed
+    durable fact and the call is NOT blocked — dispatch authority stays with
+    the pre-existing in-memory identity re-check. A design note that outranks
+    the code it describes is how the next author reintroduces the gate.
+    """
+    note = _read("docs/v7next/DESIGN_MODEL_VISIBLE_LOGGED.md")
+    note_flat = " ".join(note.split())
+
+    assert (REPO / "ouroboros" / "model_send_seal.py").exists()
+    assert "Status: DESIGN ONLY" not in note
+    assert "Status: LANDED" in note
+    assert "refuse dispatch with the existing `PhysicalAttemptPreparationFailed`" \
+        not in note_flat
+    assert "The call is NOT blocked" in note_flat
+
+
 def test_settings_docs_name_every_key_owner_and_what_startup_persists():
     """Three settings-layer claims the code contradicts (all red pre-fix).
 

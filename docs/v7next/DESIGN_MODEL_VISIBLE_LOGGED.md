@@ -1,8 +1,13 @@
 # Design note — runtime invariant `model-visible ⟺ logged` (CPL-5)
 
-Status: DESIGN ONLY (plan §7 item 5; batch-1 Q8=A confirmed; narrowed per
-roast finding F15). Code lands in a later lane; this note fixes the contract
-so the implementation cannot drift into a broader — unprovable — claim.
+Status: LANDED (plan §7 item 5; batch-1 Q8=A confirmed; narrowed per roast
+finding F15). The code is `ouroboros/model_send_seal.py`, wired at
+`llm_attempt._candidate_before_dispatch` and swept from `server_maintenance`;
+the pins are `tests/test_model_send_seal.py`. This note remains the contract,
+kept narrow so neither the code nor a later reader drifts into a broader —
+unprovable — claim. ONE clause changed between design and landing, and it is
+marked in §3.2: a reconstruction mismatch is an OBSERVABILITY fact, not a
+dispatch gate.
 
 ## 1. The claim, narrowed (F15)
 
@@ -41,12 +46,13 @@ response-assembly truth is covered transitively by the next round's
 | Anthropic native custody projection (opaque provider-native content replaced before persistence; disclosed as `anthropic_native_custody_projected`) | `anthropic_native_custody.physical_custody_projection` | Prototype of a typed exclusion |
 | Secret redaction with per-hit `RedactionRecord`s | `observability._redact_text` + rules | Prototype of a typed exclusion |
 
-Gap the implementation must close: today the gate compares two **in-memory**
-serializations; the invariant requires **reconstruction from the durable
-record** and a byte compare of that reconstruction against the wire-bound
-serialization — so a bug between "what we persisted" and "what we believe we
-persisted" is caught, not assumed away. And a mismatch today is only a raised
-exception; the invariant requires a **typed durable fact**.
+The gap this note was written to close: the pre-existing gate compared two
+**in-memory** serializations, so a bug between "what we persisted" and "what we
+believe we persisted" was assumed away rather than caught, and a mismatch was
+only a raised exception. `model_send_seal.verify_sealed_candidate` closes it by
+**reconstructing from the durable record** and byte-comparing that
+reconstruction against the wire-bound serialization, emitting a **typed durable
+fact** on any inequality (§3.2 — a fact, not a refusal).
 
 ## 3. The contract
 
@@ -77,10 +83,33 @@ At the seam, in this order:
    and custody projection are not invertible; §5.1) — and compare byte-for-byte
    the comparable domain: `project(W, exclusions) == blob_bytes` AND
    `sha256(W) == pre_redaction_sha256`.
-4. Any inequality → write the typed durable mismatch fact (§3.4) → refuse
-   dispatch with the existing `PhysicalAttemptPreparationFailed` semantics
-   (fail-closed; the refusal now has a durable twin instead of being only an
-   exception in flight).
+4. Any inequality → write the typed durable mismatch fact (§3.4). The call is
+   NOT blocked, and the verification never raises: this invariant is
+   observability, and `verify_sealed_candidate` is fail-soft by contract.
+
+That last step is the one place the landed contract differs from the first
+draft of this note, which asked for a fail-closed refusal through
+`PhysicalAttemptPreparationFailed`. It was rejected on its own merits, not for
+convenience:
+
+- The refusal it would add is not the same question as the existing gate. The
+  in-memory identity re-check above this call still refuses dispatch when the
+  candidate itself changed between reservation and send — that is a candidate
+  fact and it stays fail-closed, unchanged. A reconstruction mismatch is a fact
+  about the RECORD (a corrupt blob, a tampered seal digest, a missing seal
+  block, an undisclosed exclusion class, a foreign serializer basis) — a
+  logging defect. Blocking a paid, otherwise-correct model call because the
+  audit copy on disk is unreadable trades the product's function for the
+  audit's tidiness, and it would let a full disk or a rotated file stop
+  cognition.
+- Fail-closed here would also be self-defeating: the durable fact IS the
+  disclosure, and a refusal path that can itself fail (write error, unreadable
+  root) would have to decide between a silent skip and a dead runtime.
+
+So the landed rule is: the fact is mandatory, the block is not.
+`tests/test_model_send_seal.py` pins exactly this — a corrupted blob, a
+tampered seal digest, a dropped seal block, an undisclosed exclusion class and
+a foreign basis each produce their typed fact while the attempt still settles.
 
 The added cost is one read-back and one projection per physical attempt —
 bounded, local, and on the same drive the record was just written to.
