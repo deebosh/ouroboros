@@ -228,7 +228,7 @@ def project_task_acceptance_review_capacity(
             ctx, profile=task_pacing.resolve_budget_profile(ctx),
         )
         launch_ok, launch_reason = task_pacing.review_launch_allowed(
-            budget,
+            budget, ctx=ctx,
             estimated_sec=task_pacing.acceptance_review_estimate_sec(
                 ctx, passes_done=claimed,
             ),

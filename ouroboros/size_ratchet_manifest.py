@@ -178,6 +178,7 @@ BAND_PATHS = {
     "supervisor/message_bus.py": "push_log gained the A2A frame suppression and explicit-addressing contract comments in the live log routing fix (fix/main-chat-leak sprint); the module sat at exactly 1000 lines before it",
     "supervisor/queue_transitions.py": "Queue-owned admission/quiescence transitions: the budget-pause predicate, the settled-tree fence release, and the restore-time orphan sweep join their resume/fence siblings (one queue authority).",
     "supervisor/terminal_delivery.py": None,
+    "tests/test_acceptance_delivery.py": "Entered the band as the ONE suite of the acceptance three-delivery contract (owner R0-R16, R36): work order, wallet matrix, route-aware gates, delivery-aware pacing with the real JSONL reader, the real wave budget gate on a seeded ledger, and the R12 save disclosure share fixtures (offline triad, scripted ledger-crossing LLM, fake session gateway, priced offline model) that a split would duplicate or hide behind conftest indirection.",
     "tests/test_advisory_observability.py": None,
     "tests/test_build_scripts.py": None,
     "tests/test_commit_gate.py": None,
@@ -238,7 +239,7 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "ouroboros/loop.py": 274203,
+    "ouroboros/loop.py": 274180,
     "tests/test_delegated_subagent_transport.py": 320337,
     "tests/test_devtools_benchmarks.py": 328084,
     "web/modules/chat.js": 208394,

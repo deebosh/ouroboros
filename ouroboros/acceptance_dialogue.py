@@ -1082,10 +1082,16 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     # (R16; one send before any history, capped by
     # `task_pacing.ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP`); a packet row renders its REAL
     # message pair. The rare second physical attempt is not multiplied in —
-    # fail-open coarse filter, no reservation.
+    # fail-open coarse filter, no reservation. R36: admission decides on the
+    # FLOOR-priced wave (one work-order send per paid row); the rounds estimate
+    # raises the disclosed price but never refuses what the floor admits — a
+    # poisoned history would otherwise refuse every later wave while the only
+    # corrective event is written after dispatch. The per-send wallet binding
+    # at dispatch still protects money.
     from ouroboros.review_execution import ReviewRouteKind, panel_delivery_class, slot_delivery
-    from ouroboros.tools.review_helpers import review_wave_budget_gate
+    from ouroboros.tools.review_helpers import emit_review_event, review_wave_budget_gate
 
+    floor_dispatch: Optional[Dict[str, Any]] = None
     paid = [slot for slot in slots if getattr(slot, "route", None) is not ReviewRouteKind.AGENT_SESSION]
     if paid:
         rounds = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
@@ -1100,12 +1106,9 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
             )
         except Exception:
             _prompt_chars = len(json.dumps(evidence, ensure_ascii=False, default=str))
+        floor_models = [getattr(slot, "model", "") for slot in paid]
         _admission = review_wave_budget_gate(
-            ctx.tools._ctx,
-            surface="task_acceptance",
-            models=[getattr(slot, "model", "")
-                    for slot in paid for _ in range(rounds if getattr(slot, "retrieves", False) else 1)],
-            prompt_chars=_prompt_chars,
+            ctx.tools._ctx, surface="task_acceptance", models=floor_models, prompt_chars=_prompt_chars,
         )
         if _admission is not None:
             return _refused(
@@ -1113,6 +1116,36 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                 f"~${_admission.get('estimated_wave_usd')} > remaining "
                 f"${_admission.get('remaining_usd')} (no reviewer was called)"
             )
+        if rounds > 1 and any(getattr(slot, "retrieves", False) for slot in paid):
+            try:  # read-only: does the rounds-priced wave fit too? If not, disclose the floor dispatch.
+                from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
+
+                scope = current_usage_scope()
+                if scope is not None and scope.root_task_id:
+                    estimate_models = [
+                        m for slot in paid
+                        for m in [getattr(slot, "model", "")] * (rounds if getattr(slot, "retrieves", False) else 1)
+                    ]
+                    priced = review_wave_admission(
+                        scope.drive_root, root_task_id=scope.root_task_id,
+                        models=estimate_models, prompt_chars=_prompt_chars)
+                    floor_priced = review_wave_admission(
+                        scope.drive_root, root_task_id=scope.root_task_id,
+                        models=floor_models, prompt_chars=_prompt_chars)
+                    if not priced.get("fits", True):
+                        floor_dispatch = {
+                            "estimated_wave_usd": priced.get("estimated_wave_usd"),
+                            "floor_wave_usd": floor_priced.get("estimated_wave_usd"),
+                            "remaining_usd": priced.get("remaining_usd"),
+                            "native_rounds_estimate": rounds,
+                            "floor_slots": len(floor_models),
+                        }
+                        emit_review_event(ctx.tools._ctx, {
+                            "type": task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR, "surface": "task_acceptance",
+                            "task_id": str(ctx.task_id), **floor_dispatch,
+                        })
+            except Exception:
+                log.debug("rounds-priced admission check failed open", exc_info=True)
     free_result = _free_dispatch(request, slots, drive_root=drive_root, usage_ctx=ctx.tools._ctx)
     if free_result is not None:
         return free_result
@@ -1128,6 +1161,12 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     except TaskAcceptanceDispatchUnavailable as exc:
         return _refused(f"{exc} (no reviewer was called)")
     duration_sec = round(time.monotonic() - started, 3)
+    if floor_dispatch is not None:
+        # The typed fact rides the panel usage: every actor of a panel admitted
+        # at the floor price says so beside its other usage facts.
+        for actor in getattr(result, "actors", None) or []:
+            if isinstance(actor, dict) and isinstance(actor.get("usage"), dict):
+                actor["usage"][task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR] = dict(floor_dispatch)
     try:
         from ouroboros.review_cycles import review_max_cycles, review_max_cycles_source
         from ouroboros.utils import append_jsonl, utc_now_iso
@@ -1154,6 +1193,7 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                 "deliveries": _deliveries,
                 "native_rounds": _native_rounds,
                 "native_rows": _deliveries.count("native_tool_rounds"),
+                **({task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR: floor_dispatch} if floor_dispatch else {}),
                 "pass_index": ctx.passes_done,
                 "aggregate_signal": str(result.aggregate_signal or ""),
                 "effective_max_cycles": "unlimited" if _cap is None else _cap,

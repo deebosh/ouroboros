@@ -54,16 +54,27 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # review operation inherits it, so no honest panel can outlive it, while a
 # legitimate agent-session panel may well run past the configurable 3600 s
 # initial-estimate clamp) — so every estimate is finite and bounded (rounds ≤ 64;
-# reserve ≤ 1.5 × the task ceiling). What a bounded-but-inflated
-# estimate still DOES: it raises the priced wave and the deadline reserve, and a
-# wave or reserve that then does not fit is refused typed before dispatch
-# (`review_wave_budget_insufficient` / `review_skipped_deadline_reserve`); the
-# estimate decays only with each DISPATCHED honest panel (its excess halves per
-# panel, alpha 0.5), never with a refusal. Whether such a wave should instead be
-# admitted at the floor price with a disclosure is an open owner decision (Ф2
-# item 3(i) analysis). 64 is the plan's measured deep-review ceiling (Б2-2), far
-# above the 3–5 rounds a verdict-shaped episode takes.
+# reserve ≤ 1.5 × the task ceiling). A history-derived estimate is a pacing
+# FLOOR-raiser, never an admission ceiling (owner R36, 2026-09-02): the review
+# launches when the spendable window (remaining − reserve) exceeds the bounded
+# estimate; when it does not but exceeds the configured floor
+# (max(200 s, OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC)) it launches at the floor and
+# records `acceptance_estimate_unaffordable_launched_at_floor`; only a spendable
+# window below the floor is refused `review_skipped_deadline_reserve`. Likewise
+# the acceptance wave gate decides on the FLOOR-priced wave (one work-order send
+# per paid row): a rounds-priced wave that does not fit while the floor does is
+# dispatched at the floor with `acceptance_estimate_unaffordable_dispatched_at_floor`
+# on the panel usage; only a floor that does not fit is refused
+# `review_wave_budget_insufficient`. The per-send wallet binding at dispatch and
+# the review's logical window remain the protection, and the honest event of the
+# dispatched panel decays the estimate (its excess halves per panel, alpha 0.5).
+# 64 is the plan's measured deep-review ceiling (Б2-2), far above the 3–5 rounds a
+# verdict-shaped episode takes.
 ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP = 64
+# Typed disclosures (R36): a history-derived reserve/price did not fit but the
+# floor did, so the panel was launched/dispatched at the floor instead of refused.
+DISCLOSURE_LAUNCHED_AT_FLOOR = "acceptance_estimate_unaffordable_launched_at_floor"
+DISCLOSURE_DISPATCHED_AT_FLOOR = "acceptance_estimate_unaffordable_dispatched_at_floor"
 
 # Proportional nanny-economics reminder thresholds (poltergeist phase B; owner
 # decision 2=B: NO absolute round cap — reminders only, sized to the measured
@@ -254,6 +265,34 @@ def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: 
     return configured if ewma is None else max(configured, 1.5 * ewma)
 
 
+def _acceptance_floor_sec() -> float:
+    """The floor-priced reserve: the configured estimate, never below 200 s."""
+    return max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
+
+
+def _disclose_launch_at_floor(ctx: Any, *, gate: str, estimated_sec: float, floor_sec: float,
+                              spendable_sec: float) -> None:
+    """Record that a history-derived reserve did not fit but the floor did (R36):
+    one durable row on the canonical event stream and one live review event."""
+    if ctx is None:
+        return
+    row = {
+        "type": DISCLOSURE_LAUNCHED_AT_FLOOR, "gate": gate, "task_id": str(getattr(ctx, "task_id", "") or ""),
+        "estimated_sec": round(float(estimated_sec), 3), "floor_sec": round(float(floor_sec), 3),
+        "spendable_sec": round(float(spendable_sec), 3),
+    }
+    try:
+        append_jsonl(acceptance_timing_events_path(ctx), {"ts": utc_now_iso(), **row})
+    except Exception:
+        log.debug("floor-launch disclosure could not be persisted", exc_info=True)
+    try:
+        from ouroboros.tools.review_helpers import emit_review_event
+
+        emit_review_event(ctx, row)
+    except Exception:
+        log.debug("floor-launch disclosure could not be emitted live", exc_info=True)
+
+
 def _native_rounds_per_row(event: Dict[str, Any]) -> Optional[float]:
     """Rounds per native row of ONE timing event, clamped to the cap — None
     (which `_ewma` skips) when the panel ran no native row or either counter is
@@ -354,22 +393,28 @@ def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None)
 
 
 def review_launch_allowed(
-    snapshot: BudgetSnapshot, *, estimated_sec: Optional[float] = None,
+    snapshot: BudgetSnapshot, *, estimated_sec: Optional[float] = None, ctx: Any = None,
 ) -> Tuple[bool, str]:
     """Gate 1: run an acceptance review only when it fits ABOVE the reserve.
 
     Historically a review could start two minutes before the deadline and kill
     the task; skipping inside the reserve is a strict improvement. No deadline →
-    always allowed (the pass counter is the only axis)."""
+    always allowed (the pass counter is the only axis). R36: the history-derived
+    estimate raises the reserve but never refuses what the configured floor
+    admits — when the spendable window does not exceed the estimate but does
+    exceed the floor, the review launches and the typed
+    ``DISCLOSURE_LAUNCHED_AT_FLOOR`` fact is the returned reason (recorded
+    durably and live when ``ctx`` is supplied)."""
     if not snapshot.has_deadline:
         return True, ""
-    estimate = (
-        float(estimated_sec)
-        if estimated_sec is not None
-        else max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
-    )
+    floor = _acceptance_floor_sec()
+    estimate = float(estimated_sec) if estimated_sec is not None else floor
     if snapshot.spendable_sec > estimate:
         return True, ""
+    if snapshot.spendable_sec > floor:
+        _disclose_launch_at_floor(ctx, gate="review_launch", estimated_sec=estimate, floor_sec=floor,
+                                  spendable_sec=snapshot.spendable_sec)
+        return True, DISCLOSURE_LAUNCHED_AT_FLOOR
     return False, "review_skipped_deadline_reserve"
 
 
@@ -443,14 +488,16 @@ def improvement_pass_allowed(
         return False, "improvement_passes_exhausted"
     if not snapshot.has_deadline:
         return True, ""
-    est = (
-        float(estimated_sec)
-        if estimated_sec is not None
-        else max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
-    )
-    needed = est * 2.0 if profile.get("improvement_policy") == "adaptive" else est
-    if snapshot.spendable_sec > needed:
+    floor = _acceptance_floor_sec()
+    est = float(estimated_sec) if estimated_sec is not None else floor
+    scale = 2.0 if profile.get("improvement_policy") == "adaptive" else 1.0
+    if snapshot.spendable_sec > est * scale:
         return True, ""
+    if snapshot.spendable_sec > floor * scale:
+        # R36: the history-derived reserve never refuses what the floor admits.
+        _disclose_launch_at_floor(ctx, gate="improvement_pass", estimated_sec=est * scale,
+                                  floor_sec=floor * scale, spendable_sec=snapshot.spendable_sec)
+        return True, DISCLOSURE_LAUNCHED_AT_FLOOR
     return False, "improvement_window_inside_reserve"
 
 

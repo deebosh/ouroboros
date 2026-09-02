@@ -366,6 +366,42 @@ def _priced_offline_model(monkeypatch):
     monkeypatch.setitem(pricing._pricing_fetched_at, "openrouter", time.time())
 
 
+def _root_scope(tmp_path, *, root_limit_usd):
+    from ouroboros import usage_accounting as ua
+
+    return ua.UsageScope(drive_root=tmp_path, task_id="root-delivery", root_task_id="root-delivery",
+                         root_limit_usd=root_limit_usd)
+
+
+def _seed_root_ledger(scope, *, cost=0.0):
+    """`usage_projection(root_task_id)` derives the root limit from EXISTING
+    ledger rows; before the first send there is none and the wave gate fails
+    open. One scoped physical attempt makes the wallet real for the gate."""
+    from ouroboros import usage_accounting as ua
+
+    request = ua.AttemptRequest(model="openai/fake-reviewer", provider="openrouter", reservation_usd=cost)
+    with ua.usage_scope(scope):
+        ua.execute_physical_attempt(
+            request, lambda: ({"content": "seed"}, {"prompt_tokens": 1, "completion_tokens": 1, "cost": cost}))
+
+
+def _spy_admission(monkeypatch):
+    """Record every real `review_wave_admission` call (models and result) and
+    call through — the gate is observed, never replaced."""
+    from ouroboros import usage_accounting as ua
+
+    calls = []
+    original = ua.review_wave_admission
+
+    def _spy(drive_root, *, models, **kwargs):
+        result = original(drive_root, models=models, **kwargs)
+        calls.append({"models": list(models), **result})
+        return result
+
+    monkeypatch.setattr(ua, "review_wave_admission", _spy)
+    return calls
+
+
 def _roots(tmp_path):
     governance, workspace = tmp_path / "governance", tmp_path / "workspace"
     governance.mkdir(exist_ok=True)
@@ -686,27 +722,35 @@ def test_timing_event_names_the_deliveries_and_the_native_rounds(monkeypatch, tm
 def test_wave_gate_prices_a_native_row_by_the_rounds_a_real_mixed_panel_recorded(monkeypatch, tmp_path):
     """The REAL writer drives the estimator: a mixed api+session+native panel
     runs for real (its native row reads one file, then answers — two rounds),
-    writes the timing event, and the NEXT panel's wave gate prices the native
-    row by those two rounds although the recorded panel's slowest class was the
-    session."""
+    writes the timing event, and the NEXT panel's REAL wave gate (a seeded,
+    priced wallet) decides on the floor wave and prices the rounds wave by
+    those two rounds read-only (R36) although the recorded panel's slowest
+    class was the session."""
     import ouroboros.review_substrate as rs
     from ouroboros import loop as loop_mod, task_pacing
-    from ouroboros.tools import review_helpers
+    from ouroboros import usage_accounting as ua
     from ouroboros.utils import iter_jsonl_objects
 
     FakeGateway = _fake_session(monkeypatch)
     _offline_env(monkeypatch, _ROW_API, _ROW_SESSION, _ROW_NATIVE)
+    _priced_offline_model(monkeypatch)
+    admissions = _spy_admission(monkeypatch)
     governance, workspace = _roots(tmp_path)
     llm = _EpisodeLLM(
         tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}],
         native_script=[{"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"})]},
                        {"content": json.dumps(_CLEAN_VERDICT)}],
+        scoped=True,
     )
-    _real_panel(monkeypatch, llm)
+    _real_panel(monkeypatch, llm, stub_gate=False)
+    scope = _root_scope(tmp_path, root_limit_usd=50.0)
+    _seed_root_ledger(scope)
     ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
                           workspace_root=str(workspace), workspace_mode="project")
-    assert loop_mod._execute_task_acceptance_panel(ctx).aggregate_signal == "PASS"
+    with ua.usage_scope(scope):
+        assert loop_mod._execute_task_acceptance_panel(ctx).aggregate_signal == "PASS"
     assert len(FakeGateway.instances[0].start_requests) == 1
+    assert [len(a["models"]) for a in admissions] == [2]  # no history yet: the floor wave only (api + native)
     (event,) = [e for e in iter_jsonl_objects(task_pacing.acceptance_timing_events_path(ctx.tools._ctx))
                 if e.get("type") == "task_acceptance_review_timing"]
     assert event["delivery"] == "agent_session"
@@ -714,14 +758,18 @@ def test_wave_gate_prices_a_native_row_by_the_rounds_a_real_mixed_panel_recorded
     assert event["native_rounds"] == 2 and event["native_rows"] == 1
     assert task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx) == 2
 
-    gate_calls = []
+    del admissions[:]
     monkeypatch.setattr(
         rs, "run_review_request", lambda request, **kw: SimpleNamespace(aggregate_signal="PASS", actors=[]))
-    monkeypatch.setattr(review_helpers, "review_wave_budget_gate", lambda _ctx, **kw: gate_calls.append(kw))
-    loop_mod._execute_task_acceptance_panel(ctx)
-    (kw,) = gate_calls
-    # One api send + the native row at its two observed rounds; the session row is not API money.
-    assert kw["models"] == ["openai/fake-reviewer"] * 3
+    with ua.usage_scope(scope):
+        loop_mod._execute_task_acceptance_panel(ctx)
+    # R36: the gate decides on the floor wave (api + native = 2 sends); the rounds-priced
+    # wave — one api send + the native row at its two observed rounds — is checked read-only
+    # (3 sends) with the floor wave beside it; the session row is never API money.
+    assert [len(a["models"]) for a in admissions] == [2, 3, 2]
+    assert all(a["fits"] and a["limit_usd"] == 50.0 and a["unpriced_slots"] == 0 for a in admissions)
+    assert admissions[1]["models"] == ["openai/fake-reviewer"] * 3
+    assert not any(e.get("type") == task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR for e in ctx.tools._ctx.pending_events)
 
 
 def test_native_projection_never_turns_a_malformed_manifest_into_its_keys():
@@ -821,14 +869,13 @@ def test_a_poisoned_timing_row_never_refuses_or_crashes_a_later_acceptance_panel
     downstream. Packet-only, native-only and mixed panels all proceed and the
     gate receives a bounded integer multiplier."""
     from ouroboros import loop as loop_mod, task_pacing
-    from ouroboros.tools import review_helpers
-
     from ouroboros import usage_accounting as ua
 
     if _ROW_SESSION in rows:
         _fake_session(monkeypatch)
     _offline_env(monkeypatch, *rows)
     _priced_offline_model(monkeypatch)
+    admissions = _spy_admission(monkeypatch)
     governance, workspace = _roots(tmp_path)
     llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 2, scoped=True)
     _real_panel(monkeypatch, llm, stub_gate=False)  # the REAL wave budget gate decides
@@ -838,15 +885,18 @@ def test_a_poisoned_timing_row_never_refuses_or_crashes_a_later_acceptance_panel
     for token in _POISON_TOKENS:
         _raw_timing(events, f'"native_rounds": {token}, "native_rows": {token}')
     _raw_timing(events, '"native_rounds": 1e999, "native_rows": 1')
-    scope = ua.UsageScope(drive_root=tmp_path, task_id="root-delivery", root_task_id="root-delivery",
-                          root_limit_usd=50.0)
+    scope = _root_scope(tmp_path, root_limit_usd=50.0)
+    _seed_root_ledger(scope)  # the wallet exists for the gate: it prices, it does not fail open
     with ua.usage_scope(scope):
         result = loop_mod._execute_task_acceptance_panel(ctx)
     assert result.aggregate_signal == "PASS"
     estimate = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
     assert type(estimate) is int and 1 <= estimate <= 64
+    (gate,) = admissions  # one real admission, numerically priced
+    assert gate["limit_usd"] == 50.0 and gate["estimated_wave_usd"] > 0 and gate["unpriced_slots"] == 0
+    paid_rows = sum(1 for row in rows if row is not _ROW_SESSION)
+    assert paid_rows <= len(gate["models"]) <= paid_rows * 64
     assert not any(e.get("type") == "review_wave_budget_insufficient" for e in ctx.tools._ctx.pending_events)
-    del review_helpers
 
 
 @pytest.mark.parametrize("poison", ("1e999", '"Infinity"', "NaN", "-5", '"long"'))
@@ -929,6 +979,120 @@ def test_honest_timing_streams_are_priced_exactly_as_before(tmp_path):
         assert task_pacing.acceptance_review_estimate_sec(
             ctx, passes_done=1, delivery=delivery) == max(200.0, 1.5 * ewma_d)
         assert task_pacing.acceptance_native_rounds_estimate(ctx) == min(64, max(1, math.ceil(ewma_r)))
+
+
+@pytest.mark.parametrize("rows", [(_ROW_NATIVE,), (_ROW_API, _ROW_NATIVE)])
+def test_a_poisoned_rounds_estimate_never_refuses_the_floor_priced_panel_through_the_real_gate(
+        monkeypatch, tmp_path, rows):
+    """R36: the rounds estimate is a pacing floor-raiser, never an admission
+    ceiling. A wallet where one work-order send per paid row fits but the
+    poisoned 33× wave does not → the panel DISPATCHES at the floor price through
+    the REAL gate (priced: the root ledger is seeded), discloses the typed fact
+    on every actor's usage, the timing row and a live event, and its honest
+    timing event lands — so the NEXT estimate is lower. Without R36 the refusal
+    happened before dispatch and the estimate could never decay."""
+    from ouroboros import loop as loop_mod, task_pacing
+    from ouroboros import usage_accounting as ua
+    from ouroboros.utils import iter_jsonl_objects
+
+    _offline_env(monkeypatch, *rows)
+    _priced_offline_model(monkeypatch)
+    admissions = _spy_admission(monkeypatch)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 4, scoped=True)
+    _real_panel(monkeypatch, llm, stub_gate=False)
+    scope = _root_scope(tmp_path, root_limit_usd=1.0)  # ≈14 sends fit; 33 do not
+    _seed_root_ledger(scope)
+    common = dict(evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance), workspace_root=str(workspace),
+                  workspace_mode="project", max_improvement_passes=1)
+    ctx = _acceptance_ctx(tmp_path, **common)
+    with ua.usage_scope(scope):
+        assert loop_mod._execute_task_acceptance_panel(ctx).aggregate_signal == "PASS"  # honest: 1 round/row
+    events = task_pacing.acceptance_timing_events_path(ctx.tools._ctx)
+    _raw_timing(events, '"native_rounds": 1e300, "native_rows": 1')
+    poisoned = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
+    assert poisoned == 33  # ceil(0.5*64 + 0.5*1)
+
+    again = _acceptance_ctx(tmp_path, content="deliverable v2", fresh_result=False, **common)
+    with ua.usage_scope(scope):
+        second = loop_mod._execute_task_acceptance_panel(again)
+    assert second.aggregate_signal == "PASS"  # dispatched at the floor, not refused
+    fact_name = task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
+    for actor in second.actors:
+        fact = actor["usage"][fact_name]
+        assert fact["native_rounds_estimate"] == 33 and fact["floor_slots"] == len(rows)
+        assert fact["estimated_wave_usd"] > fact["remaining_usd"] >= fact["floor_wave_usd"] > 0
+    # The gate itself saw the priced floor wave; the rounds-priced wave was checked read-only.
+    floor_gate = [a for a in admissions if len(a["models"]) == len(rows)]
+    priced_wave = [a for a in admissions if len(a["models"]) == len(rows) - 1 + 33]
+    assert floor_gate and all(a["fits"] and a["limit_usd"] == 1.0 for a in floor_gate)
+    assert priced_wave and not priced_wave[-1]["fits"]
+    assert [e["type"] for e in again.tools._ctx.pending_events if e.get("type") == fact_name] == [fact_name]
+    assert not any(e.get("type") == "review_wave_budget_insufficient" for e in again.tools._ctx.pending_events)
+    timing = [e for e in iter_jsonl_objects(events) if e.get("type") == "task_acceptance_review_timing"]
+    assert timing[-1][fact_name]["native_rounds_estimate"] == 33 and timing[-1]["native_rounds"] == 1
+    assert task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx) == 17 < poisoned  # decayed by the honest event
+
+
+def test_the_floor_priced_wave_that_does_not_fit_is_still_refused(monkeypatch, tmp_path):
+    """The floor is the admission line, not a bypass: when even one send per
+    paid row does not fit the remaining root budget, the panel is refused as
+    before — through the real gate — and no reviewer is called."""
+    from ouroboros import loop as loop_mod
+    from ouroboros import usage_accounting as ua
+
+    _offline_env(monkeypatch, _ROW_NATIVE)
+    _priced_offline_model(monkeypatch)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 2, scoped=True)
+    _real_panel(monkeypatch, llm, stub_gate=False)
+    scope = _root_scope(tmp_path, root_limit_usd=0.5)
+    _seed_root_ledger(scope, cost=0.45)  # $0.05 left: less than one send (~$0.07)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    with ua.usage_scope(scope):
+        refused = loop_mod._execute_task_acceptance_panel(ctx)
+    assert refused.aggregate_signal == "DEGRADED"
+    assert any(r.startswith("review_wave_budget_insufficient") for r in refused.degraded_reasons)
+    assert llm.calls == []  # no reviewer was called
+    assert any(e.get("type") == "review_wave_budget_insufficient" for e in ctx.tools._ctx.pending_events)
+
+
+def test_a_poisoned_reserve_still_launches_a_shorter_deadline_at_the_floor(tmp_path):
+    """R36 for the deadline reserve, through the real `review_launch_allowed`
+    and `improvement_pass_allowed`: a bounded-but-inflated reserve (a poisoned
+    duration contributes the task ceiling) launches a 24 h deadline silently;
+    a spendable window shorter than the reserve but longer than the configured
+    floor STILL launches — with the typed disclosure recorded durably and live;
+    only a window below the floor is refused."""
+    from ouroboros import task_pacing
+    from ouroboros.utils import iter_jsonl_objects
+
+    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={}, task_id="root-delivery", pending_events=[])
+    events = task_pacing.acceptance_timing_events_path(ctx)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    _raw_timing(events, '"native_rows": 0, "native_rounds": 0, "duration_sec": 1e300, "delivery": "api_chat"')
+    _timing(events, duration_sec=100, delivery="api_chat")
+    estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
+    assert estimate == 1.5 * (0.5 * 100 + 0.5 * 21600)  # 16275 s: bounded, finite, inflated
+    day = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=86400.0, elapsed_sec=0.0,
+                                     remaining_sec=86400.0, reserve_sec=3600.0)
+    assert task_pacing.review_launch_allowed(day, estimated_sec=estimate, ctx=ctx) == (True, "")
+    short = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
+                                       remaining_sec=1100.0, reserve_sec=100.0)  # spendable 1000 s
+    fact = task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR
+    assert task_pacing.review_launch_allowed(short, estimated_sec=estimate, ctx=ctx) == (True, fact)
+    assert task_pacing.improvement_pass_allowed(short, 0, {}, estimated_sec=estimate, ctx=ctx) == (True, fact)
+    rows = [e for e in iter_jsonl_objects(events) if e.get("type") == fact]
+    assert [r["gate"] for r in rows] == ["review_launch", "improvement_pass"]
+    assert rows[0]["estimated_sec"] == 16275.0 and rows[0]["floor_sec"] == 200.0 and rows[0]["spendable_sec"] == 1000.0
+    assert [e["gate"] for e in ctx.pending_events if e.get("type") == fact] == ["review_launch", "improvement_pass"]
+    tiny = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=300.0, elapsed_sec=0.0,
+                                      remaining_sec=300.0, reserve_sec=150.0)  # spendable 150 s < floor
+    assert task_pacing.review_launch_allowed(tiny, estimated_sec=estimate, ctx=ctx) == (
+        False, "review_skipped_deadline_reserve")
+    assert task_pacing.improvement_pass_allowed(tiny, 0, {}, estimated_sec=estimate, ctx=ctx) == (
+        False, "improvement_window_inside_reserve")
 
 
 # ---------------------------------------------------------------------------

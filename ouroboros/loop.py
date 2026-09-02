@@ -32,7 +32,6 @@ from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
     _dispose_obligations_on_clean_pass,
     _execute_task_acceptance_panel,
     _format_obligations_clause,
-    _latest_agent_acceptance_evidence,
     _mark_agent_acceptance_runs_advisory,
     _open_acceptance_obligations,
     _prior_acceptance_run,
@@ -1397,7 +1396,7 @@ def _run_task_acceptance_review_once(
     budget_snapshot = task_pacing.build_budget_snapshot(tools._ctx, profile=budget_profile)
     passes_done = int(getattr(tools._ctx, "_task_acceptance_improvement_passes", 0))
     launch_ok, launch_reason = task_pacing.review_launch_allowed(
-        budget_snapshot,
+        budget_snapshot, ctx=tools._ctx,
         estimated_sec=task_pacing.acceptance_review_estimate_sec(
             tools._ctx, passes_done=passes_done,
         ),
