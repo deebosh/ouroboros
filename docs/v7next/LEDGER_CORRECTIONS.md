@@ -7667,3 +7667,85 @@ Three read-only lenses on the 5.4 delta: NEEDS_FIXES × 3, no HIGH (3 MEDIUM, 7 
 3. **R3 stamp-less symlink levels (LOW) — fixed**, pin deferred (suite at its 1600-line cap; mutation-verified by hand). **R5 witness inode tie + `_Abort` on a vanished ledger (LOW) — fixed**, no pin (disclosed). **R6 heartbeat-ownership pin (LOW) — disclosed, not fixed.** **R1 uncached unprobeable directory, R7 shared liveness primitive, R8d epoch-floor duration, R8e socket shape (LOW) — docs corrected** in DESIGN §8/§10/§12.5, packet §5.9/§5.10/§9/§10, ARCHITECTURE row.
 
 Gates at the close-out tip: `tests/test_lockfile_helpers.py` + `tests/test_usage_compaction.py` + `tests/test_usage_*` + `tests/test_persistence_inventory.py` rc 0 (107 passed, 1 skipped Windows-only); `ruff --select F` rc 0; `scripts/check_domains.py` rc 0; `scripts/regenerate_size_ratchet.py --check` rc 0 (`platform_layer.py` 1500, `tests/test_usage_compaction.py` 1600 — both AT their ceilings); `git diff --check` rc 0. The CI-shape battery and `-m serial` run on the integration tree after the lane merges.
+
+## From the stage-2 fix wave, lane ui-cost-regression (base 9faccf31)
+
+One user-visible regression: a child subagent card showed `cost pending`
+forever. The root cause was not the alias removal itself but what the browser
+does with a name it no longer receives. Since ABI-3 `cost_projection.py:141`
+(`out.pop(old, None)`, 33ba6e83) strips the retired `cost_usd` /
+`cost_usd_with_children` aliases from every frame, while `chat.js` `costMetaKeys`
+copies all twelve cost names unconditionally — so an alias-free frame reaches the
+readers with the retired names as own properties valued `undefined`. Nothing
+serializes them away on that path: `costMetaKeys` output goes straight into
+`summarizeSubagentCardFrame` -> `withTaskCostMeta` -> `taskCostProjection`, with
+no JSON round-trip in between. Both readers tested presence with bare
+`hasOwnProperty`, so a key with no value counted as a value.
+
+Live path (`task_done` on the log channel -> `routeSubagentTerminalToCard`
+chat.js:2412-2443 -> `summarizeSubagentCardFrame` -> `withTaskCostMeta` ->
+`taskCostProjection`): the terminal frame arrives AFTER the honest progress
+frame, projects `final: true`, and therefore outranks it in
+`mergeStickyCostMeta` for the rest of the run. The reload path (chat.js:3005)
+calls the same `routeSubagentTerminalToCard`, so it froze identically.
+
+Class fix, both readers, presence now means a DEFINED value:
+
+- `web/modules/utils.js` `resolveCostPair` — the ONE pair resolver shared by
+  every reader. An own property valued `undefined` is absence; an explicit
+  `null` is still present (Python parity with `resolve_cost_pair`'s `old in
+  src`), and a mirrored legacy amount still wins its pair, so the
+  alias-carrying upstream frames (f3fbfdbb / a76961de) are unaffected.
+- `web/modules/chat_activity.js` `taskCostMeta` — the accounting-evidence test.
+  The same materialized keys made EVERY whitelisted frame look like evidence, so
+  an evidence-free terminal projected `cost pending` at pending rank and
+  overwrote a live ceiling on recency alone — the exact thing
+  `taskCostProjection` documents it never does.
+
+Rejected: dropping the two retired names from `costMetaKeys`. It fixes this
+frame and silently breaks the other direction — an upstream producer that still
+mirrors only `cost_usd_with_children` would lose its amount entirely.
+
+Red-first evidence (pins shown failing on the pre-fix modules, then green):
+
+| # | Pin | Pre-fix (red) | Post-fix (green) |
+| - | --- | --- | --- |
+| 1 | `web/tests/chat_instance_dom.test.js` "an alias-free subagent terminal keeps the honest amount, live and on reload" — real `createChatInstance`, honest progress frame then an alias-free `task_done` on the log channel | `error: 'the alias-free terminal settles the amount'`, actual `<span class="chat-live-meta-text">cost pending</span>` | `$0.99` on the card; `$1.25` when a frame mirrors the legacy alias; `$0.50` on the history-replay (reload) route |
+| 2 | same test, the costless-terminal step (`task_done` with no cost fields after the live ceiling) | `error: 'a costless terminal keeps the ceiling'`, actual `cost pending` | `up to $0.99` kept |
+| 3 | `web/tests/cost_presentation.test.js` resolver + evidence assertions (`{cost_usd: undefined, accounted_upper_bound_usd: 9}` -> 9; `{cost_usd: null, …}` -> null; an all-`undefined` frame -> no meta) | resolver answered `null` for the honest 9 | as asserted |
+
+Dispositions:
+
+1. **The `cost pending` regression — FIXED** (both readers, pins 1-3).
+2. **`ABI3_GATEWAY_ALIAS_INVENTORY.md:32` — FIXED.** It claimed the JS side
+   needed no edit and that "undefined drops out of JSON". False for this
+   in-memory path — nothing serializes between the whitelist and the reader.
+   The bullet now states what actually happens, that the removal DID need a web
+   edit, and that the `api_types.js` typedefs already name the honest fields
+   (its "JSDoc goes stale — HOT-DEFERRED" note was itself stale).
+3. **Python twin — checked, none demonstrable; DISCLOSED.** `resolve_cost_pair`
+   has the same shape of rule (`old in src` wins with a `None` value), but no
+   live Python producer materializes a retired key beside a set honest name:
+   `with_cost_aliases` pops the retired names on every write seam, and the
+   remaining `"cost_usd"` literals in `ouroboros/` (usage rows, delegate
+   evidence, triad/skill receipts, consciousness and reflection rows) are their
+   own schemas that carry no honest-name pair to shadow. Python left untouched.
+4. **`web/tests/chat_instance_dom.test.js` entered the 1001-1500 size band
+   (1000 -> 1107) — DISCLOSED, band rationale in the same commit.** The
+   regression only reproduces through the real `createChatInstance` card path,
+   whose DOM harness lives in this file; a new neighbour file would have paid
+   the cap with a third copy of that ~186-line harness, which the owner rules
+   forbid as a design reason.
+
+Gate evidence (this host, isolated env roots per invocation, venv python;
+`git rev-parse HEAD` verified unmoved after every pytest; author and committer
+`Ouroboros <311266734+ouroboros-agent@users.noreply.github.com>`, no push) is
+recorded in the lane report: `cd web && node --test tests/` 848 passed / 0
+failed rc 0 (847 before the new pin); `tests/test_web_utils_ssot.py`,
+`test_cost_projection.py`, `test_gateway_abi3_removals.py`,
+`test_widgets_ui_static.py`, `test_qa_fixes_6_12.py`, `test_restart_reconnect.py`,
+`test_projects_v6640.py` rc 0; `ruff check . --select F` rc 0;
+`scripts/check_domains.py` rc 0; `scripts/regenerate_inventories.py --check`
+rc 0; `scripts/regenerate_size_ratchet.py --check` rc 0 after regeneration with
+the band rationale; `scripts/v7next_adoption.py` and `--release` rc 0;
+`git diff --check` and `git diff --check 9faccf31..HEAD` rc 0.
