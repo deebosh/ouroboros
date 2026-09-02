@@ -290,7 +290,7 @@ def test_run_headless_main_crash_fuse_survives_event_set_during_stop_agent(monke
         launcher._run_headless_main("http://127.0.0.1:8765", 8765, dead_thread)
 
     assert excinfo.value.code == 1
-    assert order[-1] == ("kill_orphans", 8765, "crash_fuse")
+    assert order[-2:] == ["stop_agent", ("kill_orphans", 8765, "crash_fuse")]
 
 
 # ---------------------------------------------------------------------------

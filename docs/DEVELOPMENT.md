@@ -2722,8 +2722,7 @@ that:
   test boundary, so a bare `os.environ[...] = ...` no longer leaks, but monkeypatch stays the rule
   because it reverses exactly the named change inside the test (its undo runs last, after the
   snapshot); never assume execution order; and if you must mutate a module global, reset it around
-  the test (pattern:
-  `tests/conftest.py::_isolate_workspace_executor_globals`).
+  the test (pattern: `tests/conftest.py::_isolate_workspace_executor_globals`).
 
 ### The commit gate mirrors the CI split
 
