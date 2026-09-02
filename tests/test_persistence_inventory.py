@@ -4,15 +4,28 @@ The scanner AST-walks every runtime module (``ouroboros/``, ``supervisor/``,
 ``server.py``, ``launcher.py``) and collects every data-relative path it
 constructs: ``/``-join chains rooted at a data-root expression, chains whose
 leading literal is a known top-level data entity, ``pathlib.Path("literal")``
-chain bases, and ``drive_path("literal")`` calls. Non-literal segments
-normalize to ``*``.
+chain bases, and ``drive_path("literal")`` calls.
+
+A segment is resolved to the name the SOURCE STATES — a module or imported
+string constant, a literal ``Path`` chain, the literal text of an f-string, a
+prefix a runtime helper returns, a variable or loop target inside one function
+— and only then, having run out of facts, collapses to ``*``. That order is
+the point: a durable file whose name sits in a module constant used to
+normalize to ``*`` and vanish from the forward check, which is how twelve live
+entities held no inventory row while this test passed.
 
 Contract (count-anchored both ways):
 
-- every scanned path must be covered by a backticked path pattern in the
-  first column of a PERSISTENCE.md inventory row;
+- every scanned path the scan can NAME must be covered by a backticked path
+  pattern in the first column of a PERSISTENCE.md inventory row;
+- a family wildcard proves nothing about a name: an unresolved scan segment is
+  certified only by a row segment that spells its own wildcard, never by a
+  literal row (``state/*`` is not evidence about ``state/state.json``). The
+  complete set of still-unresolvable spellings is audited in
+  ``UNRESOLVED_SPELLINGS`` and asserted by equality;
 - every inventory row must still name something the scan sees (no stale rows),
-  except rows for planes written outside the scanned tree (external daemon);
+  except rows for planes written outside the scanned tree (external daemon,
+  benchmark launchers);
 - the total number of distinct scanned paths is pinned — adding a NEW
   data-relative path fails here until PERSISTENCE.md gets its row and the pin
   moves.
@@ -22,6 +35,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import functools
 import pathlib
 import re
 
@@ -32,9 +46,11 @@ DOC = REPO / "docs" / "PERSISTENCE.md"
 
 DATA_ROOT_MARKERS = (
     "DATA_DIR", "data_dir", "data_root", "drive_root", "canonical_data_root",
-    "state_drive_root", "budget_drive_root",
+    "state_drive_root", "budget_drive_root", "state_dir",
 )
 DATA_REL_CALL_NAMES = frozenset({"drive_path"})
+PATH_CTORS = frozenset({"Path", "PurePath", "PurePosixPath", "PureWindowsPath"})
+DIR_LISTING_CALLS = frozenset({"iterdir", "glob", "rglob"})
 TOP_LEVEL = frozenset({
     "state", "logs", "memory", "skills", "task_results", "observability",
     "locks", "archive", "settings.json", "uploads", "services", "artifacts",
@@ -42,80 +58,132 @@ TOP_LEVEL = frozenset({
     "projects", "task_trees",
 })
 
-# Chains constructed relative to an intermediate sub-root the AST cannot
-# resolve; each alias names the canonical data-relative location the doc rows
-# describe. Keep this table SHORT — a growing alias list means writers are
-# drifting away from recognizable root expressions.
+# Chains whose sub-root the AST cannot reach even through constants, returned
+# prefixes and directory listings — the callee takes the parent directory as a
+# PARAMETER, so only a call-site audit says where it lives. Each alias names
+# the canonical data-relative location, audited against every caller. Keep
+# this table SHORT: a growing list means writers are drifting away from
+# recognizable root expressions, and an alias is a human promise, not a fact
+# the scan re-derives.
 SUBROOT_ALIASES = {
-    "blobs/*": "observability/blobs/*",
-    "calls/*": "observability/calls/*",
-    "calls/*/*": "observability/calls/*/*",
-    # claudexor managed-runtime archive cache (managed_runtime_root(...) base).
-    "cache/*": "state/cx/cache/*",
+    # mint_skill_token(state_dir=...): all three call sites (extension_process_
+    # runner.py:291, extension_plugin_api.py:870/959 via PluginAPI._state_dir)
+    # pass a skill_state_dir(drive_root, name).
+    "auth_token.json": "state/skills/*/auth_token.json",
+    # PluginAPI.skill_job_dir builds on the same _state_dir: every
+    # _PluginAPIConfig in extension_loader.py is constructed with
+    # skill_state_dir[_path](drive_root, skill.name).
+    "jobs/*": "state/skills/*/jobs/*",
+    "jobs/*/*": "state/skills/*/jobs/*/*",
 }
 
-# The pinned scan-population size. Moving it is deliberate: a new distinct
-# data-relative path requires a PERSISTENCE.md row AND this bump in one diff.
-# 118 -> 120: the CPL4-C13 sweep enumerates the delegate_recovery /
-# delegate_recovery_transactions / delegate_supervision directories directly
-# (their per-file chains were already pinned; the dir prefixes are new).
-# 120 -> 122: the CPL4-C14/C15 prunes enumerate state/code_intel and
-# state/extension_reconcile/failed the same way.
-# 122 -> 124: the CPL4-C16 compaction names the three memory-journal paths
-# directly (previously only their writers' per-module spellings were seen).
-# 124 -> 123: state/crash_report.json retired with its readers (CPL4-C9,
-# owner 2A) — no writer existed in this tree; stale files are inert.
-# 123 -> 124: CPL4-C6 usage-ledger compaction writes the archived raw
-# segments (archive/usage_ledger/*, usage_compaction.py, owner 1A).
-EXPECTED_SCAN_PATHS = 124
 
-# Scanned paths that must always be present — guards the scanner itself
-# against a silent regression that would shrink coverage while keeping counts
-# plausible.
-SENTINELS = frozenset({
-    "settings.json",
-    "state/state.json",
-    "state/queue_snapshot.json",
-    "state/process_ledger.jsonl",
-    "state/consciousness_observations.jsonl",
-    "state/skills/*/review_history.jsonl",
-    "logs/events.jsonl",
-    "logs/chat.jsonl",
-    "memory/identity.md",
-    "task_results/artifacts/*",
-    "task_trees/*/blackboard.jsonl",
-    "uploads",
-})
-
-# Inventory rows whose writers live outside the scanned python tree
-# (external processes); the forward direction still documents them.
-ROW_SCAN_EXEMPT_PRIMARY = frozenset({
-    "claudexor/**",  # written by the external claudexord daemon
-})
+def _call_name(node: ast.Call) -> str:
+    fn = node.func
+    return fn.attr if isinstance(fn, ast.Attribute) else (
+        fn.id if isinstance(fn, ast.Name) else "")
 
 
-def _chain(node: ast.BinOp):
+def _literal_segment(node: ast.expr) -> str | None:
+    """A path segment the source states literally: ``"x"`` or an f-string.
+
+    An f-string keeps its literal text and collapses each interpolation to
+    ``*`` (``f"{pid}-{uuid}.json"`` -> ``*-*.json``): the constant part is a
+    fact about the file NAME, and losing it was how whole families read as a
+    bare ``*``.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        text = "".join(
+            part.value if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            else "*"
+            for part in node.values
+        )
+        return re.sub(r"[*]+", "*", text)
+    return None
+
+
+def _literal_path_chain(node: ast.expr) -> str | None:
+    """``Path("task_results") / "artifacts"`` -> ``task_results/artifacts``.
+
+    ``None`` when any segment is not literal — a partially literal constant is
+    not a name the inventory can be held to.
+    """
     parts, cur = [], node
     while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Div):
-        right = cur.right
-        parts.append(
-            right.value
-            if isinstance(right, ast.Constant) and isinstance(right.value, str)
-            else "*"
-        )
+        seg = _literal_segment(cur.right)
+        if seg is None:
+            return None
+        parts.append(seg)
         cur = cur.left
-    # A pathlib.Path("literal") base contributes its own leading segment
-    # (e.g. Path("state") / "headless_tasks").
-    if isinstance(cur, ast.Call):
-        fn = cur.func
-        fn_name = fn.attr if isinstance(fn, ast.Attribute) else (
-            fn.id if isinstance(fn, ast.Name) else "")
-        if fn_name in {"Path", "PurePath", "PurePosixPath", "PureWindowsPath"} and cur.args:
-            arg0 = cur.args[0]
-            if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                parts.append(arg0.value)
+    if isinstance(cur, ast.Call) and _call_name(cur) in PATH_CTORS and cur.args:
+        seg = _literal_segment(cur.args[0])
+        if seg is None:
+            return None
+        parts.append(seg)
+    elif isinstance(cur, ast.Constant) and isinstance(cur.value, str):
+        parts.append(cur.value)
+    else:
+        return None
     parts.reverse()
-    return cur, parts
+    return _normalize(parts) or None
+
+
+def _module_constants(tree: ast.AST) -> dict[str, str]:
+    """``NAME`` -> its literal string/path value, when the file binds it once.
+
+    A name the file rebinds (or binds to something non-literal) resolves to
+    nothing: an ambiguous constant must not become a claimed file name.
+    """
+    seen: dict[str, set] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        value = node.value
+        literal = None
+        if value is not None:
+            literal = _literal_segment(value)
+            if literal is None:
+                literal = _literal_path_chain(value)
+        for target in targets:
+            if isinstance(target, ast.Name):
+                seen.setdefault(target.id, set()).add(literal)
+    return {
+        name: next(iter(values))
+        for name, values in seen.items()
+        if len(values) == 1 and next(iter(values)) is not None
+    }
+
+
+def _own_nodes(scope: ast.AST) -> list[ast.AST]:
+    """Every node of one scope, NOT descending into nested function bodies.
+
+    Return statements of a nested helper describe that helper, not its parent;
+    attributing them to the parent made both prefixes ambiguous and dropped.
+    """
+    out: list[ast.AST] = []
+
+    def walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            out.append(child)
+            walk(child)
+
+    walk(scope)
+    return out
+
+
+def _scanned_files(root: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(
+        p
+        for p in list(root.glob("ouroboros/**/*.py"))
+        + list(root.glob("supervisor/**/*.py"))
+        + [root / "server.py", root / "launcher.py"]
+        if "__pycache__" not in p.parts
+    )
 
 
 def _root_is_data(node: ast.expr) -> bool:
@@ -143,48 +211,311 @@ def _normalize(parts) -> str:
     return "/".join(out)
 
 
-def scan_data_paths(root: pathlib.Path = REPO) -> set[str]:
-    paths: set[str] = set()
-    files = [
-        p
-        for p in list(root.glob("ouroboros/**/*.py"))
-        + list(root.glob("supervisor/**/*.py"))
-        + [root / "server.py", root / "launcher.py"]
-        if "__pycache__" not in p.parts
-    ]
-    for path in sorted(files):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
-            continue
-        consumed: set[int] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-                if id(node) in consumed:
-                    continue
-                base, parts = _chain(node)
-                cur = node
-                while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Div):
-                    if isinstance(cur.left, ast.BinOp):
-                        consumed.add(id(cur.left))
-                    cur = cur.left
-                rel = _normalize(parts)
-                if not rel or not rel.replace("*", "").replace("/", ""):
-                    continue
-                if _root_is_data(base) or rel.split("/")[0] in TOP_LEVEL:
-                    paths.add(SUBROOT_ALIASES.get(rel, rel))
-            elif isinstance(node, ast.Call):
-                fn = node.func
-                name = fn.attr if isinstance(fn, ast.Attribute) else (
-                    fn.id if isinstance(fn, ast.Name) else "")
-                if name in DATA_REL_CALL_NAMES and node.args:
-                    arg = node.args[0]
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                        rel = _normalize([arg.value])
-                        if rel:
-                            paths.add(SUBROOT_ALIASES.get(rel, rel))
-    return paths
+def _is_named(rel: str) -> bool:
+    """A path that names something — not an empty or all-wildcard chain."""
+    return bool(rel) and bool(rel.replace("*", "").replace("/", "").strip())
 
+
+class _PathResolver:
+    """Resolves the data-relative paths one source tree constructs.
+
+    Three resolution planes, each a fact the source states:
+
+    * **constants** — a segment spelled as a module constant (own file first,
+      then the repo-wide map, which covers imported names and ``mod.NAME``);
+    * **returned prefixes** — a function whose returns all resolve to one
+      data-relative path lends that prefix to its callers, file-local first
+      then repo-wide-if-unambiguous (fixed point, so ``skill_state_dir`` ->
+      ``skill_state_dir_path`` chains resolve);
+    * **local flow** — inside one function, a variable assigned a resolved
+      path, and a loop variable bound to ``<resolved>.iterdir()/.glob()``.
+
+    Anything still unresolved stays ``*`` — a family, never a name.
+    """
+
+    def __init__(self, root: pathlib.Path) -> None:
+        self.trees: dict[pathlib.Path, ast.AST] = {}
+        self.consts: dict[pathlib.Path, dict[str, str]] = {}
+        repo_wide: dict[str, set] = {}
+        for path in _scanned_files(root):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):
+                continue
+            self.trees[path] = tree
+            self.consts[path] = _module_constants(tree)
+            for name, value in self.consts[path].items():
+                repo_wide.setdefault(name, set()).add(value)
+        self.repo_consts = {
+            name: next(iter(values))
+            for name, values in repo_wide.items()
+            if len(values) == 1
+        }
+        self.functions = {
+            path: [n for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            for path, tree in self.trees.items()
+        }
+        self.prefixes: dict[str, str] = {}
+        self.file_prefixes: dict[pathlib.Path, dict[str, str]] = {}
+        # The file whose scopes are being resolved right now: name/attribute
+        # prefixes are file-local facts (see ``_base_prefix``).
+        self.current: pathlib.Path | None = None
+        # Scope -> its own nodes. Keyed by identity and owned by THIS resolver,
+        # so it dies with the parsed trees it describes; the prefix fixed point
+        # would otherwise re-walk every scope once per round.
+        self._nodes: dict[int, list] = {}
+        self._resolve_prefixes()
+
+    def own_nodes(self, scope: ast.AST) -> list[ast.AST]:
+        cached = self._nodes.get(id(scope))
+        if cached is None:
+            cached = _own_nodes(scope)
+            self._nodes[id(scope)] = cached
+        return cached
+
+    # -- segments and chains ------------------------------------------------
+
+    def _segment(self, node: ast.expr, consts: dict[str, str]) -> str:
+        literal = _literal_segment(node)
+        if literal is not None:
+            return literal
+        if isinstance(node, ast.Name):
+            value = consts.get(node.id) or self.repo_consts.get(node.id)
+            if value:
+                return value
+        if isinstance(node, ast.Attribute):
+            value = self.repo_consts.get(node.attr)
+            if value:
+                return value
+        return "*"
+
+    def _chain(self, node: ast.expr, consts: dict[str, str]):
+        parts, cur = [], node
+        while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Div):
+            parts.append(self._segment(cur.right, consts))
+            cur = cur.left
+        if isinstance(cur, ast.Call) and _call_name(cur) in PATH_CTORS and cur.args:
+            literal = _literal_segment(cur.args[0])
+            if literal is not None:
+                parts.append(literal)
+        parts.reverse()
+        return cur, parts
+
+    def _base_prefix(self, base: ast.expr, local: dict[str, str]) -> str | None:
+        """The data-relative prefix a chain base already stands for.
+
+        A CALL takes the current file's function of that name first, then a
+        repo-wide name that resolves to ONE path. A bare name or attribute
+        takes ONLY the current file: ``self._state_dir`` is instance state
+        whose name may collide with an unrelated module's helper (it does —
+        ``workspace_executor._state_dir`` — and resolving it repo-wide claimed
+        the wrong plane for the per-skill jobs dir).
+        """
+        own = self.file_prefixes.get(self.current, {})
+        if isinstance(base, ast.Call):
+            name = _call_name(base)
+            return own.get(name) or self.prefixes.get(name)
+        if isinstance(base, ast.Name):
+            return local.get(base.id) or own.get(base.id)
+        if isinstance(base, ast.Attribute):
+            return own.get(base.attr)
+        return None
+
+    def resolve(self, node: ast.expr, consts: dict[str, str],
+                local: dict[str, str]) -> tuple[str, bool]:
+        """``(data-relative path, is-data-relative)`` for a path expression."""
+        if isinstance(node, ast.Name):
+            known = local.get(node.id)
+            return (known, True) if known else ("", False)
+        base, parts = self._chain(node, consts)
+        rel = _normalize(parts)
+        prefix = self._base_prefix(base, local)
+        if prefix:
+            return (f"{prefix}/{rel}" if rel else prefix), True
+        if _root_is_data(base):
+            return rel, True
+        if rel and rel.split("/")[0] in TOP_LEVEL:
+            return rel, True
+        return rel, False
+
+    # -- scopes -------------------------------------------------------------
+
+    def _locals(self, scope: ast.AST, consts: dict[str, str],
+                nodes: list[ast.AST]) -> dict[str, str]:
+        local: dict[str, str] = {}
+        for node in nodes:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name):
+                rel, ok = self.resolve(node.value, consts, local)
+                if ok and _is_named(rel):
+                    local[node.targets[0].id] = rel
+            elif isinstance(node, ast.For) and isinstance(node.target, ast.Name) \
+                    and isinstance(node.iter, ast.Call) \
+                    and _call_name(node.iter) in DIR_LISTING_CALLS \
+                    and isinstance(node.iter.func, ast.Attribute):
+                rel, ok = self.resolve(node.iter.func.value, consts, local)
+                if not (ok and _is_named(rel)):
+                    continue
+                leaf = "*"
+                if node.iter.args:
+                    literal = _literal_segment(node.iter.args[0])
+                    if literal:
+                        leaf = literal
+                local[node.target.id] = f"{rel}/{leaf}"
+        return local
+
+    def _scopes(self, path: pathlib.Path):
+        consts = self.consts[path]
+        for fn in self.functions[path]:
+            nodes = self.own_nodes(fn)
+            yield fn, consts, nodes, self._locals(fn, consts, nodes)
+        module_nodes = self.own_nodes(self.trees[path])
+        yield self.trees[path], consts, module_nodes, {}
+
+    def _resolve_prefixes(self) -> None:
+        """Fixed point over ``<function> -> <data-relative prefix>``.
+
+        Two maps, because a name can be honest locally and ambiguous globally:
+        the file map answers for a function DEFINED in the calling file (both
+        ``managed_runtime_root``s resolve, each to its own runtime root), the
+        repo map only for a name that resolves to ONE path tree-wide (that is
+        what makes an imported ``skill_state_dir`` usable everywhere).
+        """
+        for _round in range(6):
+            per_file: dict[pathlib.Path, dict[str, set]] = {}
+            for path in self.trees:
+                self.current = path
+                consts = self.consts[path]
+                found: dict[str, set] = {}
+                for fn in self.functions[path]:
+                    nodes = self.own_nodes(fn)
+                    local = self._locals(fn, consts, nodes)
+                    for node in nodes:
+                        if not isinstance(node, ast.Return) or node.value is None:
+                            continue
+                        rel, ok = self.resolve(node.value, consts, local)
+                        if ok and _is_named(rel):
+                            found.setdefault(fn.name, set()).add(rel)
+                per_file[path] = found
+            repo_wide: dict[str, set] = {}
+            for found in per_file.values():
+                for name, rels in found.items():
+                    repo_wide.setdefault(name, set()).update(rels)
+            settled = {
+                name: next(iter(rels))
+                for name, rels in repo_wide.items() if len(rels) == 1
+            }
+            file_settled = {
+                path: {
+                    name: next(iter(rels))
+                    for name, rels in found.items() if len(rels) == 1
+                }
+                for path, found in per_file.items()
+            }
+            if settled == self.prefixes and file_settled == self.file_prefixes:
+                return
+            self.prefixes = settled
+            self.file_prefixes = file_settled
+
+    # -- the scan -----------------------------------------------------------
+
+    def paths(self) -> set[str]:
+        found: set[str] = set()
+        for path in self.trees:
+            self.current = path
+            for _scope, consts, nodes, local in self._scopes(path):
+                consumed: set[int] = set()
+                for node in nodes:
+                    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                        if id(node) in consumed:
+                            continue
+                        cur = node
+                        while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Div):
+                            if isinstance(cur.left, ast.BinOp):
+                                consumed.add(id(cur.left))
+                            cur = cur.left
+                        rel, ok = self.resolve(node, consts, local)
+                        if ok and _is_named(rel):
+                            found.add(SUBROOT_ALIASES.get(rel, rel))
+                    elif isinstance(node, ast.Call) \
+                            and _call_name(node) in DATA_REL_CALL_NAMES and node.args:
+                        literal = _literal_segment(node.args[0])
+                        if literal:
+                            rel = _normalize([literal])
+                            if rel:
+                                found.add(SUBROOT_ALIASES.get(rel, rel))
+        return found
+
+
+@functools.lru_cache(maxsize=4)
+def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
+    return frozenset(_PathResolver(root).paths())
+
+
+# The pinned scan-population size. Moving it is deliberate: a new distinct
+# data-relative path requires a PERSISTENCE.md row AND this bump in one diff.
+# 124 -> 271: the stage-2 fix wave taught the scanner to resolve what the
+# source states — module/imported string constants, literal ``Path`` chains,
+# f-string names, returned prefixes of runtime helpers and one-scope local
+# flow — instead of collapsing every non-literal segment to ``*``. The old
+# population was not 124 entities but 124 SPELLINGS, most of them family
+# wildcards that hid exact durable files behind them (12 of those files had no
+# inventory row and the forward check could not see them).
+EXPECTED_SCAN_PATHS = 271
+
+# Scanned paths that must always be present — guards the scanner itself
+# against a silent regression that would shrink coverage while keeping counts
+# plausible. The constant-named files are the stage-2 sentinels: each one was
+# invisible to the scan while non-literal segments collapsed to ``*``.
+SENTINELS = frozenset({
+    "settings.json",
+    "state/state.json",
+    "state/queue_snapshot.json",
+    "state/process_ledger.jsonl",
+    "state/consciousness_observations.jsonl",
+    "state/skills/*/review_history.jsonl",
+    "logs/events.jsonl",
+    "logs/chat.jsonl",
+    "memory/identity.md",
+    "task_results/artifacts/*",
+    "task_trees/*/blackboard.jsonl",
+    "uploads",
+    # stage-2: names that live in constants, helper returns or f-strings
+    "state/claudexor_rotation_provisioning.json",
+    "state/delegate_terminal_refresh_cursor.json",
+    "state/extension_generation.json",
+    "state/post_task_evolution_counter.json",
+    "state/post_task_evolution_request.json",
+    "state/presence_bindings.json",
+    "state/request_wire_compatibility.json",
+    "state/subagent_last_delegation.json",
+    "state/review_continuations/*.json",
+    "state/skills/*/repair_admission.json",
+    "state/skills/*/auth_token.json",
+    "logs/chat_annotations.jsonl",
+})
+
+# The COMPLETE audited set of paths the scan cannot name, and why. A family
+# wildcard proves nothing about any exact file (see ``_seg_match``), so these
+# are not "covered" — they are disclosed, one entry per unresolvable spelling,
+# and this set is asserted by EQUALITY: a new unresolvable spelling fails here
+# until it is either made resolvable (name the segment in a constant) or
+# audited in. Every entry below is a parameterized reader/writer over planes
+# that DO carry inventory rows.
+UNRESOLVED_SPELLINGS = frozenset({
+    # `state`/`logs` reached with the file name as a parameter or loop value:
+    # delegate_recovery.py (the two stop flags), usage_ledger.py (ledger /
+    # quarantine / lock names), gateway/logs.py + memory.py + supervisor/
+    # state.py (bounded log tail, rotation helper).
+    "state/*",
+    "logs/*",
+    # skill payload roots resolved from a validated relpath (bucket + name):
+    # config.py, contracts/skill_payload_policy.py, skill_payload_binding.py,
+    # tools/core.py — the `skills/<source>/<name>/**` row owns them.
+    "skills/*",
+    "skills/*/*",
+})
 
 # --- doc parsing -----------------------------------------------------------
 
@@ -233,7 +564,20 @@ def doc_rows(text: str) -> list[list[str]]:
 
 
 def _seg_match(scan_seg: str, pat_seg: str) -> bool:
-    return scan_seg == "*" or pat_seg == "*" or fnmatch.fnmatchcase(scan_seg, pat_seg)
+    """One segment against one row pattern segment.
+
+    A scan segment carrying a wildcard is a FAMILY the scan could not name
+    ("some file in state/"), so only a row segment that spells its own
+    wildcard may certify it. Letting a literal row absorb it made both
+    directions vacuous: ``state/*`` "proved" ``state/state.json`` documented
+    and, backwards, kept every exact row alive with no writer behind it.
+    """
+    if "*" in scan_seg:
+        return "*" in pat_seg and (
+            fnmatch.fnmatchcase(pat_seg, scan_seg)
+            or fnmatch.fnmatchcase(scan_seg, pat_seg)
+        )
+    return pat_seg == "*" or fnmatch.fnmatchcase(scan_seg, pat_seg)
 
 
 def _match(scan: list[str], pat: list[str]) -> bool:
@@ -253,8 +597,10 @@ def _covers(scan_path: str, pattern: str) -> bool:
     if _match(scan_segs, pat_segs):
         return True
     # Bare filename tokens (contain a dot, single segment) also cover a path
-    # by basename — the row names the file inside its family directory.
-    if len(pat_segs) == 1 and "." in pat_segs[0]:
+    # by basename — the row names the file inside its family directory. Only a
+    # NAMED leaf may be matched this way: a wildcard leaf would be certified by
+    # any dotted token (``*.lock`` used to answer for every unresolved path).
+    if len(pat_segs) == 1 and "." in pat_segs[0] and "*" not in scan_segs[-1]:
         return _seg_match(scan_segs[-1], pat_segs[0])
     return False
 
@@ -276,28 +622,80 @@ def test_scan_is_populated_and_pinned():
 
 
 def test_every_scanned_path_has_an_inventory_row():
+    """Every path the scan can NAME has a row; the rest is audited, not assumed."""
     text = DOC.read_text(encoding="utf-8")
     patterns = [token for row in doc_rows(text) for token in row]
     assert patterns, "PERSISTENCE.md inventory tables not found"
-    uncovered = sorted(
+    uncovered = {
         path for path in scan_data_paths()
         if not any(_covers(path, pattern) for pattern in patterns)
-    )
-    assert not uncovered, (
+    }
+    undocumented = sorted(uncovered - UNRESOLVED_SPELLINGS)
+    assert not undocumented, (
         "data/-relative paths written by the runtime but absent from "
-        f"docs/PERSISTENCE.md: {uncovered}"
+        f"docs/PERSISTENCE.md: {undocumented}"
+    )
+    resolved = sorted(UNRESOLVED_SPELLINGS - uncovered)
+    assert not resolved, (
+        "these spellings are no longer unresolvable-and-uncovered — drop them "
+        f"from UNRESOLVED_SPELLINGS: {resolved}"
     )
 
 
 def test_every_inventory_row_is_still_real():
+    """No row survives without a scanned path behind it.
+
+    Resolution retired the previous exemption list: both rows that needed it
+    (the external claudexord daemon's directory, the benchmark sentinel) are
+    reached by in-tree path expressions now — Ouroboros creates and appends the
+    daemon dir, and it reads the sentinel. A plane with NO in-tree path
+    expression at all would fail here and must be exempted deliberately.
+    """
     text = DOC.read_text(encoding="utf-8")
     paths = scan_data_paths()
-    stale = []
-    for row in doc_rows(text):
-        if row[0] in ROW_SCAN_EXEMPT_PRIMARY:
-            continue
-        if not any(_covers(path, token) for token in row for path in paths):
-            stale.append(row[0])
+    stale = [
+        row[0] for row in doc_rows(text)
+        if not any(_covers(path, token) for token in row for path in paths)
+    ]
     assert not stale, (
         f"PERSISTENCE.md rows no scanned writer path matches (stale?): {stale}"
     )
+
+
+# --- red-first pins (stage-2 fix wave, lane persistence-inventory) ----------
+
+
+def test_constant_named_durable_files_are_visible_to_the_scan():
+    """A durable file whose NAME lives in a module constant must be scanned.
+
+    Collapsing every non-literal segment to ``*`` hid whole entities from the
+    forward check: the name is a compile-time constant, so the scan can and
+    must resolve it.
+    """
+    paths = scan_data_paths()
+    hidden = sorted(p for p in (
+        "state/claudexor_rotation_provisioning.json",
+        "state/delegate_terminal_refresh_cursor.json",
+        "state/extension_generation.json",
+        "state/post_task_evolution_counter.json",
+        "state/post_task_evolution_request.json",
+        "state/presence_bindings.json",
+        "state/request_wire_compatibility.json",
+        "state/subagent_last_delegation.json",
+        "logs/chat_annotations.jsonl",
+    ) if p not in paths)
+    assert not hidden, f"constant-named durable files invisible to the scan: {hidden}"
+
+
+def test_unresolved_wildcard_never_certifies_an_exact_row():
+    """An unresolved scan segment is a FAMILY, never proof about a NAME.
+
+    ``state/*`` means "some file in state/ the scan could not name"; letting it
+    match the exact row ``state/state.json`` made both directions of the
+    contract vacuous — the wildcard absorbed every literal row.
+    """
+    assert not _covers("state/*", "state/state.json")
+    assert not _covers("state/skills/*/*", "state/skills/*/review.json")
+    # Family patterns still certify family scans (both spell the wildcard).
+    assert _covers("state/*", "state/*")
+    assert _covers("task_results/*", "task_results/*.json")

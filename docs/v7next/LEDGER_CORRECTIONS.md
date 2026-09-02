@@ -8114,3 +8114,171 @@ commits; no push), each as its own command with its rc printed:
 Not run for this lane: the CI-shape battery and the `-m serial` pass. The
 delta is documentation, one generated report, one report-only generator write
 and one test module; no runtime module changed.
+## From the stage-2 fix wave, lane persistence-inventory (base 9faccf31)
+
+CPL-4's claim — «every durable entity under the data root is inventoried»
+(docs/PERSISTENCE.md header, ARCHITECTURE §10 prose) — was false and its own
+verify pair could not see it. Two independent holes:
+
+1. **The scanner collapsed every non-literal segment to `*`.** A durable file
+   whose name lives in a module constant, an imported constant, a literal
+   `Path` chain, an f-string or a helper's returned prefix never entered the
+   scan population under its own name, so the forward check never asked for
+   its row. Twelve live entities were inventoried nowhere.
+2. **A wildcard matched anything in both directions.** The resulting `state/*`
+   was "covered" by the exact row `state/state.json`, and backwards every
+   exact row stayed "real" with no writer behind it; a dotted token such as
+   `*.lock` answered by basename for any path whose leaf was unresolved. Both
+   directions of a count-anchored contract were vacuous for anything the
+   scanner could not name.
+
+### Red-first
+
+| # | Pin | Red on the pre-fix shape | Green |
+|---|---|---|---|
+| 1 | `test_constant_named_durable_files_are_visible_to_the_scan` | base scanner (9faccf31 `tests/test_persistence_inventory.py` + the pin appended): `constant-named durable files invisible to the scan: ['logs/chat_annotations.jsonl', 'state/claudexor_rotation_provisioning.json', 'state/delegate_terminal_refresh_cursor.json', 'state/extension_generation.json', 'state/post_task_evolution_counter.json', 'state/post_task_evolution_request.json', 'state/presence_bindings.json', 'state/request_wire_compatibility.json', 'state/subagent_last_delegation.json']` | all nine resolve; they and three more (`state/review_continuations/*.json`, `state/skills/*/repair_admission.json`, `state/skills/*/auth_token.json`) are pinned as SENTINELS |
+| 2 | `test_unresolved_wildcard_never_certifies_an_exact_row` | base matcher: `assert not _covers("state/*", "state/state.json")` → `assert not True` | `_seg_match` requires a wildcard-bearing row segment to certify a wildcard scan segment (and the basename fallback requires a named leaf) |
+| 3 | `test_every_scanned_path_has_an_inventory_row` (the doc gap) | fixed verifier against the base `docs/PERSISTENCE.md`: 17 undocumented paths — `.ouroboros_isolated_benchmark`, `logs/chat_annotations.jsonl`, `state/claudexor_rotation_provisioning.json`, `state/delegate_terminal_refresh_cursor.json`, `state/extension_generation.json`, `state/post_task_evolution_{counter,request}.json`, `state/presence_bindings.json`, `state/request_wire_compatibility.json`, `state/review_continuations` (+ `*.json`, `archived`, `archived/*`, `corrupt`, `corrupt/*.*.json`), `state/subagent_last_delegation.json`, `state/usage_attempts.quarantine.jsonl` | every one carries a row with its four decisions |
+
+### What the fix is
+
+Resolution before wildcards, each plane a fact the source states: module and
+imported string constants (per-file first, then repo-wide when the name binds
+to exactly one value), literal `Path` chains (`ARTIFACTS_DIR = Path("task_results") / "artifacts"`),
+f-string text (`f"{pid}-{uuid}.json"` → `*-*.json`), the data-relative prefix
+a helper returns (fixed point, file-local first then repo-wide-if-unambiguous,
+so `skill_state_dir` → `skill_state_dir_path` resolves and the two same-named
+`managed_runtime_root`s each resolve to their own runtime root), and one-scope
+local flow including `for x in <resolved>.iterdir()/.glob(...)`. Population
+124 → 271: the old anchor counted SPELLINGS, most of them family wildcards
+hiding exact files, not entities.
+
+Two audited tables carry what resolution cannot reach, both asserted rather
+than assumed:
+
+- `SUBROOT_ALIASES` (3 entries, was 4 — the observability `blobs/*`,
+  `calls/*`, `calls/*/*` guesses and the claudexor `cache/*` guess all became
+  dead and were removed, `auth_token.json`, `jobs/*`, `jobs/*/*` added): the
+  callee receives its parent directory as a
+  PARAMETER, so a call-site audit is the only evidence. Both new aliases were
+  audited to every caller: `mint_skill_token` is called with
+  `skill_state_dir(...)` at `extension_process_runner.py:291` and through
+  `PluginAPI._state_dir`, and every `_PluginAPIConfig` in
+  `extension_loader.py` (:477, :581) is built with
+  `skill_state_dir[_path](drive_root, skill.name)`.
+- `UNRESOLVED_SPELLINGS` (4 entries, asserted by EQUALITY): `state/*`,
+  `logs/*`, `skills/*`, `skills/*/*` — parameterized readers/writers over
+  planes that DO carry rows (the two stop flags, the usage ledger's own file
+  names, the bounded log tail and rotation helper, skill payload roots from a
+  validated relpath). A new unresolvable spelling now fails the suite until it
+  is named in a constant or audited in; a spelling that becomes resolvable
+  fails until it is removed from the table.
+
+Resolution also retired `ROW_SCAN_EXEMPT_PRIMARY`: both rows that needed it
+(the external claudexord daemon's directory, the benchmark sentinel) are
+reached by in-tree path expressions now — Ouroboros creates and appends the
+daemon directory and reads the sentinel — so the list was dead, and a dead
+exemption is the same vacuous-contract defect in miniature.
+
+### Dispositions
+
+**Fixed — inventory rows added, each derived by reading the owner (not the
+plan):**
+
+| Entity | Owner read | The four decisions in one line |
+|---|---|---|
+| `state/presence_bindings.json` | `presence_bindings.py` | own `schema_version: 1` typed-refusal on mismatch; `update_json_locked`; overwrite bounded by owner links; reset loses every transport→behavior link |
+| `state/request_wire_compatibility.json` | `request_wire_contract.py` | own `schema_version: 1`, other versions read as empty; TTL 14 days on read; reset re-learns from one fresh provider refusal |
+| `state/claudexor_rotation_provisioning.json` | `claudexor_daemon.py` | no stamp (disclosure receipt, never read back); last patching reconcile wins; reset loses the receipt only, provisioning is idempotent |
+| `state/delegate_terminal_refresh_cursor.json` | `delegate_terminal.py` | no stamp, self-grounding offset; `deferred` capped at 500; reset re-grounds at 0 and replays paced by the 5 MB per-tick cap |
+| `state/extension_generation.json` | `extension_reconcile_queue.py` | own `schema_version: 1`; write-if-changed; absent marker is fail-closed no-evidence, workers keep their spawn-time set |
+| `state/post_task_evolution_{request,counter}.json` | `post_task_evolution.py` | request own `schema_version: 1` + one-shot consume, counter unstamped single `n`; reset drops one promotion signal and restarts the cadence — the durable backstop stays the `evolution_owner_stopped` flag |
+| `state/subagent_last_delegation.json` | `subagents.py` | no stamp (disclosure projection); last run wins; reset shows absence |
+| `state/review_continuations/<task>.json` + `archived/`, `corrupt/` | `task_continuation.py` | typed dataclass with an ownership check, corrupt files quarantined not migrated; retire at 7 days settled-and-unresumed, quarantines unbounded-accepted; reset forces review to be re-run |
+| `state/skills/<name>/auth_token.json` | `extension_plugin_api.py`, `gateway/host_service.py` | no stamp — `content_hash` IS the staleness contract; 0600, rotate on hash change, transient hash failure never rotates; reset de-authorizes live companions until respawn |
+| `state/skills/<name>/repair_admission.json` | `skill_repair_admission.py` | own `schema_version: 1`; newest admission owns the record; reset refuses repair writes (fail-closed by design) |
+| `logs/chat_annotations.jsonl` | `project_dialogue.py` | `type: chat_annotation` keyed by `client_message_id`; self-compacting at 800 KB to messages still in the chat chain (live + 3 newest archives), NOT rotated into `archive/`; reset falls back to plain chat rows and loses one pending picker token (#198) |
+| `state/usage_attempts.quarantine.jsonl`, `state/usage_attempts.lock` | `usage_ledger.py`, `usage_compaction.py` | already governed by the ledger row — the row named them as bare `.quarantine.jsonl`/`lock` labels, which matched nothing; now spelled in full |
+
+**Fixed — entities the tightened verifier and the owner sweep surfaced that
+were in NO plan or review note (item d of the lane):**
+
+| Entity | Owner | Why it matters |
+|---|---|---|
+| `.ouroboros_isolated_benchmark` | written by `devtools/benchmarks/**` launchers, read by `supervisor/state.py` and `agent_startup_checks.py` | the only marker that makes a data root declare itself synthetic; deleting it turns rotation and the benchmark carve-outs back on inside a throwaway root |
+| `logs/tasks/task_<id>.txt` | `ouroboros/utils.py` log sanitization | spilled full text of oversized task prompts; **unbounded → candidate**: no retention plane names `logs/tasks/` |
+| `state/skills/<name>/chat_id_counter.json` | `gateway/host_service.py` | A2A chat-id allocation descending from `A2A_CHAT_ID_MAX`; deleting it restarts allocation at the top and a fresh room can reuse an id already in history |
+| `state/skills/<name>/jobs/<job>/` (`assets/`, `output/`, `tmp/`) | `extension_plugin_api.py::skill_job_dir` | extension job workspaces; **unbounded → candidate**: nothing sweeps them, only the gateway's local skill delete removes them with the state dir |
+
+**Disclosed, not fixed (residuals of this lane):**
+
+1. **A directory row still covers undocumented children.** A pattern that is a
+   strict prefix of a scanned path covers it without spelling `**`, so a NEW
+   file under an inventoried family directory (e.g. `state/skills/<name>/`)
+   would not be demanded by the forward check. Tightening it is a bigger
+   change than this lane's defect: it also requires resolving the `TOP_LEVEL`
+   leading-literal heuristic's non-data-relative hits (`cache`, `cache/pip`,
+   `cache/npm`, `tmp` reached through a `.ouroboros_env` root passed as a
+   parameter), which are nominally covered by the `.ouroboros_env` row today.
+   The three per-skill files this lane added were therefore found by READING
+   the owners, not demanded by the verifier.
+2. **Two entities are inventoried as `unbounded → candidate`** (`logs/tasks/`,
+   `state/skills/<name>/jobs/`) with no fix and no CPL4-Cn number: adding a
+   retention plane is a behaviour change with owner-visible effects (deleting
+   an extension's assets, deleting spilled owner text) and belongs to a
+   decision, not to a verifier lane.
+3. **`state_dir` joined `DATA_ROOT_MARKERS`.** It admits any chain rooted at a
+   parameter or attribute whose name contains `state_dir`; that is how the
+   per-skill token and jobs planes became visible, and the equality-asserted
+   residual table is what keeps a false positive from passing silently.
+4. **The scan is ~13 s** (constant maps, a prefix fixed point of at most six
+   rounds, one memoized scope walk per resolver) against ~2 s before — the
+   same order as `tests/test_architecture_facts.py`'s heaviest case in this
+   tree, and paid once per session by `functools.lru_cache`.
+
+**Rejected with evidence:**
+
+1. **Resolving a bare name or attribute against a repo-wide helper of the same
+   name — rejected as unsound, after it produced a false plane.** An early
+   revision resolved `self._state_dir / "jobs" / <job>` through
+   `workspace_executor._state_dir()` and claimed
+   `state/workspace_executor_processes/jobs/*`, a directory nothing writes.
+   Name and attribute prefixes are now file-local facts; only CALLS resolve
+   repo-wide, and only when the name binds to one path tree-wide. The false
+   pair is gone from the population.
+2. **Keeping the observability `blobs/*` / `calls/*` aliases — rejected.**
+   Resolution reaches `observability/{blobs,calls,salvaged}/…` directly;
+   removal was verified by deleting each alias and diffing the population
+   (no change). An alias that changes nothing is a human promise about a fact
+   the scan already has.
+3. **Inventing a `state/*`-shaped family row so the residuals would "match" —
+   rejected.** `state/*` is not an entity; a row for it would restore exactly
+   the vacuous coverage this lane removed. The audited equality table says the
+   same thing honestly and fails on the next new spelling.
+
+### Gate evidence
+
+This host, isolated env roots per invocation (`OUROBOROS_APP_ROOT`/`_REPO_DIR`/
+`_DATA_DIR`/`_SETTINGS_PATH` + private `TMPDIR` under a fresh `mktemp -d`),
+venv python 3.10.12, `-p no:cacheprovider`; `git rev-parse HEAD` verified
+unmoved after every pytest run; author and committer
+`Ouroboros <311266734+ouroboros-agent@users.noreply.github.com>`; no push.
+Each gate its own command with its rc printed:
+
+- `tests/test_persistence_inventory.py` 5 passed, rc 0 (2 of the 5 are this
+  lane's new pins);
+- `tests/test_persistence_inventory.py tests/test_architecture_facts.py
+  tests/test_docs_sync.py` 34 passed, rc 0 (the architecture-facts suite owns
+  the PERSISTENCE.md row parser, its one-row-per-table-line completeness check
+  and the writer-span resolution the new rows had to satisfy);
+- `tests/test_doc_context.py tests/test_skip_tests_doc_only.py` included in an
+  earlier 71-passed run, rc 0;
+- `ruff check . --select F` rc 0; `scripts/check_domains.py` rc 0 (no module
+  row moved); `scripts/regenerate_inventories.py --check` rc 0;
+  `scripts/regenerate_size_ratchet.py --check` rc 0 (the suite grew 303 → 701
+  lines, inside its band with no manifest change);
+  `scripts/v7next_adoption.py` rc 0 and `--release` rc 0;
+  `git diff --check` rc 0 and `git diff --check 9faccf31..HEAD` rc 0.
+
+The CI-shape battery and the `-m serial` pass are not re-run here: the lane's
+surfaces are one test module and two documents, and no runtime code changed.

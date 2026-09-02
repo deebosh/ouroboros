@@ -3472,7 +3472,12 @@ The durable data-plane inventory — every entity under `data/` with its
 schema_version, migration, retention, and reset decision — lives in
 [`docs/PERSISTENCE.md`](PERSISTENCE.md) (CPL-4), verify-paired with
 `tests/test_persistence_inventory.py`: the test AST-scans every runtime
-data-path writer and fails when a written path has no inventory row.
+data-path writer, resolves each segment to the name the source states
+(constants, literal `Path` chains, f-string text, prefixes helpers return,
+one-scope local flow) and fails when a NAMED path has no inventory row. A path
+it still cannot name stays a family wildcard, which certifies no exact row;
+those spellings are audited by equality in the test, so a new unresolvable one
+fails until it is named or audited in.
 
 ### 10.1 Continuity data-flow map
 
