@@ -25,6 +25,7 @@ import yaml
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 JOB = "system-e2e-mock"
+MIN_TIMEOUT_MINUTES = 30
 
 
 def _workflow() -> dict:
@@ -65,7 +66,13 @@ def test_the_scheduled_lane_never_runs_on_a_push_or_a_pull_request():
         "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
     ), condition
     assert job["runs-on"] == "ubuntu-latest"
-    assert int(job["timeout-minutes"]) > 0
+    # The budget must clear the suite, not merely exist. `> 0` accepted
+    # `timeout-minutes: 1`, which cancels the job mid-scenario and reports the
+    # same red as a real failure — the one thing a nightly lane nobody watches
+    # must not do. The floor is the measured walltime (~17 minutes for
+    # tests/system_e2e/ on the mock lane) plus room for a slow runner and for
+    # the scenarios a later wave adds; production sits at 40.
+    assert int(job["timeout-minutes"]) >= MIN_TIMEOUT_MINUTES
 
 
 def test_the_scheduled_lane_runs_the_keyless_suite_on_a_throwaway_root():
