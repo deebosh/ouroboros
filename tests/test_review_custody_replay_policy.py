@@ -929,6 +929,22 @@ def test_agent_session_config_refusal_is_zero_send_not_dispatched(tmp_path):
     assert not actor.get("late_result_pending")
 
 
+def test_native_pre_send_refusals_are_zero_send_not_dispatched():
+    """A native tool-round refusal raised BEFORE the first provider send (no
+    inspection registry; a bound below the first send) is a $0 retryable row,
+    never a settled paid attempt."""
+    from ouroboros.review_custody import _worker_exception_operation_state
+    from ouroboros.review_execution import ReviewRouteUnavailable
+
+    for code in ("native_inspection_unavailable", "native_bound_below_first_send"):
+        error = ReviewRouteUnavailable("refused before any send", code=code)
+        assert _worker_exception_operation_state(error, {}) == "not_dispatched", code
+    # Ends AFTER a paid round stay settled.
+    for code in ("native_transcript_cap_exceeded", "native_round_without_progress"):
+        error = ReviewRouteUnavailable("refused after a paid round", code=code)
+        assert _worker_exception_operation_state(error, {}) == "settled", code
+
+
 def test_post_stamp_checkpoint_refusal_cannot_be_relabelled_zero_send():
     """Missing capture metadata must not erase a failure after write-ahead."""
     from ouroboros.review_custody import _worker_exception_operation_state

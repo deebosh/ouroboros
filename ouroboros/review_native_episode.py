@@ -32,6 +32,7 @@ from ouroboros.deadline_utils import owner_deadline_exhausted, review_transport_
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.review_verdict_extraction import canonicalize_session_verdict
 from ouroboros.triad_review import default_output_contract, review_output_shape
+from ouroboros.utils import truncate_review_artifact
 from ouroboros.usage_accounting import (
     POSITIVE_PHYSICAL_ATTEMPT_STATES,
     physical_attempt_limit,
@@ -157,6 +158,14 @@ _EPISODE_TOOL_RESULT_CHAR_CAP = 120_000
 # Room kept below the bound for the landing notice itself: the notice must
 # always fit under the send bound it announces.
 _LANDING_RESERVE_CHARS = 512
+
+# Bound on the terminal-round copy kept on the episode facts (P1 forensics of
+# a bound/deadline end): a disclosure, never a second transcript.
+_TERMINAL_ROUND_FACT_CHARS = 8_000
+
+# Below this much room a tool result could carry nothing but its truncation
+# marker: the call is WITHHELD (not executed) instead of read-and-discarded.
+_RESULT_ROOM_FLOOR_CHARS = 256
 
 class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
     """Bounded native inspection episode for a configured-subagent api row.
@@ -332,12 +341,14 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         final_answer: Optional[str] = None
         last_content = ""  # the reviewer's latest prose — the product of an exhausted report episode
         landed = False
-        end_reason = "transcript_bound"
+        end_reason = "not_started"  # the true reason is set by whichever end the episode takes
         round_idx = 0
         transcript_chars = 0
         episode: Dict[str, Any] = {}
         try:
+            end_reason = "registry_unavailable"
             registry, schemas = self._inspection_registry(root, data_root or scratch)
+            end_reason = "transcript_bound"
             # The counter measures what every send actually carries: the
             # system instructions and the tool schemas ride EVERY provider
             # call, and tool-call argument objects accumulate in `messages`
@@ -456,9 +467,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 ]
                 if not content and not well_formed:
                     # PROGRESS FLOOR (P13: a floor, never a ceiling): a round
-                    # carrying neither prose nor one well-formed tool call is
-                    # malformed provider output — it adds nothing to the
-                    # transcript and would re-enter the paid send forever.
+                    # that carries tool calls but no well-formed one and no
+                    # prose is malformed provider output — it adds nothing to
+                    # the transcript and would re-enter the paid send forever.
+                    # (An EMPTY answer is different: it is the episode's honest
+                    # end and rides the ordinary empty-response rail above.)
                     end_reason = "round_without_progress"
                     break
                 assistant = dict(msg)
@@ -482,6 +495,23 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     messages.append({
                         "role": "tool", "tool_call_id": call_id, "content": result,
                     })
+            if final_answer is None and messages and messages[-1].get("role") != "user":
+                # The terminal round — the exact assistant envelope and the
+                # tool results that led to a bound/deadline end — is not
+                # reconstructible from the receipts alone (P1): keep a bounded
+                # copy of it on the episode facts, redacted like every other
+                # projected review artifact.
+                from ouroboros.observability import redact_projection
+
+                tail = []
+                for msg_item in reversed(messages):
+                    tail.insert(0, msg_item)
+                    if msg_item.get("role") == "assistant":
+                        break
+                episode["native_terminal_round"] = truncate_review_artifact(
+                    json.dumps(redact_projection(tail).value, ensure_ascii=False, default=str),
+                    _TERMINAL_ROUND_FACT_CHARS,
+                )
             if shape == "report" and not final_answer and last_content:
                 # A report is a product, not a verdict: the collected draft is
                 # delivered marked INCOMPLETE rather than discarded (the bound
@@ -513,7 +543,12 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             self._episode_usage = dict(total_usage)
             self._episode_usage.update({
                 "provider": str(total_usage.get("provider") or ""),
-                "resolved_model": str(total_usage.get("resolved_model") or slot.model),
+                # The slot model stands in for an unreported resolved model ONLY
+                # once a provider round actually ran: a pre-send refusal leaves
+                # the receipt keys empty, or the public execution wire would
+                # mint a native run for an episode that never sent anything.
+                "resolved_model": str(
+                    total_usage.get("resolved_model") or (slot.model if self._rounds_used else "")),
                 **episode,
                 "native_tool_receipts": list(self._tool_receipts),
                 # Provenance class of this delivery: the host SAW these reads.
@@ -565,7 +600,15 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         args: Optional[Dict[str, Any]] = None
         outcome = "executed"
         verdict = validation_by_id.get(call_id)
-        if verdict is not None and not getattr(verdict, "allows_execution", True):
+        if room < _RESULT_ROOM_FLOOR_CHARS:
+            # The round's earlier calls spent the room below the bound: a read
+            # whose result could not be returned is not performed at all.
+            outcome = "withheld"
+            result = (
+                "⚠️ RESULT WITHHELD: the episode transcript budget is spent; "
+                "answer now from what you have read."
+            )
+        elif verdict is not None and not getattr(verdict, "allows_execution", True):
             outcome = "refused"
             result = f"⚠️ TOOL_ARG_ERROR: {getattr(verdict, 'error', 'invalid arguments')}"
         elif name not in _INSPECTION_TOOL_NAMES:
@@ -589,17 +632,20 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 if len(result) > result_cap:
                     # Disclosed bound with a continuation handle — the reader
                     # keeps reading in chunks (read_file supports offset/limit),
-                    # so nothing is silently cut.
+                    # so nothing is silently cut. The marker is budgeted INSIDE
+                    # the cap: the whole returned message fits the room.
+                    marker = (
+                        " — the episode transcript budget is nearly spent;"
+                        " answer now from what you have read."
+                        if room < _EPISODE_TOOL_RESULT_CHAR_CAP else
+                        ". Continue reading the remainder in bounded"
+                        " chunks (read_file supports offset/limit)."
+                    )
+                    shown = max(0, result_cap - len(marker) - 64)
                     result = (
-                        result[:result_cap]
-                        + f"\n⚠️ RESULT TRUNCATED: showed {result_cap} of {len(result)} chars"
-                        + (
-                            " — the episode transcript budget is nearly spent;"
-                            " answer now from what you have read."
-                            if room < _EPISODE_TOOL_RESULT_CHAR_CAP else
-                            ". Continue reading the remainder in bounded"
-                            " chunks (read_file supports offset/limit)."
-                        )
+                        result[:shown]
+                        + f"\n⚠️ RESULT TRUNCATED: showed {shown} of {len(result)} chars"
+                        + marker
                     )
         # Host-observed evidence (bounded): which artifacts THIS episode
         # actually opened — disclosure, never a claim of full-surface coverage.

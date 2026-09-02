@@ -220,6 +220,8 @@ def _worker_exception_operation_state(
             "session_target_unparsable", "session_route_unconfigured",
             "custody_root_missing", "session_root_missing",
             "unknown_review_route", "review_route_not_implemented",
+            # Native tool-round refusals raised BEFORE the first provider send.
+            "native_inspection_unavailable", "native_bound_below_first_send",
         }:
             return "not_dispatched"
         return "settled"

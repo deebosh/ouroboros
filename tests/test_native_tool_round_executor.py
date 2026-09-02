@@ -284,6 +284,112 @@ def test_bound_below_the_first_send_is_a_typed_refusal_before_any_send(subject_r
     assert not llm2.calls
 
 
+def test_pre_send_refusal_never_projects_a_native_execution(subject_repo, tmp_path, monkeypatch):
+    """The receipt keys (resolved model/provider) are filled only from a real
+    send: a refusal before the first send hands the error actor its facts via
+    failure_custody, but the public execution wire must not mint a native run."""
+    import ouroboros.review_native_episode as native_episode
+    from ouroboros.review_execution_projection import review_executions_from_actor_usage
+
+    first_send = _first_send_chars(subject_repo)
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound",
+                        lambda *a, **k: first_send + 200)
+    llm = _ScriptedLLM([{"content": _VERDICT}])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "custody")
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        executor.execute()
+    assert exc.value.code == "native_bound_below_first_send"
+    custody = executor.failure_custody()
+    assert custody["delivery"] == "native_tool_rounds"
+    assert custody["native_end_reason"] == "bound_below_first_send" and custody["native_rounds"] == 0
+    assert custody["resolved_model"] == "" and custody["provider"] == ""
+    assert custody["native_custody_row"] == "written"
+    assert review_executions_from_actor_usage([{"usage": custody}]) == []
+    # A refusal AFTER a paid round keeps the slot model as the resolved stand-in
+    # (the historical success semantics) and therefore projects the run.
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: 900_000)
+    llm = _ScriptedLLM([{"tool_calls": ["junk"]}])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    with pytest.raises(ReviewRouteUnavailable):
+        executor.execute()
+    custody = executor.failure_custody()
+    assert custody["native_rounds"] == 1 and custody["resolved_model"] == "openai/fake-reviewer"
+    assert review_executions_from_actor_usage([{"usage": custody}]) == [
+        {"kind": "native", "model": "openai/fake-reviewer"},
+    ]
+
+
+def test_registry_failure_records_its_own_end_reason(subject_repo, tmp_path, monkeypatch):
+    """A pre-loop end (no inspection registry) must not read as a transcript-bound landing."""
+    def broken_registry(self, root, drive_root):
+        raise ReviewRouteUnavailable("no schemas", code="native_inspection_unavailable")
+
+    monkeypatch.setattr(NativeToolRoundReviewExecutor, "_inspection_registry", broken_registry)
+    llm = _ScriptedLLM([])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "custody")
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    assert exc.value.code == "native_inspection_unavailable"
+    fact = _episode_rows(tmp_path / "custody")
+    assert len(fact) == 1 and fact[0]["native_end_reason"] == "registry_unavailable"
+    assert fact[0]["native_rounds"] == 0 and not llm.calls
+
+
+def test_multi_call_round_withholds_reads_once_the_room_is_spent(subject_repo, monkeypatch):
+    """The room below the bound is enforced across the calls of ONE round: the
+    whole returned message (marker included) fits the room, and a call with no
+    room left is WITHHELD — not executed — with a typed marker."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    for name in ("a", "b", "c"):
+        (subject_repo / f"{name}.txt").write_text(name * 30_000, encoding="utf-8")
+    llm = _ScriptedLLM([
+        {"tool_calls": [
+            _tool_call("read_file", {"path": "a.txt"}, "c1"),
+            _tool_call("read_file", {"path": "b.txt"}, "c2"),
+            _tool_call("read_file", {"path": "c.txt"}, "c3"),
+        ]},
+        {"content": _VERDICT},
+    ])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    result = executor.execute()
+    assert result.raw_text == _VERDICT
+    usage = result.usage
+    assert usage["native_transcript_chars"] <= usage["native_transcript_bound"] == 50_000
+    outcomes = [r["outcome"] for r in usage["native_tool_receipts"]]
+    assert outcomes[0] == "executed" and "withheld" in outcomes
+    tool_msgs = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"]
+    # First read fits whole; the second is clamped to the room left; the third
+    # finds no useful room and is withheld without being executed.
+    assert "RESULT TRUNCATED" not in tool_msgs[0]["content"]
+    assert "RESULT TRUNCATED" in tool_msgs[1]["content"]
+    assert "RESULT WITHHELD" in tool_msgs[2]["content"]
+    assert outcomes == ["executed", "executed", "withheld"]
+    assert usage["native_landing_notified"] is True
+
+
+def test_terminal_round_is_kept_on_a_bound_end(subject_repo, tmp_path, monkeypatch):
+    """The exact assistant envelope + tool results that led to a bound end are
+    not reconstructible from the receipts: a bounded redacted copy rides the
+    episode facts and the custody row (P1)."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    llm = _ScriptedLLM(_ignores_landing())
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "custody")
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
+    with pytest.raises(ReviewRouteUnavailable):
+        executor.execute()
+    fact = _episode_rows(tmp_path / "custody")[0]
+    terminal = json.loads(fact["native_terminal_round"])
+    assert terminal[0]["role"] == "assistant" and terminal[-1]["role"] == "tool"
+    assert "greeting.txt" in json.dumps(terminal)
+    assert len(fact["native_terminal_round"]) <= 8_000
+    # A delivered episode keeps no terminal-round copy: the answer IS the record.
+    llm = _ScriptedLLM([{"content": _VERDICT}])
+    usage = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute().usage
+    assert "native_terminal_round" not in usage
+
+
 def test_round_without_progress_is_a_typed_malformed_end(subject_repo):
     """PROGRESS FLOOR: a round with neither prose nor one well-formed tool call
     adds nothing and would re-enter the paid send forever."""
