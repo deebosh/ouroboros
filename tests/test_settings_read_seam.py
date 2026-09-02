@@ -217,6 +217,32 @@ def test_owner_read_settings_raw_applies_the_same_normalization_as_load_settings
     assert RETIRED_GHOST not in raw
 
 
+def test_a_pinned_snapshot_that_changed_refuses_every_reader(isolated_settings, monkeypatch):
+    """One read primitive on both readers: under a strict benchmark pin the owner
+    reader refuses a changed snapshot exactly as the loader does, instead of quietly
+    serving the unverified file — and the context-fit route, which reads through the
+    loader, does not resolve a route from an unverified document either."""
+    from hashlib import sha256
+
+    from ouroboros import config as cfg
+    from ouroboros.context_fit import resolve_context_fit_route
+    from ouroboros.gateway.owner_settings import _owner_read_settings_raw
+
+    _seed(isolated_settings, LEGACY_OWNER_DOCUMENT)
+    monkeypatch.setenv(cfg.SETTINGS_INTEGRITY_ENV, "0" * 64)
+    for reader in (cfg.load_settings, _owner_read_settings_raw):
+        with pytest.raises(cfg.SettingsIntegrityError):
+            reader()
+    with pytest.raises(cfg.SettingsIntegrityError):
+        resolve_context_fit_route({"model": ""}, allow_fetch=False)
+
+    monkeypatch.setenv(cfg.SETTINGS_INTEGRITY_ENV, sha256(isolated_settings.read_bytes()).hexdigest())
+    assert _owner_read_settings_raw()["TOTAL_BUDGET"] == 77.0
+    assert cfg.load_settings()["TOTAL_BUDGET"] == 77.0
+    route, _evidence = resolve_context_fit_route({"model": ""}, allow_fetch=False)
+    assert route["model"]
+
+
 def test_the_colab_re_run_reads_the_drive_document_through_the_same_normalization(tmp_path):
     """The third reader (spec 4.3.5-7, the Colab fixture): the quickstart re-reads the
     Drive ``settings.json`` it wrote last session and hands it to ``build_colab_settings``

@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import json
 import logging
 import pathlib
 import threading
@@ -49,6 +48,7 @@ from ouroboros.config import DATA_DIR
 from ouroboros.config import SETTINGS_DEFAULTS as _SETTINGS_DEFAULTS
 from ouroboros.context_mode_compat import normalize_context_mode_compat
 from ouroboros.gateway._helpers import json_error, request_drive_root
+from ouroboros.settings_integrity import SettingsIntegrityError, read_settings_json_verified
 from ouroboros.utils import append_jsonl, atomic_write_json, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -220,18 +220,22 @@ def _owner_read_settings_raw() -> Dict[str, Any]:
     default while the legacy key it should have been promoted from sat untouched in the
     same mapping — and because these endpoints write the mapping back, the defaults the
     merge invented were persisted as owner choices and the rename migration never fired
-    again."""
+    again. The READ is the loader's too: one verified primitive, so a pinned benchmark
+    snapshot that changed refuses this reader exactly as it refuses ``load_settings``
+    instead of serving the unverified file as defaults-with-a-document. Only the
+    ratchets and the one-window context-pair persistence are skipped here."""
     from ouroboros import config as _config
 
     merged = dict(_SETTINGS_DEFAULTS)
     try:
-        if _config.SETTINGS_PATH.exists():
-            raw = json.loads(_config.SETTINGS_PATH.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                raw = normalize_context_mode_compat(
-                    raw, settings_path=_config.SETTINGS_PATH, warn_ambiguous=True,
-                )
-                merged.update(_config.normalize_settings_raw(raw))
+        raw = read_settings_json_verified(_config.SETTINGS_PATH)
+        if isinstance(raw, dict):
+            raw = normalize_context_mode_compat(
+                raw, settings_path=_config.SETTINGS_PATH, warn_ambiguous=True,
+            )
+            merged.update(_config.normalize_settings_raw(raw))
+    except SettingsIntegrityError:
+        raise
     except Exception:
         log.debug("Failed to read raw owner settings; using defaults", exc_info=True)
     return merged
