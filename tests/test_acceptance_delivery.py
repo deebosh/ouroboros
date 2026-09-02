@@ -1234,6 +1234,8 @@ def test_dispatched_at_floor_fact_lands_once_through_the_real_supervisor_path(mo
     (row,) = _rows(s.events, fact)
     assert row["native_rounds_estimate"] == 33 and row["floor_slots"] == 1 and row["surface"] == "task_acceptance"
     assert row["estimated_wave_usd"] > row["remaining_usd"] >= row["floor_wave_usd"] > 0
+    # By money only: the wave was at the floor, the launch was not.
+    assert row["wave_at_floor"] is True and row["launched_at_floor"] is False and row["launch_gate"] is None
     timing = _rows(s.events, "task_acceptance_review_timing")
     assert timing[-1][fact]["native_rounds_estimate"] == 33  # the timing-row carrier, once
     assert s.task_pacing.acceptance_native_rounds_estimate(again.tools._ctx) == 17
@@ -1251,8 +1253,14 @@ def test_a_refused_panel_in_the_floor_band_leaves_no_dispatched_at_floor_fact(mo
     s = _floor_band_native_panel(monkeypatch, tmp_path, _ROW_NATIVE)
     fact = s.task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
     sends = len(s.llm.calls)
+    short = s.task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
+                                         remaining_sec=1100.0, reserve_sec=100.0)
+    decision = s.task_pacing.launch_at_floor_payload(short, gate="improvement_pass", estimated_sec=5000.0)
 
     def _no_fact(result):
+        # A launch decision left by an improvement pass admitted at the floor was
+        # consumed at entry and is gone: it cannot leak onto a later panel.
+        assert getattr(s.first.tools._ctx, "_task_acceptance_launch_decision", None) is None
         assert result.aggregate_signal == "DEGRADED"
         drained = _drain_to_supervisor(s.event_queue, s.sup_ctx)
         assert not any(e.get("type") == fact for e in drained)
@@ -1260,11 +1268,13 @@ def test_a_refused_panel_in_the_floor_band_leaves_no_dispatched_at_floor_fact(mo
         assert not any(fact in row for row in _rows(s.events, "task_acceptance_review_timing"))
         assert len(s.llm.calls) == sends  # no reviewer was called
 
-    # (a) the SAME binding again: the wallet already claimed it → preclaim refusal.
+    # (a) the SAME binding again: the wallet already claimed it → preclaim refusal —
+    #     with the launch ALSO admitted at the floor (both flags would be true).
+    s.first.tools._ctx._task_acceptance_launch_decision = dict(decision)
     with s.ua.usage_scope(s.scope):
         _no_fact(s.loop_mod._execute_task_acceptance_panel(s.first))
     # (b) zero-physical refusal: the immutable core overflowed → refused before any send.
-    overflow = _acceptance_ctx(tmp_path, content="deliverable v2", fresh_result=False,
+    overflow = _acceptance_ctx(tmp_path, content="deliverable v2", fresh_result=False, launch_decision=dict(decision),
                                **{**s.common, "evidence": {**_ACCEPTANCE_PACKET, "__immutable_core_overflow__": True}})
     with s.ua.usage_scope(s.scope):
         _no_fact(s.loop_mod._execute_task_acceptance_panel(overflow))
@@ -1276,7 +1286,8 @@ def test_a_refused_panel_in_the_floor_band_leaves_no_dispatched_at_floor_fact(mo
         raise review_dispatch.TaskAcceptanceDispatchUnavailable("wallet_veto_for_test")
         yield  # pragma: no cover
 
-    vetoed = _acceptance_ctx(tmp_path, content="deliverable v3", fresh_result=False, **s.common)
+    vetoed = _acceptance_ctx(tmp_path, content="deliverable v3", fresh_result=False, launch_decision=dict(decision),
+                             **s.common)
     with monkeypatch.context() as m:
         m.setattr(review_dispatch, "bind_task_acceptance_paid_dispatch", _veto)
         with s.ua.usage_scope(s.scope):
@@ -1286,7 +1297,8 @@ def test_a_refused_panel_in_the_floor_band_leaves_no_dispatched_at_floor_fact(mo
     import ouroboros.review_substrate as rs
     from ouroboros.review_substrate import ReviewRunResult
 
-    unrouted = _acceptance_ctx(tmp_path, content="deliverable v4", fresh_result=False, **s.common)
+    unrouted = _acceptance_ctx(tmp_path, content="deliverable v4", fresh_result=False, launch_decision=dict(decision),
+                               **s.common)
     with monkeypatch.context() as m:
         m.setattr(rs, "run_review_request", lambda request, **kw: ReviewRunResult(
             request={"surface": "task_acceptance"}, actors=[{"slot_id": "t_actor", "status": "error",
@@ -1335,6 +1347,94 @@ def test_the_per_send_wallet_fence_still_binds_after_a_floor_admitted_dispatch(m
     projection = ua.usage_projection(tmp_path, root_task_id="root-delivery")
     spent = float(projection["limit_usd"]) - float(projection["remaining_known_usd"])
     assert projection["limit_usd"] == limit and 0.06 <= spent <= limit
+
+
+def test_a_floor_launch_by_time_is_disclosed_once_on_the_dispatch_fact(monkeypatch, tmp_path):
+    """Item 2(e): a real panel whose LAUNCH was admitted at the floor (deadline
+    reserve) and whose wave fits normally → exactly ONE fact, `launched_at_floor`
+    true with `launch_gate="review_launch"` and the launch seconds, the wave
+    fields showing the normal admission (`wave_at_floor` false) — and exactly
+    one supervisor-persisted row through the REAL event path."""
+    from ouroboros import loop as loop_mod, task_pacing
+    from ouroboros import usage_accounting as ua
+
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    _offline_env(monkeypatch, _ROW_API, _ROW_NATIVE)
+    _priced_offline_model(monkeypatch)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 2, scoped=True)
+    _real_panel(monkeypatch, llm, stub_gate=False)
+    scope = _root_scope(tmp_path, root_limit_usd=50.0)
+    _seed_root_ledger(scope)
+    event_queue, sup_ctx = _supervised(tmp_path)
+    short = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
+                                       remaining_sec=1100.0, reserve_sec=100.0)  # spendable 1000 s
+    decision = task_pacing.launch_at_floor_payload(short, estimated_sec=16275.0)  # the review launch's own
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project", event_queue=event_queue,
+                          launch_decision=decision)
+    with ua.usage_scope(scope):
+        result = loop_mod._execute_task_acceptance_panel(ctx)
+    assert result.aggregate_signal == "PASS"
+    fact = task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
+    for actor in result.actors:
+        assert actor["usage"][fact]["launched_at_floor"] is True
+    drained = _drain_to_supervisor(event_queue, sup_ctx)
+    assert [e["type"] for e in drained if e.get("type") == fact] == [fact]
+    (row,) = _rows(task_pacing.acceptance_timing_events_path(ctx.tools._ctx), fact)
+    assert row["launched_at_floor"] is True and row["launch_gate"] == "review_launch"
+    assert row["launch_estimated_sec"] == 16275.0 and row["launch_floor_sec"] == 200.0
+    assert row["launch_spendable_sec"] == 1000.0
+    assert row["wave_at_floor"] is False and row["native_rounds_estimate"] == 1 and row["floor_slots"] == 2
+    assert row["estimated_wave_usd"] == row["floor_wave_usd"] > 0 and row["remaining_usd"] == 50.0
+    timing = _rows(task_pacing.acceptance_timing_events_path(ctx.tools._ctx), "task_acceptance_review_timing")
+    assert timing[-1][fact]["launched_at_floor"] is True
+
+
+def test_a_floor_launch_and_a_floor_wave_are_one_fact_with_both_flags(monkeypatch, tmp_path):
+    """Item 2(g): the improvement pass left its floor-launch decision on the tool
+    context; the next panel's wave is at the floor too → ONE fact carrying both
+    (`launch_gate="improvement_pass"`, `wave_at_floor` true), exactly one
+    persisted row, and the decision consumed at entry."""
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    s = _floor_band_native_panel(monkeypatch, tmp_path, _ROW_NATIVE)
+    fact = s.task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
+    short = s.task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
+                                         remaining_sec=1100.0, reserve_sec=100.0)
+    again = _acceptance_ctx(tmp_path, content="deliverable v2", fresh_result=False, **s.common)
+    again.tools._ctx._task_acceptance_launch_decision = s.task_pacing.launch_at_floor_payload(
+        short, gate="improvement_pass", estimated_sec=5000.0, profile={"improvement_policy": "adaptive"})
+    with s.ua.usage_scope(s.scope):
+        result = s.loop_mod._execute_task_acceptance_panel(again)
+    assert result.aggregate_signal == "PASS"
+    assert getattr(again.tools._ctx, "_task_acceptance_launch_decision", None) is None  # consumed at entry
+    drained = _drain_to_supervisor(s.event_queue, s.sup_ctx)
+    assert [e["type"] for e in drained if e.get("type") == fact] == [fact]
+    (row,) = _rows(s.events, fact)
+    assert row["wave_at_floor"] is True and row["native_rounds_estimate"] == 33
+    assert row["launched_at_floor"] is True and row["launch_gate"] == "improvement_pass"
+    assert row["launch_estimated_sec"] == 10000.0 and row["launch_floor_sec"] == 400.0  # ×2 adaptive window
+    assert all(actor["usage"][fact] == {k: v for k, v in row.items() if k not in ("ts", "type", "surface", "task_id")}
+               for actor in result.actors)
+
+
+def test_the_one_fact_has_exactly_one_emission_site_after_the_paid_seam():
+    """Item 2(d) at the source: nothing in `_apply_task_acceptance_result` (the
+    improvement-pass gate, the dialogue-terminal / empty-capsule / fence-reopen
+    branches) emits the fact; the only emitter is the panel, after
+    `bind_task_acceptance_paid_dispatch` and the `stamp.fired` check."""
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parents[1] / "ouroboros" / "acceptance_dialogue.py").read_text(encoding="utf-8")
+    emits = [i for i in range(len(src)) if src.startswith('"type": task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR', i)]
+    assert len(emits) == 1
+    panel = src.index("def _execute_task_acceptance_panel(")
+    seam = src.index("with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:", panel)
+    fired = src.index('getattr(stamp, "fired", False)', seam)
+    assert panel < seam < fired < emits[0]
+    apply = src.index("def _apply_task_acceptance_result(")
+    apply_end = src.index("\ndef ", apply + 1)
+    assert "emit_review_event" not in src[apply:apply_end] and "record_launch_at_floor" not in src
 
 
 # ---------------------------------------------------------------------------
