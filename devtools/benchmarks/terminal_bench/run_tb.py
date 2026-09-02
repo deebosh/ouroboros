@@ -1180,9 +1180,21 @@ def main(argv: list[str] | None = None) -> int:
                 light_model=args.light_model, disable_agent_web=bool(args.disable_agent_web),
                 settings=host_settings,
             )
-            # Typed provenance: the configured triad rows this container cannot run.
-            final["triad_rows_not_executable_in_container"] = triad_rows_not_executable_in_container(
-                args.model, host_settings)
+            # Typed provenance: the configured triad rows this container cannot run —
+            # on the manifest, as a metadata comment, and (owner R40) said ONCE, loudly,
+            # at admission: the run continues, but the operator must not learn this
+            # from the artifacts afterwards.
+            not_executable = triad_rows_not_executable_in_container(args.model, host_settings)
+            final["triad_rows_not_executable_in_container"] = not_executable
+            if not_executable:
+                print(
+                    "[run_tb] WARNING: the configured reviewer triad carries agent-session rows the "
+                    f"task container CANNOT run: {', '.join(not_executable)}. A Terminal-Bench container "
+                    "has no harness CLI/daemon and no harness credentials, so these rows are not "
+                    "declared as used models and their acceptance seat degrades typed inside the "
+                    "container. Configure api/native triad rows for a submittable run.",
+                    file=sys.stderr,
+                )
         except ValueError as exc:
             final.update({
                 "outcome": "refused", "exit_code": 1,

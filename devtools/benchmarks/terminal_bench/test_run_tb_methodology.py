@@ -25,8 +25,13 @@ def _hermetic_process_environment():
     `benchmark-scope-1` contamination class). Every test here runs on a
     snapshot of the environment that is restored afterwards, whatever it wrote —
     and starts WITHOUT the operator shell's reviewer panel or legacy comma-list
-    keys (mirroring tests/conftest.py's `_scrub_inherited_subagent_selection`),
-    so a panel-reading test here is hermetic against the shell."""
+    keys, in the spirit of tests/conftest.py's
+    `_scrub_inherited_subagent_selection` but with a deliberately different key
+    set: conftest drops the subagent roster, the account pin and the structured
+    panel; this suite reads BOTH panel forms, so it drops the structured panel
+    AND the legacy comma-list keys (`OUROBOROS_REVIEW_MODELS`,
+    `OUROBOROS_SCOPE_REVIEW_MODELS`, `OUROBOROS_SCOPE_REVIEW_MODEL`). A
+    panel-reading test here is hermetic against the shell either way."""
     saved = dict(os.environ)
     for key in ("OUROBOROS_REVIEWER_SLOTS", "OUROBOROS_REVIEW_MODELS",
                 "OUROBOROS_SCOPE_REVIEW_MODELS", "OUROBOROS_SCOPE_REVIEW_MODEL"):
@@ -436,12 +441,14 @@ _PANEL_WITH_TWO_SESSIONS = {
 }
 
 
-def test_run_manifest_and_metadata_carry_the_rows_the_container_cannot_run(tmp_path, monkeypatch):
+def test_run_manifest_and_metadata_carry_the_rows_the_container_cannot_run(tmp_path, monkeypatch, capsys):
     """End to end through `main` (command generation, no harbor): the durable
     `run_manifest.json` carries `extra.triad_rows_not_executable_in_container`
     with the session rows' targets verbatim and in row order — a target with
-    its own `/` (`cursor=openai/gpt-5`) included — and `metadata.yaml` carries
-    the same list as a comment while declaring no session row as a model."""
+    its own `/` (`cursor=openai/gpt-5`) included — `metadata.yaml` carries the
+    same list as a comment while declaring no session row as a model, and
+    (owner R40) admission prints ONE loud stderr warning naming each row and
+    the typed degradation while the run continues."""
     model = "openai/gpt-5.5"
     run_root = tmp_path / "run"
     settings = tmp_path / "settings.json"
@@ -463,6 +470,28 @@ def test_run_manifest_and_metadata_carry_the_rows_the_container_cannot_run(tmp_p
     assert '# triad_rows_not_executable_in_container: ["codex=gpt-5.6-sol", "cursor=openai/gpt-5"]' in meta
     assert 'model_name: "codex' not in meta and 'model_name: "cursor' not in meta
     assert f'model_name: "{model}"' in meta and 'role: "agent+commit_review_triad"' in meta
+    err = capsys.readouterr().err
+    assert err.count("[run_tb] WARNING: the configured reviewer triad carries agent-session rows") == 1
+    assert "codex=gpt-5.6-sol, cursor=openai/gpt-5" in err and "degrades typed" in err
+    assert "Configure api/native triad rows" in err
+
+
+def test_an_api_only_panel_prints_no_container_warning(tmp_path, monkeypatch, capsys):
+    """The R40 warning is for session rows only: an api-only panel admits silently."""
+    run_root = tmp_path / "run"
+    settings = tmp_path / "settings.json"
+    api_only = {**_PANEL_WITH_TWO_SESSIONS, "triad": [_PANEL_WITH_TWO_SESSIONS["triad"][0]]}
+    settings.write_text(json.dumps({"OUROBOROS_REVIEWER_SLOTS": json.dumps(api_only)}), encoding="utf-8")
+    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
+    monkeypatch.setattr(run_tb, "harbor_version", lambda _binary: "test-harbor")
+    assert run_tb.main([
+        "--model", "openai/gpt-5.5", "--allow-low-k", "--allow-dirty-seed",
+        "--run-root", str(run_root), "--submission-root", str(tmp_path / "submission"),
+        "--settings-path", str(settings),
+    ]) == 0
+    assert "[run_tb] WARNING: the configured reviewer triad" not in capsys.readouterr().err
+    manifest = json.loads((run_root / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["extra"]["triad_rows_not_executable_in_container"] == []
 
 
 def test_metadata_parses_the_panel_under_the_container_roster(monkeypatch):
