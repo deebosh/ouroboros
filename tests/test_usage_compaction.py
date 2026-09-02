@@ -21,6 +21,7 @@ import decimal
 import errno
 import hashlib
 import json
+import logging
 import os
 import pathlib
 import shutil
@@ -727,6 +728,30 @@ def test_a_hold_lost_while_the_temp_is_written_refuses_the_replace(data_root):
     assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
     cost, bound = _decimal_money(rows)
     assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
+
+
+def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, monkeypatch, caplog):
+    """Where the lock directory takes no kernel locks the monetary lock is a
+    name protocol only — exclusion the pass cannot prove — so compaction
+    refuses with a disclosed reason and the ledger stays byte-identical, while
+    appends keep working under the name protocol (disclosed best effort)."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    before = ledger_path.read_bytes()
+    monkeypatch.setattr(
+        platform_layer, "kernel_file_locks_enforced", lambda path: False, raising=False)
+    with caplog.at_level(logging.WARNING, logger="ouroboros.usage_compaction"):
+        assert _compact(data_root) is None
+    assert ledger_path.read_bytes() == before
+    assert not (data_root / "archive").exists()
+    assert any("name tier" in record.getMessage() for record in caplog.records)
+    # The reserve-path trigger refuses the same way, and the append it serves lands.
+    monkeypatch.setattr("ouroboros.config.USAGE_LEDGER_COMPACT_BYTES", 1)
+    uc._COMPACT_ATTEMPTS.clear()
+    _settle(data_root, cost=0.5, cost_final=True)
+    rows = _ledger_rows(data_root)
+    assert not any(row.get("kind") == "usage_baseline" for row in rows)
+    assert len(rows) == len(before.splitlines()) + 3  # reserved, dispatched, settled
 
 
 

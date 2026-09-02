@@ -61,12 +61,10 @@ def local_zoneinfo():
 
 def is_container_env() -> bool:
     """Return whether explicit env or Docker sentinel indicates a container."""
-    if os.environ.get("OUROBOROS_CONTAINER") == "1":
-        return True
     # /.dockerenv is Docker's Linux sentinel.
-    if IS_LINUX and pathlib.Path("/.dockerenv").exists():
-        return True
-    return False
+    return os.environ.get("OUROBOROS_CONTAINER") == "1" or (
+        IS_LINUX and pathlib.Path("/.dockerenv").exists()
+    )
 
 
 def bootstrap_process_path() -> list[str]:
@@ -169,10 +167,51 @@ def _lock_identity(target: "int | pathlib.Path") -> tuple:
     return (info.st_ino, info.st_dev, info.st_mtime_ns)
 
 
-# Kernel answers meaning "the lock is HELD by someone", as opposed to "this
-# filesystem cannot take kernel locks at all" (bare NFS and friends), which
-# degrades to the name-protocol best effort instead of refusing forever.
+# Kernel answers meaning "the lock is HELD by someone": stand down and
+# re-contend. On the enforced tier EVERY other refusal fails closed — a
+# descriptor without its kernel lock is not a hold.
 _LOCK_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK})
+# Kernel answers that the FILESYSTEM takes no kernel locks at all (bare NFS
+# and friends): the only evidence that selects the name tier.
+_LOCK_UNSUPPORTED_ERRNOS = frozenset({errno.ENOLCK, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
+_KERNEL_LOCK_TIER: dict = {}  # lock directory -> kernel locks enforced there
+
+
+def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
+    """Capability predicate: are locks in ``lock_path``'s directory kernel-
+    enforced (flock / LockFileEx held on the fd) or name-only?  Decided ONCE
+    per directory by locking a scratch file there — never by a refusal on a
+    live acquisition: only the kernel's own "this filesystem cannot" selects
+    the name tier; an unprobeable directory and every other answer keep the
+    enforced tier, where a refused live lock fails closed.  Name-tier locks
+    run the O_EXCL name protocol alone (re-check-then-unlink eviction, no
+    kernel exclusion): disclosed best effort — the monetary compaction pass
+    refuses to run there while ordinary appends continue."""
+    directory = os.path.realpath(str(pathlib.Path(lock_path).parent))
+    tier = _KERNEL_LOCK_TIER.get(directory)
+    if tier is None:
+        probe = os.path.join(directory, f".kernel-lock-probe.{os.getpid()}.{time.time_ns()}")
+        try:
+            fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        except OSError:
+            log.debug("Cannot probe kernel lock support under %s", directory, exc_info=True)
+            return True  # undecided: enforced now, probed again next time
+        try:
+            file_lock_exclusive_nb(fd)
+            file_unlock(fd)
+            tier = True
+        except OSError as exc:
+            tier = exc.errno not in _LOCK_UNSUPPORTED_ERRNOS
+        finally:
+            os.close(fd)
+            try:
+                os.unlink(probe)
+            except OSError:
+                log.debug("Kernel-lock probe %s left behind", probe, exc_info=True)
+        if not tier:
+            log.warning("No kernel file locks under %s: locks there use the name protocol only", directory)
+        _KERNEL_LOCK_TIER[directory] = tier
+    return tier
 
 
 def acquire_exclusive_file_lock(
@@ -184,33 +223,40 @@ def acquire_exclusive_file_lock(
     poll_sec: float = 0.05,
     owner_aware_stale: bool = False,
 ) -> Optional[int]:
-    """Acquire a portable lockfile; the returned descriptor also HOLDS a
-    kernel lock (flock / LockFileEx), so exclusion is kernel-enforced on the
-    fd rather than resting on the O_EXCL name protocol alone.
+    """Acquire a portable lockfile.  On the enforced tier
+    (:func:`kernel_file_locks_enforced`) the returned descriptor HOLDS a
+    kernel lock (flock / LockFileEx): exclusion rests on the fd, not on the
+    O_EXCL name alone, and a kernel refusal that is not contention fails
+    CLOSED — no descriptor, our own file removed.  The name tier is selected
+    by that predicate, never by a refusal.
 
     Authority streams opt into ``owner_aware_stale`` so elapsed time alone
     never steals a lock from a live writer; a dead/malformed legacy owner
     still recovers through the stale-age path.  POSIX evicts a stale lock
     only UNDER a held flock on the very fd it judged, re-checking that the
     path still names that inode: of two racing reclaimers at most one can
-    evict.  Windows cannot unlink an open file (and a filesystem may lack
-    kernel locks); those keep the re-check-then-unlink shape without the held
-    lock — best effort, chosen by the platform predicate, disclosed.
-    """
+    evict.  Windows cannot unlink an open file: it re-checks the path after
+    closing its probe, and a freshly won lock — held open by its owner — is
+    undeletable there.  The name tier re-checks then unlinks with no hold:
+    best effort, disclosed."""
     lock_path = pathlib.Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    enforced = kernel_file_locks_enforced(lock_path)
     started = time.time()
     while (time.time() - started) < timeout_sec:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            try:
-                file_lock_exclusive_nb(fd)
-            except OSError as exc:
-                if exc.errno in _LOCK_HELD_ERRNOS:
-                    os.close(fd)  # a racing evictor's probe kernel-locked the
-                    time.sleep(poll_sec)  # file we created: the name alone is
-                    continue  # not ownership — stand down and re-contend
-                log.debug("No kernel lock support at %s", lock_path, exc_info=True)
+            if enforced:
+                try:
+                    file_lock_exclusive_nb(fd)
+                except OSError as exc:
+                    if exc.errno in _LOCK_HELD_ERRNOS:
+                        os.close(fd)  # a racing evictor's probe kernel-locked the
+                        time.sleep(poll_sec)  # file we created: the name alone is
+                        continue  # not ownership — stand down and re-contend
+                    release_exclusive_file_lock(lock_path, fd)  # ours, yet never a hold
+                    log.warning("Kernel lock refused at %s (errno %s): no lock taken", lock_path, exc.errno)
+                    return None
             try:
                 text = metadata or f"pid={os.getpid()} ts={time.time()}\n"
                 os.write(fd, text.encode("utf-8"))
@@ -218,7 +264,7 @@ def acquire_exclusive_file_lock(
                 log.debug("Failed to write lock metadata to %s", lock_path, exc_info=True)
             return fd
         except (FileExistsError, PermissionError):
-            stale = evict_flockless = False
+            stale = refused = None
             try:
                 probe = os.open(str(lock_path), os.O_RDONLY)
                 try:
@@ -234,27 +280,26 @@ def acquire_exclusive_file_lock(
                     # while flock-holding it: between judgement and unlink the
                     # owner may release and a third writer re-create the lock —
                     # removing THAT file puts two writers on one authority.
-                    if stale and not IS_WINDOWS:
+                    if stale and enforced and not IS_WINDOWS:
                         try:
                             file_lock_exclusive_nb(probe)
-                        except OSError as exc:
-                            if exc.errno in _LOCK_HELD_ERRNOS:
-                                stale = False  # a live kernel hold: not abandoned
-                            else:
-                                evict_flockless = True
+                        except OSError as exc:  # a live kernel hold, or a refusal:
+                            stale = False  # either way, never evict without the hold
+                            refused = None if exc.errno in _LOCK_HELD_ERRNOS else exc
                         else:
                             if _lock_identity(lock_path) == judged:
                                 os.unlink(str(lock_path))  # under the held flock
                             continue
                 finally:
                     os.close(probe)
-                if stale and (IS_WINDOWS or evict_flockless) and _lock_identity(
-                    lock_path
-                ) == judged:
+                if stale and (IS_WINDOWS or not enforced) and _lock_identity(lock_path) == judged:
                     lock_path.unlink()
                     continue
             except Exception:
                 log.debug("Failed to inspect/remove stale lock %s", lock_path, exc_info=True)
+            if refused is not None:
+                log.warning("Kernel lock refused on stale %s (%s): no lock taken", lock_path, refused)
+                return None
             time.sleep(poll_sec)
         except Exception:
             log.warning("Failed to acquire lock at %s", lock_path, exc_info=True)
@@ -266,13 +311,11 @@ def refresh_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int])
     """Renew a HELD lock's staleness clock; report whether it is still OURS.
 
     A critical section that legitimately outlives ``stale_sec`` (a monetary
-    compaction pass) must keep the lockfile young for acquirers that judge by
-    age alone.  The return value is an OWNERSHIP verdict, not a courtesy:
-    ``False`` means the path no longer names the descriptor we hold (evicted,
-    deleted, replaced — however atomically), so the caller must abandon its
-    work rather than finish beside a second writer.  A stolen lock is never
-    refreshed on the thief's behalf.
-    """
+    compaction pass) keeps the lockfile young for acquirers that judge by age
+    alone.  The return value is an OWNERSHIP verdict, not a courtesy: ``False``
+    means the path no longer names the descriptor we hold (evicted, deleted,
+    replaced — however atomically), so the caller must abandon its work rather
+    than finish beside a second writer.  A stolen lock is never refreshed."""
     if lock_fd is None:
         return False
     held = _lock_identity(lock_fd)
@@ -290,11 +333,10 @@ def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int])
     """Release a lock acquired by :func:`acquire_exclusive_file_lock`: unlink
     OUR lock file or nothing at all (a hold evicted as stale and re-taken must
     not delete the new owner's lock on its way out).  POSIX unlinks BEFORE the
-    close — under the still-held kernel lock, so no reclaimer can be evicting
-    the same file between the re-check and the unlink.  Windows cannot unlink
-    an open file: it re-checks the path after the close, best effort, by the
-    platform predicate.
-    """
+    close — under the still-held kernel lock on the enforced tier, so no
+    reclaimer can be evicting the same file between re-check and unlink.
+    Windows cannot unlink an open file: it re-checks the path after the close,
+    protected by the new owner's open handle."""
     lock_path = pathlib.Path(lock_path)
     if lock_fd is None:
         return
@@ -373,14 +415,8 @@ def _broadcast_windows_environment_change() -> None:
         import ctypes
 
         result = ctypes.c_ulong()
-        ctypes.windll.user32.SendMessageTimeoutW(
-            0xFFFF,  # HWND_BROADCAST
-            0x001A,  # WM_SETTINGCHANGE
-            0,
-            "Environment",
-            0x0002,  # SMTO_ABORTIFHUNG
-            5000,
-            ctypes.byref(result),
+        ctypes.windll.user32.SendMessageTimeoutW(  # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG
+            0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, ctypes.byref(result),
         )
     except Exception:
         pass
@@ -403,11 +439,7 @@ def pid_lock_acquire(path: str) -> bool:
     fd_obj = None
     try:
         fd_obj = open(path, "w")
-        if IS_WINDOWS:
-            _win32_lock(fd_obj.fileno(), exclusive=True, blocking=False)
-        else:
-            import fcntl
-            fcntl.flock(fd_obj, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        file_lock_exclusive_nb(fd_obj.fileno())
         fd_obj.write(str(os.getpid()))
         fd_obj.flush()
         # Promote to global only after lock and PID write both succeed.
@@ -426,17 +458,10 @@ def pid_lock_release(path: str) -> None:
     """Release the PID lock."""
     global _lock_fd
     if _lock_fd is not None:
-        if IS_WINDOWS:
-            try:
-                _win32_unlock(_lock_fd.fileno())
-            except Exception:
-                pass
-        else:
-            import fcntl
-            try:
-                fcntl.flock(_lock_fd, fcntl.LOCK_UN)
-            except Exception:
-                pass
+        try:
+            file_unlock(_lock_fd.fileno())
+        except Exception:
+            pass
         try:
             _lock_fd.close()
         except Exception:
@@ -590,10 +615,8 @@ def _win32_lock(fd: int, *, exclusive: bool = True, blocking: bool = True) -> No
     OVERLAPPED = _win32_overlapped_class()
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.LockFileEx.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
-        wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(OVERLAPPED),
-    ]
+    kernel32.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(OVERLAPPED)]
     kernel32.LockFileEx.restype = wintypes.BOOL
 
     hfile = _msvcrt.get_osfhandle(fd)
@@ -607,7 +630,9 @@ def _win32_lock(fd: int, *, exclusive: bool = True, blocking: bool = True) -> No
     # Win32 whole-file lock pattern: huge range from offset 0.
     if not kernel32.LockFileEx(hfile, flags, 0, 0xFFFFFFFF, 0xFFFFFFFF, ctypes.byref(ov)):
         err = ctypes.get_last_error()
-        raise OSError(f"LockFileEx failed (error {err})")
+        # winerror -> errno (ERROR_LOCK_VIOLATION 33 -> EACCES): the acquisition
+        # tells contention from a refusal instead of reading an errno-less error.
+        raise OSError(0, f"LockFileEx failed (error {err})", None, err)
 
     _win32_overlapped[fd] = (hfile, ov)
 
@@ -624,10 +649,8 @@ def _win32_unlock(fd: int) -> None:
     OVERLAPPED = _win32_overlapped_class()
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.UnlockFileEx.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD,
-        wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(OVERLAPPED),
-    ]
+    kernel32.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                      wintypes.DWORD, ctypes.POINTER(OVERLAPPED)]
     kernel32.UnlockFileEx.restype = wintypes.BOOL
 
     hfile, ov = entry
@@ -967,23 +990,11 @@ def kill_process_on_port(port: int) -> None:
     """Kill any process listening on the given TCP port."""
     try:
         if IS_WINDOWS:
-            res = _hidden_run(
-                ["netstat", "-ano"],
-                capture_output=True, text=True, timeout=5,
-            )
-            for line in res.stdout.splitlines():
-                if f":{port}" in line and "LISTENING" in line:
-                    parts = line.strip().split()
-                    if parts:
-                        try:
-                            pid = int(parts[-1])
-                            if pid != os.getpid():
-                                _hidden_run(
-                                    ["taskkill", "/F", "/PID", str(pid)],
-                                    capture_output=True,
-                                )
-                        except (ValueError, ProcessLookupError, PermissionError):
-                            pass
+            res = _hidden_run(["netstat", "-ano"], capture_output=True, text=True, timeout=5)
+            listeners = [
+                line.split()[-1] for line in res.stdout.splitlines()
+                if f":{port}" in line and "LISTENING" in line and line.split()
+            ]
         else:
             # -sTCP:LISTEN scopes the sweep to the listener (a bare tcp:PORT
             # selector also matches ESTABLISHED client sockets — on browser
@@ -993,13 +1004,14 @@ def kill_process_on_port(port: int) -> None:
                 ["lsof", "-nP", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
                 capture_output=True, text=True, timeout=5,
             )
-            for pid_str in res.stdout.strip().split():
-                try:
-                    pid = int(pid_str)
-                    if pid != os.getpid():
-                        os.kill(pid, 9)
-                except (ValueError, ProcessLookupError, PermissionError):
-                    pass
+            listeners = res.stdout.split()
+        for pid_str in listeners:
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            if pid != os.getpid():
+                force_kill_pid(pid)
     except Exception:
         pass
 
@@ -1069,12 +1081,7 @@ def embedded_node_candidates(base_dir: pathlib.Path) -> List[pathlib.Path]:
 def node_distribution_platform() -> str:
     """Return the Node.js archive platform key supported by Ouroboros."""
     machine = platform.machine().strip().lower()
-    architecture = {
-        "amd64": "x64",
-        "x86_64": "x64",
-        "arm64": "arm64",
-        "aarch64": "arm64",
-    }.get(machine, "")
+    architecture = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(machine, "")
     if IS_WINDOWS:
         return "win32-x64" if architecture == "x64" else ""
     if IS_MACOS and architecture:
@@ -1126,17 +1133,15 @@ def bundled_resource_ancestor_bases(executable: "str | pathlib.Path | None" = No
 def bundled_resource_bases() -> List[pathlib.Path]:
     """Roots to search for a resource shipped INSIDE the packaged bundle.
 
-    SSOT for every bundled-payload lookup, because the process that consumes a
-    bundled payload is usually NOT the frozen launcher. In a packaged install the
-    launcher runs the server/CLI as a SEPARATE child of the embedded interpreter,
-    out of the launcher-managed repo under the data dir: that child has no
-    ``sys._MEIPASS`` and its ``__file__`` parent is the managed repo, so both
-    historical bases miss and every bundled payload silently reads as absent.
-    The launcher therefore hands the bundle root down by value in
-    ``OUROBOROS_BUNDLE_DIR`` and it is searched FIRST. The other two bases stay
-    for the frozen process itself and for the dev/source layout (payloads sit at
-    the repo root, two levels up from this module).
-    """
+    SSOT for every bundled-payload lookup, because the consumer is usually NOT
+    the frozen launcher: a packaged install runs the server/CLI as a SEPARATE
+    child of the embedded interpreter out of the launcher-managed repo under
+    the data dir — no ``sys._MEIPASS``, a ``__file__`` parent that is the
+    managed repo — so both historical bases miss and every bundled payload
+    silently reads as absent. The launcher therefore hands the bundle root
+    down by value in ``OUROBOROS_BUNDLE_DIR``, searched FIRST; the other bases
+    serve the frozen process itself and the dev/source layout (payloads sit at
+    the repo root, two levels up from this module)."""
     bases: List[pathlib.Path] = []
     env_base = str(os.environ.get(BUNDLE_DIR_ENV) or "").strip()
     if env_base:
@@ -1377,10 +1382,7 @@ def create_kill_on_close_job() -> Optional[Any]:
         info = _ExtendedLimitInfo()
         info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         ok = _kernel32.SetInformationJobObject(
-            handle,
-            _JOBOBJECTINFOCLASS_EXTENDED,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
+            handle, _JOBOBJECTINFOCLASS_EXTENDED, ctypes.byref(info), ctypes.sizeof(info),
         )
         if not ok:
             log.warning("SetInformationJobObject failed")
@@ -1472,14 +1474,12 @@ def resume_process(pid: int) -> bool:
 
 
 # Node runtime health/policy moved to ouroboros/node_runtime.py (its own module:
-# the policy grew past what a cross-platform primitives file should hold, and
-# the 1600-line module gate agrees). The re-export is a PEP 562 module
-# __getattr__ rather than an eager from-import: node_runtime itself imports
+# the policy outgrew a cross-platform primitives file). The re-export is a PEP
+# 562 module __getattr__ rather than an eager from-import: node_runtime imports
 # this module at module level, and an eager import back from HERE re-entered a
 # partially initialized node_runtime whenever node_runtime was imported first
 # (triad finding, all three phase-C reviewers). Lazy resolution keeps both
-# import orders sound while every existing importer (preflight_node, skill
-# surfaces, the interpreter resolver, claudexor_runtime) keeps its
+# import orders sound while every importer keeps its
 # `from ouroboros.platform_layer import <name>` spelling unchanged.
 _NODE_RUNTIME_REEXPORTS = (
     "NodeRuntimeHealth",

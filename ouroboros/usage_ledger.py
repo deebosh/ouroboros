@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 
 LEDGER_REL = pathlib.Path("state/usage_attempts.jsonl")
 QUARANTINE_REL = pathlib.Path("state/usage_attempts.quarantine.jsonl")
+LOCK_REL = pathlib.Path("state/usage_attempts.lock")  # the ONE monetary lock
 # The ONE directory a baseline header may name (CPL4-C6). The substrate owns
 # it because the substrate is what decides a row is well formed: a reference
 # out of this directory is corruption, not a reader's problem.
@@ -39,7 +40,7 @@ _ARCHIVE_SEGMENT_PREFIX = ARCHIVE_SEGMENT_DIR_REL.as_posix() + "/"
 _TERMINAL = frozenset({"settled", "unresolved", "released"})
 
 __all__ = (
-    "LEDGER_REL", "QUARANTINE_REL", "UsageAccountingError", "UsageLedgerCorrupt",
+    "LEDGER_REL", "LOCK_REL", "QUARANTINE_REL", "UsageAccountingError", "UsageLedgerCorrupt",
 )
 
 
@@ -217,7 +218,7 @@ def _locked(root: pathlib.Path) -> Iterator[Callable[[], bool]]:
     # re-reads the whole usage_attempts.jsonl under this lock — ~0.5s hold at 20MB),
     # failing healthy tasks with UsageAccountingError at >=10 concurrent workers.
     # Waiting longer is always correct here; the transaction itself stays atomic.
-    with _named_lock(root, "usage_attempts.lock", timeout_sec=45.0, stale_sec=90.0) as heartbeat:
+    with _named_lock(root, LOCK_REL.name, timeout_sec=45.0, stale_sec=90.0) as heartbeat:
         yield heartbeat
 
 

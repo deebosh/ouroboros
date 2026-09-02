@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import os
 import threading
 import time
@@ -212,3 +213,131 @@ def test_two_racing_reclaimers_never_yield_two_holders(tmp_path, monkeypatch):
     assert len(holders) == 1, "two writers hold one monetary lock"
     assert lock_path.exists()
     release_exclusive_file_lock(lock_path, holders[0])
+
+
+# --- Tiers: kernel-enforced or name-only, chosen by predicate, never by a refusal
+
+
+def _tier(monkeypatch, enforced):
+    monkeypatch.setattr(
+        platform_layer, "kernel_file_locks_enforced", lambda path: enforced, raising=False,
+    )
+
+
+def _refusing(code):
+    def refuse(fd):
+        raise OSError(code, "injected kernel refusal")
+    return refuse
+
+
+def test_a_kernel_refusal_that_is_not_contention_fails_closed(tmp_path, monkeypatch):
+    """On the enforced tier a descriptor the kernel would not lock is not a
+    hold: the acquisition answers None promptly (not after the timeout) and
+    removes the file it created, instead of degrading to the name protocol —
+    where the round-3 reclaimer race lives again."""
+    lock_path = tmp_path / "state.lock"
+    _tier(monkeypatch, True)
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", _refusing(errno.ENOLCK))
+    started = time.time()
+
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=5.0, poll_sec=0.01)
+
+    assert fd is None
+    assert time.time() - started < 2.0
+    assert not lock_path.exists()
+
+
+def test_a_stale_lock_is_never_evicted_without_the_kernel_hold(tmp_path, monkeypatch):
+    """Eviction happens only under a held kernel lock on the judged fd: a
+    refusal of that hold that is not contention leaves the stale file where
+    it is and fails the acquisition closed — never unlink-by-name instead."""
+    lock_path = tmp_path / "state.lock"
+    lock_path.write_text("pid=424242 ts=0\n", encoding="utf-8")
+    os.utime(lock_path, (0.0, 0.0))
+    monkeypatch.setattr(platform_layer, "pid_is_alive", lambda pid: False)
+    _tier(monkeypatch, True)
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", _refusing(errno.EIO))
+
+    fd = acquire_exclusive_file_lock(
+        lock_path, timeout_sec=1.0, stale_sec=1.0, poll_sec=0.01, owner_aware_stale=True,
+    )
+
+    assert fd is None
+    assert lock_path.read_text(encoding="utf-8") == "pid=424242 ts=0\n"
+
+
+def test_the_name_tier_is_chosen_by_the_predicate_not_by_a_refusal(tmp_path, monkeypatch):
+    """Where the predicate says the filesystem takes no kernel locks, the name
+    protocol runs alone and NO kernel call is attempted — so a refusal can
+    never be what decides the tier. Abandoned locks are still reclaimed there
+    by the disclosed re-check-then-unlink shape."""
+    lock_path = tmp_path / "state.lock"
+    _tier(monkeypatch, False)
+    kernel_calls: list = []
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", kernel_calls.append)
+
+    fd = acquire_exclusive_file_lock(lock_path, metadata="pid=old ts=0\n")
+    assert fd is not None and kernel_calls == []
+    assert refresh_exclusive_file_lock(lock_path, fd) is True
+    release_exclusive_file_lock(lock_path, fd)
+    assert not lock_path.exists()
+
+    lock_path.write_text("pid=424242 ts=0\n", encoding="utf-8")
+    os.utime(lock_path, (0.0, 0.0))
+    monkeypatch.setattr(platform_layer, "pid_is_alive", lambda pid: False)
+    fd = acquire_exclusive_file_lock(
+        lock_path, timeout_sec=1.0, stale_sec=1.0, poll_sec=0.01, owner_aware_stale=True,
+    )
+    assert fd is not None and kernel_calls == []
+    release_exclusive_file_lock(lock_path, fd)
+
+
+def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monkeypatch):
+    """Only the kernel's own "this filesystem cannot" answer selects the name
+    tier; any other refusal keeps the enforced tier (where a live acquisition
+    fails closed). The verdict is memoized per directory and the probe file
+    is gone afterwards."""
+    monkeypatch.setattr(platform_layer, "_KERNEL_LOCK_TIER", {})
+    assert platform_layer.kernel_file_locks_enforced(tmp_path / "real.lock") is True
+    lockless = tmp_path / "lockless"
+    lockless.mkdir()
+    answers: list = []
+
+    def probing(fd):
+        answers.append(fd)
+        raise OSError(errno.ENOLCK, "no locks available")
+
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", probing)
+    assert platform_layer.kernel_file_locks_enforced(lockless / "a.lock") is False
+    assert platform_layer.kernel_file_locks_enforced(lockless / "b.lock") is False
+    assert len(answers) == 1  # one probe per directory
+    assert list(lockless.iterdir()) == []
+
+    refusing = tmp_path / "refusing"
+    refusing.mkdir()
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", _refusing(errno.EIO))
+    assert platform_layer.kernel_file_locks_enforced(refusing / "a.lock") is True
+    assert list(refusing.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    not platform_layer.IS_WINDOWS,
+    reason="LockFileEx error classification is Windows mechanics",
+)
+def test_windows_lockfileex_contention_reads_as_busy(tmp_path):  # pragma: no cover - Windows only
+    """A refused LockFileEx carries the errno the acquisition classifies: a
+    lock violation is contention (stand down, re-contend); anything else
+    fails closed. An errno-less OSError used to fall into the degrade."""
+    path = tmp_path / "held.lock"
+    first = os.open(str(path), os.O_CREAT | os.O_RDWR)
+    second = os.open(str(path), os.O_RDWR)
+    try:
+        platform_layer._win32_lock(first, exclusive=True, blocking=False)
+        with pytest.raises(OSError) as refused:
+            platform_layer._win32_lock(second, exclusive=True, blocking=False)
+        assert refused.value.errno in platform_layer._LOCK_HELD_ERRNOS
+        assert refused.value.winerror == 33  # ERROR_LOCK_VIOLATION
+    finally:
+        platform_layer._win32_unlock(first)
+        os.close(second)
+        os.close(first)

@@ -40,6 +40,7 @@ from ouroboros._usage_rows import _breakdown_bucket, _summary
 from ouroboros.usage_ledger import (
     ARCHIVE_SEGMENT_DIR_REL,
     LEDGER_REL,
+    LOCK_REL,
     UsageLedgerCorrupt,
     _drive_root,
     _final_rows,
@@ -126,6 +127,17 @@ class _Abort(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+# The typed refusal for a lock directory without kernel locks (bare NFS and
+# friends): there the monetary lock is a name protocol only — exclusion the
+# pass cannot prove — so it declines to rewrite the authority at all. Appends
+# still land under that name protocol (disclosed best effort); the ledger
+# simply stays uncompacted and the 20 MB tripwire names the case.
+NAME_TIER_REFUSAL = (
+    "monetary lock is on the name tier (no kernel file locks under state/): "
+    "compaction refused; appends continue under the name protocol, the ledger stays uncompacted"
+)
 
 
 def _fsync_dir(path: pathlib.Path) -> None:
@@ -662,7 +674,12 @@ def compact_usage_ledger_locked(
     propagate; the archive segment is durable BEFORE the live file is touched,
     so a crash at any point leaves a valid ledger.
     """
+    from ouroboros.platform_layer import kernel_file_locks_enforced
+
     root = pathlib.Path(_drive_root(root))
+    if not kernel_file_locks_enforced(root / LOCK_REL):
+        log.warning("usage-ledger compaction refused: %s", NAME_TIER_REFUSAL)
+        return None
     ledger_path = root / LEDGER_REL
     records = _read_records_locked(root)  # owns quarantine of a torn tail
     if not records:
