@@ -84,7 +84,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── runtime_limits.py    ← The numeric runtime knobs and their clamps: worker count, liveness windows, per-call ceilings, reviewer/acceptance budgets, subagent caps, delegation windows — each an environment-or-default scalar clamped into a documented band (split from config.py; re-exported there)
       ├── secret_masking.py    ← Exact Settings/MCP wire-placeholder emitters and recognizers, plus top-level known/custom secret repair before env overlay and persistence
       ├── update_channels.py   ← Closed Stable/QA/Development mapping and update-network defaults
-      ├── colab_bootstrap.py   ← Google Colab source-mode bootstrap helpers: selected official update source, stable local `ouroboros` branch, Drive-backed settings/data, personal origin, no-UI server command, and native Telegram setup
+      ├── colab_bootstrap.py   ← Google Colab source-mode bootstrap helpers: selected official update source, stable local `ouroboros` branch, Drive-backed settings/data (the re-run reads the Drive document through `config.normalize_settings_raw` before the defaults merge and writes it back in `serialize_settings` bytes), personal origin, no-UI server command, and native Telegram setup
       ├── cli.py               ← Source/headless CLI over gateway tasks, logs, settings, skills, marketplace, local-model, and MCP wrappers
       ├── packaged_cli.py      ← Packaged desktop CLI bridge: resolves bundle roots, bootstraps the launcher-managed repo, and delegates to cli.py; its bootstrap settings saver owns its own path and atomic rename but persists through the shared `prepare_settings_for_persist()` prologue and `serialize_settings()` (D03)
       ├── packaged_cli_install.py ← Packaged CLI installer planning/execution for user-local command shims
@@ -2979,19 +2979,25 @@ release retired dropped, the renamed model slots promoted, and secret placeholde
 repaired. Every step preserves an owner customization written under a former key, and
 the order is load-bearing (the pass count is consumed before the retired purge would
 drop it; the purge runs before the slot rename so a retired spelling is never promoted),
-so every reader applies it BEFORE the shipped defaults are merged — `load_settings()`
-and the owner endpoints' `_owner_read_settings_raw()` alike. "Raw" in that name is about
+so every reader applies it BEFORE the shipped defaults are merged — `load_settings()`,
+the owner endpoints' `_owner_read_settings_raw()`, and the Colab re-run's
+`build_colab_settings()` over the Drive document it re-reads, alike. "Raw" in that name is about
 the runtime-mode ratchets it deliberately skips, never about the migrations. The
 normalization is pure and idempotent: it touches no file and no environment, which is
 what lets a read stay a read and lets a read-modify-write apply it on every save.
 
-Three surfaces persist a settings document: `config.save_settings()`,
+Three surfaces persist THIS process's settings document: `config.save_settings()`,
 `gateway/owner_settings._owner_update_settings()` (which `_owner_write_settings()` is one
 caller of), and the packaged bootstrap's `packaged_cli._save_settings()`. All three pass
 through `prepare_settings_for_persist()` — the single point where the disk-authored
 silence rule and the owner-only context/safety ratchets are enforced against the value
 ON DISK — and serialize through `serialize_settings()`, so the same document has one
-spelling on disk whichever surface wrote it.
+spelling on disk whichever surface wrote it. Two writers are exempt from the prologue by
+design and pinned as such: the one-window raw context-pair migration (written under the
+load lock, raw mapping plus the normalized pair, never a defaults-merged document) and
+`colab_bootstrap.write_colab_settings()`, which writes the generated document for the
+Drive data root — a foreign path the prologue's on-disk proofs would answer wrongly for —
+in `serialize_settings()` bytes.
 
 An owner endpoint changes one decision inside a document it does not otherwise own, so it
 must write the whole document back. `_owner_update_settings(transform, expected_digest)`

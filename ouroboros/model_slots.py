@@ -118,7 +118,8 @@ def migrate_legacy_slot_keys(settings: dict) -> dict:
     """In-place settings migration, applied BEFORE defaults are merged.
 
     Preserves a stored value (never orphans an owner customization), then drops the legacy
-    key. Shared SSOT for every settings entry point (load_settings AND the Colab builder).
+    key. One step of ``config.normalize_settings_raw``, the raw-stage seam every settings
+    reader applies (``load_settings``, the owner reader and the Colab builder alike).
     (ABI 7.0/ABI-10: the singular scope-review pin promotion is gone — both
     comma spellings are retired settings keys, purged before this runs.)"""
     for _old, _new in _LEGACY_SLOT_RENAMES:

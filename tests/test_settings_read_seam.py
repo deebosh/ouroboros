@@ -59,6 +59,12 @@ MIGRATED_OWNER_VALUES = {
 
 RETIRED_GHOST = "OUROBOROS_SUBAGENT_CAPABILITY_DEPTH_LIMIT"
 
+# The document's keys a release RENAMED (as opposed to retired): every one must be
+# gone from a normalized read, its value promoted to the key above.
+RENAMED_LEGACY_KEYS = ("OUROBOROS_MODEL_CODE", "OUROBOROS_VISION_MODEL", "OUROBOROS_MODEL_FALLBACK",
+                       "USE_LOCAL_CODE", "OUROBOROS_SUBAGENT_WORKTREE_RETENTION_DAYS",
+                       "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES")
+
 
 @pytest.fixture
 def isolated_settings(tmp_path, monkeypatch):
@@ -103,9 +109,7 @@ def test_load_settings_migrates_every_renamed_key_and_drops_the_retired_one(isol
 
     for key, expected in MIGRATED_OWNER_VALUES.items():
         assert loaded[key] == expected, key
-    for legacy in ("OUROBOROS_MODEL_CODE", "OUROBOROS_VISION_MODEL", "OUROBOROS_MODEL_FALLBACK",
-                   "USE_LOCAL_CODE", "OUROBOROS_SUBAGENT_WORKTREE_RETENTION_DAYS",
-                   "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES"):
+    for legacy in RENAMED_LEGACY_KEYS:
         assert legacy not in loaded, f"{legacy} survived its rename"
     assert RETIRED_GHOST not in loaded, "a retired key is still served to consumers"
     assert loaded["TOTAL_BUDGET"] == 77.0
@@ -211,6 +215,31 @@ def test_owner_read_settings_raw_applies_the_same_normalization_as_load_settings
     assert "OUROBOROS_VISION_MODEL" not in raw
     assert "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES" not in raw
     assert RETIRED_GHOST not in raw
+
+
+def test_the_colab_re_run_reads_the_drive_document_through_the_same_normalization(tmp_path):
+    """The third reader (spec 4.3.5-7, the Colab fixture): the quickstart re-reads the
+    Drive ``settings.json`` it wrote last session and hands it to ``build_colab_settings``
+    as ``existing``. That is an install's settings document like any other, so the same
+    raw-stage normalization runs BEFORE the shipped defaults are merged (the launch knobs
+    then win), and what ``write_colab_settings`` puts back on Drive is the one on-disk
+    spelling. Folding only the slot rename kept the retired ghost, replaced the folded
+    retention and review-cycle customizations with their defaults, and wrote all of it
+    back to Drive as the owner's choices — the owner-endpoint defect, one reader over."""
+    from ouroboros import config as cfg
+    from ouroboros.colab_bootstrap import build_colab_settings, write_colab_settings
+
+    out = build_colab_settings({}, existing=dict(LEGACY_OWNER_DOCUMENT))
+
+    for key, expected in MIGRATED_OWNER_VALUES.items():
+        assert out[key] == expected, key
+    for legacy in RENAMED_LEGACY_KEYS:
+        assert legacy not in out, f"{legacy} survived the re-run"
+    assert RETIRED_GHOST not in out, "a retired key is written back to Drive"
+
+    written = write_colab_settings(tmp_path / "drive", out)
+    assert written.read_text(encoding="utf-8") == cfg.serialize_settings(out)
+    assert json.loads(written.read_text(encoding="utf-8")) == out
 
 
 def test_one_owner_endpoint_write_preserves_every_owner_customization(isolated_settings):
@@ -449,7 +478,8 @@ def test_the_three_settings_writers_are_exactly_these_three():
                 targets_settings = "settings" in text.lower() or "SETTINGS_PATH" in text
                 writes = any(
                     marker in text
-                    for marker in ("atomic_write_json(", "os.replace(", ".write_text(")
+                    for marker in ("atomic_write_json(", "write_text_atomic(", "os.replace(",
+                                   ".write_text(", ".write_bytes(")
                 )
                 if writes and targets_settings:
                     writers.add(f"{relpath}::{node.name}")
@@ -458,8 +488,9 @@ def test_the_three_settings_writers_are_exactly_these_three():
         # The owner endpoints' write lives in the locked read-modify-write primitive.
         "ouroboros/gateway/owner_settings.py::_owner_update_settings",
         "ouroboros/packaged_cli.py::_save_settings",
-        # Not settings documents: the one-window raw context pair migration, written
-        # under the load lock, and the Colab bootstrap's own generated file.
+        # Not THIS process's settings document: the one-window raw context pair
+        # migration, written under the load lock, and the Colab bootstrap's generated
+        # file for the Drive root (serializer bytes, no prologue — foreign path).
         "ouroboros/context_mode_compat.py::normalize_and_persist_context_mode_compat",
         "ouroboros/colab_bootstrap.py::write_colab_settings",
     }, writers
