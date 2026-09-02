@@ -841,7 +841,12 @@ def test_all_delegated_triad_writes_no_fallback_record_and_reaches_acceptance(mo
     for retired in ("api_fallback_disclosure", "reviewer_slot_api_fallback_warning",
                     "_fallback_warning_text", "_record_api_fallback_substitution"):
         assert not hasattr(importlib.reload(rsc), retired), retired
-    assert reviewer_slot_save_check(json.dumps(payload)) == ""
+    # R12: the FIRST save that makes the triad retrieve discloses once, with the
+    # measured numbers and the rows; a save that keeps it retrieving is silent.
+    disclosure = reviewer_slot_save_check(json.dumps(payload))
+    assert "t1 (agent session codex" in disclosure and "≈12 s" in disclosure and "$0.07" in disclosure
+    assert reviewer_slot_save_check(json.dumps(payload), previous_raw="") == disclosure
+    assert reviewer_slot_save_check(json.dumps(payload), previous_raw=json.dumps(payload)) == ""
     _set_structured(monkeypatch, payload)
     project_reviewer_slots_into_env()
     assert not (pathlib.Path(DATA_DIR) / "state" / "reviewer_slot_api_fallback.json").exists()

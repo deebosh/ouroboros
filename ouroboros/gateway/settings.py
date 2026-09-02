@@ -1174,25 +1174,30 @@ def _check_reviewer_slots_against_incoming_roster(body: dict) -> str:
     actor cannot be removed out from under them. An EXPLICITLY cleared slots
     value ('' present in the body) is a clear, not a fallback to the stored
     value — presence and emptiness are tracked separately. Returns the
-    save-time disclosure ('' when none); raises ValueError on malformed."""
+    save-time disclosure ('' when none: the one-time R12 notice when this save
+    first gives the triad a retrieving row); raises ValueError on malformed."""
     subagents_key = "OUROBOROS_SUBAGENTS"
     slots_key = "OUROBOROS_REVIEWER_SLOTS"
     roster_changed = subagents_key in body
+    stored = str((load_settings() or {}).get(slots_key) or "").strip()
     if slots_key in body:
         slots_to_check = str(body.get(slots_key) or "").strip()
         if not slots_to_check:
             return ""  # explicit clear: nothing to validate
     elif roster_changed:
-        slots_to_check = str((load_settings() or {}).get(slots_key) or "").strip()
+        slots_to_check = stored
         if not slots_to_check:
             return ""
     else:
         return ""
     from ouroboros.reviewer_slot_config import reviewer_slot_save_check
 
+    # The stored value decides whether this save first introduces a retrieving
+    # triad row (the one-time R12 disclosure); a roster-only save keeps it.
     return reviewer_slot_save_check(
         slots_to_check,
         subagents_raw=(str(body.get(subagents_key) or "") if roster_changed else None),
+        previous_raw=stored,
     )
 
 

@@ -658,3 +658,43 @@ def test_wave_gate_prices_a_native_row_by_its_observed_rounds(structured_env, tm
     loop_mod._execute_task_acceptance_panel(ctx)
     (kw,) = gate_calls
     assert kw["models"] == ["openai/gpt-5.6-luna"] + ["openai/gpt-5.6-terra"] * 6
+
+
+# ---------------------------------------------------------------------------
+# The one-time R12 migration disclosure at save time.
+# ---------------------------------------------------------------------------
+
+
+def test_the_save_that_first_makes_the_triad_retrieve_discloses_once_with_numbers(monkeypatch, tmp_path):
+    """R12: an owner whose triad gains a retrieving row hears ONCE, with the
+    measured numbers, that every substantive task's acceptance panel now runs
+    on it; keeping that triad on later saves discloses nothing again, and a
+    packet-only triad never did."""
+    from tests.test_settings_honesty import _save
+    from ouroboros import config as cfg
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    settings_path = data_dir / "settings.json"
+    monkeypatch.setattr(cfg, "DATA_DIR", data_dir, raising=True)
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path, raising=True)
+    cfg.reset_runtime_mode_baseline_for_tests()
+    try:
+        monkeypatch.setenv("OUROBOROS_SUBAGENTS", json.dumps(_ROSTER))
+        packet_only = json.dumps({**_TRIAD, "triad": [_TRIAD["triad"][0]]})
+        assert _save(monkeypatch, settings_path, {REVIEWER_SLOTS_ENV: packet_only}).get("warnings") in (None, [])
+        # The transition save: legacy/packet-only → a triad with a session and a native row.
+        data = _save(monkeypatch, settings_path, {REVIEWER_SLOTS_ENV: json.dumps(_TRIAD)})
+        (disclosure,) = [w for w in data.get("warnings") or [] if "Task acceptance now follows" in w]
+        assert "t_sess (agent session codex=gpt-5.6-sol" in disclosure
+        assert "t_actor (native inspection via api-critic → openai/gpt-5.6-terra)" in disclosure
+        assert "≈12 s and ≈$0.07 per model row per task" in disclosure and "≈75 s / ≈$0.82" in disclosure
+        assert "minutes of your subscription window" in disclosure and "Keep an api_chat row" in disclosure
+        # Saving the same retrieving triad again is silent — the notice is one-time.
+        data = _save(monkeypatch, settings_path, {REVIEWER_SLOTS_ENV: json.dumps(_TRIAD)})
+        assert not [w for w in data.get("warnings") or [] if "Task acceptance now follows" in w]
+        # A roster-only save keeps the stored triad: still silent.
+        data = _save(monkeypatch, settings_path, {"OUROBOROS_SUBAGENTS": json.dumps(_ROSTER)})
+        assert not [w for w in data.get("warnings") or [] if "Task acceptance now follows" in w]
+    finally:
+        cfg.reset_runtime_mode_baseline_for_tests()

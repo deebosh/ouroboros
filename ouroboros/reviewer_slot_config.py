@@ -59,7 +59,7 @@ import os
 import pathlib
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ouroboros.route_spec import (
     ROUTE_KIND_AGENT_SESSION as SHARED_ROUTE_KIND_SESSION,
@@ -921,22 +921,61 @@ def row_effort(
 # ---------------------------------------------------------------------------
 
 
-def reviewer_slot_save_check(raw: str, *, subagents_raw: Optional[str] = None) -> str:
+# Measured acceptance-panel cost on the API packet delivery (plan §4.1, traces of
+# 2026-09-01): the ONE-TIME migration disclosure quotes them (owner R12) so an
+# owner whose triad now retrieves knows what each substantive task's acceptance
+# panel used to cost and what it spends instead. History, not a price table.
+_ACCEPTANCE_API_PANEL_MEASURED = (
+    "measured on the API packet panel it was ≈12 s and ≈$0.07 per model row per task "
+    "(median, OSWorld traces; a three-row panel ≈75 s / ≈$0.82 on ProgramBench; "
+    "7.5–8.9% of a run's cost)"
+)
+
+
+def acceptance_delivery_disclosure(rows: Sequence[ConfiguredReviewerSlot]) -> str:
+    """The one-time R12 disclosure for a triad that (newly) retrieves: which rows,
+    and what every substantive task's acceptance panel spends on them."""
+    named = ", ".join(
+        f"{row.slot_id} ({'agent session ' + row.session_target if row.is_session else 'native inspection'}"
+        f"{' via ' + row.subagent_id if row.subagent_id else ''} → {row.target_id})"
+        for row in rows
+    )
+    return (
+        f"Task acceptance now follows these triad rows, including the retrieving ones — {named}. "
+        f"Every substantive task's acceptance panel runs on them from the next task: {_ACCEPTANCE_API_PANEL_MEASURED}. "
+        "A native inspection row spends API money as rounds × one send; an agent-session row spends "
+        "minutes of your subscription window per task instead. Keep an api_chat row in the triad "
+        "if you want a packet panel."
+    )
+
+
+def reviewer_slot_save_check(
+    raw: str, *, subagents_raw: Optional[str] = None, previous_raw: Optional[str] = None,
+) -> str:
     """Validate an incoming structured value; return the save-time disclosure.
 
     Raises ValueError (row-precise) on a malformed value so the save handler
     turns it into a 400. ``subagents_raw`` threads the roster the SAME save
     produces (S4 atomicity) through a context-local override — actor
-    references validate against it without any process-env mutation. Returns
-    '' when there is nothing to disclose; the former all-delegated API-fallback
-    warning described a task-acceptance substitution that no longer exists
-    (acceptance follows the rows, owner R2)."""
-    if subagents_raw is None:
-        parse_reviewer_slots(raw)
-        return ""
-    with roster_env_override(subagents_raw):
-        parse_reviewer_slots(raw)
-    return ""
+    references validate against it without any process-env mutation.
+
+    The disclosure is the ONE-TIME migration notice of owner R12: returned when
+    the saved triad has a retrieving row (agent session or configured-subagent
+    native inspection) and the previously stored value had none — a legacy
+    comma-key config, a packet-only triad, an unknown/malformed previous value.
+    A save that keeps an already-retrieving triad discloses nothing again. The
+    former all-delegated API-fallback warning described a task-acceptance
+    substitution that no longer exists (acceptance follows the rows, R2)."""
+    with roster_env_override(subagents_raw) if subagents_raw is not None else _contextlib.nullcontext():
+        retrieving = [row for row in parse_reviewer_slots(raw).triad if row.retrieves]
+        if not retrieving:
+            return ""
+        try:
+            if previous_raw and any(row.retrieves for row in parse_reviewer_slots(previous_raw).triad):
+                return ""  # already disclosed when that value was saved
+        except ValueError:
+            pass  # a malformed previous value never ran a retrieving panel: disclose
+    return acceptance_delivery_disclosure(retrieving)
 
 
 @_contextlib.contextmanager
@@ -1150,6 +1189,7 @@ __all__ = [
     "project_reviewer_slots_into_env",
     "record_reviewer_slot_executions",
     "reviewer_slot_last_executions",
+    "acceptance_delivery_disclosure",
     "reviewer_slot_save_check",
     "row_effort",
     "structured_reviewer_slots_present",

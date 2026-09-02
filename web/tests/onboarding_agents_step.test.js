@@ -85,6 +85,9 @@ test('the footnote refuses both easy lies: "free", and "every reviewer moves"', 
     // footnote states the RULE (what is routed moves), never "everything moves".
     assert.match(LADDER_FOOTNOTE, /task acceptance each follow their configured\s+triad row/i);
     assert.match(LADDER_FOOTNOTE, /acceptance panel on the subscription/i);
+    // R12: the migration disclosure carries the measured numbers, not adjectives.
+    assert.match(LADDER_FOOTNOTE, /about 12 s and\s+\$0\.07 per model row per task/i);
+    assert.match(LADDER_FOOTNOTE, /minutes of your window per task/i);
     assert.doesNotMatch(LADDER_FOOTNOTE, /stays on the API|API-only/i);
     assert.doesNotMatch(LADDER_FOOTNOTE, /all reviewers|every reviewer/i);
 });
