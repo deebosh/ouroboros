@@ -198,8 +198,8 @@ export function deepReviewDeliveryNote(row, { roster = [], rosterKnown = true, h
                 : 'Delivery follows the roster row — the roster could not be read, so it is not shown';
         }
         return ref.route?.kind === ROUTE_KIND_SESSION
-            ? 'Agent session — reads the repository and memory with its own tools; reads not host-observed'
-            : 'Native inspection episode — reads the repository and memory with host read-only tools; reads host-observed';
+            ? 'Agent session — reads the repository with its own tools (reads not host-observed); the memory whitelist reaches it inline byte-exact'
+            : 'Native inspection episode — reads the repository with host read-only tools (reads host-observed); the memory whitelist reaches it inline byte-exact';
     }
     if (row?.route?.kind === ROUTE_KIND_SESSION) {
         return `${capabilityBadge(row, harnesses, { catalogKnown })} — reads not host-observed`;
@@ -621,9 +621,10 @@ export function renderReviewerSlotsSection() {
                 Who runs <code>/review</code>, the whole-system review against BIBLE.md. An API model here
                 receives ONE packed review — the repository Atlas plus the full memory whitelist in a single
                 large-context call (unlike the advisory, whose API model runs an inspection episode). A
-                configured subagent on an API model reads the repository and memory itself in a native
-                inspection episode with host-observed reads; an agent on your subscription reads them in its
-                own session (reads not host-observed). The row's effort outranks the Behavior-tab deep
+                configured subagent on an API model reads the repository itself in a native
+                inspection episode with host-observed reads; an agent on your subscription reads it in its
+                own session (reads not host-observed). Either way the memory whitelist reaches the reviewer
+                inline byte-exact — memory is never receipt-checked. The row's effort outranks the Behavior-tab deep
                 self-review effort; every report starts with a provenance header naming the delivery.
             </div>
             <div id="reviewer-deep-review-row" class="reviewer-slot-rows"></div>

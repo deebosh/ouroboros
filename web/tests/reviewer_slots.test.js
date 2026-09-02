@@ -128,6 +128,7 @@ test('the deep self-review block says the ONE difference from the advisory where
     assert.match(markup, /unlike the advisory, whose API model runs an inspection episode/);
     assert.match(markup, /native\s+inspection episode with host-observed reads/);
     assert.match(markup, /reads not host-observed/);
+    assert.match(markup, /memory whitelist reaches the reviewer\s+inline byte-exact/);
     assert.match(markup, /outranks the Behavior-tab deep\s+self-review effort/);
 
     const roster = [
@@ -138,6 +139,7 @@ test('the deep self-review block says the ONE difference from the advisory where
     assert.match(deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }), /inspection episode instead/);
     assert.match(deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }), /Native inspection episode/);
     assert.match(deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }), /host-observed/);
+    assert.match(deepReviewDeliveryNote({ subagent_id: 'api-critic' }, { roster }), /memory whitelist reaches it inline byte-exact/);
     assert.match(deepReviewDeliveryNote({ subagent_id: 'sess' }, { roster }), /Agent session .* not host-observed/);
     const direct = deepReviewDeliveryNote({ route: { kind: ROUTE_KIND_SESSION, target_id: 'codex' } }, { harnesses: { codex: { status: 'ok' } } });
     assert.match(direct, /agent session — retrieves context with its own tools · route ok — reads not host-observed/);

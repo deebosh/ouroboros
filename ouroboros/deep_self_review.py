@@ -828,7 +828,9 @@ def _run_retrieving_review(
         session_root=str(repo_dir), session_task=task_text,
         # The report contract rides the policy with the deep review's header
         # sentence (the shape is `report` either way). The data plane is the
-        # REAL runtime root (R5): the reviewer reads memory itself.
+        # REAL runtime root (R5), readable by the reviewer's own tools; memory
+        # coverage itself is the inline whitelist in the task (byte-exact,
+        # disposition-disclosed) — never receipts.
         policy={"output_contract": _REPORT_CONTRACT, "native_data_root": str(drive_root)},
         deadline_at=deadline_at,
     )

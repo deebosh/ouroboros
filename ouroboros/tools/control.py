@@ -3158,7 +3158,7 @@ def get_tools() -> List[ToolEntry]:
         # cancel_task + peek_task + discard_child_result are registered by ouroboros/tools/join_ledger.py.
         ToolEntry("request_deep_self_review", {
             "name": "request_deep_self_review",
-            "description": "Request a deep self-review of the entire Ouroboros project against the Constitution, on the configured deep-review reviewer row (Settings → Agents → Review lanes; absent, the OUROBOROS_MODEL_DEEP_SELF_REVIEW model runs one packed Atlas review): a packed API model reads the Atlas plus the full core memory whitelist; a configured subagent or agent session reads the repository and memory itself. Results go to chat and memory.",
+            "description": "Request a deep self-review of the entire Ouroboros project against the Constitution, on the configured deep-review reviewer row (Settings → Agents → Review lanes; absent, the OUROBOROS_MODEL_DEEP_SELF_REVIEW model runs one packed Atlas review): a packed API model reads the Atlas plus the full core memory whitelist; a configured subagent or agent session reads the repository itself with read-only tools and receives the same memory whitelist inline byte-exact (memory is never receipt-checked). Results go to chat and memory.",
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string", "description": "Why you want a review (context for the reviewer)"},
             }, "required": ["reason"]},

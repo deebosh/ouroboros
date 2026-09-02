@@ -730,8 +730,10 @@ def deep_review_slot(config: Optional[ReviewerSlotConfig] = None) -> ConfiguredR
 
 def synthesized_deep_review_slot() -> ConfiguredReviewerSlot:
     """The packed api row the legacy model key stands for — the ONE synthesis
-    rule, shared by ``deep_review_slot`` and the settings endpoint (which must
-    still show the effective row beside a malformed structured value)."""
+    rule, shared by ``deep_review_slot`` and the settings endpoint (which shows
+    it beside a malformed structured value as the legacy-derived REPAIR
+    PLACEHOLDER — no row is effective there until the setting is repaired;
+    ``deep_review_slot`` itself raises on a malformed value)."""
     from ouroboros.config import get_deep_self_review_model
 
     return ConfiguredReviewerSlot(

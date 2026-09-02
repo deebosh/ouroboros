@@ -942,10 +942,12 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
         config = load_reviewer_slot_config()
     except ValueError as exc:
         payload["config_error"] = str(exc)
-        # The deep-review singleton stays visible beside the error: with the
-        # structured value unparseable, the EFFECTIVE row is the one the runtime
-        # synthesizes from the legacy model key, so the repair save shows a
-        # real row instead of inventing an empty placeholder.
+        # The deep-review singleton stays visible beside the error as a
+        # legacy-derived REPAIR PLACEHOLDER — the row synthesized from the model
+        # key, labeled `synthesized_from` — NOT the effective runtime row: with
+        # the structured value unparseable no row is effective at all
+        # (`deep_review_slot()` raises) until the setting is repaired; the
+        # placeholder only gives the repair save a real row to start from.
         synthesized = synthesized_deep_review_slot()
         payload["deep_review"] = {"route": {"kind": synthesized.kind, "target_id": synthesized.target_id},
                                   "effort": "", "synthesized_from": "OUROBOROS_MODEL_DEEP_SELF_REVIEW"}
