@@ -375,11 +375,8 @@ def test_archive_directory_chain_is_durable_before_the_swap(data_root, monkeypat
     swapped: list = []
 
     def recording_fsync(fd):
-        try:
-            info = os.fstat(fd)
-            synced.append((info.st_dev, info.st_ino))
-        except OSError:  # pragma: no cover - fstat on a live fd
-            pass
+        info = os.fstat(fd)  # a descriptor being fsync'd is open by construction
+        synced.append((info.st_dev, info.st_ino))
         return real_fsync(fd)
 
     real_swap = uc._swap_ledger_fsync
@@ -438,9 +435,8 @@ def test_the_swap_fsyncs_the_candidate_before_the_rename_and_its_directory_after
     valid" rests on two calls and nothing else: the candidate temp is fsync'd
     BEFORE the replace — without it the renamed inode can hold unwritten data,
     neither the old ledger nor the approved new one — and the ledger's own
-    directory after it, without which the rename may not survive the power cut.
-    The archive half of the same guarantee carries three pins; this is the file
-    the money is in."""
+    directory after it, without which the rename may not survive the power
+    cut. The archive half of the same guarantee carries three pins."""
     _seed_mixed_ledger(data_root)
     ledger_path = data_root / ua.LEDGER_REL
     real_fsync, real_replace = os.fsync, os.replace
@@ -1042,13 +1038,12 @@ def test_a_restored_previous_generation_is_out_anchored_not_taken_for_an_orphan(
     compaction produced on disk, holding every attempt it folded: ids that
     exist nowhere else. Its leading row is the restored file's leading row, so
     matching that row admitted it as an uncommitted orphan and the join
-    answered a strictly smaller set — silent absence, the one verdict this
-    surface may never reach. An orphan is the pre-swap COPY of the live file
-    and the live file only grows behind it, so an orphan's bytes stay a PREFIX
-    of it; a restored generation carries rows past the end of the file it was
-    restored from, and that is what separates them. A live file with no stamp
-    at all is the same question with the floor at zero: the archive gets to
-    contradict the absence of a stamp instead of never being read."""
+    answered a strictly smaller set: silent absence, the one verdict this
+    surface may never reach. An orphan is the pre-swap COPY of the live file,
+    which only grows behind it, so an orphan's bytes stay a PREFIX of it and a
+    restored generation's do not. With no stamp at all it is the same question
+    with the floor at zero: the archive contradicts the missing stamp instead
+    of never being read."""
     _seed_mixed_ledger(data_root)
     generations = [(data_root / ua.LEDGER_REL).read_bytes()]
     assert _compact(data_root) is not None
@@ -1122,11 +1117,10 @@ def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root, 
     or a FIFO is no segment at all (segments are regular files by construction):
     classified and skipped — and the FIFO, which has no writer, must not hang
     the open. That holds on BOTH shapes of the scan: without the held dir-fd
-    (Windows, or any os lacking O_DIRECTORY) the entry is classified before the
-    open, because there the open is what a directory refuses and a FIFO blocks
-    on. Whatever the question cannot reach is typed the same way, the data
-    root's own handle included: a bare OSError from THAT one open would escape
-    the sweep's UNKNOWN mapping entirely."""
+    the entry is classified BEFORE the open, the step a directory refuses on
+    Windows and a FIFO blocks on. Whatever the question cannot reach is typed
+    the same way, the data root's own handle included: a bare OSError from
+    THAT open would escape the sweep's UNKNOWN mapping entirely."""
     monkeypatch.setattr(uc, "_dir_fd_capable", lambda: held_dir_fd)
     _seed_mixed_ledger(data_root)
     assert _compact(data_root) is not None
@@ -1313,6 +1307,13 @@ def test_archived_id_union_is_built_once_per_chain(data_root, monkeypatch):
     for attempt_id in folded:
         assert uc.usage_attempt_recorded(data_root, attempt_id, live_ids=set())
     assert builds == [2]
+    # The key IS the chain, so it changes at every compaction: unbounded, a
+    # long-lived process would keep one archived-id set per epoch it ever saw.
+    monkeypatch.setattr(uc, "_CHAIN_UNION_CACHE_MAX", 1)
+    _settle(data_root, cost=0.25, cost_final=True, task_id="gen3")
+    assert _compact(data_root) is not None
+    assert uc.archived_attempt_ids(data_root)
+    assert len(uc._CHAIN_UNION_CACHE) == 1  # only the newest chain can be asked again
 
 
 # --- 6: idempotent kinds never fold ------------------------------------------

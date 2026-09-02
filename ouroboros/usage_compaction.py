@@ -88,7 +88,10 @@ _SEGMENT_CACHE: Dict[
 # The union over one WHOLE chain, keyed by the chain's identity ((archive_rel,
 # sha) per hop). A reverse sweep asks the join primitive once per seal; the
 # per-segment sets are cached, but re-unioning them per question is the work
-# that made a bulk reconcile quadratic.
+# that made a bulk reconcile quadratic. Bounded: the key changes at every
+# compaction and only the newest chain can ever be asked again, so a
+# long-lived process must not keep one archived-id set per epoch it ever saw.
+_CHAIN_UNION_CACHE_MAX = 4
 _CHAIN_UNION_CACHE: Dict[Tuple[Tuple[str, str], ...], frozenset] = {}
 
 
@@ -1168,6 +1171,8 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     if cached is not None:
         return cached
     union = _union_segment_ids(segments)
+    if len(_CHAIN_UNION_CACHE) >= _CHAIN_UNION_CACHE_MAX:
+        _CHAIN_UNION_CACHE.clear()
     _CHAIN_UNION_CACHE[key] = union
     return union
 
