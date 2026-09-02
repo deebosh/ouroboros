@@ -19,6 +19,24 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def test_the_domain_quotient_report_ends_without_a_blank_line():
+    """The report generator wrote a blank line at EOF, so the whitespace gate
+    (`git diff --check`) was red on the one file nobody edits by hand.
+
+    Its sections append a trailing "" separator, and `"\\n".join(L) + "\\n"` then
+    turned the last separator into a blank final line. The generator now drops
+    the trailing separators; this pins both the artifact and that fix, without
+    pinning the report's CONTENT — the header carries a HEAD sha and a tree
+    fingerprint, so byte-identity to a regeneration is deliberately not a gate
+    (that gate belongs to `docs/DOMAIN_MAP.md`, whose input is the manifest).
+    """
+    report = _read("docs/v7next/DOMAIN_QUOTIENT_REPORT.md")
+    generator = _read("scripts/v7next_domain_report.py")
+
+    assert report.endswith("\n") and not report.endswith("\n\n")
+    assert "while L and not L[-1]:" in generator
+
+
 def test_the_domain_manifest_is_reachable_from_the_handbook():
     """The domain SSOT and its generated map were reachable from neither doc.
 
