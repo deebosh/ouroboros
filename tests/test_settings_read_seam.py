@@ -23,10 +23,13 @@ carries the VOCABULARY normalization only; the context-fit route resolver reads 
 provider-normalized EFFECTIVE document — the route the loop runs — not the owner-raw
 one. These tests pin the golden it must keep producing, the property that lets a
 locked read-modify-write apply it on every save (idempotence), the fact that a read
-writes nothing, the closed inventory of every writer in the tree, and the inventory of
-the owner endpoints that read — closed over the two modules that own the owner write
-seam, which is where an endpoint could grow a second reader; `gateway/onboarding.py`
-calls the same reader for its preview, legitimately and through the same seam.
+writes nothing, the one serializer's bytes on disk from every writer in the tree's
+closed inventory (`tests._shared.SETTINGS_WRITERS`; the inventory itself is closed by
+the whole-tree tripwire in tests/test_runtime_mode_elevation.py over the same list), and
+the inventory of the owner endpoints that read — closed over the two modules that own
+the owner write seam, which is where an endpoint could grow a second reader;
+`gateway/onboarding.py` calls the same reader for its preview, legitimately and through
+the same seam.
 """
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ import pytest
 from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
+
+from tests._shared import SETTINGS_WRITERS, calls_function
 
 # One owner-authored document, written entirely under keys a release renamed or
 # retired. Every value differs from both its legacy default and its current one,
@@ -65,21 +70,6 @@ MIGRATED_OWNER_VALUES = {
 }
 
 RETIRED_GHOST = "OUROBOROS_SUBAGENT_CAPABILITY_DEPTH_LIMIT"
-
-# Every function in the tree that persists a settings document. Three write THIS process's
-# document; the other two are exempt from the persistence prologue by design and pinned as
-# such: the one-window raw context-pair migration, written under the load lock, and the Colab
-# bootstrap's generated file for the Drive root (serializer bytes, no prologue - a foreign
-# path). Both pins below read this one list - the inventory test proves the tree grows no
-# sixth writer, the byte/mechanism pin proves all five put the same spelling on disk.
-SETTINGS_WRITERS = (
-    "ouroboros/config.py::save_settings",
-    # The owner endpoints' write lives in the locked read-modify-write primitive.
-    "ouroboros/gateway/owner_settings.py::_owner_update_settings",
-    "ouroboros/packaged_cli.py::_save_settings",
-    "ouroboros/context_mode_compat.py::normalize_and_persist_context_mode_compat",
-    "ouroboros/colab_bootstrap.py::write_colab_settings",
-)
 
 # The document's keys a release RENAMED (as opposed to retired): every one must be
 # gone from a normalized read, its value promoted to the key above.
@@ -498,62 +488,96 @@ def test_an_unreadable_settings_file_never_compares_equal(monkeypatch):
     assert first != second, "an unreadable file must refuse, never satisfy equality"
 
 
-def test_all_three_writers_serialize_a_document_to_the_same_bytes(isolated_settings):
-    """One serializer: the config saver, the owner endpoints' locked writer and the
-    packaged bootstrap saver produce identical text for identical content. They
-    disagreed on ``ensure_ascii``, so the same document had two spellings on disk.
-    Each surface is driven through its real entry point, so a serializer swapped
-    inside any one of them fails here.
+def test_every_settings_writer_puts_the_one_serializers_bytes_on_disk(isolated_settings):
+    """One serializer, one spelling. Each of the five writers, driven through its real
+    entry point, leaves exactly ``serialize_settings(document).encode("utf-8")`` on disk:
+    the three prologue-routed savers produce identical bytes for identical content, and
+    the two exempt writers — the context-pair migration, which is the one READ that
+    writes, and the Colab generator for the Drive root — produce the serializer's bytes
+    for what they persist. The writers once disagreed on ``ensure_ascii``, and a writer
+    that re-derived the JSON text itself agreed with the serializer only by coincidence:
+    mutate the serializer and that writer keeps its old spelling while the others follow.
+    So besides the bytes, each writer is required to CALL the serializer.
 
-    The comparison is on BYTES, and it is deliberately made against the serializer's
-    own output rather than only between the three: a file that survives a round trip
-    through ``json.loads`` unchanged still differs from ``serialize_settings`` bytes if
-    a trailing newline or a platform newline translation crept in after the serializer.
-    That last one is why the claim needs a second half. ``Path.write_text`` translates
-    ``\n`` to ``\r\n`` on Windows and ``utils.write_text_atomic`` never does, so a tree
-    whose config and packaged savers used text mode had ONE spelling on the Linux legs
-    of the matrix and TWO on the Windows one — a difference no comparison run on either
-    leg can see on its own. The cross-platform half is therefore pinned on the
-    MECHANISM: no writer of a settings document may commit through a text-mode write."""
+    The comparison is on BYTES against the serializer's own output, so a trailing newline
+    or a platform newline translation that crept in after the serializer fails it. The
+    half no Linux run can observe is pinned on the MECHANISM: ``Path.write_text`` and a
+    text-mode ``open`` translate ``\n`` to ``\r\n`` on Windows and the byte-exact helpers
+    never do, so every commit a writer makes must be one of those helpers (or
+    ``Path.write_bytes``, the config saver's rename-less fallback) and nothing else that
+    reaches the disk — a positive rule, because denying one spelling of a text-mode
+    write let a text-mode ``open`` through.
+
+    The spelling itself is pinned as a golden too. Once every writer calls the serializer
+    the agreement above cannot see the serializer change at all — a serializer that
+    started appending a newline or escaping non-ASCII would be green on every writer at
+    once — and the spelling is what the digest precondition, a pinned benchmark snapshot
+    and the migration's convergence observe. The golden is the one half of this pin that
+    still reads the serializer."""
     import ast
+    import re
 
     from ouroboros import config as cfg
+    from ouroboros.colab_bootstrap import write_colab_settings
     from ouroboros.gateway.owner_settings import _owner_update_settings
     from ouroboros.packaged_cli import _save_settings
 
     document = {"TOTAL_BUDGET": 10.0, "OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE": "приоритет"}
+    on_disk: dict[str, bytes] = {}
 
     cfg.save_settings(dict(document))
-    by_config = isolated_settings.read_bytes()
+    on_disk["config.save_settings"] = isolated_settings.read_bytes()
     isolated_settings.unlink()
 
     _owner_update_settings(lambda _current: dict(document))
-    by_owner_endpoint = isolated_settings.read_bytes()
+    on_disk["owner_settings._owner_update_settings"] = isolated_settings.read_bytes()
     isolated_settings.unlink()
 
     _save_settings(isolated_settings, dict(document))
-    by_packaged_cli = isolated_settings.read_bytes()
+    on_disk["packaged_cli._save_settings"] = isolated_settings.read_bytes()
 
-    assert by_config == by_owner_endpoint == by_packaged_cli
-    assert by_config == cfg.serialize_settings(json.loads(by_config)).encode("utf-8"), (
-        "the file is not exactly the serializer's bytes for the document it holds: "
-        "something between serialize_settings and the disk added a trailing newline or "
-        "translated a newline")
-    assert "приоритет".encode("utf-8") in by_config, (
-        "the shared serializer escaped a non-ASCII owner value")
+    # The migration is the one read that writes: an ambiguous Low makes the load persist.
+    _seed(isolated_settings, {**document, "OUROBOROS_CONTEXT_MODE": "low"})
+    cfg.load_settings()
+    on_disk["context_mode_compat.normalize_and_persist_context_mode_compat"] = (
+        isolated_settings.read_bytes())
 
+    on_disk["colab_bootstrap.write_colab_settings"] = write_colab_settings(
+        isolated_settings.parent / "drive", dict(document)).read_bytes()
+
+    routed = [on_disk[name] for name in ("config.save_settings",
+                                         "owner_settings._owner_update_settings",
+                                         "packaged_cli._save_settings")]
+    assert routed[0] == routed[1] == routed[2]
+    for name, written in on_disk.items():
+        assert written == cfg.serialize_settings(json.loads(written)).encode("utf-8"), (
+            f"{name}: the file is not exactly the serializer's bytes for the document it "
+            "holds: something between serialize_settings and the disk re-derived the text, "
+            "added a trailing newline or translated a newline")
+        assert "приоритет".encode("utf-8") in written, f"{name} escaped a non-ASCII value"
+
+    byte_exact = {"write_text_atomic(", "write_bytes_atomic(", "atomic_write_json(", ".write_bytes("}
     repo = pathlib.Path(__file__).resolve().parents[1]
-    for writer in SETTINGS_WRITERS:
-        relpath, name = writer.split("::")
+    for relpath, name in SETTINGS_WRITERS:
         source = (repo / relpath).read_text(encoding="utf-8")
         (node,) = [n for n in ast.walk(ast.parse(source))
                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
-        body = ast.get_source_segment(source, node) or ""
-        assert ".write_text(" not in body, (
-            f"{writer} commits a settings document through a text-mode write, which turns "
-            "every newline into CRLF on Windows while the other writers keep LF. Commit "
-            "through utils.write_text_atomic (or write_bytes), which is byte-exact "
-            "everywhere.")
+        assert calls_function(node, "serialize_settings"), (
+            f"{relpath}::{name} persists a settings document without calling the one "
+            "serializer: its bytes agree with the others only while nobody changes either.")
+        commits = re.findall(
+            r"write_text_atomic\(|write_bytes_atomic\(|atomic_write_json\(|\.write_bytes\("
+            r"|\.write_text\(|\.write\(|json\.dump\(|\bopen\(",
+            ast.get_source_segment(source, node) or "")
+        assert commits and set(commits) <= byte_exact, (
+            f"{relpath}::{name} commits a settings document through {sorted(set(commits))}: a "
+            "text-mode write turns every newline into CRLF on Windows while the other writers "
+            "keep LF. Commit through utils.write_text_atomic (or write_bytes), which is "
+            "byte-exact everywhere.")
+
+    assert cfg.serialize_settings(document) == (
+        '{\n  "TOTAL_BUDGET": 10.0,\n  "OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE": "приоритет"\n}'
+    ), "the one on-disk spelling changed: UTF-8 (ensure_ascii=False), two-space indent, no trailing newline"
 
 
 def test_the_packaged_bootstrap_writes_the_path_the_prologue_reads(isolated_settings, tmp_path,
@@ -603,41 +627,6 @@ def test_the_packaged_bootstrap_writes_the_path_the_prologue_reads(isolated_sett
     with pytest.raises(cfg.SettingsIntegrityError):
         context.save_settings({"TOTAL_BUDGET": 2.0})
     assert context.settings_path.read_bytes() == before
-
-
-def test_the_three_settings_writers_are_exactly_these_three():
-    """No fourth writer: the persisting surfaces are the config saver, the owner
-    endpoint seam, and the packaged CLI bootstrap saver — and all three go through
-    the same persistence prologue and the same serializer. The repo-root launcher is
-    scanned too: its ``_save_settings`` delegates to ``config.save_settings`` and must
-    keep doing so rather than growing a writer of its own (the whole-tree tripwire in
-    tests/test_runtime_mode_elevation.py covers ``ouroboros/**``, ``supervisor/**``,
-    ``server.py`` and ``launcher.py`` for the same reason)."""
-    import ast
-
-    repo = pathlib.Path(__file__).resolve().parents[1]
-    writers: set[str] = set()
-    for relpath in ("ouroboros/config.py", "ouroboros/gateway/owner_settings.py",
-                    "ouroboros/packaged_cli.py", "ouroboros/context_mode_compat.py",
-                    "ouroboros/colab_bootstrap.py", "launcher.py"):
-        source = (repo / relpath).read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            for call in ast.walk(node):
-                if not isinstance(call, ast.Call):
-                    continue
-                text = ast.get_source_segment(source, call) or ""
-                targets_settings = "settings" in text.lower() or "SETTINGS_PATH" in text
-                writes = any(
-                    marker in text
-                    for marker in ("atomic_write_json(", "write_text_atomic(", "os.replace(",
-                                   ".write_text(", ".write_bytes(")
-                )
-                if writes and targets_settings:
-                    writers.add(f"{relpath}::{node.name}")
-    assert writers == set(SETTINGS_WRITERS), writers
 
 
 # ---------------------------------------------------------------------------
