@@ -19,10 +19,12 @@ from typing import Any, Callable, Dict, List, Tuple
 # LLMs: files whose CONTENT starts with a loader magic number are hard-blocked
 # from the skill payload surface — judged by magic bytes, never by filename.
 # These prefixes are unambiguous (never legitimate text), so they block
-# regardless of UTF-8 validity.
+# regardless of UTF-8 validity. WebAssembly (``\x00asm``) is deliberately NOT
+# here: the host never loads it natively — it runs only inside the browser's
+# sandboxed widget frame — so a ``.wasm`` file is admitted like any other
+# non-UTF-8 asset, as a content-hash-bound descriptor the reviewer sees.
 _EXECUTABLE_MAGICS: Tuple[Tuple[bytes, str], ...] = (
     (b"\x7fELF", "ELF executable / shared object"),
-    (b"\x00asm", "WebAssembly module"),
     (b"\xfe\xed\xfa\xce", "Mach-O executable (32-bit)"),
     (b"\xfe\xed\xfa\xcf", "Mach-O executable (64-bit)"),
     (b"\xce\xfa\xed\xfe", "Mach-O executable (32-bit, little-endian)"),

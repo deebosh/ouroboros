@@ -188,7 +188,7 @@ def test_stage_rejects_sensitive_filenames(name):
     [
         "evil.so", "evil.dll", "evil.dylib",
         "evil.pyc", "evil.pyo", "evil.node",
-        "evil.wasm", "evil.exe", "evil.bin",
+        "evil.exe", "evil.bin",
     ],
 )
 def test_stage_rejects_loadable_binaries(name):

@@ -418,12 +418,17 @@ review pack:
 
 Binary payloads are judged by CONTENT, not by filename (#447 X4). A
 file whose bytes start with a loader magic (ELF, PE, Mach-O incl. the
-fat/byte-swapped variants, WASM, the host interpreter's exact `.pyc`
+fat/byte-swapped variants, the host interpreter's exact `.pyc`
 magic) is a hard review blocker regardless of its name or extension:
 ``executable_magic_kind`` raises ``SkillBinaryPayload`` and
 ``skill_review`` converts that into ``status="pending"`` with an
-actionable error. Any OTHER non-UTF-8 file is neither blocked nor
-inlined: the review pack carries a typed
+actionable error. WebAssembly (`\x00asm`) is no longer a loader-magic
+hard blocker: a `.wasm` file is admitted as a content-hash-bound binary
+descriptor (below) because it executes only inside the sandboxed widget
+frame, never natively in the host process — the reviewer does not read
+the WebAssembly code, so judge the widget JavaScript that instantiates
+it and the module's provenance instead. Any OTHER non-UTF-8 file is
+neither blocked nor inlined: the review pack carries a typed
 ``{path,size,mime_from_name,sha256}`` descriptor instead of raw bytes.
 Judge such a descriptor on the merits: `mime_from_name` is guessed
 from the FILENAME and is not a content attestation; `size`/`sha256`

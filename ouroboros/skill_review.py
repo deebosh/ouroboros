@@ -88,7 +88,7 @@ _SKILL_CHECKLIST_SECTION = "Skill Review Checklist"
 # — never filenames (X4/В21): a renamed ELF is still blocked, while a text file
 # with a scary extension stays reviewable.
 _LOADABLE_BINARY_EXTENSIONS = frozenset(
-    {".so", ".dylib", ".dll", ".pyc", ".pyo", ".node", ".wasm", ".exe", ".bin"}
+    {".so", ".dylib", ".dll", ".pyc", ".pyo", ".node", ".exe", ".bin"}
 )
 
 class _SkillFileOverBudget(RuntimeError):

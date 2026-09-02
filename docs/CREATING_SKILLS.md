@@ -842,6 +842,36 @@ acknowledgement grace yet, so autosave while running is the only durable path
 today. `start` and the owner override are validated and stored now so
 declarations and reviews can lead the host.
 
+#### WebAssembly (`.wasm`) in the payload
+
+A skill may ship WebAssembly modules as ordinary payload files. Review admits
+them **descriptor-admitted, content-hash-bound**: the review pack carries a
+`{path,size,mime_from_name,sha256}` descriptor for each `.wasm` file — the
+reviewer does not read the WebAssembly code — and the payload content hash
+covers every byte, so changing one byte of a module stales the stored review
+exactly like editing `widget.js`. The admission exists because WebAssembly
+executes only inside the browser's sandboxed widget frame, never natively in
+the host process; native loader magics (ELF, PE, Mach-O, `.pyc`) remain hard
+review blockers. Reviewers judge the JavaScript that instantiates the module
+and the module's provenance instead of its bytes.
+
+Ship and load it through your own route: register a route that returns the
+module bytes (an in-process handler may return a Starlette `Response` or
+`FileResponse`; an out-of-process handler's body is buffered by the host), then
+in the widget:
+
+```js
+const bytes = await (await OuroborosWidget.fetch('/api/extensions/<skill>/core.wasm')).arrayBuffer();
+const { instance } = await WebAssembly.instantiate(bytes, imports);
+```
+
+The module endpoint (`GET /api/extensions/<skill>/module/...`) stays
+JavaScript-only; binary assets always travel through the skill's own routes.
+Today this is admission only: the file installs and reviews, but the frame CSP
+token that permits `WebAssembly.instantiate` (`'wasm-unsafe-eval'`) and the
+binary-safe body of the bridged `fetch` land with the Widgets host's frontend
+slices.
+
 For everything else, prefer declarative components (`form`, `action`, `poll`,
 `subscription`, `stream`, `table`, `chart`, `markdown`, `json`, `kv`, `status`,
 `tabs`, `progress`, media/file/gallery, map/calendar/kanban, `group`, `metric`,

@@ -204,7 +204,7 @@ def stage(
                     _reject_if(_has_review_opaque_dir(rel_path), f"Archive contains review-opaque dependency directory {rel_path}")
                     _reject_if(
                         _is_loadable_binary(rel_path),
-                        f"Archive contains loadable-binary file {rel_path} (.so/.dll/.wasm/.pyc/.exe etc. are not permitted)",
+                        f"Archive contains loadable-binary file {rel_path} (.so/.dll/.pyc/.exe etc. are not permitted)",
                     )
                     _reject_if(not _extension_allowed(rel_path), f"Archive contains disallowed extension: {rel_path}")
                     _reject_if(
