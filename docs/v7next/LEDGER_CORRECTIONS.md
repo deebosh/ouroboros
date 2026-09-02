@@ -6222,7 +6222,11 @@ pure relocation, row 913, is byte-identical and needed no tool proof).
 
    11 of 18 observed RED before the fix; the 7 goldens characterize behaviour the
    seam must keep producing and cannot be red on a tree whose loader already
-   migrates. The scout's two repro scripts confirmed the three defect shapes on
+   migrates. CORRECTED in round 3: this table describes the round-1 FILE. The file
+   as delivered carries 22 pins and 15 of them are red on a `1072a317` export — the
+   11 here, the three round-2 pins (item 20) and
+   `test_the_packaged_bootstrap_writes_the_path_the_prologue_reads`, which round 2
+   turned behavioural and which this table still lists as a green golden. The scout's two repro scripts confirmed the three defect shapes on
    the pre-fix tree (6 keys changed by one auto-grant POST; ghost and legacy key
    both persisted; `config == owner` bytes False) and both come out clean on the
    fixed tree.
@@ -6348,7 +6352,9 @@ pure relocation, row 913, is byte-identical and needed no tool proof).
     named (the raw context-pair migration under the load lock; the Colab
     generator for the Drive root, serializer bytes, no prologue); the scanned
     roots stated.
-20. Red-first table, round 2 (isolated roots; "pre-fix" = the lane HEAD 1b80a38a
+20. Red-first table, round 2 (counts CORRECTED in round 3: the table below is the
+    round-2 DELTA, not the file total — on a `1072a317` export the delivered 22-pin
+    file is red on 15, the three rows here included). Isolated roots; "pre-fix" = the lane HEAD 1b80a38a
     exported with the new pins overlaid, i.e. before the round-2 code; the boot
     pin additionally against the base export; outputs kept in the lane scratch as
     `d03_r2_*.txt`):
@@ -6392,3 +6398,177 @@ pure relocation, row 913, is byte-identical and needed no tool proof).
     (`notebooks/colab_quickstart.py`, the update-channel bootstrap) stays raw by
     necessity — it runs before the runtime is importable and only feeds the
     document to `build_colab_settings`, which now normalizes it.
+
+### Fix round 3 (review findings on the lane, same base 1072a317)
+
+23. Prologue tripwire reads CALLS, not prose (MEDIUM) — LANDED. The whole-tree scan
+    classified a function as routed when the string `prepare_settings_for_persist`
+    appeared anywhere in its SOURCE SEGMENT — docstring included — so a writer that
+    merely NAMED the prologue was vouched for. Proven by injection on an export of
+    `2593a248`: an unrouted `write_text_atomic(SETTINGS_PATH, serialize_settings(...))`
+    whose docstring names the prologue passes BOTH scans when it lives in a file the
+    six-file seam inventory does not enumerate (`ouroboros/gateway/settings.py`); in
+    `config.py` only the enumerating seam test caught it. Routing is now
+    `any(ast.Call whose func id/attr == "prepare_settings_for_persist")` over the
+    function. The fail-open direction is the reason this mattered: item 12 met the
+    INVERSE of the same defect (a docstring made an exemption dead) and answered it by
+    rewording the docstring, which left the fail-open half standing. The round-2
+    constraint on `colab_bootstrap.write_colab_settings`'s docstring is therefore
+    LIFTED — it may name the prologue function again; its current wording is kept only
+    because "deliberately NOT routed through the persistence prologue" reads better.
+24. Writer-scan triggers (LOW) — LANDED. A function entered the scan only through
+    `SETTINGS_PATH` or a "settings" in its own NAME, so a writer taking its path as a
+    parameter under a neutral name was invisible: an injected
+    `_seed_child_document(data_dir)` in `ouroboros/headless.py` writing
+    `serialize_settings(...)` to `data_dir / "settings.json"` passed both scans on the
+    same export (item 15's injection named `SETTINGS_PATH`, i.e. the trigger itself, so
+    it never exercised this class). Calling the serializer, and naming the settings
+    file, are now triggers in their own right. On this tree the widening flags nothing
+    new — the same 7 functions, 3 routed, 4 exempt, no dead exemption — so the
+    ARCHITECTURE sentence about the scanned roots is now delivered rather than claimed,
+    and it states the triggers.
+25. "One spelling on disk" made TRUE, and pinned as what is actually guaranteed
+    (MEDIUM) — LANDED. Two of the three writers still committed through
+    `Path.write_text` (`config.save_settings` and its OSError fallback,
+    `packaged_cli._save_settings`), which translates `\n` to `\r\n` on Windows, while
+    the owner writer committed byte-exactly through `atomic_write_json` ->
+    `write_text_atomic`. On the 3-OS matrix the same document therefore had ONE
+    spelling on the Linux legs and TWO on the Windows one, and `serialize_settings`'s
+    docstring, the ARCHITECTURE seam section and item 2 all asserted otherwise. All
+    three writers now commit `serialize_settings()` output through
+    `utils.write_text_atomic`; the owner writer calls the serializer itself instead of
+    re-deriving the same JSON text inside `atomic_write_json`, so "one serializer" is
+    the code rather than two spellings pinned equal (which was the parallel-authority
+    shape). The config saver keeps its `except OSError` in-place fallback for a
+    filesystem that cannot rename a sibling — pre-existing, and now byte-exact too.
+    Three properties come WITH the shared helper rather than being added: the temp
+    sibling carries the atomic signature `sweep_stale_temp_files` recognises (the old
+    `settings.tmp` never did), the existing permission bits survive the replace (a
+    0600 settings.json previously reset to the umask default on every save), and the
+    `_atomic_overwrite` pytest live-data guard now covers this surface too. The PIN is
+    split to match what each half can prove: the byte comparison (now `read_bytes`,
+    and against the serializer's own output, so a trailing newline or a translation
+    between serializer and disk fails it) proves the platform it runs on; the
+    cross-platform half is pinned on the MECHANISM — no settings writer may commit
+    through a text-mode write — because no run on a Linux leg can observe a Windows
+    translation. Adapted patch site: `tests/test_cybergym_server.py` patches
+    `owner_settings.write_text_atomic` as its write sentinel (same assertion).
+26. Packaged saver takes the write guards (LOW) — LANDED.
+    `packaged_cli._save_settings` called neither `config._guard_live_settings_write()`
+    nor `settings_integrity.guard_live_settings_write`, so under a strict
+    `OUROBOROS_SETTINGS_SHA256` pin, or from pytest against the live install path it
+    resolves by construction, a bootstrap save was the one settings write that could
+    land. It now guards the path it ACTUALLY writes (not `config.SETTINGS_PATH`),
+    which also keeps the disclosed override split of item 18 honest. Pin:
+    `test_the_packaged_bootstrap_writes_the_path_the_prologue_reads` drives the
+    captured `BootstrapContext` saver under a mismatched pin and requires
+    `SettingsIntegrityError` with the bytes unchanged.
+27. Context-fit pin taken from the LOOP side (LOW) — LANDED. The round-2 pin computed
+    its expectation as `_active_main_route(apply_runtime_provider_defaults(load_settings())[0])`
+    — the resolver's own expression — so implementation and expectation could drift
+    together and stay green on the stated contract ("the route the loop runs"). The pin
+    now calls `subagent_runtime.apply_task_start_settings()`, which is what a task start
+    projects into the environment, takes `OUROBOROS_MODEL` from there, ROLLS THAT
+    PROJECTION BACK, and requires the resolver to reach the same model on its own. Name
+    kept (`test_the_context_fit_route_is_the_provider_normalized_effective_route`) so
+    items 13/20 and the ADOPTION hook keep resolving.
+28. Retired-key classification, class-shaped (LOW) — LANDED, and the oracle's rule is
+    CORRECTED rather than ported. Item 7 declined the oracle's
+    `test_the_three_retired_timeout_knobs_are_gone_from_every_owner_surface` because
+    D04 carries that pin; D04 covers only the SOFT/HARD pair, so the classification
+    surfaces were unpinned for the other thirteen retired keys. The new
+    `test_a_retired_key_is_absent_from_every_surface_that_would_react_to_it` walks all
+    fifteen: absent from `gateway/settings._IMMEDIATE_KEYS` and
+    `_RESTART_REQUIRED_KEYS`. The oracle's docs clause ("not the docs") is REJECTED
+    with evidence: three retired keys carry honest ARCHITECTURE rows today
+    (`OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES` as `(retired)`,
+    `OUROBOROS_REVIEW_MODELS` and `OUROBOROS_SCOPE_REVIEW_MODELS` as `(env-only)` with
+    "RETIRED settings key" in the body), and deleting them would remove the only place
+    an owner learns where the value they wrote went. The defect class is a retired key
+    still being OFFERED, so the pin is on the DEFAULT column: it must be a status
+    marker, never a value.
+29. Two residuals of this lane's own pins closed (LOW). (a) The behavioural boot pin
+    left `server._boot_managed_update_tasks` real — a daemon thread that finalizes a
+    pending managed update and refreshes its feed, i.e. runs git against whatever
+    `REPO_DIR` resolves to in the process running pytest, and whose work races the
+    assertion anyway. Stubbed, with the reason in the docstring. (b) "The closed
+    inventory of readers" over-claimed: the scan closes `gateway/settings.py` and
+    `gateway/owner_settings.py`, which is where an owner endpoint could grow a second
+    reader, while `gateway/onboarding.py:658` calls the same reader for its subagent
+    preview — the seam used as intended. Both docstrings now say what is closed.
+30. ARCHITECTURE and stale wording (LOW) — LANDED. The seam section states the
+    two-part guarantee (one serializer AND one byte-exact commit) instead of "serialize
+    through `serialize_settings()`", which was false for the owner writer, and names
+    the scan's triggers plus the calls-not-prose routing rule. The `packaged_cli.py`
+    module row says "owns its own path but takes the write guards on it" instead of
+    "owns its own path and atomic rename". The startup rule at the Onboarding Flow
+    section says the boot normalization may not WRITE `settings.json` AT ALL (it still
+    said "may CREATE", the weaker pre-lane rule, while this lane's pins and comments
+    say never write). `owner_settings._owner_write_settings`'s docstring says "every
+    persisting writer" (it said "both", while the tripwire asserts three) and the
+    module docstring's commit boundary names `write_text_atomic`.
+31. Red-first counts corrected (LOW) — item 8, item 20 and the ADOPTION D03 row now
+    state the delivered file's number (15 of 22 red on a `1072a317` export) beside the
+    round-1 draft's (11 of 18), and name the packaged-path pin as red on base since its
+    round-2 strengthening. The seven that stay green on base are goldens, the new
+    classification pin among them — the tip's classification was already clean, and the
+    pin exists so the next retirement stays that way.
+32. Red-first table, round 3 (isolated roots; exports of `2593a248` for the code fixes,
+    of `1b80a38a` for the round-2-era context-fit shape, of `1072a317` for the base):
+
+    | pin / probe | pre-fix | post-fix |
+    |---|---|---|
+    | injected unrouted writer whose DOCSTRING names the prologue (`ouroboros/gateway/settings.py`) | old scans: 2 PASSED (blind — the substring vouched for it, and the six-file inventory does not enumerate that module); new tripwire: FAILED naming `_docstring_vouched_settings_writer` | (injection removed) PASSED |
+    | injected neutral-named serializer writer (`ouroboros/headless.py`, path from a parameter) | old scans: 2 PASSED (blind); new tripwire: FAILED naming `_seed_child_document` | (injection removed) PASSED |
+    | test_all_three_writers_serialize_a_document_to_the_same_bytes (mechanism half) | FAILED on the `2593a248` export: "ouroboros/config.py::save_settings commits a settings document through a text-mode write" | PASSED |
+    | test_the_packaged_bootstrap_writes_the_path_the_prologue_reads (pinned-snapshot refusal) | FAILED on the `2593a248` export: "DID NOT RAISE SettingsIntegrityError" | PASSED |
+    | test_the_context_fit_route_is_the_provider_normalized_effective_route (loop-side expectation) | FAILED on the `1b80a38a` export: `'google/gemini-3.7-flash' != 'anthropic::claude-opus-5'` — "the probe sized a model the loop never runs" | PASSED |
+    | test_a_retired_key_is_absent_from_every_surface_that_would_react_to_it | mutation A (a retired key put back into `_IMMEDIATE_KEYS`): FAILED; mutation B (the `(retired)` default column replaced by `1`): FAILED; unmutated `2593a248` and `1072a317` exports: PASSED (golden) | PASSED |
+    | test_server_boot_leaves_the_settings_bytes_alone / test_server_boot_never_writes_the_settings_file (re-verified with the update-thread stub) | FAILED on the `1072a317` export ("boot rewrote the settings document"; `save_settings` still named) | PASSED |
+    | tests/test_settings_read_seam.py, delivered 22-pin file | 15 FAILED on the `1072a317` export | 22 PASSED |
+
+33. Gates, round 3 (each a separate command, isolated root, `LC_ALL=C`): the targeted
+    family `tests/test_settings_read_seam.py` (22) + `test_config_extraction.py` +
+    `test_onboarding_host.py` + `test_runtime_mode_elevation.py` +
+    `test_owner_settings_write_seam.py` + `test_colab_bootstrap.py` +
+    `test_context_fit_v664.py` rc=0; the wider settings/owner/onboarding/server family
+    (that set plus `test_runtime_mode_core.py`, `test_onboarding_complete_endpoint.py`,
+    `test_cybergym_server.py`, `test_settings_budget_hotreload.py`,
+    `test_settings_env_on_disk.py`, `test_model_slot_role_model.py`,
+    `test_startup_hygiene.py`, `test_launcher_sync.py`,
+    `test_launcher_headless_fallback.py`, `test_settings_secret_mask.py`,
+    `test_max_context_gate.py`, `test_settings_honesty.py`,
+    `test_onboarding_wizard.py`, `test_packaged_runtime_and_lifecycle.py`,
+    `test_legacy_timeout_retirement.py`, `test_server_extraction.py`,
+    `test_server_runtime.py`, `test_atomic_write_v639.py`) rc=0;
+    the FULL default suite 13903 passed / 3 skipped rc=0 and the serial lane 623 passed
+    / 46 skipped rc=0 (a core writer changed, so the narrow families are not the
+    evidence); `ruff check . --select F` rc=0; `scripts/check_domains.py` rc=0;
+    `scripts/regenerate_size_ratchet.py --check` rc=0 at the tip and on each of the
+    round's four commit TREES (config.py 945 -> 946 of 1000; owner_settings.py 368;
+    packaged_cli.py 485; gateway/settings.py 1429 unchanged; server.py 1643 unchanged;
+    the giant `tests/test_runtime_mode_elevation.py` 2222 -> 2232), the CI-blocking
+    `-m size_ratchet` lane rc=0, and
+    `review.validate_size_ratchet_transition_against_base(repo, "1072a317")` == [] —
+    this branch's contract is tip exactness plus that pairwise transition, with no
+    committed-history replay (`review.validate_size_ratchet` docstring), so "every
+    commit" here means every commit's tree passes the tip check, not a replayed audit;
+    `scripts/regenerate_inventories.py --check` rc=0; `scripts/v7next_adoption.py` rc=0;
+    `git diff --check` rc=0. Hermeticity: `find ~/ouro/data -newermt <start>` lists only
+    the two `data/claudexor/daemon/` files the running daemon writes; the live repo
+    stayed clean.
+34. Residuals after round 3, disclosed. (a) Everything in items 10 and 22 stands: the
+    digest's deliberate over-refusal, the two `config.save_settings` callers outside the
+    in-process document lock, the dead `BootstrapContext.save_settings` callback,
+    `_owner_read_settings_raw` not carrying the provider normalization (an owner fork),
+    `_failed_route_evidence` raising under a mismatched pin, the boot pin's stubs, and
+    the Colab quickstart's pre-import raw read. (b) NOT taken: the onboarding
+    transaction still asks the staleness question with its own compare inside
+    `_write_precondition` instead of handing `expected_digest` to the primitive — one
+    digest function, two compares, oracle parity; collapsing them changes an
+    install-time transaction's refusal shape, which is not a fix-round change. (c) NOT
+    taken: `config.save_settings`'s `except OSError` fallback is still a non-atomic
+    in-place write on a filesystem that cannot rename a sibling — pre-existing
+    behaviour, kept deliberately and now byte-exact. (d) The stub in 29(a) is this
+    lane's pin only; the same unstubbed boot thread in the pre-existing extension
+    lifespan tests is not this lane's to change.
