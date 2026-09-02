@@ -599,17 +599,13 @@ def test_teardown_reason_lands_in_the_journal_without_a_record(monkeypatch, tmp_
     ), "the trigger reason must land in the journal even with no record on disk"
 
 
-def test_headless_keepalive_reason_discriminates_shutdown_from_crash_fuse():
-    """The keep-alive teardown fires for both a requested shutdown and a
-    crash-fuse exit; the reason must split exactly like the exit code on the
-    next line does."""
+def test_panic_stop_teardown_names_its_reason():
+    """The panic branch os._exit()s from the lifecycle thread, so it has no
+    behavioural twin here; pin its reason by source. The headless
+    shutdown/crash-fuse split is proven by test_run_headless_main_shuts_down_
+    cleanly_on_event and ..._exits_nonzero_when_lifecycle_thread_dies above."""
     import inspect
 
     import launcher
 
-    src = inspect.getsource(launcher)
-    assert (
-        'reason="headless_shutdown" if _shutdown_event.is_set() else "crash_fuse"'
-        in src
-    )
-    assert 'reason="panic_stop"' in src
+    assert 'reason="panic_stop"' in inspect.getsource(launcher)

@@ -1178,13 +1178,13 @@ def _run_headless_main(url: str, port: int, lifecycle_thread: threading.Thread) 
                 "(crash fuse); shutting down."
             )
             break
+    requested_shutdown = _shutdown_event.is_set()
     stop_agent()
-    _kill_orphaned_children(port, reason="headless_shutdown" if _shutdown_event.is_set() else "crash_fuse")
+    _kill_orphaned_children(port, reason="headless_shutdown" if requested_shutdown else "crash_fuse")
     # NO explicit release_pid_lock(): sys.exit runs the atexit-registered
     # release, and a second release would unconditionally unlink a lock a
     # NEWER launcher may own (explicit calls stay only on os._exit paths).
-    # Event set == requested shutdown; otherwise crash fuse → exit nonzero.
-    sys.exit(0 if _shutdown_event.is_set() else 1)
+    sys.exit(0 if requested_shutdown else 1)
 
 
 def main():
