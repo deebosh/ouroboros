@@ -19,6 +19,32 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def test_architecture_component_map_covers_every_live_runtime_module():
+    """README calls ARCHITECTURE.md the full component map — so prove it.
+
+    Every non-``__init__`` module of the tracked runtime population must be
+    named in the component map (by path or by basename). A module nobody wrote
+    a row for is invisible to the one document a contributor is told to read
+    before editing, and the omission is silent: no other gate reads this
+    document against the tree. Population comes from the domain manifest's own
+    SSOT helper (``scripts/domain_graph.tracked_population``) so this pin and
+    the domain gates can never disagree about what "live module" means.
+    """
+    from scripts.domain_graph import tracked_population
+
+    arch = _read("docs/ARCHITECTURE.md")
+    missing = sorted(
+        path for path in tracked_population(REPO)
+        if not path.endswith("__init__.py")
+        and path not in arch
+        and pathlib.PurePosixPath(path).name not in arch
+    )
+    assert not missing, (
+        "docs/ARCHITECTURE.md names no owner for these live modules: "
+        f"{missing}"
+    )
+
+
 def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fallback():
     arch = _read("docs/ARCHITECTURE.md")
 
