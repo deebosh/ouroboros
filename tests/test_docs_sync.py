@@ -19,6 +19,19 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def test_the_domain_manifest_is_reachable_from_the_handbook():
+    """The domain SSOT and its generated map were reachable from neither doc.
+
+    A contributor is told to read DEVELOPMENT.md before moving code, and moving
+    code across domains is exactly what `ouroboros/domains.toml` gates. With no
+    pointer, the first they learned of it was a red `check_domains` run.
+    """
+    development = _read("docs/DEVELOPMENT.md")
+    for pointer in ("ouroboros/domains.toml", "docs/DOMAIN_MAP.md",
+                    "scripts/check_domains.py --write"):
+        assert pointer in development, f"DEVELOPMENT.md never mentions {pointer}"
+
+
 def test_recent_abi_retirements_section_carries_the_abi_70_window():
     """Section 11.4 documented a 5.25.0-rc.4 banner API and nothing since.
 
