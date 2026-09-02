@@ -18,8 +18,17 @@ Checks (plan §5.1, roast F2 — artifact/train-based manifest):
   superseded-by-upstream, with ``pending-decision`` allowed only before
   release);
 - every row carries a non-empty verification hook;
+- every post-cutoff upstream train the campaign absorbed keeps its row, still
+  naming its upstream tip and its campaign merge (both modes — a whole-file
+  overwrite deleted the sync #2 row past a bar that only the default mode ran);
+- a ``done`` row's hook RESOLVES: every repo path exists and every ``::nodeid``
+  names something the file actually defines (read by AST);
+- a ``done`` row does not say the work is open, unless it declares what stays
+  open in an explicit ``residual:`` clause;
 - ``--release``: no ``pending-decision`` dispositions and every row ``done``
-  ("no unresolved rows at release", plan §10).
+  ("no unresolved rows at release", plan §10), with post-release rows leaving
+  the bar only through a recorded deferral (owner-authored for the required
+  inventory).
 
 Exit 0 when green, 1 with findings, 2 when the manifest itself is missing or
 structurally unparseable.
@@ -27,6 +36,7 @@ structurally unparseable.
 from __future__ import annotations
 
 import argparse
+import ast
 import pathlib
 import re
 import sys
@@ -48,10 +58,13 @@ REQUIRED_ABI = tuple(f"ABI-{n}" for n in range(1, 11))
 REQUIRED_CPL = tuple(f"CPL-{n}" for n in range(1, 8))
 # F0 review round 2: the phase of every required row is itself part of the
 # owner-approved inventory — a required row silently rescheduled to another
-# phase (or parked post-release without an owner decision) must turn the
-# validator red. OWNER_DEFERRED lists the only ids the owner has explicitly
-# deferred out of v7.0 (ABI-8: Q5=A kept handler-ABI out of the bundle,
-# Q16=A retired the «7.1» label into post-release backlog).
+# phase (or parked post-release without a recorded deferral) must turn the
+# validator red. DEFERRED_OUT_OF_V70 is that record: every post-release row
+# must appear here, and a row of the owner-approved required inventory
+# (REQUIRED_PHASE) may only be parked with OWNER authority, so flipping a
+# required row post-release still cannot bypass the release bar. Operator
+# authority covers rows that are disclosures rather than owner decisions —
+# a defect a wave found and named instead of fixing.
 REQUIRED_PHASE = {
     # D02 F1->F3: owner-ratified F3 layout (2026-08-31) — the typed organ is
     # re-derived whole by the F3.1 lane A; seam commit updates row + pin together.
@@ -71,14 +84,46 @@ REQUIRED_PHASE = {
     "ABI-9": "F3", "ABI-10": "F3",
     "CPL-1": "F5", "CPL-2": "F5", "CPL-3": "F5", "CPL-4": "F5",
     "CPL-5": "F5", "CPL-6": "F5", "CPL-7": "F5",
+    "DEFER-BROWSER": "POST",
 }
-OWNER_DEFERRED = frozenset({"ABI-8"})
+OWNER, OPERATOR = "owner", "operator-disclosed"
+DEFERRED_OUT_OF_V70 = {
+    # Owner decisions: Q5=A kept the handler ABI out of the bundle and Q16=A
+    # retired the «7.1» label into the post-release backlog (ABI-8); batch №9
+    # №14=A put the browser wave after the release, with a green smoke — not a
+    # green browser lane — as the condition on the tag (DEFER-BROWSER).
+    "ABI-8": OWNER,
+    "DEFER-BROWSER": OWNER,
+    # Operator disclosures: crash windows the F4 wave-4 system-E2E lane found
+    # and, by that lane's rule, did not fix. Named here so they cannot pass as
+    # shipped, and so the owner can pull either into 7.0.
+    "W4-F1": OPERATOR,
+    "W4-F2": OPERATOR,
+}
+# Post-cutoff upstream adoption trains: id -> (upstream tip, campaign merge).
+# A frozen inventory rather than a git derivation, and the history is the
+# reason. Of the three recorded sync merges only f4abe0a5 has an upstream
+# commit (a76961de) as its literal second parent: 0aa74e9f and 0f9a8daf merge
+# CAMPAIGN commits (816e7b82, 4c32691e) that had already absorbed 8d13373b and
+# f3fbfdbb, because the re-tie merge f61ea3c2 reshaped the first-parent line. A
+# rule reading second parents would therefore demand a row for one train of
+# three and stay blind to the other two — exactly the hole that lost
+# TRAIN-F6b-f3fbfdbb; widened to "second parent descends from a recorded
+# upstream tip" it would demand a train row for every lane merge, the C6 lane
+# 8fb08d44 included. Neither is honest, and both need a subprocess. Adding a
+# train here is the same edit as merging one, and a deleted row is red at once.
+REQUIRED_TRAINS = {
+    "TRAIN-F6-8d13373b": ("8d13373b", "0aa74e9f"),
+    "TRAIN-F6b-f3fbfdbb": ("f3fbfdbb", "b9ceed6e"),
+    "TRAIN-F6c-a76961de": ("a76961de", "f4abe0a5"),
+}
 KINDS = frozenset({"semantic-delta", "plan-item", "class-return"})
 DISPOSITIONS = frozenset({"retain", "re-prove", "superseded-by-upstream",
                           "pending-decision", "post-release"})
 STATUSES = frozenset({"pending", "in-progress", "done", "deferred"})
 PHASES = frozenset({"F0", "F1", "F2", "F3", "F4", "F5", "F6", "POST"})
-ID_RE = re.compile(r"^(D\d\d|ABI-\d+|CPL-\d+|R-[A-Z0-9]+|TRAIN-[A-Za-z0-9._-]+)$")
+ID_RE = re.compile(r"^(D\d\d|ABI-\d+|CPL-\d+|R-[A-Z0-9]+|TRAIN-[A-Za-z0-9._-]+"
+                   r"|DEFER-[A-Z0-9]+|W\d-F\d+)$")
 
 
 def split_row(line: str) -> list[str]:
@@ -164,9 +209,9 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
             errors.append(f"{rid}: must be kind=plan-item, got {row['kind']!r}")
     # Row-specific coupling: post-release is a single coherent state, not three
     # independent knobs (prevents e.g. disposition=post-release with status=done
-    # quietly counting as shipped) — and it is an OWNER decision: only ids in
-    # OWNER_DEFERRED may carry it, so flipping a required row to post-release
-    # cannot silently bypass the release bar.
+    # quietly counting as shipped) — and it needs a recorded deferral in
+    # DEFERRED_OUT_OF_V70, owner-authored for the required inventory, so
+    # flipping a required row to post-release cannot bypass the release bar.
     for r in rows:
         post_bits = [r["disposition"] == "post-release", r["status"] == "deferred",
                      r["phase"] == "POST"]
@@ -175,10 +220,46 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
                 f"{r['id']}: post-release rows need disposition=post-release + "
                 f"status=deferred + phase=POST together, got "
                 f"{r['disposition']}/{r['status']}/{r['phase']}")
-        if all(post_bits) and r["id"] not in OWNER_DEFERRED:
-            errors.append(
-                f"{r['id']}: post-release requires an owner decision; only "
-                f"{sorted(OWNER_DEFERRED)} are owner-deferred")
+        if all(post_bits):
+            authority = DEFERRED_OUT_OF_V70.get(r["id"])
+            if authority is None:
+                errors.append(
+                    f"{r['id']}: post-release needs a recorded deferral in "
+                    f"DEFERRED_OUT_OF_V70 (currently "
+                    f"{sorted(DEFERRED_OUT_OF_V70)})")
+            elif authority != OWNER and r["id"] in REQUIRED_PHASE:
+                errors.append(
+                    f"{r['id']}: a row of the required inventory can only be "
+                    f"parked post-release by an owner decision, not by "
+                    f"{authority}")
+    # Every upstream train the campaign absorbed must keep its row, and the row
+    # must still name the tip and the merge it is a record of. Both modes: the
+    # deletion in 285ab66d survived because only the default mode was run.
+    for rid, (tip, merge) in REQUIRED_TRAINS.items():
+        row = by_id.get(rid)
+        if row is None:
+            errors.append(f"required upstream train {rid} is missing — every "
+                          "absorbed upstream train keeps a row")
+            continue
+        if row["kind"] != "plan-item":
+            errors.append(f"{rid}: must be kind=plan-item, got {row['kind']!r}")
+        text = f"{row['what']} {row['verification hook']}"
+        for sha in (tip, merge):
+            if sha not in text:
+                errors.append(f"{rid}: row text no longer names {sha} "
+                              "(upstream tip and campaign merge are what the "
+                              "row records)")
+    # A shipped row must not say it is unshipped. This is a text-vs-cell
+    # consistency lint on an operator manifest — not a semantic gate on any
+    # runtime decision — and the `residual:` clause is the explicit escape, so
+    # a genuine disclosure on a shipped row stays sayable.
+    for r in rows:
+        errors.extend(_honesty_errors(r))
+        # Hook resolution follows the rule the manifest already states in its
+        # Notes ("for a `done` row the validator resolves every token"): it is
+        # a property of a shipped row, not of the release invocation.
+        if r["status"] == "done":
+            errors.extend(_hook_resolution_errors(r))
     # Phase pinning of the required inventory.
     for rid, want in REQUIRED_PHASE.items():
         row = by_id.get(rid)
@@ -194,7 +275,6 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
                 continue  # explicitly deferred out of v7.0 by an owner decision
             if r["status"] != "done":
                 errors.append(f"release: {r['id']} status {r['status']!r} != done")
-            errors.extend(_hook_resolution_errors(r))
     return errors
 
 
@@ -203,6 +283,71 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
 # lookahead stops `scripts/x.py-not-real` matching by its existing `.py`
 # prefix (round 5) — a partial token is prose, not a reference.
 _HOOK_PATH_RE = re.compile(r"(?<![\w./-])(?:tests|scripts|docs)/[\w./-]+\.\w+(?![\w-])")
+
+
+# A shipped row that says the work is open contradicts its own status cell.
+# The escape is explicit and named, not a keyword exception list.
+_NOT_DONE_MARKERS = ("not done", "open residual", "not integrated yet",
+                     "still owed", "read pending")
+_RESIDUAL_CLAUSE = "residual:"
+
+
+def _honesty_errors(row: dict[str, str]) -> list[str]:
+    """A `done` row may carry an open residual — that is what a `residual:`
+    clause declares — but it may not say the work itself is not done."""
+    if row["status"] != "done":
+        return []
+    text = f"{row['what']} {row['verification hook']}".lower()
+    if _RESIDUAL_CLAUSE in text:
+        return []
+    hits = [m for m in _NOT_DONE_MARKERS if m in text]
+    if not hits:
+        return []
+    return [f"{row['id']}: status is done while the text says {hits!r}; either "
+            f"the status is wrong or the row needs an explicit "
+            f"'{_RESIDUAL_CLAUSE}' clause naming what stays open"]
+
+
+# A hook may name a pytest node id. The path half was already resolved; the
+# `::name` half was free text until now, so a hook could point at a suite that
+# exists and a pin that does not.
+_HOOK_NODEID_RE = re.compile(
+    r"(?<![\w./-])((?:tests|scripts)/[\w./-]+\.py)((?:::[A-Za-z_]\w*)+)")
+
+
+def _defined_names(path: pathlib.Path) -> set[str]:
+    """Every name a pytest node id could legitimately address in a file:
+    functions and classes at any depth (``path::Class::method``) plus
+    module-level bindings — a hook may name the closed inventory a pin drives,
+    not only the pin (`tests/_shared.py::SETTINGS_WRITERS`)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return names
+
+
+def _hook_nodeid_errors(row: dict[str, str], hook: str) -> list[str]:
+    errors: list[str] = []
+    for rel, tail in _HOOK_NODEID_RE.findall(hook):
+        path = (REPO_ROOT / rel).resolve()
+        if not path.is_file():
+            continue  # the path half is reported by the resolver above
+        try:
+            defined = _defined_names(path)
+        except SyntaxError as exc:  # unparseable file: say so, do not pass it
+            errors.append(f"release: {row['id']} hook file {rel} does not parse ({exc})")
+            continue
+        for part in tail.split("::"):
+            if part and part not in defined:
+                errors.append(f"release: {row['id']} hook names {rel}::{part}, "
+                              f"which {rel} does not define")
+    return errors
 
 
 def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
@@ -231,6 +376,7 @@ def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
             errors.append(f"release: {row['id']} hook path escapes {top}/: {p}")
         elif not candidate.is_file():
             errors.append(f"release: {row['id']} hook references missing file {p}")
+    errors.extend(_hook_nodeid_errors(row, hook))
     return errors
 
 
