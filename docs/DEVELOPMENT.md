@@ -2717,10 +2717,12 @@ that:
   failures in unrelated files. Mark such a test `@pytest.mark.serial` (or add its file to
   `_SERIAL_TEST_FILES` in `tests/conftest.py`) so it runs in the serial pass instead.
 - **Keep every other test parallel-safe** so it stays in the fast pass: use `tmp_path` (never a fixed
-  path like `/tmp/foo.pid`); use `monkeypatch.setenv` / `monkeypatch.setattr` (never a bare
-  `os.environ[...] = ...`, which leaks to other tests on the same worker); never assume execution
-  order; and if you must mutate a module global, reset it around the test (pattern:
-  `tests/conftest.py::_isolate_workspace_executor_globals`).
+  path like `/tmp/foo.pid`); use `monkeypatch.setenv` / `monkeypatch.delenv` for environment
+  changes — the autouse conftest snapshot (`_os_environ_isolation`) restores `os.environ` at every
+  test boundary, so a bare `os.environ[...] = ...` no longer leaks, but monkeypatch stays the rule
+  because it reverses exactly the named change inside the test (its undo runs last, after the
+  snapshot); never assume execution order; and if you must mutate a module global, reset it around
+  the test (pattern: `tests/conftest.py::_isolate_workspace_executor_globals`).
 
 ### The commit gate mirrors the CI split
 
