@@ -210,19 +210,30 @@ _REPLACE_RETRY_INITIAL_DELAY_SEC = 0.002
 _REPLACE_RETRY_MAX_DELAY_SEC = 0.1
 
 
-def replace_atomic(src: pathlib.Path | str, dst: pathlib.Path | str) -> None:
+def replace_atomic(
+    src: pathlib.Path | str, dst: pathlib.Path | str, *,
+    precondition: Callable[[], bool] | None = None,
+) -> bool:
     """``os.replace`` with a bounded retry on Windows sharing violations.
 
     Retries ONLY on PermissionError, which POSIX rename(2) never raises for an
     open destination — so POSIX behavior is byte-identical (one syscall, no
     sleeps). After the bound is exhausted the last PermissionError propagates
     unchanged; every other exception propagates immediately.
+
+    ``precondition`` is asked immediately before EVERY attempt, retries
+    included: a proof taken before a refused attempt is stale by the next one
+    (the monetary ledger swap re-proves lock ownership and its snapshot here,
+    CPL4-C6). A ``False`` answer leaves ``dst`` untouched and returns False,
+    ``src`` left for the caller to remove; True once replaced.
     """
     delay = _REPLACE_RETRY_INITIAL_DELAY_SEC
     for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+        if precondition is not None and not precondition():
+            return False
         try:
             os.replace(src, dst)
-            return
+            return True
         except PermissionError:
             if attempt == _REPLACE_RETRY_ATTEMPTS - 1:
                 raise
@@ -259,23 +270,16 @@ def _atomic_overwrite(path: pathlib.Path, write_temp: Callable[[pathlib.Path], N
         existing_mode = os.stat(path).st_mode & 0o7777
     except OSError:
         existing_mode = None  # new file -> keep the platform default
-    tmp_name = (
-        f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
-    )
-    tmp = path.with_name(tmp_name)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}")
     try:
         write_temp(tmp)
         if existing_mode is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.chmod(tmp, existing_mode)
-            except OSError:
-                pass
         replace_atomic(tmp, path)
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             tmp.unlink()
-        except OSError:
-            pass
         raise
 
 

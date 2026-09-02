@@ -65,7 +65,9 @@ SUBROOT_ALIASES = {
 # directly (previously only their writers' per-module spellings were seen).
 # 124 -> 123: state/crash_report.json retired with its readers (CPL4-C9,
 # owner 2A) — no writer existed in this tree; stale files are inert.
-EXPECTED_SCAN_PATHS = 123
+# 123 -> 124: CPL4-C6 usage-ledger compaction writes the archived raw
+# segments (archive/usage_ledger/*, usage_compaction.py, owner 1A).
+EXPECTED_SCAN_PATHS = 124
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

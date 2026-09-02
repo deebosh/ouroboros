@@ -161,6 +161,16 @@ TCP_KEEPALIVE_IDLE_SEC = 60
 TCP_KEEPALIVE_INTERVAL_SEC = 60
 TCP_KEEPALIVE_PROBE_COUNT = 5
 
+# --- Usage-ledger compaction policy (CPL4-C6, owner sanction 1A) -------------
+# docs/v7next/DESIGN_USAGE_COMPACTION.md. Constants, not env knobs. Compact the
+# monetary ledger once its byte size reaches ~0.2s-per-cold-replay scale, well
+# under the measured 20MB degradation point (USAGE_LEDGER_WARN_BYTES in
+# context_budget.py), which stays as the broken-compaction regression tripwire.
+USAGE_LEDGER_COMPACT_BYTES = 8_000_000
+# After an unprofitable/aborted pass, retry only once the file has grown this
+# much (or was replaced) — bounds the cost of a structurally unfoldable ledger.
+USAGE_LEDGER_COMPACT_RETRY_GROWTH_BYTES = 1_000_000
+
 
 def _guard_live_settings_write() -> None:
     _settings_integrity.guard_live_settings_write(SETTINGS_PATH, HOME)

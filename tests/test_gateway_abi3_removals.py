@@ -191,6 +191,7 @@ class TestAliasProducerFanOutSweep:
         ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt"): ("ledger settlement call", 1),
         ("ouroboros/usage_accounting.py", "cost_usd", "execute_physical_attempt_async"): ("ledger settlement call", 1),
         ("ouroboros/usage_legacy_import.py", "cost_usd", "_ensure_legacy_imported_locked"): ("legacy usage.json ledger import rows", 2),
+        ("ouroboros/usage_compaction.py", "cost_usd", "_build_candidate"): ("ledger compaction baseline-group row (CPL4-C6; exact-decimal string sum)", 1),
         ("ouroboros/tools/search.py", "cost_usd", "_web_search"): ("ledger settlement call (web search attempt)", 1),
         # usage/observability event streams (events.jsonl, live log frames;
         # /api/logs replay converts to the honest name at the boundary)

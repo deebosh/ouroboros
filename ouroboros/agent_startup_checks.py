@@ -737,8 +737,12 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
             "state/usage_attempts.jsonl",
             USAGE_LEDGER_WARN_BYTES,
             "Every reservation re-reads the ledger under the monetary lock "
-            "(~0.5s hold at 20MB — see usage_ledger.py); ledger compaction is "
-            "the remediation (tracked as a GitHub issue).",
+            "(~0.5s hold at 20MB — see usage_ledger.py); size-triggered "
+            "compaction (usage_compaction.py, CPL4-C6) should hold the file "
+            "far below this — growth past it means compaction is broken, the "
+            "unfoldable residue itself is this large, or the lock directory "
+            "takes no kernel locks so compaction refuses on the name tier "
+            "(see the usage_ledger_compaction_refused event in events.jsonl).",
         ),
         ("logs/events.jsonl", EVENTS_LOG_WARN_BYTES, rotation_expected),
         ("logs/tools.jsonl", TOOLS_LOG_WARN_BYTES, rotation_expected),
