@@ -54,14 +54,14 @@ def structured_env(monkeypatch):
 
 
 def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, content="deliverable",
-                    fresh_result=True, **tool_ctx_fields):
+                    fresh_result=True, max_improvement_passes=0, **tool_ctx_fields):
     """A root acceptance context whose wallet claim can be exercised for real."""
     from ouroboros import loop as loop_mod
     from ouroboros.contracts.task_contract import build_task_contract
     from ouroboros.review_substrate import build_review_binding
     from ouroboros.task_results import STATUS_RUNNING, write_task_result
 
-    contract = build_task_contract({"budget_profile": {"max_improvement_passes": 0}})
+    contract = build_task_contract({"budget_profile": {"max_improvement_passes": max_improvement_passes}})
     metadata = {
         "root_task_id": "root-delivery", "delegation_role": "root",
         "budget_drive_root": str(tmp_path), "task_contract": contract,
@@ -310,10 +310,11 @@ class _EpisodeLLM:
     native episode bind the acceptance stamp around that crossing — so the
     wallet claim fires exactly where production fires it."""
 
-    def __init__(self, drive_root, script, native_script=None):
+    def __init__(self, drive_root, script, native_script=None, scoped=False):
         self.drive_root = drive_root
         self.script = list(script)
         self.native_script = None if native_script is None else list(native_script)
+        self.scoped = scoped  # True: the bound usage scope owns task/root ids and the root limit
         self.calls = []
 
     def _reply(self, kwargs):
@@ -326,15 +327,17 @@ class _EpisodeLLM:
     def chat(self, **kwargs):
         from ouroboros import usage_accounting as ua
 
+        ids = {} if self.scoped else {"task_id": "review", "root_task_id": "review"}
         request = ua.AttemptRequest(
-            model="local-review-test", provider="local", reservation_usd=0.0,
-            drive_root=self.drive_root, task_id="review", root_task_id="review",
+            model="local-review-test", provider="local", reservation_usd=0.0, drive_root=self.drive_root, **ids,
         )
         return ua.execute_physical_attempt(request, lambda: self._reply(kwargs))
 
 
-def _real_panel(monkeypatch, llm):
-    """Run the REAL substrate under the panel with a scripted LLM; capture requests."""
+def _real_panel(monkeypatch, llm, *, stub_gate=True):
+    """Run the REAL substrate under the panel with a scripted LLM; capture requests.
+    ``stub_gate=False`` leaves the real wave budget gate in place (it needs a
+    bound usage scope and a priced model to decide anything)."""
     import ouroboros.review_substrate as rs
     from ouroboros.tools import review_helpers
 
@@ -346,8 +349,21 @@ def _real_panel(monkeypatch, llm):
         return original(request, llm=llm, **kwargs)
 
     monkeypatch.setattr(rs, "run_review_request", _run)
-    monkeypatch.setattr(review_helpers, "review_wave_budget_gate", lambda *_a, **_k: None)
+    if stub_gate:
+        monkeypatch.setattr(review_helpers, "review_wave_budget_gate", lambda *_a, **_k: None)
     return seen
+
+
+def _priced_offline_model(monkeypatch):
+    """Seed the PRICE SOURCE (the provider catalog cache, marked fresh) so the
+    real gate can price `openai/fake-reviewer` at $1/M in, $1/M out — ≈$0.07 per
+    send with the 65 536-token completion reserve. No gate code is patched."""
+    import time
+
+    from ouroboros import pricing
+
+    monkeypatch.setitem(pricing._cached_pricing, "openrouter", {"openai/fake-reviewer": (1.0, None, None, 1.0)})
+    monkeypatch.setitem(pricing._pricing_fetched_at, "openrouter", time.time())
 
 
 def _roots(tmp_path):
@@ -750,7 +766,11 @@ def test_native_counters_that_are_not_finite_positive_numbers_are_skipped_by_the
     assert type(estimate) is int and estimate == 2
 
 
-def test_a_finite_bogus_count_is_clamped_before_the_ewma_and_forgotten_within_the_documented_tail(tmp_path):
+def test_a_finite_bogus_count_is_clamped_before_the_ewma(tmp_path):
+    """Only the clamp is pinned here. Whether the inflated estimate then
+    refuses waves or is admitted at the floor is the open owner decision (Ф2
+    item 3(i)); a hand-appended stream of honest panels would model panels
+    that may never have dispatched, so no decay is asserted."""
     from ouroboros import task_pacing
 
     ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
@@ -759,12 +779,6 @@ def test_a_finite_bogus_count_is_clamped_before_the_ewma_and_forgotten_within_th
     _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=2, native_rows=1)
     _raw_timing(events, '"native_rounds": 1e300, "native_rows": 1')  # finite, absurd: clamped to 64, not inf
     assert task_pacing.acceptance_native_rounds_estimate(ctx) == 33  # ceil(0.5*64 + 0.5*2), never above the cap
-    honest = 0
-    while task_pacing.acceptance_native_rounds_estimate(ctx) != 2:
-        _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=2, native_rows=1)
-        honest += 1
-        assert honest <= 64, "the poisoned row must be forgotten within the documented tail"
-    assert 50 <= honest <= 60  # ≈57 at alpha 0.5: the number the cap comment and ARCHITECTURE state
 
 
 @pytest.mark.parametrize("rows", [(_ROW_API,), (_ROW_NATIVE,), (_ROW_API, _ROW_SESSION, _ROW_NATIVE)])
@@ -776,27 +790,30 @@ def test_a_poisoned_timing_row_never_refuses_or_crashes_a_later_acceptance_panel
     from ouroboros import loop as loop_mod, task_pacing
     from ouroboros.tools import review_helpers
 
+    from ouroboros import usage_accounting as ua
+
     if _ROW_SESSION in rows:
         _fake_session(monkeypatch)
     _offline_env(monkeypatch, *rows)
+    _priced_offline_model(monkeypatch)
     governance, workspace = _roots(tmp_path)
-    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 2)
-    _real_panel(monkeypatch, llm)
-    gate = []
-    monkeypatch.setattr(review_helpers, "review_wave_budget_gate", lambda _ctx, **kw: gate.append(kw))
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 2, scoped=True)
+    _real_panel(monkeypatch, llm, stub_gate=False)  # the REAL wave budget gate decides
     ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
                           workspace_root=str(workspace), workspace_mode="project")
     events = task_pacing.acceptance_timing_events_path(ctx.tools._ctx)
     for token in _POISON_TOKENS:
         _raw_timing(events, f'"native_rounds": {token}, "native_rows": {token}')
     _raw_timing(events, '"native_rounds": 1e999, "native_rows": 1')
-    _raw_timing(events, '"native_rounds": 1e300, "native_rows": 1e300')  # finite ratio 1.0
-    result = loop_mod._execute_task_acceptance_panel(ctx)
+    scope = ua.UsageScope(drive_root=tmp_path, task_id="root-delivery", root_task_id="root-delivery",
+                          root_limit_usd=50.0)
+    with ua.usage_scope(scope):
+        result = loop_mod._execute_task_acceptance_panel(ctx)
     assert result.aggregate_signal == "PASS"
     estimate = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
     assert type(estimate) is int and 1 <= estimate <= 64
-    (kw,) = gate
-    assert 1 <= len(kw["models"]) <= len(rows) * 64 and all(isinstance(m, str) and m for m in kw["models"])
+    assert not any(e.get("type") == "review_wave_budget_insufficient" for e in ctx.tools._ctx.pending_events)
+    del review_helpers
 
 
 @pytest.mark.parametrize("poison", ("1e999", '"Infinity"', "NaN", "-5", '"long"'))
@@ -821,6 +838,60 @@ def test_a_poisoned_duration_keeps_the_review_estimate_finite_and_a_finite_deadl
     snapshot = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=3600.0, elapsed_sec=600.0,
                                           remaining_sec=3000.0, reserve_sec=300.0)
     assert task_pacing.review_launch_allowed(snapshot, estimated_sec=estimate) == (True, "")
+
+
+@pytest.mark.parametrize("poison", ("1e12", "1e300", "1.3e308", "1.797e308"))
+def test_a_finite_absurd_duration_is_bounded_to_the_owner_ceiling_before_the_ewma(tmp_path, poison):
+    """Item 3(ii): a finite but absurd `duration_sec` is bounded to
+    `ACCEPTANCE_REVIEW_EST_SEC_MAX` before the EWMA, so the reserve is finite
+    and at most 1.5 × the ceiling — a 24 h deadline stays admissible through the
+    real `review_launch_allowed`. What a shorter deadline does with an inflated
+    reserve is the open owner decision (item 3(i)) and is deliberately not
+    pinned here."""
+    import math
+
+    from ouroboros import task_pacing
+    from ouroboros.config import ACCEPTANCE_REVIEW_EST_SEC_MAX
+
+    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
+    events = task_pacing.acceptance_timing_events_path(ctx)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    _raw_timing(events, f'"native_rows": 0, "native_rounds": 0, "duration_sec": {poison}, "delivery": "api_chat"')
+    _timing(events, duration_sec=100, delivery="api_chat")
+    estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
+    assert math.isfinite(estimate) and estimate == 1.5 * (0.5 * 100 + 0.5 * ACCEPTANCE_REVIEW_EST_SEC_MAX)
+    assert estimate <= 1.5 * ACCEPTANCE_REVIEW_EST_SEC_MAX == 5400.0
+    day = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=86400.0, elapsed_sec=0.0,
+                                     remaining_sec=86400.0, reserve_sec=3600.0)
+    assert task_pacing.review_launch_allowed(day, estimated_sec=estimate) == (True, "")
+
+
+def test_honest_timing_streams_are_priced_exactly_as_before(tmp_path):
+    """The bounds change nothing for honest history: 300 random streams of
+    in-range durations and rounds give byte-identical estimates to the plain
+    alpha-0.5 EWMA formulas."""
+    import math
+    import random
+
+    from ouroboros import task_pacing
+
+    rng = random.Random(20260902)
+    for i in range(300):
+        ctx = SimpleNamespace(drive_root=tmp_path / f"s{i}", task_metadata={})
+        events = task_pacing.acceptance_timing_events_path(ctx)
+        events.parent.mkdir(parents=True, exist_ok=True)
+        durations = [rng.uniform(1.0, 3600.0) for _ in range(rng.randint(1, 6))]
+        rounds = [(rng.randint(1, 64), rng.randint(1, 3)) for _ in durations]
+        for duration, (per_row, rows) in zip(durations, rounds):
+            _timing(events, duration_sec=duration, delivery="native_tool_rounds",
+                    native_rounds=per_row * rows, native_rows=rows)
+        ewma_d = ewma_r = None
+        for duration, (per_row, _rows) in zip(durations, rounds):
+            ewma_d = duration if ewma_d is None else 0.5 * duration + 0.5 * ewma_d
+            ewma_r = per_row if ewma_r is None else 0.5 * per_row + 0.5 * ewma_r
+        assert task_pacing.acceptance_review_estimate_sec(
+            ctx, passes_done=1, delivery="native_tool_rounds") == max(200.0, 1.5 * ewma_d)
+        assert task_pacing.acceptance_native_rounds_estimate(ctx) == min(64, max(1, math.ceil(ewma_r)))
 
 
 # ---------------------------------------------------------------------------

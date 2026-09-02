@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from ouroboros.config import (
+    ACCEPTANCE_REVIEW_EST_SEC_MAX,
     get_acceptance_reserve_pct,
     get_acceptance_review_est_sec,
     get_finalization_grace_sec,
@@ -47,13 +48,18 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # Ceiling on the native-rounds ESTIMATE the acceptance wave gate multiplies into
 # its pricing (P13: the episode itself has no round cap; the floor stays 1).
 # Every timing reader skips counters that are non-numeric, non-finite (the JSON
-# token 1e999, "Infinity", NaN) or non-positive; a numeric but bogus per-row
-# count is clamped to this cap BEFORE the EWMA and the ceil'ed estimate AFTER,
-# so one poisoned durable row can only over-price the next waves — the excess
-# halves per honest panel (≈33, 17, 9, …) and the ceil keeps the estimate one
-# round above the honest baseline until ≈57 honest panels have landed (alpha
-# 0.5) — never lose a panel. 64 is the plan's measured deep-review ceiling
-# (Б2-2), far above the 3–5 rounds a verdict-shaped episode takes.
+# token 1e999, "Infinity", NaN) or non-positive, and bounds a numeric but absurd
+# value BEFORE the EWMA — per-row rounds to this cap, `duration_sec` to the owner
+# ceiling `ACCEPTANCE_REVIEW_EST_SEC_MAX` — so every estimate is finite and
+# bounded (rounds ≤ 64; reserve ≤ 1.5 × the ceiling). What a bounded-but-inflated
+# estimate still DOES: it raises the priced wave and the deadline reserve, and a
+# wave or reserve that then does not fit is refused typed before dispatch
+# (`review_wave_budget_insufficient` / `review_skipped_deadline_reserve`); the
+# estimate decays only with each DISPATCHED honest panel (its excess halves per
+# panel, alpha 0.5), never with a refusal. Whether such a wave should instead be
+# admitted at the floor price with a disclosure is an open owner decision (Ф2
+# item 3(i) analysis). 64 is the plan's measured deep-review ceiling (Б2-2), far
+# above the 3–5 rounds a verdict-shaped episode takes.
 ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP = 64
 
 # Proportional nanny-economics reminder thresholds (poltergeist phase B; owner
@@ -183,14 +189,17 @@ def _finite_positive(raw: Any) -> Optional[float]:
     return value if math.isfinite(value) and value > 0.0 else None
 
 
-def _ewma(values: Any) -> Optional[float]:
+def _ewma(values: Any, *, cap: Optional[float] = None) -> Optional[float]:
     """EWMA (alpha 0.5) over the finite, positive numbers among ``values``
-    (`_finite_positive`); None when there were none."""
+    (`_finite_positive`), each bounded to ``cap`` first when one is given;
+    None when there were none."""
     ewma: Optional[float] = None
     for raw in values:
         value = _finite_positive(raw)
         if value is None:
             continue
+        if cap is not None:
+            value = min(float(cap), value)
         ewma = value if ewma is None else (
             _ACCEPTANCE_REVIEW_EWMA_ALPHA * value + (1.0 - _ACCEPTANCE_REVIEW_EWMA_ALPHA) * ewma)
     return ewma
@@ -219,8 +228,12 @@ def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: 
     clock, a native-episode panel by native wall clock, a packet panel as
     before; events without a recorded class are pre-R16 packet panels. The
     class defaults to the configured panel's (``acceptance_panel_delivery``).
-    The existing ``OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC`` value remains the
-    initial estimate and a floor; no additional timing database is introduced.
+    Each recorded duration is bounded to the owner ceiling
+    ``ACCEPTANCE_REVIEW_EST_SEC_MAX`` before the EWMA, so the estimate is always
+    finite and at most 1.5× that ceiling; non-numeric, non-finite and
+    non-positive rows are skipped. The existing
+    ``OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC`` value remains the initial estimate
+    and a floor; no additional timing database is introduced.
     """
     configured = max(
         _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC,
@@ -230,8 +243,9 @@ def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: 
         return configured
     wanted = str(delivery or "").strip() or acceptance_panel_delivery(ctx)
     ewma = _ewma(
-        event.get("duration_sec") for event in _acceptance_timing_events(ctx)
-        if str(event.get("delivery") or "api_chat") == wanted
+        (event.get("duration_sec") for event in _acceptance_timing_events(ctx)
+         if str(event.get("delivery") or "api_chat") == wanted),
+        cap=ACCEPTANCE_REVIEW_EST_SEC_MAX,
     )
     return configured if ewma is None else max(configured, 1.5 * ewma)
 
