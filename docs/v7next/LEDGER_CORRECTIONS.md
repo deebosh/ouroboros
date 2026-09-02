@@ -6079,3 +6079,26 @@ difference. That is one line of headroom, and it is honest to say so: the
 next change there has to pay its own way in, exactly as this one did. The
 alternative was to leave the companion env in a module that validates child
 catalogs, which is the defect the item exists to close.
+
+## Vision evidence for CHECKLISTS 2(i) on a70747cf (owner batch №11, 6=A)
+
+28 headless-Chromium screenshots (14 consumer states × 1440x900 and 390x844)
+captured on an isolated root from `git archive` of a70747cf through the repo's
+own `direct_server_with_data` fixture and MockLLMServer (no provider keys):
+chat rich markdown, document/audio cards, photo gallery + links (javascript:
+action correctly not rendered), collapsed task cards, the acceptance
+review-findings panel, plan-review findings, settings model slots, the Phase 3
+extension settings section, Updates/controls + recovery, the skill card with
+**Grant access as a primary card button**, review findings on the card, the
+ClawHub marketplace, and the chat header agent controls. Vision inspection
+of every PNG: PASS with minor caveats — no raw JSON, error banners,
+overlapping text or horizontal overflow; cosmetic items for the backlog: a
+~60-80 px empty body inside collapsed task cards, the `Online` badge wrapping
+to a third header row at 390 px, and `Reset All Data` possibly sitting under
+the sticky Reload/Save footer at 390 px (unverified whether at max scroll).
+Capture gaps (script scroll offset, not rendering): the audio card at mobile
+and its filename at desktop; not exercised: the post-click Grant access
+face, the managed-update "apply" face (isolated checkout has no managed
+remote), the OuroborosHub tab and the Widgets page. Files and manifest:
+operator scratchpad `ui_evidence/a70747cf/` (session 3ab25cbc); the owner's
+manual test on the STOP tree is the release-grade 2(i) evidence.
