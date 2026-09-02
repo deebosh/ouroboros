@@ -392,3 +392,39 @@ def test_windows_lockfileex_contention_reads_as_busy(tmp_path):  # pragma: no co
         platform_layer._win32_unlock(first)
         os.close(second)
         os.close(first)
+
+
+@pytest.mark.skipif(
+    platform_layer.IS_WINDOWS,
+    reason="the unlink-under-the-creator shape is POSIX; Windows cannot unlink an open file",
+)
+def test_a_lock_whose_identity_cannot_be_read_is_never_a_hold(tmp_path, monkeypatch):
+    """``_lock_identity`` answers ``()`` for a descriptor it cannot ``fstat`` —
+    ESTALE/EIO on exactly the network filesystems this tier exists for. Two
+    unreadable sides are not a match: comparing them raw makes ``() == ()``
+    vacuously true and hands back a descriptor for an inode the path no longer
+    names (a reclaimer unlinked it inside its own re-contend window), i.e. a
+    second holder of one monetary lock. Unprovable is not owned: the
+    acquisition answers None — and the file it stamped with its own LIVE pid
+    goes with it, or no owner-aware reclaimer may ever remove it again."""
+    lock_path = tmp_path / "state.lock"
+    monkeypatch.setattr(platform_layer, "_KERNEL_LOCK_TIER", {})
+    assert platform_layer.kernel_file_locks_enforced(lock_path) is True  # decided before the hooks
+    real_flock = platform_layer.file_lock_exclusive_nb
+    real_identity = platform_layer._lock_identity
+
+    def blind_descriptor(target):  # our own fd answers nothing; the path still answers
+        return () if isinstance(target, int) else real_identity(target)
+
+    def evicting_flock(fd):  # a reclaimer removed our file between the create and the lock
+        if lock_path.exists():
+            os.unlink(str(lock_path))
+        return real_flock(fd)
+
+    monkeypatch.setattr(platform_layer, "_lock_identity", blind_descriptor)
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", evicting_flock)
+    assert acquire_exclusive_file_lock(lock_path, timeout_sec=0.3, poll_sec=0.01) is None
+
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", real_flock)
+    assert acquire_exclusive_file_lock(lock_path, timeout_sec=0.3, poll_sec=0.01) is None
+    assert not lock_path.exists(), "a live pid was stamped on a lock nobody may reclaim"

@@ -231,7 +231,9 @@ def acquire_exclusive_file_lock(
     O_EXCL name alone, and a kernel refusal that is not contention fails
     CLOSED — no descriptor, our own file removed.  The name tier is selected
     by that predicate, never by a refusal.  On either tier a won lock is
-    returned only while the path still names it: an evicted creator re-contends.
+    returned only while the path PROVABLY still names it: an evicted creator
+    re-contends, and a descriptor whose own identity cannot be read is not a
+    hold either — that fails closed too, taking our stamp off the path with it.
 
     Authority streams opt into ``owner_aware_stale`` so elapsed time alone
     never steals a lock from a live writer; a dead/malformed legacy owner
@@ -249,8 +251,9 @@ def acquire_exclusive_file_lock(
     while (time.time() - started) < timeout_sec:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            stamp = (metadata or f"pid={os.getpid()} ts={time.time()}\n").encode("utf-8")
             try:  # the owner pid goes in BEFORE the kernel lock, so an owner-aware
-                os.write(fd, (metadata or f"pid={os.getpid()} ts={time.time()}\n").encode("utf-8"))
+                os.write(fd, stamp)
             except Exception:  # reclaimer never judges a live creator's fresh file empty
                 log.debug("Failed to write lock metadata to %s", lock_path, exc_info=True)
             try:
@@ -265,8 +268,20 @@ def acquire_exclusive_file_lock(
                 # A creator stalled between its create and its lock (SIGSTOP, suspend,
                 # clock skew) is judged abandoned — aged, with no hold yet to refuse the
                 # evictor — and evicted: its lock lands on an unlinked inode. Not a hold.
-                if _lock_identity(fd)[:2] == _lock_identity(lock_path)[:2]:
+                # An identity we cannot READ (ESTALE/EIO) is no proof either — two empty
+                # answers would compare equal — so it fails closed, and the file we
+                # stamped with our LIVE pid goes with it: left behind, no owner-aware
+                # reclaimer could ever remove it. Only bytes still exactly ours are ours.
+                won = _lock_identity(fd)[:2]
+                if won and won == _lock_identity(lock_path)[:2]:
                     return fd
+                if not won:
+                    with contextlib.suppress(OSError):
+                        if lock_path.read_bytes() == stamp:
+                            os.unlink(str(lock_path))
+                    os.close(fd)
+                    log.warning("Lock identity unreadable at %s: no lock taken", lock_path)
+                    return None
             os.close(fd)  # the file we created was kernel-locked by a racing
             time.sleep(poll_sec)  # evictor's probe, or evicted: the name alone is
             continue  # not ownership — stand down and re-contend
