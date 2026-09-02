@@ -663,6 +663,38 @@ def test_a_hold_lost_at_the_archive_is_seen_before_the_snapshot_is_trusted(
     assert len(checks) == 1  # the post-archive re-check never ran
     assert list(archive_dir.glob("segment_*.jsonl"))  # the orphan stays, disclosed
 
+def test_a_hold_lost_before_the_first_commit_look_writes_no_orphan(data_root, monkeypatch):
+    """The FIRST commit beat — after the archive bound check, before the
+    pre-archive snapshot look — is load-bearing too: a hold already lost there
+    must abort before that look is asked and before any segment is written,
+    or the pass writes an orphan (and trusts an answer it may not use) on
+    behalf of a lock that is no longer its own."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    before = ledger_path.read_bytes()
+    checks: list = []
+    lost = {"hold": False}
+    real_check = uc._snapshot_intact
+    real_bound = uc._archive_dir_bounded
+
+    def counting_check(path, raw):
+        checks.append(1)
+        return real_check(path, raw)
+
+    def losing_bound(root):
+        lost["hold"] = True  # ownership dies as the commit section is entered
+        return real_bound(root)
+
+    monkeypatch.setattr(uc, "_snapshot_intact", counting_check)
+    monkeypatch.setattr(uc, "_archive_dir_bounded", losing_bound)
+    with ua._locked(data_root):
+        assert uc.compact_usage_ledger_locked(
+            data_root, heartbeat=lambda: not lost["hold"]) is None
+    assert ledger_path.read_bytes() == before
+    assert checks == []  # the pre-archive look was never asked
+    assert not (data_root / "archive").exists()  # and no orphan was written
+
+
 
 def test_a_hold_lost_after_the_recheck_aborts_before_the_swap(data_root, monkeypatch):
     """Ownership is proven once more between the re-check and the rename: a
