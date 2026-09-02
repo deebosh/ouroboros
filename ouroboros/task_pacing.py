@@ -44,6 +44,12 @@ from ouroboros.utils import append_jsonl, iter_jsonl_objects, utc_now_iso
 
 _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC = 200.0
 _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
+# Ceiling on the native-rounds ESTIMATE the acceptance wave gate multiplies into
+# its pricing (P13: the episode itself has no round cap; the floor stays 1). It
+# only keeps one poisoned durable timing row from refusing every later wave;
+# 64 is the plan's measured deep-review ceiling (Б2-2), far above the 3–5
+# rounds a verdict-shaped episode takes.
+ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP = 64
 
 # Proportional nanny-economics reminder thresholds (poltergeist phase B; owner
 # decision 2=B: NO absolute round cap — reminders only, sized to the measured
@@ -211,17 +217,26 @@ def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: 
     return configured if ewma is None else max(configured, 1.5 * ewma)
 
 
+def _native_rounds_per_row(event: Dict[str, Any]) -> float:
+    """Rounds per native row of ONE timing event — 0.0 (which `_ewma` skips)
+    when the panel ran no native row or the durable counters are malformed, so
+    one bad row cannot degrade every later panel."""
+    try:
+        rows = int(event.get("native_rows") or 0)
+        return float(event.get("native_rounds") or 0) / rows if rows > 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def acceptance_native_rounds_estimate(ctx: Any) -> int:
     """Rounds ONE native inspection row is expected to take (owner R16: native
     cost is rounds × the price of a send): the EWMA of observed per-row rounds
-    from the same timing events, at least 1 — the first native panel is priced
-    as one send, and a run that read more re-prices the next wave."""
-    ewma = _ewma(
-        float(event.get("native_rounds") or 0) / max(1, int(event.get("native_rows") or 1))
-        for event in _acceptance_timing_events(ctx)
-        if str(event.get("delivery") or "") == "native_tool_rounds"
-    )
-    return 1 if ewma is None else max(1, math.ceil(ewma))
+    over EVERY recorded panel that ran a native row — whatever its slowest-class
+    stamp, a mixed session+native panel teaches as much as a native-only one —
+    at least 1 (the first native panel is priced as one send) and at most
+    ``ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP``."""
+    ewma = _ewma(_native_rounds_per_row(event) for event in _acceptance_timing_events(ctx))
+    return 1 if ewma is None else min(ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP, max(1, math.ceil(ewma)))
 
 
 def acceptance_timing_events_path(ctx: Any) -> pathlib.Path:

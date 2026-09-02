@@ -310,16 +310,18 @@ class _EpisodeLLM:
     native episode bind the acceptance stamp around that crossing — so the
     wallet claim fires exactly where production fires it."""
 
-    def __init__(self, drive_root, script):
+    def __init__(self, drive_root, script, native_script=None):
         self.drive_root = drive_root
         self.script = list(script)
+        self.native_script = None if native_script is None else list(native_script)
         self.calls = []
 
     def _reply(self, kwargs):
         self.calls.append(dict(kwargs))
-        if not self.script:
+        script = self.native_script if ("tools" in kwargs and self.native_script is not None) else self.script
+        if not script:
             raise AssertionError("script exhausted — an extra reviewer send was made")
-        return self.script.pop(0), {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0}
+        return script.pop(0), {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0}
 
     def chat(self, **kwargs):
         from ouroboros import usage_accounting as ua
@@ -352,7 +354,27 @@ def _roots(tmp_path):
     governance, workspace = tmp_path / "governance", tmp_path / "workspace"
     governance.mkdir(exist_ok=True)
     workspace.mkdir(exist_ok=True)
+    (workspace / "greeting.txt").write_text("hello native reviewer\n", encoding="utf-8")
     return governance, workspace
+
+
+def _tool_call(name, args, call_id="call_1"):
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+def _fake_session(monkeypatch):
+    """The offline Claudexor /v2 surface answering the acceptance object verdict."""
+    from tests.test_review_agent_session_route import FakeGateway, _terminal_detail
+    from ouroboros import claudexor_daemon
+    from ouroboros import delegate_custody as custody
+    from ouroboros.gateways import claudexor as gateway_module
+
+    FakeGateway.reset()
+    FakeGateway.detail = _terminal_detail(json.dumps(_CLEAN_VERDICT), conformance="passed")
+    monkeypatch.setattr("ouroboros.gateways.claudexor.ClaudexorGateway", FakeGateway)
+    monkeypatch.setattr(claudexor_daemon, "ensure_owned_gateway", lambda: gateway_module.ClaudexorGateway())
+    custody._CUSTODY.clear()
+    return FakeGateway
 
 
 def test_trap_retrieving_row_receipt_ref_resolves_against_the_full_packet(monkeypatch, tmp_path):
@@ -530,19 +552,11 @@ def test_wallet_stamp_claims_once_per_panel_on_api_native_and_mixed_rows(monkeyp
 
 
 def test_session_row_claims_the_same_wallet_and_receives_the_full_packet(monkeypatch, tmp_path):
-    from tests.test_review_agent_session_route import FakeGateway, _terminal_detail
-    from ouroboros import claudexor_daemon
-    from ouroboros import delegate_custody as custody
     from ouroboros import loop as loop_mod
     from ouroboros.acceptance_dialogue import _total_paid_acceptance_cycles
-    from ouroboros.gateways import claudexor as gateway_module
     from ouroboros.review_substrate import task_acceptance_is_clean
 
-    FakeGateway.reset()
-    FakeGateway.detail = _terminal_detail(json.dumps(_CLEAN_VERDICT), conformance="passed")
-    monkeypatch.setattr("ouroboros.gateways.claudexor.ClaudexorGateway", FakeGateway)
-    monkeypatch.setattr(claudexor_daemon, "ensure_owned_gateway", lambda: gateway_module.ClaudexorGateway())
-    custody._CUSTODY.clear()
+    FakeGateway = _fake_session(monkeypatch)
     _offline_env(monkeypatch, _ROW_SESSION)
     governance, workspace = _roots(tmp_path)
     llm = _EpisodeLLM(tmp_path, [])
@@ -615,10 +629,19 @@ def test_pacing_estimate_follows_the_configured_panels_delivery_class(structured
     structured_env.setenv(REVIEWER_SLOTS_ENV, "{broken")
     assert task_pacing.acceptance_panel_delivery(ctx) == "api_chat"
     # Native rounds: none observed → one send; observed → per-row EWMA, rounded up.
+    # A mixed panel whose slowest class is the SESSION still teaches native rounds
+    # (its native row ran); a packet-only panel (native_rows=0) teaches nothing.
     assert task_pacing.acceptance_native_rounds_estimate(ctx) == 1
-    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=6, native_rows=1)
+    _timing(events, duration_sec=30, delivery="agent_session",
+            deliveries=["api_chat", "agent_session", "native_tool_rounds"], native_rounds=6, native_rows=1)
     _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=6, native_rows=2)
+    _timing(events, duration_sec=30, delivery="api_chat", deliveries=["api_chat"], native_rounds=0, native_rows=0)
     assert task_pacing.acceptance_native_rounds_estimate(ctx) == 5  # ewma(6, 3) = 4.5 → 5
+    # One malformed durable row cannot degrade later panels; a poisoned history is capped.
+    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds="six", native_rows=1)
+    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 5
+    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=100000, native_rows=1)
+    assert task_pacing.acceptance_native_rounds_estimate(ctx) == task_pacing.ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP == 64
 
 
 def test_timing_event_names_the_deliveries_and_the_native_rounds(monkeypatch, tmp_path):
@@ -640,24 +663,56 @@ def test_timing_event_names_the_deliveries_and_the_native_rounds(monkeypatch, tm
     assert event["native_rounds"] == 1 and event["native_rows"] == 1 and event["duration_sec"] > 0
 
 
-def test_wave_gate_prices_a_native_row_by_its_observed_rounds(structured_env, tmp_path):
+def test_wave_gate_prices_a_native_row_by_the_rounds_a_real_mixed_panel_recorded(monkeypatch, tmp_path):
+    """The REAL writer drives the estimator: a mixed api+session+native panel
+    runs for real (its native row reads one file, then answers — two rounds),
+    writes the timing event, and the NEXT panel's wave gate prices the native
+    row by those two rounds although the recorded panel's slowest class was the
+    session."""
     import ouroboros.review_substrate as rs
     from ouroboros import loop as loop_mod, task_pacing
     from ouroboros.tools import review_helpers
+    from ouroboros.utils import iter_jsonl_objects
 
-    gate_calls = []
-    structured_env.setattr(
-        rs, "run_review_request", lambda request, **kw: SimpleNamespace(aggregate_signal="PASS", actors=[]))
-    structured_env.setattr(review_helpers, "review_wave_budget_gate", lambda _ctx, **kw: gate_calls.append(kw))
+    FakeGateway = _fake_session(monkeypatch)
+    _offline_env(monkeypatch, _ROW_API, _ROW_SESSION, _ROW_NATIVE)
     governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(
+        tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}],
+        native_script=[{"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"})]},
+                       {"content": json.dumps(_CLEAN_VERDICT)}],
+    )
+    _real_panel(monkeypatch, llm)
     ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
                           workspace_root=str(workspace), workspace_mode="project")
-    events = task_pacing.acceptance_timing_events_path(ctx.tools._ctx)
-    events.parent.mkdir(parents=True, exist_ok=True)
-    _timing(events, duration_sec=40, delivery="native_tool_rounds", native_rounds=6, native_rows=1)
+    assert loop_mod._execute_task_acceptance_panel(ctx).aggregate_signal == "PASS"
+    assert len(FakeGateway.instances[0].start_requests) == 1
+    (event,) = [e for e in iter_jsonl_objects(task_pacing.acceptance_timing_events_path(ctx.tools._ctx))
+                if e.get("type") == "task_acceptance_review_timing"]
+    assert event["delivery"] == "agent_session"
+    assert event["deliveries"] == ["api_chat", "agent_session", "native_tool_rounds"]
+    assert event["native_rounds"] == 2 and event["native_rows"] == 1
+    assert task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx) == 2
+
+    gate_calls = []
+    monkeypatch.setattr(
+        rs, "run_review_request", lambda request, **kw: SimpleNamespace(aggregate_signal="PASS", actors=[]))
+    monkeypatch.setattr(review_helpers, "review_wave_budget_gate", lambda _ctx, **kw: gate_calls.append(kw))
     loop_mod._execute_task_acceptance_panel(ctx)
     (kw,) = gate_calls
-    assert kw["models"] == ["openai/gpt-5.6-luna"] + ["openai/gpt-5.6-terra"] * 6
+    # One api send + the native row at its two observed rounds; the session row is not API money.
+    assert kw["models"] == ["openai/fake-reviewer"] * 3
+
+
+def test_native_projection_never_turns_a_malformed_manifest_into_its_keys():
+    from ouroboros.acceptance_dialogue import _retrieving_packet_projection
+
+    projected = _retrieving_packet_projection({**_ACCEPTANCE_PACKET, "omissions_manifest": {"bad": "shape"}})
+    assert [row["section"] for row in projected["omissions_manifest"]] == ["tool_trajectory", "artifact_previews"]
+    assert "bad" not in json.dumps(projected["omissions_manifest"])
+    # A well-formed manifest is extended, never replaced.
+    kept = _retrieving_packet_projection({**_ACCEPTANCE_PACKET, "omissions_manifest": [{"section": "x", "reason": "y"}]})
+    assert kept["omissions_manifest"][0] == {"section": "x", "reason": "y"} and len(kept["omissions_manifest"]) == 3
 
 
 # ---------------------------------------------------------------------------

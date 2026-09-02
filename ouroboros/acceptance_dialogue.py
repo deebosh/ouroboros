@@ -907,7 +907,8 @@ def _retrieving_packet_projection(evidence: Dict[str, Any]) -> Dict[str, Any]:
     `evidence_ref` naming it still resolves against the FULL dict (the ref
     authority never changes), and the omission is manifested like every other."""
     packet = dict(evidence)
-    omissions = list(packet.get("omissions_manifest") or [])
+    manifest = packet.get("omissions_manifest")
+    omissions = list(manifest) if isinstance(manifest, list) else []  # a malformed manifest never leaks its keys
     trajectory = packet.get("tool_trajectory")
     if isinstance(trajectory, list) and trajectory:
         packet["tool_trajectory"] = [{
@@ -1074,7 +1075,8 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     # session row rides the owner's subscription, not API money, so it is not
     # priced; a native row IS paid API — rounds × the price of a send of its
     # work order, the rounds sized from this tree's observed native panels
-    # (R16; one send before any history); a packet row renders its REAL
+    # (R16; one send before any history, capped by
+    # `task_pacing.ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP`); a packet row renders its REAL
     # message pair. The rare second physical attempt is not multiplied in —
     # fail-open coarse filter, no reservation.
     from ouroboros.review_execution import ReviewRouteKind, panel_delivery_class, slot_delivery
