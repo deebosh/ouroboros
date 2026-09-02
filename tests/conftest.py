@@ -339,9 +339,8 @@ def _reset_runtime_mode_baseline_between_tests():
     # env (`OUROBOROS_RUNTIME_MODE`, set by apply_settings_to_env/save_settings) is what
     # `get_runtime_mode()` reads.  The operator's inherited runtime mode must not change
     # test semantics either: hermetic review intentionally loads the live non-secret
-    # settings before spawning pytest.  Snapshot it, remove it for the test so the
-    # documented default applies, then restore it at the process boundary.
-    _saved_runtime_mode = os.environ.get("OUROBOROS_RUNTIME_MODE")
+    # settings before spawning pytest.  Remove it for the test so the documented
+    # default applies; the autouse os.environ snapshot restores it afterwards.
     os.environ.pop("OUROBOROS_RUNTIME_MODE", None)
     try:
         from ouroboros.config import reset_runtime_mode_baseline_for_tests
@@ -354,10 +353,6 @@ def _reset_runtime_mode_baseline_between_tests():
         reset_runtime_mode_baseline_for_tests()
     except Exception:
         pass
-    if _saved_runtime_mode is None:
-        os.environ.pop("OUROBOROS_RUNTIME_MODE", None)
-    else:
-        os.environ["OUROBOROS_RUNTIME_MODE"] = _saved_runtime_mode
 
 
 @pytest.fixture(autouse=True)
