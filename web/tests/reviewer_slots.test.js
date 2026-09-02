@@ -164,11 +164,11 @@ test('the standing note states the POLICY, never the current routing', () => {
     // subscriptions and never fall back to API spend", so the second owner read
     // Settings and believed their commit reviews were spending subscription
     // windows and would wait for capacity — while in fact they were spending
-    // API budget on the next commit (BIBLE P1). The conditional version of that
-    // claim already exists server-side, emitted only when the configuration
-    // really is all-delegated (`reviewer_slot_config._fallback_warning_text`);
-    // a static copy of it cannot carry the condition, so it must state the rule
-    // instead of the situation.
+    // API budget on the next commit (BIBLE P1). The only conditional sentence
+    // lives server-side: `reviewer_slot_config.reviewer_slot_save_check` returns
+    // the one-time R12 disclosure when a save first gives the triad a retrieving
+    // row; a static copy cannot carry that condition, so this note must state
+    // the rule instead of the situation.
     const markup = renderReviewerSlotsSection();
 
     // The section ships with NO rows — they are painted from the saved setting

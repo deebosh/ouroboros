@@ -689,7 +689,7 @@ def test_the_save_that_first_makes_the_triad_retrieve_discloses_once_with_number
         assert "t_sess (agent session codex=gpt-5.6-sol" in disclosure
         assert "t_actor (native inspection via api-critic → openai/gpt-5.6-terra)" in disclosure
         assert "≈12 s and ≈$0.07 per model row per task" in disclosure and "≈75 s / ≈$0.82" in disclosure
-        assert "minutes of your subscription window" in disclosure and "Keep an api_chat row" in disclosure
+        assert "minutes of your subscription window" in disclosure and "keeps a packet panel" in disclosure
         # Saving the same retrieving triad again is silent — the notice is one-time.
         data = _save(monkeypatch, settings_path, {REVIEWER_SLOTS_ENV: json.dumps(_TRIAD)})
         assert not [w for w in data.get("warnings") or [] if "Task acceptance now follows" in w]

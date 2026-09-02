@@ -172,7 +172,7 @@ test('one connected account declares the preset request and promises nothing cer
 
     const text = agentsOutcomeText(['claude']);
     assert.match(text, /Claude Code is connected/);
-    assert.match(text, /commit, scope, advisory, plan, and skill review/);
+    assert.match(text, /commit, scope, advisory, plan, skill review, and task acceptance/);
     assert.match(text, /Available subagents/);
     // Conditional by construction: the compiler may still refuse a seat.
     assert.match(text, /will try to/);
@@ -195,7 +195,7 @@ test('a mixed reviewer-capable and task-only setup names each capability separat
     const snapshot = snapshotWith(['codex', 'agy']);
     const text = agentsOutcomeText(['codex', 'agy'], { snapshot });
     assert.match(text, /Codex and Antigravity are connected/);
-    assert.match(text, /Codex can also move commit, scope, advisory, plan, and skill review/);
+    assert.match(text, /Codex can also move commit, scope, advisory, plan, skill review, and task acceptance/);
     assert.match(text, /Antigravity is task-only/);
     assert.doesNotMatch(text, /Antigravity can also move commit review/);
 });

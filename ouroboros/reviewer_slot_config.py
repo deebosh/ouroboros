@@ -944,8 +944,8 @@ def acceptance_delivery_disclosure(rows: Sequence[ConfiguredReviewerSlot]) -> st
         f"Task acceptance now follows these triad rows, including the retrieving ones — {named}. "
         f"Every substantive task's acceptance panel runs on them from the next task: {_ACCEPTANCE_API_PANEL_MEASURED}. "
         "A native inspection row spends API money as rounds × one send; an agent-session row spends "
-        "minutes of your subscription window per task instead. Keep an api_chat row in the triad "
-        "if you want a packet panel."
+        "minutes of your subscription window per task instead. A triad that also carries an "
+        "api_chat row keeps a packet panel beside them."
     )
 
 

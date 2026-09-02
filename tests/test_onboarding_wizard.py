@@ -425,8 +425,10 @@ def test_agents_step_ladder_states_the_startup_gate_honestly():
     assert "keeps using the API key or local model" in source
     assert "a plan cannot run it" in source
     assert "not free" in source
-    assert "Task acceptance stays on the API" in source
-    assert "plan and skill review follow each configured triad row" in source
+    assert "Task acceptance stays on the API" not in source
+    assert "commit, plan, skill review and task acceptance each follow their configured" in source
+    assert "acceptance panel on the subscription" in source
+    assert "about 12 s" in source and "$0.07 per model row per task" in source  # R12 numbers, not adjectives
     assert "all reviewers" not in source.lower()
     # D-10 vocabulary in the new owner-facing surface.
     assert "coding agent" not in source.lower()

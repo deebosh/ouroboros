@@ -325,7 +325,7 @@ export function agentsOutcomeText(connected = [], {
     if (reviewerHarnesses.length) {
         const reviewerLabels = familyLabels(reviewerHarnesses, snapshot, { catalogKnown });
         clauses.push(`${joinLabels(reviewerLabels)} can `
-            + 'also move commit, scope, advisory, plan, and skill review.');
+            + 'also move commit, scope, advisory, plan, skill review, and task acceptance.');
     }
     if (taskOnlyHarnesses.length) {
         const taskOnlyLabels = familyLabels(taskOnlyHarnesses, snapshot, { catalogKnown });
