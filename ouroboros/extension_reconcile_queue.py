@@ -150,7 +150,21 @@ def adopt_published_extension_generation(
     _adopted_generations[str(root)] = published
     from ouroboros.extension_loader import reload_all
 
-    results = reload_all(root, settings_reader, repo_path=repo_path)
+    try:
+        results = reload_all(root, settings_reader, repo_path=repo_path)
+    except Exception as exc:
+        # The generation stays marked (exactly ONE reload per distinct generation is
+        # the contract: a worker that cannot converge must not reload before every
+        # task), so a reload that RAISES must leave a durable fact instead of a
+        # silent «already_adopted» on every later call (daemon audit #17 f3).
+        append_jsonl(root / "logs" / "events.jsonl", {
+            "ts": utc_now_iso(),
+            "type": "extension_generation_adoption_failed",
+            "published_generation": published,
+            "previous_generation": local,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        })
+        raise
     adopted = live_extension_fingerprint()
     append_jsonl(root / "logs" / "events.jsonl", {
         "ts": utc_now_iso(),

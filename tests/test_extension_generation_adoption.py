@@ -230,6 +230,36 @@ def test_a_generation_a_worker_cannot_converge_on_costs_exactly_one_reload(
         "a worker-side adopt disabled a skill for the whole install")
 
 
+def test_a_reload_that_raises_leaves_a_typed_failure_fact_and_still_costs_one_reload(tmp_path, monkeypatch):
+    """A reload that RAISES keeps the exactly-one-reload contract (the generation
+    stays marked, later calls answer ``already_adopted``) but must not vanish
+    silently: one ``extension_generation_adoption_failed`` event row names the
+    generation and the error (daemon audit #17 f3: a transient failure poisoned
+    the generation with no durable fact anywhere)."""
+    import json
+
+    from ouroboros import extension_reconcile_queue as erq
+
+    root = tmp_path / "data"
+    (root / "logs").mkdir(parents=True)
+    monkeypatch.setattr(erq, "_adopted_generations", {})
+    monkeypatch.setattr(erq, "published_extension_generation", lambda _root: "gen-x")
+    monkeypatch.setattr("ouroboros.extension_companion.is_server_process", lambda: False)
+    monkeypatch.setattr("ouroboros.extension_registry_state.live_extension_fingerprint", lambda: "gen-old")
+
+    def boom(*_a, **_k):
+        raise OSError("registry unreadable mid-reload")
+
+    monkeypatch.setattr("ouroboros.extension_loader.reload_all", boom)
+    with pytest.raises(OSError):
+        erq.adopt_published_extension_generation(root, lambda: {}, repo_path=tmp_path)
+    rows = [json.loads(l) for l in (root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    failed = [r for r in rows if r.get("type") == "extension_generation_adoption_failed"]
+    assert len(failed) == 1 and failed[0]["published_generation"] == "gen-x" and "OSError" in failed[0]["error"]
+    second = erq.adopt_published_extension_generation(root, lambda: {}, repo_path=tmp_path)
+    assert second["action"] == "already_adopted", second  # the contract: one reload, however it ended
+
+
 @pytest.mark.parametrize("marker", ["absent", "unparseable", "empty_generation"])
 def test_an_unreadable_published_registry_is_fail_closed(tmp_path, marker):
     """No readable marker is no evidence of divergence — never a blind reload."""
