@@ -851,17 +851,32 @@ def _run_retrieving_review(
     except Exception:
         log.debug("deep self-review prompt custody write failed", exc_info=True)
     scope = _dc_replace(current_usage_scope() or UsageScope(), category="deep_self_review", source="deep_self_review")
+    memory = task_facts["memory"]
     try:
         with usage_scope(scope):
             attempt = executor.execute()
     except Exception as exc:
-        _record_execution(slot, executor.failure_custody(), status="error", error=f"{type(exc).__name__}: {exc}")
-        raise
+        # The memory fact precedes EVERY «Выполняется как» record — this
+        # failure-custody row included — and rides the typed failure the caller
+        # receives (with the executor's proven custody facts, so a failed
+        # execution stays visible). BudgetExceeded is recorded, then propagates
+        # to the agent's budget rail like every other budget refusal.
+        custody = {**executor.failure_custody(), "deep_review_memory": memory}
+        _record_execution(slot, custody, status="error", error=f"{type(exc).__name__}: {exc}")
+        if isinstance(exc, BudgetExceeded):
+            raise
+        log.error("Deep self-review failed: %s", exc, exc_info=True)
+        return _failed(f"❌ Deep self-review failed: {type(exc).__name__}: {exc}",
+                       reason_code="deep_self_review_error", usage=custody)
     usage = dict(attempt.usage or {})
+    # Attached FIRST: the usage handed to every «Выполняется как» record below
+    # and the returned usage carry the memory fact. The durable D22 projection
+    # itself persists route/model/status/capability_delta and the typed failure
+    # facts only — memory is disclosed durably by the header and this usage.
+    usage["deep_review_memory"] = memory
     # The executor's own list is never mutated (shallow copy): the coverage
     # deltas below are appended to THIS record's copy.
     usage["capability_delta"] = list(usage.get("capability_delta") or [])
-    usage["deep_review_memory"] = task_facts["memory"]  # attached FIRST: every D22 row's usage carries it
     text = str(attempt.raw_text or "")
     if not text.strip():
         # An empty product is an ERROR row in «Выполняется как», exactly like
@@ -1061,7 +1076,11 @@ def _run_packed_review(
     )
     usage = dict(usage or {})
     memory = stats.get("memory") or {"inlined": 0, "total": len(_MEMORY_WHITELIST), "dispositions": {}}
-    usage["deep_review_memory"] = memory  # attached FIRST: the error row's usage carries it too
+    # FIRST: the usage of both «Выполняется как» records below (error or
+    # responded) and the returned usage carry the memory fact; the durable D22
+    # projection itself does not (route/model/status/capability_delta and typed
+    # failure facts only).
+    usage["deep_review_memory"] = memory
     slot = _review_slot(row, model, None)
     text = response.get("content") or "" if isinstance(response, dict) else ""
     if not text:
@@ -1101,7 +1120,10 @@ def run_deep_self_review(
     Returns ``(text, usage)``. A delivered report carries the host provenance
     header; every ordinary review failure returns its text with typed usage
     (``execution_status="infra_failed"`` + ``reason_code``) so the caller can
-    keep the previous report instead of overwriting it with an error. The ONE
+    keep the previous report instead of overwriting it with an error; on a
+    retrieving row a failure after the task was assembled also carries the
+    memory fact (``deep_review_memory``) and the executor's failure custody —
+    the same usage its «Выполняется как» error row was recorded from. The ONE
     exception that propagates is ``BudgetExceeded`` — the paid ledger's
     refusal is budget vocabulary for the agent's budget-pause rail, not a
     review error.

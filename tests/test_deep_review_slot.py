@@ -490,9 +490,60 @@ def test_retrieving_failure_is_typed_and_recorded_never_a_report(review_repo, re
     monkeypatch.setattr(deep_self_review, "_session_route_reason", lambda row: "")
     text, usage = run_deep_self_review(review_repo, review_drive, object(), lambda _m: None, slot=_session_row())
     assert text.startswith("❌ Deep self-review failed: ReviewRouteUnavailable: delegated review route unavailable")
-    assert usage == {"execution_status": "infra_failed", "reason_code": "deep_self_review_error"}
+    assert usage["execution_status"] == "infra_failed" and usage["reason_code"] == "deep_self_review_error"
+    # The typed failure usage carries the memory fact and the executor's failure
+    # custody — the same usage the «Выполняется как» error row was recorded from.
+    assert usage["deep_review_memory"]["total"] == 7 and usage["delegated_run_started"] is False
     last = reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]
     assert last["status"] == "error" and last["surface"] == "deep_self_review"
+
+
+def test_memory_fact_precedes_every_runs_as_record_and_rides_the_returned_usage(review_repo, review_drive, monkeypatch):
+    """Round 3, ONE class: on all three retrieving paths — responded, empty
+    response, executor exception — the usage handed to the «Выполняется как»
+    record carries `deep_review_memory`, and so does the usage the caller
+    receives (a typed failure included). The durable D22 projection persists
+    route/model/status/capability_delta and typed failure facts ONLY: the
+    memory fact is intentionally absent there (no deep-review-only field on a
+    cross-surface SSOT) — its durable disclosure is the header and the usage."""
+    import ouroboros.review_execution as review_execution
+
+    class _Empty(_FakeSessionExecutor):
+        def execute(self):
+            return ReviewAttemptResult(message={"content": " "}, usage={"resolved_model": "gpt-5.6-sol"}, raw_text=" ")
+
+    class _Boom(_FakeSessionExecutor):
+        def execute(self):
+            raise RuntimeError("socket reset")
+
+    recorded = []
+    real_record = deep_self_review._record_execution
+
+    def spy(slot, usage, *, status, error=""):
+        recorded.append((status, dict(usage)))
+        real_record(slot, usage, status=status, error=error)
+
+    monkeypatch.setattr(deep_self_review, "_record_execution", spy)
+    monkeypatch.setattr(deep_self_review, "_session_route_reason", lambda row: "")
+    for executor_cls, status, prefix in (
+        (_FakeSessionExecutor, "responded", "<!-- deep-review provenance"),
+        (_Empty, "error", "⚠️ Model returned an empty response"),
+        (_Boom, "error", "❌ Deep self-review failed: RuntimeError: socket reset"),
+    ):
+        recorded.clear()
+        monkeypatch.setattr(review_execution, "_review_route_executor", executor_cls)
+        text, usage = run_deep_self_review(review_repo, review_drive, object(), lambda _m: None, slot=_session_row())
+        assert text.startswith(prefix), (executor_cls.__name__, text[:80])
+        assert [s for s, _ in recorded] == [status]
+        handed = recorded[0][1]
+        assert handed["deep_review_memory"]["total"] == 7 and handed["deep_review_memory"]["inlined"] == 3
+        assert usage["deep_review_memory"] == handed["deep_review_memory"]
+        if status == "error":
+            assert usage["execution_status"] == "infra_failed" and usage["reason_code"] == "deep_self_review_error"
+        last = reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]
+        assert last["status"] == status and last["surface"] == "deep_self_review"
+        assert last["requested"]["session_target"] == "codex=gpt-5.6-sol" and "capability_delta" in last
+        assert "deep_review_memory" not in json.dumps(last)  # intentionally absent from the durable projection
 
 
 def test_availability_follows_the_row_not_the_model_key(env, monkeypatch):
