@@ -272,7 +272,8 @@ def test_ui_smoke_agents_panel_wizard_finish_judges_the_roster(direct_server_wit
     """First-run wizard (docs/ARCHITECTURE.md §3): an unrouted entry added on the Agents step
     does not block Continue; Finish on the summary reports it and, back on Agents, the card
     is already tinted and self-naming; the fix reconciles line and tint together and the
-    second Finish succeeds."""
+    second Finish passes the wizard's own checks and enters saving (the save's provider
+    round-trip is not this test's subject)."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
