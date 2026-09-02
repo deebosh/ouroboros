@@ -420,8 +420,10 @@ def test_project_lifecycle_rows_render_design_system_action_static_contract():
     assert "chat-live-project-btn" not in chat
     assert "chat-live-project-btn" not in style
     assert 'class="btn btn-xs btn-default" data-turn-into-project' in chat
-    # The identity chip keeps its own role untouched.
-    assert "chat-live-project-card-btn" in chat
+    # The identity chip keeps its own role, now built once in ui_helpers and
+    # shared by the converted card (chat.js) and the bound-task footer (app.js).
+    assert "chat-live-project-card-btn" in helpers
+    assert "renderProjectChip(" in chat
 
     # Layout-only container CSS; the helper owns the one semantic button role.
     assert ".system-message-actions {" in style

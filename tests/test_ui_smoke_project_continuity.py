@@ -998,3 +998,73 @@ def test_ui_smoke_open_project_panel_heals_lost_task_done_from_state_fanout(
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
             pytest.skip(str(exc))
         raise
+
+
+@pytest.mark.ui_browser
+def test_ui_smoke_project_pointer_is_a_main_root_affordance(direct_server_with_data):  # noqa: F811
+    """The bound-task pointer (`in project ↗`) belongs to the LIVE Main ROOT card:
+    a task that scopes itself into a project mid-run keeps its Main card, which
+    gains the pointer; the same task's card inside the project panel carries none;
+    and clicking the Main pointer while that panel is already open leaves it open."""
+    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+
+    url = direct_server_with_data["url"]
+    data_dir = direct_server_with_data["data_dir"]
+    project = create_project(data_dir, "ptr-panel", name="Pointer panel")
+    project_chat = int(project["chat_id"])
+    main_card = '#page-chat .chat-live-card[data-task-id="ptr-root"]'
+    panel_card = '#panel-pchat-ptr-panel .chat-live-card[data-task-id="ptr-root"]'
+    try:
+        with sync_playwright() as pw:
+            browser, page = _launch(pw)
+            try:
+                _goto_main_ready(page, url)
+                # The task starts in Main as a live root card...
+                page.evaluate(
+                    """() => window.__ouroWs.emit('chat', {
+                        type: 'chat', role: 'assistant', is_progress: true, chat_id: 1,
+                        task_id: 'ptr-root', content: 'Started in Main',
+                        ts: '2026-08-19T10:00:00+00:00',
+                    })"""
+                )
+                page.wait_for_selector(main_card, state="attached", timeout=30_000)
+                assert page.locator(f"{main_card} .chat-live-bound-pointer").count() == 0
+                # ...then scopes itself into the project (durable binding + project-thread progress).
+                bind_task_to_project(data_dir, "ptr-root", "ptr-panel", project_chat, origin={"absent": "system"})
+                logs_dir = data_dir / "logs"
+                logs_dir.mkdir(parents=True, exist_ok=True)
+                with (logs_dir / "progress.jsonl").open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps({
+                        "ts": "2026-08-19T10:00:01+00:00", "chat_id": project_chat,
+                        "task_id": "ptr-root", "content": "Continues in the project",
+                        "is_progress": True,
+                    }) + "\n")
+                page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
+                page.wait_for_selector(f"{main_card} .chat-live-bound-pointer", state="attached", timeout=30_000)
+                assert page.locator(f"{main_card} .chat-live-project-name").inner_text().strip() == "Pointer panel"
+                assert page.locator(f"{main_card} .chat-live-project-icon svg").count() == 1
+                with page.expect_response(lambda response: response.url.endswith("/api/ui/preferences") and response.request.method == "POST", timeout=30_000):
+                    page.click('.nav-project-row[data-project-id="ptr-panel"]')
+                page.wait_for_selector("#project-panel:not([hidden])", timeout=30_000)
+                page.wait_for_selector(panel_card, state="attached", timeout=30_000)
+                # Re-apply the bindings now that the panel card exists: it stays pointer-free.
+                page.evaluate("() => window.__ouroWs.emit('projects_changed', {})")
+                page.wait_for_timeout(600)
+                assert page.locator(f"{panel_card} .chat-live-bound-pointer").count() == 0
+                assert page.locator(f"{main_card} .chat-live-bound-pointer").count() == 1
+                # Open-or-noop: the pointer never closes the panel it points at. The
+                # panel backdrop covers Main, so the handler is exercised directly.
+                page.locator(f"{main_card} .chat-live-bound-pointer").dispatch_event("click")
+                page.wait_for_timeout(400)
+                assert page.locator("#project-panel:not([hidden])").count() == 1
+                assert page.locator(panel_card).count() == 1
+            finally:
+                browser.close()
+    except PlaywrightError as exc:
+        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+            pytest.skip(str(exc))
+        raise

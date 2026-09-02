@@ -305,19 +305,19 @@ export function taskCostMeta(payload = {}) {
     const pendingKnown = payload.cost_final === false
         || payload.cost_with_children_partial === true
         || payload.cost_accounting_status === 'available' && !has('cost_final');
-    const meta = [];
-    if (total === null) {
-        meta.push('cost pending');
-    } else if (finalKnown || pendingKnown || total !== 0) {
-        meta.push(`cost=$${total.toFixed(2)}${pendingKnown && !finalKnown ? ' (pending)' : ''}`);
-    }
-    const reserved = optionalFiniteNumber(payload.reserved_usd);
-    if (reserved !== null && reserved > 0) meta.push(`reserved=$${reserved.toFixed(2)}`);
-    const unresolved = optionalFiniteNumber(payload.unresolved_upper_bound_usd);
-    if (unresolved !== null && unresolved > 0) meta.push(`unresolved≤$${unresolved.toFixed(2)}`);
+    // ONE amount (owner decision, 2026-09-02): the accounted upper bound already
+    // contains settled + reserved + unresolved (cost_projection.py), so the card
+    // states that number once and lets its wording carry the openness — a ceiling
+    // (`up to`) while the ledger is open, a plain amount once final, and a floor
+    // (`or more`) when calls with no known price sit outside the number entirely.
+    // Component breakdowns stay on Costs, Logs and task detail.
     const unknown = optionalFiniteNumber(payload.unknown_unmetered);
-    if (unknown !== null && unknown > 0) meta.push(`unmetered=${Math.trunc(unknown)}`);
-    return meta;
+    const unpriced = unknown !== null && unknown > 0;
+    if (total === null) return ['cost pending'];
+    if (!(finalKnown || pendingKnown || total !== 0)) return [];
+    const amount = `$${total.toFixed(2)}`;
+    if (unpriced) return [`${amount} or more`];
+    return [finalKnown ? amount : `up to ${amount}`];
 }
 
 /**
@@ -407,8 +407,32 @@ export function clearStickyCardState(record) {
  */
 export const COLLAPSED_ACTIVITY_MAX = 240;
 
+/**
+ * The collapsed activity line is plain text: the expanded timeline renders the
+ * same headline through `renderMarkdown`, so the compact projection strips
+ * exactly that renderer's inventory (utils.js) — fences, inline code, bold,
+ * emphasis, strikethrough, headings, bullets, links, table pipes — and nothing
+ * more. A headline that is nothing but markers keeps its source text: an empty
+ * projection would flip the reserved activity band's `:empty` rules.
+ */
+export function plainActivityText(text = '') {
+    const source = String(text || '');
+    const plain = source
+        .replace(/```\w*\n([\s\S]*?)```/g, '$1')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/\*\*(.+?)\*\*/g, '$1')
+        .replace(/\*(.+?)\*/g, '$1')
+        .replace(/~~(.+?)~~/g, '$1')
+        .replace(/^#{1,3} (.+)$/gm, '$1')
+        .replace(/^- (.+)$/gm, '$1')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+        .replace(/^\|(.+)\|$/gm, (_, row) => row.split('|').map((cell) => cell.trim()).join(' '))
+        .replace(/^[\s\-:|]+$/gm, '');
+    return plain.trim() ? plain : source;
+}
+
 export function boundActivityPreview(value = '') {
-    const candidate = String(value || '').replace(/\s+/g, ' ').trim();
+    const candidate = plainActivityText(value).replace(/\s+/g, ' ').trim();
     if (candidate.length <= COLLAPSED_ACTIVITY_MAX) return candidate;
     return candidate.slice(0, COLLAPSED_ACTIVITY_MAX - 1).trimEnd() + '…';
 }

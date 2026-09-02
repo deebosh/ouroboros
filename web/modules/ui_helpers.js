@@ -1,4 +1,5 @@
 import { apiFetch } from './api_client.js';
+import { PAGE_ICONS } from './page_icons.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 // Cycle note: toast.js imports normalizeTone from this module. Both edges only
 // call the imported function inside function bodies (never at module eval), so
@@ -125,6 +126,31 @@ export function createSystemMessageAction({ label, onClick, disabled = false, ar
     btn.textContent = String(label || '');
     if (disabled) btn.disabled = true;
     if (ariaLabel) btn.setAttribute('aria-label', ariaLabel);
+    if (typeof onClick === 'function') btn.addEventListener('click', onClick);
+    return btn;
+}
+
+/**
+ * The one project chip: the bound-task footer in Main (`in project ↗`) and the
+ * whole converted card (`running in background ↗`) share this exact DOM so the
+ * two states of one element cannot drift apart. The icon is the shared Projects
+ * vector (never an emoji); the name is written as text, never as HTML.
+ */
+export function renderProjectChip({ name, status, onClick, className = '' } = {}) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = ['chat-live-project-card-btn', className].filter(Boolean).join(' ');
+    const icon = document.createElement('span');
+    icon.className = 'chat-live-project-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = PAGE_ICONS.projects;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'chat-live-project-name';
+    nameEl.textContent = String(name || '');
+    const statusEl = document.createElement('span');
+    statusEl.className = 'chat-live-project-status';
+    statusEl.textContent = String(status || '');
+    btn.append(icon, nameEl, statusEl);
     if (typeof onClick === 'function') btn.addEventListener('click', onClick);
     return btn;
 }
