@@ -298,6 +298,25 @@ def test_escaping_inflation_cannot_jump_the_landing_notice(subject_repo, monkeyp
     assert "RESULT TRUNCATED" in tool_msg["content"] and "\\n" not in tool_msg["content"]  # real text, escaped only on the wire
 
 
+def test_first_send_is_measured_on_the_wire(subject_repo, monkeypatch):
+    """The initial system+task messages are charged as the serialized objects
+    the send carries (escape-heavy text inflates), so a bound the raw text
+    would pass but the wire would not is refused before any send."""
+    import ouroboros.review_native_episode as native_episode
+
+    task = ('line "quoted" \\ back\n' * 2_000)  # ~44K raw, far more on the wire
+    llm = _ScriptedLLM([{"content": _VERDICT}])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm, session_task=task), llm=llm)
+    raw = len(executor.episode_prompt) + len(native_episode._NATIVE_REVIEW_INSTRUCTIONS)
+    wire = len(json.dumps([{"role": "system", "content": native_episode._NATIVE_REVIEW_INSTRUCTIONS},
+                           {"role": "user", "content": executor.episode_prompt}], ensure_ascii=False))
+    assert wire > raw + 2_000
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: raw + 12_000)
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        executor.execute()
+    assert exc.value.code == "native_bound_below_first_send" and not llm.calls
+
+
 def test_bound_below_the_first_send_is_a_typed_refusal_before_any_send(subject_repo, monkeypatch):
     """A bound that leaves no room to read anything must not make the landing
     notice the first thing the reviewer hears (an obedient `[]` would then be a
@@ -650,6 +669,17 @@ def test_terminal_round_masks_secrets_structurally(subject_repo):
     # redacted as text — every shape the text redactor masks.
     from ouroboros.observability import redact_projection
 
+    # Secrets nested INSIDE JSON strings inside JSON (any depth) are masked too.
+    nested = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "function": {"name": "search_code",
+         "arguments": json.dumps({"payload": json.dumps({"password": "hunter2"})})}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"wrapped": json.dumps({"api_key": "hunter2"})})}]
+    assert "hunter2" not in NativeToolRoundReviewExecutor._terminal_round_fact(nested)
+    # A non-list tool_calls container (malformed provider output) never breaks the record.
+    for container in (7, {"id": "x", "password": "hunter2"}, "junk"):
+        doc = json.loads(NativeToolRoundReviewExecutor._terminal_round_fact(
+            [{"role": "assistant", "content": "", "tool_calls": container}]))
+        assert "hunter2" not in json.dumps(doc) and doc["messages"][0]["role"] == "assistant"
     token = "sk-ant-api03-" + "A" * 40
     if token not in str(redact_projection(token).value):  # the text redactor knows this shape
         scalar = [{"role": "assistant", "content": f"found {token} in config", "tool_calls": []},
@@ -657,7 +687,7 @@ def test_terminal_round_masks_secrets_structurally(subject_repo):
         assert token not in NativeToolRoundReviewExecutor._terminal_round_fact(scalar)
 
 
-def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path):
+def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypatch):
     """The coordinator's logical window for the slot is a bound like the owner
     deadline: past it, a verdict episode refuses typed and a report keeps its
     draft; one send's transport timeout never outlives the window."""
@@ -691,6 +721,19 @@ def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path):
     result = executor.execute()
     assert result.raw_text == "# Draft\n" and result.usage["native_incomplete"] == "deadline_exhausted"
     assert llm.calls[0]["timeout"] <= 0.2  # one send never outlives the window: no floor above it
+
+    # The window expiring between the round's admission check and dispatch
+    # takes the deadline path — no send with a floored timeout.
+    import ouroboros.review_native_episode as native_episode
+
+    ticks = iter([1000.0])  # the admission check sees 1000; every later reading (the clamp) sees 1002
+    monkeypatch.setattr(native_episode.time, "monotonic", lambda: next(ticks, 1002.0))
+    llm = _ScriptedLLM([{"content": _VERDICT}])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    executor._logical_deadline_monotonic = 1001.0
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        executor.execute()
+    assert exc.value.code == "deadline_exhausted" and not llm.calls
 
 
 def test_round_without_progress_is_a_typed_malformed_end(subject_repo):

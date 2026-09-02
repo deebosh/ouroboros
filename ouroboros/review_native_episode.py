@@ -348,24 +348,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         messages: List[Dict[str, Any]] = []
         try:
             end_reason = "registry_unavailable"
-            registry, schemas = self._inspection_registry(root, data_root or scratch)
+            registry, schemas, messages, transcript_chars = self._open_episode(root, data_root or scratch)
             end_reason = "transcript_bound"
-            # The counter measures what every send actually carries: the
-            # system instructions and the tool schemas ride EVERY provider
-            # call, and tool-call argument objects accumulate in `messages`
-            # exactly like results do. Counting only prompt+content+results
-            # understated each send by the fixed system/schema cost and let
-            # the argument tail drift past the promised bound unmeasured.
-            # Units are CHARS throughout — same as the cap.
-            transcript_chars = (
-                len(self.episode_prompt)
-                + len(_NATIVE_REVIEW_INSTRUCTIONS)
-                + len(json.dumps(schemas, ensure_ascii=False, default=str))
-            )
-            messages = [
-                {"role": "system", "content": _NATIVE_REVIEW_INSTRUCTIONS},
-                {"role": "user", "content": self.episode_prompt},
-            ]
             if transcript_chars >= landing_at:
                 # FLOOR: a bound that lands before the first send leaves no
                 # room to read anything — a review with zero reads is not a
@@ -415,9 +399,17 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     slot.model, getattr(slot, "transport_timeout_sec", None), deadline_at,
                 )
                 if logical_deadline is not None:
-                    # One send never outlives the slot's window (no floor: the
-                    # session executor clamps the same way).
-                    remaining = max(0.001, float(logical_deadline) - time.monotonic())
+                    # Recomputed immediately before dispatch: a window that
+                    # expired since the round's admission check takes the
+                    # deadline path (a report keeps its draft), and a positive
+                    # remainder bounds the send with NO floor.
+                    remaining = float(logical_deadline) - time.monotonic()
+                    if remaining <= 0:
+                        end_reason = "deadline_exhausted"
+                        if shape == "report" and last_content:
+                            break
+                        raise _deadline_exhausted_error(
+                            "slot logical window exhausted before the native review send")
                     transport = remaining if transport is None else min(float(transport), remaining)
                 if transport is not None:
                     chat_kwargs["timeout"] = transport
@@ -544,7 +536,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 # a bounded copy on the episode facts, redacted like every
                 # other projected review artifact. Assembled HERE so every
                 # non-delivering end carries it, exception ends included.
-                episode["native_terminal_round"] = self._terminal_round_fact(messages)
+                try:
+                    episode["native_terminal_round"] = self._terminal_round_fact(messages)
+                except Exception as exc:  # custody must never mask the episode's own end
+                    episode["native_terminal_round"] = json.dumps(
+                        {"error": "terminal_round_unavailable", "reason": type(exc).__name__})
             # One typed custody row per episode END — including the ends that
             # leave through an exception (deadline, transport, registry): a
             # refused episode used to leave no trace of how far it got. The
@@ -600,6 +596,26 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 "reason": f"native_{end_reason}_before_final_answer",
             })
         self._raw_transcript = final_answer
+
+    def _open_episode(self, root: str, drive_root: Any) -> tuple[Any, List[Dict[str, Any]], List[Dict[str, Any]], int]:
+        """The episode's opening: the inspection registry, the first send's
+        messages, and that send measured the way EVERY send is measured.
+
+        The counter measures what a send actually carries — the serialized
+        message objects (system instructions and the task) plus the tool
+        schemas that ride every provider call; later assistant envelopes and
+        tool messages are charged the same way. Counting raw text understated
+        an escape-heavy first send. Units are CHARS throughout — same as the cap."""
+        registry, schemas = self._inspection_registry(root, drive_root)
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": _NATIVE_REVIEW_INSTRUCTIONS},
+            {"role": "user", "content": self.episode_prompt},
+        ]
+        transcript_chars = (
+            len(json.dumps(messages, ensure_ascii=False, default=str))
+            + len(json.dumps(schemas, ensure_ascii=False, default=str))
+        )
+        return registry, schemas, messages, transcript_chars
 
     def _chat_kwargs(self, messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]], max_tokens: int) -> Dict[str, Any]:
         """One round's provider call, shaped from the request and the slot."""
@@ -723,20 +739,41 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         from ouroboros.observability import redact_projection
         from ouroboros.utils import truncate_within_limit
 
+        def _unfold(value: Any, depth: int = 0) -> Any:
+            # JSON carried inside strings — at any nesting — is parsed so the
+            # structural key masking sees every secret-named field; bounded in
+            # depth (container levels) and size so hostile input cannot make
+            # this unbounded.
+            if isinstance(value, str) and depth < 8 and len(value) <= 200_000:
+                stripped = value.lstrip()
+                if stripped[:1] in "{[":
+                    try:
+                        parsed = json.loads(value)
+                    except (TypeError, ValueError):
+                        return value
+                    if isinstance(parsed, (dict, list)):
+                        return {"__json__": _unfold(parsed, depth + 1)}
+                return value
+            if isinstance(value, dict):
+                return {str(k): _unfold(v, depth + 1) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_unfold(v, depth + 1) for v in value]
+            return value
+
+        def _fold(value: Any) -> Any:
+            if isinstance(value, dict):
+                if set(value) == {"__json__"}:
+                    return json.dumps(_fold(value["__json__"]), ensure_ascii=False, default=str)
+                return {k: _fold(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_fold(v) for v in value]
+            return value
+
         def _redacted(value: Any) -> Any:
-            # Structural key masking works on OBJECTS: JSON carried inside a
-            # string (tool-call arguments, a JSON tool result) is parsed first
-            # so a secret-named field is masked, then serialized back; plain
-            # text is redacted as text.
-            if isinstance(value, str):
-                try:
-                    parsed = json.loads(value)
-                except (TypeError, ValueError):
-                    parsed = None
-                if isinstance(parsed, (dict, list)):
-                    return json.dumps(redact_projection(parsed).value, ensure_ascii=False, default=str)
-                return redact_projection(value).value  # plain text or a JSON scalar: redacted as text
-            return redact_projection(value).value
+            # Structural key masking works on OBJECTS: unfold every JSON string
+            # (nested ones included), mask, fold back; plain text and JSON
+            # scalars are redacted as text.
+            return _fold(redact_projection(_unfold(value)).value)
 
         tail: List[Dict[str, Any]] = []
         for msg_item in reversed(messages):
@@ -749,17 +786,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         results = [m for m in tail[1:] if m.get("role") == "tool"]
         trailing_notice = any(m.get("role") == "user" for m in tail[1:])
         calls = []
-        for tc in (assistant.get("tool_calls") or []):
-            if isinstance(tc, dict):
-                tc = dict(tc)
-                function = tc.get("function")
-                if isinstance(function, dict):
-                    function = dict(function)
-                    function["arguments"] = _redacted(function.get("arguments"))
-                    tc["function"] = function
-                calls.append(_redacted(tc))
-            else:
-                calls.append(_redacted(tc))
+        raw_calls = assistant.get("tool_calls")
+        # Total over provider output: a non-list container is kept as ONE
+        # bounded redacted value, never iterated.
+        for tc in (raw_calls if isinstance(raw_calls, list) else ([raw_calls] if raw_calls else [])):
+            calls.append(_redacted(tc))
         bounded: List[Dict[str, Any]] = [{
             "role": "assistant",
             "content": truncate_within_limit(str(_redacted(str(assistant.get("content") or "")) or ""), 1_200),
