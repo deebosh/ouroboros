@@ -798,7 +798,7 @@ declaration, so every framed or declarative widget tab carries an explicit value
 |---|---|---|
 | `auto` | Starts when the Widgets page is shown; leaving the page stops it. For cheap instruments (a quota gauge, a status board). | `declarative` — the only value it accepts: the host draws it, there is nothing to start |
 | `manual` | The card shows the title, icon, and a Start button; the program runs only after the owner presses Start. Leaving the page is an ordered Stop: the host sends the dispose message and gives the widget up to one second to save before the frame is removed. | `module`, `iframe` |
-| `retain` | "Keep running": starts on the first Widgets visit and keeps running while the owner is on other pages, with a "running in the background" badge on the card. It stops on the owner's Stop, on skill disable / unload / delete, on app reload, on server restart, and when Ouroboros closes. | — |
+| `retain` | "Keep running": starts on the first Widgets visit and keeps running while the owner is on other pages, with a "running in the background" badge on the card. It stops on the owner's Stop, on skill disable / unload / delete, on app reload, on server restart, and when Ouroboros closes. Keep-alive is the next host phase — see the note at the end of this section for what `retain` does today. | — |
 
 Rules every module author follows:
 
@@ -837,12 +837,16 @@ Rules every module author follows:
 - **Install and enable never start browser code.** The first visit to Widgets
   does; nothing runs at app load.
 
-Until the Widgets host ships its launch-policy phase, every framed widget still
-mounts when Widgets is shown and is stopped when the owner leaves, and the parent
-removes the frame right after posting the dispose message — hooks get no
-acknowledgement grace yet, so autosave while running is the only durable path
-today. `start` and the owner override are validated and stored now so
-declarations and reviews can lead the host.
+What the host does today: `auto` and `manual` are honoured — an `auto` card
+mounts when Widgets is shown and a `manual` card waits behind its Start button;
+the owner's per-card override wins over your declaration; and the dispose →
+acknowledgement handshake is live: your `__ouroWidgetOnDispose` hooks may be
+async and may use the fetch bridge, and the parent gives them up to one second
+before it removes the frame. `retain` is accepted and stored, but the keep-alive
+behaviour in the table above has not shipped yet: until that phase lands, a
+`retain` card behaves exactly like `auto` (it is stopped, in order, when the
+owner leaves Widgets), so autosave while running plus the one-second flush is
+still the whole durable path.
 
 #### WebAssembly (`.wasm`) in the payload
 

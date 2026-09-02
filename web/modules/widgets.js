@@ -11,6 +11,17 @@ import {
 import { mountModuleWidget, mountRouteIframeWidget } from './widget_module.js';
 import { planWidgetListPatch, widgetKey, widgetTabsSignature } from './widget_list.js';
 import {
+    bindWidgetCardMenus,
+    effectiveStartMode,
+    isFramedWidget,
+    renderWidgetCardControls,
+    renderWidgetFacade,
+    syncWidgetCardControls,
+    WIDGET_START_MODES,
+    withWidgetStartMode,
+} from './widget_card.js';
+import { bindWidgetCardReorder, normalizeWidgetOrder, sortTabsByWidgetOrder } from './widget_reorder.js';
+import {
     apiClient,
     apiFetch,
     cleanExtensionRoute,
@@ -65,7 +76,10 @@ function renderCardHtml(tab) {
                     <strong>${escapeHtml(title)}</strong>
                     ${subtitle}
                 </div>
-                <button class="widgets-card-drag" type="button" data-widget-reorder-handle title="Move widget: drag or use arrow keys" aria-label="Move widget: drag or use arrow keys">↕</button>
+                <div class="widgets-card-controls">
+                    ${renderWidgetCardControls(tab)}
+                    <button class="widgets-card-drag" type="button" data-widget-reorder-handle title="Move widget: drag or use arrow keys" aria-label="Move widget: drag or use arrow keys">↕</button>
+                </div>
             </div>
             <div class="widgets-card-body" data-widget-mount></div>
         </article>
@@ -85,127 +99,6 @@ function createCardElement(tab) {
     const template = document.createElement('template');
     template.innerHTML = renderCardHtml(tab).trim();
     return template.content.firstElementChild;
-}
-
-function normalizeWidgetOrder(value) {
-    if (!Array.isArray(value)) return [];
-    const seen = new Set();
-    return value
-        .map((item) => String(item || '').trim())
-        .filter((item) => {
-            if (!item || seen.has(item)) return false;
-            seen.add(item);
-            return true;
-        });
-}
-
-function sortTabsByWidgetOrder(tabs, order) {
-    const rank = new Map(normalizeWidgetOrder(order).map((key, idx) => [key, idx]));
-    return tabs.map((tab, originalIndex) => ({ tab, originalIndex })).sort((a, b) => {
-        const aRank = rank.has(widgetKey(a.tab)) ? rank.get(widgetKey(a.tab)) : Number.MAX_SAFE_INTEGER;
-        const bRank = rank.has(widgetKey(b.tab)) ? rank.get(widgetKey(b.tab)) : Number.MAX_SAFE_INTEGER;
-        if (aRank !== bRank) return aRank - bRank;
-        return a.originalIndex - b.originalIndex;
-    }).map((item) => item.tab);
-}
-
-function currentWidgetOrderFromDom(list) {
-    return Array.from(list.querySelectorAll('[data-widget-key]'))
-        .map((card) => card.dataset.widgetKey || '')
-        .filter(Boolean);
-}
-
-// Cards keep their DOM node across list patches, so binding is per card, once;
-// the drag source is shared by every binding pass over the one Widgets list.
-const reorderBoundCards = new WeakSet();
-let draggedKey = '';
-
-function bindWidgetCardReorder(list, onOrderChange) {
-    if (!list) return;
-    const clearDragState = () => {
-        list.querySelectorAll('.widgets-card.dragging, .widgets-card.drag-over').forEach((card) => {
-            card.classList.remove('dragging', 'drag-over');
-        });
-        draggedKey = '';
-    };
-    const finishReorder = () => {
-        applyMasonry(list);
-        onOrderChange(currentWidgetOrderFromDom(list));
-    };
-    list.querySelectorAll('[data-widget-reorder-handle]').forEach((handle) => {
-        const card = handle.closest('[data-widget-key]');
-        if (!card || reorderBoundCards.has(card)) return;
-        handle.setAttribute('draggable', 'true');
-        handle.addEventListener('dragstart', (event) => {
-            draggedKey = card.dataset.widgetKey || '';
-            if (!draggedKey) return;
-            card.classList.add('dragging');
-            if (event.dataTransfer) {
-                event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData('text/plain', draggedKey);
-            }
-        });
-        handle.addEventListener('dragend', clearDragState);
-        handle.addEventListener('keydown', (event) => {
-            let moved = false;
-            if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-                const previous = card.previousElementSibling;
-                if (previous?.classList.contains('widgets-card')) {
-                    previous.before(card);
-                    moved = true;
-                }
-            } else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-                const next = card.nextElementSibling;
-                if (next?.classList.contains('widgets-card')) {
-                    next.after(card);
-                    moved = true;
-                }
-            } else if (event.key === 'Home') {
-                const first = list.querySelector('.widgets-card');
-                if (first && first !== card) {
-                    first.before(card);
-                    moved = true;
-                }
-            } else if (event.key === 'End') {
-                const cards = list.querySelectorAll('.widgets-card');
-                const last = cards[cards.length - 1];
-                if (last && last !== card) {
-                    last.after(card);
-                    moved = true;
-                }
-            }
-            if (!moved) return;
-            event.preventDefault();
-            clearDragState();
-            finishReorder();
-            handle.focus();
-        });
-    });
-    list.querySelectorAll('.widgets-card').forEach((card) => {
-        if (reorderBoundCards.has(card)) return;
-        reorderBoundCards.add(card);
-        card.addEventListener('dragover', (event) => {
-            if (!draggedKey || card.dataset.widgetKey === draggedKey) return;
-            event.preventDefault();
-            card.classList.add('drag-over');
-            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-        });
-        card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
-        card.addEventListener('drop', (event) => {
-            if (!draggedKey || card.dataset.widgetKey === draggedKey) return;
-            event.preventDefault();
-            const dragged = list.querySelector(`[data-widget-key="${CSS.escape(draggedKey)}"]`);
-            if (!dragged) return;
-            const cards = Array.from(list.querySelectorAll('.widgets-card'));
-            const draggedIdx = cards.indexOf(dragged);
-            const targetIdx = cards.indexOf(card);
-            if (draggedIdx < 0 || targetIdx < 0) return;
-            if (draggedIdx < targetIdx) card.after(dragged);
-            else card.before(dragged);
-            clearDragState();
-            finishReorder();
-        });
-    });
 }
 
 function getPath(root, path, fallback = '') {
@@ -642,9 +535,16 @@ function renderComponent(tab, component, view, treePath, inheritedTarget = '') {
 }
 
 const widgetDisposers = new Map();
+// key → settle promise of an ordered stop still waiting for the child's
+// acknowledgement (its frame is still in the card until then).
+const widgetDisposing = new Map();
 const widgetMountControllers = new Set();
 const widgetMessageHandlers = new Set();
 const widgetSessionState = new Map();
+// Owner pressed Stop on this card in this page session: re-entering Widgets
+// shows its facade instead of auto-starting it again. Start, a launch-policy
+// change to Auto / Keep running, and Refresh clear it. Never persisted.
+const stoppedByOwner = new Set();
 let widgetsWsBridgeBound = false;
 
 async function callWidgetRoute(tab, spec, values, signal) {
@@ -1218,45 +1118,82 @@ async function mountTab(card, tab, mountSignal = null) {
     return null;
 }
 
+// A framed disposer settles asynchronously (dispose → child ack, ≤ 1 s); track
+// it by key so a remount of the same key waits for it — never two frames per key.
+function trackSettling(key, result) {
+    if (!result || typeof result.then !== 'function') return null;
+    const settling = result
+        .catch((err) => console.warn('widgets: dispose failed', err))
+        .finally(() => {
+            if (widgetDisposing.get(key) === settling) widgetDisposing.delete(key);
+        });
+    widgetDisposing.set(key, settling);
+    return settling;
+}
+
+// Returns the settle promise of an ordered stop, or null when nothing is left to
+// wait for (declarative and route-iframe disposers finish synchronously).
 function disposeWidgetByKey(key) {
     const dispose = widgetDisposers.get(key);
-    if (!dispose) return;
+    if (!dispose) return widgetDisposing.get(key) || null;
     widgetDisposers.delete(key);
     try {
-        dispose();
+        return trackSettling(key, dispose());
     } catch (err) {
         console.warn('widgets: dispose failed', err);
+        return null;
     }
 }
 
+// Issue the stop for every mounted card; resolves once every ordered stop in
+// flight has settled (they run in parallel, each bounded by the ack timeout).
 function disposeMountedWidgets() {
     widgetMountControllers.forEach((controller) => controller.abort());
     widgetMountControllers.clear();
-    widgetDisposers.forEach((dispose) => {
-        try {
-            dispose();
-        } catch (err) {
-            console.warn('widgets: dispose failed', err);
-        }
-    });
-    widgetDisposers.clear();
+    Array.from(widgetDisposers.keys()).forEach(disposeWidgetByKey);
+    return Promise.allSettled(Array.from(widgetDisposing.values()));
+}
+
+// A card whose skill left the live list: its stop is still the ordered one, so
+// the node (and the frame in it) stays until the acknowledgement or the timeout,
+// marked so the keyed patch treats it as already gone.
+function liveCardFor(list, key) {
+    return list.querySelector(`[data-widget-key="${CSS.escape(key)}"]:not([data-widget-removed])`);
+}
+
+function previousLiveCard(card) {
+    let node = card.previousElementSibling;
+    while (node?.hasAttribute('data-widget-removed')) node = node.previousElementSibling;
+    return node;
 }
 
 // Keyed patch over the existing <article> nodes: vanished cards go (their mounted
-// work disposed first), cards whose own entry changed are replaced, new cards are
-// inserted, every other card keeps its DOM node. Order follows `nextTabs`; only a
-// node that is out of place moves.
+// work disposed first, their session state evicted), cards whose own entry
+// changed are replaced, new cards are inserted, every other card keeps its DOM
+// node. Order follows `nextTabs`; only a node that is out of place moves.
 function patchWidgetCards(list, previousTabs, nextTabs) {
     const plan = planWidgetListPatch(previousTabs, nextTabs);
-    const cardFor = (key) => list.querySelector(`[data-widget-key="${CSS.escape(key)}"]`);
     for (const key of plan.removed) {
-        disposeWidgetByKey(key);
-        cardFor(key)?.remove();
+        const card = liveCardFor(list, key);
+        const settling = disposeWidgetByKey(key);
+        widgetSessionState.delete(key);
+        stoppedByOwner.delete(key);
+        if (!card) continue;
+        if (!settling) {
+            card.remove();
+            continue;
+        }
+        card.setAttribute('data-widget-removed', '');
+        syncWidgetCardControls(card, 'stopping');
+        settling.then(() => {
+            card.remove();
+            applyMasonry(list);
+        });
     }
     let anchor = null;
     for (const tab of nextTabs) {
         const key = widgetKey(tab);
-        let card = cardFor(key);
+        let card = liveCardFor(list, key);
         if (!card || plan.changed.includes(key)) {
             disposeWidgetByKey(key);
             const fresh = createCardElement(tab);
@@ -1265,7 +1202,7 @@ function patchWidgetCards(list, previousTabs, nextTabs) {
             else list.prepend(fresh);
             card = fresh;
         }
-        if (card.previousElementSibling !== anchor) {
+        if (previousLiveCard(card) !== anchor) {
             if (anchor) anchor.after(card);
             else list.prepend(card);
         }
@@ -1275,14 +1212,17 @@ function patchWidgetCards(list, previousTabs, nextTabs) {
 
 async function mountTrackedTab(card, tab, isCurrent = () => true) {
     const key = widgetKey(tab);
-    disposeWidgetByKey(key);
+    // One frame per key: a stop still awaiting its acknowledgement finishes first.
+    const settling = disposeWidgetByKey(key);
+    if (settling) await settling;
+    if (!isCurrent()) return;
     const mountController = new AbortController();
     widgetMountControllers.add(mountController);
     try {
         const dispose = await mountTab(card, tab, mountController.signal);
         if (typeof dispose === 'function') {
             if (!isCurrent()) {
-                dispose();
+                trackSettling(key, dispose());
                 return;
             }
             widgetDisposers.set(key, dispose);
@@ -1309,7 +1249,7 @@ export function initWidgets(ctx = {}) {
     // mid-sync marks the list dirty and the running sync loops once more.
     let activeSync = 0;
     let listDirty = false;
-    let uiPreferences = { widget_order: [], nested_subagents_expanded: false };
+    let uiPreferences = { widget_order: [], widget_start_mode: {}, nested_subagents_expanded: false };
     if (ctx.ws && !widgetsWsBridgeBound) {
         widgetsWsBridgeBound = true;
         ctx.ws.on('message', (msg) => {
@@ -1322,7 +1262,9 @@ export function initWidgets(ctx = {}) {
         ctx.ws.on('open', reconcileWidgetList);
     }
 
-    const hasCards = () => Boolean(list.querySelector('[data-widget-key]'));
+    const hasCards = () => Boolean(list.querySelector('[data-widget-key]:not([data-widget-removed])'));
+    const isCurrentFor = (generation) => () => widgetsVisible && generation === renderGeneration;
+    const tabByKey = (key) => (lastTabs || []).find((tab) => widgetKey(tab) === key) || null;
 
     function paintShell(tabs) {
         renderShell(list, tabs);
@@ -1333,11 +1275,17 @@ export function initWidgets(ctx = {}) {
     // Page entry, or the hard reset behind Refresh (`force`): the shell is on
     // screen before the first await. Leaving disposed the mounted work but kept
     // the cards, so a plain entry reuses them and only mounts into them again.
+    // The hard reset also forgets every owner Stop and lets the ordered stops
+    // settle (≤ 1 s) before it rebuilds the cards.
     async function render(force = false) {
         const generation = ++renderGeneration;
         widgetsVisible = true;
         if (widgetsMounted && !force) return;
-        if (force) disposeMountedWidgets();
+        if (force) {
+            stoppedByOwner.clear();
+            await disposeMountedWidgets();
+            if (!isCurrentFor(generation)()) return;
+        }
         if (!lastTabs) {
             list.innerHTML = '<div class="muted">Loading widgets…</div>';
         } else if (force || !hasCards()) {
@@ -1362,7 +1310,7 @@ export function initWidgets(ctx = {}) {
     // cards by key, then mount every card without a live mount. Repeats while a
     // trigger marked the list dirty mid-flight.
     async function syncWidgets(generation) {
-        const isCurrent = () => widgetsVisible && generation === renderGeneration;
+        const isCurrent = isCurrentFor(generation);
         activeSync = generation;
         refreshBtn.disabled = true;
         refreshBtn.classList.add('is-loading');
@@ -1377,6 +1325,9 @@ export function initWidgets(ctx = {}) {
                 if (prefs) {
                     uiPreferences = {
                         widget_order: normalizeWidgetOrder(prefs.widget_order),
+                        widget_start_mode: prefs.widget_start_mode && typeof prefs.widget_start_mode === 'object'
+                            ? prefs.widget_start_mode
+                            : {},
                         nested_subagents_expanded: prefs.nested_subagents_expanded === true,
                     };
                 }
@@ -1389,7 +1340,10 @@ export function initWidgets(ctx = {}) {
                     // Same signature: not one <article> is touched.
                     if (signature !== lastSignature) patchWidgetCards(list, lastTabs, tabs);
                 } else {
-                    if (hasCards()) disposeMountedWidgets();
+                    // Rebuilding the shell destroys frames, so the ordered stops
+                    // still in flight get their acknowledgement window first.
+                    await disposeMountedWidgets();
+                    if (!isCurrent()) return;
                     renderShell(list, tabs);
                 }
                 lastTabs = tabs;
@@ -1400,18 +1354,15 @@ export function initWidgets(ctx = {}) {
                 for (const tab of tabs) {
                     if (!isCurrent()) return;
                     const key = widgetKey(tab);
-                    if (widgetDisposers.has(key)) continue;
-                    const card = list.querySelector(`[data-widget-key="${CSS.escape(key)}"]`);
+                    const card = liveCardFor(list, key);
                     if (!card) continue;
-                    try {
-                        await mountTrackedTab(card, tab, isCurrent);
-                        applyMasonry(list);
-                    } catch (err) {
-                        if (!isCurrent()) return;
-                        const mount = card.querySelector('[data-widget-mount]');
-                        if (mount) mount.innerHTML = `<div class="skills-load-error">widget failed: ${escapeHtml(err.message || err)}</div>`;
-                        applyMasonry(list);
+                    if (widgetDisposers.has(key)) {
+                        if (isFramedWidget(tab)) syncWidgetCardControls(card, 'running', effectiveStartMode(tab, uiPreferences));
+                        continue;
                     }
+                    if (isFramedWidget(tab) && !startsOnShow(tab)) await settleStopped(card, tab);
+                    else await startWidget(card, tab, isCurrent);
+                    applyMasonry(list);
                 }
                 applyMasonry(list);
             } while (listDirty && isCurrent());
@@ -1441,6 +1392,88 @@ export function initWidgets(ctx = {}) {
             console.warn('Failed to save widget order', err);
         });
     }
+
+    // Framed card, effective policy `auto` (or `retain`, which behaves as `auto`
+    // until the keep-alive phase), and the owner has not stopped it this session.
+    const startsOnShow = (tab) => effectiveStartMode(tab, uiPreferences) !== 'manual'
+        && !stoppedByOwner.has(widgetKey(tab));
+
+    // Mount one card and keep its head controls truthful; a failed mount leaves
+    // the error in the body and Start available for a retry.
+    async function startWidget(card, tab, isCurrent) {
+        const mode = effectiveStartMode(tab, uiPreferences);
+        syncWidgetCardControls(card, 'starting', mode);
+        try {
+            await mountTrackedTab(card, tab, isCurrent);
+        } catch (err) {
+            if (!isCurrent()) return;
+            const mount = card.querySelector('[data-widget-mount]');
+            if (mount) mount.innerHTML = `<div class="skills-load-error">widget failed: ${escapeHtml(err.message || err)}</div>`;
+        }
+        if (isCurrent()) syncWidgetCardControls(card, widgetDisposers.has(widgetKey(tab)) ? 'running' : 'stopped', mode);
+    }
+
+    // A framed card that is not to run now: let an ordered stop still in flight
+    // finish (its frame is still in the card), then show the facade.
+    async function settleStopped(card, tab) {
+        const key = widgetKey(tab);
+        const mode = effectiveStartMode(tab, uiPreferences);
+        if (widgetDisposing.has(key)) {
+            syncWidgetCardControls(card, 'stopping', mode);
+            await widgetDisposing.get(key);
+        }
+        if (widgetDisposers.has(key) || !card.isConnected) return;
+        renderWidgetFacade(card.querySelector('[data-widget-mount]'), tab);
+        syncWidgetCardControls(card, 'stopped', mode);
+    }
+
+    async function stopWidgetByOwner(card, tab) {
+        stoppedByOwner.add(widgetKey(tab));
+        syncWidgetCardControls(card, 'stopping', effectiveStartMode(tab, uiPreferences));
+        await disposeWidgetByKey(widgetKey(tab));
+        await settleStopped(card, tab);
+        applyMasonry(list);
+    }
+
+    async function startWidgetByOwner(card, tab) {
+        stoppedByOwner.delete(widgetKey(tab));
+        await startWidget(card, tab, isCurrentFor(renderGeneration));
+        applyMasonry(list);
+    }
+
+    // Launch-policy change from the card menu: whole-map replace through the
+    // preferences API (read the current map first so a stale in-memory copy never
+    // drops another card's choice), applied immediately — Auto / Keep running
+    // start a stopped card now, Manual changes nothing until Start.
+    async function setWidgetStartMode(key, mode) {
+        const tab = tabByKey(key);
+        if (!tab || !WIDGET_START_MODES.includes(mode)) return;
+        let current = uiPreferences.widget_start_mode;
+        try {
+            const stored = await apiClient.uiPreferences();
+            if (stored?.widget_start_mode && typeof stored.widget_start_mode === 'object') current = stored.widget_start_mode;
+        } catch { /* fall back to the in-memory map */ }
+        const next = withWidgetStartMode(current, key, mode);
+        uiPreferences = { ...uiPreferences, widget_start_mode: next };
+        apiClient.saveUiPreferences({ widget_start_mode: next }).catch((err) => {
+            console.warn('Failed to save widget start mode', err);
+        });
+        const card = liveCardFor(list, key);
+        if (!card) return;
+        syncWidgetCardControls(card, widgetDisposers.has(key) ? 'running' : 'stopped', mode);
+        if (mode !== 'manual' && !widgetDisposers.has(key) && widgetsVisible) await startWidgetByOwner(card, tab);
+    }
+
+    bindWidgetCardMenus(list, setWidgetStartMode);
+    list.addEventListener('click', (event) => {
+        const power = event.target.closest('[data-widget-power]');
+        if (!power || power.disabled) return;
+        const card = power.closest('[data-widget-key]');
+        const tab = tabByKey(card?.dataset.widgetKey || '');
+        if (!card || !tab) return;
+        if (widgetDisposers.has(widgetKey(tab))) stopWidgetByOwner(card, tab);
+        else startWidgetByOwner(card, tab);
+    });
 
     refreshBtn.addEventListener('click', () => render(true));
     window.addEventListener('ouro:page-shown', (event) => {

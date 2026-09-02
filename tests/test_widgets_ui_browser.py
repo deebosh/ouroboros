@@ -44,11 +44,13 @@ def _write_module_widget_smoke_extension(data_dir: pathlib.Path) -> str:
 
 
             def register(api):
+                # Geometry probes are cheap instruments: `start: "auto"` so they mount on show
+                # (framed cards default to `manual` and would wait behind Start otherwise).
                 api.register_route("ping", ping, methods=("GET",))
-                api.register_ui_tab("auto", "Auto module", render={"kind": "module", "entry": "widget.js"})
-                api.register_ui_tab("fixed", "Fixed module", render={"kind": "module", "entry": "widget.js", "height": 480})
-                api.register_ui_tab("capped", "Capped module", render={"kind": "module", "entry": "widget.js", "max_height": 640})
-                api.register_ui_tab("small", "Small module", render={"kind": "module", "entry": "small.js"})
+                api.register_ui_tab("auto", "Auto module", render={"kind": "module", "entry": "widget.js", "start": "auto"})
+                api.register_ui_tab("fixed", "Fixed module", render={"kind": "module", "entry": "widget.js", "height": 480, "start": "auto"})
+                api.register_ui_tab("capped", "Capped module", render={"kind": "module", "entry": "widget.js", "max_height": 640, "start": "auto"})
+                api.register_ui_tab("small", "Small module", render={"kind": "module", "entry": "small.js", "start": "auto"})
             """
         ),
         encoding="utf-8",
@@ -121,13 +123,13 @@ def _write_temporal_module_widget_extension(data_dir: pathlib.Path) -> str:
         textwrap.dedent(
             """\
             def register(api):
-                module = {"kind": "module", "entry": "widget.js"}
+                module = {"kind": "module", "entry": "widget.js", "start": "auto"}
                 api.register_ui_tab("auto", "Temporal auto", render={**module, "span": 2})
                 api.register_ui_tab("capped", "Temporal capped", render={**module, "span": 2, "max_height": 1000})
                 api.register_ui_tab("fixed", "Temporal fixed", render={**module, "height": 480})
-                api.register_ui_tab("floor", "Temporal floor", render={"kind": "module", "entry": "small.js", "max_height": 320})
-                api.register_ui_tab("wide", "Temporal wide", render={"kind": "module", "entry": "wide.js", "span": 2, "max_height": 700})
-                api.register_ui_tab("sibling", "Temporal sibling", render={"kind": "module", "entry": "small.js", "height": 360})
+                api.register_ui_tab("floor", "Temporal floor", render={"kind": "module", "entry": "small.js", "max_height": 320, "start": "auto"})
+                api.register_ui_tab("wide", "Temporal wide", render={"kind": "module", "entry": "wide.js", "span": 2, "max_height": 700, "start": "auto"})
+                api.register_ui_tab("sibling", "Temporal sibling", render={"kind": "module", "entry": "small.js", "height": 360, "start": "auto"})
             """
         ),
         encoding="utf-8",

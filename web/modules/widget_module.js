@@ -6,13 +6,13 @@
 import { apiFetch, extensionRoutePath, extensionRoutePrefix } from './api_client.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { moduleBridgeScript, moduleResizeScript } from './widget_frame.js';
-import { boundedNumber, WIDGET_REQUEST_TIMEOUT_MS } from './widget_job.js';
+import { boundedNumber, WIDGET_DISPOSE_ACK_TIMEOUT_MS, WIDGET_REQUEST_TIMEOUT_MS } from './widget_job.js';
 
 export const WIDGET_FRAME_DEFAULT_HEIGHT = 320;
 export const WIDGET_FRAME_MAX_HEIGHT = 8192;
 export const WIDGET_FRAME_BORDER_RESERVE = 2;
 
-function frameHeight(render, fallback = WIDGET_FRAME_DEFAULT_HEIGHT) {
+export function frameHeight(render, fallback = WIDGET_FRAME_DEFAULT_HEIGHT) {
     return boundedNumber(render?.height, fallback, WIDGET_FRAME_DEFAULT_HEIGHT, WIDGET_FRAME_MAX_HEIGHT);
 }
 
@@ -20,9 +20,11 @@ function frameMaxHeight(render) {
     return boundedNumber(render?.max_height, WIDGET_FRAME_MAX_HEIGHT, WIDGET_FRAME_DEFAULT_HEIGHT, WIDGET_FRAME_MAX_HEIGHT);
 }
 
-function setFrameHeight(iframe, height) {
-    if (!iframe) return;
-    iframe.style.setProperty('--widget-frame-height', `${Math.ceil(height)}px`);
+// The declared frame height is the one measured value the frame (and the
+// stopped card's facade standing in for it) carries as a custom property.
+export function setFrameHeight(node, height) {
+    if (!node) return;
+    node.style.setProperty('--widget-frame-height', `${Math.ceil(height)}px`);
 }
 
 export function mountRouteIframeWidget(mount, tab, render) {
@@ -101,10 +103,16 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null) 
     setFrameHeight(iframe, appliedHeight);
     const pendingRequests = new Map();
     let disposed = false;
+    let disposing = null;
+    let onDisposed = null;
     const onMessage = async (event) => {
         if (disposed || !iframe || event.source !== iframe.contentWindow) return;
         const msg = event.data || {};
         if (msg.nonce !== nonce) return;
+        if (msg.type === 'ouro-widget-disposed') {
+            onDisposed?.();
+            return;
+        }
         if (msg.type === 'ouro-widget-resize') {
             if (!autoHeight) return;
             const measured = Number(msg.height);
@@ -153,13 +161,31 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null) 
         }
     };
     window.addEventListener('message', onMessage);
+    // Ordered stop with acknowledgement: post the dispose message, keep
+    // answering bridged fetches the child's hooks issue meanwhile, and tear down
+    // on `ouro-widget-disposed` or after WIDGET_DISPOSE_ACK_TIMEOUT_MS —
+    // whichever comes first. The frame stays in its card until then; nothing
+    // here blocks a page switch. Returns the settle promise; repeat calls share it.
     return () => {
-        if (disposed) return;
-        disposed = true;
-        pendingRequests.forEach((controller) => controller.abort());
-        pendingRequests.clear();
-        iframe?.contentWindow?.postMessage({ type: 'ouro-widget-dispose', nonce }, '*');
-        window.removeEventListener('message', onMessage);
-        if (iframe?.parentNode === mount) iframe.remove();
+        if (disposing) return disposing;
+        disposing = new Promise((resolve) => {
+            let ackTimer = 0;
+            const finish = () => {
+                if (disposed) return;
+                disposed = true;
+                clearTimeout(ackTimer);
+                pendingRequests.forEach((controller) => controller.abort());
+                pendingRequests.clear();
+                window.removeEventListener('message', onMessage);
+                if (iframe?.parentNode === mount) iframe.remove();
+                resolve();
+            };
+            onDisposed = finish;
+            ackTimer = setTimeout(finish, WIDGET_DISPOSE_ACK_TIMEOUT_MS);
+            const child = iframe?.contentWindow;
+            if (child) child.postMessage({ type: 'ouro-widget-dispose', nonce }, '*');
+            else finish();
+        });
+        return disposing;
     };
 }

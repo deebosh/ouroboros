@@ -5,21 +5,29 @@ export function moduleBridgeScript(nonce) {
         (() => {
             const nonce = ${JSON.stringify(nonce)};
             let seq = 0;
+            let disposing = false;
             let disposed = false;
             const pending = new Map();
             const cleanup = new Set();
             const onDispose = (fn) => {
                 if (typeof fn !== 'function') return;
-                if (disposed) fn();
-                else cleanup.add(fn);
+                if (disposing) { try { fn(); } catch {} return; }
+                cleanup.add(fn);
             };
-            const dispose = () => {
-                if (disposed) return;
+            // Ordered dispose: every hook runs first (async hooks are awaited and
+            // the fetch bridge stays live for them), then the parent gets the
+            // acknowledgement, and only then are pending fetches rejected and the
+            // listener removed. The parent bounds the whole wait on its side.
+            const dispose = async () => {
+                if (disposing) return;
+                disposing = true;
+                const hooks = Array.from(cleanup);
+                cleanup.clear();
+                await Promise.allSettled(hooks.map((fn) => Promise.resolve().then(fn)));
+                window.parent.postMessage({ type: 'ouro-widget-disposed', nonce }, '*');
                 disposed = true;
                 pending.forEach(({ reject }) => reject(new Error('widget disposed')));
                 pending.clear();
-                cleanup.forEach((fn) => { try { fn(); } catch {} });
-                cleanup.clear();
                 window.removeEventListener('message', onMessage);
             };
             const onMessage = (event) => {

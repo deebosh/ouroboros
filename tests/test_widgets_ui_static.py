@@ -15,13 +15,16 @@ def _widgets_js() -> str:
 
 def _framed_widget_sources() -> str:
     """widgets.js (page host, dispatcher, declarative renderer) plus the framed
-    mounts split out of it (widget_module.js) and the in-frame bootstrap
-    (widget_frame.js). Negative pins run against this union so the moved
-    code never leaves their coverage."""
+    mounts split out of it (widget_module.js), the in-frame bootstrap
+    (widget_frame.js), the framed-card chrome (widget_card.js) and the card
+    reorder handles (widget_reorder.js). Negative pins run against this union
+    so the moved code never leaves their coverage."""
     return (
         _widgets_js()
         + _read("web/modules/widget_module.js")
         + _read("web/modules/widget_frame.js")
+        + _read("web/modules/widget_card.js")
+        + _read("web/modules/widget_reorder.js")
     )
 
 
@@ -75,9 +78,13 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     assert "ctx.ws.on('extension_lifecycle', reconcileWidgetList);" in source
     assert "ctx.ws.on('open', reconcileWidgetList);" in source
     assert "setInterval(" not in source
-    # Entry paints the shell before the first await; Refresh is the hard reset.
+    # Entry paints the shell before the first await; Refresh is the hard reset:
+    # it forgets every owner Stop and lets the ordered stops settle before it
+    # rebuilds the cards (destroying a frame mid-flush would skip its ack window).
     assert source.index("paintShell(lastTabs);") < source.index("await syncWidgets(generation);")
-    assert "if (force) disposeMountedWidgets();" in source
+    force_branch = source.split("if (force) {", 1)[1].split("}", 1)[0]
+    assert "stoppedByOwner.clear();" in force_branch
+    assert "await disposeMountedWidgets();" in force_branch
     assert "refreshBtn.addEventListener('click', () => render(true));" in source
     assert 'title="Reload the list and restart all widgets"' in source
 
@@ -200,6 +207,94 @@ def test_widgets_frame_geometry_and_teardown_contract():
     assert "widgetMountControllers.forEach((controller) => controller.abort());" in source
 
 
+def test_widgets_framed_dispose_is_ordered_and_acknowledged():
+    """Widgets lifecycle phase 2, both sides of the frame. Child
+    (``widget_frame.js``): on ``ouro-widget-dispose`` every registered hook
+    runs first — async hooks are awaited, the fetch bridge stays live for
+    them — then the bootstrap posts ``ouro-widget-disposed`` and only then
+    rejects pending fetches and removes its listener. Parent
+    (``widget_module.js``): the disposer posts the dispose message, keeps
+    ``onMessage`` answering bridged fetches, and the abort → unlisten →
+    ``iframe.remove()`` tail runs from ``finish`` on the acknowledgement or
+    after ``WIDGET_DISPOSE_ACK_TIMEOUT_MS`` (1 s, beside the 25 s request
+    timeout) — asynchronously, never blocking a page switch. The page keeps
+    one settle promise per key so a remount waits for the pending stop."""
+    child = _read("web/modules/widget_frame.js")
+    parent = _read("web/modules/widget_module.js")
+    jobs = _read("web/modules/widget_job.js")
+    page = _widgets_js()
+    assert "export const WIDGET_DISPOSE_ACK_TIMEOUT_MS = 1000;" in jobs
+    assert jobs.index("WIDGET_REQUEST_TIMEOUT_MS = 25000") < jobs.index("WIDGET_DISPOSE_ACK_TIMEOUT_MS = 1000")
+    # Child: hooks (awaited) → ack → reject pending → unlisten.
+    dispose_body = child.split("const dispose = async () =>", 1)[1].split("const onMessage", 1)[0]
+    assert "await Promise.allSettled(hooks.map((fn) => Promise.resolve().then(fn)));" in dispose_body
+    assert dispose_body.index("Promise.allSettled") < dispose_body.index("type: 'ouro-widget-disposed'")
+    assert dispose_body.index("type: 'ouro-widget-disposed'") < dispose_body.index("reject(new Error('widget disposed'))")
+    assert dispose_body.index("reject(new Error('widget disposed'))") < dispose_body.index("window.removeEventListener('message', onMessage);")
+    # The bridge answers during the hooks: fetch is refused only once `disposed`.
+    assert "if (msg.type !== 'ouro-widget-fetch-result' || disposed) return;" in child
+    # Parent: the old synchronous tail is now the post-ack `finish`.
+    assert "if (msg.type === 'ouro-widget-disposed') {" in parent
+    tail = parent.split("const finish = () =>", 1)[1]
+    assert tail.index("pendingRequests.forEach((controller) => controller.abort());") < tail.index("window.removeEventListener('message', onMessage);")
+    assert tail.index("window.removeEventListener('message', onMessage);") < tail.index("if (iframe?.parentNode === mount) iframe.remove();")
+    assert "onDisposed = finish;" in tail
+    assert "setTimeout(finish, WIDGET_DISPOSE_ACK_TIMEOUT_MS)" in tail
+    assert "postMessage({ type: 'ouro-widget-dispose', nonce }, '*');" in tail
+    assert "if (disposing) return disposing;" in parent
+    # Page: one settle promise per key; a remount and the facade wait for it.
+    assert "const widgetDisposing = new Map();" in page
+    assert "if (settling) await settling;" in page
+    assert "await widgetDisposing.get(key);" in page
+    assert "return Promise.allSettled(Array.from(widgetDisposing.values()));" in page
+
+
+def test_widgets_launch_policy_controls_and_stop_suppression():
+    """Widgets lifecycle phase 2, host side. Framed (module / route-iframe)
+    cards carry exactly one primary control (Start / Stop) plus a secondary
+    launch-policy menu built on the Skills card menu primitive; declarative
+    cards get neither. The effective policy is owner override > author
+    ``render.start`` > kind default (``widget_card.js``, node-tested). A card
+    that is not to run shows a facade at the declared frame height through
+    the frame's own custom property. Owner Stop is remembered for the page
+    session only; Start, a policy change to Auto / Keep running, and Refresh
+    forget it. A vanished card is stopped in order and evicts its session
+    state. Retain is accepted and behaves as auto until the keep-alive phase."""
+    page = _widgets_js()
+    card = _read("web/modules/widget_card.js")
+    style = _read("web/style.css")
+    assert "export function effectiveStartMode(tab, prefs)" in card
+    assert "const KIND_DEFAULT_START = { declarative: 'auto', module: 'manual', iframe: 'manual' };" in card
+    assert "if (!isFramedWidget(tab)) return '';" in card
+    assert card.count("btn btn-primary") == 1
+    assert 'role="menuitemradio"' in card
+    assert '<dialog class="skills-card-menu-dialog" role="menu"' in card
+    assert 'class="skills-card-menu-trigger"' in card
+    assert '<span class="ui-status" data-tone="neutral" data-widget-status hidden>' in card
+    assert "setFrameHeight(mount.firstElementChild, frameHeight(tab.render || {}));" in card
+    assert ".widgets-facade {" in style
+    assert "height: var(--widget-frame-height, 320px);" in style.split(".widgets-facade {", 1)[1].split("}", 1)[0]
+    assert ".widgets-card-controls .ui-status[data-tone]::before" in style
+    # Page: policy gate, suppression, owner controls, whole-map persistence.
+    assert "const stoppedByOwner = new Set();" in page
+    assert "effectiveStartMode(tab, uiPreferences) !== 'manual'" in page
+    assert "&& !stoppedByOwner.has(widgetKey(tab));" in page
+    assert "if (isFramedWidget(tab) && !startsOnShow(tab)) await settleStopped(card, tab);" in page
+    assert "stoppedByOwner.add(widgetKey(tab));" in page
+    assert "stoppedByOwner.delete(widgetKey(tab));" in page
+    assert "apiClient.saveUiPreferences({ widget_start_mode: next })" in page
+    assert "const next = withWidgetStartMode(current, key, mode);" in page
+    assert "bindWidgetCardMenus(list, setWidgetStartMode);" in page
+    assert "event.target.closest('[data-widget-power]')" in page
+    # Force-stop + eviction on a vanished card; the frame keeps its ack window.
+    removed_branch = page.split("for (const key of plan.removed) {", 1)[1].split("let anchor = null;", 1)[0]
+    assert "disposeWidgetByKey(key)" in removed_branch
+    assert "widgetSessionState.delete(key);" in removed_branch
+    assert "stoppedByOwner.delete(key);" in removed_branch
+    assert "card.setAttribute('data-widget-removed', '');" in removed_branch
+    assert "localStorage" not in _framed_widget_sources()
+
+
 def test_widgets_job_poll_retries_transient_transport_without_dropping_id():
     source = _widgets_js()
     assert "error.retryable = resp.status === 408" in source
@@ -266,20 +361,25 @@ def test_widget_json_wraps_inside_its_host_card():
 
 
 def test_widgets_card_order_is_owner_ui_preference():
+    """The reorder handles moved unchanged into ``widget_reorder.js`` (phase 2
+    made room in widgets.js); the card markup and the preference write stay
+    in the page host."""
     source = _widgets_js()
+    reorder = _read("web/modules/widget_reorder.js")
     css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")
     api_client = (REPO_ROOT / "web" / "modules" / "api_client.js").read_text(encoding="utf-8")
 
     assert 'data-widget-reorder-handle' in source
-    assert "function sortTabsByWidgetOrder" in source
-    assert "originalIndex" in source
-    assert "return a.originalIndex - b.originalIndex;" in source
+    assert "from './widget_reorder.js'" in source
+    assert "export function sortTabsByWidgetOrder" in reorder
+    assert "originalIndex" in reorder
+    assert "return a.originalIndex - b.originalIndex;" in reorder
     assert "Move widget: drag or use arrow keys" in source
-    assert "handle.addEventListener('keydown'" in source
-    assert "event.key === 'ArrowUp'" in source
+    assert "handle.addEventListener('keydown'" in reorder
+    assert "event.key === 'ArrowUp'" in reorder
     assert "apiClient.uiPreferences()" in source
     assert "apiClient.saveUiPreferences({ widget_order: normalized })" in source
-    assert "currentWidgetOrderFromDom(list)" in source
+    assert "currentWidgetOrderFromDom(list)" in reorder
     assert ".widgets-card-drag" in css
     assert ".widgets-card.drag-over" in css
     assert "uiPreferences: () => fetchJson('/api/ui/preferences'" in api_client

@@ -726,6 +726,14 @@ behind; "hide the DOM node, keep the handlers" is the leak shape this
 invariant forbids. Late async continuations check a `destroyed` flag before
 touching state or re-arming loops.
 
+A framed widget's disposer is the ordered dispose with acknowledgement
+(ARCHITECTURE "Skills and Widgets"): it posts the dispose message, keeps the
+bridge answering the child's hooks, and finishes — abort, unlisten, remove the
+iframe — on the child's acknowledgement or after `WIDGET_DISPOSE_ACK_TIMEOUT_MS`.
+That bounded wait is not the forbidden shape: the handlers live only until a
+settle promise the page tracks per card key resolves, and a remount of the same
+key waits on that promise instead of racing it.
+
 Enforcement (honest disclosure): the deterministic leak test runs in the
 release-tier `ui_browser` lane, not at commit tier; commit-tier coverage is
 the advisory Repo Commit Checklist item 24. The class is closed
@@ -2559,7 +2567,11 @@ Both framed mounts (the extension-route iframe and the module `srcdoc` iframe
 with its CSP/sandbox constants and parent bridge) live in
 `web/modules/widget_module.js` and return their disposer to the `mountTab`
 dispatcher in `widgets.js`, which keeps the card registry and the declarative
-renderer. The pure list helpers — per-card and order-independent list change
+renderer. The framed card's chrome — the effective launch policy (owner override
+> author `render.start` > kind default), the one primary Start / Stop control,
+the launch-policy menu and the stopped card's facade — lives in
+`web/modules/widget_card.js`; the card reorder handles live in
+`web/modules/widget_reorder.js`. The pure list helpers — per-card and order-independent list change
 signatures plus the keyed patch plan — live in `web/modules/widget_list.js`;
 the page compares the signature after every `GET /api/widgets` and touches no
 existing card when it is unchanged.
