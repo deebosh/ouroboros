@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import os
@@ -445,12 +446,10 @@ def pid_lock_acquire(path: str) -> bool:
         # Promote to global only after lock and PID write both succeed.
         _lock_fd = fd_obj
         return True
-    except (IOError, OSError):
+    except OSError:
         if fd_obj is not None:
-            try:
+            with contextlib.suppress(Exception):
                 fd_obj.close()
-            except Exception:
-                pass
         return False
 
 
@@ -458,19 +457,13 @@ def pid_lock_release(path: str) -> None:
     """Release the PID lock."""
     global _lock_fd
     if _lock_fd is not None:
-        try:
+        with contextlib.suppress(Exception):
             file_unlock(_lock_fd.fileno())
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             _lock_fd.close()
-        except Exception:
-            pass
         _lock_fd = None
-    try:
+    with contextlib.suppress(Exception):
         os.unlink(path)
-    except Exception:
-        pass
 
 
 # File locking.
@@ -620,11 +613,7 @@ def _win32_lock(fd: int, *, exclusive: bool = True, blocking: bool = True) -> No
     kernel32.LockFileEx.restype = wintypes.BOOL
 
     hfile = _msvcrt.get_osfhandle(fd)
-    flags = 0
-    if exclusive:
-        flags |= _LOCKFILE_EXCLUSIVE_LOCK
-    if not blocking:
-        flags |= _LOCKFILE_FAIL_IMMEDIATELY
+    flags = (_LOCKFILE_EXCLUSIVE_LOCK if exclusive else 0) | (0 if blocking else _LOCKFILE_FAIL_IMMEDIATELY)
 
     ov = OVERLAPPED()
     # Win32 whole-file lock pattern: huge range from offset 0.
@@ -654,10 +643,8 @@ def _win32_unlock(fd: int) -> None:
     kernel32.UnlockFileEx.restype = wintypes.BOOL
 
     hfile, ov = entry
-    try:
+    with contextlib.suppress(OSError):
         kernel32.UnlockFileEx(hfile, 0, 0xFFFFFFFF, 0xFFFFFFFF, ctypes.byref(ov))
-    except OSError:
-        pass
 
 
 # Process management.
