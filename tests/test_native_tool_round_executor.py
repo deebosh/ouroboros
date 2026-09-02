@@ -1244,7 +1244,8 @@ def test_read_file_receipts_carry_the_delivered_extent(subject_repo):
     parsed back from the header — while every existing field and the outcome
     vocabulary (executed | refused | error | withheld) stay as they were. A
     sub-line cursor makes the first line partial, so it is not counted; a
-    non-read tool and a refused read carry no extent."""
+    non-read tool and a refused read carry no extent; a read the registry
+    refuses BEFORE dispatch inherits nothing from the read before it."""
     (subject_repo / "many.txt").write_text("".join(f"row {i}\n" for i in range(1, 31)), encoding="utf-8")
     llm = _ScriptedLLM([
         {"tool_calls": [
@@ -1261,12 +1262,19 @@ def test_read_file_receipts_carry_the_delivered_extent(subject_repo):
             _tool_call("read_file", {"path": "many.txt", "start_line": 5, "max_lines": 10, "start_char": 6}, "c8"),
             _tool_call("read_file", {"path": "many.txt", "start_line": 5, "max_lines": 2, "start_char": 12}, "c9"),
             _tool_call("read_file", {"path": "many.txt", "start_line": 100}, "c10"),
+            # After a SUCCESSFUL full read, three reads the registry refuses BEFORE
+            # dispatch (its binding layer: path traversal) — they never reach the
+            # reader, so they must inherit nothing from the read before them.
+            _tool_call("read_file", {"path": "many.txt"}, "c11"),
+            _tool_call("read_file", {"path": "a/../many.txt"}, "c12"),
+            _tool_call("read_file", {"path": "many.txt/../many.txt"}, "c13"),
+            _tool_call("read_file", {"path": "../../../etc/passwd"}, "c14"),
         ]},
         {"content": _VERDICT},
     ])
     usage = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute().usage
     r = usage["native_tool_receipts"]
-    assert [x["outcome"] for x in r] == ["executed"] * 5 + ["refused"] + ["executed"] * 4
+    assert [x["outcome"] for x in r] == ["executed"] * 5 + ["refused"] + ["executed"] * 8
     assert {k: r[0][k] for k in ("start_line", "end_line", "total_lines", "eof")} == {"start_line": 5, "end_line": 14, "total_lines": 30, "eof": False}
     assert {k: r[1][k] for k in ("start_line", "end_line", "eof")} == {"start_line": 28, "end_line": 30, "eof": True}
     assert r[2]["start_line"] == 6 and r[2]["end_line"] == 14  # sub-line cursor lands mid "row 5": that line is partial
@@ -1281,36 +1289,73 @@ def test_read_file_receipts_carry_the_delivered_extent(subject_repo):
     assert r[8]["end_line"] < r[8]["start_line"] and r[8]["eof"] is False and r[8]["total_lines"] == 30
     # A start past EOF: empty range, eof False, total still truthful.
     assert r[9]["end_line"] < r[9]["start_line"] and r[9]["eof"] is False and r[9]["total_lines"] == 30
+    # c11 delivered the whole file; c12–c14 were refused by the registry's
+    # pre-dispatch binding (the tool never ran): the refusal text goes back,
+    # the outcome follows control flow, and there is NO extent — not the
+    # full-file extent c11 left behind.
+    assert (r[10]["start_line"], r[10]["end_line"], r[10]["eof"]) == (1, 30, True)
+    tool_msgs = {m["tool_call_id"]: m["content"] for m in llm.calls[1]["messages"] if m.get("role") == "tool"}
+    for i, cid in ((11, "c12"), (12, "c13"), (13, "c14")):
+        assert tool_msgs[cid].startswith("⚠️ READ_FILE_ERROR") and "traversal" in tool_msgs[cid]
+        assert r[i]["result_chars"] == len(tool_msgs[cid]) and r[i]["outcome"] == "executed"
+        assert not any(k in r[i] for k in ("start_line", "end_line", "total_lines", "eof")), r[i]
 
 
 def test_read_extent_counts_only_complete_delivered_lines_from_the_stamp(subject_repo):
     """When this episode's result bound cuts the body, the extent credits ONLY
-    the complete lines inside the delivered prefix, counted from the
-    renderer's stamped body offset (never by parsing the header) and minus a
-    partial head when the cursor landed mid-line; a stamp missing any fact
-    records NO extent (coverage then reads `unobserved`)."""
+    the complete lines whose end lies inside the delivered prefix — from the
+    renderer's stamped `line_ends` (ONE line definition, `str.splitlines`,
+    shared by the stamp and this cut; never by parsing the header back or
+    recounting newlines); the stamp is accepted only for the call whose `path`
+    it names; a stamp missing any fact records NO extent (coverage then reads
+    `unobserved`)."""
     from types import SimpleNamespace
 
     from ouroboros.tools.core import _render_line_slice
 
+    def stamped(extent, path="f"):
+        return SimpleNamespace(last_read_view={"target": "/x/" + path, "path": path, **extent})
+
     content = "".join(f"line {i}\n" for i in range(1, 21))
     executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, None), llm=None)
+    call = {"path": "f"}
     # Cursor at 3 lands mid "line 3" (window 3..12): first complete line is 4.
     extent: dict = {}
     full = _render_line_slice("f", content, max_lines=10, start_line=3, start_char=3, extent=extent)
     assert full.count("\n", 0, extent["body_start"]) == 1 and full[extent["body_start"] - 1] == "\n"  # one header line
     assert extent["first_line"] == 4 and extent["partial_head"] is True and extent["end_line"] == 12
-    executor._inspection_ctx = SimpleNamespace(last_read_view=extent)
-    assert executor._read_extent(full, len(full)) == {"start_line": 4, "end_line": 12, "total_lines": 20, "eof": False}
+    assert extent["line_ends"][:3] == (11, 18, 25) and len(extent["line_ends"]) == 9  # complete lines 4..12, body-relative
+    executor._inspection_ctx = stamped(extent)
+    assert executor._read_extent(full, len(full), call) == {"start_line": 4, "end_line": 12, "total_lines": 20, "eof": False}
     # Cut after the partial head + two complete lines + half of the next: exactly 2 lines credited.
     body = full[extent["body_start"]:]
     cut = extent["body_start"] + len("e 3\n") + len("line 4\n") + len("line 5\n") + 3
     assert body.startswith("e 3\n")
-    assert executor._read_extent(full, cut) == {"start_line": 4, "end_line": 5, "total_lines": 20, "eof": False}
-    # Cut inside the partial head: nothing complete delivered — an empty range.
-    assert executor._read_extent(full, extent["body_start"] + 2)["end_line"] < 4
-    # Fail-safe: a stamp without the delivery facts records no extent.
-    executor._inspection_ctx = SimpleNamespace(last_read_view={"start_line": 3, "end_line": 12, "total_lines": 20})
-    assert executor._read_extent(full, len(full)) == {}
+    assert executor._read_extent(full, cut, call) == {"start_line": 4, "end_line": 5, "total_lines": 20, "eof": False}
+    # A cut exactly at a line end credits that line; a cut inside the partial head credits nothing.
+    assert executor._read_extent(full, cut - 3, call)["end_line"] == 5
+    assert executor._read_extent(full, extent["body_start"] + 2, call)["end_line"] < 4
+    # Identity: a stamp naming another path is not THIS call's stamp.
+    executor._inspection_ctx = stamped(extent, path="g")
+    assert executor._read_extent(full, len(full), call) == {}
+    # ONE line definition: `splitlines` separators (U+2028, a bare CR) end lines
+    # too — a cursor right after "a\u2028" is a line START (no partial head), and
+    # a cut after "c\r" credits two complete lines where a newline recount
+    # would credit none.
+    mixed = "a\u2028b\u2028c\rd\r\ne\n"
+    extent = {}
+    full = _render_line_slice("f", mixed, max_lines=10, start_line=1, start_char=2, extent=extent)
+    assert (extent["first_line"], extent["partial_head"], extent["total_lines"], extent["line_ends"]) == (2, False, 5, (2, 4, 7, 9))
+    executor._inspection_ctx = stamped(extent)
+    assert executor._read_extent(full, extent["body_start"] + len("b\u2028c\r"), call) == {
+        "start_line": 2, "end_line": 3, "total_lines": 5, "eof": False}
+    extent = {}
+    _render_line_slice("f", mixed, max_lines=10, start_line=1, start_char=3, extent=extent)  # inside "b\u2028"
+    assert (extent["first_line"], extent["partial_head"], extent["line_ends"]) == (3, True, (3, 6, 8))
+    # Fail-safe: a stamp without the delivery facts, or without `line_ends`, records no extent.
+    executor._inspection_ctx = stamped({"start_line": 3, "end_line": 12, "total_lines": 20})
+    assert executor._read_extent(full, len(full), call) == {}
+    executor._inspection_ctx = stamped({k: v for k, v in extent.items() if k != "line_ends"})
+    assert executor._read_extent(full, len(full), call) == {}
     executor._inspection_ctx = SimpleNamespace(last_read_view=None)
-    assert executor._read_extent(full, len(full)) == {}
+    assert executor._read_extent(full, len(full), call) == {}

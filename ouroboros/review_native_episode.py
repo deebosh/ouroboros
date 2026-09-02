@@ -21,6 +21,7 @@ the session executor.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import time
 import hashlib
@@ -698,6 +699,13 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 outcome = "refused"
                 args, result = None, f"⚠️ TOOL_ARG_ERROR: {exc}"
             if isinstance(args, dict):
+                # A stamp belongs to ONE call: clear the reader's `last_read_view`
+                # BEFORE dispatch, so a call the registry refuses before the tool
+                # runs (its pre-dispatch binding: a traversal shape, a blocked
+                # root) — or any path that returns without rendering — leaves NO
+                # stamp for `_read_extent` to inherit from the previous read.
+                if self._inspection_ctx is not None:
+                    self._inspection_ctx.last_read_view = None
                 try:
                     result = str(registry.execute(name, args))
                 except Exception as exc:  # tool errors feed the model, not the rail
@@ -718,17 +726,21 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     " chunks (read_file supports offset/limit)."
                 )
                 full = result
-                shown = len(full) if len(full) <= result_cap else max(0, result_cap - len(marker) - 64)
+                shown = sent = len(full) if len(full) <= result_cap else max(0, result_cap - len(marker) - 64)
                 for _ in range(5):
                     result = full if shown >= len(full) else (
                         full[:shown] + f"\n⚠️ RESULT TRUNCATED: showed {shown} of {len(full)} chars" + marker)
+                    sent = shown  # the `shown` the SENT result was built from (an exhausted fit loop shrinks `shown` once more after its last build)
                     overshoot = len(json.dumps({"role": "tool", "tool_call_id": call_id, "content": result},
                                                ensure_ascii=False, default=str)) + 2 - max(0, room)  # +2: list separator
                     if overshoot <= 0 or shown == 0:
                         break
                     shown = max(0, min(shown, len(full) - 1) - overshoot)
                 if name == "read_file" and outcome == "executed":
-                    extent = self._read_extent(full, shown)
+                    # Measured on `sent`, never on a `shown` the exhausted fit
+                    # loop reduced after the last build: the receipt credits
+                    # exactly what the reviewer received.
+                    extent = self._read_extent(full, sent, args)
         # Host-observed evidence (bounded): which artifacts THIS episode
         # actually opened — disclosure, never a claim of full-surface coverage.
         self._tool_calls_total += 1
@@ -744,7 +756,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             self._tool_receipts.append(receipt)
         return {"role": "tool", "tool_call_id": call_id, "content": result}
 
-    def _read_extent(self, full: str, shown: int) -> Dict[str, Any]:
+    def _read_extent(self, full: str, shown: int, args: Dict[str, Any]) -> Dict[str, Any]:
         """The extent an executed ``read_file`` actually DELIVERED, as bounded
         facts on the receipt: ``start_line``/``end_line`` (the COMPLETE lines
         the reviewer received; an empty delivery is an empty range with
@@ -753,23 +765,31 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         Every number comes from the reader's own stamp (``ctx.last_read_view``,
         written by the renderer AFTER its sub-line cursor cut: ``first_line`` is
         the first complete line, ``body_start`` where the body begins in the
-        returned text) — nothing is parsed back from the header. When this
-        episode's result bound cut the body, only the complete lines inside the
-        delivered prefix count: newlines are counted from ``body_start`` (so
-        the header line never counts), minus the body's partial head when the
-        cursor landed mid-line; a cut line is never counted. Fail-safe: a
-        stamp missing any of these facts records NO extent, which coverage
-        reads as ``unobserved``. Extends the receipt contract; the existing
-        fields and the outcome vocabulary are unchanged."""
+        returned text, ``line_ends`` the end offsets of the body's complete
+        lines on the renderer's own line definition) — nothing is parsed back
+        from the header and no newline is recounted here. The stamp is accepted
+        for THIS call only: the caller clears it before every dispatch, and its
+        request ``path`` must be this call's ``path`` argument — a call refused
+        before the tool ran, or one that returned without rendering, has no
+        stamp and records no extent. (The resolved target is deliberately NOT
+        the identity: recomputing it would re-run the registry's binding, and a
+        traversal shape such as ``a/../BIBLE.md`` resolves to the very file a
+        leaked stamp names — the forgery the identity exists to reject.) When
+        this episode's result bound cut the body, only the complete lines whose
+        end lies inside the delivered prefix count. Fail-safe: a stamp missing
+        any fact records NO extent, which coverage reads as ``unobserved``.
+        Extends the receipt contract; the existing fields and the outcome
+        vocabulary are unchanged."""
         view = getattr(self._inspection_ctx, "last_read_view", None)
         keys = ("first_line", "end_line", "total_lines", "body_start")
+        ends = view.get("line_ends") if isinstance(view, dict) else None
         if (not isinstance(view, dict) or not all(isinstance(view.get(k), int) for k in keys)
-                or not isinstance(view.get("partial_head"), bool)):
+                or not isinstance(ends, (list, tuple)) or not all(isinstance(e, int) for e in ends)
+                or not isinstance(view.get("path"), str) or view["path"] != args.get("path")):
             return {}
         start, end, total, body_start = (int(view[k]) for k in keys)
         if shown < len(full):
-            newlines = full[body_start:shown].count("\n") if shown > body_start else 0
-            delivered = max(0, newlines - (1 if view["partial_head"] else 0))
+            delivered = bisect.bisect_right(ends, shown - body_start) if shown > body_start else 0
             end = min(end, start + delivered - 1)
         return {"start_line": start, "end_line": end, "total_lines": total, "eof": end >= start and end >= total}
 

@@ -847,6 +847,48 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
     assert "coverage=BIBLE.md:partial(" in text
 
 
+def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review_repo, review_drive, monkeypatch):
+    """The stamp-leak class (round 3): a `read_file` the registry refuses BEFORE
+    dispatch (its binding layer — path traversal) never reaches the reader, so
+    it carries NO extent, and its `..` path is never folded onto `BIBLE.md`:
+    after a real read of another file the mandatory read is `missing` with
+    its typed delta; after a real PARTIAL read of BIBLE.md the traversal
+    shapes never lift it to `read`."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    shapes = ("a/../BIBLE.md", "BIBLE.md/../BIBLE.md", "../../../etc/passwd")
+    llm = _ScriptedLLM([
+        {"tool_calls": [_tool_call("read_file", {"path": "docs/ARCHITECTURE.md"}, "c1")]
+                       + [_tool_call("read_file", {"path": p}, f"c{i}") for i, p in enumerate(shapes, 2)]},
+        {"content": _REPORT},
+    ])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    receipts = usage["native_tool_receipts"]
+    assert receipts[0]["path"] == "docs/ARCHITECTURE.md" and receipts[0]["eof"] is True
+    tool_msgs = {m["tool_call_id"]: m["content"] for m in llm.calls[1]["messages"] if m.get("role") == "tool"}
+    for i, p in enumerate(shapes, 1):
+        assert tool_msgs[f"c{i + 1}"].startswith("⚠️ READ_FILE_ERROR") and receipts[i]["path"] == p
+        assert receipts[i]["outcome"] == "executed"  # the registry answered with text; the vocabulary is unchanged
+        assert not any(k in receipts[i] for k in ("start_line", "end_line", "total_lines", "eof")), receipts[i]
+    assert "coverage=BIBLE.md:missing" in text and "BIBLE.md NOT read" in text
+    assert [d["reason"] for d in usage["capability_delta"]] == ["deep_review_mandatory_read_missing"]
+    # A real PARTIAL read followed by a traversal shape stays partial — never `read`.
+    total = len(_BIBLE.splitlines())
+    llm = _ScriptedLLM([
+        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "max_lines": 1}, "c1"),
+                        _tool_call("read_file", {"path": "a/../BIBLE.md"}, "c2")]},
+        {"content": _REPORT},
+    ])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    assert f"coverage=BIBLE.md:partial({1 / total:.2f})" in text
+    assert "total_lines" not in usage["native_tool_receipts"][1]
+    # The path rule itself: `..` is kept as spelled (matches no mandatory read);
+    # a clean relative or in-repo absolute spelling still normalizes.
+    assert deep_self_review._repo_relative("a/../BIBLE.md", review_repo) == "a/../BIBLE.md"
+    assert deep_self_review._repo_relative("BIBLE.md/../BIBLE.md", review_repo) == "BIBLE.md/../BIBLE.md"
+    assert deep_self_review._repo_relative("./docs//ARCHITECTURE.md", review_repo) == "docs/ARCHITECTURE.md"
+    assert deep_self_review._repo_relative(str(review_repo / "BIBLE.md"), review_repo) == "BIBLE.md"
+
+
 
 # ---------------------------------------------------------------------------
 # Fix batch №1 — custody / ownership (items 4, 14, 8, 17).

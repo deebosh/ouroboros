@@ -596,16 +596,21 @@ def _record_execution(slot: Any, usage: Dict[str, Any], *, status: str, error: s
 
 
 def _repo_relative(path: Any, repo_dir: pathlib.Path) -> str:
-    """A receipt path as a repo-relative POSIX path (absolute paths under the
-    repository are relativized; anything else is kept normalized)."""
+    """A receipt path as a repo-relative POSIX path: absolute paths under the
+    repository are relativized, relative ones normalized — but a path with a
+    ``..`` component is kept AS SPELLED and so names no mandatory read: the
+    registry refuses traversal shapes before dispatch, so ``a/../BIBLE.md``
+    delivered nothing and must never be folded onto ``BIBLE.md``."""
     text = str(path or "").replace("\\", "/")
-    candidate = pathlib.PurePosixPath(os.path.normpath(text).replace("\\", "/"))
-    if candidate.is_absolute():
+    pure = pathlib.PurePosixPath(text)
+    if ".." in pure.parts:
+        return text
+    if pure.is_absolute():
         try:
             return pathlib.Path(text).resolve().relative_to(pathlib.Path(repo_dir).resolve()).as_posix()
         except (ValueError, OSError):
-            return candidate.as_posix()
-    return candidate.as_posix().removeprefix("./")
+            return pure.as_posix()
+    return pathlib.PurePosixPath(os.path.normpath(text)).as_posix().removeprefix("./")
 
 
 def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict[str, Dict[str, Any]]:
@@ -621,8 +626,10 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
     alone); ``partial`` with the covered fraction; ``missing`` when nothing of
     the file was delivered — no receipt names it at a repository root (a
     data-plane read never counts), or every measured receipt delivered zero
-    lines (a cursor past the window, a start past EOF). Disclosure, never a
-    refusal: the report is delivered with the flag in its header.
+    lines (a cursor past the window, a start past EOF). A receipt whose path
+    carries a ``..`` component names nothing here (the registry refuses
+    traversal shapes before dispatch — see ``_repo_relative``). Disclosure,
+    never a refusal: the report is delivered with the flag in its header.
     """
     receipts = [r for r in (usage.get("native_tool_receipts") or []) if isinstance(r, dict)]
     capped = int(usage.get("native_tool_calls") or 0) > len(receipts)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import bisect
 import fnmatch
 import ipaddress
 import json
@@ -109,7 +110,11 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     lands mid-line makes that line partial, so it is not counted), ``end_line``,
     ``total_lines``, ``body_start`` (where the body begins in the returned text,
     right after the one header line), ``body_chars``, ``partial_head`` (the body
-    opens with a partial line), plus the requested ``start_line``/``start_char``.
+    opens with a partial line), ``line_ends`` (the end offsets, within the body,
+    of its COMPLETE lines — the partial head excluded — on the very line
+    definition the renderer cut by, so a consumer that cuts the body further
+    counts complete lines from them and never recounts newlines), plus the
+    requested ``start_line``/``start_char``.
     An empty delivery (cursor at or past the window's end, or a start past EOF)
     is an EMPTY range (``end_line < first_line``), never an inverted claim. A
     consumer that must know what a read delivered (the native review episode's
@@ -129,21 +134,32 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     total = len(lines)
     start = max(1, min(start_raw, total + 1))
     end = min(start + max_raw - 1, total)
-    window = "".join(lines[start - 1:end])
+    window_lines = lines[start - 1:end]
+    window = "".join(window_lines)
+    # ONE line-boundary definition — the `splitlines` lines above (U+2028, a
+    # bare CR, … are line ends too) — serves the rendering, the cursor
+    # arithmetic AND the consumer's bound-cut arithmetic: the end offset of
+    # every window line, in window chars.
+    ends: List[int] = []
+    for line in window_lines:
+        ends.append((ends[-1] if ends else 0) + len(line))
     offset = _coerce_start_char(start_char)
     if offset:
-        skipped, body = window[:offset], window[offset:]
+        body = window[offset:]
         header = f"# {path} — lines {start}\u2013{end} of {total} (from char {offset} of this window)\n"
-        partial_head = bool(body) and not skipped.endswith("\n")  # landed mid-line: that line is partial
-        first_line = start + skipped.count("\n") + (1 if partial_head else 0)
+        whole = bisect.bisect_right(ends, offset)  # lines ending at or before the cursor: skipped whole
+        partial_head = bool(body) and not (whole and ends[whole - 1] == offset)  # landed mid-line: that line is partial
+        first_line = start + whole + (1 if partial_head else 0)
+        line_ends = tuple(e - offset for e in ends[whole + (1 if partial_head else 0):])
     else:
         body, header, partial_head, first_line = window, f"# {path} — lines {start}\u2013{end} of {total}\n", False, start
+        line_ends = tuple(ends)
     if not body:
-        first_line = end + 1  # nothing complete was delivered: an EMPTY range, never an inverted one
+        first_line, line_ends = end + 1, ()  # nothing complete was delivered: an EMPTY range, never an inverted one
     if extent is not None:
         extent.update({"start_line": start, "end_line": end, "total_lines": total, "start_char": offset,
                        "first_line": first_line, "body_start": len(header), "body_chars": len(body),
-                       "partial_head": partial_head})
+                       "partial_head": partial_head, "line_ends": line_ends})
     return header + body
 
 
@@ -1134,13 +1150,15 @@ def _annotate_reread(ctx: ToolContext, target: Any, start_line: int, max_lines: 
     return result
 
 
-def _stamp_read_view(ctx: ToolContext, target: Any, extent: Dict[str, Any], rendered: str) -> str:
+def _stamp_read_view(ctx: ToolContext, target: Any, path: str, extent: Dict[str, Any], rendered: str) -> str:
     """Record on the context what THIS read delivered (``ctx.last_read_view``:
-    resolved target + the renderer's window facts). Same per-context bookkeeping
-    class as ``_annotate_reread``; consumed by the native review episode's
-    receipts. Disclosure only — never gates or alters the read."""
+    resolved target, the request ``path`` exactly as this call spelled it, and
+    the renderer's window facts). Same per-context bookkeeping class as
+    ``_annotate_reread``; consumed by the native review episode's receipts,
+    which accept the stamp only for the call whose ``path`` it names.
+    Disclosure only — never gates or alters the read."""
     if extent:
-        ctx.last_read_view = {"target": str(target), **extent}
+        ctx.last_read_view = {"target": str(target), "path": str(path), **extent}
     return rendered
 
 
@@ -1187,7 +1205,7 @@ def _read_file(
             if binding.source == "project_room"
             else _root_display_path(normalized, path)
         )
-        return _stamp_read_view(ctx, target, extent, _annotate_reread(ctx, target, start_line, max_lines, _repo_read(
+        return _stamp_read_view(ctx, target, path, extent, _annotate_reread(ctx, target, start_line, max_lines, _repo_read(
             ctx,
             path,
             max_lines=max_lines,
@@ -1198,7 +1216,7 @@ def _read_file(
             extent=extent,
         ), start_char=start_char))
     if normalized == "runtime_data":
-        return _stamp_read_view(ctx, target, extent, _annotate_reread(ctx, target, start_line, max_lines, _data_read(
+        return _stamp_read_view(ctx, target, path, extent, _annotate_reread(ctx, target, start_line, max_lines, _data_read(
             ctx,
             path,
             max_lines=max_lines,
@@ -1242,7 +1260,7 @@ def _read_file(
                                                start_char=start_char, rendered=rendered)
             except Exception:
                 log.warning("staged-output coverage acknowledgement hook failed", exc_info=True)
-        return _stamp_read_view(ctx, target, extent,
+        return _stamp_read_view(ctx, target, path, extent,
                                 _annotate_reread(ctx, target, start_line, max_lines, rendered, start_char=start_char))
     except FileNotFoundError:
         return f"⚠️ NOT_FOUND: {_root_display_path(normalized, path)} (resolved: {target})"
