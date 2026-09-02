@@ -371,27 +371,6 @@ DOC_RESIDUE_BASELINE = {
             "codename_paren": 0,
             "codename_word": 0
         },
-        "## 2. Startup / Onboarding Flow": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 2,
-            "codename_paren": 0,
-            "codename_word": 1
-        },
-        "## 3. Web UI Pages & Buttons": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 1,
-            "codename_paren": 1,
-            "codename_word": 1
-        },
-        "## 4. Server API Endpoints": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 1,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
         "## 5. Supervisor Loop": {
             "version_stamp": 0,
             "version_narrative": 0,
