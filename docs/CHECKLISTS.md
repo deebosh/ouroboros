@@ -426,7 +426,8 @@ actionable error. WebAssembly (`\x00asm`) is no longer a loader-magic
 hard blocker: a `.wasm` file is admitted as a content-hash-bound binary
 descriptor (below) because it executes only inside the sandboxed widget
 frame, never natively in the host process — the reviewer does not read
-the WebAssembly code, so judge the widget JavaScript that instantiates
+the WebAssembly bytes (the review pack never inlines them), so judge the
+widget JavaScript that instantiates
 it and the module's provenance instead. Any OTHER non-UTF-8 file is
 neither blocked nor inlined: the review pack carries a typed
 ``{path,size,mime_from_name,sha256}`` descriptor instead of raw bytes.

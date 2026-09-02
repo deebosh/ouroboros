@@ -849,7 +849,8 @@ declarations and reviews can lead the host.
 A skill may ship WebAssembly modules as ordinary payload files. Review admits
 them **descriptor-admitted, content-hash-bound**: the review pack carries a
 `{path,size,mime_from_name,sha256}` descriptor for each `.wasm` file — the
-reviewer does not read the WebAssembly code — and the payload content hash
+review pack never inlines the WebAssembly bytes (an agentic reviewer may still
+open a reachable binary by path) — and the payload content hash
 covers every byte, so changing one byte of a module stales the stored review
 exactly like editing `widget.js`. The admission exists because WebAssembly
 executes only inside the browser's sandboxed widget frame, never natively in
@@ -860,10 +861,10 @@ and the module's provenance instead of its bytes.
 Ship and load it through your own route: register a route that returns the
 module bytes (an in-process handler may return a Starlette `Response` or
 `FileResponse` of any size; an out-of-process handler's body is buffered by the
-host and capped at 512 KiB — `_RESULT_CAP` in
-`ouroboros/extension_process_runner.py` — so a larger module needs an in-process
-skill or the runtime-download path described under assets below), then in the
-widget:
+host and capped at about 380 KiB of body — `_RESULT_CAP` = 512 KiB in
+`ouroboros/extension_process_runner.py` bounds the base64-encoded result — so a
+larger module needs an in-process skill or the runtime-download path described
+under assets below), then in the widget:
 
 ```js
 const bytes = await (await OuroborosWidget.fetch('/api/extensions/<skill>/core.wasm')).arrayBuffer();
@@ -881,7 +882,7 @@ slices.
 
 Widget assets are ordinary payload files and travel the same way as
 WebAssembly: your own routes serve them (`register_route` returning the bytes;
-an out-of-process handler answers at most 512 KiB per response, as above), the
+an out-of-process handler answers about 380 KiB of body per response, as above), the
 widget references them by `/api/extensions/<skill>/...` URL, and review
 sees each non-text asset as a content-hash-bound descriptor. The module
 endpoint stays JavaScript-only. Hub packages admit `.png .jpg .jpeg .gif .webp
@@ -906,11 +907,12 @@ when the module tab registers (the same moment it reads the entry), so the frame
 always receives the bytes the reviewed bundle loaded from; files under
 `node_modules`, `.ouroboros_env`, other cache directories, and dot-prefixed
 paths (directories and files) are never served, and only UTF-8 text is
-admitted — a non-UTF-8 `.js` fails the load exactly like a broken entry. The
-host owns GET/HEAD under three prefixes of `/api/extensions/<skill>/` —
-`manifest`, `module/…` (any depth), and `settings_section` — so do not register
-skill routes there: a route registered under them is shadowed for GET/HEAD,
-while POST and the other methods are unaffected. Load a sibling either as a
+admitted — a non-UTF-8 `.js` fails the load exactly like a broken entry; the
+`.js`/`.mjs` suffix match is case-sensitive. The host owns GET/HEAD for the exact
+paths `manifest` and `settings_section` and for everything under `module/` in
+`/api/extensions/<skill>/`, so do not register skill routes there: a route
+registered at those paths is shadowed for GET/HEAD, while POST and the other
+methods are unaffected. Load a sibling either as a
 classic script or as an ES module:
 
 ```html

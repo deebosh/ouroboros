@@ -126,10 +126,10 @@ class PluginAPI(Protocol):
     ) -> None:
         """Register ``/api/extensions/<skill>/<path>`` for allowed methods.
 
-        The host owns GET/HEAD under three prefixes of that namespace —
-        ``manifest``, ``module/...`` (any depth) and ``settings_section`` — so
-        a skill route registered there is shadowed for GET/HEAD (POST and the
-        other methods still reach the skill); register under another path.
+        The host owns GET/HEAD for the exact paths ``manifest`` and
+        ``settings_section`` and for everything under ``module/`` in that
+        namespace, so a skill route registered there is shadowed for GET/HEAD
+        (POST and the other methods still reach the skill); use another path.
         """
         ...
 
