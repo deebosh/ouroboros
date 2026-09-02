@@ -102,16 +102,21 @@ DEFERRED_OUT_OF_V70 = {
 }
 # Post-cutoff upstream adoption trains: id -> (upstream tip, campaign merge).
 # A frozen inventory rather than a git derivation, and the history is the
-# reason. Of the three recorded sync merges only f4abe0a5 has an upstream
-# commit (a76961de) as its literal second parent: 0aa74e9f and 0f9a8daf merge
-# CAMPAIGN commits (816e7b82, 4c32691e) that had already absorbed 8d13373b and
-# f3fbfdbb, because the re-tie merge f61ea3c2 reshaped the first-parent line. A
-# rule reading second parents would therefore demand a row for one train of
-# three and stay blind to the other two — exactly the hole that lost
-# TRAIN-F6b-f3fbfdbb; widened to "second parent descends from a recorded
-# upstream tip" it would demand a train row for every lane merge, the C6 lane
-# 8fb08d44 included. Neither is honest, and both need a subprocess. Adding a
-# train here is the same edit as merging one, and a deleted row is red at once.
+# reason. Each sync's absorb merge does take its upstream tip as the literal
+# second parent (20850191<-8d13373b, b9ceed6e<-f3fbfdbb, f4abe0a5<-a76961de),
+# but only f4abe0a5 sits on this branch's first-parent line: the other two were
+# made on lane lines and reached mainline as the second parent of a lane
+# integration merge over a CAMPAIGN commit (0aa74e9f over 816e7b82, 0f9a8daf
+# over 4c32691e). So a rule walking --first-parent merges and reading second
+# parents would police one train of three and stay blind to the other two —
+# exactly the hole that lost TRAIN-F6b-f3fbfdbb; widened to "second parent
+# descends from a recorded upstream tip" it would demand a train row for every
+# lane merge made after a sync (35 / 15 / 6 merges on this tree for the three
+# tips), the C6 lane merge 9faccf31 over 8fb08d44 included. Neither is honest,
+# and both need a subprocess. Sync #1 is recorded by its mainline carrier
+# 0aa74e9f and names absorb merge 20850191 in the row text too; syncs #2 and #3
+# are recorded by the absorb merge itself. Adding a train here is the same edit
+# as merging one, and a deleted row is red at once.
 REQUIRED_TRAINS = {
     "TRAIN-F6-8d13373b": ("8d13373b", "0aa74e9f"),
     "TRAIN-F6b-f3fbfdbb": ("f3fbfdbb", "b9ceed6e"),

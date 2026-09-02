@@ -7905,17 +7905,21 @@ train to `(upstream tip, campaign merge)`; a missing row, a row of the wrong
 kind, or a row whose text no longer names both SHAs is an error in the default
 mode as well as under `--release`.
 
-Frozen inventory rather than a git derivation, and the reason is this history:
-of the three recorded sync merges only `f4abe0a5` has an upstream commit as its
-literal second parent. `0aa74e9f` and `0f9a8daf` merge *campaign* commits
-(`816e7b82`, `4c32691e`) that had already absorbed `8d13373b` and `f3fbfdbb`,
-because the re-tie merge `f61ea3c2` reshaped the first-parent line. A rule
-reading second parents would therefore police one train of three and stay blind
-to exactly the two whose row was lost; widened to «second parent descends from a
-recorded upstream tip» it would demand a train row for every lane merge, the C6
-lane `8fb08d44` included. Neither form is honest, and both need a subprocess in
-a checker that today reads one file. Adding a train to the inventory is the same
-edit as merging one.
+Frozen inventory rather than a git derivation, and the reason is this history.
+Each sync's absorb merge *does* take its upstream tip as the literal second
+parent — `20850191` (parent `8d13373b`), `b9ceed6e` (parent `f3fbfdbb`),
+`f4abe0a5` (parent `a76961de`) — but only `f4abe0a5` sits on this branch's
+first-parent line. The other two were made on lane lines and reached mainline
+as the second parent of a lane-integration merge over a *campaign* commit:
+`0aa74e9f` over `816e7b82` carried `20850191`, and `0f9a8daf` over `4c32691e`
+carried `b9ceed6e`. So a rule walking `--first-parent` merges and reading second
+parents would police one train of three and stay blind to exactly the two whose
+row was lost; widened to «second parent descends from a recorded upstream tip»
+it would demand a train row for every lane merge made after a sync — 35, 15 and
+6 merges on this tree for the three tips, the C6 lane merge `9faccf31` (second
+parent `8fb08d44`) included. Neither form is honest, and both need a subprocess
+in a checker that today reads one file. Adding a train to the inventory is the
+same edit as merging one.
 
 **Hook `::nodeid` tokens read by AST.** The path half of a hook was resolved;
 the `::name` half was free text, so a hook could point at a suite that exists
