@@ -111,17 +111,15 @@ regression of anything this campaign re-applied, and the same run's `full-test
 (ubuntu-latest)` and `full-test (macos-latest)` were green. Also red in that
 run and outside this row's scope: `ui-smoke` and `skill-smoke (ubuntu-latest)`.
 
-Run 33563498919 is dispatched on `196438c9`, which has `a0b35fcd` as an
-ancestor, so it is the first run that could clear class 17. Its result is
-recorded here as **pending** deliberately: writing a verdict this file's author
-did not read would be exactly the fabrication the one-decision-per-class rule
-exists to prevent. Whoever reads that run appends the row's outcome.
+Run 33563498919 (`196438c9`, `a0b35fcd` an ancestor — both are ancestors of
+every later tip of this branch) cleared class 17 and surfaced nine further
+platform classes on Windows (see the run table); they were fixed in
+20afdbb7..e0aee1ac and the first green Windows leg is run 33568728122
+(`f5a94675`). The full 3-OS matrix went green on run 33569841899
+(`8b27b507`) and held on every later run in the table, which is the
+re-prove the ADOPTION row R-WINWAVE cites; the per-class decisions above
+stand as recorded.
 
-Until a green windows leg exists on a frozen SHA, the ADOPTION row R-WINWAVE
-stays non-`done` and its disposition `re-prove` is honestly unproven — the
-per-class decisions above are recorded, the matrix that would prove them is
-not.
-
-Neither `a0b35fcd` nor `196438c9` is an ancestor of this worktree; the fix and
-the pending run both live on the campaign integration line, and this branch
-carries the registry, not the fix.
+(Written on the adoption lane's own worktree, where `a0b35fcd` and `196438c9`
+were not yet ancestors; on the integrated branch both are, and the run table
+above carries the outcomes.)
