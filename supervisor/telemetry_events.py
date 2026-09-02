@@ -63,13 +63,13 @@ TELEMETRY_EVENT_HANDLERS = {
     "advisory_suspect_result": _handle_typed_telemetry,
     "advisory_contract_warning": _handle_typed_telemetry,
     "plan_task_deadline_skip": _handle_typed_telemetry,
-    # R36 (2026-09-02) pacing facts, low-rate by construction (at most once per
-    # launch owner decision / per paid acceptance dispatch). Payload:
-    #   launched_at_floor  — gate ("review_launch" | "improvement_pass"), task_id,
-    #                        estimated_sec, floor_sec, spendable_sec
-    #   dispatched_at_floor — surface, task_id, estimated_wave_usd, floor_wave_usd,
-    #                        remaining_usd, native_rounds_estimate, floor_slots
-    "acceptance_estimate_unaffordable_launched_at_floor": _handle_typed_telemetry,
+    # R36/R46 (2026-09-02): the ONE acceptance pacing fact, emitted at the paid
+    # seam — at most once per paid acceptance dispatch that ran under a floor
+    # admission by time, by money, or both. Payload: surface, task_id,
+    # estimated_wave_usd, floor_wave_usd, remaining_usd, native_rounds_estimate,
+    # floor_slots, wave_at_floor (bool), launched_at_floor (bool),
+    # launch_gate ("review_launch" | "improvement_pass" | null),
+    # launch_estimated_sec, launch_floor_sec, launch_spendable_sec.
     "acceptance_estimate_unaffordable_dispatched_at_floor": _handle_typed_telemetry,
     "task_message_injected": _handle_task_message_injected,
     # #Q-2b: the owner's quiz answer landed in a worker round — same

@@ -198,6 +198,6 @@ def test_constant_typed_emitters_are_seen_and_registered():
 
     emitted = _emitted_types()
     registered = _registered_types()
-    for name in (task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR, task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR):
-        assert name in emitted, f"constant-typed emitter not seen by the scan: {name}"
-        assert name in registered, f"constant-typed event unregistered: {name}"
+    name = task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
+    assert name in emitted, f"constant-typed emitter not seen by the scan: {name}"
+    assert name in registered, f"constant-typed event unregistered: {name}"

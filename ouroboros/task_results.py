@@ -227,9 +227,9 @@ def project_task_acceptance_review_capacity(
         budget = task_pacing.build_budget_snapshot(
             ctx, profile=task_pacing.resolve_budget_profile(ctx),
         )
-        # Observe only: the predicate is pure; recording a floor launch belongs
-        # to the launch owner (loop.py / the improvement-pass gate), never to a
-        # projection that every poll calls.
+        # Observe only: the predicate is pure; a launch admitted at the floor is
+        # disclosed on the panel's dispatch fact, never by a projection that
+        # every poll calls.
         launch_ok, launch_reason = task_pacing.review_launch_allowed(
             budget,
             estimated_sec=task_pacing.acceptance_review_estimate_sec(

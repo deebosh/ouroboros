@@ -503,12 +503,12 @@ def _apply_task_acceptance_result(
         estimated_sec=next_pass_estimate,
         ctx=ctx.tools._ctx,
     )
-    if pass_ok and pass_reason == task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR:
-        # R36: this gate is the launch owner of the improvement pass — the fact is
-        # recorded here, once; the predicate stayed pure.
-        task_pacing.record_launch_at_floor(
-            ctx.tools._ctx, budget_snapshot, gate="improvement_pass",
-            estimated_sec=next_pass_estimate, profile=ctx.budget_profile,
+    if pass_ok and pass_reason == task_pacing.REASON_LAUNCHED_AT_FLOOR:
+        # R36/R46: the pass was admitted at the floor. Nothing is recorded here —
+        # the NEXT panel consumes this decision at entry and discloses it on its
+        # dispatch fact only if its paid seam fires.
+        ctx.tools._ctx._task_acceptance_launch_decision = task_pacing.launch_at_floor_payload(
+            budget_snapshot, gate="improvement_pass", estimated_sec=next_pass_estimate, profile=ctx.budget_profile,
         )
     # A DEGRADED panel (no valid verdict quorum) cannot "judge" the dialogue:
     # a lone terminal vote from the one contributing slot must NOT shadow the
@@ -1098,7 +1098,15 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     from ouroboros.review_execution import ReviewRouteKind, panel_delivery_class, slot_delivery
     from ouroboros.tools.review_helpers import emit_review_event, review_wave_budget_gate
 
-    floor_dispatch: Optional[Dict[str, Any]] = None
+    # The launch decision (R36/R46): the review launch hands its own in through
+    # the panel context; an improvement pass admitted at the floor leaves its
+    # decision on the tool context for the NEXT panel. Consumed HERE, at entry,
+    # whatever this panel does next — a decision behind a panel that never
+    # dispatches is no fact and must not leak onto a later one.
+    launch = ctx.launch_decision or getattr(ctx.tools._ctx, "_task_acceptance_launch_decision", None)
+    ctx.tools._ctx._task_acceptance_launch_decision = None
+    wave: Optional[Dict[str, Any]] = None
+    rounds = 1
     paid = [slot for slot in slots if getattr(slot, "route", None) is not ReviewRouteKind.AGENT_SESSION]
     if paid:
         rounds = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
@@ -1123,12 +1131,24 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                 f"~${_admission.get('estimated_wave_usd')} > remaining "
                 f"${_admission.get('remaining_usd')} (no reviewer was called)"
             )
-        if rounds > 1 and any(getattr(slot, "retrieves", False) for slot in paid):
-            try:  # read-only: does the rounds-priced wave fit too? If not, disclose the floor dispatch.
-                from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
+        try:  # read-only pricing of the admitted floor wave and, with a rounds history, of the rounds-priced wave
+            from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
 
-                scope = current_usage_scope()
-                if scope is not None and scope.root_task_id:
+            scope = current_usage_scope()
+            if scope is not None and scope.root_task_id:
+                floor_priced = review_wave_admission(
+                    scope.drive_root, root_task_id=scope.root_task_id,
+                    models=floor_models, prompt_chars=_prompt_chars)
+                # PROSPECTIVE wave fields: they become a fact only after the paid seam fires.
+                wave = {
+                    "estimated_wave_usd": floor_priced.get("estimated_wave_usd"),
+                    "floor_wave_usd": floor_priced.get("estimated_wave_usd"),
+                    "remaining_usd": floor_priced.get("remaining_usd"),
+                    "native_rounds_estimate": rounds,
+                    "floor_slots": len(floor_models),
+                    "wave_at_floor": False,
+                }
+                if rounds > 1 and any(getattr(slot, "retrieves", False) for slot in paid):
                     estimate_models = [
                         m for slot in paid
                         for m in [getattr(slot, "model", "")] * (rounds if getattr(slot, "retrieves", False) else 1)
@@ -1136,21 +1156,10 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                     priced = review_wave_admission(
                         scope.drive_root, root_task_id=scope.root_task_id,
                         models=estimate_models, prompt_chars=_prompt_chars)
-                    floor_priced = review_wave_admission(
-                        scope.drive_root, root_task_id=scope.root_task_id,
-                        models=floor_models, prompt_chars=_prompt_chars)
-                    if not priced.get("fits", True):
-                        # The PROSPECTIVE fact only: it is attached, emitted and
-                        # persisted after the paid dispatch actually fired.
-                        floor_dispatch = {
-                            "estimated_wave_usd": priced.get("estimated_wave_usd"),
-                            "floor_wave_usd": floor_priced.get("estimated_wave_usd"),
-                            "remaining_usd": priced.get("remaining_usd"),
-                            "native_rounds_estimate": rounds,
-                            "floor_slots": len(floor_models),
-                        }
-            except Exception:
-                log.debug("rounds-priced admission check failed open", exc_info=True)
+                    wave["estimated_wave_usd"] = priced.get("estimated_wave_usd")
+                    wave["wave_at_floor"] = not priced.get("fits", True)
+        except Exception:
+            log.debug("wave pricing check failed open", exc_info=True)
     free_result = _free_dispatch(request, slots, drive_root=drive_root, usage_ctx=ctx.tools._ctx)
     if free_result is not None:
         return free_result
@@ -1168,15 +1177,24 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     except TaskAcceptanceDispatchUnavailable as exc:
         return _refused(f"{exc} (no reviewer was called)")
     duration_sec = round(time.monotonic() - started, 3)
-    if floor_dispatch is not None and not bool(getattr(stamp, "fired", False)):
-        # Nothing was physically dispatched (every row refused before its send,
-        # e.g. route unavailable): a floor dispatch that never happened is no fact.
-        floor_dispatch = None
-    if floor_dispatch is not None:
-        # The paid seam fired: the typed fact rides the panel usage (every actor
-        # of a panel admitted at the floor price says so beside its other usage
-        # facts), the timing row below, and ONE live event whose registered
-        # supervisor handler persists the canonical events.jsonl row.
+    floor_dispatch: Optional[Dict[str, Any]] = None
+    if bool(getattr(stamp, "fired", False)) and (bool((wave or {}).get("wave_at_floor")) or bool(launch)):
+        # The paid seam fired and the panel ran under a floor admission — by
+        # money (the rounds-priced wave did not fit, the floor wave did), by time
+        # (the launch was admitted at the floor), or both: ONE typed fact rides
+        # every actor's usage, the timing row below, and one live event whose
+        # registered supervisor handler persists the canonical events.jsonl row.
+        # A panel whose seam never fired (every row refused before its send,
+        # e.g. route unavailable) leaves no fact.
+        floor_dispatch = {
+            **(wave or {"estimated_wave_usd": None, "floor_wave_usd": None, "remaining_usd": None,
+                        "native_rounds_estimate": rounds, "floor_slots": len(paid), "wave_at_floor": False}),
+            "launched_at_floor": bool(launch),
+            "launch_gate": str(launch.get("gate")) if launch else None,
+            "launch_estimated_sec": launch.get("estimated_sec") if launch else None,
+            "launch_floor_sec": launch.get("floor_sec") if launch else None,
+            "launch_spendable_sec": launch.get("spendable_sec") if launch else None,
+        }
         for actor in getattr(result, "actors", None) or []:
             if isinstance(actor, dict) and isinstance(actor.get("usage"), dict):
                 actor["usage"][task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR] = dict(floor_dispatch)

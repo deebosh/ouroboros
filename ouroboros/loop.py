@@ -1163,6 +1163,7 @@ class _TaskAcceptanceContext:
     # in loop.py from each real source, fed into the improvement capsule
     # (v6.74.0 A1, owner Q6); the capsule builder never gains ctx.
     rails_line: str = ""
+    launch_decision: Any = None
 
 
 def _record_host_acceptance_run(ctx: _TaskAcceptanceContext, result: Any) -> Dict[str, Any]:
@@ -1412,8 +1413,6 @@ def _run_task_acceptance_review_once(
         })
         emit_progress("Task acceptance review skipped: inside the finalization reserve.")
         return False
-    if launch_reason:  # R36: the launch owner records the floor launch
-        task_pacing.record_launch_at_floor(tools._ctx, budget_snapshot, estimated_sec=estimate)
     review_ctx = _TaskAcceptanceContext(
         tools=tools,
         content=content,
@@ -1429,6 +1428,7 @@ def _run_task_acceptance_review_once(
         passes_done=passes_done,
         evidence={},
         review_binding={},
+        launch_decision=launch_reason and task_pacing.launch_at_floor_payload(budget_snapshot, estimated_sec=estimate),
         rails_line=task_pacing.acceptance_rails_line(
             budget_snapshot,
             budget_profile,

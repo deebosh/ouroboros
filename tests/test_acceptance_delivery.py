@@ -54,7 +54,7 @@ def structured_env(monkeypatch):
 
 
 def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, content="deliverable",
-                    fresh_result=True, max_improvement_passes=0, **tool_ctx_fields):
+                    fresh_result=True, max_improvement_passes=0, launch_decision=None, **tool_ctx_fields):
     """A root acceptance context whose wallet claim can be exercised for real."""
     from ouroboros import loop as loop_mod
     from ouroboros.contracts.task_contract import build_task_contract
@@ -87,6 +87,7 @@ def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, content="del
         review_binding=build_review_binding(
             candidate=content, evidence=evidence, fence_token_or_state="delivery-test",
         ),
+        launch_decision=launch_decision,
     )
 
 
@@ -756,7 +757,9 @@ def test_wave_gate_prices_a_native_row_by_the_rounds_a_real_mixed_panel_recorded
     with ua.usage_scope(scope):
         assert loop_mod._execute_task_acceptance_panel(ctx).aggregate_signal == "PASS"
     assert len(FakeGateway.instances[0].start_requests) == 1
-    assert [len(a["models"]) for a in admissions] == [2]  # no history yet: the floor wave only (api + native)
+    # No history yet: the gate decides on the floor wave (api + native) and the
+    # panel prices that same wave read-only for its dispatch fact — nothing else.
+    assert [len(a["models"]) for a in admissions] == [2, 2]
     (event,) = [e for e in iter_jsonl_objects(task_pacing.acceptance_timing_events_path(ctx.tools._ctx))
                 if e.get("type") == "task_acceptance_review_timing"]
     assert event["delivery"] == "agent_session"
@@ -769,12 +772,12 @@ def test_wave_gate_prices_a_native_row_by_the_rounds_a_real_mixed_panel_recorded
         rs, "run_review_request", lambda request, **kw: SimpleNamespace(aggregate_signal="PASS", actors=[]))
     with ua.usage_scope(scope):
         loop_mod._execute_task_acceptance_panel(ctx)
-    # R36: the gate decides on the floor wave (api + native = 2 sends); the rounds-priced
-    # wave — one api send + the native row at its two observed rounds — is checked read-only
-    # (3 sends) with the floor wave beside it; the session row is never API money.
-    assert [len(a["models"]) for a in admissions] == [2, 3, 2]
+    # R36: the gate decides on the floor wave (api + native = 2 sends); the panel then
+    # prices that floor wave read-only and the rounds-priced wave — one api send + the
+    # native row at its two observed rounds (3 sends); the session row is never API money.
+    assert [len(a["models"]) for a in admissions] == [2, 2, 3]
     assert all(a["fits"] and a["limit_usd"] == 50.0 and a["unpriced_slots"] == 0 for a in admissions)
-    assert admissions[1]["models"] == ["openai/fake-reviewer"] * 3
+    assert admissions[2]["models"] == ["openai/fake-reviewer"] * 3
     assert not any(e.get("type") == task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR for e in ctx.tools._ctx.pending_events)
 
 
@@ -898,7 +901,10 @@ def test_a_poisoned_timing_row_never_refuses_or_crashes_a_later_acceptance_panel
     assert result.aggregate_signal == "PASS"
     estimate = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
     assert type(estimate) is int and 1 <= estimate <= 64
-    (gate,) = admissions  # one real admission, numerically priced
+    # The deciding admission (the gate) and the read-only pricing of the admitted
+    # floor wave that the panel's dispatch fact would carry — both numerically priced.
+    gate, floor_priced = admissions
+    assert gate["models"] == floor_priced["models"]
     assert gate["limit_usd"] == 50.0 and gate["estimated_wave_usd"] > 0 and gate["unpriced_slots"] == 0
     paid_rows = sum(1 for row in rows if row is not _ROW_SESSION)
     assert paid_rows <= len(gate["models"]) <= paid_rows * 64
@@ -1094,12 +1100,13 @@ def test_a_poisoned_reserve_still_launches_a_shorter_deadline_at_the_floor(monke
     assert task_pacing.review_launch_allowed(day, estimated_sec=estimate) == (True, "")
     short = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
                                        remaining_sec=1100.0, reserve_sec=100.0)  # spendable 1000 s
-    fact = task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR
-    assert task_pacing.review_launch_allowed(short, estimated_sec=estimate) == (True, fact)
-    assert task_pacing.improvement_pass_allowed(short, 0, {}, estimated_sec=estimate, ctx=ctx) == (True, fact)
-    # The predicates are PURE: the fact is recorded by the launch owner (see the
-    # owner/projection cardinality test), never by asking.
-    assert [e for e in iter_jsonl_objects(events) if e.get("type") == fact] == [] and ctx.pending_events == []
+    reason = task_pacing.REASON_LAUNCHED_AT_FLOOR
+    assert task_pacing.review_launch_allowed(short, estimated_sec=estimate) == (True, reason)
+    assert task_pacing.improvement_pass_allowed(short, 0, {}, estimated_sec=estimate, ctx=ctx) == (True, reason)
+    # The predicates are PURE: a floor launch is disclosed on the panel's dispatch
+    # fact after the paid seam fires (see the real-path tests), never by asking.
+    assert [e for e in iter_jsonl_objects(events) if e.get("type") != "task_acceptance_review_timing"] == []
+    assert ctx.pending_events == []
     assert task_pacing.launch_at_floor_payload(short, gate="review_launch", estimated_sec=estimate) == {
         "gate": "review_launch", "estimated_sec": round(estimate, 3), "floor_sec": 200.0, "spendable_sec": 1000.0}
     tiny = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=300.0, elapsed_sec=0.0,
@@ -1143,12 +1150,11 @@ def _rows(events_path, event_type):
     return [e for e in iter_jsonl_objects(events_path) if e.get("type") == event_type]
 
 
-def test_floor_launch_fact_is_recorded_once_by_the_owner_and_never_by_predicates_or_the_projection(
-        monkeypatch, tmp_path):
-    """Item 1 (the class): the predicates are pure and the read-only capacity
-    projection observes without disclosing — polled twice inside the floor band
-    they write ZERO rows/events — while the launch owner records exactly ONE
-    live event that the REAL supervisor path persists as exactly ONE row."""
+def test_floor_launch_predicates_and_the_projection_record_nothing(monkeypatch, tmp_path):
+    """R46: the launch predicates are pure and the read-only capacity projection
+    observes without disclosing — asked repeatedly inside the floor band they
+    write ZERO rows/events; the projection carries the decision as
+    `launch_disclosure`. The only emitter is the panel's paid seam (below)."""
     from ouroboros import task_pacing
     from ouroboros.task_results import project_task_acceptance_review_capacity
 
@@ -1165,45 +1171,22 @@ def test_floor_launch_fact_is_recorded_once_by_the_owner_and_never_by_predicates
                                        remaining_sec=1100.0, reserve_sec=100.0)  # spendable 1000 s: floor band
     monkeypatch.setattr(task_pacing, "build_budget_snapshot", lambda _ctx, profile=None: short)
     estimate = task_pacing.acceptance_review_estimate_sec(tools_ctx, passes_done=1, delivery="api_chat")
-    fact = task_pacing.DISCLOSURE_LAUNCHED_AT_FLOOR
+    reason = task_pacing.REASON_LAUNCHED_AT_FLOOR
     assert estimate > 1000.0 > 200.0
-
-    # Predicates: pure, whatever they are asked.
     for _ in range(3):
-        assert task_pacing.review_launch_allowed(short, estimated_sec=estimate) == (True, fact)
-        assert task_pacing.improvement_pass_allowed(short, 0, {}, estimated_sec=estimate, ctx=tools_ctx) == (True, fact)
-    # The projection: observes the floor band, discloses nothing, carries the case.
-    # (It reserves the floor while nothing was claimed yet, so the poisoned
-    # estimate is pinned to put its poll inside the band.)
+        assert task_pacing.review_launch_allowed(short, estimated_sec=estimate) == (True, reason)
+        assert task_pacing.improvement_pass_allowed(short, 0, {}, estimated_sec=estimate, ctx=tools_ctx) == (True, reason)
     monkeypatch.setattr(task_pacing, "acceptance_review_estimate_sec", lambda *_a, **_k: estimate)
     for _ in range(2):
         projection = project_task_acceptance_review_capacity(tools_ctx, task_id="root-delivery")
-        assert projection["launch_disclosure"] == fact and projection["state"] != "unavailable"
-    assert event_queue.empty() and _rows(events, fact) == []
-    # The owner: exactly one live event, exactly one canonical row via the REAL path.
-    payload = task_pacing.record_launch_at_floor(tools_ctx, short, estimated_sec=estimate)
-    drained = _drain_to_supervisor(event_queue, sup_ctx)
-    assert [e["type"] for e in drained] == [fact]
-    (row,) = _rows(events, fact)
-    assert row["gate"] == "review_launch" and row["spendable_sec"] == 1000.0 and row["floor_sec"] == 200.0
-    assert row["estimated_sec"] == payload["estimated_sec"] == round(estimate, 3)
-    assert row["task_id"] == "root-delivery"
-    # The adaptive improvement window scales the whole payload.
+        assert projection["launch_disclosure"] == reason and projection["state"] != "unavailable"
+    assert event_queue.empty()
+    assert _rows(events, task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR) == []
+    assert not hasattr(task_pacing, "record_launch_at_floor") and not hasattr(task_pacing, "DISCLOSURE_LAUNCHED_AT_FLOOR")
+    # The adaptive improvement window scales the whole decision payload.
     adaptive = task_pacing.launch_at_floor_payload(short, gate="improvement_pass", estimated_sec=estimate,
                                                    profile={"improvement_policy": "adaptive"})
     assert adaptive["floor_sec"] == 400.0 and adaptive["estimated_sec"] == round(estimate * 2, 3)
-
-
-def test_the_launch_owners_are_exactly_loop_and_the_improvement_gate():
-    """A source-level pin of item 1's ownership: the recorder is called by the
-    review launch in loop.py and the improvement-pass gate in
-    acceptance_dialogue.py — once each — and never by the projection."""
-    import pathlib
-
-    repo = pathlib.Path(__file__).resolve().parents[1]
-    counts = {name: (repo / "ouroboros" / name).read_text(encoding="utf-8").count("record_launch_at_floor(")
-              for name in ("loop.py", "acceptance_dialogue.py", "task_results.py", "task_pacing.py")}
-    assert counts == {"loop.py": 1, "acceptance_dialogue.py": 1, "task_results.py": 0, "task_pacing.py": 1}
 
 
 def _floor_band_native_panel(monkeypatch, tmp_path, *rows):

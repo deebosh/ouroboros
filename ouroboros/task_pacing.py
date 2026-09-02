@@ -58,25 +58,29 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # estimate is a pacing FLOOR-raiser, never an admission ceiling (owner R36,
 # 2026-09-02): the review launches when the spendable window (remaining − reserve)
 # exceeds the bounded estimate; when it does not but exceeds the configured floor
-# (max(200 s, OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC)) it launches at the floor and the
-# LAUNCH OWNER (loop.py's review launch; the improvement-pass gate) records
-# `acceptance_estimate_unaffordable_launched_at_floor` once — the predicates are
-# pure, a read-only projection records nothing; a spendable window at or below the
-# floor is refused `review_skipped_deadline_reserve`. Likewise the acceptance wave
-# gate DECIDES on one work-order send per paid row; the rounds-priced wave is a
-# read-only check, and when it does not fit while the floor did the panel is
-# dispatched at the floor with `acceptance_estimate_unaffordable_dispatched_at_floor`
-# attached only after the paid seam fired; only a floor that does not fit is
-# refused `review_wave_budget_insufficient`. The per-send wallet binding at
-# dispatch and the review's logical window remain the protection, and the honest
-# event of the dispatched panel decays the estimate (its excess halves per panel).
+# (max(200 s, OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC)) it launches at the floor — the
+# predicates are pure and return the `launched_at_floor` reason, a read-only
+# projection only observes it; a spendable window at or below the floor is
+# refused `review_skipped_deadline_reserve`. Likewise the acceptance wave gate
+# DECIDES on one work-order send per paid row; the rounds-priced wave is a
+# read-only check; only a floor that does not fit is refused
+# `review_wave_budget_insufficient`. ONE fact (owner R46) discloses both:
+# `acceptance_estimate_unaffordable_dispatched_at_floor`, attached by the panel
+# to every actor's usage, the timing row and one registered live event only
+# AFTER the paid seam fired, whenever it ran under a floor admission by time
+# (`launched_at_floor`, `launch_gate`, launch seconds), by money (`wave_at_floor`,
+# wave prices) or both. The per-send wallet binding at dispatch and the review's
+# logical window remain the protection, and the honest event of the dispatched
+# panel decays the estimate (its excess halves per panel).
 # 64 is the plan's measured deep-review ceiling (Б2-2), far above the 3–5 rounds a
 # verdict-shaped episode takes.
 ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP = 64
-# Typed disclosures (R36): a history-derived reserve/price did not fit but the
-# floor did, so the panel was launched/dispatched at the floor instead of refused.
-DISCLOSURE_LAUNCHED_AT_FLOOR = "acceptance_estimate_unaffordable_launched_at_floor"
+# ONE typed disclosure (owner R36/R46): emitted by the acceptance panel at the
+# paid seam, after its dispatch fired — "the panel ran under a floor admission:
+# by time, by money, or both". The launch predicates stay pure and only RETURN
+# the reason token; the panel threads the decision into that fact.
 DISCLOSURE_DISPATCHED_AT_FLOOR = "acceptance_estimate_unaffordable_dispatched_at_floor"
+REASON_LAUNCHED_AT_FLOOR = "launched_at_floor"
 
 # Proportional nanny-economics reminder thresholds (poltergeist phase B; owner
 # decision 2=B: NO absolute round cap — reminders only, sized to the measured
@@ -277,36 +281,18 @@ def _window_scale(profile: Any) -> float:
     return 2.0 if isinstance(profile, dict) and profile.get("improvement_policy") == "adaptive" else 1.0
 
 
-def launch_at_floor_payload(snapshot: BudgetSnapshot, *, gate: str, estimated_sec: float,
-                            profile: Any = None) -> Dict[str, Any]:
-    """The prospective R36 fact of a floor launch — what the history-derived
-    reserve would have needed, what the floor admitted, what was spendable —
-    computed purely; the launch owner decides whether to record it."""
+def launch_at_floor_payload(snapshot: BudgetSnapshot, *, estimated_sec: float,
+                            gate: str = "review_launch", profile: Any = None) -> Dict[str, Any]:
+    """The launch decision behind a floor admission — which gate admitted, what
+    the history-derived reserve would have needed, what the floor admitted, what
+    was spendable — computed purely. The acceptance panel attaches it to its
+    ONE dispatch fact after the paid seam fired; nothing records it earlier."""
     scale = _window_scale(profile)
     return {
         "gate": str(gate), "estimated_sec": round(float(estimated_sec) * scale, 3),
         "floor_sec": round(_acceptance_floor_sec() * scale, 3),
         "spendable_sec": round(float(snapshot.spendable_sec), 3),
     }
-
-
-def record_launch_at_floor(ctx: Any, snapshot: BudgetSnapshot, *, estimated_sec: float,
-                           gate: str = "review_launch", profile: Any = None) -> Dict[str, Any]:
-    """Emit the R36 launch-at-floor fact ONCE, from the launch OWNER only — the
-    review launch in loop.py and the improvement-pass gate — never from a
-    read-only projection or the predicates themselves. One live typed event;
-    its registered supervisor handler persists the canonical events.jsonl row,
-    so no direct append is made here (that would be the duplicate row)."""
-    payload = launch_at_floor_payload(snapshot, gate=gate, estimated_sec=estimated_sec, profile=profile)
-    try:
-        from ouroboros.tools.review_helpers import emit_review_event
-
-        emit_review_event(ctx, {
-            "type": DISCLOSURE_LAUNCHED_AT_FLOOR, "task_id": str(getattr(ctx, "task_id", "") or ""), **payload,
-        })
-    except Exception:
-        log.debug("floor-launch disclosure could not be emitted", exc_info=True)
-    return payload
 
 
 def _native_rounds_per_row(event: Dict[str, Any]) -> Optional[float]:
@@ -419,9 +405,9 @@ def review_launch_allowed(
     estimate raises the reserve but never refuses what the configured floor
     admits — when the spendable window does not exceed the estimate but does
     exceed the floor, the review launches and the typed
-    ``DISCLOSURE_LAUNCHED_AT_FLOOR`` fact is the returned reason. PURE: a
-    read-only projection may ask; only the launch owner records the fact
-    (``record_launch_at_floor``)."""
+    ``REASON_LAUNCHED_AT_FLOOR`` token is the returned reason. PURE: a
+    read-only projection may ask; the panel discloses the floor launch on its
+    dispatch fact after the paid seam fired — nothing is recorded here."""
     if not snapshot.has_deadline:
         return True, ""
     floor = _acceptance_floor_sec()
@@ -429,7 +415,7 @@ def review_launch_allowed(
     if snapshot.spendable_sec > estimate:
         return True, ""
     if snapshot.spendable_sec > floor:
-        return True, DISCLOSURE_LAUNCHED_AT_FLOOR
+        return True, REASON_LAUNCHED_AT_FLOOR
     return False, "review_skipped_deadline_reserve"
 
 
@@ -510,8 +496,8 @@ def improvement_pass_allowed(
         return True, ""
     if snapshot.spendable_sec > floor * scale:
         # R36: the history-derived reserve never refuses what the floor admits.
-        # Pure here; the improvement-pass owner records the fact once.
-        return True, DISCLOSURE_LAUNCHED_AT_FLOOR
+        # Pure here; the next panel discloses it on its dispatch fact.
+        return True, REASON_LAUNCHED_AT_FLOOR
     return False, "improvement_window_inside_reserve"
 
 
