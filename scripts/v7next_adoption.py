@@ -99,6 +99,25 @@ DEFERRED_OUT_OF_V70 = {
     # shipped, and so the owner can pull either into 7.0.
     "W4-F1": OPERATOR,
     "W4-F2": OPERATOR,
+    # Owner-sanctioned deferrals that lived as prose inside done rows or in the
+    # ledger until the stage-2 bookkeeping made them rows (quotes in each row):
+    # batch №7 5=A (headless cancel receipts), batch №9 №12=A (two frozen modules),
+    # batch №12 A (C6 residuals), batch №8 5=A (task_results eternal).
+    # Operator disclosures without an owner decision yet (each an open item of
+    # the STOP batch): the wave-4 observations W4-F3/W4-F4, the mutating
+    # delegation scenarios, the never-executed paid E2E lane, the five typed
+    # process-fact surfaces, spec §6.4 paths/roots, the F23 acceptance capsule.
+    "DEFER-HEADLESS-CANCEL": OWNER,
+    "DEFER-FROZEN-2": OWNER,
+    "DEFER-C6-RESIDUALS": OWNER,
+    "DEFER-C19-RETENTION": OWNER,
+    "W4-F3": OPERATOR,
+    "W4-F4": OPERATOR,
+    "DEFER-E2E-DELEG-MUT": OPERATOR,
+    "DEFER-E2E-PAID-LANE": OPERATOR,
+    "DEFER-TYPED-PROC-5": OPERATOR,
+    "DEFER-PATHS-6.4": OPERATOR,
+    "DEFER-F23-ACCEPTANCE": OPERATOR,
 }
 # Post-cutoff upstream adoption trains: id -> (upstream tip, campaign merge).
 # A frozen inventory rather than a git derivation, and the history is the
