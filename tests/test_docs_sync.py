@@ -19,6 +19,24 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def _names_basename(text: str, basename: str) -> bool:
+    """Whether ``text`` names this module file as its own token.
+
+    The boundary is stated as "not a file-name character" rather than a list
+    of allowed delimiters: the component map introduces modules after a space,
+    a backtick, a path separator AND an opening parenthesis (``(clawhub.py
+    registry client``), so an allow-list of delimiters would report a module
+    the document does name. What must NOT precede the basename is a character
+    that could be part of a longer file name — a word character, a dot or a
+    hyphen — which is exactly how ``test_s3_task_control_browser.py`` used to
+    answer for ``browser.py``. A trailing word character is refused too, so
+    ``x.py`` never answers for ``x.pyi``.
+    """
+    return re.search(
+        r"(?<![\w.\-])" + re.escape(basename) + r"(?!\w)", text
+    ) is not None
+
+
 def test_the_domain_quotient_report_ends_without_a_blank_line():
     """The report generator wrote a blank line at EOF, so the whitespace gate
     (`git diff --check`) was red on the one file nobody edits by hand.
@@ -166,6 +184,13 @@ def test_architecture_component_map_covers_every_live_runtime_module():
     document against the tree. Population comes from the domain manifest's own
     SSOT helper (``scripts/domain_graph.tracked_population``) so this pin and
     the domain gates can never disagree about what "live module" means.
+
+    The basename must appear as its OWN token, not as a substring. A plain
+    ``name in arch`` accepted a basename buried inside a longer name — so
+    ``browser.py`` was "documented" by ``test_s3_task_control_browser.py``,
+    ``health.py`` by ``extension_health.py`` and ``vision.py`` by
+    ``delegate_supervision.py``, while those three modules had no row of any
+    kind.
     """
     from scripts.domain_graph import tracked_population
 
@@ -174,7 +199,7 @@ def test_architecture_component_map_covers_every_live_runtime_module():
         path for path in tracked_population(REPO)
         if not path.endswith("__init__.py")
         and path not in arch
-        and pathlib.PurePosixPath(path).name not in arch
+        and not _names_basename(arch, pathlib.PurePosixPath(path).name)
     )
     assert not missing, (
         "docs/ARCHITECTURE.md names no owner for these live modules: "
