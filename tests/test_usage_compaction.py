@@ -1074,15 +1074,20 @@ def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root,
     platform_layer.IS_WINDOWS,
     reason="a dangling link, a FIFO and O_NONBLOCK are POSIX shapes; Windows keeps the path-based scan",
 )
-def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root):
+@pytest.mark.parametrize("held_dir_fd", (True, False))
+def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root, monkeypatch, held_dir_fd):
     """An entry the anchor scan cannot open or read is not "no evidence": the
     scan did not complete, so the history question is UNKNOWN (typed) — never
     an answer built on the part of the archive that could be read. A directory
     or a FIFO is no segment at all (segments are regular files by construction):
     classified and skipped — and the FIFO, which has no writer, must not hang
-    the open, so the scan opens O_NONBLOCK. Whatever the question cannot reach
-    is typed the same way, the data root's own handle included: a bare OSError
-    from THAT one open would escape the sweep's UNKNOWN mapping entirely."""
+    the open. That holds on BOTH shapes of the scan: without the held dir-fd
+    (Windows, or any os lacking O_DIRECTORY) the entry is classified before the
+    open, because there the open is what a directory refuses and a FIFO blocks
+    on. Whatever the question cannot reach is typed the same way, the data
+    root's own handle included: a bare OSError from THAT one open would escape
+    the sweep's UNKNOWN mapping entirely."""
+    monkeypatch.setattr(uc, "_dir_fd_capable", lambda: held_dir_fd)
     _seed_mixed_ledger(data_root)
     assert _compact(data_root) is not None
     known = uc.archived_attempt_ids(data_root)
@@ -1096,12 +1101,13 @@ def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root):
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous)
-    data_root.chmod(0o111)  # traversable, unreadable: fd exhaustion reads the same
-    try:
-        with pytest.raises(UsageLedgerCorrupt):
-            uc.archived_attempt_ids(data_root)
-    finally:
-        data_root.chmod(0o755)
+    if held_dir_fd:  # the root handle is opened only on the dir-fd shape
+        data_root.chmod(0o111)  # traversable, unreadable: fd exhaustion reads the same
+        try:
+            with pytest.raises(UsageLedgerCorrupt):
+                uc.archived_attempt_ids(data_root)
+        finally:
+            data_root.chmod(0o755)
     planted = archive_dir / "segment_ep0009_planted.jsonl"
     planted.symlink_to(data_root / "nowhere.jsonl")  # dangling: unopenable either way
     with pytest.raises(UsageLedgerCorrupt, match="could not complete"):

@@ -938,9 +938,10 @@ def _open_archive_entry(path: pathlib.Path, dir_fd: Optional[int]) -> int:
     any path-based look is an open error, never a read through it — and
     ``O_NONBLOCK``, so a FIFO planted there (no writer: a blocking open never
     returns) opens at once and is classified by the caller's ``fstat``. Without
-    a handle (Windows) the open is path-based, best effort, by the predicate."""
+    a handle (Windows) the open is path-based, best effort, by the predicate —
+    and carries the same non-blocking flag where the platform has one."""
     if dir_fd is None:
-        return os.open(str(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        return os.open(str(path), os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0))
     return os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
 
 
@@ -1030,7 +1031,9 @@ def _no_newer_archived_epoch(
     not complete, so the history question is UNKNOWN. An entry that opens but
     is not a regular file (a stray directory, a FIFO) is no segment — segments
     are regular files by construction, no generation lives there — and is
-    skipped, not corruption. A first row that reads but does not parse is a
+    skipped, not corruption; without a held handle that classification happens
+    BEFORE the open, which is the step a directory refuses (Windows) and a
+    writer-less FIFO blocks on. A first row that reads but does not parse is a
     torn segment from a crashed write: no evidence of any generation, left to
     the walk, which verifies every segment the answer actually depends on.
 
@@ -1054,7 +1057,9 @@ def _no_newer_archived_epoch(
         for name in sorted(os.listdir(directory if dir_fd is None else dir_fd)):
             if name in walked:
                 continue
-            fd = _open_archive_entry(directory / name, dir_fd)
+            if dir_fd is None and not stat.S_ISREG(os.stat(directory / name).st_mode):
+                continue  # no held handle: classify BEFORE the open, which is what a
+            fd = _open_archive_entry(directory / name, dir_fd)  # directory refuses there
             try:
                 regular = stat.S_ISREG(os.fstat(fd).st_mode)
                 first = os.read(fd, 1 << 16).split(b"\n", 1)[0] if regular else b""
