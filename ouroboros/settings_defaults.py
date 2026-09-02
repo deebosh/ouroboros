@@ -364,6 +364,30 @@ RETIRED_COMMA_LIST_SETTING_KEYS: tuple[str, ...] = (
 )
 
 
+# The second classification INSIDE RETIRED_SETTING_KEYS: retired keys whose
+# SUCCESSOR SETTING this retirement table states, so the first-boot notice can
+# name it instead of telling the owner there is none. Membership is a decision
+# recorded HERE, next to the retirement it explains — a retired key is absent
+# from this map when the table names no successor for it (the knob's effect
+# became fixed behavior, or the replacement is a surface rather than a setting),
+# and the notice then stays neutral instead of claiming either. The pair below
+# is stated twice over: by the comment above the keys in the tuple, and by the
+# ABI-5/D04 rows in docs/ARCHITECTURE.md.
+#
+# A key whose value the read seam MIGRATES does not belong here even though its
+# successor is named: `OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES` is consumed
+# into `OUROBOROS_REVIEW_MAX_CYCLES` before the purge computes the dropped set,
+# so it never reaches the notice — there is no loss to report, and an entry for
+# it would promise a line nothing emits.
+RETIRED_SETTING_SUCCESSORS: dict[str, tuple[str, ...]] = {
+    # The flat wall-clock pair was superseded by the activity model.
+    "OUROBOROS_SOFT_TIMEOUT_SEC": (
+        "OUROBOROS_TASK_IDLE_TIMEOUT_SEC", "OUROBOROS_TASK_ABS_CEILING_SEC"),
+    "OUROBOROS_HARD_TIMEOUT_SEC": (
+        "OUROBOROS_TASK_IDLE_TIMEOUT_SEC", "OUROBOROS_TASK_ABS_CEILING_SEC"),
+}
+
+
 # The same keys from the other side: load_settings overlays env onto disk-ABSENT keys, so without this an
 # ordinary load->save round-trip in a process whose env says low/off would launder that value onto disk
 # unauthorised — or, once the guard reads disk, raise a PermissionError nobody authored. Owner endpoints

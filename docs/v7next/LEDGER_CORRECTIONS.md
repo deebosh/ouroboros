@@ -8665,3 +8665,114 @@ where the 1072a317 intermittent class either recurs or does not.
 No runtime module changed in this lane: the diff is one test module, one
 architecture document, one persistence inventory and this ledger. The
 CI-shape battery and the `-m serial` pass are therefore not re-run here.
+## From the stage-2 close-out, lane smalls2 (base bf8b6549)
+
+Four read-only lens findings on the stage-2 code-smalls lane (2 MEDIUM, 2 LOW),
+one single-intent commit each, every behaviour change pinned red-first against
+the pre-fix shape. No protected file is touched. `ouroboros/config.py` ends at
+1000 lines — AT the band floor, not over it, so no band rationale is due.
+
+| # | item | red-first evidence (pre-fix shape) | green |
+|---|---|---|---|
+| 1 | item 7's route pin keyed the adapter count on `binding_resolves`, a predicate that is FALSE for the binding-RAISES case of the cognitive scenario | with `_build_builtin_target_binding` forced to raise (the Windows outcome the retired `os.name` stand-in encoded), the previous pin fails `assert 3 == 0` on the cognitive scenario | 2 passed on the real tree AND on that same mutant; still fails `assert 0 == 3` when the resolving-binding branch is mutated to answer natively, so the derived pin is not vacuous |
+| 2 | item 9's notice told every non-comma dropped set "no replacement setting: what they used to configure is fixed behavior in this release" — false for a retired key the table gives a successor | both new pins fail against the VERBATIM `bf8b6549` `ouroboros/config.py`: the wall-clock pair is answered with the "fixed behavior" sentence (captured log quoted in the run), and the neutral shape has no wording of its own | 25 passed (`test_settings_read_seam`), 41 passed with `test_legacy_timeout_retirement` + `test_config_extraction`, 129 passed across the seven retirement-adjacent suites |
+| 3 | item 8's `_pinned_upstream` caught only a nonzero exit code, so a host without `git` failed COLLECTION instead of the promised skip | on a PATH with no `git`, the pre-fix file errors out with `FileNotFoundError: [Errno 2] ... 'git'` and runs ZERO tests | same no-git PATH: 43 passed + exactly 7 honest corpus skips naming file and base SHA; the tree with `git`: 50 passed |
+| 4 | item 6's docstring/ledger claim about WHERE the RuntimeWarning surfaced was unreproduced | n/a — this is a truth claim about an observation, not a behaviour change; no pin was weakened | 48 passed (`test_broadcast_ws` + `test_extensions_api`) |
+
+Dispositions beyond the plain fix:
+
+1. **Item 1 — the route follows the returned SHAPE, not the binding predicate
+   (supersedes the code-smalls disposition 6).** That entry reads
+   "`registry_core` reaches the light repo-mutation block only when
+   `_build_builtin_target_binding` RETURNED a binding (legacy text → adapter, 3
+   calls); when it RAISES, the except arm answers from the resolution layer
+   with a native `ToolResult` (0 calls)". The first half is right; the second is
+   only half the except arm. `tool_resolution._light_binding_failure_result`
+   types the ROOT redirect as a native `ToolResult` (0 adapter calls) and hands
+   the COGNITIVE redirect back as legacy TEXT — 3 adapter calls, exactly like
+   the resolving-binding branch. So `binding_resolves` alone inherited the
+   retired `os.name` stand-in's second, unstated assumption: that the cognitive
+   scenario can never take the except arm. Forced onto it, that scenario still
+   costs 3 calls while the old predicate demanded 0. The test now calls the
+   except arm itself and keys on `isinstance(..., ToolResult)`. The earlier
+   entry is left in place as the record of what that lane concluded; this row
+   supersedes it.
+2. **Item 2 — a second classification INSIDE the retirement SSOT, not a new
+   module.** `RETIRED_SETTING_SUCCESSORS` lives in
+   `ouroboros/settings_defaults.py` next to `RETIRED_SETTING_KEYS` and
+   `RETIRED_COMMA_LIST_SETTING_KEYS`, which is the same shape the ABI-10 comma
+   classification already has; the notice composes one clause per
+   classification, so a MIXED dropped set no longer gets a single sentence that
+   is wrong for half of it. Two entries only, each stated twice over (the
+   comment above the key in the retirement tuple, and the ABI-5/D04 rows in
+   `docs/ARCHITECTURE.md`): the flat wall-clock pair → the activity model. Keys
+   the table does not give a successor stay neutral ("removed, not honored —
+   see the release notes for the surface that replaced them") rather than
+   getting either claim: the observability retention knob genuinely has no
+   successor setting, and the three plan-task swarm timeouts have none the
+   table states PER KEY, so naming one would have been an invention.
+3. **Item 2 — a MIGRATED key is not in the map, and that is pinned.**
+   `OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES` has a documented successor, but
+   `config._seed_review_cycles_from_legacy_passes` consumes it into
+   `OUROBOROS_REVIEW_MAX_CYCLES` BEFORE the purge computes the dropped set, so
+   it can never reach this notice: there is no loss to report, and an entry for
+   it would promise a line nothing emits. The pin asserts its absence from the
+   map, that the notice stays silent about it, and that cycles = passes + 1
+   still happens.
+4. **Item 2 — the successor pin derives its document from the table.** Spelling
+   the retired wall-clock keys in `tests/test_settings_read_seam.py` would have
+   made that file an offender of the D04 grep gate
+   (`tests/test_legacy_timeout_retirement.py::test_no_runtime_or_settings_surface_still_names_either_key`,
+   which allows the pair only in the retirement SSOT and its own audits). The
+   pin reads `RETIRED_SETTING_SUCCESSORS` instead, which is also the right
+   altitude: it is about the CLASS "a retired key whose successor the table
+   states", not about one key's spelling. The gate stayed rc 0 without being
+   widened. `tests/test_config_extraction.py`'s owner inventory gained the new
+   symbol's row, and `docs/v7next/FACADE_INVENTORY.md` was REGENERATED for the
+   one added `config.py` re-export (2222 → 2223 marked bindings) — the
+   inventory `--check` was red until then, and that red was ours, not
+   pre-existing.
+5. **Item 3 — the class is the OSError, and only that.** `subprocess.run`
+   raises `FileNotFoundError` (an `OSError`) before it can return a code, so
+   the "corpus unreachable" marker the item promised was unreachable itself on
+   a no-git host. The three call sites already share one reader, so the fix is
+   one `except OSError: return ""`; nothing else in the file shells out.
+6. **Item 4 — the mechanism REPRODUCED, so the pin and the claim both stand;
+   what changed is the honesty about its determinism.** Under a CI-shaped full
+   run of the pre-fix `ouroboros/gateway/ws.py` (`pytest tests/ -n 6 -W always`
+   with the local marker set, instrumented so the swallowed `RuntimeError` arm
+   logs the running test), the leak path was taken as
+   `tests/test_extensions_api.py::test_api_extensions_index_lists_extension_skills
+   (setup) | closed=True | RuntimeError: Event loop is closed`, and the warnings
+   summary of that same run carried
+   `tests/test_extensions_api.py::test_api_extensions_index_lists_extension_skills
+   / ws.py:184: RuntimeWarning: coroutine 'broadcast_ws' was never awaited` —
+   the innocent-bystander attribution, exactly as claimed. It is NOT
+   deterministic: a second full run under the same markers did not take that
+   path, and a single-file run of `tests/test_extensions_api.py` never does.
+   What IS deterministic is who leaves the finished loop in the module global —
+   tracing every `ws.set_event_loop` writer across a full run gives exactly the
+   three `with TestClient(server.app)` lifespan tests
+   (`test_extensions_api::test_testclient_lifespan_reload_all_uses_app_state_drive_root`,
+   `test_extensions_api::test_testclient_settings_hot_reload_uses_app_state_drive_root`,
+   `test_onboarding_host::test_server_boot_leaves_the_settings_bytes_alone`),
+   because `server.lifespan` is the only writer in the product. The docstring
+   now separates the deterministic half from the flaky half, which is also the
+   argument for pinning the leaking line rather than the bystander. Both
+   full-run logs are operator artifacts under `/tmp` and are NOT committed; the
+   copies used for them were tar copies outside this worktree, whose missing
+   `.git` accounts for the 5 failed / 7 errored git-dependent tests in those
+   logs (inventories, domain manifest, docs sync).
+
+Gates at the lane tip: targeted suites rc 0 (`test_registry_core` 20 passed,
+`test_settings_read_seam` 25, `test_v7next_transplant` 50, `test_broadcast_ws` +
+`test_extensions_api` 48, `test_generated_inventories` 13, plus 129 across the
+retirement-adjacent suites); the CI-shape battery rc 0 — 14040 passed / 4
+skipped parallel (`-n 6`) and 624 passed / 19 skipped on `-m serial`, `HEAD`
+unmoved before and after both; `ruff check . --select F` rc 0;
+`scripts/check_domains.py` rc 0; `scripts/regenerate_inventories.py --check`
+rc 0 (after the regeneration named in disposition 4);
+`scripts/regenerate_size_ratchet.py --check` rc 0;
+`scripts/v7next_adoption.py` rc 0 and `--release` rc 0; `git diff --check` rc 0,
+`git diff --check f3fbfdbb..HEAD` rc 0 and `git diff --check bf8b6549..HEAD`
+rc 0.

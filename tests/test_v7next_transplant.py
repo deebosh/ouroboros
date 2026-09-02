@@ -52,8 +52,12 @@ def _read(path: pathlib.Path) -> str:
 def _pinned_upstream(base_sha: str, rel_path: str) -> str:
     """The exact pre-split monolith bytes the real extraction ran against.
 
-    Empty when the object is unreachable (a shallow clone without that commit),
-    and the probes that need it SKIP. The corpus is the probe's INPUT: each
+    Empty when the object is unreachable (a shallow clone without that commit)
+    or when git itself is not on PATH, and the probes that need it SKIP. Both
+    reach the same honest marker: catching only a nonzero exit code left the
+    no-git host failing COLLECTION on OSError at import time, which reads as a
+    broken suite rather than as the disclosed gap this corpus has. The rest of
+    the file runs from this repository alone. The corpus is the probe's INPUT: each
     real case feeds it to the tool and compares the tool's output against the
     landed leaf. Reconstructing the corpus by inverse-normalizing that same
     leaf — the earlier fallback — made the tool prove its own transformation
@@ -62,9 +66,12 @@ def _pinned_upstream(base_sha: str, rel_path: str) -> str:
     had nothing to recalculate. A green run then proved nothing about the
     transplant, and no marker said so.
     """
-    done = subprocess.run(
-        ["git", "-C", str(REPO), "show", f"{base_sha}:{rel_path}"],
-        capture_output=True, text=True)
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(REPO), "show", f"{base_sha}:{rel_path}"],
+            capture_output=True, text=True)
+    except OSError:
+        return ""
     return done.stdout if done.returncode == 0 else ""
 
 
