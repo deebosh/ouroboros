@@ -154,6 +154,15 @@ def _lock_path(data_root):
     return data_root / "state" / "usage_attempts.lock"
 
 
+@pytest.fixture
+def compacted(data_root):
+    """A seeded, compacted ledger: its live header and the segment that header names."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    header = _ledger_rows(data_root)[0]
+    return header, data_root / header["archive_rel"]
+
+
 def _rewrite_header(data_root, header):
     """Replace the live ledger's leading row (tamper simulation)."""
     path = data_root / ua.LEDGER_REL
@@ -873,23 +882,17 @@ def test_every_attempt_id_stays_resolvable_across_chained_compactions(data_root)
     assert not uc.usage_attempt_recorded(data_root, "never-recorded")
 
 
-def test_tampered_archive_segment_is_detected(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
-    header = _ledger_rows(data_root)[0]
-    segment = data_root / header["archive_rel"]
+def test_tampered_archive_segment_is_detected(data_root, compacted):
+    _, segment = compacted
     payload = segment.read_bytes()
     segment.write_bytes(payload.replace(b'"settled"', b'"sett1ed"', 1))
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
 
 
-def test_rehashed_segment_still_fails_the_ledger_structure(data_root):
+def test_rehashed_segment_still_fails_the_ledger_structure(data_root, compacted):
     """A tamperer who also repairs the hash still has to produce a LEDGER."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
-    header = _ledger_rows(data_root)[0]
-    segment = data_root / header["archive_rel"]
+    header, segment = compacted
     forged = segment.read_bytes().replace(b'"seq":2', b'"seq":9', 1)
     assert len(forged) == header["source_size_bytes"]
     segment.write_bytes(forged)
@@ -900,12 +903,9 @@ def test_rehashed_segment_still_fails_the_ledger_structure(data_root):
         uc.archived_attempt_ids(data_root)
 
 
-def test_warm_segment_cache_revalidates_the_file_it_cached(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_warm_segment_cache_revalidates_the_file_it_cached(data_root, compacted):
+    _, segment = compacted
     assert uc.archived_attempt_ids(data_root)  # warms the per-segment cache
-    header = _ledger_rows(data_root)[0]
-    segment = data_root / header["archive_rel"]
     segment.unlink()
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
@@ -929,13 +929,10 @@ def _rewrite_segment_in_place(segment, marker):
     os.utime(segment, ns=(info.st_atime_ns, info.st_mtime_ns))
 
 
-def test_a_rewrite_inside_the_timestamp_window_is_re_hashed_not_recalled(data_root):
+def test_a_rewrite_inside_the_timestamp_window_is_re_hashed_not_recalled(data_root, compacted):
     """Filesystem timestamps have granularity; a file touched about NOW cannot
     prove it is the file that was read, however well the fingerprint matches."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
-    header = _ledger_rows(data_root)[0]
-    segment = data_root / header["archive_rel"]
+    _, segment = compacted
     assert uc.archived_attempt_ids(data_root)  # warms the per-segment cache
     _rewrite_segment_in_place(segment, b'"sett1ed"')
     # Deterministically place the file INSIDE the settle window while keeping
@@ -951,12 +948,9 @@ def test_a_rewrite_inside_the_timestamp_window_is_re_hashed_not_recalled(data_ro
         uc.archived_attempt_ids(data_root)
 
 
-def test_a_same_size_rewrite_is_caught_once_the_cache_entry_expires(data_root):
+def test_a_same_size_rewrite_is_caught_once_the_cache_entry_expires(data_root, compacted):
     """A verified read is evidence with a shelf life, not a standing answer."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
-    header = _ledger_rows(data_root)[0]
-    segment = data_root / header["archive_rel"]
+    _, segment = compacted
     settled = time.time() - 3600
     os.utime(segment, (settled, settled))  # well outside the settle window
     assert uc.archived_attempt_ids(data_root)
@@ -985,10 +979,8 @@ def _embedded_header(data_root, header):
     return json.loads(first)
 
 
-def test_repointing_the_header_at_an_older_segment_is_corrupt(data_root):
+def test_repointing_the_header_at_an_older_segment_is_corrupt(data_root, compacted):
     """Dropping the epochs between is a shortened chain, not a shorter history."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
     for generation in ("gen2", "gen3"):
         _settle(data_root, cost=0.75, cost_final=True, task_id=generation)
         assert _compact(data_root) is not None
@@ -1009,12 +1001,10 @@ def test_repointing_the_header_at_an_older_segment_is_corrupt(data_root):
     assert everything  # what the forgeries were trying to make disappear
 
 
-def test_an_orphan_segment_of_the_live_generation_is_not_a_rollback(data_root, monkeypatch):
+def test_an_orphan_segment_of_the_live_generation_is_not_a_rollback(data_root, monkeypatch, compacted):
     """A pass that lost the snapshot race leaves a segment for an epoch that
     never committed. It holds THIS generation's bytes, so the archive still
     anchors the live stamp and the history stays readable."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
     known = uc.archived_attempt_ids(data_root)
     original_write = uc._write_new_file_fsync
 
@@ -1068,7 +1058,7 @@ def test_a_restored_previous_generation_is_out_anchored_not_taken_for_an_orphan(
     platform_layer.IS_WINDOWS,
     reason="the held dir-fd scan is POSIX; Windows keeps the path-based scan, fail-closed",
 )
-def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root, monkeypatch):
+def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root, monkeypatch, compacted):
     """The chain walk and the anchor scan must look at the SAME directory: a
     directory swapped between them (renamed away, a look-alike put in its
     place) hides the newer generation from a path-based scan and admits a
@@ -1077,8 +1067,6 @@ def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root,
     carries the epoch-3 NAME with the forged live header as its leading row
     is admitted by the orphan exemption. The renamed directory is still the
     one the handle names, so the real epoch-3 segment is what gets read."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
     for generation in ("gen2", "gen3"):
         _settle(data_root, cost=0.75, cost_final=True, task_id=generation)
         assert _compact(data_root) is not None
@@ -1150,10 +1138,8 @@ def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root, 
         uc.archived_attempt_ids(data_root)
 
 
-def test_pre_compaction_seq_must_name_a_row_the_named_source_held(data_root):
+def test_pre_compaction_seq_must_name_a_row_the_named_source_held(data_root, compacted):
     """The claim is provenance about an archived range, not a free number."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
     rows = _ledger_rows(data_root)
     header = rows[0]
     carriers = [index for index, row in enumerate(rows) if "pre_compaction_seq" in row]
@@ -1166,9 +1152,7 @@ def test_pre_compaction_seq_must_name_a_row_the_named_source_held(data_root):
         _validate_records(forged)
 
 
-def test_archive_reference_is_bounded_to_the_archive_directory(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_archive_reference_is_bounded_to_the_archive_directory(data_root, compacted):
     rows = _ledger_rows(data_root)
     header = rows[0]
     for archive_rel in (
@@ -1190,12 +1174,10 @@ def test_archive_reference_is_bounded_to_the_archive_directory(data_root):
 
 
 @pytest.mark.parametrize("level", ("archive", "archive/usage_ledger"))
-def test_a_symlinked_archive_path_is_refused_by_writer_and_reader(data_root, tmp_path, level):
+def test_a_symlinked_archive_path_is_refused_by_writer_and_reader(data_root, tmp_path, level, compacted):
     """The archive directory must BE inside the data root, not a door to
     somewhere else: with a link at either level the segment and the directory
     resolve THROUGH the same link, so "next to the archive" proves nothing."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
     ledger_path = data_root / ua.LEDGER_REL
     target = data_root / level
     elsewhere = tmp_path / "elsewhere"
@@ -1212,15 +1194,13 @@ def test_a_symlinked_archive_path_is_refused_by_writer_and_reader(data_root, tmp
 
 
 def test_a_link_planted_after_the_writer_bound_check_cannot_receive_history(
-    data_root, tmp_path, monkeypatch
+    data_root, tmp_path, monkeypatch, compacted
 ):
     """The bound check and the write are not one instant: on POSIX the writer
     creates the segment through O_NOFOLLOW dir-fd handles, so a link swapped
     in AFTER the check passed still cannot receive monetary history."""
     if platform_layer.IS_WINDOWS:  # pragma: no cover - platform predicate
         pytest.skip("dir-fd anchoring is POSIX; Windows is a disclosed best effort")
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
     _settle(data_root, cost=0.5, cost_final=True, task_id="gen2")
     ledger_path = data_root / ua.LEDGER_REL
     archive = data_root / "archive"
@@ -1244,17 +1224,14 @@ def test_a_link_planted_after_the_writer_bound_check_cannot_receive_history(
 
 
 def test_a_link_planted_after_the_reader_bound_check_is_refused(
-    data_root, tmp_path, monkeypatch
+    data_root, tmp_path, monkeypatch, compacted
 ):
     """A byte-identical copy behind a planted link hashes perfectly — the
     only defense is that the read itself refuses to traverse a link, which
     the O_NOFOLLOW dir-fd open enforces at the open, not at an earlier look."""
     if platform_layer.IS_WINDOWS:  # pragma: no cover - platform predicate
         pytest.skip("dir-fd anchoring is POSIX; Windows is a disclosed best effort")
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
-    header = _ledger_rows(data_root)[0]
-    segment = data_root / header["archive_rel"]
+    _, segment = compacted
     copy = tmp_path / "copy.jsonl"
     copy.write_bytes(segment.read_bytes())  # identical bytes: the hash cannot object
     real_path = uc._segment_path
@@ -1272,9 +1249,7 @@ def test_a_link_planted_after_the_reader_bound_check_is_refused(
         uc.archived_attempt_ids(data_root)
 
 
-def test_unreadable_leading_row_is_typed_corruption_not_absence(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_unreadable_leading_row_is_typed_corruption_not_absence(data_root, compacted):
     folded = sorted(uc.archived_attempt_ids(data_root))
     assert folded
     path = data_root / ua.LEDGER_REL
@@ -1288,9 +1263,7 @@ def test_unreadable_leading_row_is_typed_corruption_not_absence(data_root):
         uc.usage_attempt_recorded(data_root, folded[0], live_ids=set())
 
 
-def test_archived_id_union_is_built_once_per_chain(data_root, monkeypatch):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_archived_id_union_is_built_once_per_chain(data_root, monkeypatch, compacted):
     _settle(data_root, cost=0.25, cost_final=True, task_id="gen2")
     assert _compact(data_root) is not None
     folded = sorted(uc.archived_attempt_ids(data_root))
@@ -1320,9 +1293,7 @@ def test_archived_id_union_is_built_once_per_chain(data_root, monkeypatch):
 
 # --- 6: idempotent kinds never fold ------------------------------------------
 
-def test_subscription_replay_still_dedups_after_compaction(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_subscription_replay_still_dedups_after_compaction(data_root, compacted):
     before = len(_ledger_rows(data_root))
     attempt_id = ua.record_subscription_session(
         "sess-1", drive_root=data_root, route="claudexor:claude", model="fable",
@@ -1473,10 +1444,8 @@ def test_baseline_rows_are_rejected_outside_the_leading_block(data_root):
         _validate_records([*rows, smuggled])
 
 
-def test_a_group_row_cannot_rejoin_the_block_after_it_closed(data_root):
+def test_a_group_row_cannot_rejoin_the_block_after_it_closed(data_root, compacted):
     """The money-injection shape: a real group row, real ``baseline_id``, later."""
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
     rows = _ledger_rows(data_root)
     template = next(row for row in rows if row.get("kind") == "usage_baseline_group")
     smuggled = {
@@ -1488,9 +1457,7 @@ def test_a_group_row_cannot_rejoin_the_block_after_it_closed(data_root):
         _validate_records([*rows, smuggled])
 
 
-def test_baseline_header_is_rejected_by_POSITION_not_by_shape(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_baseline_header_is_rejected_by_POSITION_not_by_shape(data_root, compacted):
     rows = _ledger_rows(data_root)
     header = rows[0]
     groups = [row for row in rows if row.get("kind") == "usage_baseline_group"]
@@ -1508,9 +1475,7 @@ def test_baseline_header_is_rejected_by_POSITION_not_by_shape(data_root):
         _validate_records(displaced)
 
 
-def test_baseline_header_counts_must_close(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_baseline_header_counts_must_close(data_root, compacted):
     rows = _ledger_rows(data_root)
     header = rows[0]
     _validate_records(rows)
@@ -1529,9 +1494,7 @@ def test_baseline_header_counts_must_close(data_root):
             _validate_records([{**header, field: value}, *rows[1:]])
 
 
-def test_pre_compaction_seq_is_a_checked_provenance_claim(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_pre_compaction_seq_is_a_checked_provenance_claim(data_root, compacted):
     rows = _ledger_rows(data_root)
     carriers = [index for index, row in enumerate(rows) if "pre_compaction_seq" in row]
     assert len(carriers) >= 2
@@ -1565,9 +1528,7 @@ def test_group_rows_require_a_leading_header(data_root):
         _validate_records([group])
 
 
-def test_compacted_ledger_revalidates_and_quarantine_semantics_hold(data_root):
-    _seed_mixed_ledger(data_root)
-    assert _compact(data_root) is not None
+def test_compacted_ledger_revalidates_and_quarantine_semantics_hold(data_root, compacted):
     rows = _ledger_rows(data_root)
     _validate_records(rows)  # full-file validation accepts the baseline block
     # Torn tail on the compacted file still quarantines exactly as before.
