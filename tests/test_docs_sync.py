@@ -396,15 +396,15 @@ DOC_RESIDUE_BASELINE = {
             "version_stamp": 0,
             "version_narrative": 0,
             "narrative": 0,
-            "codename_paren": 2,
-            "codename_word": 3
+            "codename_paren": 0,
+            "codename_word": 0
         },
         "## 6. Agent Core": {
-            "version_stamp": 8,
+            "version_stamp": 0,
             "version_narrative": 0,
-            "narrative": 9,
-            "codename_paren": 6,
-            "codename_word": 15
+            "narrative": 0,
+            "codename_paren": 0,
+            "codename_word": 0
         },
         "## 7. Configuration (ouroboros/config.py)": {
             "version_stamp": 0,
