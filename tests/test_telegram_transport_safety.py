@@ -364,12 +364,15 @@ def test_photo_download_accepts_small_response(monkeypatch):
     assert mime == "image/jpeg"
 
 
-def test_telegram_http_clients_pin_trust_env_false(monkeypatch):
-    """Both TelegramClient transports (API calls and file downloads) must ignore
-    ambient proxy environment: on a shared host an HTTP(S)_PROXY would silently
-    route the bot token through a foreign proxy, while every other client in this
-    skill and the runtime's no-proxy LLM clients already pin trust_env=False."""
+@pytest.mark.parametrize("proxied", [False, True])
+def test_telegram_http_clients_trust_env_only_on_proxy_routed_installs(monkeypatch, proxied):
+    """Both TelegramClient transports (API calls and file downloads) isolate the
+    ambient environment — HTTP(S)_PROXY and SSL_CERT_FILE/SSL_CERT_DIR, i.e. an
+    env-injected MITM CA — unless the install actually routes through a proxy
+    (``net_transport.env_proxies_configured()``), where the pin would cut the
+    owner's only Telegram egress; the LLM lane makes the same trade."""
     _plugin, telegram_api = _load_skill()
+    monkeypatch.setattr(telegram_api, "env_proxies_configured", lambda: proxied)
     real_async_client = httpx.AsyncClient
     seen: list[dict] = []
 
@@ -389,4 +392,4 @@ def test_telegram_http_clients_pin_trust_env_false(monkeypatch):
     asyncio.run(client._download_bytes("photos/file_1.jpg"))
 
     assert len(seen) == 2
-    assert all(kwargs.get("trust_env") is False for kwargs in seen)
+    assert all(kwargs.get("trust_env") is proxied for kwargs in seen)
