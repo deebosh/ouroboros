@@ -1044,7 +1044,9 @@ def _no_newer_archived_epoch(
     the live generation. A pass writes its segment BEFORE the swap, so that
     segment is the byte-for-byte copy of the live file at that instant, and
     the live file only grows behind it — the orphan's bytes are still a PREFIX
-    of it, and every id it holds is live. That prefix is the test. Matching
+    of it, and every id it holds is live. That prefix is the test, read from
+    the descriptor the entry was classified through (one open per entry: a
+    name re-opened in between could name a different file). Matching
     only the segment's leading row against the live header was not: a previous
     generation RESTORED over the live file (a backup, a rescue snapshot) has
     the same leading row and also carries every attempt the rolled-back
@@ -1064,26 +1066,21 @@ def _no_newer_archived_epoch(
                 continue  # no held handle: classify BEFORE the open, which is what a
             fd = _open_archive_entry(directory / name, dir_fd)  # directory refuses there
             try:
-                regular = stat.S_ISREG(os.fstat(fd).st_mode)
-                first = os.read(fd, 1 << 16).split(b"\n", 1)[0] if regular else b""
-            finally:
-                os.close(fd)
-            if not regular:
-                continue
-            try:
-                row = json.loads(first.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            if not isinstance(row, dict):
-                continue
-            prior = row.get("compaction_epoch") if str(row.get("kind") or "") == "usage_baseline" else 0
-            if isinstance(prior, bool) or not isinstance(prior, int) or prior < 0:
-                continue
-            if prior + 1 <= live_epoch:
-                continue
-            fd = _open_archive_entry(directory / name, dir_fd)
-            try:  # an orphan of the live generation, or a rolled-back one: read it out
-                with open(root / LEDGER_REL, "rb") as live:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    continue
+                try:
+                    row = json.loads(os.read(fd, 1 << 16).split(b"\n", 1)[0].decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                prior = row.get("compaction_epoch") if str(row.get("kind") or "") == "usage_baseline" else 0
+                if isinstance(prior, bool) or not isinstance(prior, int) or prior < 0:
+                    continue
+                if prior + 1 <= live_epoch:
+                    continue
+                os.lseek(fd, 0, os.SEEK_SET)  # compared from the descriptor just classified, never a re-open
+                with open(root / LEDGER_REL, "rb") as live:  # an orphan of the live generation, or a rolled-back one
                     while chunk := os.read(fd, 1 << 20):
                         if live.read(len(chunk)) != chunk:
                             raise UsageLedgerCorrupt(

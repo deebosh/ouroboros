@@ -431,12 +431,11 @@ def test_the_directory_chain_is_re_synced_on_the_retry_after_a_failed_pass(data_
 
 
 def test_the_swap_fsyncs_the_candidate_before_the_rename_and_its_directory_after(data_root, monkeypatch):
-    """"A crash during the swap leaves either the old file or the new one, both
-    valid" rests on two calls and nothing else: the candidate temp is fsync'd
-    BEFORE the replace — without it the renamed inode can hold unwritten data,
-    neither the old ledger nor the approved new one — and the ledger's own
-    directory after it, without which the rename may not survive the power
-    cut. The archive half of the same guarantee carries three pins."""
+    """"A crash during the swap leaves the old file or the new one, both valid"
+    rests on two calls: the candidate temp fsync'd BEFORE the replace (without
+    it the renamed inode can hold unwritten data — neither the old ledger nor
+    the approved new one) and the ledger's own directory after it, without
+    which the rename may not survive the power cut. The archive half has three pins."""
     _seed_mixed_ledger(data_root)
     ledger_path = data_root / ua.LEDGER_REL
     real_fsync, real_replace = os.fsync, os.replace
@@ -1034,18 +1033,17 @@ def test_an_orphan_segment_of_the_live_generation_is_not_a_rollback(data_root, m
 
 
 @pytest.mark.parametrize("restored", ("stamped", "unstamped"))
-def test_a_restored_previous_generation_is_out_anchored_not_taken_for_an_orphan(data_root, restored):
-    """Restoring the ledger from a backup — an operator copy, a rescue
-    snapshot — taken before the last compaction leaves the segment THAT
-    compaction produced on disk, holding every attempt it folded: ids that
-    exist nowhere else. Its leading row is the restored file's leading row, so
-    matching that row admitted it as an uncommitted orphan and the join
-    answered a strictly smaller set: silent absence, the one verdict this
-    surface may never reach. An orphan is the pre-swap COPY of the live file,
-    which only grows behind it, so an orphan's bytes stay a PREFIX of it and a
-    restored generation's do not. With no stamp at all it is the same question
-    with the floor at zero: the archive contradicts the missing stamp instead
-    of never being read."""
+def test_a_restored_previous_generation_is_out_anchored_not_taken_for_an_orphan(data_root, monkeypatch, restored):
+    """A ledger restored from a backup taken before the last compaction leaves
+    that pass's segment on disk holding every attempt it folded — ids that
+    exist nowhere else — and its leading row IS the restored file's, so
+    matching that row admitted it as an orphan and the join answered a
+    strictly smaller set: silent absence, the one verdict this surface may
+    never reach. An orphan is the pre-swap COPY of the live file, which only
+    grows behind it: its bytes stay a PREFIX, a restored generation's do not —
+    compared from the descriptor that was classified, never from a re-open of
+    the name. No stamp at all is the same question with the floor at zero: the
+    archive contradicts the missing stamp instead of never being read."""
     _seed_mixed_ledger(data_root)
     generations = [(data_root / ua.LEDGER_REL).read_bytes()]
     assert _compact(data_root) is not None
@@ -1058,6 +1056,10 @@ def test_a_restored_previous_generation_is_out_anchored_not_taken_for_an_orphan(
     (data_root / ua.LEDGER_REL).write_bytes(generations[restored == "stamped"])
     uc._SEGMENT_CACHE.clear()
     uc._CHAIN_UNION_CACHE.clear()
+    opened: set = set()  # a name opened AGAIN answers an empty file: the entry swapped in between
+    real_open = uc._open_archive_entry
+    monkeypatch.setattr(uc, "_open_archive_entry", lambda path, dir_fd: os.open(os.devnull, os.O_RDONLY)
+                        if path.name in opened else (opened.add(path.name) or real_open(path, dir_fd)))
     with pytest.raises(UsageLedgerCorrupt, match="generation newer"):
         uc.archived_attempt_ids(data_root)
 
@@ -1113,16 +1115,14 @@ def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root,
 )
 @pytest.mark.parametrize("held_dir_fd", (True, False))
 def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root, monkeypatch, held_dir_fd):
-    """An entry the anchor scan cannot open or read is not "no evidence": the
-    scan did not complete, so the history question is UNKNOWN (typed) — never
-    an answer built on the part of the archive that could be read. A directory
-    or a FIFO is no segment at all (segments are regular files by construction):
-    classified and skipped — and the FIFO, which has no writer, must not hang
-    the open. That holds on BOTH shapes of the scan: without the held dir-fd
-    the entry is classified BEFORE the open, the step a directory refuses on
-    Windows and a FIFO blocks on. Whatever the question cannot reach is typed
-    the same way, the data root's own handle included: a bare OSError from
-    THAT open would escape the sweep's UNKNOWN mapping entirely."""
+    """An entry the anchor cannot open or read is not "no evidence": the scan
+    did not complete, so the question is UNKNOWN (typed), never an answer built
+    on the part of the archive that could be read. A directory or a writer-less
+    FIFO is no segment (segments are regular files by construction): classified
+    and skipped without hanging the open, on BOTH scan shapes — without the held
+    dir-fd the entry is classified BEFORE the open, the step a directory refuses
+    on Windows and a FIFO blocks on. The data root's own handle is typed the
+    same way: a bare OSError from THAT open would escape the sweep's UNKNOWN mapping."""
     monkeypatch.setattr(uc, "_dir_fd_capable", lambda: held_dir_fd)
     _seed_mixed_ledger(data_root)
     assert _compact(data_root) is not None
