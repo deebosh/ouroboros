@@ -44,7 +44,6 @@ from ouroboros.tools.registry import (
     ToolEntry,
 )
 from ouroboros.tools import shell_audit as _shell_audit
-from ouroboros.tools.shell_bounds import RUN_SCRIPT_MAX_ARG_CHARS, RUN_SCRIPT_MAX_ARGS_COUNT, RUN_SCRIPT_MAX_SCRIPT_CHARS, oversized_run_script_input
 from ouroboros.tools.deliverables_shell import lexical_user_files_block_reason
 from ouroboros.tools.shell_audit import (
     _UNDECLARED_OUTPUTS_MARKER,
@@ -1310,8 +1309,6 @@ def _run_script(
     body = str(script or "")
     if not body.strip():
         return "⚠️ TOOL_ARG_ERROR (run_script): script is required."
-    if (oversized := oversized_run_script_input(body, args)):
-        return oversized
     try:
         binding = _resolved_binding or build_resolved_resource_binding(
             ctx, operation="shell", process_cwd=cwd, bucket=bucket, skill_name=skill_name,
@@ -1470,10 +1467,9 @@ def get_tools() -> List[ToolEntry]:
                 "The underlying command result echoes the resolved cwd."
             ),
             "parameters": {"type": "object", "properties": {
-                "script": {"type": "string", "maxLength": RUN_SCRIPT_MAX_SCRIPT_CHARS,
-                           "description": f"Script body (hard limit {RUN_SCRIPT_MAX_SCRIPT_CHARS} chars; stage larger content with write_file and run the staged file)."},
+                "script": {"type": "string"},
 	                "interpreter": {"type": "string", "enum": ["python", "python3", "bash", "sh", "node", "ruby"], "default": "python3"},
-	                "args": {"type": "array", "maxItems": RUN_SCRIPT_MAX_ARGS_COUNT, "items": {"type": "string", "maxLength": RUN_SCRIPT_MAX_ARG_CHARS}, "default": []},
+	                "args": {"type": "array", "items": {"type": "string"}, "default": []},
 	                "cwd": {"type": "string", "default": "", "description": "Omit for active_workspace; use system_repo[/subdir] for Ouroboros or skill_payload[/subdir] with bucket+skill_name for a skill."},
 	                "bucket": {"type": "string", "enum": ["external", "clawhub", "ouroboroshub", "user_repo"], "description": "Physical skill location for cwd=skill_payload[/subdir]."},
 	                "skill_name": {"type": "string", "description": "Exact skill identity for cwd=skill_payload[/subdir]."},

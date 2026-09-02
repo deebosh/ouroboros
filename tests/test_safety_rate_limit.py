@@ -728,8 +728,7 @@ def test_non_ascii_subject_near_cap_is_not_inflated(monkeypatch, tmp_path):
     """``ensure_ascii=False`` keeps serialized length ≈ input length: a near-cap
     Cyrillic payload must reach the model instead of being refused through the
     6x ``\\uXXXX`` inflation the default serialization would apply — otherwise
-    the run_script schema cap (200k chars) is a false promise for non-ASCII
-    scripts."""
+    a script the budget admits in ASCII would be refused for its Cyrillic twin."""
     from ouroboros.safety import check_safety
 
     stub = _ScriptedLLMClient([
@@ -762,8 +761,7 @@ def test_safe_subject_whitelist_stays_llm_free_for_oversized_calls(monkeypatch, 
     """INTENTIONAL pass-through pin: a deterministic safe-subject call
     (``run_command`` with a whitelisted argv head) never builds a check prompt,
     so the subject budget does not apply — there is nothing to inflate. The
-    budget governs subjects that would ENTER the LLM check; the handler-side
-    per-field caps remain the bound for tool-specific payload size."""
+    budget governs only subjects that would ENTER the LLM check."""
     from ouroboros.safety import check_safety
 
     _patch_llm_client(monkeypatch, _MustNotBeCalled())

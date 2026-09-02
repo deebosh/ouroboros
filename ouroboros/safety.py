@@ -480,8 +480,8 @@ def _render_subject_json(arguments: Dict[str, Any]) -> str:
 
     ``ensure_ascii=False`` keeps serialized length ≈ input length: the default
     \\uXXXX escaping inflates non-ASCII text 6×, which would make the subject
-    budget below (and the run_script schema cap sized against it) a false
-    promise for e.g. Cyrillic scripts. The prompt goes to an LLM; UTF-8 is fine.
+    budget below a false promise for e.g. Cyrillic scripts. The prompt goes to
+    an LLM; UTF-8 is fine.
     """
     safe_args = _redact_secrets_in_arguments(arguments or {})
     try:
