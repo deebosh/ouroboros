@@ -80,10 +80,18 @@ reads that feed source-text regexes are touched.
    requirements archive, «os.name→alias-условие в route-пине») asks for the pin
    to name the actual alias condition instead of the platform.
    Class 5 above is landed; this is a follow-up on its expression, not on its
-   decision.
-2. **No green windows leg exists yet on any frozen SHA.** Class 17 is decided
-   and fixed on the integration branch, but the run that would prove the fix
-   has not reported. See the run log below.
+   decision. Still open on the integration tip (`tests/test_registry_core.py`
+   line 813 reads `os.name`); the repin is being landed by the smalls lane of
+   the stage-2 fix wave, so this item is assigned, not merely listed.
+2. **Green windows legs exist, and the whole matrix is green.** This item used to
+   read «no green windows leg exists yet on any frozen SHA», which the run table
+   below has contradicted since run 33568728122 (`f5a94675`, first green Windows
+   leg) and, for the full matrix, since run 33569841899 (`8b27b507`) — four
+   consecutive green 3-OS matrices are logged there, and three more on the later
+   branch tips. Class 17 is decided, fixed and proved. What is genuinely open is
+   FRESHNESS, not colour: the matrix dispatched on the newest tip (the sync #3
+   merge `f4abe0a5`, run 33644668074) has not reported, so the newest bytes are
+   not yet covered by a read verdict.
 
 ## 3-OS matrix runs
 
@@ -102,6 +110,10 @@ The row's re-prove needs a green full-test 3-OS matrix on a frozen branch SHA
 | [33571681398](https://github.com/razzant/ouroboros/actions/runs/33571681398) | `9238cc2d` | green | green | green | re-prove holds |
 | [33572515529](https://github.com/razzant/ouroboros/actions/runs/33572515529) | `c0029d45` | green | green | green | re-prove holds |
 | [33574822693](https://github.com/razzant/ouroboros/actions/runs/33574822693) | `d21806d8` (first run of the scheduled `system-e2e-mock` job on dispatch) | pending | pending | pending | pending at the time of writing |
+| [33579445704](https://github.com/razzant/ouroboros/actions/runs/33579445704) | `1072a317` | green | green | green | re-prove holds |
+| [33624546416](https://github.com/razzant/ouroboros/actions/runs/33624546416) | `ac17fa03` | green | green | green | re-prove holds |
+| [33626834806](https://github.com/razzant/ouroboros/actions/runs/33626834806) | `43dcc1d2` | green | green | green | re-prove holds — full-test 3-OS green on the FIRST attempt; the separate `system-e2e-mock` job was red 2/57 on attempt 1 and green on rerun (see below) |
+| [33644668074](https://github.com/razzant/ouroboros/actions/runs/33644668074) | `f4abe0a5` (the sync #3 merge) | pending | pending | pending | **pending** — dispatched, no verdict read; recorded as pending because a verdict nobody read is not evidence |
 
 The windows failure in run 33555971481, read from the run's own log rather than
 from its exit code: two subtests of `web/tests/chat_plain_system_rows.test.js`
@@ -119,6 +131,16 @@ platform classes on Windows (see the run table); they were fixed in
 (`8b27b507`) and held on every later run in the table, which is the
 re-prove the ADOPTION row R-WINWAVE cites; the per-class decisions above
 stand as recorded.
+
+The two red `system-e2e-mock` subtests on attempt 1 of run 33626834806
+(`43dcc1d2`) were not platform classes and are not registry rows: both were
+races inside the mock lane's own scaffolding — the `/proc`-environ scan of
+`pids_with_env_value` (a process can exit between the listing and the read) and
+an S22 wait that assumed its window was wide enough under CI load. The rerun of
+the same job on the same SHA was green, and the full 57-scenario lane passed
+twice locally on that tree. Recorded here so the attempt-1 red is not read later
+as a cross-OS class: it is lane flakiness on ubuntu, disclosed, and it belongs to
+the E2E lane's own ledger rather than to this row.
 
 (Written on the adoption lane's own worktree, where `a0b35fcd` and `196438c9`
 were not yet ancestors; on the integrated branch both are, and the run table
