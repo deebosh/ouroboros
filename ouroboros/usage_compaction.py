@@ -858,11 +858,14 @@ def _live_baseline_header(root: pathlib.Path) -> Optional[Dict[str, Any]]:
 
     Lock-free by design: appends never touch line 1 and the compactor swaps
     the file atomically, so the first line is always a complete row of either
-    generation. ``None`` therefore means exactly one thing — a readable
-    leading row that is not a baseline stamp, i.e. no compaction has happened.
-    A row that cannot be read AT ALL is corruption and says so: reporting it
-    as "not compacted" would hand the CPL-5 sweep an empty archive and let it
-    call a folded attempt an orphan seal.
+    generation. ``None`` means a readable leading row that is not a baseline
+    stamp: either no compaction has happened, or one has and its stamp is gone
+    (a restore from a backup older than the last pass). This function cannot
+    tell those apart and does not try — the archive does, in the epoch anchor,
+    which runs on a stamp-less file too. A row that cannot be read AT ALL is
+    corruption and says so: reporting it as "not compacted" would hand the
+    CPL-5 sweep an empty archive and let it call a folded attempt an orphan
+    seal.
     """
     try:
         with open(root / LEDGER_REL, "rb") as handle:
@@ -1003,9 +1006,9 @@ def _load_segment(
 
 
 def _no_newer_archived_epoch(
-    root: pathlib.Path, live_header: Dict[str, Any], walked: set, dir_fd: Optional[int]
+    root: pathlib.Path, live_header: Optional[Dict[str, Any]], walked: set, dir_fd: Optional[int]
 ) -> None:
-    """Refuse a live stamp the archive itself knows to be an older generation.
+    """Refuse a live file the archive itself knows to be an older generation.
 
     The chain walk proves every hop, but it starts wherever the live header
     points: re-pointing that header at an older GENUINE segment while also
@@ -1022,17 +1025,25 @@ def _no_newer_archived_epoch(
     not complete, so the history question is UNKNOWN. An entry that opens but
     is not a regular file (a stray directory, a FIFO) is no segment — segments
     are regular files by construction, no generation lives there — and is
-    skipped, not corruption. One generation newer is the legal case, not
-    tampering: a pass that lost the snapshot race, or died before its swap,
-    leaves a segment holding THIS generation's bytes — its embedded leading
-    row IS the live header (so a rollback that restores the previous
-    generation VERBATIM is admitted too: the same power as truncating the live
-    tail, and it hides no id from the join). A first row that reads but does
-    not parse is a torn segment from a crashed write: no evidence of any
-    generation, left to the walk, which verifies every segment the answer
-    actually depends on.
+    skipped, not corruption. A first row that reads but does not parse is a
+    torn segment from a crashed write: no evidence of any generation, left to
+    the walk, which verifies every segment the answer actually depends on.
+
+    A newer generation has exactly ONE legal shape: the uncommitted orphan of
+    the live generation. A pass writes its segment BEFORE the swap, so that
+    segment is the byte-for-byte copy of the live file at that instant, and
+    the live file only grows behind it — the orphan's bytes are still a PREFIX
+    of it, and every id it holds is live. That prefix is the test. Matching
+    only the segment's leading row against the live header was not: a previous
+    generation RESTORED over the live file (a backup, a rescue snapshot) has
+    the same leading row and also carries every attempt the rolled-back
+    compaction folded — ids that exist nowhere else — so the exemption hid
+    them from the join, the one verdict this surface may never reach. A live
+    file with NO stamp is the same question with the floor at zero: its only
+    legal companion is a pre-compaction generation (leading row an ordinary
+    attempt row, so produced by epoch 1) that is likewise still its prefix.
     """
-    live_epoch = int(live_header.get("compaction_epoch") or 0)
+    live_epoch = int(live_header.get("compaction_epoch") or 0) if live_header else 0
     directory = root / ARCHIVE_SEGMENT_DIR_REL
     try:
         for name in sorted(os.listdir(directory if dir_fd is None else dir_fd)):
@@ -1055,10 +1066,18 @@ def _no_newer_archived_epoch(
             prior = row.get("compaction_epoch") if str(row.get("kind") or "") == "usage_baseline" else 0
             if isinstance(prior, bool) or not isinstance(prior, int) or prior < 0:
                 continue
-            if prior + 1 > live_epoch and row != live_header:
-                raise UsageLedgerCorrupt(
-                    f"usage archive holds a generation newer than the live baseline: {name}"
-                )
+            if prior + 1 <= live_epoch:
+                continue
+            fd = _open_archive_entry(directory / name, dir_fd)
+            try:  # an orphan of the live generation, or a rolled-back one: read it out
+                with open(root / LEDGER_REL, "rb") as live:
+                    while chunk := os.read(fd, 1 << 20):
+                        if live.read(len(chunk)) != chunk:
+                            raise UsageLedgerCorrupt(
+                                f"usage archive holds a generation newer than the live baseline: {name}"
+                            )
+            finally:
+                os.close(fd)
     except OSError as exc:
         raise UsageLedgerCorrupt(f"usage archive anchor scan could not complete: {exc}") from exc
 
@@ -1081,7 +1100,11 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     segment (dropping the epochs between) is corruption, not a shorter
     history. Because that stamp's own epoch is mutable too, the archive
     anchors it: no segment on disk may carry a generation newer than the live
-    stamp except an uncommitted orphan of the live generation itself.
+    file's own, except the uncommitted orphan of that generation — the pre-swap
+    copy of the live file, still a prefix of it. The anchor runs whether or not
+    the live file carries a stamp, so a stamp that was REMOVED (a restore from
+    a backup taken before the last compaction) is a corruption verdict instead
+    of an archive nobody consulted.
     Segments are immutable, so per-segment reads and the union over a given
     chain are cached. An unreadable (or not-a-regular-file), hash-mismatched,
     mis-stepped, cyclic or out-anchored chain raises ``UsageLedgerCorrupt`` —
@@ -1089,10 +1112,12 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     skip-pass state, never as evidence of an orphan."""
     root = pathlib.Path(_drive_root(root))
     live_header = _live_baseline_header(root)
+    if live_header is None and not (root / ARCHIVE_SEGMENT_DIR_REL).is_dir():
+        return frozenset()  # never compacted and no archive: nothing to anchor against
     # POSIX holds the archive directory handles for the WHOLE question: the
     # chain walk and the epoch anchor read one and the same directory, whatever
     # the path names by the time the anchor runs.
-    fds = _archive_dir_fds(root, create=False) if live_header is not None and _dir_fd_capable() else []
+    fds = _archive_dir_fds(root, create=False) if _dir_fd_capable() else []
     dir_fd = fds[-1] if fds else None
     header = live_header
     chain: list = []
@@ -1123,10 +1148,9 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
                 raise UsageLedgerCorrupt(
                     f"usage archive chain ends before epoch {expected_epoch}"
                 )
-        if live_header is not None:
-            _no_newer_archived_epoch(
-                root, live_header, {pathlib.PurePosixPath(rel).name for rel in seen}, dir_fd
-            )
+        _no_newer_archived_epoch(
+            root, live_header, {pathlib.PurePosixPath(rel).name for rel in seen}, dir_fd
+        )
     finally:
         _close_fds(fds)
     key = tuple(chain)

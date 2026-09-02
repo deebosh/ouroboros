@@ -982,6 +982,37 @@ def test_an_orphan_segment_of_the_live_generation_is_not_a_rollback(data_root, m
     uc._CHAIN_UNION_CACHE.clear()
     assert uc.archived_attempt_ids(data_root) == known
 
+
+@pytest.mark.parametrize("restored", ("stamped", "unstamped"))
+def test_a_restored_previous_generation_is_out_anchored_not_taken_for_an_orphan(data_root, restored):
+    """Restoring the ledger from a backup — an operator copy, a rescue
+    snapshot — taken before the last compaction leaves the segment THAT
+    compaction produced on disk, holding every attempt it folded: ids that
+    exist nowhere else. Its leading row is the restored file's leading row, so
+    matching that row admitted it as an uncommitted orphan and the join
+    answered a strictly smaller set — silent absence, the one verdict this
+    surface may never reach. An orphan is the pre-swap COPY of the live file
+    and the live file only grows behind it, so an orphan's bytes stay a PREFIX
+    of it; a restored generation carries rows past the end of the file it was
+    restored from, and that is what separates them. A live file with no stamp
+    at all is the same question with the floor at zero: the archive gets to
+    contradict the absence of a stamp instead of never being read."""
+    _seed_mixed_ledger(data_root)
+    generations = [(data_root / ua.LEDGER_REL).read_bytes()]
+    assert _compact(data_root) is not None
+    generations.append((data_root / ua.LEDGER_REL).read_bytes())
+    _settle(data_root, cost=0.75, cost_final=True, task_id="gen2")
+    folded_by_the_second_pass = {row["attempt_id"] for row in _ledger_rows(data_root) if row.get("attempt_id")}
+    assert _compact(data_root) is not None
+    assert folded_by_the_second_pass <= uc.archived_attempt_ids(data_root)  # resolvable while intact
+
+    (data_root / ua.LEDGER_REL).write_bytes(generations[restored == "stamped"])
+    uc._SEGMENT_CACHE.clear()
+    uc._CHAIN_UNION_CACHE.clear()
+    with pytest.raises(UsageLedgerCorrupt, match="generation newer"):
+        uc.archived_attempt_ids(data_root)
+
+
 @pytest.mark.skipif(
     platform_layer.IS_WINDOWS,
     reason="the held dir-fd scan is POSIX; Windows keeps the path-based scan, fail-closed",
