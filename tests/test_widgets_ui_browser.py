@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import textwrap
+import urllib.parse
 
 import pytest
 
@@ -594,6 +595,21 @@ def test_ui_smoke_module_widgets_geometry_lifecycle(direct_server_with_data):
                 assert narrow_height > 320
                 page.screenshot(path=str(evidence_dir / "module-widgets-narrow.png"), full_page=True)
 
+                # Leave/return: leaving disposes the framed mount, but the card
+                # keeps its DOM identity (an expando survives only on the same
+                # node), a hidden page issues no list request, and the return
+                # issues exactly one `GET /api/widgets` before mounting again.
+                widgets_list_requests = []
+
+                def record_widgets_request(request):
+                    if urllib.parse.urlparse(request.url).path == "/api/widgets":
+                        widgets_list_requests.append(request.url)
+
+                page.on("request", record_widgets_request)
+                page.evaluate(
+                    "(selector) => { document.querySelector(selector).__ouroCardIdentity = true; }",
+                    card_selector("auto"),
+                )
                 page.evaluate(
                     """() => {
                         const button = [...document.querySelectorAll('[data-nav-page="dashboard"]')]
@@ -606,6 +622,8 @@ def test_ui_smoke_module_widgets_geometry_lifecycle(direct_server_with_data):
                     arg=card_selector("auto"),
                     timeout=10_000,
                 )
+                page.wait_for_timeout(300)
+                assert widgets_list_requests == [], widgets_list_requests
                 page.evaluate(
                     """() => {
                         const button = [...document.querySelectorAll('[data-nav-page="widgets"]')]
@@ -614,6 +632,11 @@ def test_ui_smoke_module_widgets_geometry_lifecycle(direct_server_with_data):
                     }"""
                 )
                 page.locator(card_selector("auto")).locator("iframe").wait_for(state="attached", timeout=10_000)
+                assert page.evaluate(
+                    "(selector) => document.querySelector(selector).__ouroCardIdentity === true",
+                    card_selector("auto"),
+                ), "returning to Widgets must reuse the existing card node, not rebuild the list"
+                assert len(widgets_list_requests) == 1, widgets_list_requests
             finally:
                 browser.close()
     except PlaywrightError as exc:

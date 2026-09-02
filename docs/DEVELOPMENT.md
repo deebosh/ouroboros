@@ -2559,7 +2559,10 @@ Both framed mounts (the extension-route iframe and the module `srcdoc` iframe
 with its CSP/sandbox constants and parent bridge) live in
 `web/modules/widget_module.js` and return their disposer to the `mountTab`
 dispatcher in `widgets.js`, which keeps the card registry and the declarative
-renderer.
+renderer. The pure list helpers — per-card and order-independent list change
+signatures plus the keyed patch plan — live in `web/modules/widget_list.js`;
+the page compares the signature after every `GET /api/widgets` and touches no
+existing card when it is unchanged.
 Never load skill JavaScript into the SPA origin. Long-running actions use a
 durable job id and resumable status polling rather than a foreground request
 lost on remount.

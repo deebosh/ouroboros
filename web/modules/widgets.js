@@ -9,6 +9,7 @@ import {
     withWidgetRequestTimeout,
 } from './widget_job.js';
 import { mountModuleWidget, mountRouteIframeWidget } from './widget_module.js';
+import { planWidgetListPatch, widgetKey, widgetTabsSignature } from './widget_list.js';
 import {
     apiClient,
     apiFetch,
@@ -40,7 +41,7 @@ function pageTemplate() {
                 title: 'Widgets',
                 icon: PAGE_ICONS.widgets,
                 description: 'Reviewed extension UI surfaces live here, separate from the skill catalogue.',
-                actionsHtml: '<button id="widgets-refresh" class="btn btn-default btn-sm">Refresh</button>',
+                actionsHtml: '<button id="widgets-refresh" class="btn btn-default btn-sm" title="Reload the list and restart all widgets">Refresh</button>',
             })}
             <div class="widgets-scroll scroll-fade-y">
                 <div id="widgets-list" class="widgets-list"></div>
@@ -49,21 +50,16 @@ function pageTemplate() {
     `;
 }
 
-function renderShell(host, tabs) {
-    if (!tabs.length) {
-        host.innerHTML = '<div class="muted">No live widgets yet. Review and enable an extension that registers a UI tab.</div>';
-        return;
-    }
-    host.innerHTML = tabs.map((tab) => {
-        // Avoid leaking internal "skill:tab_id"; show skill only as needed.
-        const title = tab.title || tab.tab_id || tab.skill;
-        const subtitle = tab.skill && tab.skill !== title
-            ? `<span class="widgets-card-source">from ${escapeHtml(tab.skill)}</span>`
-            : '';
-        const span = Number(tab.span || tab.grid_span || 1);
-        const spanClass = span >= 2 ? ' widgets-card-span-2' : '';
-        return `
-        <article class="widgets-card${spanClass}" data-widget-key="${escapeHtml(tab.key || `${tab.skill}:${tab.tab_id}`)}">
+function renderCardHtml(tab) {
+    // Avoid leaking internal "skill:tab_id"; show skill only as needed.
+    const title = tab.title || tab.tab_id || tab.skill;
+    const subtitle = tab.skill && tab.skill !== title
+        ? `<span class="widgets-card-source">from ${escapeHtml(tab.skill)}</span>`
+        : '';
+    const span = Number(tab.span || tab.grid_span || 1);
+    const spanClass = span >= 2 ? ' widgets-card-span-2' : '';
+    return `
+        <article class="widgets-card${spanClass}" data-widget-key="${escapeHtml(widgetKey(tab))}">
             <div class="widgets-card-head">
                 <div class="widgets-card-title">
                     <strong>${escapeHtml(title)}</strong>
@@ -74,11 +70,21 @@ function renderShell(host, tabs) {
             <div class="widgets-card-body" data-widget-mount></div>
         </article>
         `;
-    }).join('');
 }
 
-function widgetKey(tab) {
-    return tab.key || `${tab.skill}:${tab.tab_id}`;
+// Full paint — only for a list without cards yet and for the hard reset.
+function renderShell(host, tabs) {
+    if (!tabs.length) {
+        host.innerHTML = '<div class="muted">No live widgets yet. Review and enable an extension that registers a UI tab.</div>';
+        return;
+    }
+    host.innerHTML = tabs.map(renderCardHtml).join('');
+}
+
+function createCardElement(tab) {
+    const template = document.createElement('template');
+    template.innerHTML = renderCardHtml(tab).trim();
+    return template.content.firstElementChild;
 }
 
 function normalizeWidgetOrder(value) {
@@ -109,9 +115,13 @@ function currentWidgetOrderFromDom(list) {
         .filter(Boolean);
 }
 
+// Cards keep their DOM node across list patches, so binding is per card, once;
+// the drag source is shared by every binding pass over the one Widgets list.
+const reorderBoundCards = new WeakSet();
+let draggedKey = '';
+
 function bindWidgetCardReorder(list, onOrderChange) {
     if (!list) return;
-    let draggedKey = '';
     const clearDragState = () => {
         list.querySelectorAll('.widgets-card.dragging, .widgets-card.drag-over').forEach((card) => {
             card.classList.remove('dragging', 'drag-over');
@@ -124,7 +134,7 @@ function bindWidgetCardReorder(list, onOrderChange) {
     };
     list.querySelectorAll('[data-widget-reorder-handle]').forEach((handle) => {
         const card = handle.closest('[data-widget-key]');
-        if (!card) return;
+        if (!card || reorderBoundCards.has(card)) return;
         handle.setAttribute('draggable', 'true');
         handle.addEventListener('dragstart', (event) => {
             draggedKey = card.dataset.widgetKey || '';
@@ -172,6 +182,8 @@ function bindWidgetCardReorder(list, onOrderChange) {
         });
     });
     list.querySelectorAll('.widgets-card').forEach((card) => {
+        if (reorderBoundCards.has(card)) return;
+        reorderBoundCards.add(card);
         card.addEventListener('dragover', (event) => {
             if (!draggedKey || card.dataset.widgetKey === draggedKey) return;
             event.preventDefault();
@@ -1206,6 +1218,17 @@ async function mountTab(card, tab, mountSignal = null) {
     return null;
 }
 
+function disposeWidgetByKey(key) {
+    const dispose = widgetDisposers.get(key);
+    if (!dispose) return;
+    widgetDisposers.delete(key);
+    try {
+        dispose();
+    } catch (err) {
+        console.warn('widgets: dispose failed', err);
+    }
+}
+
 function disposeMountedWidgets() {
     widgetMountControllers.forEach((controller) => controller.abort());
     widgetMountControllers.clear();
@@ -1219,13 +1242,40 @@ function disposeMountedWidgets() {
     widgetDisposers.clear();
 }
 
-async function mountTrackedTab(card, tab, isCurrent = () => true) {
-    const key = tab.key || `${tab.skill}:${tab.tab_id}`;
-    const existing = widgetDisposers.get(key);
-    if (existing) {
-        existing();
-        widgetDisposers.delete(key);
+// Keyed patch over the existing <article> nodes: vanished cards go (their mounted
+// work disposed first), cards whose own entry changed are replaced, new cards are
+// inserted, every other card keeps its DOM node. Order follows `nextTabs`; only a
+// node that is out of place moves.
+function patchWidgetCards(list, previousTabs, nextTabs) {
+    const plan = planWidgetListPatch(previousTabs, nextTabs);
+    const cardFor = (key) => list.querySelector(`[data-widget-key="${CSS.escape(key)}"]`);
+    for (const key of plan.removed) {
+        disposeWidgetByKey(key);
+        cardFor(key)?.remove();
     }
+    let anchor = null;
+    for (const tab of nextTabs) {
+        const key = widgetKey(tab);
+        let card = cardFor(key);
+        if (!card || plan.changed.includes(key)) {
+            disposeWidgetByKey(key);
+            const fresh = createCardElement(tab);
+            if (card) card.replaceWith(fresh);
+            else if (anchor) anchor.after(fresh);
+            else list.prepend(fresh);
+            card = fresh;
+        }
+        if (card.previousElementSibling !== anchor) {
+            if (anchor) anchor.after(card);
+            else list.prepend(card);
+        }
+        anchor = card;
+    }
+}
+
+async function mountTrackedTab(card, tab, isCurrent = () => true) {
+    const key = widgetKey(tab);
+    disposeWidgetByKey(key);
     const mountController = new AbortController();
     widgetMountControllers.add(mountController);
     try {
@@ -1251,76 +1301,130 @@ export function initWidgets(ctx = {}) {
     let renderGeneration = 0;
     let widgetsVisible = false;
     let widgetsMounted = false;
-    // Last good payload keeps revisits and slow refreshes from blanking the page.
+    // Last good payload keeps revisits and slow refreshes from blanking the page;
+    // its order-independent signature decides whether a fetched list touches the DOM.
     let lastTabs = null;
+    let lastSignature = '';
+    // Generation of the list sync in flight (0 = none). A reconcile trigger landing
+    // mid-sync marks the list dirty and the running sync loops once more.
+    let activeSync = 0;
+    let listDirty = false;
     let uiPreferences = { widget_order: [], nested_subagents_expanded: false };
     if (ctx.ws && !widgetsWsBridgeBound) {
         widgetsWsBridgeBound = true;
         ctx.ws.on('message', (msg) => {
             widgetMessageHandlers.forEach((handler) => handler(msg));
         });
+        // List reconcile triggers besides page entry: a skill lifecycle change, and
+        // every (re)connect — events may have been missed while offline, or the
+        // server restarted with the same SHA (no SPA reload then). No polling.
+        ctx.ws.on('extension_lifecycle', reconcileWidgetList);
+        ctx.ws.on('open', reconcileWidgetList);
     }
 
+    const hasCards = () => Boolean(list.querySelector('[data-widget-key]'));
+
+    function paintShell(tabs) {
+        renderShell(list, tabs);
+        bindWidgetCardReorder(list, persistWidgetOrder);
+        applyMasonry(list);
+    }
+
+    // Page entry, or the hard reset behind Refresh (`force`): the shell is on
+    // screen before the first await. Leaving disposed the mounted work but kept
+    // the cards, so a plain entry reuses them and only mounts into them again.
     async function render(force = false) {
         const generation = ++renderGeneration;
         widgetsVisible = true;
         if (widgetsMounted && !force) return;
+        if (force) disposeMountedWidgets();
+        if (!lastTabs) {
+            list.innerHTML = '<div class="muted">Loading widgets…</div>';
+        } else if (force || !hasCards()) {
+            paintShell(lastTabs);
+        } else {
+            applyMasonry(list);
+        }
+        await syncWidgets(generation);
+    }
+
+    // WS-driven reconcile: visible → sync now (or mark dirty while one runs);
+    // hidden → dirty flag, consumed by the next entry's unconditional fetch.
+    function reconcileWidgetList() {
+        if (!widgetsVisible || activeSync) {
+            listDirty = true;
+            return;
+        }
+        syncWidgets(renderGeneration);
+    }
+
+    // One list sync: GET /api/widgets (+ preferences), compare signatures, patch
+    // cards by key, then mount every card without a live mount. Repeats while a
+    // trigger marked the list dirty mid-flight.
+    async function syncWidgets(generation) {
+        const isCurrent = () => widgetsVisible && generation === renderGeneration;
+        activeSync = generation;
         refreshBtn.disabled = true;
         refreshBtn.classList.add('is-loading');
-        disposeMountedWidgets();
-        if (lastTabs) {
-            renderShell(list, lastTabs);
-            bindWidgetCardReorder(list, persistWidgetOrder);
-            applyMasonry(list);
-        } else {
-            list.innerHTML = '<div class="muted">Loading widgets…</div>';
-        }
         try {
-            const [data, prefs] = await Promise.all([
-                apiClient.extensions(),
-                apiClient.uiPreferences().catch(() => null),
-            ]);
-            if (!widgetsVisible || generation !== renderGeneration) return;
-            if (prefs) {
-                uiPreferences = {
-                    widget_order: normalizeWidgetOrder(prefs.widget_order),
-                    nested_subagents_expanded: prefs.nested_subagents_expanded === true,
-                };
-            }
-            const tabs = sortTabsByWidgetOrder(
-                Array.isArray(data.live?.ui_tabs) ? data.live.ui_tabs : [],
-                uiPreferences.widget_order,
-            );
-            lastTabs = tabs;
-            renderShell(list, tabs);
-            bindWidgetCardReorder(list, persistWidgetOrder);
-            applyMasonry(list);
-            widgetsMounted = true;
-            for (const tab of tabs) {
-                if (!widgetsVisible || generation !== renderGeneration) return;
-                const key = widgetKey(tab);
-                const card = list.querySelector(`[data-widget-key="${CSS.escape(key)}"]`);
-                if (!card) continue;
-                try {
-                    await mountTrackedTab(card, tab, () => widgetsVisible && generation === renderGeneration);
-                    applyMasonry(list);
-                } catch (err) {
-                    if (!widgetsVisible || generation !== renderGeneration) return;
-                    const mount = card.querySelector('[data-widget-mount]');
-                    if (mount) mount.innerHTML = `<div class="skills-load-error">widget failed: ${escapeHtml(err.message || err)}</div>`;
-                    applyMasonry(list);
+            do {
+                listDirty = false;
+                const [data, prefs] = await Promise.all([
+                    apiClient.widgets(),
+                    apiClient.uiPreferences().catch(() => null),
+                ]);
+                if (!isCurrent()) return;
+                if (prefs) {
+                    uiPreferences = {
+                        widget_order: normalizeWidgetOrder(prefs.widget_order),
+                        nested_subagents_expanded: prefs.nested_subagents_expanded === true,
+                    };
                 }
-            }
-            applyMasonry(list);
+                const tabs = sortTabsByWidgetOrder(
+                    Array.isArray(data.ui_tabs) ? data.ui_tabs : [],
+                    uiPreferences.widget_order,
+                );
+                const signature = widgetTabsSignature(tabs);
+                if (hasCards() && tabs.length) {
+                    // Same signature: not one <article> is touched.
+                    if (signature !== lastSignature) patchWidgetCards(list, lastTabs, tabs);
+                } else {
+                    if (hasCards()) disposeMountedWidgets();
+                    renderShell(list, tabs);
+                }
+                lastTabs = tabs;
+                lastSignature = signature;
+                bindWidgetCardReorder(list, persistWidgetOrder);
+                applyMasonry(list);
+                widgetsMounted = true;
+                for (const tab of tabs) {
+                    if (!isCurrent()) return;
+                    const key = widgetKey(tab);
+                    if (widgetDisposers.has(key)) continue;
+                    const card = list.querySelector(`[data-widget-key="${CSS.escape(key)}"]`);
+                    if (!card) continue;
+                    try {
+                        await mountTrackedTab(card, tab, isCurrent);
+                        applyMasonry(list);
+                    } catch (err) {
+                        if (!isCurrent()) return;
+                        const mount = card.querySelector('[data-widget-mount]');
+                        if (mount) mount.innerHTML = `<div class="skills-load-error">widget failed: ${escapeHtml(err.message || err)}</div>`;
+                        applyMasonry(list);
+                    }
+                }
+                applyMasonry(list);
+            } while (listDirty && isCurrent());
         } catch (err) {
-            if (!widgetsVisible || generation !== renderGeneration) return;
+            if (!isCurrent()) return;
             // Preserve cached widgets on transient fetch errors.
             if (!lastTabs) {
                 list.innerHTML = `<div class="skills-load-error">Failed to load widgets: ${escapeHtml(err.message || err)}</div>`;
             }
             widgetsMounted = false;
         } finally {
-            if (widgetsVisible && generation === renderGeneration) {
+            if (activeSync === generation) activeSync = 0;
+            if (isCurrent()) {
                 refreshBtn.disabled = false;
                 refreshBtn.classList.remove('is-loading');
             }
@@ -1343,7 +1447,8 @@ export function initWidgets(ctx = {}) {
         if (event.detail?.page === 'widgets') {
             render();
         } else {
-            // Hide stops stale paints; next render reuses lastTabs for instant repaint.
+            // Leaving disposes the mounted work and stops stale paints; the cards
+            // stay in the DOM so the next entry mounts into them instead of rebuilding.
             widgetsVisible = false;
             widgetsMounted = false;
             disposeMountedWidgets();

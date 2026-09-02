@@ -51,6 +51,37 @@ def test_widgets_support_declarative_schema_components():
     assert "disposeMountedWidgets();" in page_shown_branch
 
 
+def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
+    """Widgets lifecycle phase 1: the page reads the passive ``GET /api/widgets``
+    projection — never the fat ``/api/extensions`` catalogue, which stays the
+    Skills page's read — paints the shell from the last known list before its
+    first await, and after every fetch compares an order-independent list
+    signature: unchanged → not one ``<article>`` is touched; changed → keyed
+    patch (``web/modules/widget_list.js`` holds the pure helpers). The same
+    sync runs on a visible ``extension_lifecycle`` event and on every WebSocket
+    (re)connect, never on a timer. Refresh keeps the hard-reset semantics
+    (dispose everything, refetch, rebuild all) and says so in its tooltip."""
+    source = _widgets_js()
+    helpers = _read("web/modules/widget_list.js")
+    assert "apiClient.widgets()" in source
+    assert "apiClient.extensions()" not in source
+    assert "live.ui_tabs" not in source
+    assert "live?.ui_tabs" not in source
+    assert "from './widget_list.js'" in source
+    assert "export function widgetTabsSignature" in helpers
+    assert "export function planWidgetListPatch" in helpers
+    assert "const signature = widgetTabsSignature(tabs);" in source
+    assert "if (signature !== lastSignature) patchWidgetCards(list, lastTabs, tabs);" in source
+    assert "ctx.ws.on('extension_lifecycle', reconcileWidgetList);" in source
+    assert "ctx.ws.on('open', reconcileWidgetList);" in source
+    assert "setInterval(" not in source
+    # Entry paints the shell before the first await; Refresh is the hard reset.
+    assert source.index("paintShell(lastTabs);") < source.index("await syncWidgets(generation);")
+    assert "if (force) disposeMountedWidgets();" in source
+    assert "refreshBtn.addEventListener('click', () => render(true));" in source
+    assert 'title="Reload the list and restart all widgets"' in source
+
+
 def test_widgets_escape_and_sanitize_untrusted_content():
     """Widgets must reach the sanitised markdown helper through the v5.8.3-rc.5
     SSOT (``web/modules/utils.js::renderMarkdownSafe``); the DOMPurify
