@@ -8,7 +8,7 @@ import {
     projectCollapsedActivity,
 } from '../modules/chat.js';
 import { summarizeChatLiveEvent } from '../modules/log_events.js';
-import { plainActivityText } from '../modules/chat_activity.js';
+import { bindContentButton, plainActivityText, selectionInside, subagentIdentityTitle, subagentTwin } from '../modules/chat_activity.js';
 
 test('named root card shows the latest activity headline under the coined title', () => {
     assert.equal(projectCollapsedActivity({
@@ -139,7 +139,18 @@ test('subagent projection keeps identity, compact facts and complete disclosure'
         write_surface: 'workspace',
         status: 'running',
     });
-    assert.match(summary.headline, /researcher · claude-fable-5 \(child123\) — Working/);
+    // Identity only: the status lives in the chip and the id shows only for twins.
+    assert.equal(summary.headline, 'researcher · claude-fable-5');
+    // A roleless child is `Subagent · model`: the id is a render-time twin tag, never identity.
+    assert.equal(summarizeChatLiveEvent({
+        type: 'send_message', is_progress: true, delegation_role: 'subagent',
+        subagent_task_id: 'child987654', parent_task_id: 'parent1', model: 'openai/gpt-5.6-sol',
+        subagent_event: 'running', content: 'x', status: 'running',
+    }).headline, 'Subagent · gpt-5.6-sol');
+    // chat.js writes the child title from the lineage map; it must read like the reducer's headline.
+    assert.equal(subagentIdentityTitle({ role: 'researcher', model: 'anthropic/claude-fable-5' }), 'researcher · claude-fable-5');
+    assert.equal(subagentIdentityTitle({ role: '', model: 'openai::gpt-5.6-sol' }), 'Subagent · gpt-5.6-sol');
+    assert.equal(subagentIdentityTitle({ role: 'planner', model: '' }), 'planner');
     assert.ok(summary.activityPreview.length <= COLLAPSED_ACTIVITY_MAX);
     assert.match(summary.fullBody, /UNIQUE_CHILD_TAIL$/);
     assert.deepEqual(summary.meta, ['write=workspace', 'status=running']);
@@ -154,6 +165,7 @@ test('the collapsed activity line is plain text: the renderer\'s markdown invent
         'Planning a network update I need git fetch');
     assert.equal(plainActivityText('### Title\n- one\n- two [link](http://x)'), 'Title\none\ntwo link');
     assert.equal(plainActivityText('~~old~~ *new*'), 'old new');
+    assert.equal(plainActivityText('#### Deep\n``x → y`` tail'), 'Deep\nx → y tail');
     assert.equal(plainActivityText('```js\nlet a = 1;\n```'), 'let a = 1;');
     assert.equal(boundActivityPreview('| a | b |\n|---|---|\n| 1 | 2 |'), 'a b 1 2');
     // Markers-only text keeps its source: an empty projection would flip the
@@ -165,4 +177,63 @@ test('the collapsed activity line is plain text: the renderer\'s markdown invent
     assert.equal(plainActivityText(''), '');
     // Composition: the bound preview is built on the plain projection.
     assert.equal(boundActivityPreview('  **Reading**\n  the   ledger  '), 'Reading the ledger');
+});
+
+test('twins are two children of one parent with the same role and model', () => {
+    const children = new Map([
+        ['a', { parentId: 'p', role: 'scout', model: 'gemini-3.6-flash' }],
+        ['b', { parentId: 'p', role: 'scout', model: 'gemini-3.6-flash' }],
+        ['c', { parentId: 'p', role: 'reviewer', model: 'gemini-3.6-flash' }],
+        ['d', { parentId: 'q', role: 'scout', model: 'gemini-3.6-flash' }],
+    ]);
+    assert.equal(subagentTwin(children, 'a'), true);
+    assert.equal(subagentTwin(children, 'b'), true);
+    assert.equal(subagentTwin(children, 'c'), false);
+    assert.equal(subagentTwin(children, 'd'), false);
+    assert.equal(subagentTwin(children, 'missing'), false);
+    // The collision key is the DISPLAYED identity: equivalent model spellings and the
+    // roleless fallback collide exactly when the headlines read the same.
+    const spelled = new Map([
+        ['e', { parentId: 'p', role: 'scout', model: 'openai/gpt-5.6-sol' }],
+        ['f', { parentId: 'p', role: 'scout', model: 'openai::gpt-5.6-sol' }],
+        ['g', { parentId: 'p', role: '', model: 'gpt-5.6-sol' }],
+        ['h', { parentId: 'p', role: 'Subagent', model: 'gpt-5.6-sol' }],
+    ]);
+    assert.equal(subagentTwin(spelled, 'e'), true);
+    assert.equal(subagentTwin(spelled, 'f'), true);
+    assert.equal(subagentTwin(spelled, 'g'), true);
+    assert.equal(subagentTwin(spelled, 'h'), true);
+});
+
+test('a selection inside the surface means the reader is copying, not clicking', () => {
+    const inside = {}; const outside = {};
+    const el = { contains: (node) => node === inside };
+    assert.equal(selectionInside(el, { isCollapsed: false, anchorNode: inside }), true);
+    assert.equal(selectionInside(el, { isCollapsed: true, anchorNode: inside }), false);
+    assert.equal(selectionInside(el, { isCollapsed: false, anchorNode: outside }), false);
+    assert.equal(selectionInside(el, null), false);
+});
+
+test('a content button toggles on click and keyboard, but not on a selecting drag', () => {
+    const handlers = {}; let clicks = 0; let activated = 0;
+    const inside = {};
+    const el = {
+        addEventListener: (type, fn) => { handlers[type] = fn; },
+        click: () => { clicks += 1; handlers.click({ detail: 0 }); },
+        contains: (node) => node === inside,
+    };
+    bindContentButton(el, () => { activated += 1; });
+    const saved = globalThis.getSelection;
+    globalThis.getSelection = () => ({ isCollapsed: false, anchorNode: inside });
+    handlers.click({ detail: 1 });
+    assert.equal(activated, 0, 'a pointer click after a selecting drag is a copy, not a toggle');
+    globalThis.getSelection = () => ({ isCollapsed: true, anchorNode: inside });
+    handlers.click({ detail: 1 });
+    assert.equal(activated, 1);
+    let prevented = 0;
+    handlers.keydown({ key: 'Enter', preventDefault: () => { prevented += 1; } });
+    handlers.keydown({ key: ' ', preventDefault: () => { prevented += 1; } });
+    handlers.keydown({ key: 'a', preventDefault: () => { prevented += 1; } });
+    assert.deepEqual([clicks, activated, prevented], [2, 3, 2]);
+    globalThis.getSelection = saved;
 });

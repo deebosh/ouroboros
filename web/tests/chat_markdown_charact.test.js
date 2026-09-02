@@ -69,6 +69,25 @@ test('legacy renderMarkdown pins emphasis, inline code, and fake headings', () =
     );
 });
 
+test('legacy renderMarkdown reads double-backtick spans and demotes deep headings', () => {
+    assert.equal(
+        renderMarkdown('#### Four\n##### Five\n``a `b` c`` and `d`'),
+        '<strong class="md-h3">Four</strong>\n<strong class="md-h3">Five</strong>\n<code class="inline-code">a `b` c</code> and <code class="inline-code">d</code>',
+    );
+});
+
+test('legacy renderMarkdown keeps a marker-led paragraph as prose', () => {
+    const paragraph = 'summary ' + 'word '.repeat(30).trim();
+    assert.equal(renderMarkdown(`## ${paragraph}`), paragraph);
+    assert.equal(renderMarkdown('## Short heading'), '<strong class="md-h2">Short heading</strong>');
+    // The cap measures what the reader sees: rendered inline tags and entities are not length.
+    const seventy = 'x'.repeat(70);
+    assert.equal(renderMarkdown(`## **${seventy}**`), `<strong class="md-h2"><strong>${seventy}</strong></strong>`);
+    assert.equal(renderMarkdown('## Tom & Jerry <3'), '<strong class="md-h2">Tom &amp; Jerry &lt;3</strong>');
+    const longUrl = 'https://example.com/' + 'segment/'.repeat(14);
+    assert.match(renderMarkdown(`## [Short](${longUrl})`), /^<strong class="md-h2"><a href=/);
+});
+
 test('legacy renderMarkdown discards fenced-code language', () => {
     assert.equal(
         renderMarkdown('```javascript\nconst less = 1 < 2;\n```'),

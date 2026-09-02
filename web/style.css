@@ -1872,6 +1872,17 @@ body.resizing-panels { user-select: none; }
     outline-offset: -2px;
 }
 
+/* Content is copyable (DESIGN.md §5): the summary suppresses selection only on
+   its own chrome; a drag that selects text does not toggle the card. The summary
+   is a div[role=button] (keyboard-activated in chat.js) because WebKit never
+   lets text inside a real <button> be selected. */
+.chat-live-summary-button .chat-live-title,
+.chat-live-summary-button .chat-live-activity,
+.chat-live-summary-button .chat-live-meta {
+    -webkit-user-select: text;
+    user-select: text;
+}
+
 .chat-live-summary-button:hover {
     background: var(--accent-05);
 }
@@ -1879,6 +1890,10 @@ body.resizing-panels { user-select: none; }
 .chat-live-summary {
     display: flex;
     align-items: flex-start;
+    /* A flex item shrinks below its text only with min-width: 0; the nested
+       one-line title relies on that to ellipsize instead of pushing the side
+       controls past the card edge. */
+    min-width: 0;
     justify-content: space-between;
     gap: 10px;
     flex: 1 1 100%;
@@ -2378,6 +2393,33 @@ body.resizing-panels { user-select: none; }
     padding: 9px 12px;
 }
 
+/* A nested child is subordinate to its root: quieter ink, and collapsed it is
+   one identity row (chip · role · model · notes/toggle) with its activity and
+   metadata shown only when expanded. The title stays on one line; the narrow
+   regime still moves it under the chip row so it keeps a readable width. */
+.chat-live-card.subagent .chat-live-title {
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+
+.chat-live-card.subagent .chat-live-activity {
+    color: var(--text-secondary);
+}
+
+.chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-title {
+    display: block;
+    min-height: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-activity,
+.chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-meta,
+.chat-live-card.subagent:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-review-summary {
+    display: none;
+}
+
 .chat-live-line {
     border-top: 1px solid rgba(255,255,255,0.05);
     padding-top: 10px;
@@ -2469,6 +2511,21 @@ body.resizing-panels { user-select: none; }
     word-break: break-word;
     font-size: var(--type-body);
     line-height: var(--line-body);
+}
+
+/* A markdown heading inside a timeline line is a subsection label (DESIGN.md
+   §2), never a page title: body size, semibold, inline, no block margins. */
+.chat-live-line-title .md-h1,
+.chat-live-line-title .md-h2,
+.chat-live-line-title .md-h3,
+.chat-live-line-body .md-h1,
+.chat-live-line-body .md-h2,
+.chat-live-line-body .md-h3 {
+    display: inline;
+    font-size: var(--type-body);
+    font-weight: 600;
+    line-height: inherit;
+    margin: 0;
 }
 
 /* P3: the genuinely-full fetched output is shown in a bounded, scrollable box so a
@@ -2619,12 +2676,11 @@ body.resizing-panels { user-select: none; }
 }
 /* Chat-scoped heading clamp: a markdown heading inside a chat bubble is a
    section label, never a page title (--type-page stays for real page titles). */
-.chat-bubble .message .md-h1 {
-    font-size: var(--type-section);
-}
+.chat-bubble .message .md-h1,
 .chat-bubble .message .md-h2,
 .chat-bubble .message .md-h3 {
     font-size: var(--type-body);
+    font-weight: 600;
 }
 .md-li {
     display: block;
