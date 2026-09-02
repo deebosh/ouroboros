@@ -907,8 +907,11 @@ def _retrieving_packet_projection(evidence: Dict[str, Any]) -> Dict[str, Any]:
     `evidence_ref` naming it still resolves against the FULL dict (the ref
     authority never changes), and the omission is manifested like every other."""
     packet = dict(evidence)
+    manifest_present = "omissions_manifest" in packet
     manifest = packet.get("omissions_manifest")
-    omissions = list(manifest) if isinstance(manifest, list) else []  # a malformed manifest never leaks its keys
+    # A sequence is a manifest; anything else present (None, a dict, a string) is
+    # malformed and is normalized to an empty list — never carried as-is, never its keys.
+    omissions = list(manifest) if isinstance(manifest, (list, tuple)) else []
     trajectory = packet.get("tool_trajectory")
     if isinstance(trajectory, list) and trajectory:
         packet["tool_trajectory"] = [{
@@ -926,8 +929,8 @@ def _retrieving_packet_projection(evidence: Dict[str, Any]) -> Dict[str, Any]:
         if stripped:
             packet["artifacts"] = rows
             omissions.append({"section": "artifact_previews", "omitted": stripped, "reason": "retrieving_delivery"})
-    if omissions or (manifest is not None and not isinstance(manifest, list)):
-        packet["omissions_manifest"] = omissions  # a malformed manifest never travels as-is, omitted or not
+    if omissions or (manifest_present and not isinstance(manifest, list)):
+        packet["omissions_manifest"] = omissions  # normalized whenever present and not a list; an absent key stays absent
     return packet
 
 

@@ -733,10 +733,43 @@ def test_native_projection_never_turns_a_malformed_manifest_into_its_keys():
     # A well-formed manifest is extended, never replaced.
     kept = _retrieving_packet_projection({**_ACCEPTANCE_PACKET, "omissions_manifest": [{"section": "x", "reason": "y"}]})
     assert kept["omissions_manifest"][0] == {"section": "x", "reason": "y"} and len(kept["omissions_manifest"]) == 3
-    # Nothing to omit: a malformed manifest is still normalized, an absent one is not invented.
+    # Nothing to omit: a PRESENT manifest of any non-list shape is normalized (None, dict,
+    # str → []; a tuple is a sequence and is kept as a list); an absent key is not invented.
     bare = {k: v for k, v in _ACCEPTANCE_PACKET.items() if k not in ("tool_trajectory", "artifacts")}
-    assert _retrieving_packet_projection({**bare, "omissions_manifest": "junk"})["omissions_manifest"] == []
+    for malformed in (None, {"bad": "shape"}, "junk"):
+        assert _retrieving_packet_projection({**bare, "omissions_manifest": malformed})["omissions_manifest"] == []
+    row = {"section": "x", "reason": "y"}
+    assert _retrieving_packet_projection({**bare, "omissions_manifest": (row,)})["omissions_manifest"] == [row]
+    assert _retrieving_packet_projection({**_ACCEPTANCE_PACKET, "omissions_manifest": (row,)})["omissions_manifest"][0] == row
     assert "omissions_manifest" not in _retrieving_packet_projection(bare)
+
+
+@pytest.mark.parametrize("tail", ["\n", "\r\n", "\n\n"])
+def test_a_renderer_tail_ending_in_a_newline_still_loses_its_slot_label(structured_env, tmp_path, tail):
+    """The executor labels the slot itself; the work order must carry no `Slot:`
+    line even if the renderer's dynamic segment ever grows a trailing newline
+    (or CRLF) after the label — the `.rstrip()` branch of the trim."""
+    from ouroboros import review_execution
+    from ouroboros.acceptance_dialogue import acceptance_retrieving_work_order
+    from ouroboros.review_substrate import ReviewRequest, triad_delivery_slots
+
+    original = review_execution._render_prompt_parts
+
+    def _with_tail(request, slot):
+        stable, task_stable, dynamic = original(request, slot)
+        assert dynamic.endswith(f"Slot: {slot.slot_id}")  # the renderer's real tail today
+        return stable, task_stable, dynamic + tail
+
+    structured_env.setattr(review_execution, "_render_prompt_parts", _with_tail)
+    request = ReviewRequest(surface="task_acceptance", goal="ship it", subject="deliverable",
+                            evidence=dict(_ACCEPTANCE_PACKET), task_id="root-delivery",
+                            policy={"classify_outcome_tier": True})
+    retrieving = [slot for slot in triad_delivery_slots(role_hint="task acceptance") if slot.retrieves]
+    assert [slot.slot_id for slot in retrieving] == ["t_sess", "t_actor"]
+    acceptance_retrieving_work_order(request, retrieving, session_root=str(tmp_path), data_root=tmp_path)
+    for slot_id, order in request.slot_session_tasks.items():
+        assert "Slot:" not in order and not order.endswith(("\n", "\r"))
+        assert "RETRIEVAL POINTERS" in order and "verification_receipts[0]" in order, slot_id
 
 
 def _raw_timing(events, fields: str):
