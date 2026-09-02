@@ -1254,15 +1254,63 @@ def test_read_file_receipts_carry_the_delivered_extent(subject_repo):
             _tool_call("read_file", {"path": "nope.txt"}, "c4"),
             _tool_call("search_code", {"query": "row"}, "c5"),
             _tool_call("write_file", {"path": "many.txt", "content": "x"}, "c6"),
+            # The cursor cases the extent must get right: past the first line
+            # (mid-line landing), exactly at a line start, at/past the window's
+            # end (empty delivery), and a start past EOF (empty delivery).
+            _tool_call("read_file", {"path": "many.txt", "start_line": 5, "max_lines": 10, "start_char": 8}, "c7"),
+            _tool_call("read_file", {"path": "many.txt", "start_line": 5, "max_lines": 10, "start_char": 6}, "c8"),
+            _tool_call("read_file", {"path": "many.txt", "start_line": 5, "max_lines": 2, "start_char": 12}, "c9"),
+            _tool_call("read_file", {"path": "many.txt", "start_line": 100}, "c10"),
         ]},
         {"content": _VERDICT},
     ])
     usage = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute().usage
     r = usage["native_tool_receipts"]
-    assert [x["outcome"] for x in r] == ["executed", "executed", "executed", "executed", "executed", "refused"]
+    assert [x["outcome"] for x in r] == ["executed"] * 5 + ["refused"] + ["executed"] * 4
     assert {k: r[0][k] for k in ("start_line", "end_line", "total_lines", "eof")} == {"start_line": 5, "end_line": 14, "total_lines": 30, "eof": False}
     assert {k: r[1][k] for k in ("start_line", "end_line", "eof")} == {"start_line": 28, "end_line": 30, "eof": True}
-    assert r[2]["start_line"] == 6 and r[2]["end_line"] == 14  # sub-line cursor: first line partial, not counted
+    assert r[2]["start_line"] == 6 and r[2]["end_line"] == 14  # sub-line cursor lands mid "row 5": that line is partial
     for i in (3, 4, 5):  # a NOT_FOUND read renders nothing; other tools and refusals carry no extent
         assert not any(k in r[i] for k in ("start_line", "end_line", "total_lines", "eof")), r[i]
     assert r[0]["tool"] == "read_file" and r[0]["path"] == "many.txt" and r[0]["result_chars"] > 0
+    # start_char=8 skips "row 5\n" whole and lands mid "row 6": first complete line is 7.
+    assert (r[6]["start_line"], r[6]["end_line"], r[6]["eof"]) == (7, 14, False)
+    # start_char=6 lands exactly at the start of "row 6": it counts.
+    assert (r[7]["start_line"], r[7]["end_line"]) == (6, 14)
+    # A cursor at the window's end delivers nothing: an EMPTY range, never an inverted eof=True.
+    assert r[8]["end_line"] < r[8]["start_line"] and r[8]["eof"] is False and r[8]["total_lines"] == 30
+    # A start past EOF: empty range, eof False, total still truthful.
+    assert r[9]["end_line"] < r[9]["start_line"] and r[9]["eof"] is False and r[9]["total_lines"] == 30
+
+
+def test_read_extent_counts_only_complete_delivered_lines_from_the_stamp(subject_repo):
+    """When this episode's result bound cuts the body, the extent credits ONLY
+    the complete lines inside the delivered prefix, counted from the
+    renderer's stamped body offset (never by parsing the header) and minus a
+    partial head when the cursor landed mid-line; a stamp missing any fact
+    records NO extent (coverage then reads `unobserved`)."""
+    from types import SimpleNamespace
+
+    from ouroboros.tools.core import _render_line_slice
+
+    content = "".join(f"line {i}\n" for i in range(1, 21))
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, None), llm=None)
+    # Cursor at 3 lands mid "line 3" (window 3..12): first complete line is 4.
+    extent: dict = {}
+    full = _render_line_slice("f", content, max_lines=10, start_line=3, start_char=3, extent=extent)
+    assert full.count("\n", 0, extent["body_start"]) == 1 and full[extent["body_start"] - 1] == "\n"  # one header line
+    assert extent["first_line"] == 4 and extent["partial_head"] is True and extent["end_line"] == 12
+    executor._inspection_ctx = SimpleNamespace(last_read_view=extent)
+    assert executor._read_extent(full, len(full)) == {"start_line": 4, "end_line": 12, "total_lines": 20, "eof": False}
+    # Cut after the partial head + two complete lines + half of the next: exactly 2 lines credited.
+    body = full[extent["body_start"]:]
+    cut = extent["body_start"] + len("e 3\n") + len("line 4\n") + len("line 5\n") + 3
+    assert body.startswith("e 3\n")
+    assert executor._read_extent(full, cut) == {"start_line": 4, "end_line": 5, "total_lines": 20, "eof": False}
+    # Cut inside the partial head: nothing complete delivered — an empty range.
+    assert executor._read_extent(full, extent["body_start"] + 2)["end_line"] < 4
+    # Fail-safe: a stamp without the delivery facts records no extent.
+    executor._inspection_ctx = SimpleNamespace(last_read_view={"start_line": 3, "end_line": 12, "total_lines": 20})
+    assert executor._read_extent(full, len(full)) == {}
+    executor._inspection_ctx = SimpleNamespace(last_read_view=None)
+    assert executor._read_extent(full, len(full)) == {}

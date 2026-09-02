@@ -746,27 +746,32 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
 
     def _read_extent(self, full: str, shown: int) -> Dict[str, Any]:
         """The extent an executed ``read_file`` actually DELIVERED, as bounded
-        facts on the receipt: ``start_line``/``end_line`` (complete lines the
-        reviewer received), ``total_lines`` of the file, ``eof``. The window
-        comes from the reader's own stamp (``ctx.last_read_view``, the
-        renderer's arithmetic — never parsed back from the header text); when
-        this episode's result bound cut the body, only the complete lines
-        inside the delivered prefix count, and a sub-line cursor
-        (``start_char``) makes the first line partial, so it is not counted.
-        Extends the receipt contract; the existing fields and the outcome
-        vocabulary are unchanged. Empty when the reader recorded no view."""
+        facts on the receipt: ``start_line``/``end_line`` (the COMPLETE lines
+        the reviewer received; an empty delivery is an empty range with
+        ``end_line < start_line``), ``total_lines`` of the file, ``eof``.
+
+        Every number comes from the reader's own stamp (``ctx.last_read_view``,
+        written by the renderer AFTER its sub-line cursor cut: ``first_line`` is
+        the first complete line, ``body_start`` where the body begins in the
+        returned text) — nothing is parsed back from the header. When this
+        episode's result bound cut the body, only the complete lines inside the
+        delivered prefix count: newlines are counted from ``body_start`` (so
+        the header line never counts), minus the body's partial head when the
+        cursor landed mid-line; a cut line is never counted. Fail-safe: a
+        stamp missing any of these facts records NO extent, which coverage
+        reads as ``unobserved``. Extends the receipt contract; the existing
+        fields and the outcome vocabulary are unchanged."""
         view = getattr(self._inspection_ctx, "last_read_view", None)
-        if not isinstance(view, dict) or not all(
-            isinstance(view.get(k), int) for k in ("start_line", "end_line", "total_lines")
-        ):
+        keys = ("first_line", "end_line", "total_lines", "body_start")
+        if (not isinstance(view, dict) or not all(isinstance(view.get(k), int) for k in keys)
+                or not isinstance(view.get("partial_head"), bool)):
             return {}
-        start, end, total = int(view["start_line"]), int(view["end_line"]), int(view["total_lines"])
-        if int(view.get("start_char") or 0) > 0:
-            start += 1
+        start, end, total, body_start = (int(view[k]) for k in keys)
         if shown < len(full):
-            delivered = full[:shown].count("\n") - 1  # minus the renderer's one header line
-            end = min(end, start + max(0, delivered) - 1)
-        return {"start_line": start, "end_line": end, "total_lines": total, "eof": end >= total}
+            newlines = full[body_start:shown].count("\n") if shown > body_start else 0
+            delivered = max(0, newlines - (1 if view["partial_head"] else 0))
+            end = min(end, start + delivered - 1)
+        return {"start_line": start, "end_line": end, "total_lines": total, "eof": end >= start and end >= total}
 
     @staticmethod
     def _terminal_round_fact(messages: List[Dict[str, Any]]) -> str:

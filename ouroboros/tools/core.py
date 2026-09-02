@@ -103,11 +103,18 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
                        start_char: int = 0, extent: Optional[Dict[str, Any]] = None) -> str:
     """Return a line-ranged file view with the shared read-tool header.
 
-    ``extent`` (when a dict is passed) receives the rendered window as FACTS —
-    ``start_line``/``end_line``/``total_lines``/``start_char`` — so a consumer
-    that must know what a read actually delivered (the native review episode's
-    host-observed receipts) gets it from the renderer's own arithmetic, never by
-    parsing the header text back.
+    ``extent`` (when a dict is passed) receives the DELIVERED window as FACTS,
+    stamped AFTER the ``start_char`` cut: ``first_line`` (the first COMPLETE line
+    in the body — a cursor that skips whole lines advances it, and a cursor that
+    lands mid-line makes that line partial, so it is not counted), ``end_line``,
+    ``total_lines``, ``body_start`` (where the body begins in the returned text,
+    right after the one header line), ``body_chars``, ``partial_head`` (the body
+    opens with a partial line), plus the requested ``start_line``/``start_char``.
+    An empty delivery (cursor at or past the window's end, or a start past EOF)
+    is an EMPTY range (``end_line < first_line``), never an inverted claim. A
+    consumer that must know what a read delivered (the native review episode's
+    host-observed receipts) gets it from this arithmetic, never by parsing the
+    header text back.
 
     ``start_char`` is a SUB-LINE cursor: it skips that many characters of the selected
     window's body before rendering. It exists because delivery is char-bounded (the
@@ -122,16 +129,22 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     total = len(lines)
     start = max(1, min(start_raw, total + 1))
     end = min(start + max_raw - 1, total)
-    result = "".join(lines[start - 1:end])
+    window = "".join(lines[start - 1:end])
     offset = _coerce_start_char(start_char)
-    if extent is not None:
-        extent.update({"start_line": start, "end_line": end, "total_lines": total, "start_char": offset})
     if offset:
-        result = result[offset:]
+        skipped, body = window[:offset], window[offset:]
         header = f"# {path} — lines {start}\u2013{end} of {total} (from char {offset} of this window)\n"
+        partial_head = bool(body) and not skipped.endswith("\n")  # landed mid-line: that line is partial
+        first_line = start + skipped.count("\n") + (1 if partial_head else 0)
     else:
-        header = f"# {path} — lines {start}\u2013{end} of {total}\n"
-    return header + result
+        body, header, partial_head, first_line = window, f"# {path} — lines {start}\u2013{end} of {total}\n", False, start
+    if not body:
+        first_line = end + 1  # nothing complete was delivered: an EMPTY range, never an inverted one
+    if extent is not None:
+        extent.update({"start_line": start, "end_line": end, "total_lines": total, "start_char": offset,
+                       "first_line": first_line, "body_start": len(header), "body_chars": len(body),
+                       "partial_head": partial_head})
+    return header + body
 
 
 def _coerce_start_char(start_char: Any = 0) -> int:

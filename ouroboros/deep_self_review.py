@@ -607,27 +607,32 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
     ``read_file`` receipt for the path (a single result is capped, so a full
     read of BIBLE.md is multi-chunk by construction).
 
-    ``read`` only when the union covers the whole file; ``partial`` with the
-    covered fraction; ``missing`` when the receipts are complete and none names
-    the path at a repository root (a data-plane read never counts);
-    ``unobserved`` when the receipt list was capped below the call count or a
-    receipt carried no extent — absence proves nothing there. Disclosure,
-    never a refusal: the report is delivered with the flag in its header.
+    ``read`` only when the union of extent-bearing receipts covers the whole
+    file; otherwise ``unobserved`` when the receipt list was capped below the
+    call count OR any matching executed receipt carries no extent (absence
+    proves nothing there — full coverage must be proven by measured receipts
+    alone); ``partial`` with the covered fraction; ``missing`` when nothing of
+    the file was delivered — no receipt names it at a repository root (a
+    data-plane read never counts), or every measured receipt delivered zero
+    lines (a cursor past the window, a start past EOF). Disclosure, never a
+    refusal: the report is delivered with the flag in its header.
     """
     receipts = [r for r in (usage.get("native_tool_receipts") or []) if isinstance(r, dict)]
     capped = int(usage.get("native_tool_calls") or 0) > len(receipts)
     out: Dict[str, Dict[str, Any]] = {}
     for rel in _MANDATORY_READS:
         spans: list[tuple[int, int]] = []
-        total, opened = 0, False
+        total, unmeasured = 0, False
         for r in receipts:
             if (r.get("tool") != "read_file" or r.get("outcome") != "executed"
                     or str(r.get("root") or "") not in _REPO_ROOTS or _repo_relative(r.get("path"), repo_dir) != rel):
                 continue
-            opened = True
-            if all(isinstance(r.get(k), int) for k in ("start_line", "end_line", "total_lines")) and r["end_line"] >= r["start_line"]:
+            if not all(isinstance(r.get(k), int) for k in ("start_line", "end_line", "total_lines")):
+                unmeasured = True  # opened, extent not recorded: this receipt proves nothing about coverage
+                continue
+            total = max(total, int(r["total_lines"]))
+            if r["end_line"] >= r["start_line"]:
                 spans.append((int(r["start_line"]), int(r["end_line"])))
-                total = max(total, int(r["total_lines"]))
         covered, cursor = 0, 0
         for start, end in sorted(spans):  # merge overlapping / re-read chunks; clip to the file
             lo, hi = max(start, cursor + 1, 1), min(end, total)
@@ -636,10 +641,10 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
                 cursor = hi
         if total and covered >= total:
             state = "read"
-        elif capped or (opened and not spans):
+        elif capped or unmeasured:
             state = "unobserved"
         else:
-            state = "partial" if spans else "missing"
+            state = "partial" if covered else "missing"
         out[rel] = {"state": state, "covered_lines": covered, "total_lines": total,
                     "fraction": round(covered / total, 3) if total else 0.0}
     return out

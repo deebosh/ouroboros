@@ -375,6 +375,14 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
     assert cov([rec("ouroboros/loop.py", 1, 2, 2)], calls=5)["state"] == "unobserved"
     assert cov([{"tool": "read_file", "path": "BIBLE.md", "root": "", "outcome": "executed"}])["state"] == "unobserved"
     assert cov([rec("BIBLE.md", 1, 6, 12)], calls=3)["state"] == "unobserved"  # partial AND capped: the tail may hold the rest
+    # One measured receipt beside one extent-less receipt: the unmeasured one may
+    # hold the rest — `unobserved`, never `partial` (full coverage must be PROVEN).
+    assert cov([rec("BIBLE.md", 1, 6, 12), {"tool": "read_file", "path": "BIBLE.md", "root": "", "outcome": "executed"}])["state"] == "unobserved"
+    assert cov([rec("BIBLE.md", 1, 12, 12), {"tool": "read_file", "path": "BIBLE.md", "root": "", "outcome": "executed"}])["state"] == "read"
+    # A measured EMPTY delivery (cursor past the window, start past EOF) delivered
+    # nothing of the file: `missing`, never an inverted claim.
+    assert cov([rec("BIBLE.md", 13, 12, 12)])["state"] == "missing"
+    assert cov([rec("BIBLE.md", 13, 12, 12), rec("BIBLE.md", 1, 3, 12)])["state"] == "partial"
 
 
 def test_native_row_exhaustion_delivers_the_draft_marked_incomplete(review_repo, review_drive, monkeypatch):
