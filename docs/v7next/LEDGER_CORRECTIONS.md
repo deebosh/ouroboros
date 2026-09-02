@@ -9001,3 +9001,82 @@ Gates: `tests/test_usage_compaction.py` + `tests/test_usage_compaction_archive.p
    by the commands printed in report §5 (a `git show` of the oracle ledger and a
    ~25-line inline reader); adding a checker would contradict the owner's own
    decision to stop at a one-off report.
+
+## From the Windows kernel-tier lane (owner batch №13 item 1 = B)
+
+Owner decision, 2026-09-02: 7.0 is not released until the Windows KERNEL lock tier works.
+This lane implements the post-release recipe the C6 packet wrote for itself and brings it
+into 7.0. Base `72bb4949`.
+
+1. **What was wrong, and what changed.** The `LockFileEx` tier of `bf8b6549` locked the
+   whole file (offset 0, length `0xFFFFFFFFFFFFFFFF`). A Win32 byte-range lock is MANDATORY:
+   the bytes inside it cannot be READ by another handle, so a contender that opened the held
+   lock file to read the owner stamp — the read this protocol's every poll makes to judge a
+   hold — was refused, judged nothing and waited out its timeout (run 33654743857: eight
+   monetary writers answered «lock unavailable», four `update_json_locked` timeouts, a lost
+   chat append). The fix is the range, not the tier: `platform_layer._WIN32_LOCK_OFFSET`
+   = `0x7FFFFFFF00000000`, `_WIN32_LOCK_LENGTH` = 1 — one byte at an offset no lock file can
+   reach (a lock beyond end-of-file is legal on Windows), leaving [0, 512) readable by
+   everyone. `kernel_file_locks_enforced` lost its `IS_WINDOWS → False` short-circuit and
+   probes there exactly as on POSIX; the errno classification (`_WIN32_LOCK_ERRNOS`: 33 held,
+   1/50 unsupported, anything else fail-closed) is untouched.
+2. **Eviction on Windows, and the guarantee it does NOT give.** The enforced tier's stale
+   eviction now takes the same non-blocking kernel lock on the judged descriptor on Windows
+   as on POSIX (a creator stalled between its O_EXCL create and its lock is judged by the
+   kernel, not by age alone; a live holder's lock refuses the probe and nothing is evicted).
+   But Windows deletes no open file, so it releases that hold, closes the probe and only then
+   re-checks the identity and unlinks. POSIX's «of two racing reclaimers at most one can
+   evict» is a KERNEL guarantee across judge → re-check → unlink; Windows does not have it.
+   What it has instead, stated in the docstring, DESIGN §8, the packet §10 addendum and the
+   ARCHITECTURE row: two reclaimers may both re-check, and the loser's unlink is refused by
+   the winner's own open handle on its freshly won lock — a sharing violation the eviction
+   path deliberately does NOT retry (the poll loop re-judges; only the RELEASE retries, which
+   is the d0bb839e class). Release order on Windows is unlock → close → unlink: a handle
+   closed with an outstanding lock leaves the release undefined per Win32.
+3. **`_win32_overlapped` is gone.** The per-fd OVERLAPPED map existed only to remember the
+   range for the unlock; the range is now a constant, so `_win32_unlock` rebuilds it. That
+   removes state that could answer for a descriptor number the process had recycled onto
+   another file — a live hazard the moment any caller closes a locked fd, which the acquire
+   loop does on every stand-down.
+4. **The compaction pass runs on Windows.** `tests/test_usage_compaction.py`'s `data_root`
+   fixture no longer skips there (the four tier-agnostic pins keep `data_root_any_tier`; the
+   POSIX fsync/dir-fd/inode pins keep their `skipif`). Four probe pins in
+   `tests/test_lockfile_helpers.py` skipped «because the Windows short-circuit never reaches
+   the probe» run again, as does `test_a_stale_lock_is_never_evicted_without_the_kernel_hold`
+   (Windows takes that hold now). The pins that stay Windows-skipped are the ones whose TEST
+   BODY unlinks or rewrites a lock file its owner holds open, plus the POSIX eviction ORDER
+   pin and the POSIX release pin — their reasons were rewritten to say that instead of «7.0
+   ships Windows on the name tier».
+5. **Pins, and exactly what they prove.** Red-first on `72bb4949`, all four:
+   `test_the_windows_lock_range_lies_beyond_every_owner_stamp` (the constants, and that
+   neither wrapper still spells the whole-file range),
+   `test_windows_contenders_read_the_owner_stamp_while_the_kernel_hold_stands` (an emulated
+   LockFileEx — `ctypes.wintypes` is Windows-only — grants exactly the range the real wrapper
+   asks for and refuses it to a second descriptor with ERROR_LOCK_VIOLATION → EAGAIN; the
+   predicate answers enforced, a second acquirer stands down, and the stamp is still readable
+   through the hold), `test_windows_evicts_a_stale_lock_only_under_the_probe_hold`, and
+   `test_windows_release_unlocks_before_the_close_and_unlinks_after_it` (order read off the
+   fd's own liveness). The two existing Windows release pins now install the same emulation.
+   Plus the verifier's delete-semantics simulator, re-run against this platform_layer with
+   `IS_WINDOWS = True` (12 writers × 20 s): base `72bb4949` (name tier) 45 826 acquisitions,
+   0 timeouts, 1 248 sharing violations absorbed, no orphan; this lane (kernel tier) 43 317
+   acquisitions, 0 timeouts, 1 281 absorbed, no orphan — against the 35b82db0 shape's 19
+   acquisitions and 120 timeouts. The ~5% is the extra probe lock/unlock per contended poll.
+   None of these is a Windows execution: they pin the mechanism on Linux under an emulation
+   of the two Win32 calls and of the delete semantics.
+6. **The Windows-EXECUTED proof is the next CI matrix**, dispatched by the operator after
+   integration. Only a Windows leg can prove: that `LockFileEx` accepts a lock at that offset
+   past EOF and refuses the same range to a second handle with ERROR_LOCK_VIOLATION; that the
+   capability probe answers enforced on the runner's volume; that a contender's stamp read is
+   no longer refused; that `tests/test_usage_compaction.py` — 130-odd pins that never once
+   executed a compaction on Windows — passes with the pass actually landing there; and that
+   the two concurrency shapes (`test_concurrent_writers_keep_monotonic_sequence`,
+   `test_terminal_projection_dedup_does_not_lose_concurrent_chat_append`) stay green on the
+   kernel tier as they now are on the name tier (runs 33668287491, 33669250620).
+7. **Not touched, disclosed.** The pre-existing LOW residual of item 5 in «From the Windows
+   CI matrix on 35b82db0» — the «identity unreadable» branch unlinks its own file BEFORE
+   closing the descriptor, which on Windows is always a sharing violation — is unchanged and
+   is not made more reachable by this lane (it needs an `fstat` of our own fresh descriptor to
+   fail). The Windows no-ops of the pass itself are unchanged: no directory fsync, and no
+   old-inode witness across `os.replace`, so a charge landed in the swap's last syscall is
+   still lost silently there rather than quarantined.

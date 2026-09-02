@@ -230,24 +230,50 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   probes that could disagree — except a directory where the scratch probe
   cannot be created, which answers enforced for that call and is probed again
   next time (not cached).
-  **Windows in 7.0 takes the name tier.** The `LockFileEx` tier is implemented
-  (the Win32 error mapping above, the byte-range lock on the fd) but the 3-OS
-  matrix on `bf8b6549` (run 33654743857) showed why it cannot ship as written:
-  a Windows byte-range lock is MANDATORY, so a contender that opens the held
-  lock file to read the owner's stamp is refused the read, can never judge the
-  hold, and waits until its timeout — eight concurrent monetary writers all
-  answered «lock unavailable», `update_json_locked` timed out, a concurrent chat
-  append was lost. `kernel_file_locks_enforced` therefore answers False on
-  Windows: every lock there runs the O_EXCL name protocol — with this design's
-  per-poll identity/stamp probe, which is NOT the pre-C6 stat-only protocol: on
-  Windows a contender's probe handle refuses the owner's unlink for a moment
-  (no FILE_SHARE_DELETE), so the release retries that transient refusal for a
-  bounded window (`_unlink_lock_path`; a swallowed refusal orphaned the lock
-  with a live pid, run 33663258606) — and the compaction pass refuses
-  (disclosed, typed) exactly as on any name-tier filesystem. Post-release: lock a byte range BEYOND the stamp (the
-  common Win32 idiom) so reads stay possible, then re-enable the tier under a
-  Windows-executed pin.
-  *Enforced tier* (POSIX `fcntl.flock`; Windows `LockFileEx` once re-enabled —
+  **Windows takes the ENFORCED tier in 7.0, on a byte range beyond the stamp.**
+  Its first shape could not ship. The 3-OS matrix on `bf8b6549`
+  (run 33654743857) locked the WHOLE file, and a Windows byte-range lock is
+  MANDATORY: a contender that opened the held lock file to read the owner's
+  stamp was refused the READ, could never judge the hold and waited out its
+  timeout — eight concurrent monetary writers all answered «lock unavailable»,
+  `update_json_locked` timed out, a concurrent chat append was lost.
+  `kernel_file_locks_enforced` was made to answer False there (abea91ec), which
+  moved the defect rather than closing it: this design's name tier probes
+  identity and stamp on every poll (the pre-C6 protocol only `stat`ed), and on
+  Windows that contender handle made the owner's release unlink fail with a
+  sharing violation (no FILE_SHARE_DELETE), orphaning the lock with a live pid
+  until `_unlink_lock_path` retried the transient refusal for a bounded window
+  (run 33663258606). The owner then made the working tier a release condition
+  (batch №13 item 1, 2026-09-02), and it is back: the hold is ONE byte at
+  `platform_layer._WIN32_LOCK_OFFSET` (`0x7FFFFFFF00000000`, length 1 — the
+  common Win32 idiom; a lock beyond end-of-file is legal there and no lock
+  file's one-line stamp can reach that far), so the bytes a contender reads,
+  [0, 512), lie outside every range this protocol locks. The capability probe
+  then runs on Windows exactly as on POSIX (scratch file, lock, unlock;
+  ERROR_LOCK_VIOLATION = held, ERROR_INVALID_FUNCTION/ERROR_NOT_SUPPORTED = no
+  byte-range locks on this volume → the name tier), and the compaction pass
+  runs there. Windows eviction on this tier takes the SAME non-blocking kernel
+  lock on the judged descriptor as POSIX — a creator stalled between its create
+  and its lock is judged by the kernel, not by age alone — but it cannot unlink
+  what it holds open, so it releases that hold, closes its probe and only then
+  re-checks the identity and unlinks. It therefore does NOT give the POSIX
+  guarantee below («of two racing reclaimers at most one can evict», held by
+  the kernel across the whole judge → re-check → unlink span): two Windows
+  reclaimers may both re-check, and what keeps the shape exclusive across that
+  gap is Windows itself — the winner's freshly won lock is held open by its
+  owner, so the loser's unlink is REFUSED rather than obeyed (a sharing
+  violation the eviction path deliberately does not retry; the poll loop
+  re-judges). Release order there is unlock → close → unlink (a handle closed
+  with an outstanding lock leaves the release undefined; the unlink still
+  retries a contender's transient refusal). What Windows still does not have on
+  this tier is named elsewhere in this section and unchanged: no directory
+  fsync, and no old-inode witness across `os.replace`, so a charge landed in
+  the swap's last syscall is lost silently there. The Windows-EXECUTED proof is
+  the CI matrix, which is the only Windows host this work has: the Linux-side
+  pins (the range constant and its two wrappers, an emulated LockFileEx that
+  refuses the same range, the delete-semantics simulator) stand in for the
+  mechanism, never for the platform.
+  *Enforced tier* (POSIX `fcntl.flock`, Windows `LockFileEx` —
   both held on the lock fd): every other hold of this lock is milliseconds; a compaction
   pass over a multi-megabyte ledger can legitimately exceed its 90 s
   staleness window, and a lock evicted purely by age would put a second
@@ -278,10 +304,11 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   answers OWNERSHIP rather than success, including for a lock file replaced
   atomically (the path never absent), and answers `False` — never a renewal —
   when its own descriptor's identity cannot be read or the kernel refuses the
-  `utime`. Windows cannot unlink an open file: its eviction re-checks the
-  path after closing the probe AND its release re-checks after its close, a
-  freshly won lock — held open by its owner — being undeletable there, which
-  is what keeps that shape exclusive. Disclosed, both tiers: a contention
+  `utime`. Windows cannot unlink an open file: its eviction takes the same
+  probe lock and then re-checks the path after releasing and closing that
+  probe, AND its release re-checks after its own close, a freshly won lock —
+  held open by its owner — being undeletable there, which is what keeps that
+  shape exclusive across the gap the kernel does not cover (above). Disclosed, both tiers: a contention
   answer (`EAGAIN`) on the creator's OWN fresh file — a foreign flock holder
   that never unlinks it — leaves that file on the path, stamped with the
   creator's live pid; the creator re-contends against it until its timeout,

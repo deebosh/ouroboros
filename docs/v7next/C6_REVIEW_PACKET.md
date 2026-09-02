@@ -918,6 +918,22 @@ after the merge was red on windows-latest only, in one class plus two test shape
   `test_windows_release_gives_up_a_refusal_that_never_clears`,
   `test_posix_release_does_not_retry_a_permission_refusal`. Verified by the matrix on
   the SHA carrying the fix (see LEDGER «From the Windows CI matrix on 35b82db0»).
+  **Re-enabled in 7.0 by the Windows kernel-tier lane (commit `eb3ba7a1`), owner batch
+  №13 item 1 = B: 7.0 does not ship until the kernel tier works.** The disposition above
+  stands as history; what changed is the byte range. `_win32_lock` now holds ONE byte at
+  `platform_layer._WIN32_LOCK_OFFSET` (`0x7FFFFFFF00000000`) instead of the whole file, so
+  the stamp bytes [0, 512) a contender must read are outside every locked range;
+  `kernel_file_locks_enforced` probes on Windows like POSIX and the compaction pass runs
+  there (`tests/test_usage_compaction.py`'s `data_root` no longer skips). Windows eviction
+  takes the same probe lock and unlinks after closing it — a WEAKER guarantee than POSIX's
+  «at most one may evict», stated as such in DESIGN §8: the loser's unlink is refused by
+  the winner's open handle, not by the kernel. Release order is unlock → close → unlink.
+  Linux-side pins (`tests/test_lockfile_helpers.py`): the range constant and its two
+  wrappers, an emulated LockFileEx refusing the same range while a contender still reads
+  the stamp, eviction only under the probe hold, and the release order read off the fd's
+  own liveness; plus the delete-semantics simulator (43 317 acquisitions in 20 s, 1 281
+  sharing violations absorbed, no orphan). The Windows-EXECUTED proof is the next CI
+  matrix — see LEDGER «From the Windows kernel-tier lane (owner 1 = B)».
 - **Test shape (lane pins, POSIX protocol):** five lock-ownership pins unlink or
   rewrite a HELD lock file (impossible on Windows) and two swap pins assert
   directory fsync/inode identity — `skipif(IS_WINDOWS)` with the reason stated;

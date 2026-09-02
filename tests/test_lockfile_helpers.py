@@ -1,5 +1,6 @@
 import contextlib
 import errno
+import inspect
 import os
 import pathlib
 import re
@@ -56,7 +57,7 @@ def test_path_only_git_lock_cleanup_remains_available(tmp_path):
 # --- Ownership: a lock is only ever OURS to renew or remove -------------------
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="the test itself unlinks or rewrites a lock file its owner holds open, which Windows refuses; the protocol it pins runs on both tiers of both OSes")
 def test_release_never_unlinks_a_lock_that_was_stolen(tmp_path):
     """A hold evicted as stale must not delete the new owner's lock on exit."""
     lock_path = tmp_path / "state.lock"
@@ -69,7 +70,7 @@ def test_release_never_unlinks_a_lock_that_was_stolen(tmp_path):
     assert lock_path.read_text(encoding="utf-8") == "pid=1 ts=stolen\n"
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="the test itself unlinks or rewrites a lock file its owner holds open, which Windows refuses; the protocol it pins runs on both tiers of both OSes")
 def test_stale_eviction_never_removes_a_lock_re_created_under_it(tmp_path, monkeypatch):
     """Judge one file, unlink that same file — or none at all.
 
@@ -135,7 +136,7 @@ def test_a_pid_that_refuses_our_signal_is_alive_and_its_lock_is_not_reclaimed(tm
     assert platform_layer.pid_is_alive(4242) is False and platform_layer.pid_provably_gone(4242) is True
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="the test itself unlinks or rewrites a lock file its owner holds open, which Windows refuses; the protocol it pins runs on both tiers of both OSes")
 def test_heartbeat_reports_lost_ownership_instead_of_renewing(tmp_path):
     """The renewal is an OWNERSHIP statement: a stolen lock renews nothing."""
     lock_path = tmp_path / "state.lock"
@@ -149,7 +150,7 @@ def test_heartbeat_reports_lost_ownership_instead_of_renewing(tmp_path):
     os.close(fd)
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="the test itself unlinks or rewrites a lock file its owner holds open, which Windows refuses; the protocol it pins runs on both tiers of both OSes")
 def test_heartbeat_on_a_deleted_lock_reports_lost_ownership(tmp_path):
     lock_path = tmp_path / "state.lock"
     fd = acquire_exclusive_file_lock(lock_path, metadata="pid=old ts=0\n")
@@ -187,8 +188,9 @@ def test_heartbeat_after_an_atomic_swap_of_the_lock_reports_false(tmp_path):
 
 @pytest.mark.skipif(
     platform_layer.IS_WINDOWS,
-    reason="flock-held eviction is POSIX; Windows keeps the disclosed "
-    "re-check-then-unlink best effort",
+    reason="the eviction ORDER under test is POSIX: it unlinks under the held "
+    "flock, while Windows must close its probe first and leans on the new owner's "
+    "open handle across that gap (test_windows_evicts_a_stale_lock_only_under_the_probe_hold)",
 )
 def test_two_racing_reclaimers_never_yield_two_holders(tmp_path, monkeypatch):
     """Kernel-enforced eviction: judge, re-check and unlink happen under a
@@ -316,7 +318,6 @@ def test_a_kernel_refusal_that_is_not_contention_fails_closed(tmp_path, monkeypa
     assert not lock_path.exists()
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="POSIX enforced-tier protocol under test: 7.0 ships Windows on the name tier, and Windows cannot unlink or rewrite a held open file")
 def test_a_stale_lock_is_never_evicted_without_the_kernel_hold(tmp_path, monkeypatch):
     """Eviction happens only under a held kernel lock on the judged fd: a
     refusal of that hold that is not contention leaves the stale file where
@@ -336,7 +337,6 @@ def test_a_stale_lock_is_never_evicted_without_the_kernel_hold(tmp_path, monkeyp
     assert lock_path.read_text(encoding="utf-8") == "pid=424242 ts=0\n"
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="7.0 ships Windows on the name tier by decision: kernel_file_locks_enforced answers False before the probe, so the probe mechanics under test never run there (packet §10 addendum)")
 def test_the_name_tier_is_chosen_by_the_predicate_not_by_a_refusal(tmp_path, monkeypatch):
     """Where the predicate says the filesystem takes no kernel locks, the name
     protocol runs alone and NO kernel call is attempted — so a refusal can
@@ -363,7 +363,6 @@ def test_the_name_tier_is_chosen_by_the_predicate_not_by_a_refusal(tmp_path, mon
     release_exclusive_file_lock(lock_path, fd)
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="7.0 ships Windows on the name tier by decision: kernel_file_locks_enforced answers False before the probe, so the probe mechanics under test never run there (packet §10 addendum)")
 def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monkeypatch):
     """Only the kernel's own "this filesystem cannot" answer selects the name
     tier; any other refusal keeps the enforced tier (where a live acquisition
@@ -397,7 +396,6 @@ def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monke
         assert list(refusing.iterdir()) == []
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="7.0 ships Windows on the name tier by decision: kernel_file_locks_enforced answers False before the probe, so the probe mechanics under test never run there (packet §10 addendum)")
 def test_enolck_is_the_name_tier_for_ordinary_locks_and_a_typed_refusal_for_money(tmp_path, monkeypatch):
     """A filesystem without a lock daemon answers ENOLCK to every kernel lock; so
     does an exhausted lock table. Neither is "held", so the probe records it as the
@@ -428,7 +426,6 @@ def test_enolck_is_the_name_tier_for_ordinary_locks_and_a_typed_refusal_for_mone
     assert not (tmp_path / "state" / "usage_attempts.lock").exists()
 
 
-@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="7.0 ships Windows on the name tier by decision: kernel_file_locks_enforced answers False before the probe, so the probe mechanics under test never run there (packet §10 addendum)")
 def test_two_threads_racing_the_first_probe_run_one_probe_and_read_one_tier(tmp_path, monkeypatch):
     """The tier cache is read and written under one lock: two threads asking
     about a directory nobody has probed run ONE probe and read one verdict —
@@ -589,6 +586,137 @@ def test_pid_is_signalable_is_the_kill_question():
         assert platform_layer.pid_is_signalable(1) is False
 
 
+def _windows_kernel_tier(monkeypatch):
+    """Drive the WINDOWS lock shapes on any host: ``IS_WINDOWS`` plus a stand-in for the
+    two LockFileEx wrappers (whose ``ctypes.wintypes`` exists on Windows only).  The
+    stand-in grants exactly what the real one asks the kernel for — an exclusive hold on
+    the single byte at ``_WIN32_LOCK_OFFSET``, refused with ERROR_LOCK_VIOLATION while
+    another descriptor holds it — and RECORDS every range requested, so a pin can compare
+    it against the stamp bytes a contender must still be able to read.  Returns that log."""
+    monkeypatch.setattr(platform_layer, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform_layer, "_KERNEL_LOCK_TIER", {})
+    ranges: list = []
+    held: dict = {}
+
+    def win32_lock(fd, *, exclusive=True, blocking=True):
+        ranges.append((platform_layer._WIN32_LOCK_OFFSET, platform_layer._WIN32_LOCK_LENGTH))
+        info = os.fstat(fd)
+        if held.get((info.st_dev, info.st_ino), fd) != fd:
+            raise platform_layer._win32_lock_error(33)  # ERROR_LOCK_VIOLATION: held by someone
+        held[(info.st_dev, info.st_ino)] = fd
+
+    def win32_unlock(fd):
+        for key, owner in list(held.items()):
+            if owner == fd:
+                del held[key]
+
+    monkeypatch.setattr(platform_layer, "_win32_lock", win32_lock)
+    monkeypatch.setattr(platform_layer, "_win32_unlock", win32_unlock)
+    return ranges
+
+
+def test_the_windows_lock_range_lies_beyond_every_owner_stamp():
+    """The bf8b6549 matrix died of a MANDATORY whole-file LockFileEx: a contender
+    could not READ the stamp it must read to judge the hold, so every wait ran to
+    its timeout (eight monetary writers refused, a chat append lost).  The hold is
+    therefore one byte at an offset the stamp — one short line, read 512 bytes at a
+    time — can never reach, and the whole-file range is gone from both wrappers."""
+    assert platform_layer._WIN32_LOCK_LENGTH == 1
+    assert platform_layer._WIN32_LOCK_OFFSET > 512 * 1024 ** 3  # unreachable by any lock file
+    for wrapper in (platform_layer._win32_lock, platform_layer._win32_unlock):
+        source = inspect.getsource(wrapper)
+        assert "_WIN32_LOCK_OFFSET" in source and "_WIN32_LOCK_LENGTH" in source
+        assert "0xFFFFFFFF, 0xFFFFFFFF" not in source, "the whole-file range is back"
+
+
+def test_windows_contenders_read_the_owner_stamp_while_the_kernel_hold_stands(tmp_path, monkeypatch):
+    """With the range beyond the stamp the Windows tier behaves like POSIX: the
+    predicate answers enforced, the hold is real (a second acquirer is refused), and
+    the contender still READS the owner stamp on every poll — so it judges a live
+    hold and stands down instead of timing out blind, which is what makes the tier
+    shippable at all.  The stamp bytes are never inside a requested range."""
+    ranges = _windows_kernel_tier(monkeypatch)
+    lock_path = tmp_path / "state.lock"
+    assert platform_layer.kernel_file_locks_enforced(lock_path) is True
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0, poll_sec=0.01)
+    assert fd is not None
+
+    with open(str(lock_path), "rb") as contender:  # the read a mandatory hold refused
+        assert f"pid={os.getpid()}".encode() in contender.read(512)
+    assert acquire_exclusive_file_lock(lock_path, timeout_sec=0.3, poll_sec=0.01) is None
+    assert ranges and all(offset >= 512 for offset, _length in ranges)
+
+    release_exclusive_file_lock(lock_path, fd)
+    assert not lock_path.exists()
+    again = acquire_exclusive_file_lock(lock_path, timeout_sec=0.5, poll_sec=0.01)
+    assert again is not None
+    release_exclusive_file_lock(lock_path, again)
+
+
+def test_windows_evicts_a_stale_lock_only_under_the_probe_hold(tmp_path, monkeypatch):
+    """On the enforced tier Windows now takes the SAME kernel hold on the judged
+    descriptor before it may evict — it just unlinks after closing the probe,
+    because it deletes no open file.  A stale-looking lock somebody actually holds
+    is therefore never evicted (the hold refuses the probe); an abandoned one is."""
+    _windows_kernel_tier(monkeypatch)
+    monkeypatch.setattr(platform_layer, "pid_is_alive", lambda pid: False)
+    lock_path = tmp_path / "state.lock"
+    lock_path.write_text("pid=424242 ts=0\n", encoding="utf-8")
+    os.utime(lock_path, (0.0, 0.0))  # ancient: judged abandoned by age
+    holder = os.open(str(lock_path), os.O_RDWR)
+    platform_layer.file_lock_exclusive_nb(holder)  # ... but a live kernel hold stands
+
+    assert acquire_exclusive_file_lock(
+        lock_path, timeout_sec=0.4, stale_sec=1.0, poll_sec=0.01, owner_aware_stale=True,
+    ) is None
+    assert lock_path.read_text(encoding="utf-8") == "pid=424242 ts=0\n"
+
+    platform_layer.file_unlock(holder)
+    os.close(holder)
+    reclaimed = acquire_exclusive_file_lock(
+        lock_path, timeout_sec=1.0, stale_sec=1.0, poll_sec=0.01, owner_aware_stale=True,
+    )
+    assert reclaimed is not None
+    release_exclusive_file_lock(lock_path, reclaimed)
+
+
+def test_windows_release_unlocks_before_the_close_and_unlinks_after_it(tmp_path, monkeypatch):
+    """Order, on Windows: release the kernel hold (a handle closed with an
+    outstanding lock leaves the release undefined), then close, then unlink — the
+    file being undeletable while our own handle is open.  Read by the fd's own
+    liveness: it must still be open at the unlock and gone by the unlink."""
+    _windows_kernel_tier(monkeypatch)
+    lock_path = tmp_path / "state.lock"
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=1.0, poll_sec=0.01)
+    assert fd is not None
+    order: list = []
+    real_unlock, real_unlink = platform_layer.file_unlock, platform_layer._unlink_lock_path
+
+    def unlock(target):
+        order.append(("unlock", _fd_open(target)))
+        return real_unlock(target)
+
+    def unlink(path, held):
+        order.append(("unlink", _fd_open(fd)))
+        return real_unlink(path, held)
+
+    monkeypatch.setattr(platform_layer, "file_unlock", unlock)
+    monkeypatch.setattr(platform_layer, "_unlink_lock_path", unlink)
+
+    release_exclusive_file_lock(lock_path, fd)
+
+    assert order == [("unlock", True), ("unlink", False)]
+    assert not lock_path.exists()
+
+
+def _fd_open(fd):
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
 def _refusing_unlink(monkeypatch, lock_path, *, refusals):
     """Windows delete semantics on any host: ``os.unlink`` of ``lock_path`` answers
     a sharing violation ``refusals`` times (a contender's probe handle still open —
@@ -613,7 +741,7 @@ def test_windows_release_retries_a_contenders_transient_sharing_refusal(tmp_path
     matrices after the C6 merge: every later monetary writer refused, chat appends
     fell to the unlocked lane), so the release retries until the handle is gone
     and the next acquirer wins at once instead of waiting out its timeout."""
-    monkeypatch.setattr(platform_layer, "IS_WINDOWS", True)
+    _windows_kernel_tier(monkeypatch)
     lock_path = tmp_path / "state.lock"
     fd = acquire_exclusive_file_lock(lock_path)
     assert fd is not None
@@ -632,7 +760,7 @@ def test_windows_release_gives_up_a_refusal_that_never_clears(tmp_path, monkeypa
     """The retry is bounded: a handle that never closes (an indexer, a foreign
     reader) cannot pin the releasing writer forever — it logs and returns
     within the window, leaving the file it could not remove."""
-    monkeypatch.setattr(platform_layer, "IS_WINDOWS", True)
+    _windows_kernel_tier(monkeypatch)
     lock_path = tmp_path / "state.lock"
     fd = acquire_exclusive_file_lock(lock_path)
     assert fd is not None
