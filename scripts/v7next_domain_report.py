@@ -235,6 +235,12 @@ def main() -> int:
             L.append(f"- `{path}:{lineno}`")
         L.append("")
 
+    # Sections append a trailing "" as their separator, so the last one leaves a
+    # blank element: joining it would end the file with a blank LINE, which the
+    # repository's whitespace gate (`git diff --check`) reports. Drop the
+    # trailing separators and write exactly one final newline.
+    while L and not L[-1]:
+        L.pop()
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text("\n".join(L) + "\n", encoding="utf-8")
     print(f"wrote {REPORT}")
