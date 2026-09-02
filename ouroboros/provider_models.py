@@ -162,24 +162,6 @@ def fallback_candidate_targets(active_model: str = "") -> tuple[ResolvedModelTar
     )
 
 
-def delegated_route_target(route) -> ResolvedModelTarget:
-    """The ABI-4 typed target a delegated harness route pins (reuse-first bridge).
-
-    ``provider_route`` carries the OPAQUE harness route id — the delegated
-    transport lane, never interpreted here (AGENTS.md); ``credential_ref`` is
-    the optional strict account pin (D-U6). The ``""``/``0`` sentinels mean
-    "the engine's own default", exactly as on the wire, where the run request
-    re-serializes these fields as strings (transport boundary).
-    """
-    return ResolvedModelTarget(
-        model_id=str(getattr(route, "model", "") or ""),
-        provider_route=str(getattr(route, "route_id", "") or ""),
-        credential_ref=str(getattr(route, "profile_id", "") or ""),
-        effort=str(getattr(route, "effort", "") or ""),
-        context_window=0,
-    )
-
-
 def provider_has_credentials(provider: str) -> bool:
     """Return True when the environment carries usable credentials for a provider."""
     if provider == "local":

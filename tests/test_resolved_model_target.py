@@ -160,16 +160,14 @@ def test_reviewer_slots_consume_the_typed_local_route(monkeypatch):
 
 
 def test_delegation_route_bridges_to_the_typed_target():
-    from ouroboros.provider_models import delegated_route_target
-
     route = parse_subagent_harness("codex=gpt-5.5:high")
     assert route == DelegationRoute(route_id="codex", model="gpt-5.5", effort="high")
-    assert delegated_route_target(route) == ResolvedModelTarget(
+    assert route.resolved_target() == ResolvedModelTarget(
         model_id="gpt-5.5", provider_route="codex",
         credential_ref="", effort="high", context_window=0,
     )
     pinned = DelegationRoute(route_id="claude", model="", effort="", profile_id="acct-1")
-    target = delegated_route_target(pinned)
+    target = pinned.resolved_target()
     assert (target.model_id, target.provider_route, target.credential_ref) == ("", "claude", "acct-1")
 
 
@@ -194,8 +192,33 @@ def test_reviewer_slot_builders_take_the_dataclass():
 
 
 def test_delegate_run_request_takes_the_dataclass():
+    """Behavioural, not textual: the wire body must carry exactly the typed
+    target's fields, so a route the dataclass resolves differently (an account
+    pin, a route-carried effort) reaches Claudexor through that one read."""
+    from types import SimpleNamespace
+
+    from ouroboros.subagents import delegated_run_shape
+    from ouroboros.tools.delegate import _start_request
+
+    route = DelegationRoute(route_id="codex", model="gpt-5.5", effort="high", profile_id="acct-1")
+    target = route.resolved_target()
+    request = _start_request(
+        SimpleNamespace(), route, delegated_run_shape(False),
+        "/tmp/project", "do the work", 300, "host instructions",
+    )
+    assert request["harnesses"] == [target.provider_route]
+    assert request["primaryHarness"] == target.provider_route
+    assert request["model"] == target.model_id
+    assert request["effort"] == target.effort
+    assert request["credentialProfileId"] == target.credential_ref
+
+    # A route with nothing pinned sends no empty wire keys: "" means the
+    # engine's own default, and the body must not claim one.
+    bare = _start_request(
+        SimpleNamespace(), DelegationRoute(route_id="claude"), delegated_run_shape(False),
+        "/tmp/project", "do the work", 300, "host instructions",
+    )
+    assert not {"model", "effort", "credentialProfileId"} & set(bare)
+
     source = (REPO / "ouroboros" / "tools" / "delegate.py").read_text(encoding="utf-8")
-    assert "delegated_route_target(route)" in source
-    assert 'request["model"] = route.model' not in source
-    assert 'request["credentialProfileId"] = route.profile_id' not in source
     assert 'split(","' not in source and 'partition("=")' not in source

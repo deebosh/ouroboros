@@ -34,6 +34,7 @@ from ouroboros.config import (
     get_light_model,
 )
 from ouroboros.cost_projection import with_cost_aliases
+from ouroboros.model_slots import ResolvedModelTarget
 
 log = logging.getLogger(__name__)
 
@@ -177,7 +178,24 @@ class DelegationRoute:
     route_id: str
     model: str = ""
     effort: str = ""
-    profile_id: str = ""  # ABI-4 bridge: provider_models.delegated_route_target
+    profile_id: str = ""
+
+    def resolved_target(self) -> ResolvedModelTarget:
+        """The ABI-4 typed target this route pins.
+
+        ``provider_route`` carries the OPAQUE harness route id — the delegated
+        transport lane, never interpreted here (AGENTS.md); ``credential_ref``
+        is the optional strict account pin (D-U6). The ``""``/``0`` sentinels
+        mean "the engine's own default", exactly as on the wire, where the run
+        request re-serializes these fields as strings (transport boundary).
+        """
+        return ResolvedModelTarget(
+            model_id=self.model,
+            provider_route=self.route_id,
+            credential_ref=self.profile_id,
+            effort=self.effort,
+            context_window=0,
+        )
 
 
 def parse_subagent_harness(value: Any) -> DelegationRoute | None:

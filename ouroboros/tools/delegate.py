@@ -36,7 +36,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from ouroboros import delegate_custody as custody
 from ouroboros import delegate_progress as progress
 from ouroboros.delegate_custody import RunCustody as _RunCustody
-from ouroboros.provider_models import delegated_route_target
 from ouroboros.tool_capabilities import tool_result_limit
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.subagent_work_order import (  # noqa: F401 - compatibility re-export
@@ -127,7 +126,7 @@ from ouroboros.tools.delegate_integration import (  # noqa: F401
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from ouroboros.subagents import DelegatedRunShape
+    from ouroboros.subagents import DelegatedRunShape, DelegationRoute
 
 log = logging.getLogger(__name__)
 
@@ -228,7 +227,7 @@ def _presence_delegate_read_refusal(ctx: ToolContext) -> str:
 # -- tools --------------------------------------------------------------------
 
 
-def _start_request(ctx: ToolContext, route: Any, authority: "DelegatedRunShape",
+def _start_request(ctx: ToolContext, route: "DelegationRoute", authority: "DelegatedRunShape",
                    root: str, text: str, seconds: int, instructions: str, execution_root: str = "") -> Dict[str, Any]:
     """The POST body for one delegated run, built from the derived SHAPE.
 
@@ -243,7 +242,7 @@ def _start_request(ctx: ToolContext, route: Any, authority: "DelegatedRunShape",
     whether to recompute them or replay the recorded ones (the retry path never calls
     this function at all — it replays the stored canonical body verbatim).
     """
-    target = delegated_route_target(route)  # ABI-4: one typed read; strings only at the wire
+    target = route.resolved_target()  # ABI-4: one typed read; strings only at the wire
     request: Dict[str, Any] = {
         "prompt": text,
         # Built from the SHAPE plus the task contract, so a mutating delegated
