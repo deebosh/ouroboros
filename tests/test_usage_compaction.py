@@ -17,6 +17,7 @@ pinned here are monetary-authority invariants (owner sanction 1A):
 """
 from __future__ import annotations
 
+import base64
 import decimal
 import errno
 import hashlib
@@ -578,15 +579,26 @@ def test_every_ledger_writer_refuses_when_the_lock_cannot_be_taken(data_root, mo
     assert ledger_path.read_bytes() == before
 
 
-def test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt(data_root, monkeypatch):
-    """Post-verify: the receipt describes the bytes that are actually there."""
+@pytest.mark.parametrize("intrusion", ("written_over", "erased"))
+def test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt(data_root, monkeypatch, intrusion):
+    """Post-verify: the receipt describes the bytes that are actually there — and
+    a charge landed on the OLD inode inside the one syscall between the last proof
+    and the rename (an out-of-protocol holder) is erased by that rename, with
+    nothing left at the path to show it. The old inode, held open across the swap
+    (POSIX), still shows it: those bytes are quarantined, integrity is flagged, and
+    the pass raises instead of returning a receipt over an erased charge."""
+    if intrusion == "erased" and platform_layer.IS_WINDOWS:  # pragma: no cover - platform predicate
+        pytest.skip("Windows cannot hold the destination open across os.replace: the loss stays silent, disclosed")
     _seed_mixed_ledger(data_root)
     ledger_path = data_root / ua.LEDGER_REL
     real_replace = os.replace
+    landed: dict = {}
 
     def lying_replace(src, dst):
+        if pathlib.Path(dst) == ledger_path and intrusion == "erased":
+            landed.update(_append_raw_row(data_root, _raced_row("sess-in-the-syscall")))  # on the old inode
         real_replace(src, dst)
-        if pathlib.Path(dst) == ledger_path:
+        if pathlib.Path(dst) == ledger_path and intrusion == "written_over":
             with open(dst, "ab") as handle:
                 handle.write(b'{"kind":"attempt","attempt_id":"late"}\n')
 
@@ -594,6 +606,10 @@ def test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt(data_root, mo
     with ua._locked(data_root) as heartbeat:
         with pytest.raises(UsageLedgerCorrupt):
             uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
+    if intrusion == "erased":
+        row = json.loads((data_root / ua.QUARANTINE_REL).read_text(encoding="utf-8").splitlines()[-1])
+        assert json.loads(base64.b64decode(row["raw_base64"])) == landed  # the erased charge, byte for byte
+        assert ua.usage_projection(data_root)["integrity_degraded"] is True
 
 
 def test_an_append_between_the_recheck_and_the_replace_aborts_without_loss(

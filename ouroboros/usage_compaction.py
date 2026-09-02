@@ -23,6 +23,7 @@ under the held monetary lock; the substrate never imports it.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import decimal
 import hashlib
@@ -42,7 +43,9 @@ from ouroboros.usage_ledger import (
     ARCHIVE_SEGMENT_DIR_REL,
     LEDGER_REL,
     LOCK_REL,
+    QUARANTINE_REL,
     UsageLedgerCorrupt,
+    _append_bytes_fsync,
     _drive_root,
     _final_rows,
     _number,
@@ -318,17 +321,44 @@ def _swap_ledger_fsync(
     milliseconds of a full-file compare. AFTER the rename the pass re-reads
     what landed: the receipt describes bytes that are actually AT the path,
     so a rename that reported success without landing (or was immediately
-    written over) is never logged as a compaction.
+    written over) is never logged as a compaction. The one interval no proof
+    covers is the rename syscall itself: a charge an out-of-protocol holder
+    lands on the OLD inode inside it is erased by that rename, and nothing at
+    the path shows it afterwards. On POSIX the old inode is held open across
+    the swap (Windows cannot hold the destination open through ``os.replace``:
+    there the loss stays silent, disclosed), so the bytes that landed beyond
+    the snapshot are still readable AFTER the fact: they are preserved in the
+    quarantine file — which flags ``integrity_degraded`` — and the pass raises
+    typed instead of returning a receipt over an erased charge. Detected by
+    size, never re-appended; a same-size in-place rewrite inside that one
+    syscall is not a landed charge and is not seen.
     """
+    from ouroboros.platform_layer import IS_WINDOWS
+
     def owned_and_intact() -> bool:
         beat()  # raises _Abort on a lost hold; the temp is cleaned up en route
         intact = _snapshot_intact(path, raw)
         beat()  # and once more AFTER the look: the rename is the next syscall
         return intact
 
-    if not _write_bytes_atomic_fsync(path, payload, precondition=owned_and_intact):
-        raise _Abort("ledger changed between the re-check and the replace")
-    _fsync_dir(path.parent)
+    old_fd = None if IS_WINDOWS else os.open(str(path), os.O_RDONLY)  # the only witness left after the rename
+    try:
+        if not _write_bytes_atomic_fsync(path, payload, precondition=owned_and_intact):
+            raise _Abort("ledger changed between the re-check and the replace")
+        _fsync_dir(path.parent)
+        erased = b"" if old_fd is None else os.pread(old_fd, max(0, os.fstat(old_fd).st_size - len(raw)), len(raw))
+    finally:
+        if old_fd is not None:
+            os.close(old_fd)
+    if erased:
+        _append_bytes_fsync(path.with_name(QUARANTINE_REL.name), (json.dumps({
+            "ts": utc_now_iso(), "source": str(path), "raw_base64": base64.b64encode(erased).decode("ascii"),
+            "reason": "erased by the compaction swap: landed between its last ownership proof and the rename",
+        }, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
+        raise UsageLedgerCorrupt(
+            f"usage ledger swap erased {len(erased)} bytes appended between the last proof and the rename "
+            f"(quarantined, integrity degraded): {path}"
+        )
     if path.read_bytes() != payload:
         raise UsageLedgerCorrupt(f"usage ledger swap did not land the approved bytes: {path}")
 
@@ -848,7 +878,7 @@ def maybe_compact_usage_ledger_locked(
     try:
         receipt = compact_usage_ledger_locked(root, heartbeat=heartbeat)
     except Exception:
-        log.exception("usage-ledger compaction failed; reservation continues uncompacted")
+        log.exception("usage-ledger compaction pass raised; the reservation continues on the ledger as it stands")
     if receipt is not None:
         with _COMPACT_ATTEMPTS_LOCK:
             _COMPACT_ATTEMPTS.pop(key, None)
