@@ -347,11 +347,66 @@ export function accountedUpperBoundWithChildren(payload) {
 // count as what the reader sees, not as their markup.
 export const MARKDOWN_HEADING_MAX_CHARS = 80;
 
+// What the reader sees of a heading, at either stage of the pipeline. Rendered
+// text has already turned matched spans into tags (not visible) and `<`/`&` into
+// entities (one character each). Raw text is projected the way the renderer
+// would: only MATCHED span pairs and link destinations are invisible; an unmatched
+// `*`, a literal `<okay>` or a literal `&amp;` stay visible characters.
+function visibleHeadingText(text, rendered) {
+    const linkless = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+    if (rendered) return linkless.replace(/<[^>]*>/g, '').replace(/&[#\w]+;/g, 'x');
+    return linkless.replace(/(``|`)(.+?)\1/g, '$2').replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/~~(.+?)~~/g, '$1');
+}
+
+function isMarkdownHeading(text, { rendered = false } = {}) {
+    return visibleHeadingText(text, rendered).length <= MARKDOWN_HEADING_MAX_CHARS;
+}
+
 function headingOrProse(cls, text) {
-    // Links render later, so their destination is not visible text either.
-    const visible = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/<[^>]*>/g, '').replace(/&[#\w]+;/g, 'x');
-    if (visible.length > MARKDOWN_HEADING_MAX_CHARS) return text;
-    return `<strong class="${cls}">${text}</strong>`;
+    return isMarkdownHeading(text, { rendered: true }) ? `<strong class="${cls}">${text}</strong>` : text;
+}
+
+// The renderer's fence grammar (`/```(\w*)\n([\s\S]*?)```/`), line by line: a line
+// ENDING in ``` plus a word-only info string opens a fence, whatever precedes it on
+// that line, PROVIDED a later line closes it (the renderer's regex needs the closer;
+// an unclosed opener is ordinary text); the next line containing ``` closes it.
+// `md-js` opens nothing.
+const FENCE_OPEN = /```\w*$/;
+const FENCE_CLOSE = /```/;
+
+/**
+ * Plain-text projection of ATX headings for one-line previews: the markers go,
+ * and a heading (by the renderer's own visible-length rule) followed by text keeps
+ * ` — ` as its separator, so a collapsed preview reads `summary — …` rather than
+ * gluing the label to the sentence. A marker-led line the renderer treats as prose
+ * loses only its markers; a heading already ending in a dash or colon gets no
+ * second one; lines inside a code fence are code and stay untouched. CRLF and
+ * trailing blanks are normalized. Line-by-line on purpose: a regex over the whole
+ * text with a lazy or trailing-blank tail is quadratic on long whitespace runs.
+ */
+export function joinMarkdownHeadings(text) {
+    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n').map((line) => line.trimEnd());
+    // Next non-blank line and "a closer exists below" for every line: one backward
+    // pass each, no per-heading rescans.
+    const nextText = new Array(lines.length);
+    const closerBelow = new Array(lines.length);
+    for (let i = lines.length - 1, carry = '', closer = false; i >= 0; i -= 1) {
+        nextText[i] = carry; closerBelow[i] = closer;
+        if (lines[i].trim()) carry = lines[i];
+        if (FENCE_CLOSE.test(lines[i])) closer = true;
+    }
+    let fenced = false;
+    return lines.map((line, index) => {
+        if (fenced) { if (FENCE_CLOSE.test(line)) fenced = false; return line; }
+        if (FENCE_OPEN.test(line) && closerBelow[index]) { fenced = true; return line; }
+        const heading = /^#{1,6} (.*\S)$/.exec(line);
+        if (!heading) return line;
+        const next = nextText[index];
+        // A visibly dash- or colon-terminated heading (`**Steps:**` included) needs no second separator.
+        const visible = visibleHeadingText(heading[1], false);
+        const separate = next && !FENCE_OPEN.test(next) && visible.length <= MARKDOWN_HEADING_MAX_CHARS && !/[—–\-:]$/.test(visible);
+        return heading[1] + (separate ? ' —' : '');
+    }).join('\n');
 }
 
 export function renderMarkdown(text) {

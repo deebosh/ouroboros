@@ -163,9 +163,57 @@ test('the collapsed activity line is plain text: the renderer\'s markdown invent
     // preferred to a leaked marker).
     assert.equal(plainActivityText('**Planning a network update** I need `git fetch`'),
         'Planning a network update I need git fetch');
-    assert.equal(plainActivityText('### Title\n- one\n- two [link](http://x)'), 'Title\none\ntwo link');
+    // A heading keeps ' — ' before the text under it (any number of blank lines);
+    // a heading with nothing under it is just its text.
+    assert.equal(plainActivityText('### Title\n- one\n- two [link](http://x)'), 'Title —\none\ntwo link');
+    assert.equal(plainActivityText('## summary\n\nCursor Grok confirmed'), 'summary —\n\nCursor Grok confirmed');
+    assert.equal(plainActivityText('## Only'), 'Only');
+    assert.equal(plainActivityText('## Trailing   \nnext'), 'Trailing —\nnext');
+    // Continuation may be indented, come after whitespace-only lines, or use CRLF.
+    assert.equal(plainActivityText('## summary\r\ncontinued'), 'summary —\ncontinued');
+    assert.equal(plainActivityText('## summary\n   continued'), 'summary —\n   continued');
+    assert.equal(plainActivityText('## A\n   \nB'), 'A —\n\nB');
+    // A marker-led line the renderer treats as prose (over MARKDOWN_HEADING_MAX_CHARS)
+    // loses its markers but gets no separator.
+    const prose = 'x'.repeat(85);
+    assert.equal(plainActivityText(`## ${prose}\nnext`), `${prose}\nnext`);
+    // A `#` line inside a fence is code: no separator, and its markers stay.
+    assert.equal(plainActivityText('```md\n## not a heading\n```'), '## not a heading');
+    assert.equal(plainActivityText('```sh\n# comment\nls -la\n```\nafter'), '# comment\nls -la\n\nafter');
+    // A heading that already ends in a dash or colon gets no second separator.
+    assert.equal(plainActivityText('## summary —\nnext'), 'summary —\nnext');
+    assert.equal(plainActivityText('## Steps:\nnext'), 'Steps:\nnext');
+    assert.equal(plainActivityText('## **Steps:**\nnext'), 'Steps:\nnext');
+    const styled = summarizeChatLiveEvent({ is_progress: true, content: '## **Steps:**\nnext', task_id: 'p3', chat_id: 1 });
+    assert.equal(boundActivityPreview(styled.headline), 'Steps: next');
+    // Typed shell text is not markdown: a `# comment` in a failed command's compact
+    // diagnostic keeps its `#` and gets no separator.
+    const failed = summarizeChatLiveEvent({ type: 'tool_call_finished', is_error: true, status: 'non_zero_exit', exit_code: 1,
+        args: { cmd: '# explain\nfalse' }, task_id: 'p4', chat_id: 1 });
+    assert.ok(failed.body.includes('Command: # explain false'), failed.body);
+    assert.ok(!failed.body.includes(' —'), failed.body);
+    // Linear on hostile whitespace: a 40k-space run inside a marker line.
+    const started = Date.now();
+    plainActivityText(`# a${' '.repeat(40000)}b\nnext`);
+    assert.ok(Date.now() - started < 500, 'heading projection must stay linear');
+    assert.equal(boundActivityPreview('## summary\n\nCursor Grok confirmed the skew'), 'summary — Cursor Grok confirmed the skew');
+    // The live preview path: the reducer collapses newlines in describeText, so the
+    // heading rule must have run before that — a non-leading heading keeps no marker.
+    const live = summarizeChatLiveEvent({ is_progress: true, content: 'text\n## Second\nbeta', task_id: 'p1', chat_id: 1 });
+    assert.equal(live.headline, 'text Second — beta');
+    assert.equal(boundActivityPreview(live.headline), 'text Second — beta');
+    // A fenced `##` line — with text inside and after the fence — stays code on the
+    // live path too: markers kept, no separator (the fence itself collapses to the
+    // renderer's code-span remnant, which is not this rule's contract).
+    for (const content of ['```md\n## code\n```\nafter', '```md\n## not a heading\nnext\n```', '   ```md\n## code\n```\nafter', '  ```md\n## code\n  ```\nafter', 'prefix ```md\n## code\n```\nafter']) {
+        const fenced = summarizeChatLiveEvent({ is_progress: true, content, task_id: 'p2', chat_id: 1 });
+        for (const text of [fenced.headline, boundActivityPreview(fenced.headline), plainActivityText(content)]) {
+            assert.ok(text.includes('## code') || text.includes('## not a heading'), text);
+            assert.ok(!text.includes(' —'), text);
+        }
+    }
     assert.equal(plainActivityText('~~old~~ *new*'), 'old new');
-    assert.equal(plainActivityText('#### Deep\n``x → y`` tail'), 'Deep\nx → y tail');
+    assert.equal(plainActivityText('#### Deep\n``x → y`` tail'), 'Deep —\nx → y tail');
     assert.equal(plainActivityText('```js\nlet a = 1;\n```'), 'let a = 1;');
     assert.equal(boundActivityPreview('| a | b |\n|---|---|\n| 1 | 2 |'), 'a b 1 2');
     // Markers-only text keeps its source: an empty projection would flip the
