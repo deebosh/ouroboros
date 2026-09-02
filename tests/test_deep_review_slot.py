@@ -942,25 +942,6 @@ def test_packed_row_refuses_a_confirmed_sub_1m_window_and_discloses_an_unknown_o
     with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
         text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
     assert "131,072 tokens" in text and not llm.chat.called
-    # ONE window fact per run: the object validated against the floor IS the
-    # object the pack is sized and labeled with. Availability reads once, the
-    # run reads once — a third evidence value (here a confirmed 200K) is never
-    # consumed, so it can never size a call the floor check did not see.
-    seen = []
-    sequence = iter([ReviewerWindow(window_tokens=0), ReviewerWindow(window_tokens=0),
-                     ReviewerWindow(window_tokens=200_000, status="confirmed")])
-
-    def _resolve(model_id, **_k):
-        seen.append(model_id)
-        return next(sequence)
-
-    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", _resolve)
-    llm.chat.reset_mock()
-    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-    assert len(seen) == 2 and llm.chat.call_count == 1
-    assert f"window=assumed_{REVIEWER_FULL_WINDOW}" in text.split("\n")[0] and "200" not in text.split("\n")[0]
-    assert next(sequence).window_tokens == 200_000  # the third fact was never read
 
     # Unknown window: dispatched on the full-window assumption, disclosed.
     windows["answer"] = ReviewerWindow(window_tokens=0)
@@ -977,3 +958,22 @@ def test_packed_row_refuses_a_confirmed_sub_1m_window_and_discloses_an_unknown_o
         text, _usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
     assert llm.chat.call_count == 2 and f"window={REVIEWER_FULL_WINDOW}" in text.split("\n")[0]
     assert "(unknown" not in text
+    # ONE window fact per run: the object validated against the floor IS the
+    # object the pack is sized and labeled with. Availability reads once, the
+    # run reads once — a third evidence value (here a confirmed 200K) is never
+    # consumed, so it can never size a call the floor check did not see.
+    seen = []
+    sequence = iter([ReviewerWindow(window_tokens=0), ReviewerWindow(window_tokens=0),
+                     ReviewerWindow(window_tokens=200_000, status="confirmed")])
+
+    def _resolve(model_id, **_k):
+        seen.append(model_id)
+        return next(sequence)
+
+    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", _resolve)
+    before = llm.chat.call_count
+    with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
+        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
+    assert len(seen) == 2 and llm.chat.call_count == before + 1
+    assert f"window=assumed_{REVIEWER_FULL_WINDOW}" in text.split("\n")[0] and "200" not in text.split("\n")[0]
+    assert next(sequence).window_tokens == 200_000  # the third fact was never read
