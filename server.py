@@ -1192,10 +1192,14 @@ async def lifespan(app):
         name="ws-heartbeat",
     )
 
-    # Boot APPLIES the provider normalization in-process and persists nothing:
-    # every reader re-derives it from the same seam, so a start-time write would
-    # only be a second author of settings.json with no reader that needs it
-    # (mirror of launcher_onboarding.prepare_first_run_settings).
+    # Boot APPLIES the provider normalization in-process and persists nothing
+    # (mirror of launcher_onboarding.prepare_first_run_settings). Two
+    # normalizations, two re-derivations: the VOCABULARY one is the read seam
+    # every reader applies (config.normalize_settings_raw); the PROVIDER one is
+    # re-derived by every consumer that needs the route — the task-start
+    # projection, the settings GET and onboarding reads, the context-fit route
+    # resolver — so a start-time write would only make boot a second author of
+    # settings.json with no reader that needs it.
     settings, _provider_defaults_changed, _provider_default_keys = apply_runtime_provider_defaults(load_settings())
     _apply_settings_to_env(settings)
     # Pin boot-time runtime-mode after env apply; save_settings compares to this owner baseline.

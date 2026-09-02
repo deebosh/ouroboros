@@ -374,12 +374,20 @@ def resolve_context_fit_route(
     *,
     allow_fetch: bool,
 ) -> Tuple[Dict[str, Any], Any]:
-    """Resolve one exact route through the existing settings/evidence SSOT."""
-    from ouroboros.capability_evidence import probe
-    from ouroboros.config import DATA_DIR
-    from ouroboros.gateway.settings import _active_main_route, _owner_read_settings_raw
+    """Resolve one exact route through the existing settings/evidence SSOT.
 
-    settings = _owner_read_settings_raw()
+    The document the route is read from is the provider-normalized EFFECTIVE
+    settings — the same derivation the task-start projection and the settings
+    GET make — never the owner-raw read: the read seam carries the vocabulary
+    normalization only, and a direct-provider install with no explicit model
+    resolves its main slot through the provider normalization alone, so the
+    owner-raw route would name a model the loop never runs."""
+    from ouroboros.capability_evidence import probe
+    from ouroboros.config import DATA_DIR, load_settings
+    from ouroboros.gateway.settings import _active_main_route
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
+
+    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
     model = str(task.get("model") or "").strip()
     local_override = task.get("use_local_model")
     route = _active_main_route(
@@ -402,10 +410,13 @@ def resolve_context_fit_route(
 
 def _failed_route_evidence(task: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
     from ouroboros.capability_evidence import route_fingerprint
-    from ouroboros.gateway.settings import _active_main_route, _owner_read_settings_raw
+    from ouroboros.config import load_settings
+    from ouroboros.gateway.settings import _active_main_route
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
 
+    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
     route = _active_main_route(
-        _owner_read_settings_raw(),
+        settings,
         model_override=str(task.get("model") or ""),
         use_local_override=(
             bool(task.get("use_local_model"))

@@ -9,17 +9,22 @@ placeholders. Every one of those steps exists to PRESERVE an owner customization
 written under a former key.
 
 That normalization used to live inside `load_settings`. `_owner_read_settings_raw` —
-the reader behind every owner endpoint and behind the context-fit route resolver —
-merged the shipped defaults over the RAW document instead and got none of it. On its
-own that was a wrong read; combined with the read-modify-write those endpoints
-perform it was destructive, because the defaults the merge invented were written back
-as if the owner had chosen them, and the migration that would have rescued the legacy
-value then found the new key already present and left it alone. Forever.
+the reader behind every owner endpoint, and at the time behind the context-fit route
+resolver too — merged the shipped defaults over the RAW document instead and got none
+of it. On its own that was a wrong read; combined with the read-modify-write those
+endpoints perform it was destructive, because the defaults the merge invented were
+written back as if the owner had chosen them, and the migration that would have rescued
+the legacy value then found the new key already present and left it alone. Forever.
 
-`config.normalize_settings_raw` is now that step, and both readers apply it. These
-tests pin the golden it must keep producing, the property that lets a locked
-read-modify-write apply it on every save (idempotence), the fact that a read writes
-nothing, and the closed inventory of readers and writers that keeps the seam single.
+`config.normalize_settings_raw` is now that step, and every reader applies it: the
+loader, the owner reader (through the loader's verified read primitive, so a pinned
+snapshot that changed refuses both), and the Colab re-run over the Drive document. It
+carries the VOCABULARY normalization only; the context-fit route resolver reads the
+provider-normalized EFFECTIVE document — the route the loop runs — not the owner-raw
+one. These tests pin the golden it must keep producing, the property that lets a
+locked read-modify-write apply it on every save (idempotence), the fact that a read
+writes nothing, and the closed inventory of readers and writers that keeps the seam
+single.
 """
 
 from __future__ import annotations
@@ -215,6 +220,33 @@ def test_owner_read_settings_raw_applies_the_same_normalization_as_load_settings
     assert "OUROBOROS_VISION_MODEL" not in raw
     assert "OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES" not in raw
     assert RETIRED_GHOST not in raw
+
+
+def test_the_context_fit_route_is_the_provider_normalized_effective_route(isolated_settings):
+    """The read seam carries the vocabulary normalization only. The PROVIDER
+    normalization is a separate derivation that is never persisted, so a consumer
+    that needs the route the loop actually runs must re-derive it over the effective
+    document — the same derivation the task-start projection and the settings GET
+    make. A direct-provider install with no explicit model has no main slot at all
+    outside that derivation: read from the owner-raw document, the context-fit probe
+    resolved a window for an OpenRouter model the loop never runs, and `fits` was
+    computed against the wrong route on every ordinary task."""
+    from ouroboros import config as cfg
+    from ouroboros.context_fit import _failed_route_evidence, resolve_context_fit_route
+    from ouroboros.gateway.owner_settings import _owner_read_settings_raw
+    from ouroboros.gateway.settings import _active_main_route
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
+
+    _seed(isolated_settings, {"ANTHROPIC_API_KEY": "sk-ant-test"})
+    expected = _active_main_route(apply_runtime_provider_defaults(cfg.load_settings())[0])
+    assert expected["provider"] == "anthropic", "the fixture is a direct-provider install"
+    # The fixture is not vacuous: the owner-raw document answers a different route.
+    assert _active_main_route(_owner_read_settings_raw())["provider"] != "anthropic"
+
+    route, _evidence = resolve_context_fit_route({"model": ""}, allow_fetch=False)
+    assert route == expected
+    failed_route, _failed = _failed_route_evidence({"model": ""})
+    assert failed_route == expected
 
 
 def test_a_pinned_snapshot_that_changed_refuses_every_reader(isolated_settings, monkeypatch):

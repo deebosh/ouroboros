@@ -16,7 +16,7 @@ launcher.py (PyWebView)       ← desktop window, release-reviewed outer shell (
   │
   │  spawns subprocess
   ▼
-server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (default localhost:8765; Docker/non-loopback supported via OUROBOROS_SERVER_HOST=0.0.0.0); its lifespan APPLIES the boot provider normalization in-process and persists nothing (D03: startup is a read, every reader re-derives the normalization through the settings read seam)
+server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (default localhost:8765; Docker/non-loopback supported via OUROBOROS_SERVER_HOST=0.0.0.0); its lifespan APPLIES the boot provider normalization in-process and persists nothing (D03: startup is a read — the vocabulary normalization is the settings read seam every reader applies; the provider normalization is re-derived by every route consumer: the task-start projection, the settings GET and onboarding reads, the context-fit route resolver)
   │
   ├── web/                     ← Web UI (SPA with ES modules in web/modules/)
   │   └── modules/review_presentation.js, review_dom_patch.js, and harness_presentation.js ← Review Checkpoint grouping/status, keyed DOM reconciliation, and neutral harness identity presentation; read-side only
@@ -194,7 +194,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── context_runtime_facts.py ← The runtime section's FACT builders — the project room a task sits in, its budget rails, the toolset a promoted task materialized, and the configured delegation route with honestly-labeled historical observations; plain projections, no context assembly (split from context.py; re-exported there)
       ├── main_context_authority.py ← Main-only defensive continuation projection: deep-copies authority, keeps exact source/narrative facts, and replaces only oversized raw result strings with a source-resolvable narrative or typed gap; exact readers and external work orders remain full
       ├── client_surface.py    ← Owner Surface Fact SSOT: closed-key bounded normalizer for the SPA's per-message sending-surface observables, the surface-identity projection (viewport/narrow_layout excluded — a resize is not a device change), and the mailbox surface-change note
-      ├── context_fit.py       ← Ordinary Main task-local fit authority: deterministic Max/Low projections from one immutable captured core, one labelled T/W measurement and typed reclaim deficit, with no routing/retry/global-mode authority; physical sizing includes the largest permitted direct-OpenAI function/custom projection and private Anthropic custody bytes without exposing them; commit/scope review stay outside this path
+      ├── context_fit.py       ← Ordinary Main task-local fit authority: deterministic Max/Low projections from one immutable captured core, one labelled T/W measurement and typed reclaim deficit, with no routing/retry/global-mode authority; the exact route it probes is read from the provider-normalized effective settings (`apply_runtime_provider_defaults(load_settings())`, the route the loop runs), never from the owner-raw read; physical sizing includes the largest permitted direct-OpenAI function/custom projection and private Anthropic custody bytes without exposing them; commit/scope review stay outside this path
       ├── context_budget.py    ← Context-window budget vocabulary and typed reclaim request/receipt SSOT, including the owner-Low 200K economy target and static section/image bounds; it owns no trigger, timer, route, or retry policy. It also owns `estimate_message_chars`, the bounded message-chars measure that counts image blocks at the provider-billing proxy instead of their base64 bytes — moved beside its `IMAGE_BLOCK_CHAR_EQUIVALENT` constant out of `llm.py`, which keeps the historical private name importable — so the fit estimator, the density witness and the compaction proxy share ONE definition of the bounded basis
       ├── capability_evidence.py ← Sourced, route-fingerprinted context-window EVIDENCE (v6.33.0): provider `/models` metadata, local n_ctx, or owner acknowledgement; each claim carries `confirmed`/`asserted`/`unprobeable`/`failed`, and authorizing readers require fresh evidence. Persisted to `data/state/capability_evidence.json`; the ≥1M scope-reviewer floor and Main route-window fit (W) consult it. Historical model-global effort-floor/ceiling and rejected-parameter namespaces remain readable for diagnostics and upgrade regression compatibility, but request construction, scheduling, and recovery no longer consult them as dispatch authority; exact-route success-confirmed authority lives in `request_wire_compatibility.json`. It also owns `observe_token_density` (moved here from `usage_accounting.py` at its size ceiling; the settlement path keeps its historical `_observe_token_density` seam), and every density row carries the additive `basis` field — `"raw"` (base64 bytes) versus `"bounded_proxy"` — so the two measurement bases can never be silently mixed by a later unification. The witness calibrates on the BOUNDED-proxy basis, because that is the basis the fit estimator measures on: multiplying a bounded estimate by a raw-basis density produced a self-consistent ~27% context under-prediction on image-bearing rounds. Budget reservation deliberately keeps the RAW basis (`_reservation_cost` reads `prompt_tokens_estimate`) — for money an over-count on image rounds is the safe direction (owner decision 3=A: the two consumers split on purpose)
       ├── context_layout.py    ← Reference-document form SSOT: tier-0 stays full; Architecture is full in Max and a lossless H2-H4 navigation map in Low for every task class, using inclusive complete-subtree ranges whose parent rows overlap descendants; Development is full for system-repository/self-body bindings and a visible pointer for external bindings; README and Checklists stay on demand.
@@ -2989,6 +2989,15 @@ in-process readers also share one read primitive
 (`settings_integrity.read_settings_json_verified`), so a pinned benchmark snapshot that
 changed refuses the owner reader exactly as it refuses the loader.
 
+This seam carries the VOCABULARY normalization only. The provider normalization
+(`server_runtime.apply_runtime_provider_defaults`: direct-provider slot defaults, retired
+model replacements) is a separate, never-persisted derivation that every consumer needing
+the route makes over the effective document — the task-start projection, the settings GET
+and onboarding reads, and `context_fit.resolve_context_fit_route()`, which therefore
+resolves the exact route the loop runs from `apply_runtime_provider_defaults(load_settings())`
+rather than from the owner-raw document (a direct-provider install with no explicit model
+has no main slot at all outside that normalization).
+
 Three surfaces persist THIS process's settings document: `config.save_settings()`,
 `gateway/owner_settings._owner_update_settings()` (which `_owner_write_settings()` is one
 caller of), and the packaged bootstrap's `packaged_cli._save_settings()`. All three pass
@@ -3011,8 +3020,8 @@ an earlier read passes the digest that read saw (`settings_document_digest()`, t
 staleness question the onboarding transaction asks), and a mismatch refuses before the
 transform runs, so a concurrent owner change can never be reverted key by key while the
 request answers "saved". Startup is a read: the launcher's and the server's boot provider
-normalization is applied to the process environment and re-derived by every reader rather
-than persisted.
+normalization is applied to the process environment and re-derived by every route consumer
+rather than persisted; the read seam itself carries only the vocabulary normalization.
 
 ### LLM output token budgets
 
