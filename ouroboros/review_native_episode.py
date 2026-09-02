@@ -166,6 +166,16 @@ _LANDING_RESERVE_CHARS = 2_048
 # marker: the call is WITHHELD (not executed) instead of read-and-discarded.
 _RESULT_ROOM_FLOOR_CHARS = 256
 
+
+def _wire_size(messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]]) -> int:
+    """The ONE measure of a send: the serialized messages list plus the tool
+    schemas that ride every call. It is RECOMPUTED from the real list after
+    every append and before every bound or room decision — no incremental
+    charge (a raw text here, a missing list separator there) can drift from
+    what the next send actually carries."""
+    return (len(json.dumps(messages, ensure_ascii=False, default=str))
+            + len(json.dumps(schemas, ensure_ascii=False, default=str)))
+
 class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
     """Bounded native inspection episode for a configured-subagent api row.
 
@@ -390,7 +400,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         pct=int(100 * transcript_chars / max(1, transcript_cap)),
                         used=transcript_chars, bound=transcript_cap)
                     messages.append({"role": "user", "content": notice})
-                    transcript_chars += len(notice)
+                    transcript_chars = _wire_size(messages, schemas)
                     if transcript_chars > transcript_cap:
                         break  # even the notice would not fit: the bound has landed
                 round_idx += 1
@@ -435,6 +445,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 self._rounds_used = round_idx
                 landing_sent = landing_sent or landed  # a returned send carried the notice
                 tool_calls = (msg.get("tool_calls") or []) if isinstance(msg, dict) else []
+                # a non-list container is malformed output: one progress-floor entry, never a TypeError
+                tool_calls = tool_calls if isinstance(tool_calls, list) else [tool_calls]
                 usage = dict(usage or {})
                 # Pop the wire-validation sidecar BEFORE accumulation, exactly
                 # like the existing bounded loops — receipts are per-round
@@ -481,10 +493,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     # end and rides the ordinary empty-response rail above.)
                     end_reason = "round_without_progress"
                     break
-                # The WHOLE assistant envelope (content + tool-call objects,
-                # names and argument JSON) joins `messages` and rides every
-                # later send — counting only its parts understated each send.
-                transcript_chars += len(json.dumps(assistant, ensure_ascii=False, default=str))
+                # The size is recomputed from the real list after every append
+                # (the whole assistant envelope rides every later send).
+                transcript_chars = _wire_size(messages, schemas)
                 for tc in tool_calls:
                     if not isinstance(tc, dict):
                         continue  # a non-dict tool_call is malformed provider output, not a crash
@@ -493,15 +504,15 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     # landing notice and the bound in a single round.
                     # The WHOLE tool message rides the next send — role and the
                     # provider's call id included — so an empty withheld result
-                    # still costs its envelope, and the clamp and the charge
-                    # measure the SAME serialized size (JSON escaping inflates
-                    # real text); the call executor returns a message that fits.
+                    # still costs its envelope; the call executor fits it to the
+                    # room on the SERIALIZED size (JSON escaping inflates real
+                    # text) and the recompute below decides the bound.
                     tool_message = self._execute_inspection_call(
                         registry, tc, validation_by_id, round_idx=round_idx,
                         room=transcript_cap - _LANDING_RESERVE_CHARS - transcript_chars,
                     )
-                    envelope = len(json.dumps(tool_message, ensure_ascii=False, default=str))
-                    if transcript_chars + envelope > transcript_cap:
+                    with_result = _wire_size(messages + [tool_message], schemas)
+                    if with_result > transcript_cap:
                         # Even the mandatory envelope (the provider's exact call
                         # id must be echoed) no longer fits under the bound: the
                         # round cannot be answered within it, so the episode
@@ -509,8 +520,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         end_reason = "transcript_bound"
                         transcript_chars = transcript_cap + 1
                         break
-                    transcript_chars += envelope
                     messages.append(tool_message)
+                    transcript_chars = with_result
             if shape == "report" and not final_answer and last_content:
                 # A report is a product, not a verdict: the collected draft is
                 # delivered marked INCOMPLETE rather than discarded (the bound
@@ -601,21 +612,18 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         """The episode's opening: the inspection registry, the first send's
         messages, and that send measured the way EVERY send is measured.
 
-        The counter measures what a send actually carries — the serialized
-        message objects (system instructions and the task) plus the tool
-        schemas that ride every provider call; later assistant envelopes and
-        tool messages are charged the same way. Counting raw text understated
-        an escape-heavy first send. Units are CHARS throughout — same as the cap."""
+        The size is what a send actually carries — the serialized message
+        objects (system instructions and the task) plus the tool schemas that
+        ride every provider call — computed by the one `_wire_size` measure
+        that every later append recomputes. Counting raw text understated an
+        escape-heavy first send; summing bare envelopes drifted from the list.
+        Units are CHARS throughout — same as the cap."""
         registry, schemas = self._inspection_registry(root, drive_root)
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": _NATIVE_REVIEW_INSTRUCTIONS},
             {"role": "user", "content": self.episode_prompt},
         ]
-        transcript_chars = (
-            len(json.dumps(messages, ensure_ascii=False, default=str))
-            + len(json.dumps(schemas, ensure_ascii=False, default=str))
-        )
-        return registry, schemas, messages, transcript_chars
+        return registry, schemas, messages, _wire_size(messages, schemas)
 
     def _chat_kwargs(self, messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]], max_tokens: int) -> Dict[str, Any]:
         """One round's provider call, shaped from the request and the slot."""
@@ -676,7 +684,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             result = f"⚠️ TOOL_ARG_ERROR: {getattr(verdict, 'error', 'invalid arguments')}"
         elif name not in _INSPECTION_TOOL_NAMES:
             outcome = "refused"
-            result = f"⚠️ tool {name!r} is not available in this read-only inspection episode"
+            result = f"⚠️ tool {name[:200]!r} is not available in this read-only inspection episode"
         else:
             try:
                 args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args or {})
@@ -711,7 +719,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     result = full if shown >= len(full) else (
                         full[:shown] + f"\n⚠️ RESULT TRUNCATED: showed {shown} of {len(full)} chars" + marker)
                     overshoot = len(json.dumps({"role": "tool", "tool_call_id": call_id, "content": result},
-                                               ensure_ascii=False, default=str)) - max(0, room)
+                                               ensure_ascii=False, default=str)) + 2 - max(0, room)  # +2: list separator
                     if overshoot <= 0 or shown == 0:
                         break
                     shown = max(0, min(shown, len(full) - 1) - overshoot)
@@ -739,25 +747,36 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         from ouroboros.observability import redact_projection
         from ouroboros.utils import truncate_within_limit
 
-        def _unfold(value: Any, depth: int = 0) -> Any:
+        def _unfold(value: Any, depth: int = 0, expansions: int = 0) -> Any:
             # JSON carried inside strings — at any nesting — is parsed so the
-            # structural key masking sees every secret-named field; bounded in
-            # depth (container levels) and size so hostile input cannot make
-            # this unbounded.
-            if isinstance(value, str) and depth < 8 and len(value) <= 200_000:
-                stripped = value.lstrip()
-                if stripped[:1] in "{[":
-                    try:
-                        parsed = json.loads(value)
-                    except (TypeError, ValueError):
-                        return value
-                    if isinstance(parsed, (dict, list)):
-                        return {"__json__": _unfold(parsed, depth + 1)}
+            # structural key masking sees every secret-named field. Two
+            # SEPARATE guards bound the work: container levels (`depth`) and
+            # nested string expansions along one path (`expansions`); one
+            # shared counter let ordinary traversal spend the expansion budget
+            # before the secret-keyed object was reached. A JSON-looking string
+            # that cannot be expanded (a guard reached, oversized, too deep to
+            # parse) is MASKED, never kept in clear: the text pass cannot see
+            # structure it never parsed.
+            if isinstance(value, str):
+                if value.lstrip()[:1] not in "{[":
+                    return value
+                if expansions >= 8 or len(value) > 200_000:
+                    return f"[unexpanded JSON masked: {len(value)} chars]"
+                try:
+                    parsed = json.loads(value)
+                except (TypeError, ValueError):
+                    return value  # JSON-looking but not JSON: plain text
+                except RecursionError:
+                    return f"[unexpanded JSON masked: {len(value)} chars]"
+                if isinstance(parsed, (dict, list)):
+                    return {"__json__": _unfold(parsed, depth + 1, expansions + 1)}
                 return value
+            if isinstance(value, (dict, list)) and depth >= 64:
+                return "[container too deep: masked]"
             if isinstance(value, dict):
-                return {str(k): _unfold(v, depth + 1) for k, v in value.items()}
+                return {str(k): _unfold(v, depth + 1, expansions) for k, v in value.items()}
             if isinstance(value, list):
-                return [_unfold(v, depth + 1) for v in value]
+                return [_unfold(v, depth + 1, expansions) for v in value]
             return value
 
         def _fold(value: Any) -> Any:

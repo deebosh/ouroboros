@@ -687,6 +687,73 @@ def test_terminal_round_masks_secrets_structurally(subject_repo):
         assert token not in NativeToolRoundReviewExecutor._terminal_round_fact(scalar)
 
 
+@pytest.mark.parametrize("wrappers", [0, 1, 2, 3, 5, 8, 12])
+def test_nested_json_secrets_fail_closed_at_any_nesting(wrappers):
+    """FAIL CLOSED (P1): a low-entropy secret under a secret-named key wrapped
+    in N JSON strings is masked structurally while the expansion budget lasts
+    and masked WHOLESALE beyond it — never kept in clear for the text pass,
+    which cannot see structure it never parsed. Pinned on both custody paths
+    (a tool-call argument sits two container levels deeper than a result), so
+    a shared depth counter spending the budget on traversal cannot return."""
+    value = json.dumps({"password": "hunter2"})
+    for _ in range(wrappers):
+        value = json.dumps({"payload": value})
+    via_args = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "function": {"name": "read_file", "arguments": json.dumps({"path": "x", "note": value})}}]}]
+    via_result = [{"role": "assistant", "content": "", "tool_calls": []},
+                  {"role": "tool", "tool_call_id": "c1", "content": value}]
+    for messages in (via_args, via_result):
+        doc = NativeToolRoundReviewExecutor._terminal_round_fact(messages)
+        assert "hunter2" not in doc and json.loads(doc)["messages"]
+    if wrappers >= 8:  # beyond the expansion budget: masked as a whole, disclosed as such
+        assert "unexpanded JSON masked" in NativeToolRoundReviewExecutor._terminal_round_fact(via_result)
+
+
+def test_terminal_round_guards_never_raise_and_never_keep_structure_in_clear():
+    """The container-depth guard and the parser's own recursion limit are
+    fail-closed too: a hostile 80-level container and 200K unclosed brackets
+    yield a valid bounded record with the deep part masked, not a crash."""
+    deep = {"k": None}
+    node = deep
+    for _ in range(80):
+        node["k"] = {"k": None}
+        node = node["k"]
+    node["k"] = {"password": "hunter2"}
+    doc = NativeToolRoundReviewExecutor._terminal_round_fact([{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "function": {"name": "x", "arguments": "{}"}, "extra": deep}]}])
+    assert "hunter2" not in doc and "container too deep" in doc and json.loads(doc)
+    brackets = NativeToolRoundReviewExecutor._terminal_round_fact([{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "function": {"name": "x", "arguments": "[" * 200_000}}]}])
+    assert json.loads(brackets)["messages"] and "unexpanded JSON masked" in brackets
+
+
+def test_every_send_is_measured_exactly_on_the_wire(subject_repo, monkeypatch):
+    """ONE wire measure: the counter EQUALS the serialized messages list plus
+    the schemas — not a lagging sum of envelopes (two chars per message adds
+    up over a long episode) — and no captured send ever exceeds the bound."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "400000")
+    script = [{"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, f"c{i}")]} for i in range(120)]
+    script.append({"content": _VERDICT})
+    llm = _ScriptedLLM(script)
+    usage = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute().usage
+    last = llm.calls[-1]  # the counter is the wire size of the LAST send (the answer is output, not a send)
+    exact = (len(json.dumps(last["messages"], ensure_ascii=False, default=str))
+             + len(json.dumps(last["tools"], ensure_ascii=False, default=str)))
+    assert usage["native_rounds"] == 121 and usage["native_transcript_chars"] == exact
+    # An episode that ignores the landing notice and ends at the bound never
+    # made a send above it — measured on every captured send, not the counter.
+    bound = 50_000
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", str(bound))
+    (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    llm = _ScriptedLLM(_ignores_landing())
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute()
+    assert exc.value.code == "native_transcript_cap_exceeded"
+    sends = [len(json.dumps(c["messages"], ensure_ascii=False, default=str))
+             + len(json.dumps(c["tools"], ensure_ascii=False, default=str)) for c in llm.calls]
+    assert len(sends) > 5 and max(sends) <= bound
+
+
 def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypatch):
     """The coordinator's logical window for the slot is a bound like the owner
     deadline: past it, a verdict episode refuses typed and a report keeps its
@@ -736,11 +803,14 @@ def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypa
     assert exc.value.code == "deadline_exhausted" and not llm.calls
 
 
-def test_round_without_progress_is_a_typed_malformed_end(subject_repo):
+@pytest.mark.parametrize("container", [["junk", {"id": "x"}], 7, True, "junk", {"id": "x"}])
+def test_round_without_progress_is_a_typed_malformed_end(subject_repo, container):
     """PROGRESS FLOOR: a round with neither prose nor one well-formed tool call
-    adds nothing and would re-enter the paid send forever."""
+    adds nothing and would re-enter the paid send forever — whatever container
+    the provider returned: a non-list `tool_calls` is the same malformed round
+    (typed end, truthful reason), never an untyped TypeError."""
     llm = _ScriptedLLM([
-        {"tool_calls": ["junk", {"id": "x"}]},  # no dict with a function name
+        {"tool_calls": container},  # no dict with a function name
         {"content": _VERDICT},  # never reached
     ])
     executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
