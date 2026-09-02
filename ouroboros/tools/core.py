@@ -12,7 +12,7 @@ import pathlib
 import re
 import subprocess
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ouroboros.artifacts import artifact_store_path_block_reason, copy_file_to_task_artifacts
 from ouroboros.project_facts import filter_out_project_store as _filter_out_project_store
@@ -100,8 +100,14 @@ def _binding_skill_control_plane_path(binding: ResolvedResourceBinding) -> bool:
 
 
 def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_line: int = 1,
-                       start_char: int = 0) -> str:
+                       start_char: int = 0, extent: Optional[Dict[str, Any]] = None) -> str:
     """Return a line-ranged file view with the shared read-tool header.
+
+    ``extent`` (when a dict is passed) receives the rendered window as FACTS —
+    ``start_line``/``end_line``/``total_lines``/``start_char`` — so a consumer
+    that must know what a read actually delivered (the native review episode's
+    host-observed receipts) gets it from the renderer's own arithmetic, never by
+    parsing the header text back.
 
     ``start_char`` is a SUB-LINE cursor: it skips that many characters of the selected
     window's body before rendering. It exists because delivery is char-bounded (the
@@ -118,6 +124,8 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     end = min(start + max_raw - 1, total)
     result = "".join(lines[start - 1:end])
     offset = _coerce_start_char(start_char)
+    if extent is not None:
+        extent.update({"start_line": start, "end_line": end, "total_lines": total, "start_char": offset})
     if offset:
         result = result[offset:]
         header = f"# {path} — lines {start}\u2013{end} of {total} (from char {offset} of this window)\n"
@@ -466,6 +474,7 @@ def _repo_read(
     start_char: int = 0,
     display_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
+    extent: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Read a repo file; root-level memory names return a runtime_data read hint."""
     target = _resolved_binding.target_path if _resolved_binding is not None else ctx.repo_path(path)
@@ -493,7 +502,7 @@ def _repo_read(
             )
         return f"⚠️ NOT_FOUND: file does not exist: {target}"
     return _render_line_slice(display_path or path, content, max_lines=max_lines, start_line=start_line,
-                              start_char=start_char)
+                              start_char=start_char, extent=extent)
 
 
 def _repo_list(
@@ -537,6 +546,7 @@ def _data_read(
     start_char: int = 0,
     display_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
+    extent: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Read a drive text file; duplicate drive_root prefixes are stripped."""
     task_constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
@@ -596,9 +606,9 @@ def _data_read(
             if display_path is None:
                 return content
             full_line_count = max(1, len(content.splitlines()))
-            return _render_line_slice(display_path, content, max_lines=full_line_count, start_line=1)
+            return _render_line_slice(display_path, content, max_lines=full_line_count, start_line=1, extent=extent)
         return _render_line_slice(display_path or norm, content, max_lines=max_raw, start_line=start_raw,
-                                  start_char=start_char)
+                                  start_char=start_char, extent=extent)
     except FileNotFoundError:
         if norm.replace("\\", "/").startswith("memory/"):
             explanation = (
@@ -1111,6 +1121,16 @@ def _annotate_reread(ctx: ToolContext, target: Any, start_line: int, max_lines: 
     return result
 
 
+def _stamp_read_view(ctx: ToolContext, target: Any, extent: Dict[str, Any], rendered: str) -> str:
+    """Record on the context what THIS read delivered (``ctx.last_read_view``:
+    resolved target + the renderer's window facts). Same per-context bookkeeping
+    class as ``_annotate_reread``; consumed by the native review episode's
+    receipts. Disclosure only — never gates or alters the read."""
+    if extent:
+        ctx.last_read_view = {"target": str(target), **extent}
+    return rendered
+
+
 def _read_file(
     ctx: ToolContext,
     path: str,
@@ -1122,6 +1142,10 @@ def _read_file(
     skill_name: str = "",
     _resolved_binding: ResolvedResourceBinding | None = None,
 ) -> str:
+    # Reset first: a blocked or missing read must never inherit the previous
+    # read's extent (the renderer fills `extent` only when it rendered).
+    ctx.last_read_view = None
+    extent: Dict[str, Any] = {}
     normalized, block = _access_or_block(ctx, root, "read")
     if block:
         return block
@@ -1150,7 +1174,7 @@ def _read_file(
             if binding.source == "project_room"
             else _root_display_path(normalized, path)
         )
-        return _annotate_reread(ctx, target, start_line, max_lines, _repo_read(
+        return _stamp_read_view(ctx, target, extent, _annotate_reread(ctx, target, start_line, max_lines, _repo_read(
             ctx,
             path,
             max_lines=max_lines,
@@ -1158,9 +1182,10 @@ def _read_file(
             start_char=start_char,
             display_path=display_path,
             _resolved_binding=binding,
-        ), start_char=start_char)
+            extent=extent,
+        ), start_char=start_char))
     if normalized == "runtime_data":
-        return _annotate_reread(ctx, target, start_line, max_lines, _data_read(
+        return _stamp_read_view(ctx, target, extent, _annotate_reread(ctx, target, start_line, max_lines, _data_read(
             ctx,
             path,
             max_lines=max_lines,
@@ -1168,7 +1193,8 @@ def _read_file(
             start_char=start_char,
             display_path=_root_display_path(normalized, path),
             _resolved_binding=binding,
-        ), start_char=start_char)
+            extent=extent,
+        ), start_char=start_char))
     block_msg = _local_readonly_resource_block(
         ctx, normalized, target, binding.base_path, action="READ_FILE"
     )
@@ -1177,7 +1203,8 @@ def _read_file(
     try:
         content = read_text(target)
         rendered = _render_line_slice(_root_display_path(normalized, path), content,
-                                      max_lines=max_lines, start_line=start_line, start_char=start_char)
+                                      max_lines=max_lines, start_line=start_line, start_char=start_char,
+                                      extent=extent)
         if normalized == "user_files":
             # Egress seam for owner-home reads (#447 X1/В23): the file may be
             # read, but raw credential bytes never enter model context/history —
@@ -1202,7 +1229,8 @@ def _read_file(
                                                start_char=start_char, rendered=rendered)
             except Exception:
                 log.warning("staged-output coverage acknowledgement hook failed", exc_info=True)
-        return _annotate_reread(ctx, target, start_line, max_lines, rendered, start_char=start_char)
+        return _stamp_read_view(ctx, target, extent,
+                                _annotate_reread(ctx, target, start_line, max_lines, rendered, start_char=start_char))
     except FileNotFoundError:
         return f"⚠️ NOT_FOUND: {_root_display_path(normalized, path)} (resolved: {target})"
     except UserFilesPathBlockedError as exc:

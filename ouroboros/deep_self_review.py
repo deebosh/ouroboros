@@ -145,6 +145,9 @@ _REPORT_CONTRACT = REVIEW_REPORT_CONTRACT + (
 )
 
 _MANDATORY_READS = ("BIBLE.md",)
+# The inspection roots that resolve to the REPOSITORY (both name the review's
+# session root); a read under the data plane never satisfies a repository read.
+_REPO_ROOTS = frozenset({"", "active_workspace", "system_repo"})
 _NAV_MAP_DOCS = ("docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md", "docs/CHECKLISTS.md")
 
 
@@ -560,22 +563,48 @@ def _repo_relative(path: Any, repo_dir: pathlib.Path) -> str:
     return candidate.as_posix().removeprefix("./")
 
 
-def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict[str, str]:
-    """R8: which mandatory reads the host OBSERVED — from the episode's receipts.
+def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict[str, Dict[str, Any]]:
+    """R8: how much of each mandatory read the host OBSERVED, from the episode's
+    receipts — the merged line intervals of every executed repository-root
+    ``read_file`` receipt for the path (a single result is capped, so a full
+    read of BIBLE.md is multi-chunk by construction).
 
-    ``read`` = an executed read_file receipt names the path; ``missing`` = the
-    receipts are complete and none does; ``unobserved`` = the receipt list was
-    capped below the call count, so absence proves nothing. Disclosure, never
-    a refusal: the report is delivered with the flag in its header.
+    ``read`` only when the union covers the whole file; ``partial`` with the
+    covered fraction; ``missing`` when the receipts are complete and none names
+    the path at a repository root (a data-plane read never counts);
+    ``unobserved`` when the receipt list was capped below the call count or a
+    receipt carried no extent — absence proves nothing there. Disclosure,
+    never a refusal: the report is delivered with the flag in its header.
     """
     receipts = [r for r in (usage.get("native_tool_receipts") or []) if isinstance(r, dict)]
-    opened = {
-        _repo_relative(r.get("path"), repo_dir)
-        for r in receipts
-        if r.get("tool") == "read_file" and r.get("outcome") == "executed" and r.get("path")
-    }
     capped = int(usage.get("native_tool_calls") or 0) > len(receipts)
-    return {rel: ("read" if rel in opened else ("unobserved" if capped else "missing")) for rel in _MANDATORY_READS}
+    out: Dict[str, Dict[str, Any]] = {}
+    for rel in _MANDATORY_READS:
+        spans: list[tuple[int, int]] = []
+        total, opened = 0, False
+        for r in receipts:
+            if (r.get("tool") != "read_file" or r.get("outcome") != "executed"
+                    or str(r.get("root") or "") not in _REPO_ROOTS or _repo_relative(r.get("path"), repo_dir) != rel):
+                continue
+            opened = True
+            if all(isinstance(r.get(k), int) for k in ("start_line", "end_line", "total_lines")) and r["end_line"] >= r["start_line"]:
+                spans.append((int(r["start_line"]), int(r["end_line"])))
+                total = max(total, int(r["total_lines"]))
+        covered, cursor = 0, 0
+        for start, end in sorted(spans):  # merge overlapping / re-read chunks; clip to the file
+            lo, hi = max(start, cursor + 1, 1), min(end, total)
+            if hi >= lo:
+                covered += hi - lo + 1
+                cursor = hi
+        if total and covered >= total:
+            state = "read"
+        elif capped or (opened and not spans):
+            state = "unobserved"
+        else:
+            state = "partial" if spans else "missing"
+        out[rel] = {"state": state, "covered_lines": covered, "total_lines": total,
+                    "fraction": round(covered / total, 3) if total else 0.0}
+    return out
 
 
 _HEADER_VALUE_MAX_CHARS = 120
@@ -759,15 +788,19 @@ def _run_retrieving_review(
         raise
     usage = dict(attempt.usage or {})
     if delivery == "native_tool_rounds":
-        coverage = _native_read_coverage(usage, repo_dir)
-        for rel, state in coverage.items():
-            if state != "read":
+        detail = _native_read_coverage(usage, repo_dir)
+        coverage = {rel: (f"partial({c['fraction']:.2f})" if c["state"] == "partial" else c["state"])
+                    for rel, c in detail.items()}
+        for rel, c in detail.items():
+            if c["state"] != "read":
                 usage.setdefault("capability_delta", []).append({
                     "kind": "capability_delta",
                     "requested": f"mandatory full read of {rel}",
-                    "effective": (f"no executed read_file receipt for {rel}" if state == "missing"
-                                  else f"receipts capped below the call count; the {rel} read is unobserved"),
-                    "reason": f"deep_review_mandatory_read_{state}",
+                    "effective": {
+                        "partial": f"{c['covered_lines']} of {c['total_lines']} lines of {rel} delivered (merged receipts)",
+                        "missing": f"no executed repository-root read_file receipt for {rel}",
+                    }.get(c["state"], f"the {rel} read extent is unobserved (receipts capped or extent not recorded)"),
+                    "reason": f"deep_review_mandatory_read_{c['state']}",
                 })
     else:
         coverage = {rel: "unobserved" for rel in _MANDATORY_READS}
@@ -795,8 +828,10 @@ def _run_retrieving_review(
     completeness = "complete" if incomplete == "none" else (
         "completeness not host-observed" if incomplete == "unobserved" else f"INCOMPLETE ({incomplete})")
     if delivery == "native_tool_rounds":
-        reads = "; ".join(f"{rel} {'read' if state == 'read' else ('NOT read' if state == 'missing' else 'unobserved (receipts capped)')}"
-                          for rel, state in coverage.items())
+        reads = "; ".join(
+            f"{rel} " + (f"{c['fraction']:.0%} read ({c['covered_lines']}/{c['total_lines']} lines)" if c["state"] == "partial"
+                         else {"read": "read in full", "missing": "NOT read"}.get(c["state"], "read extent unobserved"))
+            for rel, c in detail.items())
         human = (
             f"Deep self-review: native inspection episode on {model} — {usage.get('native_rounds', 0)} rounds, "
             f"{usage.get('native_tool_calls', 0)} tool calls ({len(usage.get('native_tool_receipts') or [])} host-observed receipts); "

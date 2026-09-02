@@ -1235,3 +1235,34 @@ def test_missing_session_task_refuses_typed(subject_repo):
             _assignment(subject_repo, llm, session_task=""), llm=llm,
         ).execute()
     assert exc.value.code == "session_task_missing"
+
+
+def test_read_file_receipts_carry_the_delivered_extent(subject_repo):
+    """Receipt contract EXTENSION (Ф3/R8): an executed `read_file` receipt also
+    carries the extent the reviewer actually received — start_line/end_line/
+    total_lines/eof from the reader's own `ctx.last_read_view` stamp, never
+    parsed back from the header — while every existing field and the outcome
+    vocabulary (executed | refused | error | withheld) stay as they were. A
+    sub-line cursor makes the first line partial, so it is not counted; a
+    non-read tool and a refused read carry no extent."""
+    (subject_repo / "many.txt").write_text("".join(f"row {i}\n" for i in range(1, 31)), encoding="utf-8")
+    llm = _ScriptedLLM([
+        {"tool_calls": [
+            _tool_call("read_file", {"path": "many.txt", "start_line": 5, "max_lines": 10}, "c1"),
+            _tool_call("read_file", {"path": "many.txt", "start_line": 28, "max_lines": 10}, "c2"),
+            _tool_call("read_file", {"path": "many.txt", "start_line": 5, "max_lines": 10, "start_char": 3}, "c3"),
+            _tool_call("read_file", {"path": "nope.txt"}, "c4"),
+            _tool_call("search_code", {"query": "row"}, "c5"),
+            _tool_call("write_file", {"path": "many.txt", "content": "x"}, "c6"),
+        ]},
+        {"content": _VERDICT},
+    ])
+    usage = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute().usage
+    r = usage["native_tool_receipts"]
+    assert [x["outcome"] for x in r] == ["executed", "executed", "executed", "executed", "executed", "refused"]
+    assert {k: r[0][k] for k in ("start_line", "end_line", "total_lines", "eof")} == {"start_line": 5, "end_line": 14, "total_lines": 30, "eof": False}
+    assert {k: r[1][k] for k in ("start_line", "end_line", "eof")} == {"start_line": 28, "end_line": 30, "eof": True}
+    assert r[2]["start_line"] == 6 and r[2]["end_line"] == 14  # sub-line cursor: first line partial, not counted
+    for i in (3, 4, 5):  # a NOT_FOUND read renders nothing; other tools and refusals carry no extent
+        assert not any(k in r[i] for k in ("start_line", "end_line", "total_lines", "eof")), r[i]
+    assert r[0]["tool"] == "read_file" and r[0]["path"] == "many.txt" and r[0]["result_chars"] > 0

@@ -199,6 +199,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         self._raw_transcript: Optional[str] = None
         self._episode_usage: Dict[str, Any] = {}
         self._tool_receipts: List[Dict[str, Any]] = []
+        self._inspection_ctx: Any = None  # the registry's context: the reader stamps `last_read_view` on it
         self._tool_calls_total = 0
         self._rounds_used = 0
         self._episode_deltas: List[Dict[str, Any]] = []
@@ -299,6 +300,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             },
         )
         registry.set_context(ctx)
+        self._inspection_ctx = ctx
         schemas = []
         for name in _INSPECTION_TOOL_NAMES:
             schema = registry.get_schema_by_name(name)
@@ -665,6 +667,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         raw_args = function.get("arguments")
         args: Optional[Dict[str, Any]] = None
         outcome = "executed"
+        extent: Dict[str, Any] = {}
         verdict = validation_by_id.get(call_id)
         if room < _RESULT_ROOM_FLOOR_CHARS:
             # The round's earlier calls spent the room below the bound: a read
@@ -724,6 +727,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     if overshoot <= 0 or shown == 0:
                         break
                     shown = max(0, min(shown, len(full) - 1) - overshoot)
+                if name == "read_file" and outcome == "executed":
+                    extent = self._read_extent(full, shown)
         # Host-observed evidence (bounded): which artifacts THIS episode
         # actually opened — disclosure, never a claim of full-surface coverage.
         self._tool_calls_total += 1
@@ -735,8 +740,33 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         receipt[key] = str(args[key])[:300]
             receipt["result_chars"] = len(result)
             receipt["outcome"] = outcome
+            receipt.update(extent)  # read_file only: the DELIVERED extent (ints/bool, see _read_extent)
             self._tool_receipts.append(receipt)
         return {"role": "tool", "tool_call_id": call_id, "content": result}
+
+    def _read_extent(self, full: str, shown: int) -> Dict[str, Any]:
+        """The extent an executed ``read_file`` actually DELIVERED, as bounded
+        facts on the receipt: ``start_line``/``end_line`` (complete lines the
+        reviewer received), ``total_lines`` of the file, ``eof``. The window
+        comes from the reader's own stamp (``ctx.last_read_view``, the
+        renderer's arithmetic — never parsed back from the header text); when
+        this episode's result bound cut the body, only the complete lines
+        inside the delivered prefix count, and a sub-line cursor
+        (``start_char``) makes the first line partial, so it is not counted.
+        Extends the receipt contract; the existing fields and the outcome
+        vocabulary are unchanged. Empty when the reader recorded no view."""
+        view = getattr(self._inspection_ctx, "last_read_view", None)
+        if not isinstance(view, dict) or not all(
+            isinstance(view.get(k), int) for k in ("start_line", "end_line", "total_lines")
+        ):
+            return {}
+        start, end, total = int(view["start_line"]), int(view["end_line"]), int(view["total_lines"])
+        if int(view.get("start_char") or 0) > 0:
+            start += 1
+        if shown < len(full):
+            delivered = full[:shown].count("\n") - 1  # minus the renderer's one header line
+            end = min(end, start + max(0, delivered) - 1)
+        return {"start_line": start, "end_line": end, "total_lines": total, "eof": end >= total}
 
     @staticmethod
     def _terminal_round_fact(messages: List[Dict[str, Any]]) -> str:

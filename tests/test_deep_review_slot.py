@@ -304,7 +304,7 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
         "coverage=BIBLE.md:read, incomplete=none, attestation=host_observed, rounds=3, tool_calls=2, receipts=2, "
         "end_reason=final_answer, transcript=")
     assert "_Deep self-review: native inspection episode on openai/fake-deep — 3 rounds, 2 tool calls" in header
-    assert "BIBLE.md read; memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, improvement-backlog.md missing); complete_" in header
+    assert "BIBLE.md read in full; memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, improvement-backlog.md missing); complete_" in header
     assert usage["deep_review_memory"]["inlined"] == 3 and usage["deep_review_memory"]["dispositions"]["memory/WORLD.md"] == "missing"
     assert usage["native_rounds"] == 3 and usage["host_file_read_attestation"] == "host_observed"
     assert usage["resolved_model"] == "openai/fake-deep" and "execution_status" not in usage
@@ -348,19 +348,34 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
     deltas = [d for d in usage["capability_delta"] if d["reason"] == "deep_review_mandatory_read_missing"]
     assert deltas and deltas[0]["requested"] == "mandatory full read of BIBLE.md"
     assert reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]["capability_delta"] == usage["capability_delta"]
-    # Capped receipts prove nothing: absence is `unobserved`, not `missing`.
-    assert deep_self_review._native_read_coverage(
-        {"native_tool_calls": 5, "native_tool_receipts": [{"tool": "read_file", "path": "x", "outcome": "executed"}]},
-        review_repo) == {"BIBLE.md": "unobserved"}
-    # Absolute and dot-prefixed spellings of the mandatory path still count as read.
+
+    def cov(receipts, calls=None):
+        return deep_self_review._native_read_coverage(
+            {"native_tool_calls": len(receipts) if calls is None else calls, "native_tool_receipts": receipts}, review_repo)["BIBLE.md"]
+
+    def rec(path, start, end, total, root="", outcome="executed"):
+        return {"tool": "read_file", "path": path, "root": root, "outcome": outcome,
+                "start_line": start, "end_line": end, "total_lines": total}
+
+    # Full coverage only when the merged intervals cover the whole file.
+    assert cov([rec("BIBLE.md", 1, 12, 12)])["state"] == "read"
+    two = cov([rec("BIBLE.md", 1, 6, 12), rec("BIBLE.md", 7, 12, 12)])
+    assert two["state"] == "read" and two["covered_lines"] == 12
+    one = cov([rec("BIBLE.md", 1, 1, 12)])
+    assert one["state"] == "partial" and one["fraction"] == round(1 / 12, 3)
+    overlap = cov([rec("BIBLE.md", 1, 6, 12), rec("BIBLE.md", 1, 6, 12), rec("BIBLE.md", 3, 8, 12)])
+    assert overlap["state"] == "partial" and overlap["covered_lines"] == 8
+    # Absolute and dot-prefixed spellings of the mandatory path still count.
     for spelled in (str(review_repo / "BIBLE.md"), "./BIBLE.md", "BIBLE.md"):
-        assert deep_self_review._native_read_coverage(
-            {"native_tool_calls": 1, "native_tool_receipts": [{"tool": "read_file", "path": spelled, "outcome": "executed"}]},
-            review_repo) == {"BIBLE.md": "read"}
-    # A refused or withheld read of the path is not a read.
-    assert deep_self_review._native_read_coverage(
-        {"native_tool_calls": 1, "native_tool_receipts": [{"tool": "read_file", "path": "BIBLE.md", "outcome": "withheld"}]},
-        review_repo) == {"BIBLE.md": "missing"}
+        assert cov([rec(spelled, 1, 12, 12, root="system_repo")])["state"] == "read"
+    # A data-plane read of a same-named file is NOT the repository read.
+    assert cov([rec("BIBLE.md", 1, 12, 12, root="runtime_data")])["state"] == "missing"
+    # Refused / withheld reads are not reads; capped receipts or a receipt
+    # without an extent make absence `unobserved`, never `missing`.
+    assert cov([rec("BIBLE.md", 1, 12, 12, outcome="withheld")])["state"] == "missing"
+    assert cov([rec("ouroboros/loop.py", 1, 2, 2)], calls=5)["state"] == "unobserved"
+    assert cov([{"tool": "read_file", "path": "BIBLE.md", "root": "", "outcome": "executed"}])["state"] == "unobserved"
+    assert cov([rec("BIBLE.md", 1, 6, 12)], calls=3)["state"] == "unobserved"  # partial AND capped: the tail may hold the rest
 
 
 def test_native_row_exhaustion_delivers_the_draft_marked_incomplete(review_repo, review_drive, monkeypatch):
@@ -744,3 +759,53 @@ def test_memory_dispositions_are_disclosed_per_whitelisted_entry(review_repo, tm
     assert "drive/memory/scratchpad.md (empty: no content)" in omitted
     assert "drive/memory/WORLD.md (oversized: >1024KB)" in omitted
     assert "drive/memory/registry.md (missing: not present under the data root)" in omitted
+
+
+def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, review_drive, monkeypatch):
+    """Item 20 end to end: the reader's own window facts reach the receipts
+    (extended contract: start_line/end_line/total_lines/eof), two chunks that
+    cover BIBLE.md read as `read`, one line as `partial`, a data-root BIBLE.md
+    as `missing`, and an episode-truncated read counts only delivered lines."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    total = len(_BIBLE.splitlines())
+    half = total // 2
+    llm = _ScriptedLLM([
+        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "max_lines": half}, "c1")]},
+        {"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "start_line": half + 1, "max_lines": 500}, "c2")]},
+        {"content": _REPORT},
+    ])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    receipts = usage["native_tool_receipts"]
+    assert receipts[0]["outcome"] == "executed"  # the outcome vocabulary is unchanged
+    assert (receipts[0]["start_line"], receipts[0]["end_line"], receipts[0]["total_lines"], receipts[0]["eof"]) == (1, half, total, False)
+    assert (receipts[1]["start_line"], receipts[1]["end_line"], receipts[1]["eof"]) == (half + 1, total, True)
+    assert "coverage=BIBLE.md:read" in text and "BIBLE.md read in full" in text
+    assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
+
+    # One line: partial, with the fraction in the header and a typed delta.
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "max_lines": 1}, "c1")]}, {"content": _REPORT}])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    assert f"coverage=BIBLE.md:partial({1 / total:.2f})" in text
+    assert f"BIBLE.md {1 / total:.0%} read (1/{total} lines)" in text
+    delta = next(d for d in usage["capability_delta"] if d["reason"] == "deep_review_mandatory_read_partial")
+    assert delta["effective"] == f"1 of {total} lines of BIBLE.md delivered (merged receipts)"
+
+    # A BIBLE.md under the DATA plane does not satisfy the repository read.
+    (review_drive / "BIBLE.md").write_text(_BIBLE, encoding="utf-8")
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "root": "runtime_data"}, "c1")]}, {"content": _REPORT}])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    assert usage["native_tool_receipts"][0]["root"] == "runtime_data" and usage["native_tool_receipts"][0]["eof"] is True
+    assert "coverage=BIBLE.md:missing" in text
+
+    # The episode's own result bound cut the body: only complete delivered lines count.
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (review_repo / "BIBLE.md").write_text("".join(f"line {i:05d} " + "b" * 60 + "\n" for i in range(1500)), encoding="utf-8")
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md"}, "c1")]}, {"content": _REPORT}])
+    text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+    receipt = usage["native_tool_receipts"][0]
+    assert receipt["total_lines"] == 1500 and receipt["start_line"] == 1
+    assert receipt["end_line"] < 1500 and receipt["eof"] is False
+    tool_msg = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"][0]["content"]
+    assert "RESULT TRUNCATED" in tool_msg and f"line {receipt['end_line']:05d}" in tool_msg
+    assert f"line {receipt['end_line'] + 1:05d} " + "b" * 60 + "\n" not in tool_msg  # the first cut line is not counted
+    assert "coverage=BIBLE.md:partial(" in text

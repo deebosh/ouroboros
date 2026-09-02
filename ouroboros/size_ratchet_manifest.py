@@ -140,6 +140,7 @@ BAND_PATHS = {
     "ouroboros/cancel_intents.py": "Entered the band from 929 lines: reciprocal timeout-retry lineage validation and physical-leaf/logical-root aliasing stay with the durable cancel-intent mutation authority so Stop-now hardens the same request across retry races.",
     "ouroboros/capability_evidence.py": "Grew INTO the band by the #284 fix: a fresh exact-model density witness may honestly undercut the cold floor \u2014 evidence logic belongs beside the witness store it reads.",
     "ouroboros/consciousness.py": "Durable Background Consciousness observation inbox and bounded truthful replay",
+    "ouroboros/deep_self_review.py": "Deep self-review moved from one packed call to the three reviewer-row deliveries inside ONE surface module: the packed Atlas assembler and the retrieving runner (route-aware availability, provenance header, mandatory-read coverage, typed failures) share the memory whitelist, the prompt constants and the failure typing, so a split would separate the surface from its own pack contract; shrink next touch.",
     "ouroboros/extension_process_runner.py": None,
     "ouroboros/gateway/control.py": "Entered the band from 966 lines: the update-flow redesign added the shared stash-first prologue (_stash_local_work_fenced/_unwind_stashed_update) and the review-wave affordability floor to the update apply orchestration (update-flow-redesign sprint, Q9/Q10 owner decisions).",
     "ouroboros/gateway/history.py": None,
