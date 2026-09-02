@@ -1,6 +1,7 @@
 """Split extension-loader regression coverage kept below module size gates."""
 from __future__ import annotations
 
+import copy
 
 import pytest
 
@@ -578,23 +579,41 @@ def test_register_ui_tab_rejects(tmp_path, case_id, name, plugin, expected_subst
     "render,expected_start",
     [
         ({"kind": "module", "entry": "widget.js"}, "manual"),
+        ({"kind": "module", "entry": "widget.js", "start": None}, "manual"),
+        ({"kind": "module", "entry": "widget.js", "start": ""}, "manual"),
+        ({"kind": "module", "entry": "widget.js", "start": "  "}, "manual"),
         ({"kind": "module", "entry": "widget.js", "start": "auto"}, "auto"),
+        ({"kind": "module", "entry": "widget.js", "start": " auto "}, "auto"),
         ({"kind": "module", "entry": "widget.js", "start": "retain"}, "retain"),
         ({"kind": "iframe", "route": "view"}, "manual"),
+        ({"kind": "iframe", "route": "view", "start": None}, "manual"),
         ({"kind": "iframe", "route": "view", "start": "retain"}, "retain"),
         ({"kind": "declarative", "schema_version": 1, "components": []}, "auto"),
+        ({"kind": "declarative", "schema_version": 1, "components": [], "start": ""}, "auto"),
         ({"kind": "declarative", "schema_version": 1, "components": [], "start": "auto"}, "auto"),
     ],
     ids=[
-        "module-default", "module-auto", "module-retain", "iframe-default",
-        "iframe-retain", "declarative-default", "declarative-auto",
+        "module-default", "module-none", "module-blank", "module-whitespace", "module-auto",
+        "module-auto-padded", "module-retain", "iframe-default", "iframe-none", "iframe-retain",
+        "declarative-default", "declarative-blank", "declarative-auto",
     ],
 )
 def test_validate_ui_render_fills_explicit_start_mode(render, expected_start):
+    original = copy.deepcopy(render)
     clean = validate_ui_render(render)
     assert clean["start"] == expected_start
-    # The declaration passed in is never mutated; the filled default lives in the copy.
-    assert render.get("start", expected_start) == expected_start
+    # The declaration passed in is never mutated: an omitted key stays omitted and an
+    # explicit value (even a blank one) is left exactly as the author wrote it.
+    assert render == original
+    if "start" not in original:
+        assert "start" not in render
+
+
+# A present ``start`` must be an enum string: falsy non-strings and case variants are rejected,
+# never silently defaulted (only absent / None / blank take the per-kind default).
+_BAD_START_VALUES = {
+    "zero": 0, "false": False, "list": [], "dict": {}, "int": 123, "Retain": "Retain", "always": "always",
+}
 
 
 @pytest.mark.parametrize(
@@ -602,10 +621,17 @@ def test_validate_ui_render_fills_explicit_start_mode(render, expected_start):
     [
         ({"kind": "module", "entry": "widget.js", "start": "whenever"}, "expected one of"),
         ({"kind": "iframe", "route": "view", "start": "always"}, "expected one of"),
+        *[({"kind": "module", "entry": "widget.js", "start": bad}, "expected one of") for bad in _BAD_START_VALUES.values()],
+        *[({"kind": "iframe", "route": "view", "start": bad}, "expected one of") for bad in _BAD_START_VALUES.values()],
         ({"kind": "declarative", "schema_version": 1, "components": [], "start": "manual"}, "nothing to start"),
         ({"kind": "declarative", "schema_version": 1, "components": [], "start": "retain"}, "nothing to start"),
     ],
-    ids=["module-unknown", "iframe-unknown", "declarative-manual", "declarative-retain"],
+    ids=[
+        "module-unknown", "iframe-unknown",
+        *[f"module-{name}" for name in _BAD_START_VALUES],
+        *[f"iframe-{name}" for name in _BAD_START_VALUES],
+        "declarative-manual", "declarative-retain",
+    ],
 )
 def test_validate_ui_render_rejects_bad_start_mode(render, expected):
     with pytest.raises(ExtensionRegistrationError, match=expected):

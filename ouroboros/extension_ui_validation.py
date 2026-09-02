@@ -96,9 +96,15 @@ def _validate_grid_columns(value: Any, *, path: str) -> None:
 
 
 def _validate_start_mode(render: Dict[str, Any], *, kind: str) -> None:
-    """Normalize ``render.start``: fill the per-kind default, reject unknown values."""
-    mode = _text(render.get("start"))
-    if not mode:
+    """Normalize ``render.start``: fill the per-kind default, reject unknown values.
+
+    Only an absent, ``None``, or blank ``start`` takes the default. Any other present
+    value must be one of ``WIDGET_START_MODES`` after trimming: the enum is closed, so
+    ``0``, ``False``, ``[]``, ``{}`` and ``"Retain"`` are rejected rather than defaulted.
+    """
+    raw = render.get("start")
+    mode = raw.strip() if isinstance(raw, str) else raw
+    if mode is None or mode == "":
         default = _START_MODE_DEFAULTS.get(kind)
         if default is not None:
             render["start"] = default

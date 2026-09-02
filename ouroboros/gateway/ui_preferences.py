@@ -106,6 +106,8 @@ def _normalize_preferences(
                 key = str(widget_key or "").strip()
                 if not key or len(key) > _MAX_WIDGET_KEY_LENGTH:
                     continue
+                # Trim like the validator trims ``render.start``; non-strings still fail below.
+                mode = str(mode).strip()
                 if mode not in WIDGET_START_MODES:
                     raise ValueError(
                         f"widget_start_mode values must be one of {list(WIDGET_START_MODES)}"

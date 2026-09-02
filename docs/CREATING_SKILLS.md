@@ -789,7 +789,8 @@ reachable.
 A widget card declares how it starts with `render.start`. The validator in
 `ouroboros/extension_ui_validation.py` (`WIDGET_START_MODES`) is the single
 source of truth for the allowed values and fills the default into the stored
-declaration, so every live tab carries an explicit value:
+declaration, so every framed or declarative widget tab carries an explicit value
+(a tab without a render has nothing to launch):
 
 | `start` | Behaviour | Default for |
 |---|---|---|
@@ -827,7 +828,9 @@ Rules every module author follows:
 - **Hidden pages are throttled by the browser, not by the host.** In
   Chromium-based browsers animation frames pause while the page is hidden;
   timers, audio, and bridged requests continue at the rate the browser allows.
-  The desktop app does not throttle. Keep work that must progress off
+  The macOS desktop shell (WKWebView) does not throttle hidden frames; the
+  Windows shell (WebView2) and ordinary Chromium browsers pause animation
+  frames while hidden. Keep work that must progress off
   `requestAnimationFrame`.
 - **Install and enable never start browser code.** The first visit to Widgets
   does; nothing runs at app load.
@@ -1034,7 +1037,7 @@ def register(api):
 | `EXTENSION_NOT_LIVE` on tool dispatch | The skill is disabled or the loader had a load_error — check the Skills UI. |
 | `HEAL_MODE_BLOCKED: ...` | The Repair task tried to call a tool the internal heal-mode allowlist does not permit; finish the Repair flow with `skill_review` and exit. |
 | `PluginAPI.register_*` raises `ExtensionRegistrationError` | Usually the skill is missing the matching permission in its manifest. For `register_companion_process` the name must also be alnum/underscore and declared under `companion_processes` — see "Declaring a companion process". |
-| Reviewer marks `widget_module_safety: FAIL` | `widget.js` fetches outside `/api/extensions/<skill>/`, talks to the parent through its own `postMessage` protocol, declares a `start` mode heavier than the widget needs, or keeps state only inside the frame. Move data through your own routes and save it from `__ouroWidgetOnDispose`. |
+| Reviewer marks `widget_module_safety: FAIL` | `widget.js` fetches outside `/api/extensions/<skill>/`, talks to the parent through its own `postMessage` protocol, declares a `start` mode heavier than the widget needs, or keeps state only inside the frame. Move data through your own routes and save it from `__ouroWidgetOnDispose` (autosave while running until the host's dispose acknowledgement ships). |
 
 For deeper integration questions read
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) §13 (external skills layer)

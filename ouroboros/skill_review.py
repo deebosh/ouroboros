@@ -132,8 +132,8 @@ _SKILL_REVIEW_ITEMS = (
     "env_allowlist",
     "timeout_and_output_discipline",
     "extension_namespace_discipline",
-    # Module widgets are arbitrary JS in a sandboxed iframe; review still checks
-    # for cookie/storage/cross-prefix fetch escape intent.
+    # Module widgets are arbitrary JS in an opaque-origin sandbox (storage throws there); review
+    # checks cross-prefix fetch, bespoke parent messaging, launch-policy fit, dispose-state handling.
     "widget_module_safety",
     "inject_chat_minimization",
     "event_subscription_minimization",

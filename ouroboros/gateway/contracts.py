@@ -861,6 +861,7 @@ class SkillDeleteResponse(TypedDict, total=False):
 class UiPreferencesResponse(TypedDict):
     ok: NotRequired[bool]
     widget_order: list[str]
+    widget_start_mode: dict[str, Literal["auto", "manual", "retain"]]  # owner per-card launch-policy override
     nested_subagents_expanded: bool
     sidebar_width: int  # px; 0 = CSS default (resizable side sections, v6.33.0)
     project_panel_width: int  # px; 0 = CSS default

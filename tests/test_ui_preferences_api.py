@@ -182,12 +182,13 @@ def test_ui_preferences_widget_start_mode_override(tmp_path):
             assert client.post("/api/ui/preferences", json=bad).status_code == 400, bad
         assert client.get("/api/ui/preferences").json()["widget_start_mode"] == {"game:main": "manual"}
 
-        # Blank or oversized keys are dropped; whitespace is trimmed; null clears the map.
+        # Blank or oversized keys are dropped; whitespace around keys and values is trimmed
+        # (the validator trims render.start the same way); null clears the map.
         trimmed = client.post(
             "/api/ui/preferences",
-            json={"widget_start_mode": {"": "auto", "x" * 201: "auto", " game:main ": "retain"}},
+            json={"widget_start_mode": {"": "auto", "x" * 201: "auto", " game:main ": "retain", "gauge:live": " auto "}},
         )
-        assert trimmed.json()["widget_start_mode"] == {"game:main": "retain"}
+        assert trimmed.json()["widget_start_mode"] == {"game:main": "retain", "gauge:live": "auto"}
         assert client.post("/api/ui/preferences", json={"widget_start_mode": None}).json()["widget_start_mode"] == {}
 
         # Bounded like widget_order: at most 200 entries are kept.
