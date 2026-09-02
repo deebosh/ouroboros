@@ -23,9 +23,13 @@ Contract (count-anchored both ways):
   literal row (``state/*`` is not evidence about ``state/state.json``). The
   complete set of still-unresolvable spellings is audited in
   ``UNRESOLVED_SPELLINGS`` and asserted by equality;
-- every inventory row must still name something the scan sees (no stale rows),
-  except rows for planes written outside the scanned tree (external daemon,
-  benchmark launchers);
+- every inventory row must still name something the scan sees (no stale rows).
+  This direction uses a STRICTER matcher than the forward one: a scan path
+  shorter than the row does not certify it, because the population also holds
+  bare top-level tokens (``state``, ``logs``, ``archive`` …) that would keep
+  any invented exact row alive — that is what made the check vacuous. The
+  complete set of rows admitted with no in-tree writer is
+  ``STALE_ROW_EXEMPTIONS``, asserted by equality;
 - the total number of distinct scanned paths is pinned — adding a NEW
   data-relative path fails here until PERSISTENCE.md gets its row and the pin
   moves.
@@ -75,6 +79,18 @@ SUBROOT_ALIASES = {
     # skill_state_dir[_path](drive_root, skill.name).
     "jobs/*": "state/skills/*/jobs/*",
     "jobs/*/*": "state/skills/*/jobs/*/*",
+}
+
+# The same human promise for a parameter whose NAME is the audited root, read
+# BEFORE the chain is built (so the plane is named right instead of being
+# mis-rooted and relocated afterwards). Keep it as short as the table above.
+PARAM_SUBROOTS = {
+    # sanitize_task_for_event(task, drive_logs, ...) — utils.py:1160 writes
+    # `drive_logs / "tasks" / f"task_{id}.txt"`. Every `drive_logs` in the tree
+    # is `env.drive_path("logs")` (agent.py:442/795, agent_startup_checks.py:860)
+    # or `ctx.drive_logs`/`drive_root / "logs"` (commit_gate.py:907) threaded
+    # down unchanged; nothing else binds the name.
+    "drive_logs": "logs",
 }
 
 
@@ -333,7 +349,8 @@ class _PathResolver:
             name = _call_name(base)
             return own.get(name) or self.prefixes.get(name)
         if isinstance(base, ast.Name):
-            return local.get(base.id) or own.get(base.id)
+            return (local.get(base.id) or own.get(base.id)
+                    or PARAM_SUBROOTS.get(base.id))
         if isinstance(base, ast.Attribute):
             return own.get(base.attr)
         return None
@@ -387,7 +404,8 @@ class _PathResolver:
             nodes = self.own_nodes(fn)
             yield fn, consts, nodes, self._locals(fn, consts, nodes)
         module_nodes = self.own_nodes(self.trees[path])
-        yield self.trees[path], consts, module_nodes, {}
+        yield (self.trees[path], consts, module_nodes,
+               self._locals(self.trees[path], consts, module_nodes))
 
     def _resolve_prefixes(self) -> None:
         """Fixed point over ``<function> -> <data-relative prefix>``.
@@ -482,7 +500,12 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # which surfaced ``state/reviewer_slot_api_fallback.json`` — a live durable
 # disclosure record that had no inventory row — plus nine already-documented
 # spellings under ``state/cx/`` and ``projects/*``.
-EXPECTED_SCAN_PATHS = 281
+# 281 -> 284: giving the no-stale-rows direction a matcher that actually bites
+# left three rows unbacked; two were real writers the scan simply could not
+# see, and resolving them (module-scope local flow for the stdlib rotating
+# handlers, ``PARAM_SUBROOTS`` for the oversized-task-text sink) added
+# ``logs/server.log``, ``logs/launcher.log`` and ``logs/tasks/*``.
+EXPECTED_SCAN_PATHS = 284
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -600,21 +623,33 @@ def _seg_match(scan_seg: str, pat_seg: str) -> bool:
     return pat_seg == "*" or fnmatch.fnmatchcase(scan_seg, pat_seg)
 
 
-def _match(scan: list[str], pat: list[str]) -> bool:
-    """Segment match with mutual prefix semantics and multi-segment ``**``."""
+def _match(scan: list[str], pat: list[str], scan_prefix_ok: bool = True) -> bool:
+    """Segment match with multi-segment ``**`` and directional prefix rules.
+
+    A pattern that runs out first always matches: a directory row covers its
+    children. A SCAN path that runs out first is directional. Forward
+    (``scan_prefix_ok=True``, "is this scanned path documented?") accepts it —
+    ``state`` is answered by the deeper rows under ``state/``. Backward
+    (``scan_prefix_ok=False``, "does anything still write this row?") refuses
+    it: the population contains bare top-level tokens, so accepting a shorter
+    scan path let ``state`` keep ANY invented ``state/<name>.json`` row alive
+    and the no-stale-rows direction proved nothing. A trailing ``**`` still
+    matches zero segments, so ``state/skills/**`` needs depth 2, not 3.
+    """
     if not pat:
         return True  # pattern is a prefix: a directory row covers children
     if pat[0] == "**":
-        return any(_match(scan[i:], pat[1:]) for i in range(len(scan) + 1))
+        return any(_match(scan[i:], pat[1:], scan_prefix_ok)
+                   for i in range(len(scan) + 1))
     if not scan:
-        return True  # scan path is a prefix: named by a deeper row
-    return _seg_match(scan[0], pat[0]) and _match(scan[1:], pat[1:])
+        return scan_prefix_ok  # scan path is a prefix: named by a deeper row
+    return _seg_match(scan[0], pat[0]) and _match(scan[1:], pat[1:], scan_prefix_ok)
 
 
-def _covers(scan_path: str, pattern: str) -> bool:
+def _covers(scan_path: str, pattern: str, scan_prefix_ok: bool = True) -> bool:
     scan_segs = scan_path.split("/")
     pat_segs = pattern.split("/")
-    if _match(scan_segs, pat_segs):
+    if _match(scan_segs, pat_segs, scan_prefix_ok):
         return True
     # Bare filename tokens (contain a dot, single segment) also cover a path
     # by basename — the row names the file inside its family directory. Only a
@@ -662,24 +697,73 @@ def test_every_scanned_path_has_an_inventory_row():
     )
 
 
+# Rows the backward check must NOT demand a writer for, each because the row
+# itself states there is none in this tree. Asserted by equality below, so an
+# entry that acquires a writer (or a row that quietly loses one) surfaces.
+STALE_ROW_EXEMPTIONS = frozenset({
+    # PERSISTENCE.md documents this plane as an orphan of a removed feature:
+    # "none in this tree ... nothing reads or recreates it". Confirmed by grep —
+    # the string `project_source_locks` appears in no .py file.
+    "state/project_source_locks",
+})
+
+
+def stale_rows(text: str, paths=None) -> list[str]:
+    """Inventory rows for which no scanned path reaches the row's own depth."""
+    paths = scan_data_paths() if paths is None else paths
+    return [
+        row[0] for row in doc_rows(text)
+        if not any(_covers(path, token, scan_prefix_ok=False)
+                   for token in row for path in paths)
+    ]
+
+
 def test_every_inventory_row_is_still_real():
     """No row survives without a scanned path behind it.
 
-    Resolution retired the previous exemption list: both rows that needed it
-    (the external claudexord daemon's directory, the benchmark sentinel) are
-    reached by in-tree path expressions now — Ouroboros creates and appends the
-    daemon dir, and it reads the sentinel. A plane with NO in-tree path
-    expression at all would fail here and must be exempted deliberately.
+    The backward direction drops the forward direction's scan-prefix rule: a
+    scan path SHORTER than the row must not certify it, or every exact row is
+    kept alive by the bare top-level token (``state``, ``logs``, ``skills``,
+    ``archive``, …) the scan also produces — which is what made this check
+    vacuous. ``test_a_fabricated_inventory_row_is_caught_as_stale`` is the
+    mutant that proves it bites now.
+
+    Making it bite cost two resolution facts and one exemption. The stdlib
+    rotating handlers (`logs/server.log`, `logs/launcher.log`) and the
+    oversized-task-text sink (`logs/tasks/*`) were resolved instead of
+    exempted — a real writer must be SEEN, not excused. The remaining row is
+    an orphan plane the document itself says nothing in this tree writes, and
+    it is exempted by name in ``STALE_ROW_EXEMPTIONS``.
     """
     text = DOC.read_text(encoding="utf-8")
-    paths = scan_data_paths()
-    stale = [
-        row[0] for row in doc_rows(text)
-        if not any(_covers(path, token) for token in row for path in paths)
-    ]
-    assert not stale, (
-        f"PERSISTENCE.md rows no scanned writer path matches (stale?): {stale}"
+    stale = stale_rows(text)
+    assert not set(stale) - STALE_ROW_EXEMPTIONS, (
+        "PERSISTENCE.md rows no scanned writer path matches (stale?): "
+        f"{sorted(set(stale) - STALE_ROW_EXEMPTIONS)}"
     )
+    acquired = sorted(STALE_ROW_EXEMPTIONS - set(stale))
+    assert not acquired, (
+        "these rows have an in-tree writer now — drop them from "
+        f"STALE_ROW_EXEMPTIONS: {acquired}"
+    )
+
+
+def test_a_fabricated_inventory_row_is_caught_as_stale():
+    """A row for a file nothing writes must be reported, not absorbed.
+
+    The scan population contains bare top-level tokens, and the forward
+    matcher lets a SHORTER scan path count as "named by a deeper row" — so
+    ``state`` used to certify any invented ``state/<anything>.json`` row and
+    the no-stale-rows direction proved nothing at all.
+    """
+    text = DOC.read_text(encoding="utf-8")
+    fabricated = "state/does_not_exist.json"
+    mutant = text + (
+        f"\n| `{fabricated}` | fabricated writer | none | none | none |\n"
+    )
+    assert set(stale_rows(mutant)) - STALE_ROW_EXEMPTIONS == {fabricated}
+    # ... and the honest document adds nothing beyond its audited exemption.
+    assert not set(stale_rows(text)) - STALE_ROW_EXEMPTIONS
 
 
 # --- red-first pins (stage-2 fix wave, lane persistence-inventory) ----------
