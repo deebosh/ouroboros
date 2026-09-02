@@ -352,8 +352,27 @@ export const MARKDOWN_HEADING_MAX_CHARS = 80;
 // entities (one character each). Raw text is projected the way the renderer
 // would: only MATCHED span pairs and link destinations are invisible; an unmatched
 // `*`, a literal `<okay>` or a literal `&amp;` stay visible characters.
+// `[label](url)` → label with one forward cursor: a regex retried from every
+// unmatched `[` is quadratic on hostile input, and this runs on live frames.
+function withoutLinkTargets(text) {
+    let out = ''; let i = 0;
+    for (;;) {
+        const open = text.indexOf('[', i);
+        const close = open < 0 ? -1 : text.indexOf(']', open + 1);
+        if (close < 0) break;
+        if (text[close + 1] !== '(') { out += text.slice(i, close + 1); i = close + 1; continue; }
+        const end = text.indexOf(')', close + 2);
+        if (end < 0) break;
+        out += text.slice(i, open) + text.slice(open + 1, close); i = end + 1;
+    }
+    return out + text.slice(i);
+}
+
 function visibleHeadingText(text, rendered) {
-    const linkless = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+    const linkless = withoutLinkTargets(text);
+    // Past this length no span markup can bring a line under the cap; skipping the
+    // span regexes keeps a hostile marker run from costing quadratic time.
+    if (linkless.length > 8 * MARKDOWN_HEADING_MAX_CHARS) return linkless;
     if (rendered) return linkless.replace(/<[^>]*>/g, '').replace(/&[#\w]+;/g, 'x');
     return linkless.replace(/(``|`)(.+?)\1/g, '$2').replace(/\*\*(.+?)\*\*/g, '$1').replace(/\*(.+?)\*/g, '$1').replace(/~~(.+?)~~/g, '$1');
 }
@@ -366,11 +385,12 @@ function headingOrProse(cls, text) {
     return isMarkdownHeading(text, { rendered: true }) ? `<strong class="${cls}">${text}</strong>` : text;
 }
 
-// The renderer's fence grammar (`/```(\w*)\n([\s\S]*?)```/`), line by line: a line
-// ENDING in ``` plus a word-only info string opens a fence, whatever precedes it on
-// that line, PROVIDED a later line closes it (the renderer's regex needs the closer;
-// an unclosed opener is ordinary text); the next line containing ``` closes it.
-// `md-js` opens nothing.
+// The renderer's fence grammar (`/```(\w*)\n([\s\S]*?)```/`), line by line on the
+// ORIGINAL lines: a line ending in ``` plus a word-only info string right before
+// the newline opens a fence, whatever precedes it — trailing blanks or a CR make it
+// ordinary text, exactly as for the renderer — PROVIDED a later line closes it (the
+// renderer's regex needs the closer; an unclosed opener is ordinary text); the next
+// line containing ``` closes it. `md-js` opens nothing.
 const FENCE_OPEN = /```\w*$/;
 const FENCE_CLOSE = /```/;
 
@@ -385,26 +405,28 @@ const FENCE_CLOSE = /```/;
  * text with a lazy or trailing-blank tail is quadratic on long whitespace runs.
  */
 export function joinMarkdownHeadings(text) {
-    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n').map((line) => line.trimEnd());
-    // Next non-blank line and "a closer exists below" for every line: one backward
-    // pass each, no per-heading rescans.
-    const nextText = new Array(lines.length);
-    const closerBelow = new Array(lines.length);
-    for (let i = lines.length - 1, carry = '', closer = false; i >= 0; i -= 1) {
-        nextText[i] = carry; closerBelow[i] = closer;
-        if (lines[i].trim()) carry = lines[i];
-        if (FENCE_CLOSE.test(lines[i])) closer = true;
+    const raw = String(text || '').split('\n');
+    const lines = raw.map((line) => line.trimEnd());
+    // Index of the next non-blank line and "a closer exists below" for every line:
+    // one backward pass, no per-heading rescans. Fence tests read the ORIGINAL line.
+    const nextIndex = new Array(raw.length);
+    const closerBelow = new Array(raw.length);
+    for (let i = raw.length - 1, carry = -1, closer = false; i >= 0; i -= 1) {
+        nextIndex[i] = carry; closerBelow[i] = closer;
+        if (lines[i].trim()) carry = i;
+        if (FENCE_CLOSE.test(raw[i])) closer = true;
     }
+    const opensFence = (i) => i >= 0 && FENCE_OPEN.test(raw[i]) && closerBelow[i];
     let fenced = false;
     return lines.map((line, index) => {
-        if (fenced) { if (FENCE_CLOSE.test(line)) fenced = false; return line; }
-        if (FENCE_OPEN.test(line) && closerBelow[index]) { fenced = true; return line; }
+        if (fenced) { if (FENCE_CLOSE.test(raw[index])) fenced = false; return line; }
+        if (opensFence(index)) { fenced = true; return line; }
         const heading = /^#{1,6} (.*\S)$/.exec(line);
         if (!heading) return line;
-        const next = nextText[index];
+        const next = nextIndex[index];
         // A visibly dash- or colon-terminated heading (`**Steps:**` included) needs no second separator.
         const visible = visibleHeadingText(heading[1], false);
-        const separate = next && !FENCE_OPEN.test(next) && visible.length <= MARKDOWN_HEADING_MAX_CHARS && !/[—–\-:]$/.test(visible);
+        const separate = next >= 0 && !opensFence(next) && visible.length <= MARKDOWN_HEADING_MAX_CHARS && !/[—–\-:]$/.test(visible);
         return heading[1] + (separate ? ' —' : '');
     }).join('\n');
 }

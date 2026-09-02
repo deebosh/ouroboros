@@ -205,6 +205,9 @@ test('the collapsed activity line is plain text: the renderer\'s markdown invent
     // A fenced `##` line — with text inside and after the fence — stays code on the
     // live path too: markers kept, no separator (the fence itself collapses to the
     // renderer's code-span remnant, which is not this rule's contract).
+    // A heading right before an UNCLOSED opener is followed by text (the opener is text).
+    const before = summarizeChatLiveEvent({ is_progress: true, content: '## Title\n```md\nmore', task_id: 'p5', chat_id: 1 });
+    assert.equal(boundActivityPreview(before.headline), 'Title — `md more');
     for (const content of ['```md\n## code\n```\nafter', '```md\n## not a heading\nnext\n```', '   ```md\n## code\n```\nafter', '  ```md\n## code\n  ```\nafter', 'prefix ```md\n## code\n```\nafter']) {
         const fenced = summarizeChatLiveEvent({ is_progress: true, content, task_id: 'p2', chat_id: 1 });
         for (const text of [fenced.headline, boundActivityPreview(fenced.headline), plainActivityText(content)]) {
