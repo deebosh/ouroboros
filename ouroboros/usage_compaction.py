@@ -292,7 +292,7 @@ def _swap_ledger_fsync(
 ) -> None:
     """Atomically replace the live ledger with the verified candidate bytes.
 
-    Two proofs run immediately BEFORE the rename — after the temp bytes are
+    The proofs run immediately BEFORE the rename — after the temp bytes are
     durable, at the last instant the replace can still be refused, because
     writing and fsyncing the candidate temp can take arbitrarily long and any
     proof taken before the swap began is stale by the rename. Ownership FIRST
@@ -300,14 +300,19 @@ def _swap_ledger_fsync(
     was written — a snapshot answered while robbed is a meaningless answer),
     THEN the live file must still be the snapshot ``raw`` this candidate
     folded: the recheck-to-replace gap is where an append under a broken lock
-    would be silently erased, so the last look happens inside the swap itself.
-    AFTER it, the pass re-reads what landed: the receipt describes bytes that
-    are actually AT the path, so a rename that reported success without
-    landing (or was immediately written over) is never logged as a compaction.
+    would be silently erased, so the last look happens inside the swap itself
+    — and ownership is proven AGAIN after that look, so the only interval
+    left between the last proof and the rename is the syscall, not the
+    milliseconds of a full-file compare. AFTER the rename the pass re-reads
+    what landed: the receipt describes bytes that are actually AT the path,
+    so a rename that reported success without landing (or was immediately
+    written over) is never logged as a compaction.
     """
     def owned_and_intact() -> bool:
         beat()  # raises _Abort on a lost hold; the temp is cleaned up en route
-        return _snapshot_intact(path, raw)
+        intact = _snapshot_intact(path, raw)
+        beat()  # and once more AFTER the look: the rename is the next syscall
+        return intact
 
     if not _write_bytes_atomic_fsync(path, payload, precondition=owned_and_intact):
         raise _Abort("ledger changed between the re-check and the replace")

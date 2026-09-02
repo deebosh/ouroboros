@@ -710,6 +710,36 @@ def test_a_hold_lost_after_the_recheck_aborts_before_the_swap(data_root, monkeyp
         assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
     assert ledger_path.read_bytes() == before  # no swap: byte-identical
     assert not any(row.get("kind") == "usage_baseline" for row in _ledger_rows(data_root))
+    assert len(looks) == 2  # the in-swap look is never asked once the hold is gone
+
+
+def test_a_hold_lost_after_the_last_snapshot_look_refuses_the_rename(data_root, monkeypatch):
+    """The in-swap look is not the last proof: ownership is proven again AFTER
+    it answered, immediately before the rename, so the only interval a robbery
+    can slip through is the rename syscall itself — not the milliseconds of a
+    full-file compare. A hold lost the moment that look answered True, the new
+    holder's charge landing right behind it, refuses the replace."""
+    _seed_mixed_ledger(data_root)
+    before_money = _decimal_money(_ledger_rows(data_root))
+    ledger_path = data_root / ua.LEDGER_REL
+    injected: dict = {}
+    looks = _snapshot_looks(monkeypatch)
+
+    def heartbeat():
+        if len(looks) < 3:
+            return True
+        if not injected:  # lands after the last look answered, before the rename
+            injected.update(_append_raw_row(data_root, _raced_row("sess-after-last-look")))
+        return False
+
+    with ua._locked(data_root):
+        assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
+    rows = _ledger_rows(data_root)
+    assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
+    assert not any(row.get("kind") == "usage_baseline" for row in rows)
+    _validate_records(rows)
+    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
+    assert _decimal_money(rows) == (before_money[0] + Decimal("0.25"), before_money[1])
 
 
 def test_a_hold_lost_while_the_temp_is_written_refuses_the_replace(data_root):
