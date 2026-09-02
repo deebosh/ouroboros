@@ -134,11 +134,15 @@ class _Abort(Exception):
 # friends): there the monetary lock is a name protocol only — exclusion the
 # pass cannot prove — so it declines to rewrite the authority at all. Appends
 # still land under that name protocol (disclosed best effort); the ledger
-# simply stays uncompacted and the 20 MB tripwire names the case.
+# simply stays uncompacted. The refusal is durable as well as logged: ONE
+# ``usage_ledger_compaction_refused`` event per process per data root (the
+# growth guard throttles the log line, not the fact), so an operator and the
+# 20 MB tripwire can tell this tier apart from "nothing foldable".
 NAME_TIER_REFUSAL = (
     "monetary lock is on the name tier (no kernel file locks under state/): "
     "compaction refused; appends continue under the name protocol, the ledger stays uncompacted"
 )
+_NAME_TIER_REFUSED: set = set()  # data roots whose refusal event this process already wrote
 
 
 def _fsync_dir(path: pathlib.Path) -> None:
@@ -685,6 +689,15 @@ def compact_usage_ledger_locked(
     root = pathlib.Path(_drive_root(root))
     if not kernel_file_locks_enforced(root / LOCK_REL):
         log.warning("usage-ledger compaction refused: %s", NAME_TIER_REFUSAL)
+        if str(root) not in _NAME_TIER_REFUSED:
+            _NAME_TIER_REFUSED.add(str(root))
+            try:
+                append_jsonl(root / "logs" / "events.jsonl", {
+                    "type": "usage_ledger_compaction_refused", "ts": utc_now_iso(),
+                    "reason": "name_tier", "lock_dir": str((root / LOCK_REL).parent),
+                })
+            except Exception:
+                log.exception("Failed to emit usage_ledger_compaction_refused event")
         return None
     ledger_path = root / LEDGER_REL
     records = _read_records_locked(root)  # owns quarantine of a torn tail

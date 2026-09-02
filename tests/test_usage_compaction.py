@@ -775,7 +775,9 @@ def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, mon
     """Where the lock directory takes no kernel locks the monetary lock is a
     name protocol only — exclusion the pass cannot prove — so compaction
     refuses with a disclosed reason and the ledger stays byte-identical, while
-    appends keep working under the name protocol (disclosed best effort)."""
+    appends keep working under the name protocol (disclosed best effort). The
+    refusal is durable and typed — ONE usage_ledger_compaction_refused event
+    per process per data root — and the 20 MB tripwire names the tier."""
     _seed_mixed_ledger(data_root)
     ledger_path = data_root / ua.LEDGER_REL
     before = ledger_path.read_bytes()
@@ -793,6 +795,15 @@ def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, mon
     rows = _ledger_rows(data_root)
     assert not any(row.get("kind") == "usage_baseline" for row in rows)
     assert len(rows) == len(before.splitlines()) + 3  # reserved, dispatched, settled
+    # Two refusals in this process, ONE durable typed row: an operator (and the
+    # 20 MB tripwire) can tell the tier apart from "nothing foldable".
+    events = (data_root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    refused = [row for row in map(json.loads, events) if row.get("type") == "usage_ledger_compaction_refused"]
+    assert [row["reason"] for row in refused] == ["name_tier"]
+    from ouroboros.agent_startup_checks import _hot_store_thresholds
+
+    ledger_note = next(note for rel, _, note in _hot_store_thresholds() if rel == "state/usage_attempts.jsonl")
+    assert "name tier" in ledger_note and "usage_ledger_compaction_refused" in ledger_note
 
 
 # --- 5: CPL-5 join surface ---------------------------------------------------
