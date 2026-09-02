@@ -87,9 +87,12 @@ def test_confirm_dialog_backdrop_stacks_above_every_overlay() -> None:
     """Dialogs must render OVER the reconnect shade — not under it, visible
     through the tint but unclickable (issue #146). Static pin of the layer
     order; the cross-element stack is decided by z-index alone because both
-    are body-level siblings. (The former .update-dialog-overlay was retired
-    by the Updates-tab redesign; the reconnect shade is the one full-screen
-    overlay left at the 1000 layer.)"""
+    are body-level siblings. The dialog backdrop also carries
+    .marketplace-modal-backdrop, whose z-index 90 reaches it through a
+    :where() selector of specificity 0, so .confirm-dialog-backdrop wins that
+    inherited default on specificity and not merely on source order. (The
+    former .update-dialog-overlay was retired by the Updates-tab redesign; the
+    reconnect shade is the one full-screen overlay left at the 1000 layer.)"""
     css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")
 
     def effective_z(selector_re: str) -> int:
