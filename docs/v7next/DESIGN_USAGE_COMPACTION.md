@@ -605,7 +605,10 @@ only the new row kinds' validation), the one-way seam
 know the aggregation semantics — lives beside the aggregation, not inside the
 byte authority.
 
-## 12. Invariants (pinned by tests/test_usage_compaction.py)
+## 12. Invariants (pinned by tests/test_usage_compaction.py — the pass side,
+invariants 1-4, 6, 7, 9, 10 — and tests/test_usage_compaction_archive.py —
+the archive reader, invariants 5 and 8; shared fixtures in
+tests/fixtures_usage_compaction.py)
 
 1. **Byte-exact money**: decimal sums of `cost_usd` /
    `reservation_upper_bound_usd` over finals are identical before/after; the

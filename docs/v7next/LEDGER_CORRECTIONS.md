@@ -8885,3 +8885,66 @@ concurrency tests stayed red on every name-tier leg — see «From the Windows C
    (OUROBOROS_V7_SPEC_v72.md, «Human artifacts», ~:947-950) are WITHDRAWN from the 7.0 acceptance by
    the owner's decision; what stands in for them: the hook inventory (`docs/v7next/*INVENTORY*`, the
    validator's AST-resolved nodeids) and the owner's manual test of the packaged pre-release.
+
+## From the compaction test split lane (owner 11 = A)
+
+`tests/test_usage_compaction.py` stood at exactly 1600 lines — the hard cap —
+so the next monetary-accounting pin had nowhere to land. Owner batch №13 item
+11 = A: split it at its natural boundary rather than raise the cap.
+
+1. **The boundary: archive reader ↔ compaction pass.** The pass side stays in
+   `tests/test_usage_compaction.py` — invariants 1+4 (monetary exactness and
+   budget equality), 2 (in-flight rows never fold), 3 (crash-safety), 1b (the
+   lock the pass runs under, including the swap-window pins), 6 (idempotent
+   kinds) and 7 (trigger policy). The reader side moved to the new
+   `tests/test_usage_compaction_archive.py` — invariant 5 (the CPL-5 join
+   surface: chained compactions, segment hashes and the cache window, epoch
+   anchors, orphan-vs-rollback, the archive symlink bounds, typed corruption
+   for what the reader cannot inspect) and invariant 8 (structural validation
+   of the compacted ledger, judged by what the tests exercise — every one of
+   them drives `_validate_records` over baseline blocks, i.e. reads a
+   compacted ledger rather than running a pass).
+2. **Shared fixtures, conftest-free.** `tests/fixtures_usage_compaction.py`
+   follows the existing `tests/fixtures_*.py` convention
+   (`tests/fixtures_e2e_cancellation.py`): it holds `data_root_any_tier`,
+   `data_root` (which still skips on Windows, byte-identical), `compacted`,
+   and the helpers both modules need (`_request`, `_ledger_lines`,
+   `_ledger_rows`, `_settle`, `_seed_mixed_ledger`, `_compact`,
+   `_append_raw_row`, `_raced_row`). Module-local helpers stayed local:
+   `_decimal_money`, `_lock_path`, `_charge_survived`, `_snapshot_looks`,
+   `_projection_snapshot` on the pass side; `_rewrite_header`,
+   `_rewrite_segment_in_place`, `_SOURCE_PROVENANCE_KEYS`, `_embedded_header`
+   on the reader side. The three fixtures are re-exported through the module
+   object (`data_root = _fixtures.data_root`) rather than imported by name: a
+   test's `data_root` PARAMETER shadows a bare import of that name and F811
+   fires on every such test, and `pytest_plugins` would have cost the fixture
+   module its assertion rewriting (`PytestAssertRewriteWarning`).
+3. **No behaviour change.** No test dropped, no test edited: the two files
+   collect the SAME 64 node ids as the old single file at `72bb4949` (diffed
+   name-by-name, not just counted). The four tier-agnostic tests keep running
+   on Windows through `data_root_any_tier` —
+   `test_the_pass_refuses_on_the_name_tier_while_appends_continue` and
+   `test_every_ledger_writer_refuses_when_the_lock_cannot_be_taken` on the
+   pass side, `test_baseline_rows_are_rejected_outside_the_leading_block` and
+   `test_group_rows_require_a_leading_header` on the reader side.
+4. **Counts.** Before: `tests/test_usage_compaction.py` 1600/1600, 64 items.
+   After: `tests/test_usage_compaction.py` 900, `tests/test_usage_compaction_archive.py`
+   660, `tests/fixtures_usage_compaction.py` 123 — 64 items, ~700 lines of cap
+   headroom for the next pin, and no new size-ratchet band entry needed (the
+   manifest names none of these files; `regenerate_size_ratchet.py --check`
+   is green unregenerated).
+5. **Hooks repointed.** `ADOPTION_v7next.md` CPL-4 verification column now
+   names all three files with what each holds (no reference in the tree was a
+   `::<nodeid>` — the AST resolver in `scripts/v7next_adoption.py` sees only
+   file paths here, and both it and `--release` stay green).
+   `docs/v7next/DESIGN_USAGE_COMPACTION.md` §12 heading names both suites and
+   which invariants each pins. The `C6_REVIEW_PACKET.md` close-out size line
+   said the owner decision was "still owed" — it records the answer and the
+   post-split sizes instead. The append-only round records in this ledger and
+   in the packet describe the file as it was and are left as written.
+
+Gates: `tests/test_usage_compaction.py` + `tests/test_usage_compaction_archive.py`
++ `tests/test_v7next_adoption.py` + `tests/test_docs_sync.py` rc 0 (103 passed);
+`--collect-only` node-id sets identical before/after (64 = 64);
+`ruff check . --select F` rc 0; `scripts/v7next_adoption.py` rc 0 and
+`--release` rc 0; `scripts/regenerate_size_ratchet.py --check` rc 0.
