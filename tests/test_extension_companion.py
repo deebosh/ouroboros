@@ -388,7 +388,7 @@ def test_unload_completing_between_snapshot_and_publication_refuses_recovery(
         )
         token_bytes = token_path.read_bytes()
 
-        real_state_path = extension_loader.skill_state_path
+        real_state_path = extension_loader.skill_state_dir_path
 
         def _unload_wins_the_race(drive_root_arg, skill_name_arg):
             # Deterministic interleave: the concurrent unload COMPLETES after
@@ -396,7 +396,7 @@ def test_unload_completing_between_snapshot_and_publication_refuses_recovery(
             extension_loader.unload_extension(skill_name_arg)
             return real_state_path(drive_root_arg, skill_name_arg)
 
-        monkeypatch.setattr(extension_loader, "skill_state_path", _unload_wins_the_race)
+        monkeypatch.setattr(extension_loader, "skill_state_dir_path", _unload_wins_the_race)
         result = extension_loader.ensure_companions_running(
             loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
         )
@@ -444,21 +444,21 @@ def test_recovery_publication_refuses_on_generation_mismatch_without_effects(
         )
         token_bytes = token_path.read_bytes()
 
-        real_state_path = extension_loader.skill_state_path
+        real_state_path = extension_loader.skill_state_dir_path
 
         def _reload_wins_the_race(drive_root_arg, skill_name_arg):
             # Deterministic interleave: the unload/reload COMPLETES after
             # recovery snapshotted the generation and before it publishes;
             # the bundle EXISTS again, under a fresh generation. Restore the
             # real resolver first — the reload itself resolves state dirs.
-            monkeypatch.setattr(extension_loader, "skill_state_path", real_state_path)
+            monkeypatch.setattr(extension_loader, "skill_state_dir_path", real_state_path)
             extension_loader.unload_extension(skill_name_arg)
             assert extension_loader.load_extension(
                 loaded, lambda: {}, drive_root=drive_root_arg, skills=[loaded],
             ) is None
             return real_state_path(drive_root_arg, skill_name_arg)
 
-        monkeypatch.setattr(extension_loader, "skill_state_path", _reload_wins_the_race)
+        monkeypatch.setattr(extension_loader, "skill_state_dir_path", _reload_wins_the_race)
         result = extension_loader.ensure_companions_running(
             loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
         )
@@ -509,7 +509,7 @@ def test_stale_recovery_does_not_break_live_publication_authorization(
         (repo_root_v2 / loaded_v1.name / "scripts" / "daemon.py").write_text(
             "print('v2')\n", encoding="utf-8"
         )
-        real_state_path = extension_loader.skill_state_path
+        real_state_path = extension_loader.skill_state_dir_path
         g2_token_bytes: dict = {}
 
         def _reload_v2_wins_the_race(drive_root_arg, skill_name_arg):
@@ -517,7 +517,7 @@ def test_stale_recovery_does_not_break_live_publication_authorization(
             # recovery snapshotted generation/payload and before it publishes;
             # the G2 token is bound to the NEW root's content hash while the
             # stale recovery still holds the v1 snapshot at the old root.
-            monkeypatch.setattr(extension_loader, "skill_state_path", real_state_path)
+            monkeypatch.setattr(extension_loader, "skill_state_dir_path", real_state_path)
             extension_loader.unload_extension(skill_name_arg)
             loaded_v2 = find_skill(
                 drive_root, skill_name_arg, repo_path=str(repo_root_v2),
@@ -537,7 +537,7 @@ def test_stale_recovery_does_not_break_live_publication_authorization(
             g2_token_bytes["value"] = token_path.read_bytes()
             return real_state_path(drive_root_arg, skill_name_arg)
 
-        monkeypatch.setattr(extension_loader, "skill_state_path", _reload_v2_wins_the_race)
+        monkeypatch.setattr(extension_loader, "skill_state_dir_path", _reload_v2_wins_the_race)
         result = extension_loader.ensure_companions_running(
             loaded_v1.name, drive_root, lambda: {}, repo_path=str(repo_root),
             selected_skill=loaded_v1,  # the stale v1 snapshot the recovery holds
@@ -651,7 +651,7 @@ def test_stale_recovery_with_env_from_settings_has_zero_filesystem_effects(
         assert env["EXT_OVERLAY"] == "from-manifest"
         assert str(site_dir.resolve()) in (env.get("PYTHONPATH") or "")
 
-        real_state_path = extension_loader.skill_state_path
+        real_state_path = extension_loader.skill_state_dir_path
         snapshot: dict = {}
 
         def _unload_wins_and_snapshots(drive_root_arg, skill_name_arg):
@@ -664,7 +664,7 @@ def test_stale_recovery_with_env_from_settings_has_zero_filesystem_effects(
             assert not lock_path.exists()
             return real_state_path(drive_root_arg, skill_name_arg)
 
-        monkeypatch.setattr(extension_loader, "skill_state_path", _unload_wins_and_snapshots)
+        monkeypatch.setattr(extension_loader, "skill_state_dir_path", _unload_wins_and_snapshots)
         result = extension_loader.ensure_companions_running(
             loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
         )
@@ -699,7 +699,7 @@ def test_transient_hash_error_never_rotates_a_valid_token(
             loaded, lambda: {}, drive_root=drive_root, skills=[loaded],
         ) is None
         env_token = fake.started[0].env["HOST_SERVICE_TOKEN"]
-        state_dir = extension_loader.skill_state_path(drive_root, loaded.name)
+        state_dir = extension_loader.skill_state_dir_path(drive_root, loaded.name)
         token_path = state_dir / host_service.AUTH_TOKEN_FILENAME
         before = token_path.read_bytes()
 
@@ -813,11 +813,10 @@ def _node_companion_api(tmp_path: pathlib.Path, monkeypatch, *, runtime: str, co
 
 def _staged_companion_env(api: PluginAPIImpl) -> tuple:
     """The staged descriptor plus its env AFTER the post-fence materialization
-    (the campaign structure defers env to `materialize_companion_env`)."""
-    from ouroboros.extension_child_catalog import materialize_companion_env
+    (the campaign structure defers env to `PluginAPIImpl._companion_env`)."""
 
     spawn = api._staged.companion_spawns[0]
-    materialize_companion_env(api, spawn.descriptor, spawn.spec, "test-token")
+    spawn.descriptor.env.update(api._companion_env(spawn.spec, "test-token"))
     return spawn.descriptor, spawn.descriptor.env
 
 
@@ -827,13 +826,13 @@ def test_companion_node_command_rewritten_via_policy_helper(tmp_path: pathlib.Pa
     emergency, so the child env stays byte-identical."""
     import os
 
-    from ouroboros import platform_layer
+    from ouroboros import node_runtime
 
     selected = str(tmp_path / "bundle" / "bin" / "node")
     monkeypatch.setattr(
-        platform_layer, "select_skill_node_runtime", lambda timeout_sec=10: (selected, "bundled")
+        node_runtime, "select_skill_node_runtime", lambda timeout_sec=10: (selected, "bundled")
     )
-    monkeypatch.setattr(platform_layer, "skill_node_emergency_path_dir", lambda timeout_sec=10: "")
+    monkeypatch.setattr(node_runtime, "skill_node_emergency_path_dir", lambda timeout_sec=10: "")
     api = _node_companion_api(tmp_path, monkeypatch, runtime="node", command=["node", "server.js"])
 
     api.register_companion_process("daemon")
@@ -849,16 +848,16 @@ def test_companion_npm_not_rewritten_but_emergency_path_prepended(tmp_path: path
     `#!/usr/bin/env node` shebang finds the working runtime."""
     import os
 
-    from ouroboros import platform_layer
+    from ouroboros import node_runtime
 
     bundle_bin = str(tmp_path / "bundle" / "bin")
     monkeypatch.setattr(
-        platform_layer,
+        node_runtime,
         "select_skill_node_runtime",
         lambda timeout_sec=10: (str(pathlib.Path(bundle_bin) / "node"), "bundled"),
     )
     monkeypatch.setattr(
-        platform_layer, "skill_node_emergency_path_dir", lambda timeout_sec=10: bundle_bin
+        node_runtime, "skill_node_emergency_path_dir", lambda timeout_sec=10: bundle_bin
     )
     api = _node_companion_api(tmp_path, monkeypatch, runtime="npm", command=["npm", "run", "start"])
 
@@ -874,14 +873,14 @@ def test_companion_node_unusable_leaves_command_and_env_untouched(tmp_path: path
     """Nothing usable -> honest failure at spawn time, no rewrite, no env edit."""
     import os
 
-    from ouroboros import platform_layer
+    from ouroboros import node_runtime
 
     monkeypatch.setattr(
-        platform_layer,
+        node_runtime,
         "select_skill_node_runtime",
         lambda timeout_sec=10: ("", "bundled:absent; path:broken:signal:SIGKILL"),
     )
-    monkeypatch.setattr(platform_layer, "skill_node_emergency_path_dir", lambda timeout_sec=10: "")
+    monkeypatch.setattr(node_runtime, "skill_node_emergency_path_dir", lambda timeout_sec=10: "")
     api = _node_companion_api(tmp_path, monkeypatch, runtime="node", command=["node", "server.js"])
 
     api.register_companion_process("daemon")

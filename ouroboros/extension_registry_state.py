@@ -100,9 +100,9 @@ class _StagedRegistrations:
     subscriptions — attaches only at publication, after the definitive
     unload/conflict validation AND after the snapshot swap (so a handler is
     visible to the bus only for an already-published extension); an aborted
-    registration leaves zero residue, and a post-swap attach failure is
-    disposed through the standard unload path. The disposers list is
-    loader-internal and never exposed through the PluginAPI ABI.
+    registration leaves zero residue — staging is purely computational, so
+    there is nothing to dispose — and a post-swap attach failure is disposed
+    through the standard unload path.
     """
 
     tools: Dict[str, Any] = field(default_factory=dict)
@@ -115,7 +115,6 @@ class _StagedRegistrations:
     companion_names: List[str] = field(default_factory=list)
     supervised_tasks: List[_StagedSupervisedTask] = field(default_factory=list)
     companion_spawns: List[_StagedCompanionSpawn] = field(default_factory=list)
-    disposers: List[Callable[[], Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -157,6 +156,24 @@ _ws_handlers: Dict[str, Any] = {}      # {"ext_<len>_<token>_<message_type>": ha
 _ui_tabs: Dict[str, Any] = {}          # {"<skill>:<tab_id>": tab_spec}
 # Declarative settings sections keyed like UI tabs.
 _settings_sections: Dict[str, Any] = {}
+
+# The five surface kinds, each naming the field that carries it on a staged
+# snapshot AND on a published bundle, its live registry, and the word used in
+# refusals. Every walk over "all surfaces" — conflict detection, the atomic
+# swap, the child-catalog staging — reads this, so a sixth kind cannot be
+# added to some walks and forgotten by others.
+SURFACE_KINDS: Sequence[tuple[str, Dict[str, Any], str]] = (
+    ("tools", _tools, "tool"),
+    ("routes", _routes, "route"),
+    ("ws_handlers", _ws_handlers, "ws handler"),
+    ("ui_tabs", _ui_tabs, "ui tab"),
+    ("settings_sections", _settings_sections, "settings section"),
+)
+
+# Dispatch surfaces: a physical call arrives on these, so each descriptor is
+# stamped with the publication that owns it. UI kinds are read as a snapshot
+# and carry no per-surface provenance.
+DISPATCH_SURFACE_KINDS = frozenset({"tools", "routes", "ws_handlers"})
 
 
 def _lifecycle_lock_for(skill_name: str) -> threading.RLock:

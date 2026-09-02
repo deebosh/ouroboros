@@ -438,11 +438,36 @@ class ExtensionRegistrationError(Exception):
     """Raised when a registration violates namespace, permission, or schema."""
 
 
+def normalize_extension_route_methods(methods: Any, *, subject: str) -> tuple[str, ...]:
+    """One route declaration's HTTP methods, normalized against the vocabulary.
+
+    Used by the in-process ``register_route`` AND by the host-side re-check of
+    a child catalog's route descriptors, so the vocabulary cannot admit
+    out-of-process what it refuses in-process. A bare string is a single
+    method; case and surrounding space are normalized, order is preserved and
+    duplicates collapse. ``subject`` names the route in the refusal.
+    """
+    declared = (methods,) if isinstance(methods, str) else (methods or ())
+    normalized = tuple(dict.fromkeys(
+        str(method).strip().upper() for method in declared if str(method).strip()
+    ))
+    if not normalized:
+        raise ExtensionRegistrationError(f"{subject} methods must be non-empty")
+    unsupported = [m for m in normalized if m not in VALID_EXTENSION_ROUTE_METHODS]
+    if unsupported:
+        raise ExtensionRegistrationError(
+            f"{subject} methods {unsupported!r} are unsupported; "
+            f"expected subset of {sorted(VALID_EXTENSION_ROUTE_METHODS)}"
+        )
+    return normalized
+
+
 __all__ = [
     "PluginAPI", "ExtensionRegistrationError", "FORBIDDEN_SKILL_SETTINGS",
     "PLUGIN_API_VERSION", "LEGACY_PLUGIN_API_GENERATION",
     "PLUGIN_API_SURFACE_FINGERPRINTS", "PluginAPINegotiation", "RuntimeInfo",
     "VALID_EXTENSION_PERMISSIONS", "VALID_EXTENSION_ROUTE_METHODS",
+    "normalize_extension_route_methods",
     "ExecutionMode", "MATRIX_CAPABILITIES", "ALWAYS_AVAILABLE_CAPABILITIES",
     "OUT_OF_PROCESS_UNAVAILABLE_CAPABILITIES",
     "api_generation", "capability_available", "available_capabilities",

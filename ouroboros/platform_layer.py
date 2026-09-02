@@ -1459,7 +1459,10 @@ _NODE_RUNTIME_REEXPORTS = (
     "NodeRuntimeHealth",
     "node_runtime_health",
     "probe_node_version",
+    "prepend_skill_node_emergency_path",
     "select_skill_node_runtime",
+    "skill_manifest_owns_path",
+    "skill_node_argv",
     "skill_node_emergency_path_dir",
 )
 

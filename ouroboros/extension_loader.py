@@ -54,7 +54,6 @@ from ouroboros.extension_isolated_deps import _isolated_python_site_dirs, async_
 from ouroboros.extension_child_catalog import (
     _out_of_process_handler_proxy,  # noqa: F401
     _stage_out_of_process_surfaces,
-    skill_state_path,
     _validate_child_catalog_namespace,  # noqa: F401
     _validate_child_route_descriptor,  # noqa: F401
     _validate_child_settings_descriptor,  # noqa: F401
@@ -128,7 +127,7 @@ from ouroboros.extension_surface_names import (
     extension_surface_name,  # noqa: F401
     parse_extension_surface_name,  # noqa: F401
 )
-from ouroboros.skill_loader import _SKILL_DIR_CACHE_NAMES, _sanitize_skill_name, LoadedSkill, SkillPayloadUnreadable, compute_content_hash, discover_skills, find_skill, grant_status_for_skill, requested_core_setting_keys, skill_conflict_status, skill_review_gate, skill_state_dir  # noqa: F401
+from ouroboros.skill_loader import _SKILL_DIR_CACHE_NAMES, _sanitize_skill_name, LoadedSkill, SkillPayloadUnreadable, compute_content_hash, discover_skills, find_skill, grant_status_for_skill, requested_core_setting_keys, skill_conflict_status, skill_review_gate, skill_state_dir, skill_state_dir_path  # noqa: F401
 from ouroboros.skill_token import SkillToken  # noqa: F401
 from ouroboros.tools.skill_exec import _scrub_env  # noqa: F401
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso  # noqa: F401
@@ -475,7 +474,7 @@ def ensure_companions_running(
         }
 
     # Fix-round-6: resolved WITHOUT mkdir — the post-fence attach creates it.
-    state_dir = skill_state_path(drive_root, skill.name)
+    state_dir = skill_state_dir_path(drive_root, skill.name)
     # ABI-9 generation-bound recovery: publish under the lifecycle lock; the
     # seam re-validates that the publication observed above is still live —
     # an unload/reload completing since the snapshot is a typed refusal with

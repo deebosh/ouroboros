@@ -17,7 +17,7 @@ import os
 import pathlib
 import shutil
 import subprocess
-from typing import Dict, List, NamedTuple, Tuple
+from typing import Any, Dict, List, NamedTuple, Tuple
 
 from ouroboros import platform_layer as _platform
 
@@ -224,3 +224,48 @@ def skill_node_emergency_path_dir(timeout_sec: float = 10) -> str:
     if _path_node_runtime_health(timeout_sec=timeout_sec).healthy:
         return ""
     return str(pathlib.Path(selected).parent)
+
+
+def prepend_skill_node_emergency_path(env: Dict[str, str], *, fallback_path: str = "") -> None:
+    """Front-load a skill-family child's PATH with the emergency node dir.
+
+    The APPLYING half of ``skill_node_emergency_path_dir``: on a healthy PATH
+    there is no emergency, ``env`` is left untouched and the child environment
+    stays byte-identical. Shared by the isolated-dep installer env and the
+    extension companion spawn env so the two cannot drift on which node an
+    `#!/usr/bin/env node` shebang resolves. ``fallback_path`` is the PATH the
+    child would otherwise inherit, for an ``env`` carrying none of its own.
+    """
+    prepend_dir = skill_node_emergency_path_dir()
+    if not prepend_dir:
+        return
+    existing = env.get("PATH") or fallback_path
+    env["PATH"] = os.pathsep.join([prepend_dir, existing]) if existing else prepend_dir
+
+
+def skill_manifest_owns_path(spec: Dict[str, Any]) -> bool:
+    """Whether a skill's manifest declares its own PATH for a child process.
+
+    An explicit manifest PATH means the author owns the runtime lookup, so
+    neither the bundled argv rewrite below nor the emergency prepend above may
+    shadow it (T14).
+    """
+    return any(str(key).upper() == "PATH" for key in (spec.get("env") or {}))
+
+
+def skill_node_argv(spec: Dict[str, Any], declared_runtime: str, argv: List[str]) -> List[str]:
+    """A node-family child's argv, rewritten onto the selected node runtime.
+
+    T14 symmetry with the python -> ``sys.executable`` rewrite: python skills
+    and companions already run on the embedded interpreter, so a node one runs
+    on the runtime ``select_skill_node_runtime`` picked (bundled-first, health
+    rollback included). ``npm`` is never rewritten — its launcher resolves node
+    through a ``#!/usr/bin/env node`` shebang, which the emergency PATH prepend
+    covers instead. On a healthy PATH argv stays byte-identical.
+    """
+    if declared_runtime not in {"node", "npm"} or skill_manifest_owns_path(spec):
+        return argv
+    selected, _provenance = select_skill_node_runtime()
+    if selected and argv and argv[0] == "node":
+        return [selected, *argv[1:]]
+    return argv

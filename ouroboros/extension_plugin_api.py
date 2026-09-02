@@ -31,18 +31,19 @@ from ouroboros.contracts.plugin_api import (
     LEGACY_PLUGIN_API_GENERATION,
     RuntimeInfo,
     VALID_EXTENSION_PERMISSIONS,
-    VALID_EXTENSION_ROUTE_METHODS,
     available_capabilities,
     capability_available,
+    normalize_extension_route_methods,
 )
 from ouroboros.event_bus import VALID_TOPICS as VALID_EVENT_TOPICS, get_global_event_bus
 from ouroboros.extension_companion import CompanionDescriptor, get_global_supervisor, is_server_process
-from ouroboros.extension_child_catalog import materialize_companion_env
 from ouroboros.extension_isolated_deps import (
     async_isolated_site_dirs_scope,
     isolated_site_dirs_scope,
 )
 from ouroboros.extension_registry_state import (
+    DISPATCH_SURFACE_KINDS,
+    SURFACE_KINDS,
     _PluginAPIConfig,
     _ExtensionRegistrations,
     _StagedCompanionSpawn,
@@ -74,6 +75,11 @@ from ouroboros.extension_ui_validation import (
     validate_ui_render as _validate_ui_render,
 )
 from ouroboros.gateway.host_service import AUTH_TOKEN_FILENAME
+from ouroboros.node_runtime import (
+    prepend_skill_node_emergency_path,
+    skill_manifest_owns_path,
+    skill_node_argv,
+)
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
 from ouroboros.skill_loader import compute_content_hash, requested_core_setting_keys
 from ouroboros.skill_token import SkillToken
@@ -108,11 +114,9 @@ def _reject_extension_child_side_effect(capability: str) -> None:
 
     Every side-effect registration method calls this; the matrix in
     ``contracts.plugin_api`` is the single source of truth for what an
-    out-of-process (isolated-dep) child may use. on_unload, send_ws_message, and
-    register_companion_process are supported out-of-process; subscribe_event and
-    register_supervised_task are not (use a companion_process instead).
+    out-of-process (isolated-dep) child may use, and the refusal reads the
+    available set from there rather than restating it.
     """
-
     mode = current_execution_mode()
     if not capability_available(capability, mode):
         available = ", ".join(sorted(available_capabilities(mode)))
@@ -195,11 +199,7 @@ class PluginAPIImpl:
         self._env_allow = frozenset(str(k).strip() for k in (config.env_allowlist or []))
         self._env_allow_upper = frozenset(k.upper() for k in self._env_allow)
         self._state_dir = pathlib.Path(config.state_dir)
-        self._drive_root = (
-            pathlib.Path(config.drive_root)
-            if config.drive_root is not None
-            else self._state_dir
-        )
+        self._drive_root = pathlib.Path(config.drive_root) if config.drive_root is not None else self._state_dir
         self._subscribe_events = frozenset(str(t).strip() for t in (config.subscribe_events or []) if str(t).strip())
         self._companion_specs = {
             str(item.get("name") or "").strip(): dict(item)
@@ -255,11 +255,7 @@ class PluginAPIImpl:
         """Whether this live in-process extension can read a funded model key."""
         if "read_settings" not in self._permissions:
             return False
-        candidates = (
-            self._env_allow_upper
-            & self._granted_upper
-            & MODEL_PROVIDER_CREDENTIAL_KEYS
-        )
+        candidates = self._env_allow_upper & self._granted_upper & MODEL_PROVIDER_CREDENTIAL_KEYS
         if not candidates:
             return False
         settings = self._settings_reader() or {}
@@ -313,8 +309,7 @@ class PluginAPIImpl:
             if self._skill_dir is None:
                 return handler(*args, **kwargs)
             with isolated_site_dirs_scope(self._skill_dir, enabled=self._dependency_site_dirs_enabled):
-                result = handler(*args, **kwargs)
-                return result
+                return handler(*args, **kwargs)
 
         return _wrapped
 
@@ -374,22 +369,7 @@ class PluginAPIImpl:
     ) -> None:
         self._require("route")
         rel = _assert_namespace_path(path)
-        methods_iter = (methods,) if isinstance(methods, str) else (methods or ())
-        norm_methods = tuple(
-            dict.fromkeys(
-                str(m).strip().upper()
-                for m in methods_iter
-                if str(m).strip()
-            )
-        )
-        if not norm_methods:
-            raise ExtensionRegistrationError("route methods must be non-empty")
-        invalid_methods = [m for m in norm_methods if m not in VALID_EXTENSION_ROUTE_METHODS]
-        if invalid_methods:
-            raise ExtensionRegistrationError(
-                f"route methods {invalid_methods!r} are unsupported; "
-                f"expected subset of {sorted(VALID_EXTENSION_ROUTE_METHODS)}"
-            )
+        norm_methods = normalize_extension_route_methods(methods, subject="route")
         mount = f"/api/extensions/{self._skill}/{rel}"
         with _lock:
             self._stage_surface_locked(_routes, self._staged.routes, mount, {
@@ -552,10 +532,9 @@ class PluginAPIImpl:
             raise ExtensionRegistrationError("companion command must be declared in manifest")
         if expected_runtime in {"python", "python3"} and cmd[0] in {"python", "python3"}:
             cmd = [sys.executable, *cmd[1:]]
-        # T14 node symmetry with the python rewrite; policy in child_catalog.
-        from ouroboros.extension_child_catalog import companion_node_argv
-
-        cmd = companion_node_argv(spec, expected_runtime, cmd)
+        # T14 node symmetry with the python rewrite above; the bundled-first
+        # precedence and its PATH-override carve-out live in node_runtime.
+        cmd = skill_node_argv(spec, expected_runtime, cmd)
         if not is_server_process():
             with _lock:
                 self._require_open_locked()
@@ -587,6 +566,55 @@ class PluginAPIImpl:
             self._staged.companion_spawns.append(
                 _StagedCompanionSpawn(name=clean_name, descriptor=descriptor, spec=dict(spec))
             )
+
+    def _companion_env(self, spec: Dict[str, Any], token: str) -> Dict[str, str]:
+        """The env one staged companion is spawned with (fix-round-6).
+
+        Built only inside ``_publish_registrations``'s post-swap attach, after
+        the generation fence admitted the publication: the settings-derived
+        values (``_scrub_env`` -> ``load_settings`` takes the settings lock and
+        may persist a settings migration), the manifest env overlay, the Host
+        Service bridge URL/token and the isolated-dep PYTHONPATH are all
+        resolved HERE, so the pre-fence descriptor build stays purely
+        computational.
+        """
+        from ouroboros.extension_isolated_deps import _isolated_python_site_dirs
+        from ouroboros.gateway.host_service import DEFAULT_HOST_SERVICE_HOST, host_service_port
+        from ouroboros.tools.skill_exec import _scrub_env
+        # Case-aware merge (delta finding D2-8): a manifest "Path" must REPLACE
+        # the allowlisted "PATH" on Windows, never sit next to it — duplicate
+        # case-variant env keys make CreateProcess-era spawns fail or pick an
+        # undefined winner. Same contract as the executor-local service lane.
+        from ouroboros.workspace_executor import overlay_env
+
+        reserved = set(FORBIDDEN_SKILL_SETTINGS) | {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL"}
+        env = overlay_env(
+            _scrub_env(
+                list(self._env_allow), self._state_dir, self._skill,
+                granted_keys=list(self._granted_upper),
+            ),
+            {
+                str(key): str(value)
+                for key, value in (spec.get("env") or {}).items()
+                if str(key).upper() not in reserved
+            },
+        )
+        env["HOST_SERVICE_URL"] = f"http://{DEFAULT_HOST_SERVICE_HOST}:{host_service_port()}"
+        env["HOST_SERVICE_TOKEN"] = token
+        site_dirs = [] if self._skill_dir is None else [
+            str(path) for path in _isolated_python_site_dirs(self._skill_dir)
+        ]
+        if site_dirs:
+            inherited = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = os.pathsep.join([*site_dirs, inherited] if inherited else site_dirs)
+        if str(spec.get("runtime") or "").strip() in {"node", "npm"} and not skill_manifest_owns_path(spec):
+            # T14 emergency PATH prepend, the other half of the argv rewrite in
+            # register_companion_process: descriptor env keys win over the
+            # supervisor's `_companion_base_env` merge, so the prepend reaches
+            # the child (and the PATH it would otherwise inherit) and survives
+            # supervisor restarts.
+            prepend_skill_node_emergency_path(env, fallback_path=os.environ.get("PATH", ""))
+        return env
 
     def _stage_companion_name_locked(self, name: str) -> None:
         if name not in self._staged.companion_names:
@@ -690,30 +718,21 @@ class PluginAPIImpl:
 
     # --- ABI-9 atomic publication (stage -> validate -> swap) ---
 
-    def _run_staged_disposers(self, extra: Sequence[Callable[[], Any]] = ()) -> None:
-        for dispose in [*reversed(list(extra)), *reversed(self._staged.disposers)]:
-            try:
-                dispose()
-            except Exception:
-                log.warning("extension %s staged-registration disposer failed", self._skill, exc_info=True)
-        self._staged = _StagedRegistrations()
-
     def _abort_registration(self) -> None:
-        """Discard the staged snapshot and undo its live side effects."""
+        """Discard the staged snapshot.
+
+        Nothing needs undoing: ABI-9 staging is purely computational, so an
+        abandoned snapshot has no live side effect anywhere — that is the
+        whole point of deferring the attach to publication.
+        """
         self._close_registration()
-        self._run_staged_disposers()
+        self._staged = _StagedRegistrations()
 
     def _staged_surface_conflicts_locked(self) -> list[str]:
         return [
             key
-            for live, staged in (
-                (_tools, self._staged.tools),
-                (_routes, self._staged.routes),
-                (_ws_handlers, self._staged.ws_handlers),
-                (_ui_tabs, self._staged.ui_tabs),
-                (_settings_sections, self._staged.settings_sections),
-            )
-            for key in staged
+            for kind, live, _label in SURFACE_KINDS
+            for key in getattr(self._staged, kind)
             if key in live
         ]
 
@@ -728,48 +747,47 @@ class PluginAPIImpl:
     ) -> None:
         """Atomically publish the staged registration snapshot (ABI-9).
 
-        validate -> SWAP -> attach under ONE registry-lock hold: the
-        definitive unload/conflict validation runs FIRST, so a refused
-        publication has produced no externally visible effect at all — no
-        supervised runner, no companion process, no bus subscription. The
-        validated snapshot then swaps into the process-wide registries as
-        the authoritative bundle, stamped with a fresh generation digest,
-        and only AFTER the swap do the deferred side effects attach — the
-        event-bus subscriptions, the supervised runners, the companion
-        spawns — still inside the same critical section. A handler is
-        therefore visible to the bus only for an already-published
-        extension: a concurrent ``EventBus.publish()`` (which takes only
-        the bus's own lock) landing between the validation and the attach
-        cannot invoke a handler of a not-yet-published extension. A bundle
-        may publish MORE than once (the OOP companion recovery path): a
-        later publication mints a fresh digest and RE-STAMPS every
-        already-published descriptor the bundle owns, so per-surface
-        provenance never diverges from the bundle digest. Such a recovery
-        publication is GENERATION-BOUND: it passes
-        ``require_live_generation`` and is admitted only while the bundle it
-        observed is STILL the live publication — a vanished bundle or a
-        different generation raises a typed ``ExtensionStaleRecoveryError``
-        before any mutation (the whole companion env included — state dir,
-        auth token and settings-derived values materialize into the staged
-        descriptors only in the post-swap attach below, never during the
-        purely computational descriptor build), and recovery never creates a
-        bundle, so a completed unload/reload cannot be resurrected. Every
-        attachable effect is recorded on the published bundle at the swap
+        validate -> SWAP -> attach under ONE registry-lock hold. The definitive
+        unload/conflict validation runs FIRST, so a refused publication has
+        produced no externally visible effect at all — no supervised runner, no
+        companion process, no bus subscription. The validated snapshot then
+        swaps into the process-wide registries as the authoritative bundle,
+        stamped with a fresh generation digest, and only AFTER the swap do the
+        deferred side effects attach — event-bus subscriptions, supervised
+        runners, companion spawns — still inside the same critical section. A
+        handler is therefore visible to the bus only for an already-published
+        extension: a concurrent ``EventBus.publish()`` (which takes only the
+        bus's own lock) landing between the validation and the attach cannot
+        invoke a handler of a not-yet-published extension.
+
+        A bundle may publish MORE than once (the OOP companion recovery path):
+        a later publication mints a fresh digest and RE-STAMPS every
+        already-published descriptor the bundle owns, so per-surface provenance
+        never diverges from the bundle digest. Such a recovery publication is
+        GENERATION-BOUND: it passes ``require_live_generation`` and is admitted
+        only while the bundle it observed is STILL the live publication — a
+        vanished bundle or a different generation raises a typed
+        ``ExtensionStaleRecoveryError`` before any mutation (the whole companion
+        env included — state dir, auth token and settings-derived values
+        materialize into the staged descriptors only in the post-swap attach
+        below, never during the purely computational descriptor build), and
+        recovery never creates a bundle, so a completed unload/reload cannot be
+        resurrected.
+
+        Every attachable effect is recorded on the published bundle at the swap
         (futures as they are created), so a failure while attaching leaves
-        nothing orphaned: it is disclosed and raised into the caller's
-        STANDARD dispose+unload path (``unload_extension`` reaps the
-        bundle's surfaces, subscriptions, futures and companions). No
-        concurrent unload or conflicting publication can interleave
-        anywhere inside (both mutate only under this lock).
+        nothing orphaned: it is disclosed and raised into the caller's STANDARD
+        dispose+unload path (``unload_extension`` reaps the bundle's surfaces,
+        subscriptions, futures and companions). No concurrent unload or
+        conflicting publication can interleave anywhere inside (both mutate only
+        under this lock).
         """
         with _lock:
             try:
                 self._require_open_locked()
                 if require_live_generation is not None:
                     live_bundle = _extensions.get(self._skill)
-                    live_generation = (
-                        str(live_bundle.generation_digest or "") if live_bundle is not None else ""
-                    )
+                    live_generation = str(getattr(live_bundle, "generation_digest", "") or "")
                     if live_bundle is None or live_generation != str(require_live_generation):
                         raise ExtensionStaleRecoveryError(
                             f"skill {self._skill!r} recovery publication refused: "
@@ -784,7 +802,7 @@ class PluginAPIImpl:
                         "publication refused"
                     )
             except Exception:
-                self._run_staged_disposers()
+                self._staged = _StagedRegistrations()
                 raise
             staged = self._staged
             bundle = _extensions.get(self._skill)
@@ -801,13 +819,9 @@ class PluginAPIImpl:
             digest = uuid.uuid4().hex
             bundle.generation_digest = digest
             self._published_generation = digest
-            for live, staged_map, bundle_keys, stamp in (
-                (_tools, staged.tools, bundle.tools, True),
-                (_routes, staged.routes, bundle.routes, True),
-                (_ws_handlers, staged.ws_handlers, bundle.ws_handlers, True),
-                (_ui_tabs, staged.ui_tabs, bundle.ui_tabs, False),
-                (_settings_sections, staged.settings_sections, bundle.settings_sections, False),
-            ):
+            for kind, live, _label in SURFACE_KINDS:
+                staged_map, bundle_keys = getattr(staged, kind), getattr(bundle, kind)
+                stamp = kind in DISPATCH_SURFACE_KINDS
                 if stamp:
                     # Staged-protocol restamp (ABI-9): a bundle may publish
                     # MORE than once (the server-side companion recovery path
@@ -855,7 +869,8 @@ class PluginAPIImpl:
                     self._state_dir.mkdir(parents=True, exist_ok=True)
                     token = mint_skill_token(self._state_dir, self._skill, self._skill_dir)
                     for spawn in staged.companion_spawns:
-                        materialize_companion_env(self, spawn.descriptor, spawn.spec, token)
+                        spawn.descriptor.env.clear()
+                        spawn.descriptor.env.update(self._companion_env(spawn.spec, token))
                 bus = get_global_event_bus()
                 for sub in staged.event_subscriptions:
                     bus.subscribe(self._skill, sub.topic, sub.handler, sub_id=sub.sub_id)
@@ -883,22 +898,15 @@ class PluginAPIImpl:
         with _lock:
             self._registration_closed = True
             self._runtime_closing = True
-        with self._api_lock:
-            with _lock:
-                self._runtime_closed = True
+        with self._api_lock, _lock:
+            self._runtime_closed = True
 
     # --- runtime access ---
 
     def log(self, level: str, message: str, **fields: Any) -> None:
-        lvl = str(level or "info").lower()
         levels = {"debug": 10, "info": 20, "warning": 30, "error": 40}
-        log.log(
-            levels.get(lvl, 20),
-            "[ext %s] %s %s",
-            self._skill,
-            message,
-            fields if fields else "",
-        )
+        level_no = levels.get(str(level or "info").lower(), logging.INFO)
+        log.log(level_no, "[ext %s] %s %s", self._skill, message, fields or "")
 
     def get_settings(self, keys: Sequence[str]) -> Dict[str, Any]:
         with self._api_lock:
@@ -953,40 +961,32 @@ class PluginAPIImpl:
     def get_runtime_info(self) -> RuntimeInfo:
         """Return the PluginAPI runtime-info snapshot without manifest I/O."""
         try:
-            from ouroboros.config import (
-                get_runtime_mode as _get_runtime_mode,
-                DATA_DIR as _DATA_DIR,
-            )
-            runtime_mode = _get_runtime_mode()
-            data_dir = str(_DATA_DIR)
+            from ouroboros.config import DATA_DIR, get_runtime_mode
+            runtime_mode, data_dir = get_runtime_mode(), str(DATA_DIR)
         except Exception:
-            runtime_mode = "advanced"
-            data_dir = ""
+            runtime_mode, data_dir = "advanced", ""
         try:
-            from ouroboros import get_version as _get_version
-            app_version = str(_get_version())
+            from ouroboros import get_version
+            app_version = str(get_version())
         except Exception:
             app_version = ""
         try:
-            from ouroboros.config import AGENT_SERVER_PORT as _agent_port, PORT_FILE as _PORT_FILE
-            server_port = 0
+            from ouroboros.config import AGENT_SERVER_PORT, PORT_FILE
             try:
-                port_text = pathlib.Path(_PORT_FILE).read_text(encoding="utf-8").strip()
-                if port_text:
-                    server_port = int(port_text)
+                # The live port file wins over the configured default: a server
+                # that started on a fallback port must still be reachable here.
+                live_port = int(pathlib.Path(PORT_FILE).read_text(encoding="utf-8").strip())
             except Exception:
-                server_port = 0
-            if server_port <= 0:
-                server_port = int(_agent_port)
+                live_port = 0
+            server_port = live_port if live_port > 0 else int(AGENT_SERVER_PORT)
         except Exception:
             server_port = 0
-        skill_dir = str(getattr(self, "_skill_dir", "") or "")
         mode = current_execution_mode()
         return {
             "runtime_mode": runtime_mode,
             "app_version": app_version,
             "data_dir": data_dir,
-            "skill_dir": skill_dir,
+            "skill_dir": str(self._skill_dir or ""),
             "state_dir": str(self._state_dir),
             "server_port": server_port,
             # Capability negotiation: an extension can branch on its execution mode
