@@ -92,7 +92,7 @@ test('incremental body reads observe each data frame before end', async () => {
     assert.equal((await last).done, true);
 });
 
-test('HEAD and 204 answers settle with a null body', async () => {
+test('HEAD and 204/205/304 answers settle with a null body', async () => {
     const { window, chunk } = bridgeHarness();
     const head = window.fetch('/api/extensions/s/ping', { method: 'HEAD' });
     chunk(1, 'headers', { status: 200, statusText: 'OK', headers: [['content-length', '12']] });
@@ -103,6 +103,13 @@ test('HEAD and 204 answers settle with a null body', async () => {
     const empty = window.fetch('/api/extensions/s/nobody');
     chunk(2, 'headers', { status: 204, statusText: 'No Content', headers: [] });
     assert.equal((await empty).body, null);
+    for (const [id, status, statusText] of [[3, 205, 'Reset Content'], [4, 304, 'Not Modified']]) {
+        const pending = window.fetch(`/api/extensions/s/nobody${id}`);
+        chunk(id, 'headers', { status, statusText, headers: [] });
+        const response = await pending;
+        assert.equal(response.body, null);
+        assert.equal(response.status, status);
+    }
 });
 
 test('abort posts -fetch-abort and rejects before headers or errors the body after', async () => {

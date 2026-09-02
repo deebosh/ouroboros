@@ -65,7 +65,8 @@ def executable_magic_kind(data: bytes, *, is_utf8_text: bool) -> str:
 
 class SkillBinaryPayload(RuntimeError):
     """Raised for loadable-executable skill payloads (judged by content magic
-    bytes); other non-UTF-8 files become ``{path,size,mime,sha256}`` descriptors."""
+    bytes); other binary payloads — non-UTF-8 files and WebAssembly admitted by
+    magic — become ``{path,size,mime_from_name,sha256}`` descriptors."""
 
     def __init__(self, relpath: str, size_bytes: int, kind: str = "") -> None:
         super().__init__(

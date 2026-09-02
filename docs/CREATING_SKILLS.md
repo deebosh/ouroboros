@@ -823,7 +823,8 @@ are the one exception — "What the frame may do" below). Two calls cover it:
 
 Two limits are disclosed rather than hidden: a route served by the
 out-of-process runner (isolated dependencies) is buffered whole before the frame
-sees it — only an in-process route's `StreamingResponse` streams chunk by
+sees it and capped at about 380 KiB of body (the same ceiling as the
+out-of-process module-bytes route below) — only an in-process route's `StreamingResponse` streams chunk by
 chunk; and the out-of-process / companion WS push (`POST /ui/ws-message`) is
 capped at 60 messages per 60 seconds per skill, so throttle progress events or
 fall back to poll-based status for bursts.

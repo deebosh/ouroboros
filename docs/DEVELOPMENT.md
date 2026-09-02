@@ -2590,8 +2590,10 @@ skill's own prefix (plus `data:`/`blob:`; `connect-src` closed). The route
 iframe (`kind: iframe`) shares the sandbox and permissions set and has no bridge.
 Both framed mounts (the extension-route iframe and the module `srcdoc` iframe
 with its CSP/sandbox constants and parent bridge) live in
-`web/modules/widget_module.js` and return their disposer to the `mountTab`
-dispatcher in `widgets.js`, which keeps the card registry and the declarative
+`web/modules/widget_module.js` (the child-side bootstrap that runs inside the
+module frame — bridge grammar, `Response` rebuilt over a stream, resize reports,
+dispose acknowledgement — is `web/modules/widget_frame.js`) and return their
+disposer to the `mountTab` dispatcher in `widgets.js`, which keeps the card registry and the declarative
 renderer. The framed card's chrome — the effective launch policy (owner override
 > author `render.start` > kind default), whether it keeps the card running while
 Widgets is hidden (`retain`, framed cards only), the one primary Start / Stop
@@ -2698,9 +2700,11 @@ explicitly:
   the source of truth for what the lane collects; the Widgets lifecycle suites
   in it are `tests/test_widgets_ui_browser.py` (geometry, job retry),
   `tests/test_widgets_ui_browser_lifecycle.py` (launch policy, ordered stop,
-  `retain`, the streaming bridge) and `tests/test_widgets_ui_browser_patch.py`
+  `retain`, the streaming bridge), `tests/test_widgets_ui_browser_patch.py`
   (keyed patch of a running card, reconnect reconcile, serialized policy
-  writes) — run all of them before a release that touched Widgets, e.g.
+  writes) and `tests/test_widgets_ui_browser_capabilities.py` (the frame CSP,
+  sandbox and permissions boundary: Wasm, blob workers, media and fonts,
+  negative origins, on Chromium and WebKit) — run all of them before a release that touched Widgets, e.g.
   `OUROBOROS_RUN_UI_SMOKE=1 OUROBOROS_DATA_DIR=$(mktemp -d) python -m pytest -o addopts="" -m ui_browser tests/test_widgets_ui_browser*.py`.
 - `ui_browser_docker` talks to an `ouroboros-web:test` container and must
   skip cleanly when Docker is unavailable locally.
