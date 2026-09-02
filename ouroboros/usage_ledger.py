@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -201,8 +202,9 @@ def _named_lock(
     )
 
     path = root / "state" / filename
-    fd = acquire_exclusive_file_lock(
+    fd = acquire_exclusive_file_lock(  # ENOLCK is the name tier for ordinary locks; money never runs there
         path, timeout_sec=timeout_sec, stale_sec=stale_sec, owner_aware_stale=True,
+        refuse_name_tier_errnos=frozenset({errno.ENOLCK}),
     )
     if fd is None:
         raise UsageAccountingError(f"usage accounting lock unavailable: {path}")

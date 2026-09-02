@@ -378,32 +378,46 @@ def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monke
     assert len(answers) == 1  # one probe per directory
     assert list(lockless.iterdir()) == []
 
-    # EIO is no capability answer; nor is ENOLCK — "no locks available" is a
-    # missing lock daemon OR an exhausted lock table, and the round-3 race
-    # lives on the tier it used to select. Both keep the enforced tier.
-    for code in (errno.EIO, errno.ENOLCK):
+    # EIO is no capability answer: the enforced tier. ENOLCK — "no locks available",
+    # a lockd-less NFS or an exhausted lock table — is the name tier for ordinary
+    # locks, RECORDED beside the verdict so a caller may refuse it (the monetary lock does).
+    for code, enforced in ((errno.EIO, True), (errno.ENOLCK, False)):
         refusing = tmp_path / f"refusing-{code}"
         refusing.mkdir()
         monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", _refusing(code))
-        assert platform_layer.kernel_file_locks_enforced(refusing / "a.lock") is True, code
+        assert platform_layer.kernel_file_locks_enforced(refusing / "a.lock") is enforced, code
+        assert platform_layer._KERNEL_LOCK_TIER[os.path.realpath(str(refusing))] == (enforced, code)
         assert list(refusing.iterdir()) == []
 
 
-def test_enolck_keeps_the_enforced_tier_and_the_acquisition_fails_closed(tmp_path, monkeypatch):
-    """A filesystem without a lock daemon answers ENOLCK to every kernel lock;
-    so does an exhausted lock table. Neither is the kernel saying "this
-    filesystem cannot", so it selects no tier: the probe keeps the enforced
-    tier and a live acquisition the kernel then refuses fails closed at once —
-    no descriptor, our own file removed, the name protocol never run — instead
-    of degrading to the tier where the round-3 reclaimer race returns. Every
-    monetary writer then refuses typed (no lock, no append, no pass)."""
-    lock_path = tmp_path / "state.lock"
+def test_enolck_is_the_name_tier_for_ordinary_locks_and_a_typed_refusal_for_money(tmp_path, monkeypatch):
+    """A filesystem without a lock daemon answers ENOLCK to every kernel lock; so
+    does an exhausted lock table. Neither is "held", so the probe records it as the
+    name tier: ordinary locks (state singletons, task results, custody) keep the
+    O_EXCL name protocol they always ran there — the shared primitive fails no
+    one else closed — while the MONETARY lock names ENOLCK in
+    ``refuse_name_tier_errnos`` and fails closed at once (no descriptor, no file,
+    the name protocol never run for money): every monetary writer refuses typed
+    and the compaction pass never enters on that tier."""
+    from ouroboros import usage_ledger
+
+    lock_path = tmp_path / "state" / "ordinary.lock"
+    lock_path.parent.mkdir()  # an unprobeable (absent) directory answers enforced-uncached; probe the real one
     monkeypatch.setattr(platform_layer, "_KERNEL_LOCK_TIER", {})
     monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", _refusing(errno.ENOLCK))
-    assert platform_layer.kernel_file_locks_enforced(lock_path) is True
+    assert platform_layer.kernel_file_locks_enforced(lock_path) is False
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=5.0, poll_sec=0.01)
+    assert fd is not None and lock_path.exists()  # the name protocol, as before round 5.4
+    platform_layer.release_exclusive_file_lock(lock_path, fd)
     started = time.time()
-    assert acquire_exclusive_file_lock(lock_path, timeout_sec=5.0, poll_sec=0.01) is None
+    assert acquire_exclusive_file_lock(
+        lock_path, timeout_sec=5.0, poll_sec=0.01, refuse_name_tier_errnos=frozenset({errno.ENOLCK}),
+    ) is None
     assert time.time() - started < 2.0 and not lock_path.exists()
+    with pytest.raises(usage_ledger.UsageAccountingError, match="lock unavailable"):
+        with usage_ledger._named_lock(tmp_path, "usage_attempts.lock", timeout_sec=1.0, stale_sec=90.0):
+            raise AssertionError("the monetary lock was taken on the ENOLCK tier")
+    assert not (tmp_path / "state" / "usage_attempts.lock").exists()
 
 
 def test_two_threads_racing_the_first_probe_run_one_probe_and_read_one_tier(tmp_path, monkeypatch):

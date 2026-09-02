@@ -169,32 +169,30 @@ def _lock_identity(target: "int | pathlib.Path") -> tuple:
     return (info.st_ino, info.st_dev, info.st_mtime_ns)
 
 
-# What a kernel refusal MEANS. Held by someone (flock's EWOULDBLOCK): stand down
-# and re-contend. The FILESYSTEM takes no kernel locks at all (EOPNOTSUPP/ENOSYS
-# to flock): the only evidence that selects the name tier; Windows answers both
-# through LockFileEx winerrors, mapped below. EVERY other refusal fails closed,
-# ENOLCK included — "no locks available" is a missing lock daemon OR an exhausted
-# lock table, not the kernel saying this filesystem cannot (a lockd-less NFS fails closed).
+# What a kernel refusal MEANS. Held by someone (flock's EWOULDBLOCK): stand down and re-contend.
+# No kernel locks on this filesystem (EOPNOTSUPP/ENOSYS; LockFileEx winerrors mapped below) or no
+# lock service (ENOLCK: lockd-less NFS, exhausted lock table): the name tier, errno RECORDED so a
+# caller may refuse it (the monetary lock does). Anything else fails closed.
 _LOCK_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK})
 _LOCK_UNSUPPORTED_ERRNOS = frozenset({errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
 _WIN32_LOCK_ERRNOS = {33: errno.EAGAIN, 1: errno.ENOSYS, 50: errno.EOPNOTSUPP}  # violation = held; invalid function / not supported = no byte-range locks here
-_KERNEL_LOCK_TIER: dict = {}  # lock directory -> kernel locks enforced there
+_KERNEL_LOCK_TIER: dict = {}  # lock directory -> (kernel locks enforced there, the errno that selected the name tier or None)
 _KERNEL_LOCK_TIER_LOCK = threading.Lock()  # one probe per directory, one verdict for every thread
 
 
 def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
-    """Capability predicate: are locks in ``lock_path``'s directory kernel-enforced
-    (flock / LockFileEx held on the fd) or name-only?  Decided ONCE per directory —
-    under one module lock, so racing threads share one probe and one verdict — by
-    locking a scratch file there, never by a refusal on a live acquisition: only the
-    kernel's own "this filesystem cannot" selects the name tier; an unprobeable
-    directory and every other answer keep the enforced tier, where a refused live
-    lock fails closed.  Name-tier locks run the O_EXCL name protocol alone
-    (re-check-then-unlink eviction, no kernel exclusion): disclosed best effort —
-    the monetary compaction pass refuses to run there while ordinary appends continue."""
+    """Capability predicate: are locks in ``lock_path``'s directory kernel-enforced (flock /
+    LockFileEx held on the fd) or name-only?  Decided ONCE per directory under one module
+    lock (racing threads share one probe and verdict) by locking a scratch file there — never
+    by a refusal on a live acquisition.  The kernel's "this filesystem cannot" and ENOLCK ("no
+    lock service") select the name tier, the errno recorded beside the verdict so a caller may
+    refuse that tier; an unprobeable directory answers enforced for that call and is probed
+    again next time (not cached); every other answer is the enforced tier, where a refused live
+    lock fails closed.  Name-tier locks run the O_EXCL name protocol alone (re-check-then-unlink
+    eviction, no kernel exclusion): disclosed best effort — the monetary compaction pass refuses to run there, appends continue."""
     directory = os.path.realpath(str(pathlib.Path(lock_path).parent))
     with _KERNEL_LOCK_TIER_LOCK:
-        tier = _KERNEL_LOCK_TIER.get(directory)
+        tier, refused = _KERNEL_LOCK_TIER.get(directory, (None, None))
         if tier is None:
             probe = os.path.join(directory, f".kernel-lock-probe.{os.getpid()}.{time.time_ns()}")
             try:
@@ -205,9 +203,9 @@ def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
             try:
                 file_lock_exclusive_nb(fd)
                 file_unlock(fd)
-                tier = True
+                tier, refused = True, None
             except OSError as exc:
-                tier = exc.errno not in _LOCK_UNSUPPORTED_ERRNOS
+                refused, tier = exc.errno, exc.errno not in _LOCK_UNSUPPORTED_ERRNOS and exc.errno != errno.ENOLCK
             finally:
                 os.close(fd)
                 try:
@@ -215,8 +213,8 @@ def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
                 except OSError:
                     log.debug("Kernel-lock probe %s left behind", probe, exc_info=True)
             if not tier:
-                log.warning("No kernel file locks under %s: locks there use the name protocol only", directory)
-            _KERNEL_LOCK_TIER[directory] = tier
+                log.warning("No kernel file locks under %s (errno %s): locks there use the name protocol only", directory, refused)
+            _KERNEL_LOCK_TIER[directory] = (tier, refused)
     return tier
 
 
@@ -228,13 +226,15 @@ def acquire_exclusive_file_lock(
     metadata: str = "",
     poll_sec: float = 0.05,
     owner_aware_stale: bool = False,
+    refuse_name_tier_errnos: frozenset = frozenset(),
 ) -> Optional[int]:
     """Acquire a portable lockfile.  On the enforced tier
     (:func:`kernel_file_locks_enforced`) the returned descriptor HOLDS a
     kernel lock (flock / LockFileEx): exclusion rests on the fd, not on the
     O_EXCL name alone, and a kernel refusal that is not contention fails
     CLOSED — no descriptor, our own file removed.  The name tier is selected
-    by that predicate, never by a refusal.  On either tier a won lock is
+    by that predicate, never by a refusal (``refuse_name_tier_errnos``: probe answers,
+    ENOLCK, on which THIS caller fails closed there instead).  On either tier a won lock is
     returned only while the path PROVABLY still names it: an evicted creator
     re-contends, and a descriptor whose own identity cannot be read is not a
     hold either — that fails closed too, taking our stamp off the path with it.
@@ -251,6 +251,9 @@ def acquire_exclusive_file_lock(
     lock_path = pathlib.Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     enforced = kernel_file_locks_enforced(lock_path)
+    if not enforced and _KERNEL_LOCK_TIER.get(os.path.realpath(str(lock_path.parent)), (False, None))[1] in refuse_name_tier_errnos:
+        log.warning("Name-tier lock refused by caller policy at %s: no lock taken", lock_path)
+        return None
     started = time.time()
     while (time.time() - started) < timeout_sec:
         try:
