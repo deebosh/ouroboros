@@ -9080,3 +9080,15 @@ into 7.0. Base `72bb4949`.
    fail). The Windows no-ops of the pass itself are unchanged: no directory fsync, and no
    old-inode witness across `os.replace`, so a charge landed in the swap's last syscall is
    still lost silently there rather than quarantined.
+5. **rc.1 never built; rc.2 replaces it.** The tag run 33678261200 (`v7.0.0-rc.1` @ 72bb4949) failed at
+   the embedded-bundle step on macOS and Linux: `scripts/build_repo_bundle.py` refuses a HEAD the
+   configured managed source branch does not contain, and `ci.yml` hardcoded that branch to
+   `ouroboros` — a pre-release cut from `ouroboros_v7next` could never build. The build job now
+   RESOLVES the branch per tag (`ouroboros` when HEAD is an ancestor of `origin/ouroboros`, else the
+   one remote branch containing HEAD; none/ambiguous fails loudly); pin in
+   `tests/test_build_scripts.py`. Consequence for the pre-release install: its update source is
+   `ouroboros_v7next` until 7.0 lands on `ouroboros` (then a reinstall or a fast-forward of that
+   branch is the operator's step; disclosed). The published `v7.0.0-rc.1` tag is left as is (no
+   rewrite of a published ref); `v7.0.0-rc.2` carries the fix plus the lanes merged so far
+   (compaction split, migration projection, Windows kernel tier — the tag's own 3-OS matrix is that
+   tier's first Windows execution).
