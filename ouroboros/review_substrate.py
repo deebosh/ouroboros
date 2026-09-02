@@ -965,9 +965,9 @@ from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
 )
 
 
-# reviewer_slots() lives in reviewer_slot_config (altitude, P7); re-exported
-# because acceptance surfaces and tests import it from here.
-from ouroboros.reviewer_slot_config import reviewer_slots  # noqa: F401,E402
+# reviewer_slots()/triad_delivery_slots() live in reviewer_slot_config (altitude,
+# P7); re-exported because acceptance surfaces and tests import them from here.
+from ouroboros.reviewer_slot_config import reviewer_slots, triad_delivery_slots  # noqa: F401,E402
 
 
 def scope_reviewer_slots(

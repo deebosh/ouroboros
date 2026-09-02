@@ -181,9 +181,11 @@ test('the standing note states the POLICY, never the current routing', () => {
     // The unconditional claim, in the shapes it could come back as.
     assert.doesNotMatch(markup, /review runs? on subscriptions/i);
     assert.doesNotMatch(markup, /reviews? run on your subscription/i);
-    assert.match(markup, /skill\s+review follow their configured rows/i);
-    assert.match(markup, /Task acceptance remains API-only/i);
-    assert.match(markup, /uses\s+configured API rows, or the shipped defaults when none remain/i);
+    assert.match(markup, /skill\s+review and task acceptance all follow their configured rows/i);
+    // Owner R2 (2026-09-01): task acceptance follows the triad rows on their own
+    // delivery — the former "remains API-only" pin must not come back in any spelling.
+    assert.match(markup, /task acceptance runs\s+the triad rows on their own delivery/i);
+    assert.doesNotMatch(markup, /API-only|shipped defaults when none remain/i);
 });
 
 

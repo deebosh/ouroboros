@@ -513,7 +513,7 @@ def _acceptance_harness(monkeypatch, tmp_path, review_result, *, enforcement="bl
 
     monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "required")
     monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: enforcement)
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [object(), object(), object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [object(), object(), object()])
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: review_result)
     meta = {}
     if deadline_remaining is not None:
@@ -994,7 +994,7 @@ def test_agent_tool_payload_carries_dissent_noted(monkeypatch, tmp_path):
         ],
         parsed_findings=[], aggregate_signal="PASS",
     )
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [object(), object(), object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [object(), object(), object()])
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: result)
     monkeypatch.setattr(
         "ouroboros.review_evidence.build_task_acceptance_evidence",

@@ -348,10 +348,11 @@ _PANEL = {
 def test_metadata_declares_what_the_container_executes_from_the_structured_panel(monkeypatch):
     """The container runs the structured panel the adapter forwards (operator
     env, else the host settings file). Inside a TB task nothing commits: the
-    panel reaches the run through task acceptance, which executes the panel's
-    NON-retrieving api rows (else the shipped defaults) — so metadata declares
-    exactly that projection, never a session row the container never runs and
-    never a stale legacy comma key."""
+    panel reaches the run through task acceptance, which executes EVERY triad
+    row on its own delivery (owner R2, 2026-09-01) — so metadata declares every
+    row: api rows by model id, a session row by its opaque harness target under
+    the agent-session role, never a stale legacy comma key and never a shipped
+    default the container does not run."""
     from ouroboros.config import SETTINGS_DEFAULTS
 
     monkeypatch.delenv("OUROBOROS_WEBSEARCH_MODEL", raising=False)
@@ -361,19 +362,29 @@ def test_metadata_declares_what_the_container_executes_from_the_structured_panel
     roles = dict(run_tb._effective_helper_models("openai/gpt-5.5", "google/gemini-3.5-flash", disable_agent_web=True))
     assert "foreign/stale-triad" not in roles and "foreign/stale-scope" not in roles
     assert roles["openai/gpt-5.5"] == "agent+commit_review_triad"
-    assert "codex=gpt-5.6-sol" not in roles  # a session row does not execute in a TB task today
+    # The session row executes in the acceptance panel now: declared by its
+    # harness target, under the role that names the delivery.
+    assert roles["codex=gpt-5.6-sol"] == "commit_review_triad_agent_session"
     # Scope review is a commit-time gate: it never fires inside a task, so its
     # rows are not declared (the same honesty rule as the advisory).
     assert "google/gemini-3.5-pro" not in roles and "scope_review" not in roles.values()
     assert roles["google/gemini-3.5-flash"] == "light_safety_post_task_synthesis"
+    meta = run_tb.leaderboard_metadata(
+        agent_name="Ouroboros", org_name="Ouroboros", model="openai/gpt-5.5",
+        light_model="google/gemini-3.5-flash", disable_agent_web=True,
+    )
+    # A harness target is served by the harness, not by an API provider.
+    assert 'model_name: "codex=gpt-5.6-sol"' in meta
+    assert meta.count('model_provider: "codex"') == 1 and 'model_display_name: "gpt-5.6-sol"' in meta
 
-    # An all-retrieving triad projects to the shipped defaults — the models
-    # acceptance really runs on — not to an empty declaration.
+    # An all-retrieving triad declares exactly its rows — the shipped defaults
+    # no longer run anywhere in the task and are not declared.
     all_session = {**_PANEL, "triad": [_PANEL["triad"][1]]}
     monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps(all_session))
     roles = dict(run_tb._effective_helper_models("openai/gpt-5.5", "google/gemini-3.5-flash", disable_agent_web=True))
+    assert roles["codex=gpt-5.6-sol"] == "commit_review_triad_agent_session"
     for helper in SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"].split(","):
-        assert "commit_review_triad" in roles[helper]
+        assert helper not in roles
 
     # Settings-file fallback, exactly like the container adapter's env → settings order.
     monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
@@ -392,11 +403,13 @@ def test_metadata_parses_the_panel_under_the_container_roster(monkeypatch):
     panel = {**_PANEL, "triad": [{"slot_id": "t1", "subagent_id": BENCHMARK_SUBAGENT_ID}]}
     monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps(panel))
     roles = dict(run_tb._effective_helper_models("openai/gpt-5.5", "google/gemini-3.5-flash", disable_agent_web=True))
-    # The benchmark actor row RETRIEVES (native tool rounds): acceptance does not
-    # execute it today, so the defaults are what run — and what is declared.
+    # The benchmark actor row RETRIEVES (native tool rounds) on the measured
+    # model: acceptance executes it, so the measured model carries the triad
+    # role and no shipped default is declared.
     from ouroboros.config import SETTINGS_DEFAULTS
 
-    assert all("commit_review_triad" in roles[h] for h in SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"].split(","))
+    assert roles["openai/gpt-5.5"] == "agent+commit_review_triad"
+    assert not any(h in roles for h in SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"].split(","))
     # An operator-roster reference the container cannot resolve is a typed refusal.
     monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({**panel, "triad": [{"slot_id": "t1", "subagent_id": "operator-critic"}]}))
     with pytest.raises(ValueError, match="operator-critic"):

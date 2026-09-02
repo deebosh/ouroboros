@@ -141,11 +141,14 @@ def _effective_helper_models(
     bound to an operator-roster subagent does not resolve there and is a typed
     refusal, never a declared-but-never-run model). Inside a Terminal-Bench task
     nothing commits: the panel reaches the run through task acceptance, which
-    projects the panel's NON-retrieving api rows into the legacy triad key and
-    falls back to the shipped defaults when none exist — so that projection,
-    not the raw row list, is what is declared here. Without a panel the legacy
-    comma keys apply (env override else the shipped config defaults). Returns
-    ordered (model_id, role) pairs, deduped by model id.
+    executes EVERY triad row on its configured delivery (owner R2, 2026-09-01) —
+    so every row is declared: an api row by its model id, a configured-subagent
+    row by its roster model id (a native inspection episode on that model), an
+    agent-session row by its opaque ``harness[=model]`` target under the role
+    ``commit_review_triad_agent_session`` (the harness, not an API provider,
+    serves it). Without a panel the legacy comma keys apply (env override else
+    the shipped config defaults). Returns ordered (model_id, role) pairs,
+    deduped by model id.
     """
     from devtools.benchmarks.common.model_slots import single_model_subagents_setting
     from ouroboros.reviewer_slot_config import (
@@ -165,9 +168,11 @@ def _effective_helper_models(
     if structured:
         with roster_env_override(single_model_subagents_setting(measured_model)):
             panel = parse_reviewer_slots(structured)
-        api_triad = [row.target_id for row in panel.triad if not row.retrieves]
-        for model_id in api_triad or review_default.split(","):
-            ordered.append((model_id.strip(), "commit_review_triad"))
+        for row in panel.triad:
+            ordered.append((
+                row.target_id.strip(),
+                "commit_review_triad_agent_session" if row.is_session else "commit_review_triad",
+            ))
     else:
         review = os.environ.get("OUROBOROS_REVIEW_MODELS", review_default) or review_default
         for m in review.split(","):
@@ -212,8 +217,14 @@ def leaderboard_metadata(
     for model_id, role in _effective_helper_models(
         model, light_model, disable_agent_web=disable_agent_web, settings=settings,
     ):
-        provider = model_id.split("/", 1)[0] if "/" in model_id else "openrouter"
-        display = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        if "/" in model_id:
+            provider, display = model_id.split("/", 1)
+        elif "agent_session" in role:
+            # An agent-session row: the harness serves the model (`harness[=model]`).
+            provider, _, display = model_id.partition("=")
+            display = display or provider
+        else:
+            provider, display = "openrouter", model_id
         lines.append(f"  - model_name: {json.dumps(model_id)}")
         lines.append(f"    model_provider: {json.dumps(provider)}")
         lines.append(f"    model_display_name: {json.dumps(display)}")

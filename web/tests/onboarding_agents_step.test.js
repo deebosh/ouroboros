@@ -65,7 +65,7 @@ test('the ladder is three rungs and states the launch gate honestly', () => {
     // Rung 2: the benefit and the D-1 limit in the same breath — a plan moves
     // delegated work and configured review rows, and CANNOT run the main agent.
     assert.match(better.body, /delegated subagents/i);
-    assert.match(better.body, /commit, plan, and skill review/i);
+    assert.match(better.body, /commit, plan, and skill review and task acceptance/i);
     assert.match(better.body, /main\s+agent keeps using the API key or local model/i);
     assert.match(better.body, /a plan cannot run it/i);
     // Rung 3: rotation, in the owner's own terms.
@@ -81,9 +81,11 @@ test('the ladder is three rungs and states the launch gate honestly', () => {
 test('the footnote refuses both easy lies: "free", and "every reviewer moves"', () => {
     assert.match(LADDER_FOOTNOTE, /not free/i);
     assert.match(LADDER_FOOTNOTE, /already\s+pay for/i);
-    // Task acceptance is the one API-pinned residual; plan + skill follow rows.
-    assert.match(LADDER_FOOTNOTE, /Task acceptance stays on the API key/i);
-    assert.match(LADDER_FOOTNOTE, /plan and skill review follow each configured triad row/i);
+    // Owner R2 (2026-09-01): task acceptance follows the triad rows too — the
+    // footnote states the RULE (what is routed moves), never "everything moves".
+    assert.match(LADDER_FOOTNOTE, /task acceptance each follow their configured\s+triad row/i);
+    assert.match(LADDER_FOOTNOTE, /acceptance panel on the subscription/i);
+    assert.doesNotMatch(LADDER_FOOTNOTE, /stays on the API|API-only/i);
     assert.doesNotMatch(LADDER_FOOTNOTE, /all reviewers|every reviewer/i);
 });
 

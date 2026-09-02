@@ -435,7 +435,7 @@ def test_acceptance_review_evidence_diff_is_host_owned(monkeypatch, tmp_path):
         return NS(aggregate_signal="PASS")
 
     monkeypatch.setattr(rs, "run_review_request", _fake_run)
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [ReviewSlot(slot_id="a", model="m")])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [ReviewSlot(slot_id="a", model="m")])
 
     ctx = NS(
         drive_root=str(tmp_path), task_id="t",
@@ -467,7 +467,7 @@ def test_acceptance_review_empty_host_diff_does_not_fall_back_to_agent(monkeypat
         return NS(aggregate_signal="PASS")
 
     monkeypatch.setattr(rs, "run_review_request", _fake_run)
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [ReviewSlot(slot_id="a", model="m")])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [ReviewSlot(slot_id="a", model="m")])
 
     ctx = NS(
         drive_root=str(tmp_path), task_id="t",
@@ -496,7 +496,7 @@ def test_acceptance_review_records_agent_disposition(monkeypatch, tmp_path):
         return NS(aggregate_signal="PASS", actors=[], parsed_findings=[])
 
     monkeypatch.setattr(rs, "run_review_request", _fake_run)
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [ReviewSlot(slot_id="a", model="m")])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [ReviewSlot(slot_id="a", model="m")])
     monkeypatch.setattr(rs, "build_improvement_capsule", lambda _result: "")
 
     ctx = NS(
@@ -534,7 +534,7 @@ def test_root_acceptance_tool_defers_to_host_without_model_calls(monkeypatch, tm
     )
     monkeypatch.setattr(
         rs,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("review slots must not resolve")),
     )
     ctx = NS(
@@ -595,7 +595,7 @@ def test_typed_retry_root_defers_self_review_and_is_host_eligible(
     )
     monkeypatch.setattr(
         rs,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("normalized root self-call must not resolve review slots")
         ),
@@ -668,7 +668,7 @@ def test_retry_root_markers_must_agree_before_acceptance_authority(
     calls = []
     monkeypatch.setattr(
         rs,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **kwargs: [ReviewSlot(slot_id="legacy", model="m")],
     )
     monkeypatch.setattr(rs, "build_improvement_capsule", lambda _result: "")
@@ -822,7 +822,7 @@ def test_off_mode_root_and_auto_mode_child_keep_existing_model_review(monkeypatc
 
     calls = []
     monkeypatch.setattr(re_mod, "collect_turn_diff", lambda ctx, **kwargs: "")
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **kwargs: [ReviewSlot(slot_id="a", model="m")])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **kwargs: [ReviewSlot(slot_id="a", model="m")])
     monkeypatch.setattr(rs, "build_improvement_capsule", lambda _result: "")
     monkeypatch.setattr(rs, "dissent_findings", lambda _result: [])
 
@@ -876,7 +876,7 @@ def test_stale_parent_lineage_cannot_trigger_a_second_host_panel(monkeypatch, tm
     monkeypatch.setattr(re_mod, "collect_turn_diff", lambda ctx, **kwargs: "")
     monkeypatch.setattr(
         rs,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **kwargs: [ReviewSlot(slot_id="a", model="m")],
     )
     monkeypatch.setattr(rs, "build_improvement_capsule", lambda _result: "")

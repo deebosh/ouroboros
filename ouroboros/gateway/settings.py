@@ -1173,8 +1173,8 @@ def _check_reviewer_slots_against_incoming_roster(body: dict) -> str:
     roster-only save re-validates the STORED slots so a still-referenced
     actor cannot be removed out from under them. An EXPLICITLY cleared slots
     value ('' present in the body) is a clear, not a fallback to the stored
-    value — presence and emptiness are tracked separately. Returns the D4
-    fallback warning ('' when none); raises ValueError on malformed."""
+    value — presence and emptiness are tracked separately. Returns the
+    save-time disclosure ('' when none); raises ValueError on malformed."""
     subagents_key = "OUROBOROS_SUBAGENTS"
     slots_key = "OUROBOROS_REVIEWER_SLOTS"
     roster_changed = subagents_key in body
@@ -1253,10 +1253,10 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
                 return unsaved_error(str(exc), 400)
             body = dict(body)
             body[subagents_key] = canonical_subagents
-        # Reviewer-slot SSOT (6.1): 400 on malformed; D4 fallback disclosed;
+        # Reviewer-slot SSOT (6.1): 400 on malformed; save-time disclosure returned;
         # validated against the roster THIS save produces (S4 — see helper).
         try:
-            _reviewer_fallback_warning = _check_reviewer_slots_against_incoming_roster(body)
+            _reviewer_slots_warning = _check_reviewer_slots_against_incoming_roster(body)
         except ValueError as exc:
             return unsaved_error(str(exc), 400)
         parsed_budget: dict[str, float] = {}
@@ -1381,8 +1381,8 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
 
         # Tolerate stubbed side effects returning None (test harnesses).
         warnings = list(side_effect_warnings or [])
-        if _reviewer_fallback_warning:
-            warnings.append(_reviewer_fallback_warning)
+        if _reviewer_slots_warning:
+            warnings.append(_reviewer_slots_warning)
         if provider_defaults_changed:
             change_kind = classify_runtime_provider_change(old_effective_settings, current)
             if change_kind == "direct_normalize":

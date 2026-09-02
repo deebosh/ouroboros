@@ -112,6 +112,15 @@ assumed in two places that used to hardcode TB2.1:
   own rules permit web access is run with the explicit `--allow-agent-web` flag, which
   prints a loud non-leaderboard-faithful warning for TB2.1 and is recorded in the manifest
   and the disclosure ledger — never a silent default.
+- **Every configured reviewer row is declared (2026-09-02).** Task acceptance now executes
+  every triad row on its configured delivery (api packet, configured-subagent native episode,
+  or agent session), so `metadata.yaml` declares every row the container's panel carries: api
+  rows by model id, a session row by its opaque `harness[=model]` target under the role
+  `commit_review_triad_agent_session` (provider = the harness). Before this change only the
+  panel's non-retrieving api rows ran — and were declared — with the shipped defaults
+  substituted when none existed; runs whose panel carries retrieving rows are therefore not
+  comparable on the acceptance axis with earlier runs, and a leaderboard submission must be
+  read against its own `metadata.yaml`.
 - **Harbor version:** the pinned TB2.1 bench venv is harbor **0.18.0** (`~/ouro/venv-tb`). 0.20.0
   is the current latest and is installed in a SEPARATE venv (`~/ouro/venv-fb`), reachable via
   `--harbor-bin` and leaving `venv-tb` frozen at 0.18.0 so published TB2.1 numbers keep their

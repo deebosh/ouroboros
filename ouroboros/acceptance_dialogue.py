@@ -35,7 +35,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros import task_pacing
-from ouroboros.config import adaptive_quorum, resolve_effort
+from ouroboros.config import adaptive_quorum
 from ouroboros.delivery_protocol import extract_plain_text_from_content
 from ouroboros.outcomes import (
     ACCEPTANCE_ACCEPTED,
@@ -898,8 +898,8 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
         HARDNESS_ADVISORY_VISIBLE,
         ReviewRequest,
         ReviewRunResult,
-        reviewer_slots,
         run_review_request,
+        triad_delivery_slots,
     )
     from ouroboros.review_dispatch import (
         TaskAcceptanceDispatchUnavailable,
@@ -908,8 +908,23 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
         task_acceptance_preclaim_refusal,
     )
 
+    def _refused(reason: str) -> Any:
+        return ReviewRunResult(
+            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
+            actors=[], parsed_findings=[], aggregate_signal="DEGRADED", degraded=True,
+            degraded_reasons=[reason],
+        )
+
     evidence = ctx.evidence or _build_host_acceptance_evidence(ctx)
-    slots = reviewer_slots(effort=resolve_effort("review"), role_hint="task acceptance")
+    try:
+        # R2: the SAME triad rows every other triad surface reads — each with
+        # its own delivery, effort, credential pin, actor binding and stable
+        # id. R3: a malformed structured value refuses typed here exactly as
+        # it does for plan and skill review; the silently projected default
+        # panel is gone.
+        slots = triad_delivery_slots(role_hint="task acceptance")
+    except ValueError as exc:
+        return _refused(f"reviewer_slot_config_invalid: {exc} (no reviewer was called)")
     request = ReviewRequest(
         surface="task_acceptance",
         goal=(
@@ -930,14 +945,7 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
         task_id=ctx.task_id, retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
     )
     if not slots:
-        return ReviewRunResult(
-            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
-            actors=[],
-            parsed_findings=[],
-            aggregate_signal="DEGRADED",
-            degraded=True,
-            degraded_reasons=["no_review_slots"],
-        )
+        return _refused("no_review_slots")
     # Budget admission for the whole acceptance wave (v6.69.0): a wave that
     # cannot fit the remaining root budget is declined up front as a terminal
     # DEGRADED (no-quorum semantics) instead of dying mid-wave. The estimate
@@ -958,17 +966,10 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
         prompt_chars=_prompt_chars,
     )
     if _admission is not None:
-        return ReviewRunResult(
-            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
-            actors=[],
-            parsed_findings=[],
-            aggregate_signal="DEGRADED",
-            degraded=True,
-            degraded_reasons=[
-                "review_wave_budget_insufficient: estimated "
-                f"~${_admission.get('estimated_wave_usd')} > remaining "
-                f"${_admission.get('remaining_usd')} (no reviewer was called)"
-            ],
+        return _refused(
+            "review_wave_budget_insufficient: estimated "
+            f"~${_admission.get('estimated_wave_usd')} > remaining "
+            f"${_admission.get('remaining_usd')} (no reviewer was called)"
         )
     free_result = _free_dispatch(
         request, slots, drive_root=ctx.drive_root or ctx.tools._ctx.drive_root, usage_ctx=ctx.tools._ctx)
@@ -989,11 +990,7 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                 usage_ctx=usage_ctx,
             )
     except TaskAcceptanceDispatchUnavailable as exc:
-        return ReviewRunResult(
-            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
-            actors=[], parsed_findings=[], aggregate_signal="DEGRADED", degraded=True,
-            degraded_reasons=[f"{exc} (no reviewer was called)"],
-        )
+        return _refused(f"{exc} (no reviewer was called)")
     duration_sec = round(time.monotonic() - started, 3)
     try:
         from ouroboros.review_cycles import review_max_cycles, review_max_cycles_source

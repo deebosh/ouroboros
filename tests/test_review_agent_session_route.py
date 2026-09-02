@@ -2225,13 +2225,23 @@ def test_mixed_scope_fanout_sends_each_row_over_its_own_route(tmp_path, monkeypa
     ], dispatched
 
 
-def test_acceptance_rows_stay_api_even_when_triad_routes_delegate(monkeypatch):
-    """D15: task acceptance is pinned to the API (plan review follows each configured
-    row's delivery since the spec-gate redesign). The triad's route list must not
-    leak into surfaces that pass no route_env_key."""
-    monkeypatch.setenv(TRIAD_REVIEW_ROUTES_ENV, "agent_session,agent_session,agent_session")
-    rows = reviewer_slots(["m1", "m2"], effort="high", role_hint="task acceptance")
-    assert all(row.route is ReviewRouteKind.API_CHAT for row in rows)
+def test_acceptance_rows_follow_the_configured_triad_delivery(monkeypatch):
+    """Owner R2 (2026-09-01): task acceptance reads the SAME triad rows every other
+    triad surface reads — on a legacy config that includes the per-row route list —
+    instead of an api-pinned projection of them. The generic model-list builder
+    keeps its explicit pin for callers that pass no route list (a caller's own
+    statement, never a surface default)."""
+    from ouroboros.reviewer_slot_config import triad_delivery_slots
+
+    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
+    monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m1,m2")
+    monkeypatch.setenv(TRIAD_REVIEW_ROUTES_ENV, "agent_session,api_chat")
+    rows = triad_delivery_slots(role_hint="task acceptance")
+    assert [row.route for row in rows] == [ReviewRouteKind.AGENT_SESSION, ReviewRouteKind.API_CHAT]
+    assert [row.slot_id for row in rows] == ["slot_1", "slot_2"]  # the one legacy mint
+    assert all(row.role_hint == "task acceptance" for row in rows)
+    pinned = reviewer_slots(["m1", "m2"], effort="high", role_hint="task acceptance")
+    assert all(row.route is ReviewRouteKind.API_CHAT for row in pinned)
 
 
 def test_agent_slot_without_session_task_refuses_the_api_pack(tmp_path, fake_route):

@@ -156,7 +156,7 @@ def _handle_task_acceptance_review(
     rationale: str = "",
     obligation_dispositions: Optional[list] = None,
 ) -> str:
-    from ouroboros.config import get_task_review_mode, resolve_effort
+    from ouroboros.config import get_task_review_mode
     from ouroboros.review_evidence import (
         build_task_acceptance_evidence,
         task_acceptance_evidence_revision,
@@ -297,8 +297,8 @@ def _handle_task_acceptance_review(
         ReviewRequest,
         build_improvement_capsule,
         dissent_findings,
-        reviewer_slots,
         run_review_request,
+        triad_delivery_slots,
     )
 
     request = ReviewRequest(
@@ -317,9 +317,27 @@ def _handle_task_acceptance_review(
         },
         task_id=str(getattr(ctx, "task_id", "") or ""), retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
     )
-    # Task acceptance alone stays API-only by owner decision (D15); configured
-    # rows now also route commit, scope, advisory, plan, and Skill Review.
-    slots = reviewer_slots(effort=resolve_effort("review"), role_hint="task acceptance")
+    # Child-task and `off`-mode acceptance is advisory evidence, never the root
+    # verdict, and buys no retrieving panel (owner R2; plan roast item 12): it
+    # runs the configured triad's PACKET rows only, refusing typed when none
+    # remain — never a silently projected default panel (R3).
+    try:
+        slots = [
+            slot for slot in triad_delivery_slots(role_hint="task acceptance")
+            if not getattr(slot, "retrieves", False)
+        ]
+    except ValueError as exc:
+        return json.dumps({
+            "status": "not_dispatched",
+            "error": f"invalid reviewer-slot configuration blocks task acceptance: {exc}",
+        }, ensure_ascii=False)
+    if not slots:
+        return json.dumps({
+            "status": "not_dispatched", "reason": "no_packet_reviewer_rows",
+            "detail": "every configured triad row retrieves (agent session or configured "
+                      "subagent); child/off task acceptance runs packet rows only, so no "
+                      "reviewer was called",
+        }, ensure_ascii=False)
     request.policy["min_successful_slots"] = _cfg.adaptive_quorum(len(slots))
     result = run_review_request(request, slots=slots, drive_root=pathlib.Path(ctx.drive_root), usage_ctx=ctx)
     # Agent self-call (auto): lead with the compact improvement capsule (the

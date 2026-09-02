@@ -148,7 +148,7 @@ def test_acceptance_panel_persists_timing_to_canonical_root(tmp_path, monkeypatc
     )
     monkeypatch.setattr(evidence_mod, "build_task_acceptance_evidence", lambda *_a, **_k: {})
     monkeypatch.setattr(
-        substrate, "reviewer_slots",
+        substrate, "triad_delivery_slots",
         lambda **_k: [SimpleNamespace(model="test-reviewer")],
     )
     monkeypatch.setattr(review_helpers, "review_wave_budget_gate", lambda *_a, **_k: None)
@@ -242,7 +242,7 @@ def _allow_acceptance_wave(monkeypatch):
 
     monkeypatch.setattr(
         substrate,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **_kwargs: [ReviewSlot(slot_id="slot", model="review-model")],
     )
     monkeypatch.setattr(

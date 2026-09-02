@@ -1,8 +1,10 @@
 """Reviewer-slot SSOT (phase 6.1): structured parse, legacy migration, projection.
 
 The one structured setting supersedes the comma-lists; the comma keys survive
-only as a runtime projection for the API-pinned surfaces (D15). Malformed
-configuration REFUSES typed — an unknown token must never silently pick a
+only as a runtime projection for legacy consumers (external review tooling,
+benchmark manifests) — no review surface reads them once the structured key
+exists (owner R2 retired the task-acceptance API pin). Malformed configuration
+REFUSES typed on every surface — an unknown token must never silently pick a
 transport, in either direction.
 """
 import json
@@ -480,7 +482,7 @@ def test_legacy_bad_route_token_still_refuses(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Runtime projection for the API-pinned surfaces (D15).
+# Runtime projection into the legacy comma keys (legacy consumers only).
 # ---------------------------------------------------------------------------
 
 
@@ -494,7 +496,13 @@ def test_projection_exposes_only_api_rows(monkeypatch):
     assert os.environ["OUROBOROS_SCOPE_REVIEW_MODELS"] == "openai/gpt-5.6-terra"
 
 
-def test_projection_all_delegated_triad_floors_to_defaults(monkeypatch):
+def test_all_delegated_triad_projects_no_api_model_and_acceptance_follows_the_rows(monkeypatch):
+    """An all-session triad has no api model id to project: the comma key keeps
+    the shipped default for its LEGACY readers only (never a stale comma value),
+    while task acceptance — like every review surface — reads the session row
+    itself (owner R2; the former API-default substitution is gone)."""
+    from ouroboros.reviewer_slot_config import triad_delivery_slots
+
     payload = json.loads(json.dumps(_STRUCTURED))
     payload["triad"] = [payload["triad"][1]]
     _set_structured(monkeypatch, payload)
@@ -504,9 +512,11 @@ def test_projection_all_delegated_triad_floors_to_defaults(monkeypatch):
 
     from ouroboros.config import SETTINGS_DEFAULTS
 
-    # The API-only task-acceptance surface falls back to shipped defaults,
-    # never to zero reviewers or a stale comma key.
     assert os.environ["OUROBOROS_REVIEW_MODELS"] == str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
+    slots = triad_delivery_slots(role_hint="task acceptance")
+    assert [(s.slot_id, s.route.value, s.session_target, s.effort) for s in slots] == [
+        ("t_sess", "agent_session", "codex=gpt-5.6-sol", "xhigh"),
+    ]
 
 
 def test_projection_malformed_leaves_legacy_keys_and_floors(monkeypatch):
@@ -520,6 +530,12 @@ def test_projection_malformed_leaves_legacy_keys_and_floors(monkeypatch):
     assert os.environ["OUROBOROS_REVIEW_MODELS"] == "owner/comma-value"
     with pytest.raises(ValueError):
         commit_triad_rows()
+    # Task acceptance refuses on the same parse (R3) instead of reading the
+    # comma key its projection left in place.
+    from ouroboros.reviewer_slot_config import triad_delivery_slots
+
+    with pytest.raises(ValueError):
+        triad_delivery_slots(role_hint="task acceptance")
 
 
 # ---------------------------------------------------------------------------
@@ -801,20 +817,20 @@ def test_legacy_session_row_with_no_shared_route_is_empty_not_a_model(monkeypatc
     assert session_row.session_target == ""
 
 
-def test_all_delegated_commit_surface_discloses_the_api_fallback(monkeypatch):
-    """When every triad row is delegated, API-only task acceptance falls back
-    to default models and spends budget — disclosed, never silent, while all
-    configured review gates keep their session rows.
+def test_all_delegated_triad_writes_no_fallback_record_and_reaches_acceptance(monkeypatch):
+    """Owner R2: when every triad row is delegated, task acceptance RUNS those
+    rows — there is no API-default substitution to disclose, no durable
+    fallback record, and the retired disclosure apparatus is gone from the
+    module. The save check still validates (400 on malformed) and stays quiet."""
+    import importlib
+    import pathlib
 
-    The disclosure is NEUTRAL routing information, not advice: an
-    all-subscription triad IS the ratified default (D-3), so the sentence must
-    not tell the owner to keep an API row and undo it."""
-    from ouroboros.config import SETTINGS_DEFAULTS
+    from ouroboros import reviewer_slot_config as rsc
+    from ouroboros.config import DATA_DIR
     from ouroboros.reviewer_slot_config import (
-        api_fallback_disclosure,
-        parse_reviewer_slots,
         project_reviewer_slots_into_env,
-        reviewer_slot_api_fallback_warning,
+        reviewer_slot_save_check,
+        triad_delivery_slots,
     )
 
     payload = {
@@ -822,42 +838,24 @@ def test_all_delegated_commit_surface_discloses_the_api_fallback(monkeypatch):
         "scope": [{"slot_id": "s1", "route": {"kind": "agent_session", "target_id": "codex"}}],
         "advisory": {"enabled": True, "route": {"kind": "agent_session", "target_id": "codex"}},
     }
-    disclosure = api_fallback_disclosure(parse_reviewer_slots(json.dumps(payload)))
-    assert disclosure["triad"] == str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"]).split(",")
-    assert set(disclosure) == {"triad"}
-
+    for retired in ("api_fallback_disclosure", "reviewer_slot_api_fallback_warning",
+                    "_fallback_warning_text", "_record_api_fallback_substitution"):
+        assert not hasattr(importlib.reload(rsc), retired), retired
+    assert reviewer_slot_save_check(json.dumps(payload)) == ""
     _set_structured(monkeypatch, payload)
-    warning = reviewer_slot_api_fallback_warning()
-    assert warning and "commit, plan, and skill-review" in warning
-    # It names both halves of the routing fact: what moved to subscriptions,
-    # and which surfaces the API still serves with which models.
-    assert "agent subscription" in warning
-    assert "Task acceptance remains API-only" in warning
-    assert str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"]).split(",")[0] in warning
-    # The retired advice: telling the owner to keep an API reviewer row
-    # contradicts the ratified all-subscription default.
-    assert "Keep at least one API" not in warning
-    assert "coding agent" not in warning
-    # The projection still keeps the reviewers WORKING (defaults present), and
-    # writes the durable record — disclose-and-continue, never a block.
-    import os as _os
     project_reviewer_slots_into_env()
-    assert _os.environ["OUROBOROS_REVIEW_MODELS"] == str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
-    import pathlib
+    assert not (pathlib.Path(DATA_DIR) / "state" / "reviewer_slot_api_fallback.json").exists()
+    slots = triad_delivery_slots(role_hint="task acceptance")
+    assert [(s.slot_id, s.route.value, s.session_target) for s in slots] == [("t1", "agent_session", "codex")]
+    with pytest.raises(ValueError, match="triad needs at least one slot"):
+        reviewer_slot_save_check(json.dumps({**payload, "triad": []}))
 
-    from ouroboros.config import DATA_DIR
-    record = pathlib.Path(DATA_DIR) / "state" / "reviewer_slot_api_fallback.json"
-    assert record.is_file()
 
-
-def test_one_api_row_avoids_the_fallback_and_the_warning(monkeypatch):
-    """The mutation that proves the disclosure is scoped: a single surviving API
-    row in each group means no fallback and no warning."""
-    from ouroboros.reviewer_slot_config import (
-        api_fallback_disclosure,
-        parse_reviewer_slots,
-        reviewer_slot_api_fallback_warning,
-    )
+def test_mixed_triad_reaches_acceptance_in_row_order(monkeypatch):
+    """A session row beside an api row: acceptance carries BOTH, in the owner's
+    order, each with its own delivery — the mutation that proves no row is
+    filtered out of the panel any more."""
+    from ouroboros.reviewer_slot_config import triad_delivery_slots
 
     payload = {
         "triad": [
@@ -867,9 +865,12 @@ def test_one_api_row_avoids_the_fallback_and_the_warning(monkeypatch):
         "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai/gpt-5.6-terra"}}],
         "advisory": {"enabled": True, "route": {"kind": "api"}},
     }
-    assert api_fallback_disclosure(parse_reviewer_slots(json.dumps(payload))) == {}
     _set_structured(monkeypatch, payload)
-    assert reviewer_slot_api_fallback_warning() == ""
+    slots = triad_delivery_slots(role_hint="task acceptance")
+    assert [(s.slot_id, s.route.value, s.model) for s in slots] == [
+        ("t1", "agent_session", "codex"), ("t2", "api_chat", "openai/gpt-5.6-luna"),
+    ]
+    assert [s.retrieves for s in slots] == [True, False]
 
 
 def test_advisory_disabled_is_a_standing_owner_decision(monkeypatch):

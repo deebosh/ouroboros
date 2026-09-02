@@ -589,9 +589,11 @@ export function renderReviewerSlotsSection() {
             </div>
             <div class="settings-inline-note">
                 Rows routed to a subscription never fall back to API spend: if every eligible window
-                is exhausted, the review waits for capacity. Commit, plan, scope, advisory, and skill
-                review follow their configured rows. Task acceptance remains API-only: it uses
-                configured API rows, or the shipped defaults when none remain.
+                is exhausted, the review waits for capacity. Commit, plan, scope, advisory, skill
+                review and task acceptance all follow their configured rows — task acceptance runs
+                the triad rows on their own delivery (API packet, configured-subagent inspection
+                episode, or agent session), so an all-subscription triad puts every substantive
+                task's acceptance panel on the subscription as well.
             </div>
             <div id="reviewer-slots-error" class="ui-status" data-tone="error" hidden></div>
             <div id="reviewer-slots-pins" class="settings-inline-status" data-tone="warn" hidden></div>
