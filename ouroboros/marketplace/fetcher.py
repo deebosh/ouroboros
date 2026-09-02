@@ -20,12 +20,15 @@ _MAX_TOTAL_BYTES = 50 * 1024 * 1024  # 50 MB total uncompressed
 _MAX_FILE_COUNT = 200
 _MAX_PER_FILE_BYTES = 8 * 1024 * 1024  # 8 MB per individual file
 
-# Mirrors ClawHub text allowlist plus inert assets; loadable binaries stay denied.
+# Mirrors ClawHub text allowlist plus inert widget assets (images, audio, video,
+# fonts) and WebAssembly, which runs only inside the sandboxed widget frame and
+# reviews as a content-hash-bound descriptor; native loadable binaries stay denied.
 _ALLOWED_EXTENSIONS = frozenset({
     ".md", ".markdown", ".txt", ".rst", ".org", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
     ".py", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
     ".html", ".htm", ".css", ".scss", ".sass", ".svg", ".csv", ".tsv", ".sql", ".graphql", ".gql",
     ".lock", ".license", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".wasm", ".mp3", ".ogg", ".wav", ".mp4", ".webm", ".woff", ".woff2", ".ttf", ".otf",
 })
 
 _ALLOWED_BARE_BASENAMES = frozenset({

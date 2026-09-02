@@ -872,6 +872,25 @@ token that permits `WebAssembly.instantiate` (`'wasm-unsafe-eval'`) and the
 binary-safe body of the bridged `fetch` land with the Widgets host's frontend
 slices.
 
+#### Assets: fonts, audio, video, images
+
+Widget assets are ordinary payload files and travel the same way as
+WebAssembly: your own routes serve them (`register_route` returning the bytes),
+the widget references them by `/api/extensions/<skill>/...` URL, and review
+sees each non-text asset as a content-hash-bound descriptor. The module
+endpoint stays JavaScript-only. Hub packages admit `.png .jpg .jpeg .gif .webp
+.svg`, `.mp3 .ogg .wav`, `.mp4 .webm`, `.woff .woff2 .ttf .otf`, and `.wasm`.
+ClawHub archives are capped at 8 MiB per file, 50 MiB uncompressed in total,
+and 200 files (`ouroboros/marketplace/fetcher.py`); OuroborosHub catalog files
+at 5 MiB each (`ouroboros/marketplace/ouroboroshub.py`). A large runtime image
+— a v86 disk image of several megabytes and up — does not fit a package: have
+the skill download it at runtime (with the `net` permission) into its state
+directory (`state_dir` from `api.get_runtime_info()`) and serve it from there.
+Locally installed skills have no per-file cap; the review pack budget is the
+only bound. The frame's `img-src`/`media-src`/`font-src` entries for your
+skill's route prefix land with the Widgets host's frontend slice; the hub
+admission and review posture above are in place now.
+
 For everything else, prefer declarative components (`form`, `action`, `poll`,
 `subscription`, `stream`, `table`, `chart`, `markdown`, `json`, `kv`, `status`,
 `tabs`, `progress`, media/file/gallery, map/calendar/kanban, `group`, `metric`,
