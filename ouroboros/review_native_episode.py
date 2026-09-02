@@ -372,10 +372,19 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     "chars; the episode fails closed", code="native_bound_below_first_send")
             logical_deadline = getattr(self, "_logical_deadline_monotonic", None)
             while True:
-                # Two clocks bound the episode: the owner's deadline on the
-                # task and the coordinator's logical window for THIS slot —
-                # the same window the session executor honours. Past either,
-                # a paid round would buy an answer the wave can no longer use.
+                # The bound is a SEND bound, enforced BEFORE every provider call
+                # (the transcript IS the next send's context); a materialized
+                # overflow is resolved FIRST, so its typed end and refused-size
+                # fact are never preempted by a clock expiring in the same instant.
+                # A final content-only answer past the number is accepted: no
+                # further send exists for it to poison.
+                if refused_chars or transcript_chars > transcript_cap:
+                    refused_chars = refused_chars or transcript_chars  # the next send this bound refused
+                    break
+                # Two clocks bound an episode that could still send: the owner's
+                # deadline and the coordinator's logical window for THIS slot (the
+                # window the session executor honours) — past either, a paid
+                # round would buy an answer the wave can no longer use.
                 if owner_deadline_exhausted(
                     deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
                 ) or (logical_deadline is not None and time.monotonic() >= float(logical_deadline)):
@@ -383,15 +392,6 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     if shape == "report" and last_content:
                         break  # a report keeps its draft (marked incomplete below)
                     raise _deadline_exhausted_error("owner deadline exhausted mid native review episode")
-                # The bound is a SEND bound: it is enforced BEFORE every
-                # provider call, because the transcript IS the growing context
-                # the next send would carry. A final content-only answer that
-                # lands past the number is accepted — no further send exists
-                # for it to poison, and refusing a completed verdict would
-                # protect nothing.
-                if refused_chars or transcript_chars > transcript_cap:
-                    refused_chars = refused_chars or transcript_chars  # the next send this bound refused
-                    break
                 if not landed and transcript_chars >= landing_at:
                     # Once: the host's budget fact, so the reviewer lands on
                     # the next send instead of walking into the bound.
@@ -423,7 +423,6 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     transport = remaining if transport is None else min(float(transport), remaining)
                 if transport is not None:
                     chat_kwargs["timeout"] = transport
-                last_send_chars = transcript_chars  # what THIS send carries: the custody fact
                 with bind_api_review_paid_stamp(self.assignment.dispatch_stamp):
                     try:
                         msg, usage = chat(**chat_kwargs)
@@ -437,13 +436,13 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                             # of this episode, even when its response never
                             # came back: its receipt keys and custody must not
                             # read as a zero-send refusal.
-                            self._rounds_used = round_idx
+                            self._rounds_used, last_send_chars = round_idx, transcript_chars  # a dispatched send IS the last one
                             landing_sent = landing_sent or landed  # the dispatched send carried the notice
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
                         if isinstance(exc, BudgetExceeded) and shape == "report" and last_content:
                             break  # nothing was sent; a report keeps its draft
                         raise
-                self._rounds_used = round_idx
+                self._rounds_used, last_send_chars = round_idx, transcript_chars  # a returned send is the last physical send
                 landing_sent = landing_sent or landed  # a returned send carried the notice
                 raw_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
                 # absent = no calls; a list = calls; ANY other value (falsy too) = one malformed entry

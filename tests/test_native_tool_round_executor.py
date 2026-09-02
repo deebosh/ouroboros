@@ -740,6 +740,7 @@ def test_every_send_is_measured_exactly_on_the_wire(subject_repo, monkeypatch):
     exact = (len(json.dumps(last["messages"], ensure_ascii=False, default=str))
              + len(json.dumps(last["tools"], ensure_ascii=False, default=str)))
     assert usage["native_rounds"] == 121 and usage["native_transcript_chars"] == exact
+    assert "native_transcript_refused_chars" not in usage  # the refused fact belongs to bound ends only
     # An episode that ignores the landing notice and ends at the bound never
     # made a send above it — measured on every captured send, not the counter.
     bound = 50_000
@@ -758,6 +759,83 @@ def test_every_send_is_measured_exactly_on_the_wire(subject_repo, monkeypatch):
     custody = executor.failure_custody()
     assert custody["native_transcript_chars"] == sends[-1] <= bound
     assert custody["native_transcript_refused_chars"] > bound and custody["native_end_reason"] == "transcript_bound"
+
+
+def test_materialized_overflow_is_resolved_before_the_clock(subject_repo, monkeypatch):
+    """A transcript overflow that has materialized ends the episode
+    `transcript_bound` with its refused-size fact even when the owner deadline
+    expires in the same instant: the clock is consulted only for an episode
+    that could still send, and the refused fact is present EXACTLY when the
+    end reason is transcript_bound."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    huge_id = "call-" + "i" * 3_000
+    calls = [_tool_call("read_file", {"path": "big.txt"}, "c0")] + [
+        _tool_call("read_file", {"path": "greeting.txt"}, huge_id + str(i)) for i in range(3)
+    ]
+    from ouroboros import review_native_episode as native_episode
+
+    llm = _ScriptedLLM([{"tool_calls": calls}, {"content": _VERDICT}])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    # The owner deadline expires the moment the first round has returned —
+    # the same instant the unfittable envelope materializes the overflow.
+    monkeypatch.setattr(native_episode, "owner_deadline_exhausted", lambda **_: executor._rounds_used >= 1)
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        executor.execute()
+    assert exc.value.code == "native_transcript_cap_exceeded"
+    custody = executor.failure_custody()
+    assert custody["native_end_reason"] == "transcript_bound"
+    assert custody["native_transcript_refused_chars"] > 50_000 >= custody["native_transcript_chars"]
+    assert len(llm.calls) == 1 and llm.script  # no send past the bound, none past the clock
+    # The clock still ends an episode that could send: same fake, no overflow.
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"})]}, {"content": _VERDICT}])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        executor.execute()
+    assert exc.value.code == "deadline_exhausted"
+    assert "native_transcript_refused_chars" not in executor.failure_custody()
+
+
+def test_last_send_fact_commits_only_on_a_physical_send(subject_repo):
+    """`native_transcript_chars` is the wire size of the LAST PHYSICAL send: a
+    ledger refusal of the next send (nothing sent) or a transport failure with
+    no positive physical capture never commits the un-dispatched candidate —
+    the fact keeps the previous send, or 0 before any."""
+    from ouroboros.usage_accounting import BudgetExceeded
+
+    def _wire(call):
+        return (len(json.dumps(call["messages"], ensure_ascii=False, default=str))
+                + len(json.dumps(call["tools"], ensure_ascii=False, default=str)))
+
+    class _RefusesOn(_ScriptedLLM):
+        def __init__(self, script, *, failing_call, error):
+            super().__init__(script)
+            self.failing_call, self.error = failing_call, error
+
+        def chat(self, **kwargs):
+            if len(self.calls) + 1 == self.failing_call:
+                raise self.error  # refused BEFORE dispatch: no physical attempt, no capture
+            return super().chat(**kwargs)
+
+    read = {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"})]}
+    # The first send refused by the ledger: zero rounds, fact 0.
+    llm = _RefusesOn([read, {"content": _VERDICT}], failing_call=1, error=BudgetExceeded("root budget exhausted"))
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    with pytest.raises(BudgetExceeded):
+        executor.execute()
+    custody = executor.failure_custody()
+    assert custody["native_end_reason"] == "budget_exhausted" and custody["native_rounds"] == 0
+    assert custody["native_transcript_chars"] == 0 and not llm.calls
+    # A later ledger refusal and a no-capture transport failure after ONE
+    # successful send: the fact is that send, never the refused candidate.
+    for error in (BudgetExceeded("root budget exhausted"), RuntimeError("socket reset before dispatch")):
+        llm = _RefusesOn([read, {"content": _VERDICT}], failing_call=2, error=error)
+        executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+        with pytest.raises(type(error)):
+            executor.execute()
+        custody = executor.failure_custody()
+        assert custody["native_rounds"] == 1 and len(llm.calls) == 1
+        assert custody["native_transcript_chars"] == _wire(llm.calls[0])
 
 
 def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypatch):
