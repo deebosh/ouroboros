@@ -740,3 +740,145 @@ def _update_patterns(drive_root: pathlib.Path, entry: Dict[str, Any]) -> None:
         except Exception:
             log.debug("Failed to rebuild knowledge index after patterns update", exc_info=True)
     log.info("Pattern register updated (%d chars)", len(updated))
+
+
+def build_reflection_from_logs(
+    drive_root: "str | pathlib.Path",
+    task_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Read the most recent reflection entry for ``task_id`` from
+    ``<drive_root>/logs/task_reflections.jsonl`` and return it.
+
+    This is the read-side companion to :func:`append_reflection`: a supervisor-
+    independent, no-LLM path that lets a CLI or test recover the structured
+    reflection artifacts already stored on disk. Returns ``None`` for any
+    failure mode (missing drive root, missing file, missing task_id, corrupt
+    JSONL line, unreadable bytes) — never raises, so the standalone CLI can
+    report a typed no-entry outcome.
+
+    When multiple entries share the same ``task_id`` (e.g. a re-run of the
+    supervisor reflection path), the MOST RECENT entry (last matching line)
+    wins. This matches the natural append order of ``task_reflections.jsonl``
+    and avoids replaying stale memory_actions/backlog_candidates.
+    """
+    if not task_id:
+        return None
+    try:
+        root = pathlib.Path(str(drive_root or "")).expanduser()
+    except Exception:
+        return None
+    if not str(root):
+        return None
+    reflections_path = root / "logs" / REFLECTIONS_FILENAME
+    try:
+        if not reflections_path.is_file():
+            return None
+    except Exception:
+        return None
+    try:
+        raw = reflections_path.read_bytes()
+    except Exception:
+        return None
+    latest: Optional[Dict[str, Any]] = None
+    for line_bytes in raw.splitlines():
+        if not line_bytes.strip():
+            continue
+        try:
+            entry = json.loads(line_bytes.decode("utf-8", errors="replace"))
+        except Exception:
+            # A single corrupt line must not derail the read; skip and keep
+            # scanning for a clean match. The supervisor append_reflection path
+            # only writes whole lines, so a corrupt line is environmental rot.
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("task_id") or "") == str(task_id):
+            latest = entry
+    return latest
+
+
+def _main(argv: Optional[List[str]] = None) -> int:
+    """Standalone CLI entry point for ``python3 -m ouroboros.reflection``.
+
+    Reads the stored reflection for ``task_id`` and prints its reflection
+    narrative followed by reconstructed ``MEMORY_ACTIONS_JSON: [...]`` and
+    ``BACKLOG_CANDIDATES_JSON: [...]`` trailing markers (sourced from the
+    stored structured fields, NOT re-parsed from LLM prose — that was
+    fragile and depended on the LLM's exact format). Returns 0 on success,
+    1 when no entry exists, 2 on argument error.
+    """
+    import argparse
+    import os
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="python3 -m ouroboros.reflection",
+        description=(
+            "Read a stored task reflection from <drive_root>/logs/"
+            f"{REFLECTIONS_FILENAME} and print its reflection narrative plus "
+            "the canonical MEMORY_ACTIONS_JSON: and BACKLOG_CANDIDATES_JSON: "
+            "trailing markers. The structured fields already parsed by "
+            "generate_reflection are the source of truth — the markers are "
+            "reconstructed from them, not re-extracted from LLM prose."
+        ),
+    )
+    parser.add_argument(
+        "--task-id", required=False, default=None,
+        help="Task id to look up. Required unless passed as the first positional arg.",
+    )
+    parser.add_argument(
+        "--drive-root", required=False, default=None,
+        help=(
+            "Override the reflection drive root. Default: $OUROBOROS_DRIVE_ROOT "
+            "or /root/Ouroboros/data."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    task_id = str(args.task_id or "").strip()
+    if not task_id:
+        # Allow positional task_id when the user omits --task-id.
+        leftover = [a for a in (argv if argv is not None else sys.argv[1:])
+                    if not a.startswith("-")]
+        if leftover:
+            task_id = leftover[0].strip()
+    if not task_id:
+        print(
+            "reflection-cli: no task_id given (use --task-id or first positional arg)",
+            file=sys.stderr,
+        )
+        return 2
+
+    drive_root = str(
+        args.drive_root
+        or os.environ.get("OUROBOROS_DRIVE_ROOT", "")
+        or "/root/Ouroboros/data"
+    ).strip()
+
+    entry = build_reflection_from_logs(drive_root, task_id)
+    if entry is None:
+        print(
+            f"reflection-cli: no reflection entry for task_id={task_id!r} in "
+            f"{drive_root}/logs/{REFLECTIONS_FILENAME}",
+            file=sys.stderr,
+        )
+        return 1
+
+    narrative = str(entry.get("reflection") or "").rstrip()
+    memory_actions = entry.get("memory_actions") or []
+    backlog_candidates = entry.get("backlog_candidates") or []
+
+    sys.stdout.write(narrative)
+    if narrative:
+        sys.stdout.write("\n")
+    sys.stdout.write("\nMEMORY_ACTIONS_JSON: ")
+    sys.stdout.write(json.dumps(memory_actions, ensure_ascii=False))
+    sys.stdout.write("\nBACKLOG_CANDIDATES_JSON: ")
+    sys.stdout.write(json.dumps(backlog_candidates, ensure_ascii=False))
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(_main(sys.argv[1:]))
