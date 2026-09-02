@@ -326,7 +326,7 @@ def _swap_ledger_fsync(
         raise UsageLedgerCorrupt(f"usage ledger swap did not land the approved bytes: {path}")
 
 
-def _beat(heartbeat: Optional[Callable[[], bool]]) -> None:
+def _beat(heartbeat: Callable[[], bool]) -> None:
     """Renew the held monetary lock at a checkpoint; ABORT if it is not ours.
 
     The heartbeat answers ownership, and a pass that keeps working after the
@@ -334,9 +334,9 @@ def _beat(heartbeat: Optional[Callable[[], bool]]) -> None:
     new owner appended. So a ``False`` — or an answer we cannot get at all —
     abandons the pass. That is never a failed reservation: the caller reads an
     abort as "not compacted this time" and the ledger stays byte-identical.
+    There is no "no heartbeat" case: an absent one is a caller defect, and it
+    aborts here (a TypeError from the call) rather than proving nothing.
     """
-    if heartbeat is None:
-        return
     try:
         owned = heartbeat()
     except Exception as exc:
@@ -668,14 +668,17 @@ def _build_candidate(
 def compact_usage_ledger_locked(
     root: pathlib.Path | str,
     *,
-    heartbeat: Optional[Callable[[], bool]] = None,
+    heartbeat: Callable[[], bool],
 ) -> Optional[Dict[str, Any]]:
     """One compaction pass. MUST be called under the held monetary ledger lock.
 
     ``heartbeat`` is the lock renewal yielded by ``usage_ledger._locked``: a
     pass over a multi-megabyte ledger can outlive the lock's staleness window,
     and a lock stolen mid-pass is the one way a swap could drop a concurrently
-    appended charge.
+    appended charge. It is REQUIRED, not defaulted: every ownership proof in
+    this module runs through it, so an omitted one would silently turn each of
+    them into a no-op and swap the monetary authority unproven. A caller that
+    drops it gets a TypeError, not a pass that runs blind.
 
     Returns the commit receipt, or ``None`` when the pass aborts by policy
     (nothing foldable, no byte gain, any verification inequality, a live
@@ -805,7 +808,7 @@ def compact_usage_ledger_locked(
 def maybe_compact_usage_ledger_locked(
     root: pathlib.Path | str,
     *,
-    heartbeat: Optional[Callable[[], bool]] = None,
+    heartbeat: Callable[[], bool],
 ) -> bool:
     """Opportunistic trigger on the monetary write path (under the held lock).
 

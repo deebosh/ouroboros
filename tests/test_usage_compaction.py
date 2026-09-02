@@ -1285,6 +1285,11 @@ def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch
             _lock_path(data_root), timeout_sec=0.05, stale_sec=3600.0, poll_sec=0.01,
             owner_aware_stale=True,
         )
+        # ... and the hold is WIRED THROUGH: without the heartbeat every ownership
+        # proof inside the pass — the commit beats, the beat/look/beat around the
+        # rename — becomes a no-op and the swap runs unproven. This is the only
+        # production caller, so the wire is pinned exactly where it is made.
+        assert callable(kwargs.get("heartbeat")), "the pass was entered without the lock's heartbeat"
         holds.append(probe is None)
         if probe is not None:
             platform_layer.release_exclusive_file_lock(_lock_path(data_root), probe)
@@ -1321,11 +1326,11 @@ def test_unprofitable_pass_is_throttled(data_root, monkeypatch):
 
     monkeypatch.setattr(uc, "compact_usage_ledger_locked", counting)
     before = _ledger_lines(data_root)
-    with ua._locked(data_root):
-        assert uc.maybe_compact_usage_ledger_locked(data_root) is False
+    with ua._locked(data_root) as heartbeat:
+        assert uc.maybe_compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is False
     assert _ledger_lines(data_root) == before  # nothing foldable -> no-op
-    with ua._locked(data_root):
-        assert uc.maybe_compact_usage_ledger_locked(data_root) is False
+    with ua._locked(data_root) as heartbeat:
+        assert uc.maybe_compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is False
     assert len(calls) == 1  # second call throttled by the growth guard
 
 
