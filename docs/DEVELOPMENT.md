@@ -1026,9 +1026,14 @@ retrieval: its verdict is authoritative once its window is sourced at ≥200K, a
 a missing-authority finding.
 
 The gate is one logical reviewer interaction per API slot. A same-route
-transport or empty-response rail may make one bounded second physical send. A
-hosted agent-session slot is one multistep execution; local extraction reuses
-its collected transcript rather than launching another session. Actor transport,
+transport or empty-response rail may make one bounded second physical send for
+a PACKET api row. A hosted agent-session slot is one multistep execution; local
+extraction reuses its collected transcript rather than launching another
+session. A native tool-round slot (an api row bound to a configured subagent)
+is likewise one multistep episode with no send count: its bounds are the
+window-derived transcript bound, the owner deadline and the paid ledger, and
+exhaustion is a typed refusal (`native_transcript_cap_exceeded`) for verdict
+shapes or a disclosed `native_incomplete` product for the report shape. Actor transport,
 parse status, semantic verdict, model and route, coverage, cost, and capability
 delta remain distinct durable facts. A retrieving delivery canonicalizes its
 answer by the surface's output SHAPE (`triad_review.review_output_shape`:
