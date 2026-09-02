@@ -248,13 +248,21 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   pass before the answer is even asked. The lock primitives are
   ownership-exact and kernel-guarded: a stale eviction unlinks only while
   HOLDING the flock on the very fd it judged abandoned (path re-checked
-  against it), so of two racing reclaimers at most one can evict; a release
-  unlinks before its close, under the still-held flock; the heartbeat answers
-  OWNERSHIP rather than success, including for a lock file replaced
-  atomically (the path never absent). Windows cannot unlink an open file: its
-  eviction re-checks the path after closing the probe, and a freshly won
-  lock — held open by its owner — is undeletable there, which is what keeps
-  that shape exclusive. The acquisition is identity-checked too: a creator
+  against it), so of two racing reclaimers at most one can evict; on POSIX a
+  release unlinks before its close, under the still-held flock; the heartbeat
+  answers OWNERSHIP rather than success, including for a lock file replaced
+  atomically (the path never absent), and answers `False` — never a renewal —
+  when its own descriptor's identity cannot be read or the kernel refuses the
+  `utime`. Windows cannot unlink an open file: its eviction re-checks the
+  path after closing the probe AND its release re-checks after its close, a
+  freshly won lock — held open by its owner — being undeletable there, which
+  is what keeps that shape exclusive. Disclosed, both tiers: a contention
+  answer (`EAGAIN`) on the creator's OWN fresh file — a foreign flock holder
+  that never unlinks it — leaves that file on the path, stamped with the
+  creator's live pid; the creator re-contends against it until its timeout,
+  and owner-aware acquirers never age it out while this process lives. No
+  in-protocol holder produces that shape (an evictor's flock unlinks what it
+  judged), so it is theoretical on the enforced tier. The acquisition is identity-checked too: a creator
   stalled between its O_EXCL create and its kernel lock (SIGSTOP, a suspend,
   a debugger, clock skew) can be judged abandoned and evicted, and its lock
   then lands on an inode the path no longer names — not a hold: a won lock is
@@ -270,11 +278,22 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   inode. It fails closed, and the file we stamped with our LIVE pid is removed
   with it when its bytes are still exactly the ones we wrote — left behind, no
   owner-aware reclaimer could ever evict it and the lock wedges for good.
-  **Residual, disclosed:** the owner-aware rule reads a RECYCLED pid as alive
-  (POSIX `kill(0)` answers EPERM for another user's process), so a lock whose
-  owner died and whose pid was reused is never reclaimed by age, even though
-  the enforced tier's probe flock would settle it; `state/usage_attempts.lock`
-  then needs a hand repair (`docs/PERSISTENCE.md` says so in its row).
+  **Residual, disclosed (mechanism corrected in round 5.4):** the owner-aware
+  rule asks `pid_is_alive(owner_pid)`, and a RECYCLED pid — one a live
+  process now owns — reads as alive whoever owns it: `kill(0)` succeeds for
+  a same-uid impostor and answers EPERM for another user's, which round 5.4
+  made "alive" too (it read as "dead" before, so another user's recycle was
+  reclaimed through the age path — the probe flock guarding it on the
+  enforced tier — while only a same-uid recycle wedged; this note named the
+  opposite mechanism). So a lock whose owner died and whose pid was reused
+  is never reclaimed by age while the impostor lives: the wedge begins once
+  the dead owner's file is older than the 90 s staleness window
+  (`usage_ledger._locked`, `stale_sec=90.0` — a literal there, not a
+  `config.py` constant) and ends when the impostor exits, even though the
+  enforced tier's probe flock would settle it at once — deliberately not
+  consulted while the pid reads alive, because a mixed-tier name-tier holder
+  holds no flock; `state/usage_attempts.lock` needs a hand repair meanwhile
+  (`docs/PERSISTENCE.md` says so in its row).
   On this tier we do not claim a pass can never be robbed. The bounded claim:
   a concurrent holder can exist only after the lock file is removed by an
   actor OUTSIDE the lock protocol — a hand repair, a foreign helper, a
@@ -284,10 +303,23 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   checkpoint, immediately before every rename attempt and once more AFTER
   the in-swap snapshot look, so the irreducible residual is the interval
   between that last proof and the rename syscall: a charge the robber lands
-  inside it is erased by the swap, then surfaced as `UsageLedgerCorrupt` by
-  the post-swap re-read or quarantined seq-misnumbered at the next read. A
-  `False` heartbeat — or one that cannot be answered at all — aborts the
-  pass, leaving the ledger byte-identical.
+  inside it is ERASED by the swap. Until round 5.4 this note claimed the
+  post-swap re-read or the next read's seq quarantine would surface it;
+  neither can — the re-read compares the NEW inode against the candidate and
+  the archive segment is the pre-row snapshot — so the loss was silent and
+  the pass returned a success receipt. Now, on POSIX, the swap holds the OLD
+  inode open across the rename (the only witness left) and reads whatever
+  landed beyond the proven snapshot's length AFTER the fact: those bytes go
+  to `state/usage_attempts.quarantine.jsonl` (`raw_base64`, the shape a torn
+  tail takes, which flips `integrity_degraded`) and the pass raises
+  `UsageLedgerCorrupt` instead of returning a receipt — the charge is still
+  gone from the live file (never re-appended: `seq` belongs to the live
+  file), but it is preserved, flagged and typed. Detected by size: a
+  same-size in-place rewrite inside that one syscall is not a landed charge
+  and is not seen. Windows cannot hold the destination open through
+  `os.replace`, so there the loss stays silent, disclosed. A `False`
+  heartbeat — or one that cannot be answered at all — aborts the pass,
+  leaving the ledger byte-identical.
   *Name tier* (a filesystem the kernel says cannot lock — one answering
   `EOPNOTSUPP`/`ENOSYS` to `flock`; a lockd-less NFS answers `ENOLCK` and is
   fail-closed, above): the O_EXCL name protocol runs alone with re-check-then-unlink
@@ -437,14 +469,39 @@ the live replay, so this lane ships the join surface the sweep must use:
     not complete, so the question is UNKNOWN — the data root's own handle
     included, since a bare `OSError` from THAT one open (an unreadable root,
     fd exhaustion) would escape the sweep's UNKNOWN mapping entirely. An entry
-    that is not a regular file — a stray `backup/` directory, a FIFO — is no
-    segment: segments are regular files by construction, no generation lives
-    there, and it is skipped. Where a dir-fd is held that classification is an
-    `fstat` after an `O_NONBLOCK` open; where none is (Windows, or any os
+    that OPENS but is not a regular file — a stray `backup/` directory, a
+    FIFO, a device — is no segment: segments are regular files by
+    construction, no generation lives there, and it is skipped; one the
+    kernel refuses to open at all (a UNIX socket, `ENXIO`) is corruption like
+    any other unopenable entry. Where a dir-fd is held that classification is
+    an `fstat` after an `O_NONBLOCK` open; where none is (Windows, or any os
     without `O_DIRECTORY`) it is a `stat` BEFORE the open, because there the
-    open is the step a directory refuses and a writer-less FIFO blocks on. A first row that reads but does not parse is a
-    torn segment from a crashed write: no evidence of any generation, left to
-    the walk;
+    open is the step a directory refuses and a writer-less FIFO blocks on. A
+    first row that reads but does not parse is a torn segment from a crashed
+    write: no evidence of any generation, left to the walk. Every path
+    inspection the reader makes is typed the same way (round 5.4): `pathlib`
+    re-raises every `OSError` but `ENOENT`/`ENOTDIR`/`EBADF`/`ELOOP` from
+    `is_symlink`/`is_dir`, so the symlink bounds on both archive levels and
+    on the named segment (an `archive/usage_ledger` readable but not
+    searchable — the shape a `chmod -R 600 data/` hardening produces —
+    refused the segment's own `lstat`) raise `UsageLedgerCorrupt`, never a
+    bare `OSError`; and on a STAMP-LESS live file the question ends early
+    only on the kernel's exact "no archive directory" (`ENOENT`) — a regular
+    file standing where the directory belongs, or an archive that cannot be
+    inspected, is UNKNOWN (typed), never a silent empty answer — and every
+    case that reads anything then goes through the same typed root open.
+    Disclosed, stamp-less anchor: with the floor at epoch zero every parsable
+    regular file in `archive/usage_ledger/` that is not a byte-prefix of a
+    stamp-less live file is `generation newer` — a fresh ledger started
+    beside a surviving archive (a reset that deleted the ledger alone) leaves
+    every history question a PERMANENT corruption verdict for the life of the
+    install, and an operator's stray `notes.jsonl` there is skipped on a
+    stamped ledger but is corruption on a stamp-less one; move or delete the
+    archive with the ledger, or keep both. Disclosed, lock-free readers: a
+    compaction that commits between a question's live-header read and its
+    anchor scan makes that ONE question UNKNOWN (`generation newer`: the
+    freshly committed segment is prefix-tested against the new live file);
+    the next question walks the new chain;
   - the archive directory must be **this data root's own**: neither
     `archive/` nor `archive/usage_ledger` may be a symlink, the resolved
     directory must be exactly the resolved root's archive path, and no segment
@@ -547,13 +604,18 @@ byte authority.
    swapped between the chain walk and the anchor scan (a look-alike carrying
    the newest NAME with the forged live header included), an archive entry the
    anchor cannot open (the data root's own handle included), a named segment
-   that is not a regular file, and an unreadable leading row are each typed
-   corruption (UNKNOWN/skip), never silent absence and never a bare
-   `OSError`; an uncommitted orphan segment of the live generation is NOT
-   corruption (its bytes are still a prefix of the live file), a stray
-   directory or FIFO in the archive is no segment and is skipped on both
-   shapes of the scan (the FIFO cannot hang the question), and the chain union
-   is built once per chain and cached within a bound.
+   that is not a regular file, an unreadable leading row, and a path
+   inspection the kernel refuses (the symlink bound on either archive level
+   or on the named segment; the stamp-less archive check, which ends the
+   question early only on an exact `ENOENT`) are each typed corruption
+   (UNKNOWN/skip), never silent absence and never a bare `OSError`; an
+   uncommitted orphan segment of the live generation is NOT corruption (its
+   bytes are still a prefix of the live file), a stray directory or FIFO in
+   the archive — an entry that opens but is not a regular file — is no
+   segment and is skipped on both shapes of the scan (the FIFO cannot hang
+   the question; an entry the kernel refuses to open at all, a UNIX socket,
+   is corruption), and the chain union is built once per chain and cached
+   within a bound.
 6. **Idempotency survives**: subscription/external replays after compaction
    dedup (no double charge) and still conflict-check; legacy import stays
    correct with and without its watermark.
@@ -589,8 +651,11 @@ byte authority.
    look answered True refuses it too, so the last proof precedes the rename
    by one syscall); a pass that loses the hold abandons its work at its next
    proof instead of swapping (bounded, not absolute: a charge landed by an
-   out-of-protocol holder inside that one syscall is erased, then surfaced by
-   the post-swap re-read or quarantined at the next read); of two reclaimers
+   out-of-protocol holder inside that one syscall is erased by the rename —
+   on POSIX its bytes are read back from the old inode held open across the
+   swap, quarantined with `integrity_degraded` raised, and the pass raises
+   typed instead of returning a receipt; on Windows the loss is silent,
+   disclosed); of two reclaimers
    racing over a stale lock at most one can evict (eviction only under the
    held flock on the judged fd); a creator evicted while still lock-less
    never returns a descriptor, nor does one whose own identity cannot be read

@@ -5487,3 +5487,130 @@ Cross-cutting disclosures:
      data root was an isolated mktemp); the lane's HEAD unmoved after both.
    With this recorded, round 5.3 is executed and verified on this host; the
    Windows LockFileEx mechanics remain owed to the 3-OS CI matrix (item 3a).
+
+## From the C6 micro-round 5.4 (owner batch №12 A, base 096437c2)
+
+1. Owner-bounded micro-round over the round-5.3 candidate `096437c2`: the
+   residual list left by the Fable lenses and the independent gpt-5.6-sol
+   read-only review — eight items, no new exploration. All eight disposed:
+   seven changed in code with red-first pins, one (R8 c–f) closed by the
+   disclosures it asked for. Full disposition and the red-first table:
+   `docs/v7next/C6_REVIEW_PACKET.md` §9, "Round 5.4".
+   - **ENOLCK fails closed; the tier is decided once under a lock** (R1,
+     HIGH): "no locks available" is a missing lock daemon OR an exhausted
+     kernel lock table, not a capability answer, yet it selected the name
+     tier. The unsupported set is exactly `EOPNOTSUPP`/`ENOTSUP`/`ENOSYS`
+     (winerror 1 → ENOSYS, 50 → EOPNOTSUPP); ENOLCK keeps the enforced tier
+     and every live acquisition the kernel refuses with it fails closed, so
+     a lockd-less NFS refuses every monetary write typed instead of running
+     the name protocol; `_KERNEL_LOCK_TIER_LOCK` makes the probe
+     single-flight. SUPERSEDES the round-5 and round-5.3 entries above where
+     they spell the unsupported set with ENOLCK. Commit `7ce7e83d`.
+   - **A pid that refuses our signal is alive** (R7, MEDIUM): `pid_is_alive`
+     folded EPERM into "dead", so another user's recycled pid was reclaimed
+     through the age path and only a same-uid recycle wedged — the OPPOSITE
+     of the mechanism the round-5.3 L2 bullet above, DESIGN §8 and
+     PERSISTENCE stated. EPERM reads alive (the process exists); only ESRCH
+     is dead; `pid_provably_gone` is the exact negation and became one line.
+     The real residual: any live impostor wedges the lock from the 90 s
+     staleness window (`usage_ledger._locked`, `stale_sec=90.0`) until it
+     exits. SUPERSEDES the L2 bullet's mechanism. Commit `01c89685`.
+   - **The name-tier refusal is "told" only once its row landed** (R2,
+     MEDIUM): `append_jsonl` reports exhausted retries as `False`; the mark
+     now follows a `True` answer only. Commit `12558046`.
+   - **The history reader types every path inspection, the stamp-less
+     question included** (R3 + R4, MEDIUM): `pathlib` re-raises every
+     `OSError` but ENOENT/ENOTDIR/EBADF/ELOOP; the symlink bounds on both
+     archive levels and on the named segment, and the stamp-less fast path
+     (`is_dir()`: a silent `frozenset()` for a regular file where the
+     directory belongs, a bare `OSError` for an uninspectable one), are
+     `UsageLedgerCorrupt` now; before any compaction the question ends early
+     only on an exact ENOENT. Commit `d99ff6a9`.
+   - **A charge erased inside the swap's one syscall is quarantined and
+     surfaced, never receipted** (R5, MEDIUM): the round-5.2 §3(b) line above
+     and the round-5.3 §3(b) line — "erased, then surfaced as
+     `UsageLedgerCorrupt` by the post-swap re-read or quarantined
+     seq-misnumbered at the next read" — were FALSE: neither could see it,
+     the loss was silent and a success receipt was returned. On POSIX the
+     swap holds the old inode open across the rename and reads back what
+     landed beyond the proven snapshot: quarantined (`raw_base64`,
+     `integrity_degraded`), typed raise, no receipt, never re-appended;
+     Windows stays a disclosed silent loss. SUPERSEDES both lines. Commit
+     `ea4d4337`.
+   - **The reserve path is pinned to the held lock's OWN heartbeat** (R6,
+     MEDIUM): `assert callable(...)` let a constant-True stub survive the
+     battery; the pin now requires the aged lock renewed. Commit `9306f962`.
+   - **`_build_candidate`'s beat is required; the heartbeat's blind spots
+     are pinned** (R8a, R8b, LOW). Commit `02338c9b`.
+   - **Disclosed** (R8c–f): the transient `generation newer` UNKNOWN when a
+     compaction commits mid-question; a ledger reset beside a surviving
+     archive as a permanent verdict (PERSISTENCE both rows); "is skipped"
+     qualified to entries that OPEN (a UNIX socket is corruption); the
+     POSIX-only release-under-flock and the contention-branch orphan. Docs
+     commit (this section).
+   Two no-behaviour commits paid for the pins inside the 1600 hard cap
+   without a neighbour suite: `bd9e99a4` (a `compacted` fixture folding
+   twenty-one seed-then-compact preambles, −39) and `b9c43911`
+   (argument-list/data-literal reflows, −28); every claim kept.
+2. Red observed, not argued (each pin run against the exact pre-fix shape or
+   mutation it names, in this worktree; pin red, fix applied or mutation
+   reverted, pin green):
+
+   | pin | mutation / base | red observed |
+   |---|---|---|
+   | `test_a_pid_that_refuses_our_signal_is_alive_and_its_lock_is_not_reclaimed` | `platform_layer.py` @ `bd9e99a4` | `assert (False is True)`; the aged lock evicted, fd 3 returned |
+   | `test_the_capability_probe_decides_once_and_leaves_no_residue` (ENOLCK clause) | `platform_layer.py` @ `01c89685` | `AssertionError: 37` — errno 37 selected the name tier |
+   | `test_enolck_keeps_the_enforced_tier_and_the_acquisition_fails_closed` | same | `enforced = False`, fd 3 returned on the name tier |
+   | `test_two_threads_racing_the_first_probe_run_one_probe_and_read_one_tier` | same | `2 == 1`: two probes |
+   | `test_the_pass_refuses_on_the_name_tier_while_appends_continue` (False append) | `usage_compaction.py` @ `7ce7e83d` | `FileNotFoundError: …/logs/events.jsonl` |
+   | `test_a_stamp_less_ledger_still_inspects_its_archive_fail_closed` | `usage_compaction.py` @ `b9c43911` | `DID NOT RAISE` (answered `frozenset()`); bare `PermissionError` |
+   | `test_a_path_inspection_the_reader_cannot_make_is_typed_corruption` | same | bare `PermissionError` from the segment's lstat; bare `PermissionError` from `is_symlink` |
+   | `test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt[erased]` | `usage_compaction.py` @ `d99ff6a9` | `DID NOT RAISE`: receipt returned, the charge gone, no quarantine, `integrity_degraded` False |
+   | `test_reserve_path_compacts_only_past_config_threshold` (heartbeat clause) | M9 (`heartbeat=lambda: True`) | `a stub, not the held lock's heartbeat`; 84 other items green under M9 |
+   | `test_a_lock_whose_identity_cannot_be_read_is_never_a_hold` (refresh clauses) | M15 / M16 | `assert True is False` under each |
+   | `test_the_long_build_and_verification_section_beats_the_lock` (control) | M10 (`beat` dropped at the call) | `TypeError … missing 1 required positional argument: 'beat'` → `assert None is not None` |
+3. Disclosed, not fixed: (a) a lockd-less NFS `state/` now fails every
+   monetary write closed (the owner's decision; the repair is a filesystem
+   that locks); (b) no `events.jsonl` row is fsync'd — the per-process mark
+   dies with the crash that could lose the row, a delayed writeback error
+   with the process alive is the residual; (c) R5 detects by size (a
+   same-size in-place rewrite inside the syscall is not a landed charge) and
+   Windows stays silent; (d) the recycled-pid wedge now covers another-uid
+   recycles too, the flock alternative would evict a live mixed-tier holder;
+   (e) R8c–f as disclosures; no socket pin (the 108-byte `AF_UNIX` cap, a
+   `chdir` hazard); (f) size: `platform_layer.py` 1500 → 1497 and
+   `usage_compaction.py` 1197 → 1245 inside their bands (the band rationale
+   is immutable between adjacent manifests by the ratchet's own rule, so the
+   owner's "extend it in the same commit" is recorded here instead),
+   `tests/test_usage_compaction.py` 1597 → 1597; (g) Windows unexecuted here;
+   (h) sol's tier-attestation-on-the-hold suggestion not taken (the module
+   lock closes the intra-process disagreement; cross-process mixed tiers
+   remain the round-5.2 disclosure).
+4. Gate evidence (this host, isolated env roots per invocation, venv python
+   3.10.12; `git rev-parse HEAD` verified unmoved after every pytest run;
+   author and committer `Ouroboros <311266734+ouroboros-agent@users.noreply.github.com>`
+   on every commit, no push):
+   - targeted at `02338c9b` (docs in the tree, uncommitted):
+     `tests/test_usage_compaction.py` + `tests/test_lockfile_helpers.py`
+     85 passed, 1 skipped (Windows-only), exit 0; the four other
+     `tests/test_usage_*.py` suites + `tests/test_persistence_inventory.py`
+     94 passed, exit 0; the `pid_is_alive`/lock consumers
+     (`test_process_custody`, `test_services_tool_v2`, `test_launcher_sync`,
+     `test_extension_reload_all`, `test_review_reconciliation_custody`,
+     `test_evolution_restart_claims`,
+     `test_available_subagents_runtime_review_fixes`,
+     `test_launcher_server_reaper`, `test_bughunt_fixes`,
+     `test_task_status_flow`, `test_evolution_commit_receipt`,
+     `test_skill_lifecycle_queue`, `test_context`, `test_startup_hygiene`,
+     `test_atomic_write_v639`) 382 passed, exit 0; no
+     `tests/test_platform_layer*.py` exists in this tree;
+   - `ruff check . --select F` exit 0; `scripts/check_domains.py` exit 0;
+     `scripts/regenerate_size_ratchet.py --check` exit 0 (at every commit of
+     the round the module stayed inside its band and the suite under the
+     hard cap); `scripts/regenerate_inventories.py --check` exit 0;
+     `git diff --check` exit 0 — each as its own command, rc printed.
+   With this recorded, round 5.4 is executed on this host; the CI-shape
+   battery and the serial pass were not re-run for this micro-round (its
+   surfaces are the two pinned suites and the lock/liveness consumers above,
+   all run), and the Windows LockFileEx mechanics remain owed to the 3-OS CI
+   matrix.

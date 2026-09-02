@@ -32,7 +32,7 @@ absolutes are bounded per tier.
 | surface | change | why |
 |---|---|---|
 | `docs/v7next/DESIGN_USAGE_COMPACTION.md` | NEW — the ratified contract | invariants, fold scope, decimal rule, seq policy, crash order, trigger, CPL-5 join |
-| `ouroboros/usage_compaction.py` | NEW leaf (D16, ~490 lines; round 5.2: `owned_and_intact` beats on both sides of its look, the typed durable `usage_ledger_compaction_refused` event, non-regular archive entries classified — `O_NONBLOCK` open, `S_ISREG` — and typed `_load_segment` failures; round 5.3: the heartbeat REQUIRED by both entry points, the orphan exemption a byte-prefix proof read from the classified descriptor, the anchor running on a stamp-less live file, the root handle typed, the name-tier mark following the landed row, the path-shape scan classifying before the open, the chain-union cache bounded — 1197 lines) | fold policy + prove-then-swap + archive + history readers; imports FROM `usage_ledger`/`_usage_rows`, called INTO by `usage_accounting` — the one-way substrate seam is unchanged |
+| `ouroboros/usage_compaction.py` | NEW leaf (D16, ~490 lines; round 5.2: `owned_and_intact` beats on both sides of its look, the typed durable `usage_ledger_compaction_refused` event, non-regular archive entries classified — `O_NONBLOCK` open, `S_ISREG` — and typed `_load_segment` failures; round 5.3: the heartbeat REQUIRED by both entry points, the orphan exemption a byte-prefix proof read from the classified descriptor, the anchor running on a stamp-less live file, the root handle typed, the name-tier mark following the landed row, the path-shape scan classifying before the open, the chain-union cache bounded — 1197 lines; round 5.4: the refusal mark following a True append only, every reader path inspection typed and the stamp-less check exact on ENOENT, the swap's old-inode witness quarantining an erased charge and raising instead of receipting, `_build_candidate`'s beat required — 1245 lines) | fold policy + prove-then-swap + archive + history readers; imports FROM `usage_ledger`/`_usage_rows`, called INTO by `usage_accounting` — the one-way substrate seam is unchanged |
 | `ouroboros/usage_ledger.py` | `_validate_records` learns the two baseline kinds; round 5: `LOCK_REL` (lock-path SSOT) and the atomic writer routing its precondition through `replace_atomic` | head-only baseline block, exactly one header at seq 1, group rows joined by `baseline_id` + positive `folded_attempt_count`; a baseline row in an appended tail or after any non-baseline row = corrupt. Everything else (locking, append arithmetic, quarantine, resume fingerprints) is untouched |
 | `ouroboros/_usage_rows.py` | `_summary` + `_physical_call_count` baseline-aware | header skipped; group rows: count axes × `folded_attempt_count`, sums added once. Weight-1 paths are byte-equivalent to the previous code (pure refactor for existing kinds) |
 | `ouroboros/usage_accounting.py` | +5 lines in `reserve_attempt` | the opportunistic trigger under the already-held monetary lock; contained (never raises into the reservation) |
@@ -41,9 +41,9 @@ absolutes are bounded per tier.
 | `ouroboros/domains.toml`, `docs/DOMAIN_MAP.md` | new module seated D16; graph regenerated via `check_domains.py --write` | manifest completeness gate |
 | `docs/PERSISTENCE.md` | usage-ledger row rewritten (bounded by compaction); NEW `archive/usage_ledger/segment_*.jsonl` row | inventory truth; scan pin 123→124 in `tests/test_persistence_inventory.py` |
 | `tests/test_gateway_abi3_removals.py` | one per-site allowlist row | `_build_candidate` writes the internal ledger-plane `cost_usd` key (same class as every existing ledger writer row there) |
-| `tests/test_usage_compaction.py` | NEW pin suite (61 test items after round 5.3; the suite entered the 1001-1500 size band with a recorded rationale — it stood at 1512 lines for one commit, `79a1b9fb`, with the manifest stale, and the round-5.2 fold `6ad110e9` returned it inside the band without a new abstraction; 1492 after round 5.2 — and LEFT the band in round 5.3 at `e08a0392`: 1597 at the tip, in the ungated 1501-1600 zone, the manifest regenerated with it; the owner decision is stated in §9 "Round 5.3") | see §3, §6, §7, §8 and §9 |
-| `tests/test_lockfile_helpers.py` | +5 lock-ownership pins in round 3, +2 in round 4, +5 in round 5 (one Windows-only), +2 in round 5.2 (the lock-less creator; LockFileEx classification), +2 in round 5.3 (an unreadable own identity is never a hold; the design note's refusal sets) with the classification pin extended to the unsupported set | the finding-1 fixes are platform primitives, so they are pinned where those primitives live |
-| `ouroboros/platform_layer.py` | lock ownership: `_lock_identity`, inode-guarded stale eviction and release, ownership-reporting heartbeat; round 5: `kernel_file_locks_enforced` capability predicate (enforced vs name tier), fail-closed kernel refusal, LockFileEx error classification; round 5.2: the owner pid written BEFORE the kernel lock and a won lock returned only while the path still names it (an evicted creator re-contends), `_win32_lock_error` classifying ERROR_LOCK_VIOLATION alone as busy; round 5.3: a descriptor whose own identity cannot be read is never a hold (its live-pid stamp removed with it), `_WIN32_LOCK_ERRNOS` mapping ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED onto the unsupported set, both kill-tree sweeps on `force_kill_pid` (exactly 1500 lines) | round 3, finding 1; round 5, finding 1; round 5.2, findings 1 and W; round 5.3, findings 1 and L5 |
+| `tests/test_usage_compaction.py` | NEW pin suite (61 test items after round 5.3; the suite entered the 1001-1500 size band with a recorded rationale — it stood at 1512 lines for one commit, `79a1b9fb`, with the manifest stale, and the round-5.2 fold `6ad110e9` returned it inside the band without a new abstraction; 1492 after round 5.2 — and LEFT the band in round 5.3 at `e08a0392`: 1597 at the tip, in the ungated 1501-1600 zone, the manifest regenerated with it; the owner decision is stated in §9 "Round 5.3"; round 5.4: 66 items, back at 1597 after five new/extended pins — paid for by a `compacted` fixture folding twenty-one seed-then-compact preambles and by argument-list/data-literal reflows, no claim dropped) | see §3, §6, §7, §8 and §9 |
+| `tests/test_lockfile_helpers.py` | +5 lock-ownership pins in round 3, +2 in round 4, +5 in round 5 (one Windows-only), +2 in round 5.2 (the lock-less creator; LockFileEx classification), +2 in round 5.3 (an unreadable own identity is never a hold; the design note's refusal sets) with the classification pin extended to the unsupported set, +3 in round 5.4 (a pid answering EPERM is alive and its aged lock is not reclaimed; ENOLCK keeps the enforced tier and the acquisition fails closed; two threads racing the first probe run one probe) with the probe pin's name-tier selector moved to EOPNOTSUPP and an ENOLCK clause, and the identity pin extended with the heartbeat's refresh clauses | the finding-1 fixes are platform primitives, so they are pinned where those primitives live |
+| `ouroboros/platform_layer.py` | lock ownership: `_lock_identity`, inode-guarded stale eviction and release, ownership-reporting heartbeat; round 5: `kernel_file_locks_enforced` capability predicate (enforced vs name tier), fail-closed kernel refusal, LockFileEx error classification; round 5.2: the owner pid written BEFORE the kernel lock and a won lock returned only while the path still names it (an evicted creator re-contends), `_win32_lock_error` classifying ERROR_LOCK_VIOLATION alone as busy; round 5.3: a descriptor whose own identity cannot be read is never a hold (its live-pid stamp removed with it), `_WIN32_LOCK_ERRNOS` mapping ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED onto the unsupported set, both kill-tree sweeps on `force_kill_pid` (exactly 1500 lines); round 5.4: ENOLCK out of the unsupported set (fails closed), winerror 1 onto ENOSYS, the tier cache decided once under `_KERNEL_LOCK_TIER_LOCK`, `pid_is_alive` reading EPERM as alive with `pid_provably_gone` its one-line negation (1497 lines) | round 3, finding 1; round 5, finding 1; round 5.2, findings 1 and W; round 5.3, findings 1 and L5; round 5.4, R1 and R7 |
 | `ouroboros/utils.py` | `replace_atomic(precondition=)`: the precondition is asked before EVERY attempt, the Windows sharing-violation retries included; returns False without replacing when refused | round 5, finding 2 |
 | `ADOPTION_v7next.md` | CPL-4 row: C6 landed + verification hook | adoption gate |
 | `docs/v7next/LEDGER_CORRECTIONS.md` | append-only C6 lane section | provenance |
@@ -146,6 +146,17 @@ absolutes are bounded per tier.
   regular file`); the name-tier pin requires exactly one durable
   `usage_ledger_compaction_refused` row and the tripwire text naming the
   tier (§9, second block)
+- round 5.4 adds four in `tests/test_lockfile_helpers.py` and, in this
+  suite, two new pins plus three strengthened ones: a stamp-less ledger still
+  inspects its archive fail-closed (a regular file where the directory
+  belongs, an uninspectable archive); a path inspection the reader cannot
+  make is typed corruption (the not-searchable segment directory, an
+  `is_symlink` the kernel refuses); the swap-lie pin gains the `erased`
+  variant (a charge landed inside the rename syscall is quarantined, flags
+  integrity, and the pass raises instead of receipting); the name-tier pin
+  gains the append-returned-False shape; the reserve-path pin proves the
+  heartbeat it is handed is THAT lock's (aged lock renewed), not a callable
+  (§9 "Round 5.4")
 
 Mutation-probed red (not just green-once): `_summary` weight math, group-sum
 rounding, folding of dispatched rows — each flips at least one pin.
@@ -225,9 +236,19 @@ rounding, folding of dispatched rows — each flips at least one pin.
    eviction is impossible under the held flock and the heartbeat-fresh
    mtime); such a robbery is caught at the next proof, and the irreducible
    residual is the interval between the final ownership proof and the rename
-   syscall, in which a charge landed by that holder would be erased — then
-   surfaced as `UsageLedgerCorrupt` by the post-swap re-read, or quarantined
-   seq-misnumbered on the next read. In-protocol, no writer can append in the
+   syscall, in which a charge landed by that holder IS erased by the rename.
+   *(Correction, round 5.4: this packet, DESIGN §8/§12.9 and the round-5.2
+   ledger line said the loss was "then surfaced by the post-swap re-read or
+   quarantined seq-misnumbered on the next read" — neither could ever see it:
+   the re-read compares the NEW inode against the candidate and the archive
+   segment is the pre-row snapshot, so the loss was SILENT and a success
+   receipt was returned. Now, on POSIX, the swap holds the old inode open
+   across the rename and reads back what landed beyond the proven snapshot:
+   those bytes are quarantined — `state/usage_attempts.quarantine.jsonl`,
+   which flips `integrity_degraded` — and the pass raises typed instead of
+   receipting; the charge is not re-appended. Windows cannot hold the
+   destination open through `os.replace`: silent there, disclosed. §9 "Round
+   5.4", R5.)* In-protocol, no writer can append in the
    compare→replace window, because every writer of this ledger takes the same
    owner-aware lock and has no unlocked fallback. On the name tier no such
    claim is made at all: the pass does not run there (§5.10). The round-5
@@ -240,9 +261,24 @@ rounding, folding of dispatched rows — each flips at least one pin.
    any generation rather than corruption, so it cannot deny service to the
    whole history; a directory or special file is not a segment (segments are
    regular files by construction) and is skipped — a FIFO is opened
-   `O_NONBLOCK`, so it cannot hang the question either; an entry the scan
+   `O_NONBLOCK`, so it cannot hang the question either *(qualified, round 5.4:
+   an entry that OPENS but is not a regular file is skipped; one the kernel
+   refuses to open at all — a UNIX socket, ENXIO — is corruption like any
+   other unopenable entry)*; an entry the scan
    cannot list, open or read IS corruption — the scan did not complete, the
-   data root's own handle included since round 5.3 — and the scan runs through
+   data root's own handle included since round 5.3, and since round 5.4 every
+   path inspection the reader makes (the symlink bounds on both archive levels
+   and on the named segment; the stamp-less archive check, which ends the
+   question early only on an exact ENOENT) is typed the same way instead of
+   escaping as a bare `OSError` or a silent empty answer. Disclosed since
+   round 5.4: with a stamp-less live file every parsable regular file in the
+   archive that is not its byte-prefix is `generation newer`, so a ledger
+   reset beside a surviving archive is a PERMANENT corruption verdict on every
+   history question (reset both together) and an operator's stray JSON file
+   there is corruption on a stamp-less ledger only; and the readers being
+   lock-free, a compaction that commits between a question's live-header read
+   and its anchor scan makes that ONE question UNKNOWN (`generation newer`),
+   the next question walking the new chain — and the scan runs through
    the very handle the chain walk held, entries opened relative to it (and
    without a dir-fd the classification happens BEFORE the open, which is the
    step a directory refuses on Windows and a FIFO blocks on: round 5.3). The round-5 wording ("an entry the scan cannot list, open
@@ -264,11 +300,18 @@ rounding, folding of dispatched rows — each flips at least one pin.
     explicit in round 5): `platform_layer.kernel_file_locks_enforced` locks a
     scratch file in the lock directory once per process; only the kernel's
     own "this filesystem cannot" selects the name tier — exactly
-    ENOLCK/EOPNOTSUPP/ENOTSUP/ENOSYS (until round 5.3 this packet and the
-    design note spelled three of the four), and since round 5.3 the two
-    Win32 answers of a volume without byte-range locks — ERROR_INVALID_FUNCTION,
-    which LockFileEx answers on `\\wsl$` (microsoft/WSL#5762), and
-    ERROR_NOT_SUPPORTED, error 50 on a Samba share — map onto the first two:
+    EOPNOTSUPP/ENOTSUP/ENOSYS *(correction, round 5.4: ENOLCK was in the set
+    until then — "no locks available" is a missing lock daemon OR an exhausted
+    kernel lock table, not a capability answer, and it selected the tier where
+    the round-3 race returns; it now keeps the enforced tier and every live
+    acquisition the kernel refuses with it fails closed, so a lockd-less NFS
+    refuses every monetary write with `UsageAccountingError` instead of running
+    the name protocol; the per-directory verdict is decided ONCE under a module
+    lock, so racing threads share one probe — §9 "Round 5.4", R1)*, and since
+    round 5.3 the two Win32 answers of a volume without byte-range locks —
+    ERROR_INVALID_FUNCTION, which LockFileEx answers on `\\wsl$`
+    (microsoft/WSL#5762), and ERROR_NOT_SUPPORTED, error 50 on a Samba share —
+    map onto ENOSYS and EOPNOTSUPP (onto ENOLCK and EOPNOTSUPP before round 5.4):
     CPython's winerror→errno table lands both on EINVAL, which left the name
     tier structurally unreachable on Windows, so a lock-less volume there
     failed EVERY monetary append closed instead of degrading to it.
@@ -279,8 +322,23 @@ rounding, folding of dispatched rows — each flips at least one pin.
     age — the deliberate trade of an availability incident (the wedged writer
     must die first) for the correctness incident (age-evicting a live
     monetary writer). Windows cannot unlink an open file: its eviction and
-    release re-check the path after closing the probe, and a freshly won
-    lock — held open by its owner — is undeletable there; Windows also has no
+    release re-check the path after the close (release included — the POSIX
+    "unlink under the still-held flock" is POSIX only, stated so since round
+    5.4), and a freshly won lock — held open by its owner — is undeletable
+    there. Disclosed since round 5.4, both tiers: a contention answer on the
+    creator's OWN fresh file (a foreign flock holder that never unlinks it)
+    leaves that live-pid-stamped file on the path — the creator re-contends
+    against it until its timeout and owner-aware acquirers never age it out
+    while the process lives; no in-protocol holder produces that shape.
+    Also since round 5.4 the recycled-pid disclosure names its real
+    mechanism: `pid_is_alive` read EPERM as DEAD, so another user's recycled
+    pid was reclaimed through the age path (flock-guarded on the enforced
+    tier) and only a same-uid recycle wedged — the opposite of what round 5.3
+    wrote; EPERM now reads alive (the process exists), so ANY live impostor —
+    same uid or another — wedges the lock from the 90 s staleness window
+    (`usage_ledger._locked`, `stale_sec=90.0`) until it exits, the probe
+    flock deliberately unconsulted while the pid reads alive (a mixed-tier
+    name-tier holder has none); Windows also has no
     `dir_fd`/`O_DIRECTORY`, so its archive bound and anchor scan stay
     path-based (fail-closed on any OSError since round 5). *Name tier* —
     kernel-lockless filesystems only — keeps the O_EXCL name protocol with
@@ -474,7 +532,7 @@ mutation it names, on this base, before the fix landed.
 
 | # | what round 4 left open | fix | red-first pin |
 |---|---|---|---|
-| 1 | HIGH — on ANY `OSError` from the kernel lock the acquisition silently degraded to the pathname/inode name tier, where the round-3 race returns (and on Windows the errno-less `LockFileEx` failure fell into the same degrade) | the tier is an explicit capability predicate, `platform_layer.kernel_file_locks_enforced(lock_path)`: one scratch-file kernel lock per lock directory per process; only ENOLCK/EOPNOTSUPP/ENOSYS select the name tier. On the enforced tier contention (EAGAIN/EACCES/EWOULDBLOCK) stands down and re-contends; every other refusal fails CLOSED — no descriptor, our own file removed, a stale lock never evicted without the held flock. `_win32_lock` raises an `OSError` carrying the Windows error so `ERROR_LOCK_VIOLATION` classifies as contention. The name tier makes no kernel call at all, and `compact_usage_ledger_locked` refuses it with the typed `NAME_TIER_REFUSAL` (logged; appends continue under the name protocol, disclosed). `usage_ledger.LOCK_REL` is the lock-path SSOT *(correction, round 5.3: the busy set is EAGAIN/EWOULDBLOCK alone — EACCES fails closed since round 5.2, finding W — and the unsupported set is ENOLCK/EOPNOTSUPP/ENOTSUP/ENOSYS plus the two Win32 codes round 5.3 maps onto it; §9 "Round 5.3", findings 2 and L5)* | `test_a_kernel_refusal_that_is_not_contention_fails_closed`, `test_a_stale_lock_is_never_evicted_without_the_kernel_hold`, `test_the_name_tier_is_chosen_by_the_predicate_not_by_a_refusal`, `test_the_capability_probe_decides_once_and_leaves_no_residue`, `test_windows_lockfileex_contention_reads_as_busy` (skipif not Windows) in `tests/test_lockfile_helpers.py`; `test_the_pass_refuses_on_the_name_tier_while_appends_continue` |
+| 1 | HIGH — on ANY `OSError` from the kernel lock the acquisition silently degraded to the pathname/inode name tier, where the round-3 race returns (and on Windows the errno-less `LockFileEx` failure fell into the same degrade) | the tier is an explicit capability predicate, `platform_layer.kernel_file_locks_enforced(lock_path)`: one scratch-file kernel lock per lock directory per process; only ENOLCK/EOPNOTSUPP/ENOSYS select the name tier. On the enforced tier contention (EAGAIN/EACCES/EWOULDBLOCK) stands down and re-contends; every other refusal fails CLOSED — no descriptor, our own file removed, a stale lock never evicted without the held flock. `_win32_lock` raises an `OSError` carrying the Windows error so `ERROR_LOCK_VIOLATION` classifies as contention. The name tier makes no kernel call at all, and `compact_usage_ledger_locked` refuses it with the typed `NAME_TIER_REFUSAL` (logged; appends continue under the name protocol, disclosed). `usage_ledger.LOCK_REL` is the lock-path SSOT *(correction, round 5.3: the busy set is EAGAIN/EWOULDBLOCK alone — EACCES fails closed since round 5.2, finding W — and the unsupported set is ENOLCK/EOPNOTSUPP/ENOTSUP/ENOSYS plus the two Win32 codes round 5.3 maps onto it; §9 "Round 5.3", findings 2 and L5; correction, round 5.4: ENOLCK left the set — it fails closed — so the set is EOPNOTSUPP/ENOTSUP/ENOSYS, with winerror 1 mapped onto ENOSYS; §9 "Round 5.4", R1)* | `test_a_kernel_refusal_that_is_not_contention_fails_closed`, `test_a_stale_lock_is_never_evicted_without_the_kernel_hold`, `test_the_name_tier_is_chosen_by_the_predicate_not_by_a_refusal`, `test_the_capability_probe_decides_once_and_leaves_no_residue`, `test_windows_lockfileex_contention_reads_as_busy` (skipif not Windows) in `tests/test_lockfile_helpers.py`; `test_the_pass_refuses_on_the_name_tier_while_appends_continue` |
 | 2 | HIGH — the ownership→snapshot precondition ran once before `utils.replace_atomic`, which retries `os.replace` up to ten times with pauses on a Windows sharing violation: a charge appended (or a hold lost) between attempts was erased by the retry that landed | `replace_atomic(src, dst, *, precondition=None)` asks the precondition immediately before EVERY attempt, retries included, and returns False without replacing when refused; `_write_bytes_atomic_fsync` routes its ownership-first, snapshot-second proof through it. POSIX behaviour is unchanged (one syscall) | `test_a_refused_rename_re_proves_the_hold_and_the_snapshot_before_retrying[append]` / `[hold_lost]` (first attempt raises `PermissionError`, the intrusion lands, the second call never happens, the row survives / the ledger is byte-identical) |
 | 3 | MEDIUM — `_no_newer_archived_epoch` walked the archive by pathname and turned `OSError` into "no evidence": a directory swapped after the safe chain walk could hide a newer generation and admit a forged rollback (the §5.10 claim was false) | `archived_attempt_ids` opens the `O_DIRECTORY\|O_NOFOLLOW` handle chain ONCE — after the live-header read, for the rest of the question *(round 5.2: a directory swapped before that open is the same power as deleting the newer segments, disclosed; a non-regular entry is skipped, not corruption)*; segment loads and the anchor scan open entries relative to that same held handle (one `_open_archive_entry` rule; path-based only where `dir_fd` is absent). An entry the scan cannot list, open or read is `UsageLedgerCorrupt`; a first row that reads but does not parse stays the disclosed torn-segment case | `test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in` (POSIX; a look-alike directory swapped in after the walk), `test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption` (a dangling entry) |
 | 4 | LOW — two surviving mutations (deleting the first commit-section beat; losing the hold between rename retries) and three doc absolutes («cannot finish while robbed», «a hold lost anyway abandons», «kernel-held») stated without their tier | both pinned (the second by finding 2's `[hold_lost]` variant); DESIGN §8/§10/§12, ARCHITECTURE and this packet now state the contract per tier — enforced tier vs name tier | `test_a_hold_lost_before_the_first_commit_look_writes_no_orphan` |
@@ -622,7 +680,7 @@ round's own fixes (3b and 4b below).
 | 4b | LOW, own residue of 4 (resumed half) — the prefix proof re-opened the entry by NAME after classifying it, so the bytes compared against the live file came from a second open: an entry swapped in between (an empty file; a writer-less FIFO under `O_NONBLOCK`) read as zero bytes and passed the anchor although the segment claiming the newer generation had just been read — the same power as deleting that segment before the scan (disclosed), but one open more than the proof needs | one open per entry: classify, parse the leading row and — when it claims a newer generation — `lseek` to the start and compare from the same descriptor (six lines fewer) | `test_a_restored_previous_generation_is_out_anchored_not_taken_for_an_orphan` (a second open of any name answers an empty file; the verdict must still be reached), red on the two-open shape |
 | 6 | MEDIUM — `_archive_dir_fds` wrapped every open below the root and left the ROOT's own outside the `try`; `archived_attempt_ids` calls it with no handler, so an unreadable data root (permissions, EMFILE/ENFILE) left a bare `OSError` on the join surface — the class round 5.2 closed one function away | the root open is inside the `try` and typed `usage archive root is not readable` | `test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption` (chmod `0o111` half) |
 | L1 | LOW — the name-tier root was marked BEFORE the append, so one transient failure (ENOSPC, an unwritable `logs/`) turned the durable typed event back into a log line for the process's life, and the 20 MB tripwire then names an event that does not exist; the key was the unresolved path while the sibling growth guard resolves (two spellings of one root on this workspace) | the mark follows the row that landed; both maps key on the resolved root | `test_the_pass_refuses_on_the_name_tier_while_appends_continue` (failing append, then a landing one; then the same root through a symlink) |
-| L2 | LOW — a lock whose owner died and whose pid was REUSED is never reclaimed (POSIX `kill(0)` answers EPERM for another user's process on this shared host), although the enforced tier's probe flock would settle it; `PERSISTENCE.md` still called these locks self-healing | **disclosed, not changed** — the finding's own alternative. Taking the probe flock whenever the file is aged would also evict a LIVE holder of a mixed-tier install (the name-tier process holds no flock), trading a rare wedge for the two-writer class §5.10 already names; DESIGN §8, the ARCHITECTURE row and the PERSISTENCE row now state the wedge and the hand repair | — |
+| L2 | LOW — a lock whose owner died and whose pid was REUSED is never reclaimed (POSIX `kill(0)` answers EPERM for another user's process on this shared host), although the enforced tier's probe flock would settle it; `PERSISTENCE.md` still called these locks self-healing *(correction, round 5.4: the mechanism was misstated — `pid_is_alive` read EPERM as DEAD, so another user's recycle WAS reclaimed through the age path and only a same-uid recycle wedged; EPERM reads alive since round 5.4 and the disclosure names the real wedge — §9 "Round 5.4", R7)* | **disclosed, not changed** — the finding's own alternative. Taking the probe flock whenever the file is aged would also evict a LIVE holder of a mixed-tier install (the name-tier process holds no flock), trading a rare wedge for the two-writer class §5.10 already names; DESIGN §8, the ARCHITECTURE row and the PERSISTENCE row now state the wedge and the hand repair | — |
 | L3 | LOW — the swap's own crash durability was unpinned on both sides: deleting the candidate temp's `fsync` (MUT-H) or the ledger directory's `fsync` after the rename (MUT-L) left the battery green, while the archive half carries three pins | one pin records the fsync'd inodes and the moment of the replace | `test_the_swap_fsyncs_the_candidate_before_the_rename_and_its_directory_after` |
 | L4 | LOW — `_snapshot_intact` reduced to a size comparison (MUT-E) also left everything green: every intrusion the pins inject is an append | one intrusion rewrites a byte in place, changing no length | `test_a_same_size_rewrite_between_the_recheck_and_the_replace_also_refuses` |
 | L5 | LOW — no LockFileEx refusal could select the name tier on Windows (CPython lands ERROR_INVALID_FUNCTION and ERROR_NOT_SUPPORTED on EINVAL), so a lock-less Windows volume failed every monetary append closed instead of degrading as disclosed; the classification pin's POSIX half asserted through errnos the function does not set | `_win32_lock_error` classifies by one table — 33 busy, 1/50 unsupported, anything else winerror-derived and fail-closed — and the classified codes carry their own errno (the 4-argument form derives errno FROM the winerror on Windows and ignores the one passed). Live evidence for exactly those two codes: LockFileEx on `\\wsl$` answers ERROR_INVALID_FUNCTION ("Incorrect function", microsoft/WSL#5762) and on a Samba share ERROR_NOT_SUPPORTED (error 50, "The network request is not supported", samba list thread "FileLockEx Problem") | `test_lockfileex_refusals_classify_by_the_win32_error` (1/50 must land in the unsupported set; 5/32/6 in neither) |
@@ -695,3 +753,107 @@ DESIGN §8/§10/§12, the ARCHITECTURE row, PERSISTENCE, this section and the
 ledger, with the design-note pin — follows. Gate evidence:
 `docs/v7next/LEDGER_CORRECTIONS.md` §"From the C6 fix-round 5.3 (base
 `5e4829e3`)".
+
+### Round 5.4 — owner-bounded micro-round (base `096437c2`, owner batch №12, answer A)
+
+Scope fixed by the owner: the residual list left by the Fable lenses over
+round 5.3 and the independent gpt-5.6-sol read-only review — eight items, no
+new exploration, no redesign. **All eight disposed**: seven changed in code
+with red-first pins, one (R8 c–f) closed by the disclosures it asked for.
+Every behaviour fix on the monetary path was observed RED on the pre-fix
+shape before the fix landed (table below), then green with it.
+
+| # | residual | disposition | fix | red-first pin |
+|---|---|---|---|---|
+| R1 | HIGH — `ENOLCK` sat in the unsupported set: "no locks available" is a missing lock daemon OR an exhausted kernel lock table, not the kernel saying this filesystem cannot, yet it selected the name tier — where the round-3 race returns; the per-directory tier cache was read and written with no synchronisation, so two first threads could run two probes and disagree | **fixed** | `_LOCK_UNSUPPORTED_ERRNOS` is exactly `EOPNOTSUPP`/`ENOTSUP`/`ENOSYS` (winerror 1 → `ENOSYS`, 50 → `EOPNOTSUPP`); ENOLCK keeps the enforced tier and a live acquisition the kernel refuses with it fails closed — no descriptor, our own file removed, no name protocol — so a lockd-less NFS refuses every monetary write typed (`UsageAccountingError`, the round-3 no-unlocked-fallback pin) and the pass is never entered; `_KERNEL_LOCK_TIER_LOCK` makes the probe single-flight: one probe, one verdict per directory per process. DESIGN §8, the ARCHITECTURE row and §5.10 spell the set (the design-note pin compares it by number) | `test_the_capability_probe_decides_once_and_leaves_no_residue` (ENOLCK clause; name tier now selected by EOPNOTSUPP), `test_enolck_keeps_the_enforced_tier_and_the_acquisition_fails_closed`, `test_two_threads_racing_the_first_probe_run_one_probe_and_read_one_tier` |
+| R2 | MEDIUM — the root was marked "already told" whether or not `append_jsonl` landed the refusal row; the helper reports exhausted retries as `False`, not an exception, so one transient failure silenced the durable event for the process's life | **fixed** | the mark follows a `True` answer only; the failed append is logged by the helper and retried at the next refusal | `test_the_pass_refuses_on_the_name_tier_while_appends_continue` (a False-returning append between the raising and the landing one) |
+| R3 | MEDIUM — the stamp-less fast path (`Path.is_dir()`) bypassed the typed root open: a regular file where the archive directory belongs answered a silent `frozenset()`, an uninspectable archive a bare `OSError` | **fixed** | before any compaction the question ends early only on the kernel's exact `ENOENT`; a non-directory or an uninspectable archive is `UsageLedgerCorrupt`; every case that reads anything then goes through `_archive_dir_fds`' typed root open as before (a plain `os.stat` classification first, because the Windows path shape has no dir-fd to route through) | `test_a_stamp_less_ledger_still_inspects_its_archive_fail_closed` |
+| R4 | MEDIUM — bare `OSError` still escaped `archived_attempt_ids` through `pathlib`'s `is_symlink()` in `_archive_dir_bounded` (both levels) and `_segment_path` (the named segment): `pathlib` re-raises everything but ENOENT/ENOTDIR/EBADF/ELOOP, and an `archive/usage_ledger` readable but not searchable (a `chmod -R 600 data/` hardening) refused the segment's own `lstat` | **fixed, as a class** | both inspections wrap their `OSError` into `UsageLedgerCorrupt` ("cannot be inspected"), the same rule the opens follow since round 5.3 | `test_a_path_inspection_the_reader_cannot_make_is_typed_corruption` (the real chmod-600 shape, then `Path.is_symlink` raising `PermissionError`) |
+| R5 | MEDIUM — DESIGN §8/§12.9, §5.8 here and the round-5.2 ledger line said a charge landed between the last proof and the rename is "erased, then surfaced by the post-swap re-read or quarantined at the next read"; neither could see it — the re-read compares the NEW inode against the candidate, the archive segment is the pre-row snapshot — so the loss was SILENT and a success receipt was returned | **fixed (POSIX) + docs corrected** | `_swap_ledger_fsync` holds the OLD inode open across the rename (the only witness left) and reads back whatever landed beyond the proven snapshot's length AFTER the fact: those bytes go to `state/usage_attempts.quarantine.jsonl` (`raw_base64`, the torn-tail shape, which flips `integrity_degraded`) and the pass raises `UsageLedgerCorrupt` instead of returning a receipt — never re-appended (`seq` belongs to the live file). Detected by size; Windows cannot hold the destination open through `os.replace` and stays a disclosed silent loss. The trigger's failure log no longer claims the ledger is uncompacted after such a raise | `test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt[erased]` (the round-3 `[written_over]` variant unchanged) |
+| R6 | MEDIUM — the production heartbeat wire was pinned as `callable(...)`: a constant-True stub (M9) survived the whole battery, every ownership proof a no-op | **fixed (pin)** | the reserve-path pin ages the lock file to the epoch, calls the heartbeat it is handed and requires `True` AND a renewed mtime — judged outside the contained call, so the red names the stub | `test_reserve_path_compacts_only_past_config_threshold` |
+| R7 | MEDIUM — the recycled-pid disclosure named the wrong mechanism: `pid_is_alive` folded EPERM into "dead", so another user's recycled pid went down the age-eviction path (flock-guarded on the enforced tier) and only a same-uid recycle wedged — while DESIGN §8, PERSISTENCE and the round-5.3 L2 row said EPERM read alive | **fixed + disclosure corrected** | EPERM (the process EXISTS) reads alive; only ESRCH is dead; anything undeterminable reads present, as Windows already did — so `pid_provably_gone` is the exact negation of `pid_is_alive` and became one line (the reaper's docstring corrected with it). The real residual, stated in DESIGN §8, §5.10, ARCHITECTURE and PERSISTENCE: any live impostor — same uid or another — wedges the lock from the 90 s staleness window (`usage_ledger._locked`, `stale_sec=90.0`, a literal there, not a `config.py` constant) until it exits; the probe flock is deliberately not consulted while the pid reads alive (a mixed-tier name-tier holder has none) | `test_a_pid_that_refuses_our_signal_is_alive_and_its_lock_is_not_reclaimed` |
+| R8a | LOW — `_build_candidate` defaulted `beat` to a no-op inside the monetary path | **fixed** | `beat` is required; omitting it is a `TypeError` at the call, contained by the pass, which then never compacts | control: `test_the_long_build_and_verification_section_beats_the_lock` red under M10 |
+| R8b | LOW — the heartbeat's own failure modes were unpinned: the `not held or` guard (the heartbeat's analog of round 5.3 finding 1) and the `False` on a refused `utime` could each be removed with both suites green | **fixed (pin)** | the identity pin gains a refresh clause: a refused renewal answers False; an unreadable own identity with the path absent is not a match of two empty answers; a stranger's file at the path is not ours | `test_a_lock_whose_identity_cannot_be_read_is_never_a_hold` (refresh clauses) |
+| R8c | LOW — a compaction committing between a question's live-header read and its anchor scan yields a transient false `generation newer` (UNKNOWN) | **disclosed** (DESIGN §10, §5.9, ARCHITECTURE) | the owner's scope for this item was disclosure; the bounded single retry the lens offered is not taken this round | — |
+| R8d | LOW — stamp-less anchor consequences undisclosed: a ledger reset beside a surviving archive is a permanent `generation newer` verdict; a stray JSON file is corruption on a stamp-less ledger only | **disclosed** (PERSISTENCE ledger and archive rows' Reset columns, DESIGN §10, §5.9, ARCHITECTURE) | reset both together, or keep both | — |
+| R8e | LOW — "an entry that is not a regular file … is skipped" was absolute; a UNIX socket cannot be opened at all (ENXIO) and reads as corruption | **qualified** (DESIGN §10/§12.5, §5.9, ARCHITECTURE) | an entry that OPENS but is not regular is skipped; one the kernel refuses to open at all is corruption. No socket pin: `AF_UNIX` paths are capped at 108 bytes and pytest's tmp paths exceed it, and a `chdir`-relative bind leaks process state into a parallel suite — a LOW not worth that hazard | — |
+| R8f | LOW — two absolutes: "a release unlinks before its close, under the still-held flock" (POSIX only: Windows closes, then re-checks and unlinks) and no mention of the contention-branch orphan (an `EAGAIN` on the creator's OWN fresh file leaves a live-pid-stamped file the creator re-contends against and no owner-aware acquirer ages out) | **disclosed** (DESIGN §8, §5.10, ARCHITECTURE) | the orphan shape has no in-protocol producer (an evictor's flock unlinks what it judged): theoretical on the enforced tier, stated | — |
+
+Red observed, not argued — each pin against the exact pre-fix shape or
+mutation it names, in this worktree (pin red, fix applied or mutation
+reverted, pin green):
+
+| pin | mutation / pre-fix shape | red observed |
+|---|---|---|
+| `test_a_pid_that_refuses_our_signal_is_alive_and_its_lock_is_not_reclaimed` | `platform_layer.py` @ `bd9e99a4` (EPERM folded into dead) | `assert (False is True)` on `pid_is_alive(EPERM)`; the lock clause alone: the aged lock evicted, fd 3 returned, the file re-stamped with our pid |
+| `test_the_capability_probe_decides_once_and_leaves_no_residue` (ENOLCK clause) | `platform_layer.py` @ `01c89685` (ENOLCK in the unsupported set) | `AssertionError: 37` — errno 37 selected the name tier (`False is True`) |
+| `test_enolck_keeps_the_enforced_tier_and_the_acquisition_fails_closed` | same | `enforced = False`; a descriptor (fd 3) returned on the name tier, the lock file present, no kernel call made |
+| `test_two_threads_racing_the_first_probe_run_one_probe_and_read_one_tier` | same (no cache lock) | `2 == 1`: both threads ran a probe |
+| `test_the_pass_refuses_on_the_name_tier_while_appends_continue` (False-returning append) | `usage_compaction.py` @ `7ce7e83d` (mark regardless of the return value) | `FileNotFoundError: …/logs/events.jsonl` — the False answer marked the root, no row ever landed |
+| `test_a_stamp_less_ledger_still_inspects_its_archive_fail_closed` | `usage_compaction.py` @ `b9c43911` (`is_dir()` fast path) | regular file: `DID NOT RAISE`, answered `frozenset()`; `archive/` chmod 000: bare `PermissionError` |
+| `test_a_path_inspection_the_reader_cannot_make_is_typed_corruption` | same (bare `is_symlink()`) | `usage_ledger` chmod 600: bare `PermissionError: [Errno 13] … segment_ep0001_….jsonl` from the segment's own lstat; `Path.is_symlink` raising: bare `PermissionError` |
+| `test_a_swap_that_did_not_land_is_a_typed_failure_not_a_receipt[erased]` | `usage_compaction.py` @ `d99ff6a9` (no old-inode witness) | `DID NOT RAISE`; standalone: receipt returned, the charge gone from the ledger, no quarantine file, `integrity_degraded` False |
+| `test_reserve_path_compacts_only_past_config_threshold` (heartbeat clause) | M9: `heartbeat=lambda: True` at the production wire | `a stub, not the held lock's heartbeat` (`[False] == [True]`); the other 84 items of the two suites green under the same mutation |
+| `test_a_lock_whose_identity_cannot_be_read_is_never_a_hold` (refresh clauses) | M15: the `not held or` guard removed from `refresh_exclusive_file_lock` | `assert True is False`: the blind descriptor renewed with the path absent |
+| same | M16: a refused `utime` answers True | `assert True is False` |
+| `test_the_long_build_and_verification_section_beats_the_lock` (control, R8a) | M10: `beat` dropped at the `_build_candidate` call | `TypeError: _build_candidate() missing 1 required positional argument: 'beat'`, contained by the pass → `assert None is not None` |
+
+Disclosed, not fixed (with the reason each time):
+
+1. **R1's consequence.** An install whose `state/` answers ENOLCK
+   persistently (bare NFS without lockd) now refuses every monetary write
+   closed — `UsageAccountingError` at the writer, one warning per attempt
+   naming errno 37 — where round 5 ran the name protocol there. That is the
+   owner's decision (fail closed, no name tier); the repair is a filesystem
+   that locks. "Compaction refuses with a typed reason" is structural, not a
+   new code path: with no lock the pass is never entered, and the round-3 pin
+   `test_every_ledger_writer_refuses_when_the_lock_cannot_be_taken` is the
+   typed refusal. sol's further suggestion — binding the established tier to
+   the returned hold and passing that attestation to the compactor — is not
+   taken: the module lock leaves one verdict per directory per process, which
+   is the disagreement the attestation would have caught; a mixed-tier
+   install ACROSS processes stays the round-5.2 disclosure.
+2. **R2 and fsync.** No `events.jsonl` row is fsync'd, this one included;
+   the mark is per-process memory that dies with the same crash that could
+   lose an un-fsync'd row, so a new process re-tells. The residual — a
+   delayed writeback error with the process alive (row lost, mark standing)
+   — is the same for every event row and is not closed here.
+3. **R5's bounds.** Detection is by size: a same-size in-place rewrite of
+   the old inode inside the rename syscall is not a landed charge and is
+   not seen. The erased bytes are preserved and flagged, never re-appended
+   (a hand repair from the quarantine row). Windows: silent, disclosed.
+4. **R7's trade.** The wedge now covers another-uid recycles too (they
+   were reclaimed through the flock-guarded age path before); the
+   alternative — the probe flock on any aged file — would evict a live
+   name-tier holder of a mixed-tier install (round 5.3 L2 stands).
+5. **R8c–f** are disclosures by the owner's scope: the transient UNKNOWN
+   (no retry added), the reset-beside-archive verdict, the socket shape (no
+   pin: the 108-byte `AF_UNIX` cap and a `chdir` hazard), the contention
+   orphan and the POSIX-only release-under-flock.
+6. **Windows** stays unexecuted on this host, as in every round.
+
+Size ratchet, stated plainly: `ouroboros/platform_layer.py` 1500 → 1497
+inside its band — `pid_provably_gone` folded to the one-line negation it now
+is and the docstrings it gained reflowed, paying for `threading`, the tier
+lock and the EPERM branch. `ouroboros/usage_compaction.py` 1197 → 1245
+inside its band; the owner asked for the band rationale to be extended in the
+same commit when the file grows, but the ratchet's own transition rule makes
+a surviving rationale immutable between adjacent manifests
+(`validate_manifest_transition`, "surviving band rationale is immutable"),
+so — as in rounds 5, 5.2 and 5.3 — the growth is recorded here and in the
+ledger instead. `tests/test_usage_compaction.py` 1597 → 1597: the round
+added five new or extended pins (+67 lines) and paid with two no-behaviour
+commits — a `compacted` fixture folding twenty-one verbatim seed-then-compact
+preambles (−39) and argument-list/data-literal reflows within the file's line
+width (−28); no claim, docstring, message or assertion was dropped, and no
+neighbour suite was added. The three-line headroom under the 1600 hard cap is
+what it was; the owner decision owed since round 5.3 still stands.
+
+Round-5.4 commits (author and committer `Ouroboros`, single-intent):
+`bd9e99a4` (the fixture fold, no behaviour change), `01c89685` (R7),
+`7ce7e83d` (R1), `12558046` (R2), `b9c43911` (the reflow, no behaviour
+change), `d99ff6a9` (R3 + R4), `ea4d4337` (R5), `9306f962` (R6),
+`02338c9b` (R8a + R8b); the docs commit — DESIGN §8/§10/§12, the
+ARCHITECTURE row, PERSISTENCE, this section and the ledger — follows. Gate
+evidence: `docs/v7next/LEDGER_CORRECTIONS.md` §"From the C6 micro-round 5.4
+(owner batch №12 A, base 096437c2)".
