@@ -253,13 +253,35 @@ not move them into the migrated set in section 8.
   `--text-meta`). The description explains what the section decides; the note
   carries consequences and caveats.
 - Subsections inside a section use a `--type-body` semibold heading and stay
-  visually grouped with their own rows and their own action toolbar. A heading
-  that floats equidistant between two groups belongs to neither.
+  visually grouped with their own rows, their own add action in the head
+  (List editors, below). A heading that floats equidistant between two groups
+  belongs to neither.
 - Spacing comes from the 8pt tokens (`--space-*`); a new visual dimension
   becomes a CSS variable before it becomes a page-local literal.
 - An item in a popup menu or a picker list highlights with
   `--menu-item-hover`. One gesture, one fill: a menu that highlights at a
   different strength than the menu beside it reads as a different control.
+
+### List editors
+
+A list editor is any section where the owner adds and edits entries in place:
+the Available subagents roster, the Review lanes groups, MCP servers, custom
+keys.
+
+- A section-level add action acts from its group's header (§6). A list
+  editor's new entry appears at the end of its own group, is scrolled into
+  view — the shortest distance, without animation — and takes the caret in its
+  first field. A button that stays in view while the entry it made is born
+  off-screen has not finished its job.
+- A freshly added entry is an invitation, not an error. Where a list editor
+  validates in the browser (today the Available subagents roster), the entry
+  shows a neutral hint in its own meta line until the owner tries to save; the
+  error then names the entry and stands beside it — the entry tinted with the
+  status pair, never dimmed — with the section-level line as the summary. A
+  save attempt judges the entries that existed then; one added afterwards is
+  an invitation again.
+- A multi-field card (an MCP server) follows the add-and-reveal rule without
+  adopting the §6 row anatomy.
 
 ### Reviews inside task cards
 
