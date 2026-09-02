@@ -728,11 +728,14 @@ def normalize_settings_raw(raw: dict) -> dict:
 def serialize_settings(settings: dict) -> str:
     """THE bytes a settings document is persisted as, for every writer that persists one.
 
-    ``ouroboros.utils.atomic_write_json`` produces exactly this text, which is what lets the
-    owner-endpoint writer keep its atomic helper while the config saver and the packaged
-    bootstrap saver produce byte-identical output through the same function (pinned by
-    tests/test_settings_read_seam.py). Without one serializer the writers disagreed on
-    ``ensure_ascii`` alone, so the same document had two spellings on disk."""
+    Every writer of this document puts exactly ``serialize_settings(document).encode("utf-8")``
+    on disk on EVERY platform, because every one of them commits through
+    ``ouroboros.utils.write_text_atomic``, which does not translate newlines. Both halves are
+    load-bearing: without one serializer the writers disagreed on ``ensure_ascii``, and with one
+    serializer but a text-mode ``Path.write_text`` two of the three would still have written
+    CRLF on Windows for the LF the third wrote. Pinned by tests/test_settings_read_seam.py on
+    the bytes AND on the mechanism, because the byte comparison alone cannot see a difference
+    that only exists on another platform."""
     return json.dumps(settings, ensure_ascii=False, indent=2)
 
 
@@ -849,13 +852,11 @@ def save_settings(
                 f"OUROBOROS_RUNTIME_MODE elevation refused: "
                 f"{baseline_mode!r} -> {new_mode!r}.{hint}"
             )
+        from ouroboros.utils import write_text_atomic
         try:
-            from ouroboros.utils import replace_atomic
-            tmp = SETTINGS_PATH.with_suffix(".tmp")
-            tmp.write_text(serialize_settings(settings), encoding="utf-8")
-            replace_atomic(str(tmp), str(SETTINGS_PATH))
-        except OSError:
-            SETTINGS_PATH.write_text(serialize_settings(settings), encoding="utf-8")
+            write_text_atomic(SETTINGS_PATH, serialize_settings(settings))
+        except OSError:  # a filesystem that cannot rename a sibling: write in place, same bytes
+            SETTINGS_PATH.write_bytes(serialize_settings(settings).encode("utf-8"))
     finally:
         _release_settings_lock(fd)
 

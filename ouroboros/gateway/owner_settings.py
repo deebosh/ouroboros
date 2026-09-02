@@ -20,7 +20,7 @@ re-implemented (or silently skipped) per call site:
    about to overwrite — not against a read taken before a multi-second daemon
    call. A refusal aborts with ``SettingsPreconditionFailed`` and writes
    nothing.
-3. **The commit boundary is visible.** Once ``atomic_write_json`` returns, the
+3. **The commit boundary is visible.** Once ``write_text_atomic`` returns, the
    bytes ARE on disk; a failure in a LATER step (env projection, supervisor
    start, hot-reload side effects) must be reported as its own fact, never as
    "nothing was saved" (BIBLE P1). ``CommitBoundary`` carries that distinction
@@ -49,7 +49,7 @@ from ouroboros.config import SETTINGS_DEFAULTS as _SETTINGS_DEFAULTS
 from ouroboros.context_mode_compat import normalize_context_mode_compat
 from ouroboros.gateway._helpers import json_error, request_drive_root
 from ouroboros.settings_integrity import SettingsIntegrityError, read_settings_json_verified
-from ouroboros.utils import append_jsonl, atomic_write_json, utc_now_iso
+from ouroboros.utils import append_jsonl, utc_now_iso, write_text_atomic
 
 log = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ def _owner_write_settings(
     """Write owner-controlled settings without applying the runtime-mode ratchet.
 
     Skipping that ONE ratchet is the whole reason this writer exists; everything else comes from
-    ``config.prepare_settings_for_persist``, the single point both persisting writers pass through.
+    ``config.prepare_settings_for_persist``, the single point every persisting writer passes through.
     An endpoint that genuinely authors a disk-authored key (context mode, safety mode, the false
     compatibility tombstone) must name it in ``authored_keys`` — otherwise a POST about an unrelated key would
     author a mode decision out of the defaults merge that ``_owner_read_settings_raw`` performs.
@@ -343,7 +343,7 @@ def _owner_update_settings(
             dict(proposed), authored_keys=authored_keys,
             allow_context_lowering=allow_context_lowering,
             allow_safety_lowering=allow_safety_lowering)
-        atomic_write_json(_config.SETTINGS_PATH, to_write, trailing_newline=False)
+        write_text_atomic(_config.SETTINGS_PATH, _config.serialize_settings(to_write))
         if boundary is not None:
             boundary.commit()
     finally:

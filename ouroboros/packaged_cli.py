@@ -211,10 +211,10 @@ def _hidden_run(command: Sequence[str], **kwargs: object) -> subprocess.Complete
 def _save_settings(path: pathlib.Path, settings: dict) -> None:
     """The packaged bootstrap's settings writer — same prologue, same bytes.
 
-    It is a THIRD writer only in the sense that it owns its own path and its own
-    atomic rename; what it persists goes through the one persistence prologue (which
-    proves the owner-only context/safety ratchets against the value on disk) and the
-    one serializer, so a bootstrap save cannot be the save that skips them. The path
+    It is a THIRD writer only in the sense that it owns its own path; what it persists
+    goes through the one persistence prologue (which proves the owner-only context/safety
+    ratchets against the value on disk), the one serializer and the one byte-exact commit
+    helper, so a bootstrap save cannot be the save that skips them. The path
     it writes is the path the prologue reads: the packaged runtime resolves its data
     dir to ``~/Ouroboros/data``, which is exactly what ``config`` resolves in a
     process that was given no path overrides — pinned by
@@ -223,14 +223,19 @@ def _save_settings(path: pathlib.Path, settings: dict) -> None:
     ignores the environment by design (the inner CLI child is handed the packaged
     paths explicitly), while the prologue proves against ``config.SETTINGS_PATH``,
     which honours one. Dormant today — ``BootstrapContext.save_settings`` has no
-    caller — and disclosed rather than papered over."""
-    from ouroboros.config import prepare_settings_for_persist, serialize_settings
-    from ouroboros.utils import replace_atomic
+    caller — and disclosed rather than papered over.
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(serialize_settings(prepare_settings_for_persist(dict(settings))), encoding="utf-8")
-    replace_atomic(tmp, path)
+    The write GUARDS are taken on the path this saver actually writes, not on
+    ``config.SETTINGS_PATH``: under a pinned benchmark snapshot, or from pytest against the
+    live install, a bootstrap save must refuse for the same reason the other two writers
+    refuse. Passing its own path is what keeps that honest while the disclosed override
+    split above exists."""
+    from ouroboros.config import prepare_settings_for_persist, serialize_settings
+    from ouroboros.settings_integrity import guard_live_settings_write
+    from ouroboros.utils import write_text_atomic
+
+    guard_live_settings_write(path, pathlib.Path.home())
+    write_text_atomic(path, serialize_settings(prepare_settings_for_persist(dict(settings))))
 
 
 def _run_inner_cli(runtime: PackagedRuntime, args: Sequence[str]) -> int:
