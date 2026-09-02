@@ -123,7 +123,9 @@ class ConfiguredReviewerSlot:
         route-name comparisons — a session row and a native-retrieval actor
         row are one class here, and neither receives an assembled packet.
         """
-        return self.is_session or self.native_retrieval
+        from ouroboros.review_execution import delivery_retrieves
+
+        return delivery_retrieves(self.kind, self.subagent_id)
 
 
 @dataclass(frozen=True)

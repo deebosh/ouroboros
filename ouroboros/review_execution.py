@@ -65,6 +65,21 @@ class ReviewRouteKind(str, Enum):
     API_CHAT = "api_chat"
     AGENT_SESSION = "agent_session"
 
+
+def delivery_retrieves(route: Any, subagent_id: Any) -> bool:
+    """THE delivery-class predicate: does this reviewer row read the subject
+    with its own tools (a hosted session, or a configured-subagent api row's
+    native tool rounds) instead of receiving the assembled packet?
+
+    One definition for every caller — slot properties, admission, packet fit
+    and the surfaces' request builders — so a delivery class can never be
+    recognised by one caller and missed by another. ``route`` may be a
+    ``ReviewRouteKind`` or its wire string."""
+    return (
+        str(getattr(route, "value", route) or "") == ReviewRouteKind.AGENT_SESSION.value
+        or bool(str(subagent_id or "").strip())
+    )
+
 class ReviewRouteUnavailable(RuntimeError):
     """Typed refusal for a route with no executor in this build.
 

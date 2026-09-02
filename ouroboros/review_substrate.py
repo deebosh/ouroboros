@@ -38,6 +38,7 @@ from ouroboros.review_execution import (  # noqa: F401  (compat re-exports)
     ReviewRouteKind,
     ReviewRouteUnavailable,
     ReviewSlotExecutor,
+    delivery_retrieves,
     _execute_slot_attempt,
     _messages_char_count,
     _render_prompt,
@@ -139,7 +140,7 @@ class ReviewSlot:
     @property
     def retrieves(self) -> bool:
         # DELIVERY class for admission/fit/authority; transport tests the route.
-        return self.route is ReviewRouteKind.AGENT_SESSION or self.native_retrieval
+        return delivery_retrieves(self.route, self.subagent_id)
 
 
 @dataclass

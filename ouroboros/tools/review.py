@@ -402,15 +402,13 @@ async def _query_model(
     async with semaphore:
         slot = None
         try:
-            from ouroboros.review_execution import ReviewRouteKind
+            from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
             from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request
             slot_route = route if route is not None else ReviewRouteKind.API_CHAT
             delegated = slot_route is ReviewRouteKind.AGENT_SESSION
             # RETRIEVES class (session row OR configured-subagent api row): the
             # compact session task replaces the assembled pack for both.
-            retrieves = delegated or (
-                bool(subagent_id) and slot_route is ReviewRouteKind.API_CHAT
-            )
+            retrieves = delivery_retrieves(slot_route, subagent_id)
             _out_budget = _review_output_budget()
             request = ReviewRequest(
                 surface=surface,
