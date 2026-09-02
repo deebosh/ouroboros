@@ -68,8 +68,11 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # `acceptance_estimate_unaffordable_dispatched_at_floor`, attached by the panel
 # to every actor's usage, the timing row and one registered live event only
 # AFTER the paid seam fired, whenever it ran under a floor admission by time
-# (`launched_at_floor`, `launch_gate`, launch seconds), by money (`wave_at_floor`,
-# wave prices) or both. The per-send wallet binding at dispatch and the review's
+# (`launched_at_floor`, `launch_gate` = review_launch | null, launch seconds —
+# the review-launch gate hands its decision into THIS panel's context; an
+# improvement pass admitted at the floor is visible only as the projection's
+# `launch_disclosure`), by money (`wave_at_floor`, wave prices) or both. The
+# per-send wallet binding at dispatch and the review's
 # logical window remain the protection, and the honest event of the dispatched
 # panel decays the estimate (its excess halves per panel).
 # 64 is the plan's measured deep-review ceiling (Б2-2), far above the 3–5 rounds a
@@ -281,16 +284,17 @@ def _window_scale(profile: Any) -> float:
     return 2.0 if isinstance(profile, dict) and profile.get("improvement_policy") == "adaptive" else 1.0
 
 
-def launch_at_floor_payload(snapshot: BudgetSnapshot, *, estimated_sec: float,
-                            gate: str = "review_launch", profile: Any = None) -> Dict[str, Any]:
-    """The launch decision behind a floor admission — which gate admitted, what
-    the history-derived reserve would have needed, what the floor admitted, what
-    was spendable — computed purely. The acceptance panel attaches it to its
-    ONE dispatch fact after the paid seam fired; nothing records it earlier."""
-    scale = _window_scale(profile)
+def launch_at_floor_payload(snapshot: BudgetSnapshot, *, estimated_sec: float) -> Dict[str, Any]:
+    """The review-launch decision behind a floor admission — what the
+    history-derived reserve would have needed, what the floor admitted, what was
+    spendable — computed purely for the panel it admits (loop.py hands it in
+    through the panel context). The panel attaches it to its ONE dispatch fact
+    after the paid seam fired; nothing records it earlier. An improvement pass
+    admitted at the floor has no payload: it is visible only as the capacity
+    projection's `launch_disclosure`."""
     return {
-        "gate": str(gate), "estimated_sec": round(float(estimated_sec) * scale, 3),
-        "floor_sec": round(_acceptance_floor_sec() * scale, 3),
+        "gate": "review_launch", "estimated_sec": round(float(estimated_sec), 3),
+        "floor_sec": round(_acceptance_floor_sec(), 3),
         "spendable_sec": round(float(snapshot.spendable_sec), 3),
     }
 
@@ -496,7 +500,8 @@ def improvement_pass_allowed(
         return True, ""
     if snapshot.spendable_sec > floor * scale:
         # R36: the history-derived reserve never refuses what the floor admits.
-        # Pure here; the next panel discloses it on its dispatch fact.
+        # Pure here; the capacity projection surfaces the reason as its
+        # `launch_disclosure` — nothing is recorded.
         return True, REASON_LAUNCHED_AT_FLOOR
     return False, "improvement_window_inside_reserve"
 

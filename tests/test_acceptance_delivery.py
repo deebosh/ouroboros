@@ -1107,7 +1107,7 @@ def test_a_poisoned_reserve_still_launches_a_shorter_deadline_at_the_floor(monke
     # fact after the paid seam fires (see the real-path tests), never by asking.
     assert [e for e in iter_jsonl_objects(events) if e.get("type") != "task_acceptance_review_timing"] == []
     assert ctx.pending_events == []
-    assert task_pacing.launch_at_floor_payload(short, gate="review_launch", estimated_sec=estimate) == {
+    assert task_pacing.launch_at_floor_payload(short, estimated_sec=estimate) == {
         "gate": "review_launch", "estimated_sec": round(estimate, 3), "floor_sec": 200.0, "spendable_sec": 1000.0}
     tiny = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=300.0, elapsed_sec=0.0,
                                       remaining_sec=300.0, reserve_sec=150.0)  # spendable 150 s < floor
@@ -1183,10 +1183,8 @@ def test_floor_launch_predicates_and_the_projection_record_nothing(monkeypatch, 
     assert event_queue.empty()
     assert _rows(events, task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR) == []
     assert not hasattr(task_pacing, "record_launch_at_floor") and not hasattr(task_pacing, "DISCLOSURE_LAUNCHED_AT_FLOOR")
-    # The adaptive improvement window scales the whole decision payload.
-    adaptive = task_pacing.launch_at_floor_payload(short, gate="improvement_pass", estimated_sec=estimate,
-                                                   profile={"improvement_policy": "adaptive"})
-    assert adaptive["floor_sec"] == 400.0 and adaptive["estimated_sec"] == round(estimate * 2, 3)
+    assert task_pacing.launch_at_floor_payload(short, estimated_sec=estimate) == {
+        "gate": "review_launch", "estimated_sec": round(estimate, 3), "floor_sec": 200.0, "spendable_sec": 1000.0}
 
 
 def _floor_band_native_panel(monkeypatch, tmp_path, *rows):
@@ -1255,12 +1253,11 @@ def test_a_refused_panel_in_the_floor_band_leaves_no_dispatched_at_floor_fact(mo
     sends = len(s.llm.calls)
     short = s.task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
                                          remaining_sec=1100.0, reserve_sec=100.0)
-    decision = s.task_pacing.launch_at_floor_payload(short, gate="improvement_pass", estimated_sec=5000.0)
+    decision = s.task_pacing.launch_at_floor_payload(short, estimated_sec=5000.0)
 
     def _no_fact(result):
-        # A launch decision left by an improvement pass admitted at the floor was
-        # consumed at entry and is gone: it cannot leak onto a later panel.
-        assert getattr(s.first.tools._ctx, "_task_acceptance_launch_decision", None) is None
+        # No attribute carrier of a launch decision exists on the tool context (R47).
+        assert not [name for name in vars(s.first.tools._ctx) if name.endswith("launch_decision")]
         assert result.aggregate_signal == "DEGRADED"
         drained = _drain_to_supervisor(s.event_queue, s.sup_ctx)
         assert not any(e.get("type") == fact for e in drained)
@@ -1270,7 +1267,7 @@ def test_a_refused_panel_in_the_floor_band_leaves_no_dispatched_at_floor_fact(mo
 
     # (a) the SAME binding again: the wallet already claimed it → preclaim refusal —
     #     with the launch ALSO admitted at the floor (both flags would be true).
-    s.first.tools._ctx._task_acceptance_launch_decision = dict(decision)
+    s.first.launch_decision = dict(decision)
     with s.ua.usage_scope(s.scope):
         _no_fact(s.loop_mod._execute_task_acceptance_panel(s.first))
     # (b) zero-physical refusal: the immutable core overflowed → refused before any send.
@@ -1392,28 +1389,28 @@ def test_a_floor_launch_by_time_is_disclosed_once_on_the_dispatch_fact(monkeypat
 
 
 def test_a_floor_launch_and_a_floor_wave_are_one_fact_with_both_flags(monkeypatch, tmp_path):
-    """Item 2(g): the improvement pass left its floor-launch decision on the tool
-    context; the next panel's wave is at the floor too → ONE fact carrying both
-    (`launch_gate="improvement_pass"`, `wave_at_floor` true), exactly one
-    persisted row, and the decision consumed at entry."""
+    """Item 2(g): the review-launch gate admitted THIS panel at the floor (its
+    decision rides the panel context) and the panel's wave is at the floor too
+    → ONE fact carrying both (`launch_gate="review_launch"`, `wave_at_floor`
+    true) and exactly one persisted row."""
     monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
     s = _floor_band_native_panel(monkeypatch, tmp_path, _ROW_NATIVE)
     fact = s.task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
     short = s.task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
                                          remaining_sec=1100.0, reserve_sec=100.0)
-    again = _acceptance_ctx(tmp_path, content="deliverable v2", fresh_result=False, **s.common)
-    again.tools._ctx._task_acceptance_launch_decision = s.task_pacing.launch_at_floor_payload(
-        short, gate="improvement_pass", estimated_sec=5000.0, profile={"improvement_policy": "adaptive"})
+    again = _acceptance_ctx(tmp_path, content="deliverable v2", fresh_result=False,
+                            launch_decision=s.task_pacing.launch_at_floor_payload(short, estimated_sec=5000.0),
+                            **s.common)
     with s.ua.usage_scope(s.scope):
         result = s.loop_mod._execute_task_acceptance_panel(again)
     assert result.aggregate_signal == "PASS"
-    assert getattr(again.tools._ctx, "_task_acceptance_launch_decision", None) is None  # consumed at entry
+    assert not [name for name in vars(again.tools._ctx) if name.endswith("launch_decision")]  # no attribute carrier (R47)
     drained = _drain_to_supervisor(s.event_queue, s.sup_ctx)
     assert [e["type"] for e in drained if e.get("type") == fact] == [fact]
     (row,) = _rows(s.events, fact)
     assert row["wave_at_floor"] is True and row["native_rounds_estimate"] == 33
-    assert row["launched_at_floor"] is True and row["launch_gate"] == "improvement_pass"
-    assert row["launch_estimated_sec"] == 10000.0 and row["launch_floor_sec"] == 400.0  # ×2 adaptive window
+    assert row["launched_at_floor"] is True and row["launch_gate"] == "review_launch"
+    assert row["launch_estimated_sec"] == 5000.0 and row["launch_floor_sec"] == 200.0
     assert all(actor["usage"][fact] == {k: v for k, v in row.items() if k not in ("ts", "type", "surface", "task_id")}
                for actor in result.actors)
 

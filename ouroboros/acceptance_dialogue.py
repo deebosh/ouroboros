@@ -503,13 +503,11 @@ def _apply_task_acceptance_result(
         estimated_sec=next_pass_estimate,
         ctx=ctx.tools._ctx,
     )
-    if pass_ok and pass_reason == task_pacing.REASON_LAUNCHED_AT_FLOOR:
-        # R36/R46: the pass was admitted at the floor. Nothing is recorded here —
-        # the NEXT panel consumes this decision at entry and discloses it on its
-        # dispatch fact only if its paid seam fires.
-        ctx.tools._ctx._task_acceptance_launch_decision = task_pacing.launch_at_floor_payload(
-            budget_snapshot, gate="improvement_pass", estimated_sec=next_pass_estimate, profile=ctx.budget_profile,
-        )
+    # R36/R47: an improvement pass admitted at the floor (`pass_reason ==
+    # REASON_LAUNCHED_AT_FLOOR`) stores NOTHING — it is visible only as the
+    # capacity projection's `launch_disclosure`; whether this pass leads to a
+    # panel is decided below, and only the review-launch gate that admits THAT
+    # panel hands a launch decision into it.
     # A DEGRADED panel (no valid verdict quorum) cannot "judge" the dialogue:
     # a lone terminal vote from the one contributing slot must NOT shadow the
     # review_degraded path below, which is the only surface carrying the
@@ -799,8 +797,8 @@ def acceptance_dialogue_history(llm_trace: Dict[str, Any], *, limit: int = 6) ->
 
 # ---------------------------------------------------------------------------
 # The host packet and the one substantive panel (moved WHOLE from loop.py,
-# which kept the fence, checkpoint, run-record and message rails; every name
-# below is re-exported from ``loop`` for existing callers and patch sites).
+# which kept the fence, checkpoint, run-record and message rails; every moved
+# name below with an external caller is re-exported from ``loop``).
 # ---------------------------------------------------------------------------
 
 # The host-forced acceptance-review checklist. v6.60.0 adds the explicit
@@ -1098,13 +1096,10 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     from ouroboros.review_execution import ReviewRouteKind, panel_delivery_class, slot_delivery
     from ouroboros.tools.review_helpers import emit_review_event, review_wave_budget_gate
 
-    # The launch decision (R36/R46): the review launch hands its own in through
-    # the panel context; an improvement pass admitted at the floor leaves its
-    # decision on the tool context for the NEXT panel. Consumed HERE, at entry,
-    # whatever this panel does next — a decision behind a panel that never
-    # dispatches is no fact and must not leak onto a later one.
-    launch = ctx.launch_decision or getattr(ctx.tools._ctx, "_task_acceptance_launch_decision", None)
-    ctx.tools._ctx._task_acceptance_launch_decision = None
+    # The launch decision (R36/R47): ONLY the review-launch gate that admitted
+    # THIS panel (loop.py) hands it in, through the panel context — no other
+    # carrier exists, so nothing can be stale.
+    launch = ctx.launch_decision
     wave: Optional[Dict[str, Any]] = None
     rounds = 1
     paid = [slot for slot in slots if getattr(slot, "route", None) is not ReviewRouteKind.AGENT_SESSION]

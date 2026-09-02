@@ -68,7 +68,7 @@ TELEMETRY_EVENT_HANDLERS = {
     # admission by time, by money, or both. Payload: surface, task_id,
     # estimated_wave_usd, floor_wave_usd, remaining_usd, native_rounds_estimate,
     # floor_slots, wave_at_floor (bool), launched_at_floor (bool),
-    # launch_gate ("review_launch" | "improvement_pass" | null),
+    # launch_gate ("review_launch" | null),
     # launch_estimated_sec, launch_floor_sec, launch_spendable_sec.
     "acceptance_estimate_unaffordable_dispatched_at_floor": _handle_typed_telemetry,
     "task_message_injected": _handle_task_message_injected,
