@@ -467,10 +467,9 @@ export function createChatInstance({
     // a new revision) short-circuit instead of refetching. Any FAILED sync
     // resets it; scheduleHistorySync and the reconnect path never consult it.
     let initialHydrationPromise = null;
-    // the offline bootstrap painted the sessionStorage
-    // fallback and set historyLoaded=true — the first successful sync after
-    // the server comes back must still rebuild the feed from durable history.
-    let offlineBootstrapPainted = false;
+    // The next successful sync fully rebuilds the feed: the offline bootstrap
+    // painted the sessionStorage fallback, or live cards passed LIVE_CARD_CAP.
+    let fullRebuildPending = false;
     // highest project revision whose history has been fetched;
     // refreshHistory only bypasses the sticky promise for a NEWER revision.
     let lastLoadedHistoryRevision = 0;
@@ -492,6 +491,7 @@ export function createChatInstance({
     let _viewportMutationDepth = 0;
     const isInstanceVisible = () =>
         Boolean(messagesDiv) && messagesDiv.offsetParent !== null && !document.hidden;
+    const LIVE_CARD_CAP = 200;
     const liveCardRecords = new Map();
     const markReviewAnchor = (r, on = false) => setReviewAnchor(r, on, setLiveCardPhase);
     const explicitCardExpansion = new Map();
@@ -1539,6 +1539,9 @@ export function createChatInstance({
             }
         });
         liveCardRecords.set(normalizedGroupId, record);
+        // Issue #135: past the cap the next resync rebuilds from durable history
+        // like a reconnect does; a Load-older window is the owner's and is kept.
+        if (liveCardRecords.size > LIVE_CARD_CAP && !historyQuotaOverride) fullRebuildPending = true;
         // apply a name that arrived (task_named) before this card existed.
         const _pendingName = pendingSuggestedNames.get(normalizedGroupId);
         if (_pendingName && !record.isSubagent) {
@@ -2774,20 +2777,17 @@ export function createChatInstance({
 
                 // First load/reconnect trusts server history and fully rebuilds the
                 // feed; routine post-completion syncs only fold in new task cards.
-                // a Load-older refetch (forceRebuild) and the first
-                // successful sync after an offline sessionStorage bootstrap
-                // rebuild fully too.
+                // a Load-older refetch (forceRebuild) and a pending full
+                // rebuild (offline bootstrap / card cap) rebuild fully too.
                 const rebuildAll = !historyLoaded || fromReconnect || forceRebuild
-                    || offlineBootstrapPainted;
+                    || fullRebuildPending;
                 // On a soft reconnect the module (and its dedupe set)
                 // survives: a plain re-sync would dedupe-drop every bubble.
                 // Restore user text and rebuild from durable history on every
                 // rebuild — incl. includeUser=false triggers (clean open /
-                // 700ms resync), since offline-bootstrap cleared those too.
-                const renderUser = includeUser || fromReconnect || offlineBootstrapPainted;
-                if (!historyLoaded || fromReconnect) retiredTaskIds.clear();
-                // The extra rebuild causes (Load-older / offline bootstrap)
-                // replay everything too, so retirement resets with them.
+                // 700ms resync), since the rebuild clears those too.
+                const renderUser = includeUser || fromReconnect || fullRebuildPending;
+                // Every rebuild replays everything, so retirement resets with it.
                 if (rebuildAll) retiredTaskIds.clear();
 
                 // the ENTIRE mutation below (clear -> pass 1 ->
@@ -3112,8 +3112,7 @@ export function createChatInstance({
                 const wasFirstLoad = !historyLoaded;
                 historyLoaded = true;
                 lastHistorySyncSucceeded = true;
-                // The durable rebuild superseded the offline fallback paint.
-                offlineBootstrapPainted = false;
+                fullRebuildPending = false;
                 // ANY successful sync leaves the instance hydrated
                 // — later hydration triggers ride this sticky promise.
                 initialHydrationPromise = historySyncPromise;
@@ -3229,7 +3228,7 @@ export function createChatInstance({
         // make the first successful post-outage sync a NON-rebuilding routine
         // fold over stale sessionStorage bubbles. Flag it so that sync
         // rebuilds from durable history instead.
-        if (!lastHistorySyncSucceeded) offlineBootstrapPainted = true;
+        if (!lastHistorySyncSucceeded) fullRebuildPending = true;
         ensureWelcomeMessage();
     })();
 
