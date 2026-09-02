@@ -911,14 +911,24 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
             seg = ast.get_source_segment(src, node) or ""
             # A writer that takes its destination as a PARAMETER never names SETTINGS_PATH,
             # so the path-literal trigger alone left the packaged bootstrap saver invisible
-            # to this tripwire for as long as it existed. Its name is the other honest
-            # signal for "this function persists a settings document".
+            # to this tripwire for as long as it existed. A name carrying "settings" is one
+            # other honest signal; the two that survive a NEUTRAL name are calling the
+            # settings serializer (by definition a settings document) and naming the file.
             settings_write = (
-                ("SETTINGS_PATH" in seg or "settings" in node.name.lower())
+                ("SETTINGS_PATH" in seg or "settings" in node.name.lower()
+                 or "serialize_settings(" in seg or "settings.json" in seg)
                 and re.search(r"\.write_text\(|\.write_bytes\(|atomic_write_json\(|write_text_atomic\(|json\.dump\(", seg)
             ) or "atomic_write_json(settings_path" in seg
             if settings_write:
-                writers[(path.as_posix(), node.name)] = "prepare_settings_for_persist" in seg
+                # Routing is read from the CALLS the function makes, never from its TEXT: a
+                # docstring that merely names the prologue vouched for a writer that never
+                # called it (proven by injection), and that is the fail-open direction.
+                writers[(path.as_posix(), node.name)] = any(
+                    isinstance(call, ast.Call)
+                    and (getattr(call.func, "id", "") == "prepare_settings_for_persist"
+                         or getattr(call.func, "attr", "") == "prepare_settings_for_persist")
+                    for call in ast.walk(node)
+                )
 
     unrouted = {k for k, routed in writers.items() if not routed and k not in exempt}
     assert not unrouted, (

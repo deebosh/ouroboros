@@ -64,6 +64,21 @@ MIGRATED_OWNER_VALUES = {
 
 RETIRED_GHOST = "OUROBOROS_SUBAGENT_CAPABILITY_DEPTH_LIMIT"
 
+# Every function in the tree that persists a settings document. Three write THIS process's
+# document; the other two are exempt from the persistence prologue by design and pinned as
+# such: the one-window raw context-pair migration, written under the load lock, and the Colab
+# bootstrap's generated file for the Drive root (serializer bytes, no prologue - a foreign
+# path). Both pins below read this one list - the inventory test proves the tree grows no
+# sixth writer, the byte/mechanism pin proves all five put the same spelling on disk.
+SETTINGS_WRITERS = (
+    "ouroboros/config.py::save_settings",
+    # The owner endpoints' write lives in the locked read-modify-write primitive.
+    "ouroboros/gateway/owner_settings.py::_owner_update_settings",
+    "ouroboros/packaged_cli.py::_save_settings",
+    "ouroboros/context_mode_compat.py::normalize_and_persist_context_mode_compat",
+    "ouroboros/colab_bootstrap.py::write_colab_settings",
+)
+
 # The document's keys a release RENAMED (as opposed to retired): every one must be
 # gone from a normalized read, its value promoted to the key above.
 RENAMED_LEGACY_KEYS = ("OUROBOROS_MODEL_CODE", "OUROBOROS_VISION_MODEL", "OUROBOROS_MODEL_FALLBACK",
@@ -222,31 +237,51 @@ def test_owner_read_settings_raw_applies_the_same_normalization_as_load_settings
     assert RETIRED_GHOST not in raw
 
 
-def test_the_context_fit_route_is_the_provider_normalized_effective_route(isolated_settings):
+def test_the_context_fit_route_is_the_provider_normalized_effective_route(
+        isolated_settings, monkeypatch):
     """The read seam carries the vocabulary normalization only. The PROVIDER
     normalization is a separate derivation that is never persisted, so a consumer
     that needs the route the loop actually runs must re-derive it over the effective
-    document — the same derivation the task-start projection and the settings GET
-    make. A direct-provider install with no explicit model has no main slot at all
-    outside that derivation: read from the owner-raw document, the context-fit probe
-    resolved a window for an OpenRouter model the loop never runs, and `fits` was
-    computed against the wrong route on every ordinary task."""
-    from ouroboros import config as cfg
+    document. A direct-provider install with no explicit model has no main slot at
+    all outside that derivation: read from the owner-raw document, the context-fit
+    probe resolved a window for an OpenRouter model the loop never runs, and `fits`
+    was computed against the wrong route on every ordinary task.
+
+    The expectation comes from the LOOP side rather than from the resolver's own
+    expression — an equality written as `_active_main_route(apply_runtime_provider_
+    defaults(load_settings()))` restates the implementation and stays green if the
+    implementation and the expectation drift together. `apply_task_start_settings()`
+    is what a task start projects into the environment, so the model it leaves there
+    IS the model the next task runs. That projection is rolled back before the route
+    is resolved, so the resolver has to reach the same answer on its own instead of
+    reading the environment the projection left behind."""
+    import os
+
     from ouroboros.context_fit import _failed_route_evidence, resolve_context_fit_route
     from ouroboros.gateway.owner_settings import _owner_read_settings_raw
     from ouroboros.gateway.settings import _active_main_route
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
+    from ouroboros.provider_models import provider_for_model
+    from ouroboros.subagent_runtime import apply_task_start_settings
 
+    monkeypatch.setattr(os, "environ", dict(os.environ))
     _seed(isolated_settings, {"ANTHROPIC_API_KEY": "sk-ant-test"})
-    expected = _active_main_route(apply_runtime_provider_defaults(cfg.load_settings())[0])
-    assert expected["provider"] == "anthropic", "the fixture is a direct-provider install"
+
+    pristine = dict(os.environ)
+    apply_task_start_settings()
+    loop_model = os.environ["OUROBOROS_MODEL"]
+    os.environ.clear()
+    os.environ.update(pristine)
+
+    assert provider_for_model(loop_model) == "anthropic", (
+        "the fixture is a direct-provider install")
     # The fixture is not vacuous: the owner-raw document answers a different route.
     assert _active_main_route(_owner_read_settings_raw())["provider"] != "anthropic"
 
     route, _evidence = resolve_context_fit_route({"model": ""}, allow_fetch=False)
-    assert route == expected
+    assert route["model"] == loop_model, "the probe sized a model the loop never runs"
+    assert route["provider"] == "anthropic"
     failed_route, _failed = _failed_route_evidence({"model": ""})
-    assert failed_route == expected
+    assert failed_route == route
 
 
 def test_a_pinned_snapshot_that_changed_refuses_every_reader(isolated_settings, monkeypatch):
@@ -463,7 +498,20 @@ def test_all_three_writers_serialize_a_document_to_the_same_bytes(isolated_setti
     packaged bootstrap saver produce identical text for identical content. They
     disagreed on ``ensure_ascii``, so the same document had two spellings on disk.
     Each surface is driven through its real entry point, so a serializer swapped
-    inside any one of them fails here."""
+    inside any one of them fails here.
+
+    The comparison is on BYTES, and it is deliberately made against the serializer's
+    own output rather than only between the three: a file that survives a round trip
+    through ``json.loads`` unchanged still differs from ``serialize_settings`` bytes if
+    a trailing newline or a platform newline translation crept in after the serializer.
+    That last one is why the claim needs a second half. ``Path.write_text`` translates
+    ``\n`` to ``\r\n`` on Windows and ``utils.write_text_atomic`` never does, so a tree
+    whose config and packaged savers used text mode had ONE spelling on the Linux legs
+    of the matrix and TWO on the Windows one — a difference no comparison run on either
+    leg can see on its own. The cross-platform half is therefore pinned on the
+    MECHANISM: no writer of a settings document may commit through a text-mode write."""
+    import ast
+
     from ouroboros import config as cfg
     from ouroboros.gateway.owner_settings import _owner_update_settings
     from ouroboros.packaged_cli import _save_settings
@@ -471,19 +519,36 @@ def test_all_three_writers_serialize_a_document_to_the_same_bytes(isolated_setti
     document = {"TOTAL_BUDGET": 10.0, "OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE": "приоритет"}
 
     cfg.save_settings(dict(document))
-    by_config = isolated_settings.read_text(encoding="utf-8")
+    by_config = isolated_settings.read_bytes()
     isolated_settings.unlink()
 
     _owner_update_settings(lambda _current: dict(document))
-    by_owner_endpoint = isolated_settings.read_text(encoding="utf-8")
+    by_owner_endpoint = isolated_settings.read_bytes()
     isolated_settings.unlink()
 
     _save_settings(isolated_settings, dict(document))
-    by_packaged_cli = isolated_settings.read_text(encoding="utf-8")
+    by_packaged_cli = isolated_settings.read_bytes()
 
     assert by_config == by_owner_endpoint == by_packaged_cli
-    assert document["OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE"] in by_config, (
+    assert by_config == cfg.serialize_settings(json.loads(by_config)).encode("utf-8"), (
+        "the file is not exactly the serializer's bytes for the document it holds: "
+        "something between serialize_settings and the disk added a trailing newline or "
+        "translated a newline")
+    assert "приоритет".encode("utf-8") in by_config, (
         "the shared serializer escaped a non-ASCII owner value")
+
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    for writer in SETTINGS_WRITERS:
+        relpath, name = writer.split("::")
+        source = (repo / relpath).read_text(encoding="utf-8")
+        (node,) = [n for n in ast.walk(ast.parse(source))
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name]
+        body = ast.get_source_segment(source, node) or ""
+        assert ".write_text(" not in body, (
+            f"{writer} commits a settings document through a text-mode write, which turns "
+            "every newline into CRLF on Windows while the other writers keep LF. Commit "
+            "through utils.write_text_atomic (or write_bytes), which is byte-exact "
+            "everywhere.")
 
 
 def test_the_packaged_bootstrap_writes_the_path_the_prologue_reads(isolated_settings, tmp_path,
@@ -522,8 +587,17 @@ def test_the_packaged_bootstrap_writes_the_path_the_prologue_reads(isolated_sett
     (context,) = contexts
     assert context.settings_path == scratch.data_dir / "settings.json"
     context.save_settings({"TOTAL_BUDGET": 1.0})
-    assert context.settings_path.read_text(encoding="utf-8") == cfg.serialize_settings(
-        cfg.prepare_settings_for_persist({"TOTAL_BUDGET": 1.0}))
+    assert context.settings_path.read_bytes() == cfg.serialize_settings(
+        cfg.prepare_settings_for_persist({"TOTAL_BUDGET": 1.0})).encode("utf-8")
+
+    # ...and it takes the write GUARDS on that same path. A bootstrap save is still a
+    # settings write: under a strict benchmark pin it must refuse like the other two
+    # writers instead of overwriting the snapshot the pin exists to hold still.
+    before = context.settings_path.read_bytes()
+    monkeypatch.setenv(cfg.SETTINGS_INTEGRITY_ENV, "0" * 64)
+    with pytest.raises(cfg.SettingsIntegrityError):
+        context.save_settings({"TOTAL_BUDGET": 2.0})
+    assert context.settings_path.read_bytes() == before
 
 
 def test_the_three_settings_writers_are_exactly_these_three():
@@ -558,17 +632,7 @@ def test_the_three_settings_writers_are_exactly_these_three():
                 )
                 if writes and targets_settings:
                     writers.add(f"{relpath}::{node.name}")
-    assert writers == {
-        "ouroboros/config.py::save_settings",
-        # The owner endpoints' write lives in the locked read-modify-write primitive.
-        "ouroboros/gateway/owner_settings.py::_owner_update_settings",
-        "ouroboros/packaged_cli.py::_save_settings",
-        # Not THIS process's settings document: the one-window raw context pair
-        # migration, written under the load lock, and the Colab bootstrap's generated
-        # file for the Drive root (serializer bytes, no prologue — foreign path).
-        "ouroboros/context_mode_compat.py::normalize_and_persist_context_mode_compat",
-        "ouroboros/colab_bootstrap.py::write_colab_settings",
-    }, writers
+    assert writers == set(SETTINGS_WRITERS), writers
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +654,34 @@ def test_a_retired_key_is_absent_from_the_defaults_that_offer_it():
     overlap = set(cfg.RETIRED_SETTING_KEYS) & set(cfg.SETTINGS_DEFAULTS)
     assert not overlap, overlap
     assert not set(cfg.RETIRED_SETTING_KEYS) & set(cfg.settings_env_keys())
+
+
+def test_a_retired_key_is_absent_from_every_surface_that_would_react_to_it():
+    """The half that neither reading nor writing covers: the surfaces that CLASSIFY a
+    key. The settings endpoint answers "applied immediately" or "restart required" per
+    saved key, and the ARCHITECTURE settings table gives each key a default — both would
+    then be talking about a knob no reader will ever serve again. Pinned over the whole
+    retired list rather than over the names one retirement happened to add, so the next
+    retirement is covered by membership instead of by remembering.
+
+    A documentation ROW is not the defect and is not forbidden: telling an owner where
+    the value they wrote under the old key went is the point of a retirement, and three
+    retired keys carry exactly such a row today. What may not survive is the DEFAULT
+    column offering a value, because that is the table saying the key is still a knob."""
+    from ouroboros import config as cfg
+    from ouroboros.gateway import settings as settings_mod
+
+    documented = (pathlib.Path(__file__).resolve().parents[1]
+                  / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8").splitlines()
+    for key in cfg.RETIRED_SETTING_KEYS:
+        assert key not in settings_mod._IMMEDIATE_KEYS, key
+        assert key not in settings_mod._RESTART_REQUIRED_KEYS, key
+        for row in [line for line in documented if line.startswith(f"| {key} |")]:
+            default = row.split("|")[2].strip()
+            assert default.startswith("(") and default.endswith(")"), (
+                f"{key} is retired, but its settings-table row still offers the default "
+                f"{default!r} — a default no reader will ever serve. State its status "
+                f"instead, the way `(retired)` and `(env-only)` do.")
 
 
 def test_a_retired_key_is_dropped_by_every_reader(isolated_settings):
