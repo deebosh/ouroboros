@@ -905,9 +905,12 @@ def _archive_dir_bounded(root: pathlib.Path) -> pathlib.Path:
     the archive path of the resolved data root.
     """
     directory = root / ARCHIVE_SEGMENT_DIR_REL
-    for level in (directory.parent, directory):
-        if level.is_symlink():
-            raise UsageLedgerCorrupt(f"usage archive path is a symlink: {level}")
+    try:
+        for level in (directory.parent, directory):
+            if level.is_symlink():
+                raise UsageLedgerCorrupt(f"usage archive path is a symlink: {level}")
+    except OSError as exc:  # pathlib re-raises all but ENOENT/ENOTDIR/EBADF/ELOOP: type it
+        raise UsageLedgerCorrupt(f"usage archive path cannot be inspected: {directory}") from exc
     resolved = pathlib.Path(os.path.realpath(directory))
     if resolved != pathlib.Path(os.path.realpath(root)) / ARCHIVE_SEGMENT_DIR_REL:
         raise UsageLedgerCorrupt(f"usage archive directory escapes its data root: {directory}")
@@ -927,7 +930,11 @@ def _segment_path(root: pathlib.Path, archive_rel: str) -> pathlib.Path:
         )
     archive_dir = _archive_dir_bounded(root)
     path = (root / archive_rel).resolve(strict=False)
-    if path.parent != archive_dir or (root / archive_rel).is_symlink():
+    try:
+        linked = (root / archive_rel).is_symlink()
+    except OSError as exc:  # an lstat the kernel refuses is UNKNOWN, typed — never a bare OSError
+        raise UsageLedgerCorrupt(f"usage archive segment cannot be inspected: {archive_rel!r}") from exc
+    if path.parent != archive_dir or linked:
         raise UsageLedgerCorrupt(
             f"usage archive segment escapes the archive directory: {archive_rel!r}"
         )
@@ -1122,8 +1129,19 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     skip-pass state, never as evidence of an orphan."""
     root = pathlib.Path(_drive_root(root))
     live_header = _live_baseline_header(root)
-    if live_header is None and not (root / ARCHIVE_SEGMENT_DIR_REL).is_dir():
-        return frozenset()  # never compacted and no archive: nothing to anchor against
+    if live_header is None:  # no stamp: only the kernel's exact "no archive directory" ends
+        try:  # the question early; anything else is UNKNOWN (typed), never a silent empty answer
+            mode = os.stat(root / ARCHIVE_SEGMENT_DIR_REL).st_mode
+        except FileNotFoundError:
+            return frozenset()  # never compacted and no archive: nothing to anchor against
+        except OSError as exc:
+            raise UsageLedgerCorrupt(
+                f"usage archive directory cannot be inspected: {root / ARCHIVE_SEGMENT_DIR_REL}"
+            ) from exc
+        if not stat.S_ISDIR(mode):
+            raise UsageLedgerCorrupt(
+                f"usage archive level is not our own directory: {root / ARCHIVE_SEGMENT_DIR_REL}"
+            )
     # POSIX holds the archive directory handles for the WHOLE question: the
     # chain walk and the epoch anchor read one and the same directory, whatever
     # the path names by the time the anchor runs.

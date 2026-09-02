@@ -1232,6 +1232,49 @@ def test_a_link_planted_after_the_reader_bound_check_is_refused(
         uc.archived_attempt_ids(data_root)
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS or getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="permission shapes are POSIX and need a non-root euid")
+def test_a_stamp_less_ledger_still_inspects_its_archive_fail_closed(data_root):
+    """Before any compaction the question ends early ONLY on the kernel's exact "no
+    archive directory": a regular file standing where the directory belongs, or a
+    directory that cannot be inspected, is UNKNOWN — typed, never a silent empty
+    answer (pathlib's is_dir swallowed the first shape) or a bare OSError (it re-raised the second)."""
+    _seed_mixed_ledger(data_root)
+    assert uc.archived_attempt_ids(data_root) == frozenset()  # control: no archive at all
+    archive_dir = data_root / "archive" / "usage_ledger"
+    archive_dir.parent.mkdir(exist_ok=True)
+    archive_dir.write_bytes(b"")  # a regular file where the archive directory belongs
+    with pytest.raises(UsageLedgerCorrupt, match="not our own directory"):
+        uc.archived_attempt_ids(data_root)
+    archive_dir.unlink()
+    archive_dir.mkdir()
+    archive_dir.parent.chmod(0o000)  # present, but no inspection allowed
+    try:
+        with pytest.raises(UsageLedgerCorrupt, match="cannot be inspected"):
+            uc.archived_attempt_ids(data_root)
+    finally:
+        archive_dir.parent.chmod(0o755)
+
+
+def test_a_path_inspection_the_reader_cannot_make_is_typed_corruption(data_root, compacted, monkeypatch):
+    """pathlib re-raises every OSError but ENOENT/ENOTDIR/EBADF/ELOOP from its
+    inspections, so the reader's symlink bounds — both archive levels, the named
+    segment — must type an EACCES/EIO themselves or a bare OSError escapes the CPL-5
+    sweep's UNKNOWN mapping (the class round 5.3 closed at the opens). Real shape first:
+    a segment directory readable but not searchable — the dir-fd open accepts it, the segment's lstat does not."""
+    _, segment = compacted
+    if not (platform_layer.IS_WINDOWS or getattr(os, "geteuid", lambda: 1)() == 0):
+        segment.parent.chmod(0o600)
+        try:
+            with pytest.raises(UsageLedgerCorrupt, match="cannot be inspected"):
+                uc.archived_attempt_ids(data_root)
+        finally:
+            segment.parent.chmod(0o755)
+    monkeypatch.setattr(pathlib.Path, "is_symlink", lambda self: (_ for _ in ()).throw(PermissionError(errno.EACCES, "refused")))
+    with pytest.raises(UsageLedgerCorrupt, match="cannot be inspected"):
+        uc.archived_attempt_ids(data_root)
+
+
 def test_unreadable_leading_row_is_typed_corruption_not_absence(data_root, compacted):
     folded = sorted(uc.archived_attempt_ids(data_root))
     assert folded
