@@ -131,10 +131,14 @@ assumed in two places that used to hardcode TB2.1:
   `commit_review_triad` by model id, and under the container's one-model roster a
   subagent-bound row resolves to the measured model and dedupes onto it
   (`agent+commit_review_triad`). The per-delivery record is the run manifest: on a fixed-model
-  run `harness.fixed_model_actor.reviewer_slots` carries each row with its route kind and
-  subagent binding, and `extra.triad_rows_not_executable_in_container` the session rows; a
-  plain `--model` run records only the latter, so its api-vs-native split is read from the
-  forwarded host settings (`--settings-path`) the container adapter used.
+  run `harness.fixed_model_actor.reviewer_slots` carries the projection's `slot_id`,
+  `route{kind, target_id}` and `effort` per row — a fixed-model panel is always direct api
+  rows, so no subagent binding exists there — and `extra.triad_rows_not_executable_in_container`
+  carries the session rows. A plain `--model` run records only the latter; its api-vs-native
+  split is recoverable from the forwarded host settings (`--settings-path`) only when the panel
+  is persisted there — the container adapter resolves the environment first
+  (`harbor_installed_agent.py`, `_container_env`), so a panel supplied only through the
+  operator's environment leaves no durable per-delivery record on a plain `--model` run.
 - **Harbor version:** the pinned TB2.1 bench venv is harbor **0.18.0** (`~/ouro/venv-tb`). 0.20.0
   is the current latest and is installed in a SEPARATE venv (`~/ouro/venv-fb`), reachable via
   `--harbor-bin` and leaving `venv-tb` frozen at 0.18.0 so published TB2.1 numbers keep their

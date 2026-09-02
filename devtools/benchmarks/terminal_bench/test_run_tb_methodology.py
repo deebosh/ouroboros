@@ -23,8 +23,14 @@ def _hermetic_process_environment():
     behaviour, kept. Under xdist that leaked `OUROBOROS_REVIEWER_SLOTS` and the
     forwarded slot keys into every later test of the same worker (the
     `benchmark-scope-1` contamination class). Every test here runs on a
-    snapshot of the environment that is restored afterwards, whatever it wrote."""
+    snapshot of the environment that is restored afterwards, whatever it wrote —
+    and starts WITHOUT the operator shell's reviewer panel or legacy comma-list
+    keys (mirroring tests/conftest.py's `_scrub_inherited_subagent_selection`),
+    so a panel-reading test here is hermetic against the shell."""
     saved = dict(os.environ)
+    for key in ("OUROBOROS_REVIEWER_SLOTS", "OUROBOROS_REVIEW_MODELS",
+                "OUROBOROS_SCOPE_REVIEW_MODELS", "OUROBOROS_SCOPE_REVIEW_MODEL"):
+        os.environ.pop(key, None)
     try:
         yield
     finally:
