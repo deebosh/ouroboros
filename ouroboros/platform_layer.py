@@ -523,7 +523,11 @@ def file_unlock(fd: int) -> None:
 
 
 def pid_is_alive(pid: int) -> bool:
-    """Return whether a PID appears alive without exposing os.kill to callers."""
+    """Return whether a PID appears alive without exposing os.kill to callers.
+
+    Only a positive "no such process" is dead: EPERM means the process EXISTS
+    and merely refuses our signal (another uid's pid on a shared host, a pid
+    recycled onto one) — alive, like Windows' access-denied answer below."""
 
     if pid <= 0:
         return False
@@ -558,29 +562,21 @@ def pid_is_alive(pid: int) -> bool:
             kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
-        return True
-    except OSError:
+    except ProcessLookupError:
         return False
+    except OSError:  # EPERM: it exists and refuses us; anything else undeterminable reads as present
+        pass
+    return True
 
 
 def pid_provably_gone(pid: int) -> bool:
     """True only when the OS positively answers that ``pid`` does not exist.
 
-    Stricter than ``not pid_is_alive``: the POSIX branch there folds EVERY
-    OSError into 'dead', but EPERM means the process EXISTS and merely refuses
-    our signal — a caller deciding whether a killed process is really gone
-    must treat that (and anything else undeterminable) as still present."""
-    if pid <= 0:
-        return True
-    if IS_WINDOWS:
-        return not pid_is_alive(pid)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False
-    return False
+    The negation of :func:`pid_is_alive`, which reads EPERM — the process
+    EXISTS and merely refuses our signal — and anything else undeterminable as
+    still present; a caller deciding whether a killed process is really gone
+    gets that same fail-safe answer under the name that says what it proves."""
+    return not pid_is_alive(pid)
 
 
 # Windows locking via LockFileEx: unlike msvcrt.locking(), works on empty files.

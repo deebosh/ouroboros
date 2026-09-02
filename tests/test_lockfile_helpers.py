@@ -108,6 +108,31 @@ def test_stale_eviction_still_reclaims_a_genuinely_abandoned_lock(tmp_path, monk
     release_exclusive_file_lock(lock_path, fd)
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="kill(pid, 0) is the POSIX liveness probe")
+def test_a_pid_that_refuses_our_signal_is_alive_and_its_lock_is_not_reclaimed(tmp_path, monkeypatch):
+    """EPERM from ``kill(pid, 0)`` means the process EXISTS and merely refuses
+    our signal — another user's process on a shared host, or a pid recycled
+    onto one. Reading it as dead let the owner-aware stale rule evict such a
+    lock by age; it is alive, so the lock stays (the disclosed recycled-pid
+    wedge), and only ESRCH is a process provably gone."""
+    def answering(code):
+        def kill(pid, sig):
+            raise OSError(code, "kill refused")
+        return kill
+
+    monkeypatch.setattr(os, "kill", answering(errno.EPERM))
+    assert platform_layer.pid_is_alive(4242) is True and platform_layer.pid_provably_gone(4242) is False
+    lock_path = tmp_path / "state.lock"
+    lock_path.write_text("pid=4242 ts=0\n", encoding="utf-8")
+    os.utime(lock_path, (0.0, 0.0))  # aged past any staleness window
+    assert acquire_exclusive_file_lock(
+        lock_path, timeout_sec=0.3, stale_sec=1.0, poll_sec=0.02, owner_aware_stale=True,
+    ) is None
+    assert lock_path.read_text(encoding="utf-8") == "pid=4242 ts=0\n"
+    monkeypatch.setattr(os, "kill", answering(errno.ESRCH))
+    assert platform_layer.pid_is_alive(4242) is False and platform_layer.pid_provably_gone(4242) is True
+
+
 def test_heartbeat_reports_lost_ownership_instead_of_renewing(tmp_path):
     """The renewal is an OWNERSHIP statement: a stolen lock renews nothing."""
     lock_path = tmp_path / "state.lock"
