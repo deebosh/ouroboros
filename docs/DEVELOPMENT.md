@@ -1635,13 +1635,22 @@ Before every commit, verify the following:
 - The canonical/replica terminal post-task/accounting field-custody projection
   must live in one pure reducer reused by both physical copy-back and effective
   reads; never blanket-overlay the replica over canonical truth. Every change
-  to that projection must add a stale-replica regression at both seams.
+  to that projection must add a stale-replica regression at both seams. The
+  same reducer owns the reconciliation-disclosure pair and protects a canonical
+  terminal delegation receipt only when its durable `started`/`settled` counts
+  do not regress the replica; equal counts may enrich cost/access/substrate,
+  while a dispatch-only canonical envelope still accepts the first child
+  receipt. Historical top-level `delegated_runs_*` counters are not rewritten.
 - Push/live events are wakeups and a fast path, not terminal authority. Durable
   task detail/history and authoritative snapshots must converge terminal UI
   state through the existing refresh/reconnect seams. Shared snapshot consumers
   mutate projections only for a request generation newer than the last applied,
   while the request-start barrier protects later live frames; lifecycle changes must
   exercise lost/reordered terminal frames and reversed snapshot completion.
+  History replay projects a durable delegation receipt onto the latest emitted
+  terminal progress row even when a separate task summary survives, because
+  that progress row is the executor-chip consumer; absent durable evidence
+  never erases a receipt already present on the row.
 - Effective task status belongs in `ouroboros/task_status.py`. Do not duplicate
   child-drive merge or terminality in gateways/tools. Task waits use
   `SETTLED_STATUSES`. Cancel INTENT is never a status value (Poltergeist phase A):
