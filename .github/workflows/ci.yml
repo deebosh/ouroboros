@@ -471,7 +471,11 @@ jobs:
   # Red here = investigate; there is no fallback-skip.
   # ──────────────────────────────────────────────────────────────────
   system-e2e-mock:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Also on a release tag: the release bar must not skip the 57-scenario lane
+    # (owner decision, batch №13 item 4, 2026-09-02).
+    if: |
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -487,13 +491,25 @@ jobs:
           OUROBOROS_DATA_DIR: ${{ runner.temp }}/ouroboros-system-e2e/data
           OUROBOROS_SETTINGS_PATH: ${{ runner.temp }}/ouroboros-system-e2e/data/settings.json
         run: python -m pytest tests/system_e2e/ -o addopts="" -q
+      # The cancellation E-suite mock lane (18 scenarios + 4 mock-only) ran only on
+      # operator hosts before 7.0; on the same isolated roots it is keyless too
+      # (owner decision, batch №13 item 16, 2026-09-02).
+      - name: Run the cancellation E-suite mock lane
+        env:
+          OUROBOROS_E2E_CANCEL: mock
+          OUROBOROS_APP_ROOT: ${{ runner.temp }}/ouroboros-e2e-cancel/app
+          OUROBOROS_REPO_DIR: ${{ runner.temp }}/ouroboros-e2e-cancel/repo
+          OUROBOROS_DATA_DIR: ${{ runner.temp }}/ouroboros-e2e-cancel/data
+          OUROBOROS_SETTINGS_PATH: ${{ runner.temp }}/ouroboros-e2e-cancel/data/settings.json
+        run: python -m pytest tests/test_e2e_cancellation_scenarios.py -o addopts="" -q
 
   # ──────────────────────────────────────────────────────────────────
   # Tier 3: Build & Release (tag push only)
   # ──────────────────────────────────────────────────────────────────
   release-preflight:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [full-test, integration-test]
+    # system-e2e-mock joined the release bar with the v7 campaign (batch №13 item 4).
+    needs: [full-test, integration-test, system-e2e-mock]
     runs-on: ubuntu-latest
     outputs:
       is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
@@ -504,6 +520,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+      - name: v7next adoption release bar
+        # The campaign ledger's release gate (every transplanted delta done or an
+        # explicit post-release row with its authority) runs on the tag path itself,
+        # not only inside the pytest wrapper (batch №13 item 4).
+        run: python scripts/v7next_adoption.py --release
       - name: Validate tag matches VERSION
         id: release_meta
         run: |

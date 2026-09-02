@@ -164,7 +164,7 @@ def test_trusted_provider_ci_wires_full_secret_policy_and_release_dependency():
         assert f"{secret}: ${{{{ secrets.{secret} }}}}" in integration_job
 
     assert " -rs " in integration_job
-    assert "needs: [full-test, integration-test]" in release_preflight
+    assert "needs: [full-test, integration-test, system-e2e-mock]" in release_preflight
 
 
 def test_repository_has_explicit_mit_license_holder():

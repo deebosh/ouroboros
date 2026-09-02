@@ -64,7 +64,8 @@ def test_the_scheduled_lane_never_runs_on_a_push_or_a_pull_request():
     condition = " ".join(str(job["if"]).split())
     assert condition == (
         "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
-    ), condition
+        " || startsWith(github.ref, 'refs/tags/v')"
+    )  # a release tag joins the lane to the release bar (batch №13 item 4); push/PR never, condition
     assert job["runs-on"] == "ubuntu-latest"
     # The budget must clear the suite, not merely exist. `> 0` accepted
     # `timeout-minutes: 1`, which cancels the job mid-scenario and reports the
