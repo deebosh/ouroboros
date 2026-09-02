@@ -51,3 +51,52 @@ def test_settings_context_mode_posts_owner_endpoint(monkeypatch):
 
     assert result == 0
     assert seen["request"] == ("POST", "/api/owner/context-mode", {"mode": "low"})
+
+
+def test_chat_history_limit_maps_to_n_human(monkeypatch, capsys):
+    """`chat history --limit N` requests the quota the server actually honors.
+
+    The CLI sends the explicit `n_human` quota (the server separately honors
+    legacy `limit` as a fallback default for already-shipped clients), so the
+    flag is no longer a placebo (issue #172).
+    """
+    from ouroboros import cli
+
+    seen = {}
+
+    class FakeClient:
+        def request(self, method, path, body=None):
+            seen["request"] = (method, path)
+            return {"messages": []}
+
+    monkeypatch.setattr(cli, "_client", lambda _args, **_kwargs: FakeClient())
+
+    result = cli._chat_history_command(SimpleNamespace(limit=25))
+
+    assert result == 0
+    assert seen["request"] == ("GET", "/api/chat/history?n_human=25")
+    capsys.readouterr()
+
+
+def test_chat_history_without_limit_sends_no_quota(monkeypatch, capsys):
+    """Through the real parser: an omitted `--limit` requests the bare endpoint.
+
+    No quota parameter is sent, so the default window has exactly one owner
+    (the server's `_DEFAULT_N_HUMAN`) and the CLI cannot drift from it.
+    """
+    from ouroboros import cli
+
+    seen = {}
+
+    class FakeClient:
+        def request(self, method, path, body=None):
+            seen["request"] = (method, path)
+            return {"messages": []}
+
+    monkeypatch.setattr(cli, "_client", lambda _args, **_kwargs: FakeClient())
+
+    args = cli.build_parser().parse_args(["chat", "history"])
+
+    assert args.func(args) == 0
+    assert seen["request"] == ("GET", "/api/chat/history")
+    capsys.readouterr()
