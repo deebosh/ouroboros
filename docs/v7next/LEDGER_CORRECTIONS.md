@@ -8287,3 +8287,184 @@ Each gate its own command with its rc printed:
 
 The CI-shape battery and the `-m serial` pass are not re-run here: the lane's
 surfaces are one test module and two documents, and no runtime code changed.
+
+## From the stage-2 close-out, lane ledger2 (base bf8b6549)
+
+Four lens findings on the ledger-validator lane, plus one inherited citation
+from the ui lane. Base `bf8b6549`, the v7next integration tip with all five
+stage-2 fix lanes merged. Nothing runtime changed: the surfaces are
+`scripts/v7next_adoption.py`, its test module, `ADOPTION_v7next.md` and three
+documents under `docs/v7next/`.
+
+### Red-first table
+
+| # | item | red-first evidence (pre-fix shape) | green |
+|---|---|---|---|
+| 3 | five hook-resolution messages prefixed `release:` although hook resolution runs for every `done` row in BOTH modes, and a docstring claiming «Outside --release hooks stay free prose» | the new parametrized pin drives four hook shapes (prose-only, missing file, `tests/../` escape, bogus `::nodeid`) through the DEFAULT mode and asserts no message claims the release bar → **4 failed, 19 passed**, the failure text being `release: D03 hook names tests/test_smoke.py::…` | 23 passed (`tests/test_v7next_adoption.py`), validator rc 0 in both modes |
+| 1 | the frozen-inventory rationale stated false git facts in two places | **not pinnable, by the design the finding asks to keep**: the checker deliberately reads one file and spawns no subprocess, so no pytest assertion can hold the comment to `git log`. Re-derived instead with read-only `git log -1 --format='%h %p'`, `git rev-list --first-parent` and `git merge-base --is-ancestor`, and the derivation is written into the commit message | validator rc 0 in both modes; `scripts/v7next_adoption.py` unchanged in behaviour |
+| 2 | two WINWAVE run rows read «green \| green \| green \| re-prove holds» for reruns, and one row still read «pending» | **not pinnable in pytest**: the facts live in GitHub Actions, not in the tree. Re-read read-only against the public API (`runs/<id>` → `run_attempt`, `conclusion`; `.../attempts/<n>/jobs` → per-job conclusions) | the run table now carries each row's attempt count, and the attempt-1 outcome of every rerun |
+| 4 | three citations naming lines they inherited from the review | **deliberately not pinned by a line assert** — a test that pins `chat.js` line numbers is the same rot class with a red light on it. Re-derived with `grep -n` and the live-path citation now leads with the symbol, which is what survives the next edit | `grep -n` agrees on all three: `chat.js:2399-2430`, `chat.js:2992`, `api_types.js:287/:290` |
+
+Only item 3 changes program text, and it is the only one with a pin. Items 1,
+2 and 4 are factual corrections to prose; each says above why a pytest pin
+would be either impossible or actively harmful, rather than claiming a pin it
+does not have.
+
+### Item 1 — the train inventory's rationale (fixed, and the reason replaced)
+
+`scripts/v7next_adoption.py` and the sync #3 ledger section both said «of the
+three recorded sync merges only `f4abe0a5` has an upstream commit as its
+literal second parent». Derived facts:
+
+| merge | parents | first-parent line of this branch |
+|---|---|---|
+| `20850191` (absorb, sync #1) | `5187fcdc` `8d13373b` | no |
+| `b9ceed6e` (absorb, sync #2) | `3e4a6181` `f3fbfdbb` | no |
+| `f4abe0a5` (absorb, sync #3) | `43dcc1d2` `a76961de` | yes |
+| `0aa74e9f` (lane integration) | `a12c873c` `816e7b82` | yes — carries `20850191` |
+| `0f9a8daf` (lane integration) | `ad8506ef` `4c32691e` | yes — carries `b9ceed6e` |
+
+So **all three** absorb merges take the upstream tip as their literal second
+parent; the false half was «only `f4abe0a5`». What holds is the first-parent
+shape: two of the three absorb merges were made on lane lines and reached
+mainline as the second-parent side of a lane-integration merge over a campaign
+commit. Three further corrections in the same paragraph:
+
+1. **The re-tie `f61ea3c2` is not the cause and cannot be.** It is an ancestor
+   of all three syncs (`git merge-base --is-ancestor f61ea3c2 20850191` and the
+   same for `b9ceed6e`, `0aa74e9f`, `0f9a8daf` all true; the reverse false), so
+   it predates them. The clause is removed rather than reworded — no causal
+   claim replaces it, because none is derivable from the graph alone.
+2. **The widened rule is now quantified.** «Second parent descends from a
+   recorded upstream tip» matches 35 merges for `8d13373b`, 15 for `f3fbfdbb`
+   and 6 for `a76961de` on this tree, which is the honest form of «every lane
+   merge».
+3. **The example was not a merge.** `8fb08d44` has one parent; the C6 lane
+   merge is `9faccf31`, whose second parent it is.
+
+Disposition on the inventory itself: `REQUIRED_TRAINS` is **unchanged**. Sync
+#1 is still recorded by its mainline carrier `0aa74e9f` while syncs #2 and #3
+are recorded by their absorb merge — an asymmetry that is now stated in the
+comment instead of hidden, and the `TRAIN-F6` manifest row names both
+`20850191` and `0aa74e9f` so the absorb merge is not lost. Repointing the tuple
+at `20850191` was rejected: it would move an enforced SHA for no gain, and the
+row records both facts as text either way.
+
+### Item 2 — rerun-greens are not first-attempt greens (fixed)
+
+Read read-only from the public GitHub API, unauthenticated (`gh` is installed
+on this host but not logged in, and nobody logged in for this read):
+
+| run | SHA | run_attempt | conclusion | attempt-1 failures |
+|---|---|---|---|---|
+| 33569841899 | `8b27b507` | 1 | success | — |
+| 33570328266 | `285ab66d` | 1 | success | — |
+| 33571681398 | `9238cc2d` | 1 | success | — |
+| 33572515529 | `c0029d45` | 1 | success | — |
+| 33574822693 | `d21806d8` | 1 | **failure** | `full-test (windows-latest)`, never rerun |
+| 33579445704 | `1072a317` | 2 | success | `full-test (windows-latest)` |
+| 33624546416 | `ac17fa03` | 2 | success | `full-test (windows-latest)` |
+| 33626834806 | `43dcc1d2` | 2 | success | `system-e2e-mock` only |
+| 33644668074 | `f4abe0a5` | 1 | success | — |
+
+Per row, as the finding asks:
+
+- **33579445704 (`1072a317`)** — attempt 1 red on `full-test
+  (windows-latest)`, everything else green; attempt 2 green. Named cause,
+  **operator-read**: `tests/test_phase3c_observability_gc` on its copy-back
+  step (intermittent) and `tests/test_preflight_runner` on an xdist worker
+  timeout. **No code fix followed**, so the class stays *intermittent,
+  unrooted* and is carried as the **O3** question to the owner.
+- **33624546416 (`ac17fa03`)** — attempt 1 red on `full-test
+  (windows-latest)`, everything else green; attempt 2 green. Cause: the
+  session-engine horizon read 301 for a deadline 300 s away on the coarse
+  Windows clock. **A code fix followed**: `43dcc1d2`, whose own message names
+  this run id and this cause, in `tests/test_review_agent_session_route.py`.
+  Rooted and closed — this is the one cause corroborated inside the repo
+  rather than only operator-read.
+- **33574822693 (`d21806d8`)** — the row said «pending at the time of
+  writing». Verdict: red on the Windows `full-test` leg and never rerun, so it
+  is **not a re-prove**. No class is claimed for it: the failing subtests are
+  not attributable from here.
+- **33626834806 (`43dcc1d2`)** and **33644668074 (`f4abe0a5`)** are the two
+  later first-attempt greens (the former on its three `full-test` legs, its
+  separate `system-e2e-mock` job having been rerun; the latter on every job),
+  and R-WINWAVE's hook now names them beside the four early ones.
+
+**Honesty boundary on this item.** Job LOGS are not readable this way — the
+API answers 403 «Must have admin rights to Repository» — and the check-run
+annotations carry only «Process completed with exit code 1». So the *attempt
+structure* is re-derived fact, while the *failing test names* for 1072a317
+remain operator-read facts and are labelled as such in the registry. The
+d21806d8 cause is recorded as unattributable rather than guessed.
+
+Also corrected while here: `ADOPTION_v7next.md` R-WINWAVE still said run
+33644668074 «is dispatched and its verdict has not arrived». It had been read
+green on 2026-09-02 15:00Z and `7b6d3613` recorded that in the registry without
+updating the manifest row.
+
+### Item 3 — `hook:` instead of `release:` (fixed, pinned)
+
+Hook resolution moved to «every `done` row, both modes» in an earlier round,
+but its five messages kept the `release:` prefix and the docstring kept the
+old sentence. Both now match the code: the prefix is `hook:`, the two genuine
+release-bar messages (`still pending-decision`, `status != done`) keep
+`release:`, and the docstring says what gates the resolution — the `done` cell,
+not the mode. The comment at the call site cited the manifest's Notes for the
+rule; the Notes did not actually state it, so the sentence was added there
+instead of dropping the citation. The fifth message (an unparseable hook file)
+is renamed with the others but not driven by the pin — it needs a planted
+syntax-error file, and the four drivable shapes already fix the prefix class.
+
+### Item 4 — inherited line citations (fixed)
+
+`chat.js:2412-2443` → **`chat.js:2399-2430`** (the function is 32 lines,
+`routeSubagentTerminalToCard` at `:2399`, closing brace at `:2430`);
+`chat.js:3005` → **`chat.js:2992`** (the reload path's call);
+`api_types.js:288/:291` → **`:287/:290`** (the `@property` lines for
+`accounted_upper_bound_usd[_with_children]`; `:288/:291` are the description
+lines beneath them, and were wrong against the frozen base as well — there the
+honest names sat at `:284`/`:287`).
+
+The live-path citation now leads with `chat.js::routeSubagentTerminalToCard`,
+so the symbol survives the next line shift. No line-number pin was added: a
+test asserting `chat.js:2399` would go red on the next unrelated edit to that
+file, which is the defect this finding is about, not a fix for it.
+
+**Checked and NOT changed:** the remaining `file:line` references in
+`docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md` (`gateway/tasks.py:227`,
+`supervisor/events_task_done.py:256`, `agent_task_pipeline.py:842/:853`,
+`gateway/history.py:849/:381/:401`, `api_types.js:333/:370/:389/:410`,
+`api_types.js:1017-1018`) no longer point at their subjects on this tree, but
+that document declares itself «Frozen BEFORE the first removal (lane D3, base
+`29e2b045`)», so those citations are as-of that base by design and rewriting
+them would destroy the evidence they exist to carry. Two of them are worth a
+reader's note all the same: the `telegram_chat_id` and ui-preferences JSDoc
+typedefs the document lists as HOT-DEFERRED were removed by `71e1f13f` (the
+F3.3 residual sweep) later in this campaign, so the deferral has since been
+discharged. Updating that disposition belongs to the ABI-3 row, not to this
+close-out, and is disclosed here rather than done.
+
+### Gates
+
+Run as separate commands with the return code printed:
+
+- targeted suites `tests/test_v7next_adoption.py` +
+  `tests/test_legacy_timeout_retirement.py` (it scans `ADOPTION_v7next.md`) +
+  `tests/test_gateway_abi3_removals.py` + `tests/test_comma_list_remnant_sweep.py`
+  — **63 passed, rc 0**;
+- `ruff check . --select F` rc 0;
+- `scripts/check_domains.py` rc 0;
+- `scripts/regenerate_inventories.py --check` rc 0;
+- `scripts/regenerate_size_ratchet.py --check` rc 0;
+- `scripts/v7next_adoption.py` rc 0 and `--release` rc 0;
+- `git diff --check` rc 0 and `git diff --check f3fbfdbb..HEAD` rc 0.
+
+`git rev-parse HEAD` was read after every pytest invocation and never moved.
+The full non-serial battery, the `-m serial` pass and the CI-shape checks are
+NOT re-run here, and the omission is deliberate rather than forgotten: the only
+program text this lane changes is five f-string prefixes and two docstrings in
+`scripts/v7next_adoption.py`, a checker no runtime path imports, plus one test
+module. Everything else is prose. A release candidate still owes its own full
+battery and its own 3-OS matrix — and, per item 2, that matrix is now the place
+where the 1072a317 intermittent class either recurs or does not.
