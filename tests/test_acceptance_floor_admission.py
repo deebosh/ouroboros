@@ -230,6 +230,89 @@ def test_floor_launch_predicates_and_the_projection_record_nothing(monkeypatch, 
         "gate": "review_launch", "estimated_sec": round(estimate, 3), "floor_sec": 200.0, "spendable_sec": 1000.0}
 
 
+def test_an_improvement_pass_admitted_at_the_floor_is_not_projected(monkeypatch, tmp_path):
+    """The DIVERGENCE band, pinned: with an adaptive profile and
+    `floor < estimate < spendable <= 2 x estimate` — 200 < 300 < 500 <= 600, and
+    500 > 2 x 200 — the improvement gate admits AT THE FLOOR through its 2x
+    window, while the capacity projection evaluates `review_launch_allowed`
+    alone, whose 1x window this same spendable window clears outright, so the
+    projection carries NO `launch_disclosure`. Every number comes from the real
+    readers and builders (the timing EWMA, the deadline snapshot, one really
+    claimed cycle); no predicate is patched. The asymmetry is PINNED, not an
+    oversight — projecting the adaptive predicate too is a deferred owner item,
+    and only a deliberate change there should turn this test red."""
+    from datetime import timedelta
+
+    from ouroboros import task_pacing
+    from ouroboros.contracts.task_contract import build_task_contract
+    from ouroboros.deadline_utils import utc_now
+    from ouroboros.review_substrate import build_review_binding
+    from ouroboros.task_results import (
+        STATUS_RUNNING,
+        claim_task_acceptance_review_cycle,
+        project_task_acceptance_review_capacity,
+        write_task_result,
+    )
+
+    _offline_env(monkeypatch, _ROW_API)  # a packet panel: the timing row below is its class
+    monkeypatch.setenv("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", "200")  # the floor
+    monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "120")  # the whole reserve (pct 0)
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    now = utc_now()
+    contract = build_task_contract({
+        "deadline_at": (now + timedelta(seconds=620)).isoformat(),
+        "budget_profile": {
+            "improvement_policy": "adaptive", "reserve_finalization_pct": 0,
+            "max_improvement_passes": 3,
+        },
+    })
+    metadata = {
+        "root_task_id": "root-floor-band", "delegation_role": "root",
+        "budget_drive_root": str(tmp_path), "task_contract": contract,
+        "created_at": (now - timedelta(seconds=60)).isoformat(),
+        "deadline_at": contract["deadline_at"],
+    }
+    ctx = SimpleNamespace(
+        task_id="root-floor-band", root_task_id="root-floor-band", drive_root=tmp_path,
+        budget_drive_root=str(tmp_path), task_contract=contract, task_metadata=metadata,
+        pending_events=[],
+    )
+    write_task_result(tmp_path, "root-floor-band", STATUS_RUNNING, root_task_id="root-floor-band",
+                      delegation_role="root", task_contract=contract)
+    claim = claim_task_acceptance_review_cycle(
+        tmp_path, "root-floor-band",
+        build_review_binding(candidate="deliverable", evidence=dict(_ACCEPTANCE_PACKET),
+                             fence_token_or_state="floor-band"),
+        claimed_by_task_id="root-floor-band",
+    )
+    assert claim["status"] == "claimed"  # a REAL paid cycle: the projection prices the next pass
+    events = task_pacing.acceptance_timing_events_path(ctx)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    _timing(events, duration_sec=200, delivery="api_chat")  # EWMA 200 -> 1.5x -> estimate 300
+
+    profile = task_pacing.resolve_budget_profile(ctx)
+    estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1)
+    snapshot = task_pacing.build_budget_snapshot(ctx, profile=profile)
+    assert profile["improvement_policy"] == "adaptive" and estimate == 300.0
+    assert snapshot.reserve_sec == 120.0 and 400.0 < snapshot.spendable_sec <= 600.0
+    assert 200.0 < estimate < snapshot.spendable_sec  # floor 200 < estimate < spendable <= 2x
+
+    reason = task_pacing.REASON_LAUNCHED_AT_FLOOR
+    assert task_pacing.improvement_pass_allowed(
+        snapshot, 0, profile, estimated_sec=estimate, ctx=ctx) == (True, reason)
+    assert task_pacing.review_launch_allowed(snapshot, estimated_sec=estimate) == (True, "")
+
+    projection = project_task_acceptance_review_capacity(ctx, task_id="root-floor-band")
+    assert projection["state"] == "available" and projection["reason"] == ""
+    assert projection["claimed_cycles"] == 1 and projection["remaining_cycles"] == 3
+    # The projection prices the SAME 300 s estimate and still discloses nothing:
+    # only `review_launch_allowed`'s 1x window can ever set the key.
+    assert task_pacing.acceptance_review_estimate_sec(
+        ctx, passes_done=projection["claimed_cycles"]) == estimate
+    assert "launch_disclosure" not in projection
+    assert ctx.pending_events == []  # still pure: the divergence records nothing either
+
+
 def _floor_band_native_panel(monkeypatch, tmp_path, *rows):
     """A native (or api+native) triad on a seeded $1 wallet with a poisoned
     rounds estimate (33): the floor wave fits, the rounds-priced wave does not."""
