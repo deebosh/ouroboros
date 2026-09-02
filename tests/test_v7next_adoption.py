@@ -96,6 +96,24 @@ def test_a_bogus_hook_nodeid_turns_the_bar_red(rows):
     assert any("test_no_such_pin_was_ever_written" in e for e in errors), errors
 
 
+@pytest.mark.parametrize("hook", [
+    "the suites this row moved bytes in",                      # prose only
+    "tests/test_no_such_suite_was_ever_written.py",            # missing file
+    "tests/../scripts/v7next_adoption.py",                     # escapes tests/
+    "tests/test_smoke.py::test_no_such_pin_was_ever_written",  # bogus nodeid
+])
+def test_a_hook_error_does_not_claim_the_release_bar(rows, hook):
+    """Hook resolution runs for every ``done`` row in BOTH modes — it is a
+    property of a shipped row, not of the ``--release`` invocation. A message
+    reported in the default mode must therefore not say ``release:``, or the
+    reader is told to look for a switch that has nothing to do with it."""
+    victim = _first_done(rows)
+    errors = validate(_mutate(rows, victim["id"], **{"verification hook": hook}),
+                      release=False)
+    assert errors, "the hook shape was accepted in the default mode"
+    assert not [e for e in errors if e.startswith("release:")], errors
+
+
 def test_a_hook_nodeid_that_names_a_real_test_stays_green(rows):
     """The AST read must accept what the manifest legitimately names, including
     a data carrier (``tests/_shared.py::SETTINGS_WRITERS``) — a hook may point

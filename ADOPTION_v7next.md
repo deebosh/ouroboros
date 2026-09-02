@@ -46,6 +46,10 @@ Schema (fixed; one row per artifact-level delta family, never per commit):
 - `verification hook` — the suite/checker that proves the row when it lands
   (suites named from the frozen reference arrive with their domain transplant,
   plan §5.3 step 4; hooks marked "(new)" are named now, built in their phase).
+  Once the row is `done` the validator resolves EVERY token of its hook — path
+  and `::nodeid` half alike — in both modes, because a resolvable hook is a
+  property of a shipped row and not of the `--release` invocation. Until then
+  the hook may stay free prose naming the suite the work will land in.
 
 | id | kind | what | disposition | status | phase | verification hook |
 |---|---|---|---|---|---|---|

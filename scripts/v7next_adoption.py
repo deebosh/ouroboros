@@ -260,9 +260,9 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
     # a genuine disclosure on a shipped row stays sayable.
     for r in rows:
         errors.extend(_honesty_errors(r))
-        # Hook resolution follows the rule the manifest already states in its
-        # Notes ("for a `done` row the validator resolves every token"): it is
-        # a property of a shipped row, not of the release invocation.
+        # Hook resolution is a property of a shipped row, not of the release
+        # invocation, so it runs in both modes and its messages say `hook:`.
+        # The manifest's own Notes state the same rule for its readers.
         if r["status"] == "done":
             errors.extend(_hook_resolution_errors(r))
     # Phase pinning of the required inventory.
@@ -346,29 +346,32 @@ def _hook_nodeid_errors(row: dict[str, str], hook: str) -> list[str]:
         try:
             defined = _defined_names(path)
         except SyntaxError as exc:  # unparseable file: say so, do not pass it
-            errors.append(f"release: {row['id']} hook file {rel} does not parse ({exc})")
+            errors.append(f"hook: {row['id']} hook file {rel} does not parse ({exc})")
             continue
         for part in tail.split("::"):
             if part and part not in defined:
-                errors.append(f"release: {row['id']} hook names {rel}::{part}, "
+                errors.append(f"hook: {row['id']} hook names {rel}::{part}, "
                               f"which {rel} does not define")
     return errors
 
 
 def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
-    """Release-bar hook contract (F0 review rounds 1-4): a shipped row's
+    """Shipped-row hook contract (F0 review rounds 1-4): a shipped row's
     verification hook must RESOLVE — prose alone cannot pass. At least one
     repo-path reference must be present, EVERY referenced token must exist
     (any extension — a smuggled bogus reference next to a valid one is an
     error, not ignored), and the path must stay inside its top directory
-    (`tests/../x` traversal is rejected). Outside --release hooks stay free
-    prose (they name future suites while the work is pending)."""
+    (`tests/../x` traversal is rejected). This runs for every `done` row in
+    BOTH modes — it is a property of a shipped row, not of the --release
+    invocation — so the messages are prefixed `hook:`, not `release:`. A row
+    that is not yet `done` keeps a free-prose hook, naming the suite the work
+    will land in."""
     hook = row["verification hook"]
     paths = _HOOK_PATH_RE.findall(hook.replace("\\|", "|"))
     errors: list[str] = []
     if not paths:
         errors.append(
-            f"release: {row['id']} hook has no resolvable repo-path reference "
+            f"hook: {row['id']} hook has no resolvable repo-path reference "
             "(tests/, scripts/ or docs/ file) — prose-only hooks cannot ship")
     for p in paths:
         top = p.split("/", 1)[0]
@@ -378,9 +381,9 @@ def _hook_resolution_errors(row: dict[str, str]) -> list[str]:
         # separators (round 5: the "/"-suffix check broke on Windows).
         inside = candidate == top_root or top_root in candidate.parents
         if ".." in p.split("/") or not inside:
-            errors.append(f"release: {row['id']} hook path escapes {top}/: {p}")
+            errors.append(f"hook: {row['id']} hook path escapes {top}/: {p}")
         elif not candidate.is_file():
-            errors.append(f"release: {row['id']} hook references missing file {p}")
+            errors.append(f"hook: {row['id']} hook references missing file {p}")
     errors.extend(_hook_nodeid_errors(row, hook))
     return errors
 
