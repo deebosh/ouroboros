@@ -210,24 +210,36 @@ _REPLACE_RETRY_INITIAL_DELAY_SEC = 0.002
 _REPLACE_RETRY_MAX_DELAY_SEC = 0.1
 
 
-def replace_atomic(src: pathlib.Path | str, dst: pathlib.Path | str) -> None:
+def replace_atomic(
+    src: pathlib.Path | str, dst: pathlib.Path | str, *,
+    precondition: Callable[[], bool] | None = None,
+) -> bool:
     """``os.replace`` with a bounded retry on Windows sharing violations.
 
     Retries ONLY on PermissionError, which POSIX rename(2) never raises for an
     open destination — so POSIX behavior is byte-identical (one syscall, no
     sleeps). After the bound is exhausted the last PermissionError propagates
     unchanged; every other exception propagates immediately.
+
+    ``precondition`` is asked immediately before EVERY attempt, retries
+    included: a proof taken before a refused attempt is stale by the next one
+    (the monetary ledger swap re-proves lock ownership and its snapshot here,
+    CPL4-C6). A ``False`` answer leaves ``dst`` untouched and returns False,
+    ``src`` left for the caller to remove; True once replaced.
     """
     delay = _REPLACE_RETRY_INITIAL_DELAY_SEC
     for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+        if precondition is not None and not precondition():
+            return False
         try:
             os.replace(src, dst)
-            return
+            return True
         except PermissionError:
             if attempt == _REPLACE_RETRY_ATTEMPTS - 1:
                 raise
             time.sleep(delay)
             delay = min(delay * 2, _REPLACE_RETRY_MAX_DELAY_SEC)
+    return False
 
 
 def _atomic_overwrite(path: pathlib.Path, write_temp: Callable[[pathlib.Path], None]) -> None:

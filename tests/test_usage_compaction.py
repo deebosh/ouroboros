@@ -186,6 +186,17 @@ def _append_raw_row(data_root, row):
     return row
 
 
+def _raced_row(attempt_id):
+    """A settled charge a concurrent holder lands: the row a stale swap erases."""
+    return {
+        "kind": "subscription_session", "attempt_id": attempt_id, "state": "settled",
+        "ts": "2026-09-01T00:00:00+00:00", "cost_usd": 0.25, "cost_final": True,
+        "model": "fable", "provider": "claudexor", "category": "task",
+        "source": "subscription", "task_id": "t", "root_task_id": "root",
+        "parent_task_id": "",
+    }
+
+
 def _projection_snapshot(data_root):
     return (
         ua.usage_projection(data_root),
@@ -472,13 +483,7 @@ def test_append_between_snapshot_and_swap_aborts_instead_of_erasing_it(data_root
     def racing_write(path, payload, root):
         # A writer that got the lock (age-broken lock, foreign repair) lands a
         # settled charge AFTER the compactor snapshotted the file.
-        injected.update(_append_raw_row(data_root, {
-            "kind": "subscription_session", "attempt_id": "sess-raced",
-            "state": "settled", "ts": "2026-09-01T00:00:00+00:00",
-            "cost_usd": 0.25, "cost_final": True, "model": "fable",
-            "provider": "claudexor", "category": "task", "source": "subscription",
-            "task_id": "t", "root_task_id": "root", "parent_task_id": "",
-        }))
+        injected.update(_append_raw_row(data_root, _raced_row("sess-raced")))
         original_write(path, payload, root)
 
     monkeypatch.setattr(uc, "_write_new_file_fsync", racing_write)
@@ -614,13 +619,7 @@ def test_an_append_between_the_recheck_and_the_replace_aborts_without_loss(
         if len(calls) == 2 and verdict:
             # The charge lands AFTER the outer pre-swap re-check answered
             # "intact" and BEFORE the rename trusts that answer.
-            injected.update(_append_raw_row(data_root, {
-                "kind": "subscription_session", "attempt_id": "sess-last-instant",
-                "state": "settled", "ts": "2026-09-01T00:00:00+00:00",
-                "cost_usd": 0.25, "cost_final": True, "model": "fable",
-                "provider": "claudexor", "category": "task", "source": "subscription",
-                "task_id": "t", "root_task_id": "root", "parent_task_id": "",
-            }))
+            injected.update(_append_raw_row(data_root, _raced_row("sess-last-instant")))
         return verdict
 
     monkeypatch.setattr(uc, "_snapshot_intact", racing_check)
@@ -710,13 +709,7 @@ def test_a_hold_lost_while_the_temp_is_written_refuses_the_replace(data_root):
         if not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*")):
             return True
         if not injected:
-            injected.update(_append_raw_row(data_root, {
-                "kind": "subscription_session", "attempt_id": "sess-new-holder",
-                "state": "settled", "ts": "2026-09-01T00:00:00+00:00",
-                "cost_usd": 0.25, "cost_final": True, "model": "fable",
-                "provider": "claudexor", "category": "task", "source": "subscription",
-                "task_id": "t", "root_task_id": "root", "parent_task_id": "",
-            }))
+            injected.update(_append_raw_row(data_root, _raced_row("sess-new-holder")))
         return False
 
     with ua._locked(data_root):
@@ -728,6 +721,53 @@ def test_a_hold_lost_while_the_temp_is_written_refuses_the_replace(data_root):
     assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
     cost, bound = _decimal_money(rows)
     assert (cost, bound) == (before_money[0] + Decimal("0.25"), before_money[1])
+
+@pytest.mark.parametrize("intrusion", ("append", "hold_lost"))
+def test_a_refused_rename_re_proves_the_hold_and_the_snapshot_before_retrying(
+    data_root, monkeypatch, intrusion
+):
+    """The atomic replace retries a refused rename (a Windows sharing
+    violation), and a proof taken before the refused attempt is stale by the
+    next one: between the attempts a charge can land or the hold can leave us.
+    Ownership and the snapshot are re-proven before EVERY attempt, so a
+    refusal followed by either intrusion never reaches a second rename, and
+    the landed row survives byte-for-byte."""
+    _seed_mixed_ledger(data_root)
+    before_money = _decimal_money(_ledger_rows(data_root))
+    ledger_path = data_root / ua.LEDGER_REL
+    before = ledger_path.read_bytes()
+    real_replace = os.replace
+    attempts: list = []
+    state = {"owned": True}
+    injected: dict = {}
+
+    def refusing_replace(src, dst):
+        if pathlib.Path(dst) != ledger_path:
+            return real_replace(src, dst)
+        attempts.append(1)
+        if len(attempts) == 1:
+            if intrusion == "append":
+                injected.update(_append_raw_row(data_root, _raced_row("sess-between-attempts")))
+            else:
+                state["owned"] = False
+            raise PermissionError(errno.EACCES, "injected sharing violation")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", refusing_replace)
+    with ua._locked(data_root) as heartbeat:
+        assert uc.compact_usage_ledger_locked(
+            data_root, heartbeat=lambda: state["owned"] and heartbeat()) is None
+    assert attempts == [1]  # the second rename never happened
+    rows = _ledger_rows(data_root)
+    assert not any(row.get("kind") == "usage_baseline" for row in rows)
+    assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
+    if intrusion == "append":
+        assert injected["attempt_id"] in {str(row.get("attempt_id")) for row in rows}
+        _validate_records(rows)
+        assert _decimal_money(rows) == (before_money[0] + Decimal("0.25"), before_money[1])
+    else:
+        assert ledger_path.read_bytes() == before
+
 
 
 def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, monkeypatch, caplog):
@@ -917,13 +957,7 @@ def test_an_orphan_segment_of_the_live_generation_is_not_a_rollback(data_root, m
     original_write = uc._write_new_file_fsync
 
     def racing_write(path, payload, root):
-        _append_raw_row(data_root, {
-            "kind": "subscription_session", "attempt_id": "sess-orphaned",
-            "state": "settled", "ts": "2026-09-01T00:00:00+00:00",
-            "cost_usd": 0.25, "cost_final": True, "model": "fable",
-            "provider": "claudexor", "category": "task", "source": "subscription",
-            "task_id": "t", "root_task_id": "root", "parent_task_id": "",
-        })
+        _append_raw_row(data_root, _raced_row("sess-orphaned"))
         original_write(path, payload, root)
 
     monkeypatch.setattr(uc, "_write_new_file_fsync", racing_write)
