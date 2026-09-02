@@ -159,6 +159,9 @@ test('the collapsed activity line is plain text: the renderer\'s markdown invent
     // Markers-only text keeps its source: an empty projection would flip the
     // reserved activity band's :empty rules on the card.
     assert.equal(plainActivityText('---'), '---');
+    // Whitespace-only narration projects to nothing: the band's :empty rules
+    // (reserve while running, fold when finished) need a truly empty node.
+    assert.equal(boundActivityPreview(' \n\t '), '');
     assert.equal(plainActivityText(''), '');
     // Composition: the bound preview is built on the plain projection.
     assert.equal(boundActivityPreview('  **Reading**\n  the   ledger  '), 'Reading the ledger');

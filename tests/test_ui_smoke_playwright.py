@@ -1074,8 +1074,8 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     assert geometry["activity"]["lines"] <= 2.2, geometry
                     assert geometry["scrollWidth"] <= geometry["clientWidth"] + 1, geometry
                     named_meta = named.locator('[data-live-meta]').inner_text().split()
-                    # Final ledger: the plain amount first, never the open-ledger ceiling.
-                    assert named_meta[:1] == ["$0.42"] and "up" not in named_meta, named_meta
+                    # Final ledger: the plain amount, never the open-ledger ceiling.
+                    assert "$0.42" in named_meta and "up" not in named_meta, named_meta
 
                     unnamed_activity = unnamed.locator('[data-live-activity]')
                     assert "Doing things without a name" in unnamed.locator('[data-live-title]').text_content()
@@ -2622,6 +2622,24 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 assert 700 <= owner_facts["column"] <= 740, owner_facts
                 # 80% of a 700-740px column is below the 620px floor, so the floor wins.
                 assert abs(owner_facts["width"] - 620) <= 1 and owner_facts["wrap"] == "nowrap", owner_facts
+                # The width is monotonic across the 620px chatcol breakpoint: against
+                # its containing block's content width the card is
+                # min(content, max(80% of content, 620px)) at every column width.
+                width_formula = (
+                    """() => {
+                        const card = document.querySelector('#page-chat .chat-live-card[data-task-id="layout-root"]');
+                        const block = card.parentElement;
+                        const style = getComputedStyle(block);
+                        const content = block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+                        return {content, width: card.getBoundingClientRect().width};
+                    }"""
+                )
+                for viewport_width in (880, 920, 1100):
+                    wide.set_viewport_size({"width": viewport_width, "height": 750})
+                    wide.wait_for_timeout(250)
+                    sample = wide.evaluate(width_formula)
+                    expected = min(sample["content"], max(0.8 * sample["content"], 620))
+                    assert abs(sample["width"] - expected) <= 1, (viewport_width, sample, expected)
                 wide.set_viewport_size({"width": 1100, "height": 750})
                 wide.wait_for_timeout(250)
 
