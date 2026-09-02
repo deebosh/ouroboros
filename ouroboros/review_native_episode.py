@@ -155,9 +155,11 @@ _LANDING_NOTICE = (
 # reserve, so no single read can jump over the landing notice and the bound.
 _EPISODE_TOOL_RESULT_CHAR_CAP = 120_000
 
-# Room kept below the bound for the landing notice itself: the notice must
-# always fit under the send bound it announces.
-_LANDING_RESERVE_CHARS = 512
+# Room kept below the bound for the landing notice itself AND the envelopes of
+# the withheld calls of the round that crossed the landing line (every tool
+# call must be answered, so an empty result still costs its message envelope):
+# the notice must always fit under the send bound it announces.
+_LANDING_RESERVE_CHARS = 2_048
 
 # Below this much room a tool result could carry nothing but its truncation
 # marker: the call is WITHHELD (not executed) instead of read-and-discarded.
@@ -436,10 +438,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                             # came back: its receipt keys and custody must not
                             # read as a zero-send refusal.
                             self._rounds_used = round_idx
+                            invoke_review_paid_stamp(self.assignment.dispatch_stamp)
                         if isinstance(exc, BudgetExceeded) and shape == "report" and last_content:
                             break  # nothing was sent; a report keeps its draft
-                        if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
-                            invoke_review_paid_stamp(self.assignment.dispatch_stamp)
                         raise
                 self._rounds_used = round_idx
                 tool_calls = (msg.get("tool_calls") or []) if isinstance(msg, dict) else []
@@ -500,10 +501,13 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         registry, tc, validation_by_id, round_idx=round_idx,
                         room=transcript_cap - _LANDING_RESERVE_CHARS - transcript_chars,
                     )
-                    transcript_chars += len(result)
-                    messages.append({
-                        "role": "tool", "tool_call_id": call_id, "content": result,
-                    })
+                    tool_message = {"role": "tool", "tool_call_id": call_id, "content": result}
+                    # The WHOLE tool message rides the next send — role and the
+                    # provider's call id included — so an empty withheld result
+                    # still costs its envelope; counting only the content let a
+                    # batch of withheld calls grow the send past the bound unseen.
+                    transcript_chars += len(json.dumps(tool_message, ensure_ascii=False, default=str))
+                    messages.append(tool_message)
             if shape == "report" and not final_answer and last_content:
                 # A report is a product, not a verdict: the collected draft is
                 # delivered marked INCOMPLETE rather than discarded (the bound
@@ -517,7 +521,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             # Only the host's own scratch is removed; an opted-in data root
             # belongs to the caller and survives a failed episode untouched.
             shutil.rmtree(scratch, ignore_errors=True)
-            if (final_answer is None or episode.get("native_incomplete")) and messages and messages[-1].get("role") != "user":
+            if (final_answer is None or episode.get("native_incomplete")) and any(
+                m.get("role") == "assistant" for m in messages
+            ):
                 # The terminal round — the exact assistant envelope and the
                 # tool results that led to a bound, deadline or transport end
                 # — is not reconstructible from the receipts alone (P1): keep
@@ -680,20 +686,28 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             tail.insert(0, msg_item)
             if msg_item.get("role") == "assistant":
                 break
-        assistant, results = tail[0], tail[1:]
+        assistant = tail[0]
+        # Only the round's own tool results belong to the record; a trailing
+        # host landing notice (a user message) is disclosed, never relabelled.
+        results = [m for m in tail[1:] if m.get("role") == "tool"]
+        trailing_notice = any(m.get("role") == "user" for m in tail[1:])
         bounded: List[Dict[str, Any]] = [{
             "role": "assistant",
-            "content": truncate_within_limit(str(assistant.get("content") or ""), 1_600),
+            "content": truncate_within_limit(str(assistant.get("content") or ""), 1_200),
             "tool_calls": truncate_within_limit(
-                json.dumps(assistant.get("tool_calls") or [], ensure_ascii=False, default=str), 1_600),
+                json.dumps(assistant.get("tool_calls") or [], ensure_ascii=False, default=str), 1_200),
         }]
         kept = results[-4:]
         for item in kept:
             bounded.append({
-                "role": "tool", "tool_call_id": str(item.get("tool_call_id") or ""),
+                "role": "tool",
+                "tool_call_id": truncate_within_limit(str(item.get("tool_call_id") or ""), 200),
                 "content": truncate_within_limit(str(item.get("content") or ""), 1_000),
             })
-        doc = {"messages": bounded, "omitted_tool_results": len(results) - len(kept)}
+        doc = {
+            "messages": bounded, "omitted_tool_results": len(results) - len(kept),
+            "trailing_host_notice": trailing_notice,
+        }
         return json.dumps(redact_projection(doc).value, ensure_ascii=False, default=str)
 
     def failure_custody(self) -> Dict[str, Any]:

@@ -221,7 +221,7 @@ def _ignores_landing(surface="multi_model_review", draft=""):
          "tool_calls": [_tool_call("read_file", {"path": "big.txt"}, "c1")]},
     ] + [
         {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, f"c{i}")]}
-        for i in range(2, 10)
+        for i in range(2, 40)
     ]
 
 
@@ -244,7 +244,7 @@ def test_transcript_bound_fails_closed_for_verdict_shapes(subject_repo, monkeypa
     # The settled failure replays; no second paid episode.
     with pytest.raises(ReviewRouteUnavailable):
         executor.execute()
-    assert 2 <= len(llm.calls) < 9 and llm.script  # the bound landed before the script ran out
+    assert 2 <= len(llm.calls) < 39 and llm.script  # the bound landed before the script ran out
 
 
 def test_one_read_can_never_jump_over_the_landing_notice_and_the_bound(subject_repo, monkeypatch):
@@ -424,6 +424,82 @@ def test_terminal_round_is_kept_on_a_bound_end(subject_repo, tmp_path, monkeypat
     parsed = json.loads(doc)
     assert len(doc) <= 8_000 and parsed["omitted_tool_results"] == 5 and len(parsed["messages"]) == 5
     assert "OMISSION NOTE" in parsed["messages"][0]["content"]
+    # A hostile provider id is bounded like every other field.
+    hostile = [{"role": "assistant", "content": "", "tool_calls": []},
+               {"role": "tool", "tool_call_id": "z" * 5_000, "content": "ok"}]
+    assert len(json.loads(NativeToolRoundReviewExecutor._terminal_round_fact(hostile))["messages"][1]["tool_call_id"]) <= 200
+
+
+def test_terminal_round_is_kept_when_the_landing_notice_is_the_last_message(subject_repo, tmp_path, monkeypatch):
+    """A transport failure on the very send that carries the landing notice
+    (the notice is the last message) still leaves the terminal-round record:
+    the guard is "an assistant round exists", not "the last message is not
+    the notice"."""
+    import ouroboros.review_native_episode as native_episode
+
+    (subject_repo / "chunk.txt").write_text("y" * 4_000, encoding="utf-8")
+    first_send = _first_send_chars(subject_repo)
+    bound = int(first_send * 1.25) + 4_000
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: bound)
+
+    class _FailsAfterNotice(_ScriptedLLM):
+        def chat(self, **kwargs):
+            if any("[EPISODE_BUDGET]" in str(m.get("content")) for m in kwargs["messages"]):
+                self.calls.append(kwargs)
+                raise RuntimeError("socket reset on the post-notice send")
+            return super().chat(**kwargs)
+
+    llm = _FailsAfterNotice([{"tool_calls": [_tool_call("read_file", {"path": "chunk.txt"}, "c1")]}])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "custody")
+    with pytest.raises(RuntimeError):
+        NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    fact = _episode_rows(tmp_path / "custody")[0]
+    assert fact["native_end_reason"] == "transport_error" and fact["native_landing_notified"] is True
+    terminal = json.loads(fact["native_terminal_round"])
+    assert "chunk.txt" in fact["native_terminal_round"] and terminal["trailing_host_notice"] is True
+    assert all(m["role"] in {"assistant", "tool"} for m in terminal["messages"])  # the notice is never relabelled
+
+    # The notice's OWN charge crossing the bound (notice last, no send after it)
+    # is a bound end that still records the terminal round. Tool results are
+    # clamped below the reserve, so only the reviewer's own (uncapped) prose
+    # can land the transcript within a notice of the bound: a round of 2.5K
+    # prose plus a tiny read. Measure that transcript from the executor's own
+    # counter, then set the bound 200 chars above it — the landing line
+    # (bound − reserve) is crossed and the ~300-char notice pushes it over.
+    prose = "p" * 2_500
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: 900_000)
+    probe = _ScriptedLLM([{"content": prose, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}, {"content": _VERDICT}])
+    after_one_round = NativeToolRoundReviewExecutor(_assignment(subject_repo, probe), llm=probe).execute().usage["native_transcript_chars"]
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: after_one_round + 200)
+    llm = _ScriptedLLM([{"content": prose, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "notice-bound")
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    assert exc.value.code == "native_transcript_cap_exceeded" and not llm.script
+    fact = _episode_rows(tmp_path / "notice-bound")[0]
+    assert fact["native_landing_notified"] is True
+    assert "greeting.txt" in fact.get("native_terminal_round", "")
+    assert json.loads(fact["native_terminal_round"])["trailing_host_notice"] is True
+
+
+def test_transcript_counter_covers_withheld_tool_message_envelopes(subject_repo, monkeypatch):
+    """The counter measures what the next send carries: a batch of withheld
+    (empty) tool results still costs its message envelopes (role + provider
+    call id), so a giant batch is seen by the bound and refused typed before
+    the over-bound send is paid for."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    calls = [_tool_call("read_file", {"path": "big.txt"}, "c0")] + [
+        _tool_call("read_file", {"path": "greeting.txt"}, "call-" + "i" * 40 + f"-{i}") for i in range(1, 300)
+    ]
+    llm = _ScriptedLLM([{"tool_calls": calls}, {"content": _VERDICT}])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        executor.execute()
+    assert exc.value.code == "native_transcript_cap_exceeded"
+    custody = executor.failure_custody()
+    assert custody["native_transcript_chars"] > custody["native_transcript_bound"] == 50_000
+    assert len(llm.calls) == 1 and llm.script  # refused before the over-bound send was paid for
 
 
 def test_report_keeps_its_draft_on_a_deadline_or_ledger_end(subject_repo, monkeypatch):
