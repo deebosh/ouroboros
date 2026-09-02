@@ -6,6 +6,10 @@ re-discover skills, reconcile review jobs, sync schedules, or hash payloads.
 from __future__ import annotations
 
 import importlib
+import json
+import pathlib
+import subprocess
+import sys
 
 import pytest
 from starlette.applications import Starlette
@@ -105,7 +109,8 @@ def test_api_widgets_projects_live_tabs_without_discovery(tmp_path, monkeypatch)
             "grid_span": 1,
             "revision": loaded.content_hash,
         }
-        assert tab["revision"] and tab["revision"] == extension_loader.live_bundle_facts("ext_widget")[0]
+        assert response.headers["cache-control"] == "no-store"
+        assert tab["revision"] and tab["revision"] == extension_loader.live_widget_projection()[0]["revision"]
 
         extension_loader.unload_extension("ext_widget")
         assert client.get("/api/widgets").json() == {"ui_tabs": []}
@@ -140,6 +145,14 @@ def test_api_extension_module_serves_live_entry_without_discovery(tmp_path, monk
         assert ok.headers["content-type"].startswith("application/javascript")
         assert ok.headers["cache-control"] == "no-store"
         assert ok.headers["access-control-allow-origin"] == "*"
+        # Reviewed bytes = served bytes by construction: the source was captured
+        # when the bundle loaded, so an edit on disk afterwards is NOT served
+        # until the skill reloads (which review freshness requires anyway).
+        (skill_dir / "widget.js").write_text("window.__edited_after_load = true;\n", encoding="utf-8")
+        again = client.get("/api/extensions/ext_module/module/widget.js")
+        assert again.status_code == 200 and again.text == "window.__ok = true;\n"
+        # The source lives on the loader bundle, never in the browser-facing snapshot.
+        assert "window.__ok" not in json.dumps(extension_loader.snapshot())
         # Exact-entry authorization stays; an unloaded skill is "not live".
         assert client.get("/api/extensions/ext_module/module/other.js").status_code == 404
         assert client.get("/api/extensions/ext_module/module/plugin.py").status_code == 404
@@ -149,17 +162,94 @@ def test_api_extension_module_serves_live_entry_without_discovery(tmp_path, monk
     assert all(count == 0 for count in calls.values()), calls
 
 
-def test_live_bundle_facts_reports_loaded_bundle_only(tmp_path):
-    assert extension_loader.live_bundle_facts("absent") is None
+def test_live_widget_projection_joins_tabs_with_owner_revision_and_source(tmp_path):
+    """One accessor under one lock: tab, owner revision and module source per row."""
+    assert extension_loader.live_widget_projection("absent") is None
+    assert extension_loader.live_widget_projection() == []
+    skill_dir = tmp_path / "skills" / "ext_proj"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "widget.js").write_text("export const x = 1;\n", encoding="utf-8")
     loaded, _, drive_root = _prepare_extension(
         tmp_path,
-        "ext_facts",
-        "def register(api):\n    pass\n",
-        permissions=[],
+        "ext_proj",
+        "def register(api):\n"
+        "    api.register_ui_tab('module', 'Module', render={'kind': 'module', 'entry': 'widget.js'})\n"
+        "    api.register_ui_tab('plain', 'Plain', render={'kind': 'declarative', 'schema_version': 1, "
+        "'components': [{'type': 'markdown', 'text': 'ok'}]})\n",
+        permissions=["widget"],
     )
     assert extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root) is None
-    content_hash, skill_dir = extension_loader.live_bundle_facts("ext_facts")
-    assert content_hash == loaded.content_hash
-    assert skill_dir == str(loaded.skill_dir.resolve())
-    extension_loader.unload_extension("ext_facts")
-    assert extension_loader.live_bundle_facts("ext_facts") is None
+    rows = extension_loader.live_widget_projection("ext_proj")
+    assert [row["tab"]["key"] for row in rows] == ["ext_proj:module", "ext_proj:plain"]
+    assert {row["revision"] for row in rows} == {loaded.content_hash}
+    assert rows[0]["module_source"] == "export const x = 1;\n"
+    assert rows[1]["module_source"] is None
+    assert extension_loader.live_widget_projection() == rows
+    # A live bundle declaring no tabs is [] (the module endpoint's 404), not None (its 409).
+    other, _, _ = _prepare_extension(tmp_path, "ext_notabs", "def register(api):\n    pass\n", permissions=[])
+    assert extension_loader.load_extension(other, lambda: {}, drive_root=drive_root) is None
+    assert extension_loader.live_widget_projection("ext_notabs") == []
+    extension_loader.unload_extension("ext_proj")
+    assert extension_loader.live_widget_projection("ext_proj") is None
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [(None, "missing from the skill directory"), (b"\xff\xfe\x00bad", "not UTF-8")],
+    ids=["missing-entry", "non-utf8-entry"],
+)
+def test_module_widget_without_readable_source_is_not_live(tmp_path, payload, expected):
+    """The entry is read ONCE at load; without it the tab (and the skill) is not live."""
+    skill_dir = tmp_path / "skills" / "ext_broken"
+    skill_dir.mkdir(parents=True)
+    if payload is not None:
+        (skill_dir / "widget.js").write_bytes(payload)
+    loaded, _, drive_root = _prepare_extension(
+        tmp_path,
+        "ext_broken",
+        "def register(api):\n"
+        "    api.register_ui_tab('module', 'Module', render={'kind': 'module', 'entry': 'widget.js'})\n",
+        permissions=["widget"],
+    )
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+    assert err is not None and "widget.js" in err and expected in err, err
+    assert extension_loader.snapshot()["ui_tabs"] == []
+    assert extension_loader.live_widget_projection("ext_broken") is None
+
+
+def test_out_of_process_catalog_captures_module_source_at_load(tmp_path):
+    """The host-side catalog path stores the same reviewed source as register_ui_tab."""
+    from types import SimpleNamespace
+
+    from ouroboros.contracts.plugin_api import ExtensionRegistrationError
+
+    skill_dir = tmp_path / "skills" / "oop"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "widget.js").write_text("export const oop = 1;\n", encoding="utf-8")
+    skill = SimpleNamespace(name="oop", skill_dir=skill_dir)
+    catalog = {"ui_tabs": [{"key": "oop:m", "skill": "oop", "tab_id": "m", "title": "M",
+                            "render": {"kind": "module", "entry": "widget.js"}}]}
+    extension_loader._register_out_of_process_surfaces(skill, current_hash="h1", catalog=catalog)
+    rows = extension_loader.live_widget_projection("oop")
+    assert [row["tab"]["key"] for row in rows] == ["oop:m"]
+    assert rows[0]["revision"] == "h1" and rows[0]["module_source"] == "export const oop = 1;\n"
+    extension_loader.unload_extension("oop")
+    # A catalog declaring an entry the payload lacks is not installed at all.
+    (skill_dir / "widget.js").unlink()
+    with pytest.raises(ExtensionRegistrationError, match="'widget.js' is missing"):
+        extension_loader._register_out_of_process_surfaces(skill, current_hash="h2", catalog=catalog)
+    assert extension_loader.live_widget_projection("oop") is None
+
+
+def test_contracts_import_stays_transport_free():
+    """``gateway/contracts.py`` re-exports the Widgets TypedDicts homed in
+    ``gateway/widgets.py``; importing the contracts must not load Starlette."""
+    code = "import sys, ouroboros.contracts.api_v1; sys.exit(1 if 'starlette' in sys.modules else 0)"
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=pathlib.Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr or "starlette was imported by ouroboros.contracts.api_v1"

@@ -521,16 +521,19 @@ async def api_extension_manifest(request: Request) -> JSONResponse:
 
 
 async def api_extension_module(request: Request) -> Response:
-    """Serve reviewed widget module JS only for live registered tab entries.
+    """Serve a live module widget's reviewed JS from the loaded bundle.
 
-    Authorization is the live loader state alone — the skill holds a loaded
-    bundle whose module tab declares exactly this entry — so this read path
+    Authorization and content are one loader read under one lock: the skill
+    holds a loaded bundle whose module tab declares exactly this entry, and
+    the body is that entry's text as captured when the bundle loaded — no
+    per-request disk read, so a file edited after load is not served until
+    the skill reloads (which review freshness requires anyway). This path
     never re-discovers skills or hashes payloads (DEVELOPMENT "Passive GET").
     The requesting ``srcdoc`` frame has an opaque origin, so its fetch is
     cross-origin and anonymous; the reply therefore carries
     ``Access-Control-Allow-Origin: *`` (no credentials are involved).
     """
-    from ouroboros.extension_loader import live_bundle_facts
+    from ouroboros.extension_loader import live_widget_projection
 
     skill_name = str(request.path_params.get("skill") or "").strip()
     entry = str(request.path_params.get("entry") or "").strip()
@@ -538,32 +541,23 @@ async def api_extension_module(request: Request) -> Response:
         return json_error("missing skill/module entry", 400)
     if "/" in entry or "\\" in entry or ".." in entry or entry.startswith("."):
         return json_error("invalid module entry", 400)
-    facts = live_bundle_facts(skill_name)
-    if facts is None:
+    rows = live_widget_projection(skill_name)
+    if rows is None:
         return json_error(f"extension {skill_name!r} not live", 409)
     # Authorize against live PluginAPI tab registrations, not only manifest ui_tab.
-    module_declared = any(
-        str(tab.get("skill") or "") == skill_name
-        and str((tab.get("render") or {}).get("kind") or "") == "module"
-        and str((tab.get("render") or {}).get("entry") or "") == entry
-        for tab in snapshot().get("ui_tabs", [])
+    source = next(
+        (
+            row["module_source"]
+            for row in rows
+            if str((row["tab"].get("render") or {}).get("kind") or "") == "module"
+            and str((row["tab"].get("render") or {}).get("entry") or "") == entry
+        ),
+        None,
     )
-    if not module_declared:
+    if source is None:
         return json_error("module entry is not declared by a live widget tab", 404)
-    skill_root = pathlib.Path(facts[1])
-    target = (skill_root / entry).resolve()
-    try:
-        target.relative_to(skill_root.resolve())
-    except ValueError:
-        return json_error("module entry escapes skill directory", 400)
-    if not target.is_file():
-        return json_error("module entry file not found", 404)
-    try:
-        text = await asyncio.to_thread(target.read_text, encoding="utf-8")
-    except UnicodeDecodeError:
-        return json_error("module entry is not UTF-8 text", 400)
     return Response(
-        text,
+        source,
         media_type="application/javascript; charset=utf-8",
         headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"},
     )

@@ -1,18 +1,23 @@
 """GET /api/widgets — the Widgets page card list, projected from the live loader.
 
-Built purely from the in-memory extension snapshot: no skill discovery, no
+Built purely from the in-memory extension state: no skill discovery, no
 stale-review reconcile, no schedule sync, no disk hashing, no writes
 (DEVELOPMENT.md "Passive GET"). ``revision`` is the owning skill's live loader
 ``content_hash`` — a revision FACT for the page's change signature, not an
 ETag and not a cache-busting token.
+
+This module also homes the Widgets TypedDicts that ``gateway/contracts.py``
+re-exports, so it imports no transport at module level (Starlette names are
+type-only here and the response class is imported inside the handler).
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, List, TypedDict
 
-from starlette.requests import Request
-from starlette.responses import JSONResponse
+if TYPE_CHECKING:  # type-only: keeps ``import ouroboros.contracts.api_v1`` transport-free
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
 
 
 class WidgetTab(TypedDict):
@@ -50,30 +55,33 @@ class ExtensionLiveSnapshot(TypedDict):
 
 
 def widget_tabs() -> List[WidgetTab]:
-    """Project live UI tabs into Widgets cards stamped with the owning skill's revision."""
-    from ouroboros.extension_loader import live_bundle_facts, snapshot
+    """Project live UI tabs into Widgets cards stamped with the owning skill's revision.
+
+    One loader read under one lock (``live_widget_projection``): a tab and its
+    ``revision`` always come from the same live generation.
+    """
+    from ouroboros.extension_loader import live_widget_projection
 
     tabs: List[WidgetTab] = []
-    revisions: Dict[str, str] = {}
-    for tab in snapshot().get("ui_tabs", []):
-        skill = str(tab.get("skill") or "")
-        if skill not in revisions:
-            facts = live_bundle_facts(skill)
-            revisions[skill] = facts[0] if facts else ""
+    for row in live_widget_projection() or []:
+        tab = row["tab"]
         # The TypedDict IS the projection: every declared key except the stamped
-        # revision comes straight from the snapshot tab (frame geometry stays in
-        # ``render``, which is where the page reads it).
+        # revision comes straight from the live tab (frame geometry stays in
+        # ``render``, which is where the page reads it). The row's module source
+        # is not a card key and never leaves the loader through this endpoint.
         card: Dict[str, Any] = {
             name: tab.get(name) for name in WidgetTab.__annotations__ if name != "revision"
         }
-        card["revision"] = revisions[skill]
+        card["revision"] = row["revision"]
         tabs.append(card)  # type: ignore[arg-type]
     return tabs
 
 
 async def api_widgets(_request: Request) -> JSONResponse:
-    """GET /api/widgets — live widget cards from the loader snapshot only."""
-    return JSONResponse({"ui_tabs": widget_tabs()})
+    """GET /api/widgets — live widget cards from the loader only; uncached like the module read."""
+    from starlette.responses import JSONResponse
+
+    return JSONResponse({"ui_tabs": widget_tabs()}, headers={"Cache-Control": "no-store"})
 
 
 __all__ = [

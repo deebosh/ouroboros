@@ -306,6 +306,9 @@ def test_register_ui_tab_promotes_render_span_metadata(tmp_path):
 
 
 def test_register_ui_tab_promotes_bounded_frame_geometry(tmp_path):
+    skill_dir = tmp_path / "skills" / "frameui"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "widget.js").write_text("export {};\n", encoding="utf-8")  # module tabs need their reviewed source
     loaded, _, drive_root = _prepare_extension(
         tmp_path,
         "frameui",
@@ -364,6 +367,13 @@ _UI_TAB_REJECTION_CASES = [
         "def register(api):\n"
         "    api.register_ui_tab('bad', 'Bad', render={'kind': 'script_module', 'src': 'x.js'})\n",
         "unsupported",
+    ),
+    (
+        "module_entry_missing_on_disk",
+        "badmodulefile",
+        "def register(api):\n"
+        "    api.register_ui_tab('bad', 'Bad', render={'kind': 'module', 'entry': 'widget.js'})\n",
+        "module widget entry 'widget.js' is missing",
     ),
     (
         "bad_declarative_component",

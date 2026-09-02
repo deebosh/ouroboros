@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from ouroboros.gateway.widgets import ExtensionLiveSnapshot
+from ouroboros.gateway.widgets import ExtensionLiveSnapshot, WidgetTab, WidgetsResponse
 
 try:  # Python 3.11+
     from typing import Literal, NotRequired, Required, TypedDict  # type: ignore[attr-defined]
@@ -1551,6 +1551,9 @@ __all__ = [
     "ScheduleDeleteResponse",
     "UploadResponse",
     "ExtensionsIndexResponse",
+    "ExtensionLiveSnapshot",
+    "WidgetTab",
+    "WidgetsResponse",
     "SkillPublishPreflightResponse",
     "SkillLifecycleQueueResponse",
     "MarketplaceSearchResponse",
