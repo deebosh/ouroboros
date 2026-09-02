@@ -772,7 +772,7 @@ def test_a_refused_rename_re_proves_the_hold_and_the_snapshot_before_retrying(
         assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
 
 
-def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, monkeypatch, caplog):
+def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, tmp_path, monkeypatch, caplog):
     """Where the lock directory takes no kernel locks the monetary lock is a
     name protocol only — exclusion the pass cannot prove — so compaction
     refuses with a disclosed reason and the ledger stays byte-identical, while
@@ -784,8 +784,14 @@ def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, mon
     before = ledger_path.read_bytes()
     monkeypatch.setattr(
         platform_layer, "kernel_file_locks_enforced", lambda path: False, raising=False)
+    # The FIRST refusal cannot write its event (a full disk, an unwritable
+    # logs/). That is not "already told": marking the root before the row lands
+    # downgrades the durable event to a log line for the life of the process.
+    landing_append = uc.append_jsonl
+    monkeypatch.setattr(uc, "append_jsonl", lambda *a, **k: (_ for _ in ()).throw(OSError("no space left")))
     with caplog.at_level(logging.WARNING, logger="ouroboros.usage_compaction"):
         assert _compact(data_root) is None
+    monkeypatch.setattr(uc, "append_jsonl", landing_append)
     assert ledger_path.read_bytes() == before
     assert not (data_root / "archive").exists()
     assert any("name tier" in record.getMessage() for record in caplog.records)
@@ -798,9 +804,15 @@ def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, mon
     assert len(rows) == len(before.splitlines()) + 3  # reserved, dispatched, settled
     # Two refusals in this process, ONE durable typed row: an operator (and the
     # 20 MB tripwire) can tell the tier apart from "nothing foldable".
-    events = (data_root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    refused = [row for row in map(json.loads, events) if row.get("type") == "usage_ledger_compaction_refused"]
-    assert [row["reason"] for row in refused] == ["name_tier"]
+    def refusals():
+        events = (data_root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        return [row for row in map(json.loads, events) if row.get("type") == "usage_ledger_compaction_refused"]
+
+    assert [row["reason"] for row in refusals()] == ["name_tier"]  # the one that could land
+    spelling = tmp_path / "linked-data"  # ~/Ouroboros -> ~/ouro: one root, two names
+    spelling.symlink_to(data_root)
+    assert _compact(spelling) is None
+    assert len(refusals()) == 1  # ONE data root, however it is spelled
     ledger_note = next(note for rel, _, note in _hot_store_thresholds() if rel == "state/usage_attempts.jsonl")
     assert "name tier" in ledger_note and "usage_ledger_compaction_refused" in ledger_note
 
