@@ -941,7 +941,6 @@ def test_generic_settings_post_does_not_author_a_mode_decision(isolated_settings
     from ouroboros.gateway import settings as settings_mod
     from ouroboros.gateway.settings import api_settings_post
 
-    monkeypatch.setattr(_os, "environ", dict(_os.environ))
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_CONTEXT_MODE"] = "low"  # forwarded by the benchmark launcher
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"
@@ -980,7 +979,6 @@ def test_owner_endpoint_authors_its_own_key_even_at_the_default(isolated_setting
     from ouroboros import config as cfg
     from ouroboros.gateway.settings import api_owner_safety_mode
 
-    monkeypatch.setattr(_os, "environ", dict(_os.environ))
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"
     _seed_disk(isolated_settings, {"TOTAL_BUDGET": "10"})
@@ -1013,9 +1011,8 @@ def test_env_forwarded_modes_survive_the_documented_startup_path(isolated_settin
 
     from ouroboros import config as cfg
 
-    # Own the WHOLE environment: apply_settings_to_env writes ~122 keys, so a real copy is the only
-    # honest ownership boundary here (the same technique the auto-low regression test uses).
-    monkeypatch.setattr(_os, "environ", dict(_os.environ))
+    # Own every mode key: apply_settings_to_env writes ~122 keys, and the autouse
+    # os.environ snapshot restores the rest after the test.
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_CONTEXT_MODE"] = "low"
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"
@@ -1066,7 +1063,6 @@ def test_agent_save_cannot_end_a_forwarded_mode_mid_run(isolated_settings, monke
     from ouroboros import config as cfg
     from ouroboros.tools.control import _set_tool_timeout
 
-    monkeypatch.setattr(_os, "environ", dict(_os.environ))  # the tool writes os.environ via apply
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_CONTEXT_MODE"] = "low"
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"

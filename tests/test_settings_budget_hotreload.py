@@ -178,7 +178,6 @@ def test_context_mode_compat_migration_truth_table_and_second_start(
         ({"OUROBOROS_CONTEXT_MODE": "low", "OUROBOROS_CONTEXT_MODE_AUTO_LOW": "unknown"}, "max", True),
     ]
 
-    monkeypatch.setattr(os, "environ", dict(os.environ))
     for index, (raw, expected_mode, warning_expected) in enumerate(cases):
         settings_path = tmp_path / f"settings-{index}.json"
         raw_document = {
@@ -335,7 +334,6 @@ def test_context_mode_env_and_disk_owner_semantics(monkeypatch, tmp_path):
     import ouroboros.config as cfg
     from ouroboros.tools import scope_review as sr
 
-    monkeypatch.setattr(os, "environ", dict(os.environ))
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path)
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
