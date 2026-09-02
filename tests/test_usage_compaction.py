@@ -830,13 +830,16 @@ def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, tmp
     before = ledger_path.read_bytes()
     monkeypatch.setattr(
         platform_layer, "kernel_file_locks_enforced", lambda path: False, raising=False)
-    # The FIRST refusal cannot write its event (a full disk, an unwritable
-    # logs/). That is not "already told": marking the root before the row lands
+    # The FIRST refusals cannot write their event (a full disk, an unwritable
+    # logs/) — append_jsonl reports exhausted retries as False, not only as an
+    # exception. Neither is "already told": marking the root before the row lands
     # downgrades the durable event to a log line for the life of the process.
     landing_append = uc.append_jsonl
     monkeypatch.setattr(uc, "append_jsonl", lambda *a, **k: (_ for _ in ()).throw(OSError("no space left")))
     with caplog.at_level(logging.WARNING, logger="ouroboros.usage_compaction"):
         assert _compact(data_root) is None
+    monkeypatch.setattr(uc, "append_jsonl", lambda *a, **k: False)
+    assert _compact(data_root) is None
     monkeypatch.setattr(uc, "append_jsonl", landing_append)
     assert ledger_path.read_bytes() == before
     assert not (data_root / "archive").exists()

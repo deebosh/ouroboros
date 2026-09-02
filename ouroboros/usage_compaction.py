@@ -701,12 +701,12 @@ def compact_usage_ledger_locked(
         log.warning("usage-ledger compaction refused: %s", NAME_TIER_REFUSAL)
         told = str(root.resolve(strict=False))  # one data root, however it is spelled
         if told not in _NAME_TIER_REFUSED:
-            try:
-                append_jsonl(root / "logs" / "events.jsonl", {
-                    "type": "usage_ledger_compaction_refused", "ts": utc_now_iso(),
-                    "reason": "name_tier", "lock_dir": str((root / LOCK_REL).parent),
-                })
-                _NAME_TIER_REFUSED.add(told)  # only a row that LANDED is "already told"
+            try:  # only a row that LANDED is "already told": append_jsonl reports its
+                if append_jsonl(root / "logs" / "events.jsonl", {  # exhausted retries as
+                    "type": "usage_ledger_compaction_refused", "ts": utc_now_iso(),  # False (and
+                    "reason": "name_tier", "lock_dir": str((root / LOCK_REL).parent),  # logs it)
+                }):
+                    _NAME_TIER_REFUSED.add(told)
             except Exception:
                 log.exception("Failed to emit usage_ledger_compaction_refused event")
         return None
