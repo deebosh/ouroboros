@@ -228,7 +228,10 @@ class _PathResolver:
       then repo-wide-if-unambiguous (fixed point, so ``skill_state_dir`` ->
       ``skill_state_dir_path`` chains resolve);
     * **local flow** — inside one function, a variable assigned a resolved
-      path, and a loop variable bound to ``<resolved>.iterdir()/.glob()``.
+      path, and a loop variable bound to ``<resolved>.iterdir()/.glob()``;
+    * **parents** — ``.parent`` of any path the planes above already named is
+      that path minus its leaf, so ``<helper>().parent / "file.json"`` lands in
+      the helper's own directory instead of reading as an unrooted leaf.
 
     Anything still unresolved stays ``*`` — a family, never a name.
     """
@@ -302,7 +305,8 @@ class _PathResolver:
         parts.reverse()
         return cur, parts
 
-    def _base_prefix(self, base: ast.expr, local: dict[str, str]) -> str | None:
+    def _base_prefix(self, base: ast.expr, consts: dict[str, str],
+                     local: dict[str, str]) -> str | None:
         """The data-relative prefix a chain base already stands for.
 
         A CALL takes the current file's function of that name first, then a
@@ -311,8 +315,20 @@ class _PathResolver:
         whose name may collide with an unrelated module's helper (it does —
         ``workspace_executor._state_dir`` — and resolving it repo-wide claimed
         the wrong plane for the per-skill jobs dir).
+
+        ``.parent`` is the one attribute read as an operation rather than a
+        name: the parent of a path this resolver already named is itself a
+        named plane (``state/reviewer_slot_last_execution.json`` -> ``state``),
+        which is how ``<helper>().parent / "file.json"`` writers become
+        visible. A single-segment path has no named parent — that is the data
+        root — so it yields nothing rather than an empty prefix.
         """
         own = self.file_prefixes.get(self.current, {})
+        if isinstance(base, ast.Attribute) and base.attr == "parent":
+            inner, ok = self.resolve(base.value, consts, local)
+            if ok and _is_named(inner) and "/" in inner:
+                return inner.rsplit("/", 1)[0]
+            return None
         if isinstance(base, ast.Call):
             name = _call_name(base)
             return own.get(name) or self.prefixes.get(name)
@@ -330,7 +346,7 @@ class _PathResolver:
             return (known, True) if known else ("", False)
         base, parts = self._chain(node, consts)
         rel = _normalize(parts)
-        prefix = self._base_prefix(base, local)
+        prefix = self._base_prefix(base, consts, local)
         if prefix:
             return (f"{prefix}/{rel}" if rel else prefix), True
         if _root_is_data(base):
@@ -462,7 +478,11 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # population was not 124 entities but 124 SPELLINGS, most of them family
 # wildcards that hid exact durable files behind them (12 of those files had no
 # inventory row and the forward check could not see them).
-EXPECTED_SCAN_PATHS = 271
+# 271 -> 281: ``<helper>().parent`` became a named root (see ``_base_prefix``),
+# which surfaced ``state/reviewer_slot_api_fallback.json`` — a live durable
+# disclosure record that had no inventory row — plus nine already-documented
+# spellings under ``state/cx/`` and ``projects/*``.
+EXPECTED_SCAN_PATHS = 281
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -699,3 +719,17 @@ def test_unresolved_wildcard_never_certifies_an_exact_row():
     # Family patterns still certify family scans (both spell the wildcard).
     assert _covers("state/*", "state/*")
     assert _covers("task_results/*", "task_results/*.json")
+
+
+def test_parent_of_a_helper_returned_path_is_a_named_root():
+    """``<helper>().parent / "name"`` is a NAMED plane, not an unrooted leaf.
+
+    ``reviewer_slot_config._record_api_fallback_substitution`` writes
+    ``_last_execution_path().parent / "reviewer_slot_api_fallback.json"``. The
+    parent of a path the scan already resolved is a fact the source states, so
+    the file must enter the population under its own name — while the base
+    stayed unresolved, this live durable disclosure record was invisible to the
+    forward check and held no inventory row.
+    """
+    paths = scan_data_paths()
+    assert "state/reviewer_slot_api_fallback.json" in paths
