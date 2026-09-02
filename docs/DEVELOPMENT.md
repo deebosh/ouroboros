@@ -112,6 +112,25 @@ integrity and authority boundaries plus truthful receipts; do not add
 task-specific auto-retry, fallback, cleanup, resume, or terminal-flow state
 machines.
 
+### Documentation contract
+
+`docs/ARCHITECTURE.md` is the map of the body (BIBLE P6), written in the present
+tense: what exists, where it lives and how it flows (structure and operation),
+and WHY it is so. Every important WHY — cross-module, gate-level or module-local
+— stays in the map, at least briefly (a second line under a module row or one
+sentence in the owning section); mechanism detail beyond that lives in the
+module's docstring, which the map points to by name and never copies.
+`docs/DEVELOPMENT.md` is how the body is changed: imperative rules grouped by
+change class, each naming the surface that enforces it (test, gate, CI lane) or
+stating honestly that none does; mechanisms, reviewer criteria, constitutional
+text and defaults belong to their owners (ARCHITECTURE, CHECKLISTS, BIBLE,
+`config.py`) and are pointed to, not restated — the ARCHITECTURE settings and
+endpoint tables are test-checked registries of those owners, not second
+authorities. A change REPLACES the description of the node it touched; release
+history lives in git and the README history table, leftovers go to issues.
+Residue — version stamps, decision codenames, "used to / previously" narrative —
+is caught by the shrink-only residue check in `tests/test_docs_sync.py`.
+
 ### Generality and emergence (P13)
 
 Every non-trivial change picks a level: patch the case in front of you,
