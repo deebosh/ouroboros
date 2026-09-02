@@ -335,13 +335,22 @@ def _swap_ledger_fsync(
     """
     from ouroboros.platform_layer import IS_WINDOWS
 
+    def witness_is_the_path() -> bool:
+        try:  # the witness fd must be the very inode the proof just licensed
+            return old_fd is None or os.fstat(old_fd)[1:3] == os.stat(path)[1:3]
+        except OSError:
+            return False
+
     def owned_and_intact() -> bool:
         beat()  # raises _Abort on a lost hold; the temp is cleaned up en route
-        intact = _snapshot_intact(path, raw)
+        intact = _snapshot_intact(path, raw) and witness_is_the_path()
         beat()  # and once more AFTER the look: the rename is the next syscall
         return intact
 
-    old_fd = None if IS_WINDOWS else os.open(str(path), os.O_RDONLY)  # the only witness left after the rename
+    try:
+        old_fd = None if IS_WINDOWS else os.open(str(path), os.O_RDONLY)  # the only witness left after the rename
+    except OSError as exc:  # the ledger vanished under the held lock: an abort by policy, not a bare OSError
+        raise _Abort(f"ledger not openable before the swap: {exc}") from exc
     try:
         if not _write_bytes_atomic_fsync(path, payload, precondition=owned_and_intact):
             raise _Abort("ledger changed between the re-check and the replace")
@@ -959,10 +968,10 @@ def _segment_path(root: pathlib.Path, archive_rel: str) -> pathlib.Path:
             f"usage baseline archive reference is not bounded: {archive_rel!r}"
         )
     archive_dir = _archive_dir_bounded(root)
-    path = (root / archive_rel).resolve(strict=False)
-    try:
+    try:  # realpath, not Path.resolve: the non-strict realpath never raises on a symlink loop
+        path = pathlib.Path(os.path.realpath(root / archive_rel))
         linked = (root / archive_rel).is_symlink()
-    except OSError as exc:  # an lstat the kernel refuses is UNKNOWN, typed — never a bare OSError
+    except (OSError, RuntimeError) as exc:  # a refused lstat, a loop: UNKNOWN, typed — never bare
         raise UsageLedgerCorrupt(f"usage archive segment cannot be inspected: {archive_rel!r}") from exc
     if path.parent != archive_dir or linked:
         raise UsageLedgerCorrupt(
@@ -1160,6 +1169,14 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     root = pathlib.Path(_drive_root(root))
     live_header = _live_baseline_header(root)
     if live_header is None:  # no stamp: only the kernel's exact "no archive directory" ends
+        for level in ((root / ARCHIVE_SEGMENT_DIR_REL).parent, root / ARCHIVE_SEGMENT_DIR_REL):
+            try:  # a link at either level — dangling included — is the stamped reader's refusal, not ENOENT
+                if stat.S_ISLNK(os.lstat(level).st_mode):
+                    raise UsageLedgerCorrupt(f"usage archive path is a symlink: {level}")
+            except FileNotFoundError:
+                continue  # absent: the exact-ENOENT question below decides
+            except OSError as exc:
+                raise UsageLedgerCorrupt(f"usage archive path cannot be inspected: {level}") from exc
         try:  # the question early; anything else is UNKNOWN (typed), never a silent empty answer
             mode = os.stat(root / ARCHIVE_SEGMENT_DIR_REL).st_mode
         except FileNotFoundError:

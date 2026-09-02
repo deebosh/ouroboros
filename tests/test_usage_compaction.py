@@ -1252,9 +1252,8 @@ def test_a_link_planted_after_the_reader_bound_check_is_refused(
                     reason="permission shapes are POSIX and need a non-root euid")
 def test_a_stamp_less_ledger_still_inspects_its_archive_fail_closed(data_root):
     """Before any compaction the question ends early ONLY on the kernel's exact "no
-    archive directory": a regular file standing where the directory belongs, or a
-    directory that cannot be inspected, is UNKNOWN — typed, never a silent empty
-    answer (pathlib's is_dir swallowed the first shape) or a bare OSError (it re-raised the second)."""
+    archive directory": a regular file standing where the directory belongs or a
+    directory that cannot be inspected is UNKNOWN — typed, never silent or bare."""
     _seed_mixed_ledger(data_root)
     assert uc.archived_attempt_ids(data_root) == frozenset()  # control: no archive at all
     archive_dir = data_root / "archive" / "usage_ledger"
@@ -1273,11 +1272,10 @@ def test_a_stamp_less_ledger_still_inspects_its_archive_fail_closed(data_root):
 
 
 def test_a_path_inspection_the_reader_cannot_make_is_typed_corruption(data_root, compacted, monkeypatch):
-    """pathlib re-raises every OSError but ENOENT/ENOTDIR/EBADF/ELOOP from its
-    inspections, so the reader's symlink bounds — both archive levels, the named
-    segment — must type an EACCES/EIO themselves or a bare OSError escapes the CPL-5
-    sweep's UNKNOWN mapping (the class round 5.3 closed at the opens). Real shape first:
-    a segment directory readable but not searchable — the dir-fd open accepts it, the segment's lstat does not."""
+    """pathlib re-raises every OSError but ENOENT/ENOTDIR/EBADF/ELOOP and turns a
+    symlink LOOP into RuntimeError, so the reader's bounds — both archive levels, the
+    named segment, its resolution — must type EACCES/EIO/a loop themselves or a bare
+    error escapes the CPL-5 sweep's UNKNOWN mapping. Real shape first: a segment directory readable but not searchable."""
     _, segment = compacted
     if not (platform_layer.IS_WINDOWS or getattr(os, "geteuid", lambda: 1)() == 0):
         segment.parent.chmod(0o600)
@@ -1286,6 +1284,11 @@ def test_a_path_inspection_the_reader_cannot_make_is_typed_corruption(data_root,
                 uc.archived_attempt_ids(data_root)
         finally:
             segment.parent.chmod(0o755)
+    loop = segment.with_name(segment.name[:-14] + "deadbeef.jsonl")  # a self-loop where a segment name is legal:
+    loop.symlink_to(loop.name)  # Path.resolve(strict=False) raised RuntimeError("Symlink loop") through the reader
+    _rewrite_header(data_root, {**_ledger_rows(data_root)[0], "archive_rel": loop.relative_to(data_root).as_posix()})
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
     monkeypatch.setattr(pathlib.Path, "is_symlink", lambda self: (_ for _ in ()).throw(PermissionError(errno.EACCES, "refused")))
     with pytest.raises(UsageLedgerCorrupt, match="cannot be inspected"):
         uc.archived_attempt_ids(data_root)
