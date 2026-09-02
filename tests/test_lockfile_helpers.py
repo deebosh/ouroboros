@@ -336,6 +336,7 @@ def test_a_stale_lock_is_never_evicted_without_the_kernel_hold(tmp_path, monkeyp
     assert lock_path.read_text(encoding="utf-8") == "pid=424242 ts=0\n"
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="7.0 ships Windows on the name tier by decision: kernel_file_locks_enforced answers False before the probe, so the probe mechanics under test never run there (packet §10 addendum)")
 def test_the_name_tier_is_chosen_by_the_predicate_not_by_a_refusal(tmp_path, monkeypatch):
     """Where the predicate says the filesystem takes no kernel locks, the name
     protocol runs alone and NO kernel call is attempted — so a refusal can
@@ -362,6 +363,7 @@ def test_the_name_tier_is_chosen_by_the_predicate_not_by_a_refusal(tmp_path, mon
     release_exclusive_file_lock(lock_path, fd)
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="7.0 ships Windows on the name tier by decision: kernel_file_locks_enforced answers False before the probe, so the probe mechanics under test never run there (packet §10 addendum)")
 def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monkeypatch):
     """Only the kernel's own "this filesystem cannot" answer selects the name
     tier; any other refusal keeps the enforced tier (where a live acquisition
@@ -395,6 +397,7 @@ def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monke
         assert list(refusing.iterdir()) == []
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="7.0 ships Windows on the name tier by decision: kernel_file_locks_enforced answers False before the probe, so the probe mechanics under test never run there (packet §10 addendum)")
 def test_enolck_is_the_name_tier_for_ordinary_locks_and_a_typed_refusal_for_money(tmp_path, monkeypatch):
     """A filesystem without a lock daemon answers ENOLCK to every kernel lock; so
     does an exhausted lock table. Neither is "held", so the probe records it as the
@@ -425,6 +428,7 @@ def test_enolck_is_the_name_tier_for_ordinary_locks_and_a_typed_refusal_for_mone
     assert not (tmp_path / "state" / "usage_attempts.lock").exists()
 
 
+@pytest.mark.skipif(platform_layer.IS_WINDOWS, reason="7.0 ships Windows on the name tier by decision: kernel_file_locks_enforced answers False before the probe, so the probe mechanics under test never run there (packet §10 addendum)")
 def test_two_threads_racing_the_first_probe_run_one_probe_and_read_one_tier(tmp_path, monkeypatch):
     """The tier cache is read and written under one lock: two threads asking
     about a directory nobody has probed run ONE probe and read one verdict —
@@ -572,3 +576,14 @@ def test_a_lock_whose_identity_cannot_be_read_is_never_a_hold(tmp_path, monkeypa
     lock_path.write_text("pid=1 ts=stranger\n", encoding="utf-8")
     assert refresh_exclusive_file_lock(lock_path, fd) is False
     os.close(fd)
+
+
+def test_pid_is_signalable_is_the_kill_question():
+    """Liveness and ownership are different questions: a pid another user owns
+    (pid 1 on a non-root POSIX host) is ALIVE for a lock owner but NOT signalable,
+    so a cleanup must not try to kill it; our own pid is both; a vanished pid is neither."""
+    assert platform_layer.pid_is_signalable(os.getpid()) is True
+    assert platform_layer.pid_is_signalable(0) is False
+    if not platform_layer.IS_WINDOWS and getattr(os, "geteuid", lambda: 1)() != 0:
+        assert platform_layer.pid_is_alive(1) is True
+        assert platform_layer.pid_is_signalable(1) is False

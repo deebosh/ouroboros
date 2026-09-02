@@ -27,7 +27,7 @@ from ouroboros.platform_layer import (
     kill_pid_tree,
     kill_process_group_id,
     kill_process_tree,
-    pid_is_alive,
+    pid_is_signalable,
     process_command,
     process_group_id,
     scrub_repo_from_pythonpath,
@@ -610,18 +610,12 @@ def _host_pid_matches_record(record: dict[str, Any]) -> bool:
         # worktree/service cleanup leak): there, fall back to liveness — owner/
         # schema/id are already verified by the caller (_valid_process_record).
         # On POSIX the capture can also fail for a genuine child (macOS `ps` right
-        # after the spawn), so liveness must still count — but the platform
-        # predicate answers the wrong question for a KILL decision: since C6 round
-        # 5.4 it reads EPERM as alive, and an owner-shaped forged record naming a
-        # foreign pid would be signalled. Ours to kill means signalable by us: a
-        # pid that refuses signal 0 (another user's process, pid 1) is not ours.
-        if IS_WINDOWS:
-            return pid_is_alive(host_pid)
-        try:
-            os.kill(host_pid, 0)
-        except (ProcessLookupError, PermissionError):
-            return False
-        return True
+        # after the spawn), so liveness must still count — but pid_is_alive answers
+        # the wrong question for a KILL decision: since C6 round 5.4 it reads EPERM
+        # as alive, and an owner-shaped forged record naming a foreign pid would be
+        # signalled. Ours to kill means signalable by us (platform_layer.pid_is_signalable;
+        # under root every live pid is signalable — the forged-record rule is a non-root property).
+        return pid_is_signalable(host_pid)
     return _process_command_sha256(host_pid) == expected
 
 

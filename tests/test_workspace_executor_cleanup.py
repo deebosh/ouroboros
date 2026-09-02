@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+
+import pytest
 
 
 def _write_docker_records(state_dir, *, foreground_pidfile="/tmp/ouroboros-exec-test.pid", service_pid="12345"):
@@ -156,6 +159,7 @@ def test_executor_cleanup_ignores_unowned_forged_process_records(tmp_path, monke
     assert workspace_executor.kill_all_foreground(data, wait=False) == []
 
 
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="under root every live pid is signalable; the forged-record rule (pid 1 refuses signal 0) is a non-root property")
 def test_executor_cleanup_ignores_owner_shaped_forged_host_pid_records(tmp_path, monkeypatch):
     import ouroboros.workspace_executor as workspace_executor
 

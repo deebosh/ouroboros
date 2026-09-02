@@ -7,11 +7,8 @@ pinned here are monetary-authority invariants (owner sanction 1A):
 2. in-flight (unsettled) rows never fold and stay transitionable;
 3. crash between archive write and ledger swap leaves the ledger byte-identical;
 4. budget enforcement sees the same numbers across compaction;
-5. every pre-compaction attempt_id stays resolvable (live ∪ archive) — the
-   CPL-5 reverse-sweep join surface — across chained compactions, with
-   tamper-evident segments;
-6. idempotent kinds (subscription/external/legacy) are never folded, so their
-   replay dedup keeps working;
+5. every pre-compaction attempt_id stays resolvable (live ∪ archive; the CPL-5 join) across chained compactions, tamper-evident;
+6. idempotent kinds (subscription/external/legacy) never fold, so their replay dedup keeps working;
 7. trigger policy: config SSOT threshold, thrash guard, verify-abort = no-op;
 8. baseline rows are legal only as the leading block.
 """
@@ -41,9 +38,7 @@ from ouroboros.usage_ledger import UsageLedgerCorrupt, _validate_records
 
 
 @pytest.fixture
-def data_root(tmp_path, monkeypatch):
-    if platform_layer.IS_WINDOWS:  # 7.0 ships Windows on the name tier: the pass REFUSES there by design (packet §10 addendum)
-        pytest.skip("compaction never runs on Windows in 7.0 (name tier); the lock-tier pins live in test_lockfile_helpers")
+def data_root_any_tier(tmp_path, monkeypatch):
     root = tmp_path / "data"
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
@@ -54,6 +49,13 @@ def data_root(tmp_path, monkeypatch):
         json.dumps({"completed": True}), encoding="utf-8"
     )
     return root
+
+
+@pytest.fixture
+def data_root(data_root_any_tier):
+    if platform_layer.IS_WINDOWS:  # 7.0 ships Windows on the name tier: the pass REFUSES there by design
+        pytest.skip("compaction never lands on Windows in 7.0 (name tier); tier-agnostic pins use data_root_any_tier")
+    return data_root_any_tier
 
 
 def _request(data_root, **overrides):
@@ -561,22 +563,22 @@ def test_no_writer_can_append_between_the_snapshot_check_and_the_swap(data_root,
     assert observed["free"] is None
 
 
-def test_every_ledger_writer_refuses_when_the_lock_cannot_be_taken(data_root, monkeypatch):
+def test_every_ledger_writer_refuses_when_the_lock_cannot_be_taken(data_root_any_tier, monkeypatch):
     """No unlocked fallback: a lock that cannot be taken is a typed refusal.
 
     An append that gave up on the lock and wrote anyway is exactly the second
     writer the compaction snapshot cannot see."""
-    _settle(data_root, cost=1.0, cost_final=True)
-    reserved = ua.reserve_attempt(_request(data_root, task_id="probe"))
-    ledger_path = data_root / ua.LEDGER_REL
+    _settle(data_root_any_tier, cost=1.0, cost_final=True)
+    reserved = ua.reserve_attempt(_request(data_root_any_tier, task_id="probe"))
+    ledger_path = data_root_any_tier / ua.LEDGER_REL
     before = ledger_path.read_bytes()
     monkeypatch.setattr(
         platform_layer, "acquire_exclusive_file_lock", lambda *a, **k: None)
     for write in (
-        lambda: ua.reserve_attempt(_request(data_root)),
+        lambda: ua.reserve_attempt(_request(data_root_any_tier)),
         lambda: ua.mark_dispatched(reserved),
         lambda: ua.record_unmetered_external_dispatch(
-            "ext-locked", drive_root=data_root, model="m", task_id="t"),
+            "ext-locked", drive_root=data_root_any_tier, model="m", task_id="t"),
     ):
         with pytest.raises(ua.UsageAccountingError):
             write()
@@ -820,15 +822,13 @@ def test_a_refused_rename_re_proves_the_hold_and_the_snapshot_before_retrying(
         assert not list(ledger_path.parent.glob(f".{ledger_path.name}.tmp.*"))
 
 
-def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, tmp_path, monkeypatch, caplog):
-    """Where the lock directory takes no kernel locks the monetary lock is a
-    name protocol only — exclusion the pass cannot prove — so compaction
-    refuses with a disclosed reason and the ledger stays byte-identical, while
-    appends keep working under the name protocol (disclosed best effort). The
-    refusal is durable and typed — ONE usage_ledger_compaction_refused event
-    per process per data root — and the 20 MB tripwire names the tier."""
-    _seed_mixed_ledger(data_root)
-    ledger_path = data_root / ua.LEDGER_REL
+def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root_any_tier, tmp_path, monkeypatch, caplog):
+    """Where the lock directory takes no kernel locks the monetary lock is a name protocol
+    only — exclusion the pass cannot prove — so compaction refuses (disclosed reason, ledger
+    byte-identical) while appends continue under the name protocol; the refusal is durable
+    and typed — ONE usage_ledger_compaction_refused event per process per data root."""
+    _seed_mixed_ledger(data_root_any_tier)
+    ledger_path = data_root_any_tier / ua.LEDGER_REL
     before = ledger_path.read_bytes()
     monkeypatch.setattr(
         platform_layer, "kernel_file_locks_enforced", lambda path: False, raising=False)
@@ -839,29 +839,29 @@ def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, tmp
     landing_append = uc.append_jsonl
     monkeypatch.setattr(uc, "append_jsonl", lambda *a, **k: (_ for _ in ()).throw(OSError("no space left")))
     with caplog.at_level(logging.WARNING, logger="ouroboros.usage_compaction"):
-        assert _compact(data_root) is None
+        assert _compact(data_root_any_tier) is None
     monkeypatch.setattr(uc, "append_jsonl", lambda *a, **k: False)
-    assert _compact(data_root) is None
+    assert _compact(data_root_any_tier) is None
     monkeypatch.setattr(uc, "append_jsonl", landing_append)
     assert ledger_path.read_bytes() == before
-    assert not (data_root / "archive").exists()
+    assert not (data_root_any_tier / "archive").exists()
     assert any("name tier" in record.getMessage() for record in caplog.records)
     # The reserve-path trigger refuses the same way, and the append it serves lands.
     monkeypatch.setattr("ouroboros.config.USAGE_LEDGER_COMPACT_BYTES", 1)
     uc._COMPACT_ATTEMPTS.clear()
-    _settle(data_root, cost=0.5, cost_final=True)
-    rows = _ledger_rows(data_root)
+    _settle(data_root_any_tier, cost=0.5, cost_final=True)
+    rows = _ledger_rows(data_root_any_tier)
     assert not any(row.get("kind") == "usage_baseline" for row in rows)
     assert len(rows) == len(before.splitlines()) + 3  # reserved, dispatched, settled
     # Two refusals in this process, ONE durable typed row: an operator (and the
     # 20 MB tripwire) can tell the tier apart from "nothing foldable".
     def refusals():
-        events = (data_root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        events = (data_root_any_tier / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
         return [row for row in map(json.loads, events) if row.get("type") == "usage_ledger_compaction_refused"]
 
     assert [row["reason"] for row in refusals()] == ["name_tier"]  # the one that could land
     spelling = tmp_path / "linked-data"  # ~/Ouroboros -> ~/ouro: one root, two names
-    spelling.symlink_to(data_root)
+    spelling.symlink_to(data_root_any_tier)
     assert _compact(spelling) is None
     assert len(refusals()) == 1  # ONE data root, however it is spelled
     ledger_note = next(note for rel, _, note in _hot_store_thresholds() if rel == "state/usage_attempts.jsonl")
@@ -1471,9 +1471,9 @@ def test_verify_abort_on_foreign_noncanonical_literal(data_root):
 
 # --- 8: structural validation ------------------------------------------------
 
-def test_baseline_rows_are_rejected_outside_the_leading_block(data_root):
-    _settle(data_root, cost=1.0, cost_final=True)
-    rows = _ledger_rows(data_root)
+def test_baseline_rows_are_rejected_outside_the_leading_block(data_root_any_tier):
+    _settle(data_root_any_tier, cost=1.0, cost_final=True)
+    rows = _ledger_rows(data_root_any_tier)
     smuggled = {
         "kind": "usage_baseline_group", "attempt_id": "baseline-x-g0001",
         "state": "settled", "seq": len(rows) + 1, "ts": "2026-09-01T00:00:00Z",
@@ -1560,7 +1560,7 @@ def test_pre_compaction_seq_is_a_checked_provenance_claim(data_root, compacted):
     ])
 
 
-def test_group_rows_require_a_leading_header(data_root):
+def test_group_rows_require_a_leading_header(data_root_any_tier):
     group = {
         "kind": "usage_baseline_group", "attempt_id": "baseline-x-g0001",
         "state": "settled", "seq": 1, "baseline_id": "x",

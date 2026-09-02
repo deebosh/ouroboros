@@ -599,6 +599,22 @@ def pid_is_alive(pid: int) -> bool:
     return True
 
 
+def pid_is_signalable(pid: int) -> bool:
+    """The KILL-decision question, distinct from :func:`pid_is_alive`: can THIS
+    process signal ``pid``?  POSIX answers with signal 0 — EPERM (another
+    user's process, pid 1) is "not ours", unlike the liveness reading where it is
+    "alive"; Windows has no signal probe, so liveness stands in for it."""
+    if pid <= 0:
+        return False
+    if IS_WINDOWS:
+        return pid_is_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
 def pid_provably_gone(pid: int) -> bool:
     """True only when the OS positively answers that ``pid`` does not exist: the
     negation of :func:`pid_is_alive`, which reads EPERM — the process EXISTS and
