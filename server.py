@@ -739,10 +739,28 @@ def _latest_project_task_result(ctx: Any, project_id: str) -> Optional[Dict[str,
     except OSError:
         paths.sort(key=lambda path: path.name, reverse=True)
     row = None
-    for path in paths[:64]:
+    for index, path in enumerate(paths[:64]):
         candidate = read_json_dict(path)
         if candidate is not None and str(candidate.get("project_id") or "") == project_id:
             row = candidate
+            # Results finalized within one clock tick share an mtime, so mtime
+            # order alone is arbitrary among them: the DURABLE `ts` decides
+            # inside the tie group — only the tied files are opened, the scan
+            # stays bounded.
+            try:
+                tied_at = path.stat().st_mtime
+            except OSError:
+                break
+            for tied in paths[index + 1:64]:
+                try:
+                    if tied.stat().st_mtime != tied_at:
+                        break
+                except OSError:
+                    break
+                other = read_json_dict(tied)
+                if (other is not None and str(other.get("project_id") or "") == project_id
+                        and str(other.get("ts") or "") > str(row.get("ts") or "")):
+                    row = other
             break
     if row is None and len(paths) > 64:
         log.info(
