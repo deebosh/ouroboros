@@ -48,10 +48,13 @@ REQUIRED_ABI = tuple(f"ABI-{n}" for n in range(1, 11))
 REQUIRED_CPL = tuple(f"CPL-{n}" for n in range(1, 8))
 # F0 review round 2: the phase of every required row is itself part of the
 # owner-approved inventory — a required row silently rescheduled to another
-# phase (or parked post-release without an owner decision) must turn the
-# validator red. OWNER_DEFERRED lists the only ids the owner has explicitly
-# deferred out of v7.0 (ABI-8: Q5=A kept handler-ABI out of the bundle,
-# Q16=A retired the «7.1» label into post-release backlog).
+# phase (or parked post-release without a recorded deferral) must turn the
+# validator red. DEFERRED_OUT_OF_V70 is that record: every post-release row
+# must appear here, and a row of the owner-approved required inventory
+# (REQUIRED_PHASE) may only be parked with OWNER authority, so flipping a
+# required row post-release still cannot bypass the release bar. Operator
+# authority covers rows that are disclosures rather than owner decisions —
+# a defect a wave found and named instead of fixing.
 REQUIRED_PHASE = {
     # D02 F1->F3: owner-ratified F3 layout (2026-08-31) — the typed organ is
     # re-derived whole by the F3.1 lane A; seam commit updates row + pin together.
@@ -71,14 +74,29 @@ REQUIRED_PHASE = {
     "ABI-9": "F3", "ABI-10": "F3",
     "CPL-1": "F5", "CPL-2": "F5", "CPL-3": "F5", "CPL-4": "F5",
     "CPL-5": "F5", "CPL-6": "F5", "CPL-7": "F5",
+    "DEFER-BROWSER": "POST",
 }
-OWNER_DEFERRED = frozenset({"ABI-8"})
+OWNER, OPERATOR = "owner", "operator-disclosed"
+DEFERRED_OUT_OF_V70 = {
+    # Owner decisions: Q5=A kept the handler ABI out of the bundle and Q16=A
+    # retired the «7.1» label into the post-release backlog (ABI-8); batch №9
+    # №14=A put the browser wave after the release, with a green smoke — not a
+    # green browser lane — as the condition on the tag (DEFER-BROWSER).
+    "ABI-8": OWNER,
+    "DEFER-BROWSER": OWNER,
+    # Operator disclosures: crash windows the F4 wave-4 system-E2E lane found
+    # and, by that lane's rule, did not fix. Named here so they cannot pass as
+    # shipped, and so the owner can pull either into 7.0.
+    "W4-F1": OPERATOR,
+    "W4-F2": OPERATOR,
+}
 KINDS = frozenset({"semantic-delta", "plan-item", "class-return"})
 DISPOSITIONS = frozenset({"retain", "re-prove", "superseded-by-upstream",
                           "pending-decision", "post-release"})
 STATUSES = frozenset({"pending", "in-progress", "done", "deferred"})
 PHASES = frozenset({"F0", "F1", "F2", "F3", "F4", "F5", "F6", "POST"})
-ID_RE = re.compile(r"^(D\d\d|ABI-\d+|CPL-\d+|R-[A-Z0-9]+|TRAIN-[A-Za-z0-9._-]+)$")
+ID_RE = re.compile(r"^(D\d\d|ABI-\d+|CPL-\d+|R-[A-Z0-9]+|TRAIN-[A-Za-z0-9._-]+"
+                   r"|DEFER-[A-Z0-9]+|W\d-F\d+)$")
 
 
 def split_row(line: str) -> list[str]:
@@ -164,9 +182,9 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
             errors.append(f"{rid}: must be kind=plan-item, got {row['kind']!r}")
     # Row-specific coupling: post-release is a single coherent state, not three
     # independent knobs (prevents e.g. disposition=post-release with status=done
-    # quietly counting as shipped) — and it is an OWNER decision: only ids in
-    # OWNER_DEFERRED may carry it, so flipping a required row to post-release
-    # cannot silently bypass the release bar.
+    # quietly counting as shipped) — and it needs a recorded deferral in
+    # DEFERRED_OUT_OF_V70, owner-authored for the required inventory, so
+    # flipping a required row to post-release cannot bypass the release bar.
     for r in rows:
         post_bits = [r["disposition"] == "post-release", r["status"] == "deferred",
                      r["phase"] == "POST"]
@@ -175,10 +193,18 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
                 f"{r['id']}: post-release rows need disposition=post-release + "
                 f"status=deferred + phase=POST together, got "
                 f"{r['disposition']}/{r['status']}/{r['phase']}")
-        if all(post_bits) and r["id"] not in OWNER_DEFERRED:
-            errors.append(
-                f"{r['id']}: post-release requires an owner decision; only "
-                f"{sorted(OWNER_DEFERRED)} are owner-deferred")
+        if all(post_bits):
+            authority = DEFERRED_OUT_OF_V70.get(r["id"])
+            if authority is None:
+                errors.append(
+                    f"{r['id']}: post-release needs a recorded deferral in "
+                    f"DEFERRED_OUT_OF_V70 (currently "
+                    f"{sorted(DEFERRED_OUT_OF_V70)})")
+            elif authority != OWNER and r["id"] in REQUIRED_PHASE:
+                errors.append(
+                    f"{r['id']}: a row of the required inventory can only be "
+                    f"parked post-release by an owner decision, not by "
+                    f"{authority}")
     # Phase pinning of the required inventory.
     for rid, want in REQUIRED_PHASE.items():
         row = by_id.get(rid)
