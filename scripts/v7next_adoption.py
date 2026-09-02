@@ -116,7 +116,7 @@ DEFERRED_OUT_OF_V70 = {
     "DEFER-E2E-DELEG-MUT": OPERATOR,
     "DEFER-E2E-PAID-LANE": OPERATOR,
     "DEFER-TYPED-PROC-5": OPERATOR,
-    "DEFER-PATHS-6.4": OPERATOR,
+    "DEFER-SPEC64-PATHS": OPERATOR,
     "DEFER-F23-ACCEPTANCE": OPERATOR,
 }
 # Post-cutoff upstream adoption trains: id -> (upstream tip, campaign merge).
@@ -147,7 +147,7 @@ DISPOSITIONS = frozenset({"retain", "re-prove", "superseded-by-upstream",
 STATUSES = frozenset({"pending", "in-progress", "done", "deferred"})
 PHASES = frozenset({"F0", "F1", "F2", "F3", "F4", "F5", "F6", "POST"})
 ID_RE = re.compile(r"^(D\d\d|ABI-\d+|CPL-\d+|R-[A-Z0-9]+|TRAIN-[A-Za-z0-9._-]+"
-                   r"|DEFER-[A-Z0-9]+|W\d-F\d+)$")
+                   r"|DEFER-[A-Z0-9][A-Z0-9-]*|W\d-F\d+)$")  # DEFER ids may carry hyphenated tokens (DEFER-E2E-PAID-LANE)
 
 
 def split_row(line: str) -> list[str]:
