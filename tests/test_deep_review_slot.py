@@ -299,11 +299,13 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
     header, body = text.split("\n\n", 1)
     assert body == _REPORT
     assert header.startswith(
-        "<!-- deep-review provenance: delivery=native_tool_rounds, model=openai/fake-deep, rounds=3, "
-        "tool_calls=2, receipts=2, coverage=BIBLE.md:read, incomplete=none, attestation=host_observed, "
+        "<!-- deep-review provenance: delivery=native_tool_rounds, model=openai/fake-deep, memory=3/7, "
+        "memory_omitted=missing:registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
+        "coverage=BIBLE.md:read, incomplete=none, attestation=host_observed, rounds=3, tool_calls=2, receipts=2, "
         "end_reason=final_answer, transcript=")
     assert "_Deep self-review: native inspection episode on openai/fake-deep — 3 rounds, 2 tool calls" in header
-    assert "BIBLE.md read; complete_" in header
+    assert "BIBLE.md read; memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, improvement-backlog.md missing); complete_" in header
+    assert usage["deep_review_memory"]["inlined"] == 3 and usage["deep_review_memory"]["dispositions"]["memory/WORLD.md"] == "missing"
     assert usage["native_rounds"] == 3 and usage["host_file_read_attestation"] == "host_observed"
     assert usage["resolved_model"] == "openai/fake-deep" and "execution_status" not in usage
     assert not [d for d in usage.get("capability_delta", []) if str(d.get("reason", "")).startswith("deep_review_")]
@@ -316,6 +318,7 @@ def test_native_row_runs_the_inspection_episode_over_repo_and_memory(review_repo
     assert "`BIBLE.md` IN FULL first" in task and f"about {len(_BIBLE):,} chars" in task
     assert "## FILE: drive/memory/identity.md\nI am Ouroboros.\n" in task
     assert "## FILE: drive/memory/knowledge/patterns.md\n## Patterns\n- class A\n" in task
+    assert "Memory dispositions (7 whitelisted): memory/identity.md inlined; memory/scratchpad.md inlined; memory/registry.md missing" in task
     assert "docs/ARCHITECTURE.md (navigation map)" in task and "Deep self-review" in task
     assert "Deliver the report itself as plain markdown prose" in task
     assert "Begin with one line naming what you read" in task
@@ -341,7 +344,7 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
     ])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
     assert text.endswith(_REPORT)
-    assert "coverage=BIBLE.md:missing" in text and "BIBLE.md NOT read; complete_" in text
+    assert "coverage=BIBLE.md:missing" in text and "BIBLE.md NOT read; memory 3/7 inlined" in text and text.split("\n")[1].endswith("; complete_")
     deltas = [d for d in usage["capability_delta"] if d["reason"] == "deep_review_mandatory_read_missing"]
     assert deltas and deltas[0]["requested"] == "mandatory full read of BIBLE.md"
     assert reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]["capability_delta"] == usage["capability_delta"]
@@ -373,7 +376,7 @@ def test_native_row_exhaustion_delivers_the_draft_marked_incomplete(review_repo,
     llm = _ScriptedLLM(script)
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
     assert text.endswith("\n\n" + draft)
-    assert "incomplete=transcript_bound" in text and "INCOMPLETE: transcript_bound_" in text
+    assert "incomplete=transcript_bound" in text and "INCOMPLETE (transcript_bound)_" in text
     assert usage["native_incomplete"] == "transcript_bound" and usage["native_end_reason"] == "transcript_bound"
     assert any(d["reason"] == "native_transcript_bound_before_final_answer" for d in usage["capability_delta"])
     assert "execution_status" not in usage  # a partial product is a product, not a failure
@@ -421,10 +424,15 @@ def test_session_row_runs_through_the_session_executor_with_the_report_contract(
                                        task_id="dsr-2", deadline_at=deadline, slot=_session_row())
     assert text.endswith(_REPORT)
     assert text.startswith(
-        "<!-- deep-review provenance: delivery=agent_session, model=gpt-5.6-sol, rounds=unobserved, "
-        "tool_calls=unobserved, receipts=0, coverage=BIBLE.md:unobserved, incomplete=none, attestation=unobserved -->\n"
+        "<!-- deep-review provenance: delivery=agent_session, model=gpt-5.6-sol, memory=3/7, "
+        "memory_omitted=missing:registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
+        "coverage=BIBLE.md:unobserved, incomplete=unobserved, attestation=unobserved -->\n"
         "_Deep self-review: agent session codex=gpt-5.6-sol (model gpt-5.6-sol) — reads not host-observed "
-        "(coverage unobserved); complete_\n\n")
+        "(coverage unobserved); memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, "
+        "improvement-backlog.md missing); completeness not host-observed_\n\n")
+    # A session carries NO round/receipt facts — by construction, not by key absence.
+    comment = text.split("\n", 1)[0]
+    assert "rounds=" not in comment and "receipts=" not in comment and "tool_calls=" not in comment
     executor = _FakeSessionExecutor.instances[0]
     request, slot = executor.assignment.request, executor.assignment.slot
     assert request.surface == "deep_self_review" and request.session_root == str(review_repo)
@@ -542,11 +550,12 @@ def test_packed_row_keeps_the_wire_shape_and_records_its_execution(review_repo, 
     assert kwargs["max_tokens"] == 100_000 and kwargs["no_proxy"] is True
     assert kwargs["reasoning_effort"] == "xhigh"  # the row's effort outranks the surface key (R6)
     assert text == (
-        "<!-- deep-review provenance: delivery=api_packet, model=openai/fake-deep, rounds=1, tool_calls=0, "
-        "receipts=0, coverage=pack:3_files, incomplete=none, attestation=packed -->\n"
-        "_Deep self-review: one packed API review on openai/fake-deep — 3 files + memory inlined; complete_\n\n"
+        "<!-- deep-review provenance: delivery=api_packet, model=openai/fake-deep, memory=0/7, "
+        "coverage=pack:3_files, incomplete=none, attestation=packed -->\n"
+        "_Deep self-review: one packed API review on openai/fake-deep — 3 files; memory 0/7 inlined; complete_\n\n"
         "Review result."
     )
+    assert usage["deep_review_memory"] == {"inlined": 0, "total": 7, "dispositions": {}}  # the mocked pack carried no memory fact
     assert usage["resolved_model"] == "openai/fake-deep" and usage["cost"] == 0.02
     last = reviewer_slot_last_executions()[DEEP_REVIEW_SLOT_ID]
     assert last["effective"]["route"] == "api_chat" and last["effective"]["model"] == "openai/fake-deep"
@@ -642,3 +651,96 @@ def test_repair_save_without_the_optional_key_succeeds_and_an_emptied_target_is_
     body = json.loads(response.body)
     assert response.status_code == 400 and body["saved"] is False
     assert "deep_review route.target_id" in body["error"]
+
+
+# ---------------------------------------------------------------------------
+# Fix batch №1 — provenance truthfulness (items 11, 13, 15, 23).
+# ---------------------------------------------------------------------------
+
+
+def test_header_sanitizes_hostile_values_and_builds_session_facts_by_construction(review_repo, review_drive, monkeypatch):
+    """Item 13: a resolved model carrying `-->` and a newline cannot close the
+    comment or break the line; a session's fact set has no rounds/receipts and
+    `attestation=unobserved` by construction; long values are bounded."""
+    import ouroboros.review_execution as review_execution
+
+    hostile = "gpt-->\ninjected --> " + "x" * 300
+
+    class _Hostile(_FakeSessionExecutor):
+        def execute(self):
+            result = super().execute()
+            usage = dict(result.usage, resolved_model=hostile, native_rounds=9, native_tool_receipts=[{"tool": "read_file"}])
+            return ReviewAttemptResult(message=result.message, usage=usage, raw_text=result.raw_text)
+
+    monkeypatch.setattr(review_execution, "_review_route_executor", _Hostile)
+    monkeypatch.setattr(deep_self_review, "_session_route_reason", lambda row: "")
+    text, _usage = run_deep_self_review(review_repo, review_drive, object(), lambda _m: None, slot=_session_row())
+    comment, human = text.split("\n")[0], text.split("\n")[1]
+    assert comment.startswith("<!-- deep-review provenance: ") and comment.endswith(" -->")
+    assert comment.count("-->") == 1 and "\n" not in comment
+    assert "model=gpt-> injected -> xxxx" in comment and "OMISSION NOTE" in comment  # bounded, disclosed
+    assert "rounds=" not in comment and "receipts=" not in comment and "attestation=unobserved" in comment
+    assert human.startswith("_") and human.endswith("_") and "\n" not in human
+
+
+def test_packed_incomplete_follows_the_provider_finish_reason(review_repo, review_drive, monkeypatch):
+    """Item 11: a packed report cut by the output reserve is labelled so
+    (`response_finish_reason == "length"`), never "complete"."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    llm = mock.Mock()
+    pack = "y" * 200
+    stats = {"file_count": 2, "total_chars": len(pack), "skipped": [],
+             "memory": {"inlined": 1, "total": 7, "dispositions": {"memory/identity.md": "inlined"}}}
+    for finish, expected in (("length", "output_reserve"), ("stop", "none"), (None, "none")):
+        usage_in = {"cost": 0.0, **({"response_finish_reason": finish} if finish else {})}
+        llm.chat.return_value = ({"content": "Cut repo"}, usage_in)
+        with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
+            text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
+        comment = text.split("\n")[0]
+        assert f"incomplete={expected}" in comment, (finish, comment)
+        assert ("INCOMPLETE (output_reserve" in text) == (expected == "output_reserve")
+        assert usage["deep_review_memory"] == stats["memory"] and "memory=1/7" in comment
+        assert "execution_status" not in usage  # a cut report is a product, disclosed — not a failure
+
+
+def test_memory_dispositions_are_disclosed_per_whitelisted_entry(review_repo, tmp_path, monkeypatch):
+    """Item 23: a partially initialized data root — one inlined, one empty, one
+    oversized, four missing — is disclosed per entry in the task text, the
+    usage fact and the header, on the retrieving delivery and the packed one."""
+    drive = tmp_path / "partial"
+    (drive / "memory" / "knowledge").mkdir(parents=True)
+    (drive / "state").mkdir()
+    (drive / "memory" / "identity.md").write_text("I am Ouroboros.\n", encoding="utf-8")
+    (drive / "memory" / "scratchpad.md").write_text("   \n", encoding="utf-8")
+    (drive / "memory" / "WORLD.md").write_text("w" * (1_048_576 + 1), encoding="utf-8")
+    task, facts = deep_self_review._retrieving_task(review_repo, drive)
+    expected = {
+        "memory/identity.md": "inlined", "memory/scratchpad.md": "empty", "memory/registry.md": "missing",
+        "memory/WORLD.md": "oversized", "memory/knowledge/index-full.md": "missing",
+        "memory/knowledge/patterns.md": "missing", "memory/knowledge/improvement-backlog.md": "missing",
+    }
+    assert facts["memory"] == {"inlined": 1, "total": 7, "dispositions": expected}
+    assert "## FILE: drive/memory/identity.md\nI am Ouroboros.\n" in task
+    assert "## FILE: drive/memory/scratchpad.md" not in task and "## FILE: drive/memory/WORLD.md" not in task
+    line = next(l for l in task.splitlines() if l.startswith("Memory dispositions (7 whitelisted): "))
+    for rel, disposition in expected.items():
+        assert f"{rel} {disposition}" in line
+    # The native episode carries the same fact into usage and the header.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    llm = _ScriptedLLM([{"content": _REPORT}])
+    text, usage = run_deep_self_review(review_repo, drive, llm, lambda _m: None, slot=_native_row())
+    assert usage["deep_review_memory"]["dispositions"] == expected
+    comment = text.split("\n")[0]
+    assert "memory=1/7" in comment
+    assert "memory_omitted=missing:registry.md,index-full.md,patterns.md,improvement-backlog.md;empty:scratchpad.md;oversized:WORLD.md" in comment
+    assert "memory 1/7 inlined (omitted: scratchpad.md empty, registry.md missing, WORLD.md oversized" in text.split("\n")[1]
+    # The packed pack states the same dispositions in its omission section.
+    dulwich_index = mock.Mock(); dulwich_index.__iter__ = mock.Mock(return_value=iter([b"ouroboros/loop.py", b"BIBLE.md"]))
+    dulwich_repo = mock.Mock(); dulwich_repo.open_index.return_value = dulwich_index
+    with mock.patch("dulwich.repo.Repo", mock.Mock(return_value=dulwich_repo)):
+        pack, stats = deep_self_review.build_review_pack(review_repo, drive)
+    assert stats["memory"]["dispositions"] == expected and stats["memory"]["inlined"] == 1
+    omitted = pack[pack.index("## OMITTED FILES"):]
+    assert "drive/memory/scratchpad.md (empty: no content)" in omitted
+    assert "drive/memory/WORLD.md (oversized: >1024KB)" in omitted
+    assert "drive/memory/registry.md (missing: not present under the data root)" in omitted

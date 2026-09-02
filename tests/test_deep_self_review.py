@@ -107,14 +107,17 @@ class TestBuildReviewPack:
         assert "Fix recurring review blocker" in pack
 
     def test_skips_missing_memory(self, tmp_repo, tmp_drive):
-        """Missing memory files are silently skipped."""
+        """Missing memory files are not inlined — and their absence is DISCLOSED
+        (omission section + typed disposition), never silently skipped."""
         with mock.patch("dulwich.repo.Repo", _make_dulwich_mock(["main.py"])):
             pack, stats = build_review_pack(tmp_repo, tmp_drive)
 
-        # registry.md, WORLD.md, index-full.md don't exist — should not appear
-        assert "registry.md" not in pack
-        assert "WORLD.md" not in pack
-        assert "index-full.md" not in pack
+        for rel in ("memory/registry.md", "memory/WORLD.md", "memory/knowledge/index-full.md"):
+            assert f"## FILE: drive/{rel}" not in pack
+            assert f"drive/{rel} (missing: not present under the data root)" in pack[pack.index("## OMITTED FILES"):]
+            assert stats["memory"]["dispositions"][rel] == "missing"
+        assert stats["memory"]["inlined"] == 3 and stats["memory"]["total"] == 7
+        assert stats["memory"]["dispositions"]["memory/identity.md"] == "inlined"
 
 
 class TestIsReviewAvailable:

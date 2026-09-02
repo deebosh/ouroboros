@@ -135,9 +135,10 @@ coverage header naming what you actually read (documents and files, in full or b
 section) and what you did not — your host records only the reads it observed."""
 
 # The report contract for a retrieving row: the shared report shape plus the
-# deep review's own header requirement. Handed over as policy["output_contract"]
-# because both retrieving executors fall back to the JSON ARRAY contract
-# without it — and an array is not a report.
+# deep review's own coverage-header sentence. The SHAPE is already `report`
+# through REVIEW_OUTPUT_SHAPES (the executors' default contract for it is the
+# report contract, never an array); the policy hands over the same contract
+# WITH the deep-review sentence, so the ask and the parse cannot disagree.
 _REPORT_CONTRACT = REVIEW_REPORT_CONTRACT + (
     "Begin with one line naming what you read (in full or by section) and what you did "
     "not; the rest is the prioritized report."
@@ -167,25 +168,37 @@ def _append_memory_whitelist(
     skipped: list[str],
     *,
     drive_root: pathlib.Path,
-) -> int:
-    file_count = 0
+) -> Dict[str, Any]:
+    """Inline the memory whitelist byte-exact and return the typed memory fact
+    every delivery carries: ``{"inlined": n, "total": 7, "dispositions": {rel:
+    inlined | missing | empty | oversized | read_error}}`` — one disposition per
+    whitelisted path (task text, usage fact, provenance header), never a silent
+    skip; every non-inlined entry also joins ``skipped`` for the omission section."""
+    dispositions: Dict[str, str] = {}
     for rel_mem in _MEMORY_WHITELIST:
         full_path = drive_root / rel_mem
         try:
             if not full_path.is_file():
+                dispositions[rel_mem] = "missing"
+                skipped.append(f"drive/{rel_mem} (missing: not present under the data root)")
                 continue
             size = full_path.stat().st_size
             if size > _MAX_FULL_REPO_FILE_BYTES:
-                skipped.append(f"drive/{rel_mem} (>{_MAX_FULL_REPO_FILE_BYTES // 1024}KB)")
+                dispositions[rel_mem] = "oversized"
+                skipped.append(f"drive/{rel_mem} (oversized: >{_MAX_FULL_REPO_FILE_BYTES // 1024}KB)")
                 continue
             content = full_path.read_text(encoding="utf-8", errors="replace")
             if not content.strip():
+                dispositions[rel_mem] = "empty"
+                skipped.append(f"drive/{rel_mem} (empty: no content)")
                 continue
             parts.append(f"## FILE: drive/{rel_mem}\n{content}\n")
-            file_count += 1
+            dispositions[rel_mem] = "inlined"
         except Exception as exc:
+            dispositions[rel_mem] = "read_error"
             skipped.append(f"drive/{rel_mem} (read error: {exc})")
-    return file_count
+    return {"inlined": sum(1 for d in dispositions.values() if d == "inlined"),
+            "total": len(_MEMORY_WHITELIST), "dispositions": dispositions}
 
 
 def _append_omission_section(parts: list[str], skipped: list[str]) -> None:
@@ -210,7 +223,8 @@ def _append_omission_section(parts: list[str], skipped: list[str]) -> None:
         "## OMITTED FILES (not included in review pack)",
         "Reasons: sensitive=secrets/keys, vendored/minified=third-party bundled asset, "
         "binary/media=images/fonts/compiled blobs, excluded_dir=non-agent-logic directory, "
-        "excluded_test=wider tests excluded, oversized=>1MB, read_error=unreadable. "
+        "excluded_test=wider tests excluded, oversized=>1MB, read_error=unreadable, "
+        "missing=whitelisted memory file absent, empty=whitelisted memory file blank. "
         "(A required atlas file that does not fit never reaches this list: it fails "
         "the pack instead of shrinking it.)",
         "Full per-file coverage for every tracked path is in the atlas coverage "
@@ -301,7 +315,7 @@ def build_review_pack(
 
     skipped: list[str] = []
     memory_parts: list[str] = []
-    memory_count = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
+    memory = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
     memory_text = "\n".join(memory_parts)
 
     # Low context mode: render ARCHITECTURE.md as a navigation map (full sections
@@ -380,7 +394,7 @@ def build_review_pack(
     parts = [atlas.text]
     parts.extend(nav_parts)
     parts.extend(memory_parts)
-    file_count = len(atlas.selected) + memory_count
+    file_count = len(atlas.selected) + memory["inlined"]
     _append_omission_section(parts, skipped)
 
     pack_text = "\n".join(parts)
@@ -389,6 +403,7 @@ def build_review_pack(
         "total_chars": len(pack_text),
         "skipped": skipped,
         "context_manifest": atlas.manifest,
+        "memory": memory,
     }
     return pack_text, stats
 
@@ -563,12 +578,74 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
     return {rel: ("read" if rel in opened else ("unobserved" if capped else "missing")) for rel in _MANDATORY_READS}
 
 
-def _provenance_header(facts: Dict[str, Any], human: str) -> str:
-    """R9: the host's provenance header — a machine-readable comment and one
-    human line — prepended to every delivered report so a reader (and the
-    next task's context) can tell a packed report from a retrieved one."""
-    comment = ", ".join(f"{key}={value}" for key, value in facts.items())
-    return f"<!-- deep-review provenance: {comment} -->\n_{human}_\n\n"
+_HEADER_VALUE_MAX_CHARS = 120
+
+
+def _header_value(value: Any) -> str:
+    """One header value, bounded and unable to break the comment or the line:
+    newlines become spaces, `--` (the comment terminator's body) collapses to
+    `-`, and the text is cut disclosed at a fixed bound."""
+    from ouroboros.utils import truncate_within_limit
+
+    text = truncate_within_limit(str(value), _HEADER_VALUE_MAX_CHARS)
+    # Sanitize AFTER the bound: the disclosed omission marker itself carries a
+    # newline, and nothing may leave this function able to break the comment.
+    text = text.replace("\r", " ").replace("\n", " ")
+    while "--" in text:
+        text = text.replace("--", "-")
+    return text
+
+
+def _delivery_incomplete(delivery: str, usage: Dict[str, Any]) -> str:
+    """Completeness from the facts each delivery carries: the native episode's
+    typed `native_incomplete`; the packed call's `finish_reason == "length"`
+    (the report hit the output reserve); a session's is not host-observable."""
+    if delivery == "native_tool_rounds":
+        return str(usage.get("native_incomplete") or "") or "none"
+    if delivery == "api_packet":
+        return "output_reserve" if str(usage.get("response_finish_reason") or "") == "length" else "none"
+    return "unobserved"
+
+
+def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory: Dict[str, Any],
+                       coverage: Dict[str, str], human: str) -> str:
+    """R9: the host's provenance header (machine-readable comment + one human
+    line) prepended to every delivered report. The fact set is built PER
+    DELIVERY (a session never carries rounds/receipts; its attestation is
+    `unobserved` by construction); every value is sanitized and bounded."""
+    facts: Dict[str, Any] = {"delivery": delivery, "model": model, "memory": f"{memory['inlined']}/{memory['total']}"}
+    # Grouped by disposition so the worst case (every whitelisted file
+    # omitted) stays inside the value bound by construction.
+    groups = [
+        f"{d}:" + ",".join(rel.rsplit("/", 1)[-1] for rel, got in memory["dispositions"].items() if got == d)
+        for d in ("missing", "empty", "oversized", "read_error") if d in memory["dispositions"].values()
+    ]
+    if groups:
+        facts["memory_omitted"] = ";".join(groups)
+    facts["coverage"] = ",".join(f"{rel}:{state}" for rel, state in coverage.items())
+    facts["incomplete"] = _delivery_incomplete(delivery, usage)
+    if delivery == "native_tool_rounds":
+        facts.update({
+            "attestation": usage.get("host_file_read_attestation") or "unobserved",
+            "rounds": usage.get("native_rounds", 0), "tool_calls": usage.get("native_tool_calls", 0),
+            "receipts": len(usage.get("native_tool_receipts") or []),
+            "end_reason": usage.get("native_end_reason", ""),
+            "transcript": f"{usage.get('native_transcript_chars', 0)}/{usage.get('native_transcript_bound', 0)}",
+            "landing": f"{usage.get('native_landing_notified', False)}/{usage.get('native_landing_sent', False)}",
+        })
+    elif delivery == "api_packet":
+        facts["attestation"] = "packed"
+    else:
+        facts["attestation"] = "unobserved"
+    comment = ", ".join(f"{key}={_header_value(value)}" for key, value in facts.items())
+    line = str(human).replace("\r", " ").replace("\n", " ")
+    return f"<!-- deep-review provenance: {comment} -->\n_{line}_\n\n"
+
+
+def _memory_line(memory: Dict[str, Any]) -> str:
+    """The human half of the memory fact: `memory 3/7 inlined (omitted: …)`."""
+    omitted = [f"{rel.rsplit('/', 1)[-1]} {d}" for rel, d in memory["dispositions"].items() if d != "inlined"]
+    return f"memory {memory['inlined']}/{memory['total']} inlined" + (f" (omitted: {', '.join(omitted)})" if omitted else "")
 
 
 def _failed(text: str, *, reason_code: str, usage: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
@@ -593,16 +670,19 @@ def _retrieving_task(repo_dir: pathlib.Path, drive_root: pathlib.Path) -> Tuple[
         raise RuntimeError("BIBLE.md is missing at the repository root — a deep self-review has no constitution to check against")
     memory_parts: list[str] = []
     skipped: list[str] = []
-    memory_count = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
+    memory = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
     parts = [
         _ROLE_PROMPT + _RETRIEVING_METHOD.format(bible_chars=len(bible)),
         "## Memory (runtime data root, inlined byte-exact)",
         *memory_parts,
+        # EVERY whitelisted entry gets its disposition here — the omission
+        # section of this delivery — so an absent or blank memory file is a
+        # stated fact the reviewer (and the header) can rely on, never a gap.
+        f"Memory dispositions ({memory['total']} whitelisted): "
+        + "; ".join(f"{rel} {d}" for rel, d in memory["dispositions"].items()),
     ]
-    if skipped:
-        parts.append("Memory files omitted: " + "; ".join(skipped))
     parts.append(governance_nav_maps(repo_dir, _NAV_MAP_DOCS))
-    return "\n\n".join(parts), {"memory_files": memory_count, "memory_skipped": skipped, "bible_chars": len(bible)}
+    return "\n\n".join(parts), {"memory": memory, "bible_chars": len(bible)}
 
 
 def _run_retrieving_review(
@@ -634,9 +714,9 @@ def _run_retrieving_review(
         task_id=task_id, call_type="deep_self_review",
         max_tokens=_DEEP_MAX_OUTPUT_TOKENS, no_proxy=True,
         session_root=str(repo_dir), session_task=task_text,
-        # The report contract MUST ride the policy: both retrieving executors
-        # fall back to the JSON array contract without it. The data plane is
-        # the REAL runtime root (R5): the reviewer reads memory itself.
+        # The report contract rides the policy with the deep review's header
+        # sentence (the shape is `report` either way). The data plane is the
+        # REAL runtime root (R5): the reviewer reads memory itself.
         policy={"output_contract": _REPORT_CONTRACT, "native_data_root": str(drive_root)},
         deadline_at=deadline_at,
     )
@@ -658,8 +738,8 @@ def _run_retrieving_review(
     executor._logical_deadline_monotonic = time.monotonic() + window
     delivery = "agent_session" if row.is_session else "native_tool_rounds"
     emit_progress(
-        f"Deep self-review via {delivery} on {row.target_id}: {task_facts['memory_files']} memory files "
-        f"inlined, BIBLE.md ({task_facts['bible_chars']:,} chars) as a mandatory read; window {window:.0f}s..."
+        f"Deep self-review via {delivery} on {row.target_id}: {_memory_line(task_facts['memory'])}, "
+        f"BIBLE.md ({task_facts['bible_chars']:,} chars) as a mandatory read; window {window:.0f}s..."
     )
     try:
         persist_call(
@@ -709,39 +789,27 @@ def _run_retrieving_review(
                        reason_code="deep_self_review_error", usage=usage)
     if not usage.get("resolved_model"):
         usage["resolved_model"] = row.target_id
-    incomplete = str(usage.get("native_incomplete") or "") or "none"
+    usage["deep_review_memory"] = task_facts["memory"]
+    incomplete = _delivery_incomplete(delivery, usage)
     model = str(usage.get("resolved_model") or row.target_id)
-    coverage_text = ",".join(f"{rel}:{state}" for rel, state in coverage.items())
-    facts: Dict[str, Any] = {
-        "delivery": delivery, "model": model,
-        "rounds": usage.get("native_rounds", "unobserved"),
-        "tool_calls": usage.get("native_tool_calls", "unobserved"),
-        "receipts": len(usage.get("native_tool_receipts") or []),
-        "coverage": coverage_text, "incomplete": incomplete,
-        "attestation": str(usage.get("host_file_read_attestation") or "unobserved"),
-    }
+    completeness = "complete" if incomplete == "none" else (
+        "completeness not host-observed" if incomplete == "unobserved" else f"INCOMPLETE ({incomplete})")
     if delivery == "native_tool_rounds":
-        facts.update({
-            "end_reason": usage.get("native_end_reason", ""),
-            "transcript": f"{usage.get('native_transcript_chars', 0)}/{usage.get('native_transcript_bound', 0)}",
-            "landing": f"{usage.get('native_landing_notified', False)}/{usage.get('native_landing_sent', False)}",
-        })
         reads = "; ".join(f"{rel} {'read' if state == 'read' else ('NOT read' if state == 'missing' else 'unobserved (receipts capped)')}"
                           for rel, state in coverage.items())
         human = (
-            f"Deep self-review: native inspection episode on {model} — {facts['rounds']} rounds, "
-            f"{facts['tool_calls']} tool calls ({facts['receipts']} host-observed receipts); {reads}; "
-            + ("complete" if incomplete == "none" else f"INCOMPLETE: {incomplete}")
+            f"Deep self-review: native inspection episode on {model} — {usage.get('native_rounds', 0)} rounds, "
+            f"{usage.get('native_tool_calls', 0)} tool calls ({len(usage.get('native_tool_receipts') or [])} host-observed receipts); "
+            f"{reads}; {_memory_line(task_facts['memory'])}; {completeness}"
         )
     else:
         human = (
             f"Deep self-review: agent session {row.session_target or row.target_id}"
             + (f" (model {model})" if model and model != (row.session_target or row.target_id) else "")
-            + " — reads not host-observed (coverage unobserved); "
-            + ("complete" if incomplete == "none" else f"INCOMPLETE: {incomplete}")
+            + f" — reads not host-observed (coverage unobserved); {_memory_line(task_facts['memory'])}; {completeness}"
         )
     emit_progress(f"Deep self-review complete ({len(text):,} chars; {delivery}, incomplete={incomplete}).")
-    return _provenance_header(facts, human) + text, usage
+    return _provenance_header(delivery, model, usage, task_facts["memory"], coverage, human) + text, usage
 
 
 def _run_packed_review(
@@ -877,12 +945,15 @@ def _run_packed_review(
         return _failed("⚠️ Model returned an empty response for the deep self-review.",
                        reason_code="deep_self_review_error", usage=usage)
     usage.setdefault("resolved_model", model)
+    memory = stats.get("memory") or {"inlined": 0, "total": len(_MEMORY_WHITELIST), "dispositions": {}}
+    usage["deep_review_memory"] = memory
     _record_execution(slot, usage, status="responded")
-    emit_progress(f"Deep self-review complete ({len(text):,} chars).")
+    incomplete = _delivery_incomplete("api_packet", usage)
+    emit_progress(f"Deep self-review complete ({len(text):,} chars; incomplete={incomplete}).")
     header = _provenance_header(
-        {"delivery": "api_packet", "model": model, "rounds": 1, "tool_calls": 0, "receipts": 0,
-         "coverage": f"pack:{stats['file_count']}_files", "incomplete": "none", "attestation": "packed"},
-        f"Deep self-review: one packed API review on {model} — {stats['file_count']} files + memory inlined; complete",
+        "api_packet", model, usage, memory, {"pack": f"{stats['file_count']}_files"},
+        f"Deep self-review: one packed API review on {model} — {stats['file_count']} files; "
+        f"{_memory_line(memory)}; " + ("complete" if incomplete == "none" else f"INCOMPLETE ({incomplete}: the report hit the output reserve)"),
     )
     return header + text, usage
 
