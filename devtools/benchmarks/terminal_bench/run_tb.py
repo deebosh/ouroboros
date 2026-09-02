@@ -17,7 +17,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
@@ -123,36 +123,54 @@ class HarborCommandConfig:
     harbor_env: str = ""
 
 
-def _effective_helper_models(measured_model: str, light_model: str, *, disable_agent_web: bool = False) -> list[tuple[str, str]]:
+def _effective_helper_models(
+    measured_model: str, light_model: str, *, disable_agent_web: bool = False,
+    settings: Mapping[str, Any] | None = None,
+) -> list[tuple[str, str]]:
     """Resolve EVERY model that materially assists a measured run, with its role.
 
     With ``task_review_mode=required`` the host forces a multi-model
     task-acceptance review whose feedback re-enters the measured agent's
     context, so the review triad / scope / light / web-search models genuinely
     assist the run. Declaring only the measured model in metadata.yaml would
-    misrepresent the submission. Values mirror what the container resolves —
-    the structured reviewer panel (``OUROBOROS_REVIEWER_SLOTS``) when the
-    operator env carries one, exactly as the container adapter forwards it;
-    otherwise the legacy comma keys (env override else the shipped config
-    defaults) — so the declared set matches reality. A hosted-session row has
-    no model of its own (the harness resolves it): its ``harness[=model]``
-    target is declared with the route named in its role. Returns ordered
-    (model_id, role) pairs, deduped by model id.
+    misrepresent the submission. Values mirror what the container EXECUTES:
+    the structured reviewer panel (``OUROBOROS_REVIEWER_SLOTS``) is read the
+    way the container adapter forwards it — operator env first, else the host
+    settings file — and parsed under the container's one-model roster (a row
+    bound to an operator-roster subagent does not resolve there and is a typed
+    refusal, never a declared-but-never-run model). Inside a Terminal-Bench task
+    nothing commits: the panel reaches the run through task acceptance, which
+    projects the panel's NON-retrieving api rows into the legacy triad key and
+    falls back to the shipped defaults when none exist — so that projection,
+    not the raw row list, is what is declared here. Without a panel the legacy
+    comma keys apply (env override else the shipped config defaults). Returns
+    ordered (model_id, role) pairs, deduped by model id.
     """
-    from ouroboros.reviewer_slot_config import REVIEWER_SLOTS_ENV, parse_reviewer_slots
+    from devtools.benchmarks.common.model_slots import single_model_subagents_setting
+    from ouroboros.reviewer_slot_config import (
+        REVIEWER_SLOTS_ENV,
+        parse_reviewer_slots,
+        roster_env_override,
+    )
 
     review_default = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
     websearch_default = str(SETTINGS_DEFAULTS["OUROBOROS_WEBSEARCH_MODEL"])
     scope_default = str(SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODELS"])
     websearch = os.environ.get("OUROBOROS_WEBSEARCH_MODEL", websearch_default) or websearch_default
     ordered: list[tuple[str, str]] = [(measured_model, "agent")]
-    structured = str(os.environ.get(REVIEWER_SLOTS_ENV, "") or "").strip()
+    structured = os.environ.get(REVIEWER_SLOTS_ENV)
+    if structured is None and settings:
+        structured = settings.get(REVIEWER_SLOTS_ENV)
+    structured = str(structured or "").strip()
     if structured:
-        panel = parse_reviewer_slots(structured)
-        for role, rows in (("commit_review_triad", panel.triad), ("scope_review", panel.scope)):
-            for row in rows:
-                suffix = "_agent_session" if row.is_session else ""
-                ordered.append((row.target_id, role + suffix))
+        with roster_env_override(single_model_subagents_setting(measured_model)):
+            panel = parse_reviewer_slots(structured)
+        api_triad = [row.target_id for row in panel.triad if not row.retrieves]
+        api_scope = [row.target_id for row in panel.scope if not row.retrieves]
+        for model_id in api_triad or review_default.split(","):
+            ordered.append((model_id.strip(), "commit_review_triad"))
+        for model_id in api_scope or scope_default.split(","):
+            ordered.append((model_id.strip(), "scope_review"))
     else:
         review = os.environ.get("OUROBOROS_REVIEW_MODELS", review_default) or review_default
         scope = (os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS")
@@ -180,14 +198,28 @@ def _effective_helper_models(measured_model: str, light_model: str, *, disable_a
     return list(deduped.items())
 
 
-def leaderboard_metadata(*, agent_name: str, org_name: str, model: str, light_model: str = "", disable_agent_web: bool = False) -> str:
+def _host_settings(settings_path: pathlib.Path) -> dict[str, Any]:
+    """The host settings file the container adapter falls back to (empty when absent)."""
+    try:
+        loaded = json.loads(pathlib.Path(settings_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def leaderboard_metadata(
+    *, agent_name: str, org_name: str, model: str, light_model: str = "",
+    disable_agent_web: bool = False, settings: Mapping[str, Any] | None = None,
+) -> str:
     lines = [
         "agent_url: https://github.com/razzant/ouroboros",
         f"agent_display_name: {json.dumps(agent_name)}",
         f"agent_org_display_name: {json.dumps(org_name)}",
         "models:",
     ]
-    for model_id, role in _effective_helper_models(model, light_model, disable_agent_web=disable_agent_web):
+    for model_id, role in _effective_helper_models(
+        model, light_model, disable_agent_web=disable_agent_web, settings=settings,
+    ):
         provider = model_id.split("/", 1)[0] if "/" in model_id else "openrouter"
         display = model_id.split("/", 1)[1] if "/" in model_id else model_id
         lines.append(f"  - model_name: {json.dumps(model_id)}")
@@ -1006,6 +1038,17 @@ def main(argv: list[str] | None = None) -> int:
         repo,
     )
     settings_path = pathlib.Path(args.settings_path).expanduser() if args.settings_path else default_settings_path()
+    # Rendered BEFORE any run/submission directory exists: a malformed reviewer
+    # panel (or a row the container roster cannot resolve) is a typed refusal
+    # here, not a traceback inside the manifest finalizer.
+    try:
+        metadata_text = leaderboard_metadata(
+            agent_name=args.agent_name, org_name=args.org_name, model=args.model,
+            light_model=args.light_model, disable_agent_web=bool(args.disable_agent_web),
+            settings=_host_settings(settings_path),
+        )
+    except ValueError as exc:
+        raise SystemExit(f"leaderboard metadata cannot be rendered: {exc}") from exc
     submission_root = assert_outside_repo(
         pathlib.Path(args.submission_root).expanduser()
         if args.submission_root
@@ -1112,10 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
         write_json(manifest_path, manifest)
     with finalize_run_manifest(manifest_path, manifest) as final:
         job_dir.mkdir(parents=True, exist_ok=True)
-        metadata_path.write_text(
-            leaderboard_metadata(agent_name=args.agent_name, org_name=args.org_name, model=args.model, light_model=args.light_model, disable_agent_web=bool(args.disable_agent_web)),
-            encoding="utf-8",
-        )
+        metadata_path.write_text(metadata_text, encoding="utf-8")
         harbor_config = HarborCommandConfig(
             dataset=args.dataset,
             model=args.model,

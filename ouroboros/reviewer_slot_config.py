@@ -47,6 +47,7 @@ delegated (same posture as ``configured_review_routes``).
 
 from __future__ import annotations
 
+import contextlib as _contextlib
 import json
 import os
 import pathlib
@@ -878,14 +879,23 @@ def reviewer_slot_save_check(raw: str, *, subagents_raw: Optional[str] = None) -
     if subagents_raw is None:
         disclosure = api_fallback_disclosure(parse_reviewer_slots(raw))
         return _fallback_warning_text(disclosure)
+    with roster_env_override(subagents_raw):
+        disclosure = api_fallback_disclosure(parse_reviewer_slots(raw))
+    return _fallback_warning_text(disclosure)
+
+
+@_contextlib.contextmanager
+def roster_env_override(subagents_raw: str):
+    """Parse reviewer rows against THIS roster instead of the process env —
+    the save handler's incoming roster, or a benchmark container's one-model
+    roster — without mutating the environment concurrent dispatch observes."""
     overlay = dict(os.environ)
     overlay["OUROBOROS_SUBAGENTS"] = str(subagents_raw)
     token = _ROSTER_ENV_OVERRIDE.set(overlay)
     try:
-        disclosure = api_fallback_disclosure(parse_reviewer_slots(raw))
+        yield
     finally:
         _ROSTER_ENV_OVERRIDE.reset(token)
-    return _fallback_warning_text(disclosure)
 
 
 def _record_api_fallback_substitution(disclosure: Dict[str, Any]) -> None:
