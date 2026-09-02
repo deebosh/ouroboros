@@ -8851,3 +8851,30 @@ concurrency tests stayed red on every name-tier leg — see «From the Windows C
 7. **Prose corrected:** packet §10 addendum and DESIGN §8 no longer claim the Windows name tier is
    «the protocol it always ran»; the earlier ledger line «Verified by the next dispatched matrix»
    is withdrawn above.
+
+## From the owner's batch №13 answers (2026-09-02 ~20:30Z; requirements archive [A-BATCH-13-ANSWERS])
+
+1. **Release bar in `ci.yml` (item 4 = A, item 16 = A; protected file, owner-sanctioned).** `system-e2e-mock`
+   also runs on a release tag and is a dependency of `release-preflight`; `release-preflight` runs
+   `scripts/v7next_adoption.py --release` on the tag path itself; the cancellation E-suite mock lane
+   (`OUROBOROS_E2E_CANCEL=mock`, 18 + 4 scenarios, ~2 min, keyless) runs inside `system-e2e-mock` on the
+   same isolated roots. Pins updated: `tests/test_system_e2e_ci_lane.py` (condition),
+   `tests/test_contributor_flow.py` (needs). The «never on push/PR» contract of the lane is unchanged.
+2. **Pre-release for the owner's packaged manual test (item 14, owner's own words: «драфт тега … pre-release,
+   чтобы всё собралось и я мог установить»).** Carriers moved to `7.0.0-rc.1` (VERSION, pyproject `7.0.0rc1`,
+   uv.lock, web/package.json, GATEWAY_CONTRACT_VERSION, README badge/history row/download refs, both install
+   pages, ARCHITECTURE header — `check_worktree_version_sync` clean); tag `v7.0.0-rc.1` on that commit. The
+   runtime is byte-identical to `c9f5c1a4`. Item 5 = B: the FINAL delivery (ff of `ouroboros`, `v7.0.0`,
+   promotion) is the owner's own act; a pre-release is not that delivery.
+3. **Decisions recorded for the work that follows (each gets its own ledger section when it lands):**
+   1 = B — 7.0 is not released until the Windows kernel tier works (LockFileEx on a byte range beyond the
+   stamp, Windows-executed pin); 2 = A — the paid E-lane runs once on the candidate; 3 — the owner's `data/`
+   is disposable («только для тестов»); 6 = B — manual test on `c9f5c1a4`, sync №4 after it, before the tag;
+   7 = A — F23 closes as covered-by-gates with its gaps recorded; 8 = A — spec §6.4 stays post-release
+   (DEFER-PATHS-6.4 confirmed); 9 = B — W4-F1/W4-F2 fixed now; 10 = B — the five typed process-fact surfaces
+   land in 7.0 (DEFER-TYPED-PROC-5 becomes a done row when they do); 11 = A — `tests/test_usage_compaction.py`
+   is split at its natural boundary, `platform_layer.py` pay-down ≤ 1500 is post-release with an issue on
+   the regenerator gap; 12 = A — family manifest + a one-off projection report «oracle rows → families»;
+   15 = B — mutating delegation E2E scenarios and the copy-back race (O3) are fixed now (upstream
+   `a76961de..cc2eac50` carries no fix for either); 17 = B — TEST_DISPOSITION/nav20 is withdrawn from the
+   spec by this record. Item 13 was not read by the owner (too long) and is re-asked in a shorter form.
