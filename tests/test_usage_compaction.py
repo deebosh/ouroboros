@@ -504,13 +504,15 @@ def test_a_lost_lock_aborts_the_pass_instead_of_swapping(data_root):
     """A heartbeat is an OWNERSHIP verdict: losing it abandons the pass.
 
     A pass that keeps building after the lock left it would swap a snapshot
-    over whatever the new owner appended in the meantime."""
+    over whatever the new owner appended in the meantime — and a pass handed
+    no heartbeat at all has nothing to prove ownership with: refused, not run."""
     _seed_mixed_ledger(data_root)
     ledger_path = data_root / ua.LEDGER_REL
     before = ledger_path.read_bytes()
     for heartbeat in (
         lambda: False,                       # evicted / re-created under us
         lambda: (_ for _ in ()).throw(OSError("lock unreadable")),
+        None,                                # the wire dropped: a caller defect, refused
     ):
         assert uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat) is None
         assert ledger_path.read_bytes() == before
