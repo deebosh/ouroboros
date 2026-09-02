@@ -1,8 +1,11 @@
 """Rendered contracts of NESTED subagent cards and of card text selection.
 
-A nested child is subordinate to its root: collapsed, it is one identity row
-(status chip · `role · model` · notes/toggle) in quieter ink, with its activity
-and metadata shown only when expanded; twins (same parent, role and model)
+A nested child is subordinate to its root: collapsed, it is an identity row
+(status chip · `role · model` · notes and chevron, no `Show details` label) in
+quieter ink over its metadata row (harness chip with the run count, cost, last
+update, docked `Reviews N`); only its narration waits for expansion. The card's
+summary outranks its details: a body-size activity line over meta-size timeline
+rows, an expanded row back at body size. Twins (same parent, role and model)
 keep the short task id, a lone child does not, and no headline carries the
 status word the chip already shows. Card text is selectable, and a drag that
 selects text never toggles the card while a plain click still does.
@@ -38,7 +41,14 @@ FACTS = """sel => {
         titleSelect: style(title).userSelect || style(title).webkitUserSelect,
         titleTop: rect(title).top, chipTop: rect(q('[data-live-phase]')).top,
         activityDisplay: style(q('[data-live-activity]')).display,
-        metaDisplay: style(q('[data-live-meta]')).display,
+        activityFont: style(q('[data-live-activity]')).fontSize,
+        metaDisplay: style(q('[data-live-meta]')).display, metaText: q('[data-live-meta]').textContent,
+        metaTop: rect(q('[data-live-meta]')).top,
+        chipText: q('.chat-live-executor-chip')?.textContent || '', chipHeight: q('.chat-live-executor-chip') ? rect(q('.chat-live-executor-chip')).height : 0,
+        reviewsText: q('[data-live-review-summary]')?.textContent || '', reviewsHidden: q('[data-live-review-summary]')?.hidden ?? true,
+        reviewsDisplay: q('[data-live-review-summary]') ? style(q('[data-live-review-summary]')).display : 'none',
+        reviewsTop: q('[data-live-review-summary]') ? rect(q('[data-live-review-summary]')).top : -1,
+        toggleDisplay: style(q('[data-live-toggle]')).display,
         ariaExpanded: button.getAttribute('aria-expanded'),
         cardRight: rect(card).right, cardHScroll: card.scrollWidth > card.clientWidth + 1,
         sideRight: rect(q('.chat-live-summary-side')).right,
@@ -66,6 +76,9 @@ def _seed(data_dir):
             "subagent_task_id": child_id, "parent_task_id": "nest-root", "root_task_id": "nest-root",
             "subagent_role": role, "model": "google/gemini-3.6-flash", "status": "completed",
             "result": f"{role} result",
+            **({"executor_route": "cursor=grok", "execution_evidence": {
+                "delegated_runs_started": 1, "delegated_runs_settled": 1, "delegated_runs_failed": 0,
+                "delegated_runs_succeeded": 1, "subscription_cost_usd": 0.4}} if role == "scout" else {}),
         })
     (logs_dir / "progress.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
 
@@ -103,15 +116,27 @@ def test_ui_smoke_nested_cards_are_one_identity_row_and_text_selects(direct_serv
                 assert lone["text"] == "reviewer · gemini-3.6-flash", lone
                 for facts in (twin_a, twin_b, lone):
                     assert "Done" not in facts["text"] and "—" not in facts["text"], facts
-                    # One row: the title shares the chip row and takes one line.
+                    # Identity row: the title shares the chip row and takes one line; the
+                    # metadata row stays (harness/cost/updated), only the narration waits.
                     assert abs(facts["titleTop"] - facts["chipTop"]) <= 4, facts
                     assert facts["titleLines"] <= 1.2, facts
-                    assert facts["activityDisplay"] == "none" and facts["metaDisplay"] == "none", facts
+                    assert facts["activityDisplay"] == "none" and facts["metaDisplay"] != "none", facts
+                    assert "updated" in facts["metaText"], facts
+                    # The `Show details` label is the root's; a child keeps notes + chevron.
+                    assert facts["toggleDisplay"] == "none", facts
                     # Quieter than the root: weight 400 and the secondary ink.
                     assert facts["titleWeight"] in ("400", "normal"), facts
                     assert facts["titleColor"] != root["titleColor"], (facts, root)
+                # The owner's first fact on a subagent — where it ran and how many runs settled —
+                # is rendered in the collapsed row: the harness chip with the run count.
+                for facts in (twin_a, twin_b):
+                    assert facts["chipText"] == "Cursor · 1 ok" and facts["chipHeight"] > 0, facts
+                assert lone["chipText"] == "", lone
                 assert root["titleWeight"] == "500", root
                 assert root["activityDisplay"] != "none" and root["metaDisplay"] != "none", root
+                assert root["toggleDisplay"] != "none", root
+                # The summary outranks the details: body-size activity line.
+                assert root["activityFont"] == "14px", root
                 # A long identity ellipsizes inside the row; the side controls stay inside the card.
                 page.set_viewport_size({"width": 700, "height": 800})
                 page.wait_for_timeout(300)
@@ -188,12 +213,39 @@ def test_ui_smoke_nested_cards_are_one_identity_row_and_text_selects(direct_serv
                 page.wait_for_timeout(300)
                 assert page.evaluate(FACTS, CHILD % "11112222aaaa-pln")["text"] == "planner · gpt-5.6-sol"
                 assert page.evaluate(FACTS, CHILD % "33334444bbbb-pln")["text"] == "planner · gemini-3.6-flash"
-                # Expanding a child reveals its activity and metadata.
+                # A child's review count docks on its metadata row while collapsed, like the root's.
+                _emit_ws_frame(page, {**child_frame, "task_id": "nest-review", "subagent_task_id": "nest-review",
+                                      "subagent_role": "reviewer", "subagent_event": "completed",
+                                      "content": "reviewer re-read the candidate and filed a long note " + "word " * 40,
+                                      "review_projection": {"panels": [{"panel_id": "nested-review", "surface": "task_acceptance",
+                                                                        "aggregate_signal": "PASS", "reason": "smoke", "actors": []}]}})
+                page.wait_for_function(
+                    "() => document.querySelector('%s [data-live-review-summary]')?.textContent === 'Reviews 1'" % (CHILD % "nest-review"),
+                    timeout=10_000,
+                )
+                reviewed = page.evaluate(FACTS, CHILD % "nest-review")
+                assert reviewed["expanded"] == "0" and not reviewed["reviewsHidden"] and reviewed["reviewsDisplay"] != "none", reviewed
+                assert abs(reviewed["reviewsTop"] - reviewed["metaTop"]) <= 2, reviewed
+                # Expanding a child reveals its narration line (metadata was already there).
                 page.locator(CHILD % "nest-review").locator(":scope > [data-live-summary-button]").click()
                 page.wait_for_timeout(200)
                 opened = page.evaluate(FACTS, CHILD % "nest-review")
                 assert opened["expanded"] == "1" and opened["activityDisplay"] != "none", opened
-                assert opened["metaDisplay"] != "none", opened
+                assert opened["metaDisplay"] != "none" and opened["activityFont"] == "14px", opened
+                # Collapsed timeline rows are a meta-size log under the summary; an expanded
+                # row returns to body size.
+                rows = page.evaluate(
+                    """sel => Array.from(document.querySelector(sel).querySelectorAll(':scope > [data-live-timeline] .chat-live-line'))
+                        .map(line => ({size: getComputedStyle(line.querySelector('.chat-live-line-title')).fontSize,
+                                       expandable: line.classList.contains('expandable')}))""",
+                    CHILD % "nest-review",
+                )
+                assert rows and all(r["size"] == "12px" for r in rows), rows
+                line_toggle = page.locator(f'{CHILD % "nest-review"} > [data-live-timeline] .chat-live-line-toggle').first
+                assert line_toggle.count() >= 1, rows
+                line_toggle.click()
+                page.wait_for_timeout(150)
+                assert line_toggle.locator(".chat-live-line-title").evaluate("el => getComputedStyle(el).fontSize") == "14px"
                 # Text is selectable, and a drag that selects text does not toggle the card.
                 assert root["titleSelect"] == "text", root
                 title = page.locator(f"{ROOT} > .chat-live-summary-button [data-live-title]")
