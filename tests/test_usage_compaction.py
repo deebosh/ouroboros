@@ -35,6 +35,7 @@ import pytest
 from ouroboros import platform_layer
 from ouroboros import usage_accounting as ua
 from ouroboros import usage_compaction as uc
+from ouroboros.agent_startup_checks import _hot_store_thresholds
 from ouroboros.usage_ledger import UsageLedgerCorrupt, _validate_records
 
 
@@ -800,8 +801,6 @@ def test_the_pass_refuses_on_the_name_tier_while_appends_continue(data_root, mon
     events = (data_root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
     refused = [row for row in map(json.loads, events) if row.get("type") == "usage_ledger_compaction_refused"]
     assert [row["reason"] for row in refused] == ["name_tier"]
-    from ouroboros.agent_startup_checks import _hot_store_thresholds
-
     ledger_note = next(note for rel, _, note in _hot_store_thresholds() if rel == "state/usage_attempts.jsonl")
     assert "name tier" in ledger_note and "usage_ledger_compaction_refused" in ledger_note
 
@@ -1109,8 +1108,6 @@ def test_a_symlinked_archive_path_is_refused_by_writer_and_reader(data_root, tmp
     elsewhere = tmp_path / "elsewhere"
     shutil.move(str(target), str(elsewhere))  # same segments, same hashes
     target.symlink_to(elsewhere, target_is_directory=True)
-    uc._SEGMENT_CACHE.clear()
-    uc._CHAIN_UNION_CACHE.clear()
 
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
@@ -1177,8 +1174,6 @@ def test_a_link_planted_after_the_reader_bound_check_is_refused(
         return result
 
     monkeypatch.setattr(uc, "_segment_path", racing_path)
-    uc._SEGMENT_CACHE.clear()
-    uc._CHAIN_UNION_CACHE.clear()
 
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
@@ -1193,8 +1188,6 @@ def test_unreadable_leading_row_is_typed_corruption_not_absence(data_root):
     lines = path.read_text(encoding="utf-8").splitlines()
     path.write_text("\n".join(['{"kind": "usage_baseline"'] + lines[1:]) + "\n",
                     encoding="utf-8")
-    uc._SEGMENT_CACHE.clear()
-    uc._CHAIN_UNION_CACHE.clear()
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
     # The CPL-5 join must reach UNKNOWN, never "no attempt row" (orphan seal).
