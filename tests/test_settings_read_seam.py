@@ -726,3 +726,62 @@ def test_a_live_setting_cannot_be_retired_by_accident():
     for key in ("OUROBOROS_TASK_IDLE_TIMEOUT_SEC", "OUROBOROS_TASK_ABS_CEILING_SEC"):
         assert key in cfg.SETTINGS_DEFAULTS
         assert key not in cfg.RETIRED_SETTING_KEYS
+
+
+def test_a_retired_comma_list_triad_is_not_dropped_silently(isolated_settings, caplog):
+    """Review M2, the first 7.0 boot. An install that configured its review
+    panel with the comma-list keys loses that configuration on upgrade: the
+    keys are in RETIRED_SETTING_KEYS, so the raw-stage normalization purges
+    them before migration, and the install runs the SHIPPED default reviewer
+    panel instead. That is the ratified migration ("move the config to the
+    structured OUROBOROS_REVIEWER_SLOTS BEFORE the upgrade"), but it happened
+    without a word: nothing in the runtime told the owner which keys went, or
+    what replaced them.
+
+    The notice is ONE line per process per dropped set — the seam is on every
+    settings read, so a per-call emission would be a log flood.
+    """
+    import logging
+
+    from ouroboros import config as cfg
+
+    cfg._RETIREMENT_NOTICE_SEEN.clear()
+    document = {
+        "OUROBOROS_REVIEW_MODELS": "a/one,b/two",
+        "OUROBOROS_SCOPE_REVIEW_MODEL": "c/three",
+        "OUROBOROS_ADVISORY_REVIEW_ROUTE": "native",
+        "TOTAL_BUDGET": 10.0,
+    }
+
+    with caplog.at_level(logging.WARNING, logger="ouroboros.config"):
+        loaded = cfg.normalize_settings_raw(document)
+        repeat = cfg.normalize_settings_raw(dict(document))
+
+    # Behavior is unchanged: the keys are still dropped, nothing else is.
+    assert "OUROBOROS_REVIEW_MODELS" not in loaded
+    assert "OUROBOROS_SCOPE_REVIEW_MODEL" not in loaded
+    assert "OUROBOROS_ADVISORY_REVIEW_ROUTE" not in loaded
+    assert loaded["TOTAL_BUDGET"] == 10.0
+    assert repeat == loaded
+
+    notices = [r.getMessage() for r in caplog.records if "retired" in r.getMessage()]
+    assert len(notices) == 1, notices
+    for key in document:
+        if key != "TOTAL_BUDGET":
+            assert key in notices[0], key
+    assert "OUROBOROS_REVIEWER_SLOTS" in notices[0]
+    assert "shipped" in notices[0].lower()
+
+
+def test_the_retirement_notice_stays_quiet_for_a_document_without_ghosts(
+    isolated_settings, caplog,
+):
+    import logging
+
+    from ouroboros import config as cfg
+
+    cfg._RETIREMENT_NOTICE_SEEN.clear()
+    with caplog.at_level(logging.WARNING, logger="ouroboros.config"):
+        cfg.normalize_settings_raw({"TOTAL_BUDGET": 10.0})
+
+    assert [r.getMessage() for r in caplog.records] == []
