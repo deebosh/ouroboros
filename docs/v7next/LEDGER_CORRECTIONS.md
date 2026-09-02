@@ -5050,3 +5050,117 @@ Cross-cutting disclosures:
      --check` OK; `git diff --check` clean.
    With this recorded, round 4 is verified; the round-4 MUST-RUN notice in
    the packet §8 is discharged by its verification block.
+
+## From the C6 fix-round 5 (base 13af62c5)
+
+1. A fourth external verdict (gpt-5.6-sol, read-only review of `13af62c5`)
+   returned NEEDS FIXES with four open items; the round-3 split-brain class,
+   the single lock over all monetary writers and the dir-fd anchoring of the
+   archive writer/reader it confirmed CLOSED. All four ACCEPTED and fixed,
+   each red-first. Full disposition: `docs/v7next/C6_REVIEW_PACKET.md` §9.
+   - **The lock tier is a capability predicate, and a refused kernel lock
+     fails closed** (HIGH): on any `OSError` from `fcntl.flock` the
+     acquisition silently degraded to the pathname/inode name tier, where the
+     round-3 race returns; on Windows the errno-less `LockFileEx` failure
+     fell into the same degrade. `platform_layer.kernel_file_locks_enforced`
+     now decides the tier once per lock directory by kernel-locking a scratch
+     file there — only ENOLCK/EOPNOTSUPP/ENOSYS select the name tier — and on
+     the enforced tier contention (EAGAIN/EACCES/EWOULDBLOCK) stands down and
+     re-contends while every other refusal fails closed: no descriptor, our
+     own file removed, a stale lock never evicted without the held flock.
+     `_win32_lock` raises `OSError(0, msg, None, winerror)` so
+     `ERROR_LOCK_VIOLATION` classifies as contention. The name tier makes no
+     kernel call and `compact_usage_ledger_locked` refuses it with the typed
+     `NAME_TIER_REFUSAL` (logged, growth-guard throttled) while appends
+     continue under the name protocol — disclosed in the design note, the
+     packet and ARCHITECTURE. `usage_ledger.LOCK_REL` is the lock-path SSOT.
+     Commit `f5eb969f`.
+   - **Ownership and snapshot re-proven before EVERY rename attempt** (HIGH):
+     the precondition ran once before `utils.replace_atomic`, which retries
+     `os.replace` up to ten times with pauses on a Windows sharing violation —
+     a charge appended or a hold lost between attempts was erased by the
+     retry that landed. `replace_atomic(src, dst, *, precondition=None)`
+     asks the precondition immediately before every attempt and returns
+     False without replacing when refused; the ledger writer routes its
+     ownership-first, snapshot-second proof through it. POSIX unchanged (one
+     syscall). Commit `8ed4f11b`.
+   - **The epoch anchor scans through the handle the walk held, fail-closed**
+     (MEDIUM): `_no_newer_archived_epoch` re-resolved the archive path and
+     turned `OSError` into "no evidence", so a directory swapped after the
+     safe chain walk hid a newer generation and admitted a forged rollback —
+     the packet's §5.10 claim that path-based anchor reads "can only ever ADD
+     a corruption verdict" was false and is corrected. `archived_attempt_ids`
+     opens the `O_DIRECTORY|O_NOFOLLOW` handle chain once for the whole
+     question; segment loads and the anchor scan open entries relative to it
+     (one `_open_archive_entry` rule; path-based only without `dir_fd`); an
+     entry the scan cannot list, open or read is `UsageLedgerCorrupt`, while
+     a first row that reads but does not parse stays the disclosed
+     torn-segment case. Commit `a3d4d51d`.
+   - **Surviving mutations pinned; absolutes stated per tier** (LOW): the
+     first commit-section beat (a hold lost as the commit section is entered
+     must abort before the pre-archive look and write no orphan) — commit
+     `4b872c22`; the hold lost between rename retries — the `[hold_lost]`
+     variant of the finding-2 pin. DESIGN §8/§10/§12, ARCHITECTURE and the
+     packet now state «cannot finish while robbed», «a hold lost anyway
+     abandons» and «kernel-held» for the enforced tier, and say plainly that
+     on the name tier the pass does not run.
+2. Red observed, not argued (pin run against the exact pre-fix shape or
+   mutation, then green with the fix):
+
+   | pin | mutation / base | red observed |
+   |---|---|---|
+   | `test_a_kernel_refusal_that_is_not_contention_fails_closed` | `13af62c5` | a descriptor returned for an ENOLCK-refused lock |
+   | `test_a_stale_lock_is_never_evicted_without_the_kernel_hold` | `13af62c5` | stale file evicted by name, descriptor returned |
+   | `test_the_name_tier_is_chosen_by_the_predicate_not_by_a_refusal` | `13af62c5` | a kernel call on the name tier (`[16] == []`) |
+   | `test_the_capability_probe_decides_once_and_leaves_no_residue` | `13af62c5` | no predicate (`AttributeError: _KERNEL_LOCK_TIER`) |
+   | `test_the_pass_refuses_on_the_name_tier_while_appends_continue` | `13af62c5` | receipt returned on the name tier |
+   | `test_a_refused_rename_re_proves_…[append]` | `13af62c5` | retried rename landed: receipt, appended row erased |
+   | `test_a_refused_rename_re_proves_…[hold_lost]` | `13af62c5` | retried rename landed while robbed: receipt |
+   | `test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in` | `13af62c5` | DID NOT RAISE: look-alike directory hid epoch 3 |
+   | `test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption` | `13af62c5` | DID NOT RAISE: dangling entry swallowed |
+   | `test_a_hold_lost_before_the_first_commit_look_writes_no_orphan` | first commit `beat()` deleted | `[1] == []`: look asked, orphan written |
+
+3. Disclosed, not fixed: (a) Windows already held `LockFileEx` on the lock
+   fd; `msvcrt.locking` was not adopted (a thinner CRT wrapper over the same
+   kernel lock with an EACCES/EDEADLOCK ambiguity). The Windows-only pin
+   `test_windows_lockfileex_contention_reads_as_busy` and the
+   `OSError(0, msg, None, winerror)` mapping were NOT executed on this host;
+   they follow the documented CPython constructor contract and are owed to
+   the 3-OS CI matrix. (b) The tier is decided per process per directory: a
+   lockd dying mid-run can leave one process on each tier until restart —
+   the name-tier process still never compacts. (c) A directory an attacker
+   swaps BEFORE the question starts is out of scope for the anchor (it is
+   the same power as deleting the newer segments); round 5 removes only the
+   window between the walk and the anchor and the swallowed `OSError`.
+   (d) `ouroboros/usage_compaction.py` grew 1094→1124 inside the band; its
+   band rationale could not be extended because the ratchet's own transition
+   rule makes a surviving rationale immutable between adjacent manifests
+   (`validate_manifest_transition`), so the growth is recorded here.
+   `platform_layer.py` stays at 1498 by prose compression and by the pid
+   lock / port sweep reusing the module's own primitives, not by a helper.
+   `tests/test_usage_compaction.py` sits at 1492 (the raced-charge literal
+   folded into `_raced_row`).
+4. Gate evidence (this host, isolated env roots per invocation, venv python
+   3.10.12; `git rev-parse HEAD` verified after every pytest run):
+   - targeted `test_usage_compaction.py` (55) + `test_lockfile_helpers.py`
+     (15, one Windows-only skip) + the four other `test_usage_*.py` suites:
+     exit 0 at `4b872c22`;
+   - neighbouring lock consumers (`test_bughunt_fixes.py`,
+     `test_task_status_flow.py`, `test_evolution_commit_receipt.py`,
+     `test_skill_lifecycle_queue.py`, `test_osworld_cu_bridge.py` claim/lock
+     cases, `test_atomic_write_v639.py`): exit 0;
+   - `ruff check . --select F` clean; `scripts/check_domains.py` OK;
+     `scripts/regenerate_size_ratchet.py --check` exit 0;
+     `scripts/regenerate_inventories.py --check` exit 0; `git diff --check`
+     clean;
+   - CI-shape non-serial battery at `4b872c22` (`-m "not serial and not
+     integration and not browser and not ui_browser and not
+     ui_browser_docker and not portable_detail and not skill_smoke and not
+     size_ratchet" -n 16 --dist loadscope --max-worker-restart=0
+     --timeout=300 --timeout-method=thread`): EXIT=0, 13498 outcomes
+     (13494 passed, 4 skipped, zero FAILED/ERROR — counted from the
+     progress markers, the `-q` summary line was not emitted in this run);
+   - `-m serial` pass at `4b872c22` (`--timeout=600 --timeout-method=thread`):
+     EXIT=0, 661 outcomes (622 passed, 39 skipped, zero FAILED/ERROR).
+   With this recorded, round 5 is executed and verified on this host; the
+   Windows-only pin remains owed to the 3-OS CI matrix (item 3a).
