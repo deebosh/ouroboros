@@ -813,7 +813,6 @@ class PluginAPIImpl:
                 "span": span,
                 "grid_span": span,
                 **_widget_geometry_from_render(validated_render),
-                "ui_host_pending": True,
             }, "ui_tabs", "ui tab")
 
     def register_settings_section(
@@ -2191,13 +2190,27 @@ def snapshot() -> Dict[str, Any]:
                 dict(copy.deepcopy(value), key=key)
                 for key, value in sorted(_ui_tabs.items())
             ],
-            "ui_tabs_pending": [],
             # Settings sections follow the same host-surfaced shape as UI tabs.
             "settings_sections": [
                 dict(copy.deepcopy(value), key=key)
                 for key, value in sorted(_settings_sections.items())
             ],
         }
+
+
+def live_bundle_facts(skill_name: str) -> Optional[tuple[str, str]]:
+    """``(content_hash, skill_dir)`` of one LIVE extension bundle, or ``None``.
+
+    Loader-side truth for read paths that must not re-discover skills: the
+    Widgets projection reports the hash as each card's ``revision`` and the
+    module endpoint resolves the reviewed payload directory from it. The
+    directory never reaches the browser.
+    """
+    with _lock:
+        bundle = _extensions.get(skill_name)
+        if bundle is None or not bundle.skill_dir:
+            return None
+        return str(bundle.content_hash or ""), str(bundle.skill_dir)
 
 
 def get_tool(name: str) -> Optional[Dict[str, Any]]:

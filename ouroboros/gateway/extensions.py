@@ -317,14 +317,6 @@ def _build_extensions_index(drive_root, repo_path):
         prefix = extension_name_prefix(skill_name)
         return sum(1 for name in live_snapshot.get("ws_handlers", []) if str(name).startswith(prefix))
 
-    def _pending_ui_tabs(skill_name: str) -> list[str]:
-        prefix = f"{skill_name}:"
-        return [
-            str(name)
-            for name in live_snapshot.get("ui_tabs_pending", [])
-            if str(name).startswith(prefix)
-        ]
-
     # Inline ClawHub provenance so Installed UI avoids a second round-trip.
     try:
         from ouroboros.marketplace.provenance import read_provenance, read_publication_record
@@ -413,7 +405,6 @@ def _build_extensions_index(drive_root, repo_path):
                 "health_regressed": False,
                 "last_known_good": None,
                 "dispatch_live": False,
-                "ui_tabs_pending": [],
                 "review_findings": [],
                 "skill_review": {},
                 "grants": {},
@@ -436,7 +427,6 @@ def _build_extensions_index(drive_root, repo_path):
                 or _live_route_count(s.name)
                 or _live_ws_count(s.name)
             ),
-            "ui_tabs_pending": _pending_ui_tabs(s.name),
             "review_findings": list(s.review.findings or []),
             "skill_review": skill_review_ui_projection(drive_root, s.name),
             "grants": grant_status_for_skill(drive_root, s),
@@ -531,9 +521,16 @@ async def api_extension_manifest(request: Request) -> JSONResponse:
 
 
 async def api_extension_module(request: Request) -> Response:
-    """Serve reviewed widget module JS only for live registered tab entries."""
-    from ouroboros.config import get_skills_repo_path
-    from ouroboros.extension_loader import runtime_state_for_skill_name
+    """Serve reviewed widget module JS only for live registered tab entries.
+
+    Authorization is the live loader state alone — the skill holds a loaded
+    bundle whose module tab declares exactly this entry — so this read path
+    never re-discovers skills or hashes payloads (DEVELOPMENT "Passive GET").
+    The requesting ``srcdoc`` frame has an opaque origin, so its fetch is
+    cross-origin and anonymous; the reply therefore carries
+    ``Access-Control-Allow-Origin: *`` (no credentials are involved).
+    """
+    from ouroboros.extension_loader import live_bundle_facts
 
     skill_name = str(request.path_params.get("skill") or "").strip()
     entry = str(request.path_params.get("entry") or "").strip()
@@ -541,33 +538,22 @@ async def api_extension_module(request: Request) -> Response:
         return json_error("missing skill/module entry", 400)
     if "/" in entry or "\\" in entry or ".." in entry or entry.startswith("."):
         return json_error("invalid module entry", 400)
-
-    drive_root = _request_drive_root(request)
-    repo_path = get_skills_repo_path()
-    state = await asyncio.to_thread(
-        runtime_state_for_skill_name,
-        skill_name,
-        drive_root,
-        repo_path=repo_path,
-    )
-    if not state.get("desired_live"):
-        return json_error(f"extension {skill_name!r} not live: {state.get('reason')}", 409, state=state)
-    loaded = await asyncio.to_thread(find_skill, drive_root, skill_name, repo_path=repo_path)
-    if loaded is None:
-        return json_error("skill not found", 404)
+    facts = live_bundle_facts(skill_name)
+    if facts is None:
+        return json_error(f"extension {skill_name!r} not live", 409)
     # Authorize against live PluginAPI tab registrations, not only manifest ui_tab.
-    live = snapshot()
     module_declared = any(
         str(tab.get("skill") or "") == skill_name
         and str((tab.get("render") or {}).get("kind") or "") == "module"
         and str((tab.get("render") or {}).get("entry") or "") == entry
-        for tab in live.get("ui_tabs", [])
+        for tab in snapshot().get("ui_tabs", [])
     )
     if not module_declared:
         return json_error("module entry is not declared by a live widget tab", 404)
-    target = (loaded.skill_dir / entry).resolve()
+    skill_root = pathlib.Path(facts[1])
+    target = (skill_root / entry).resolve()
     try:
-        target.relative_to(loaded.skill_dir.resolve())
+        target.relative_to(skill_root.resolve())
     except ValueError:
         return json_error("module entry escapes skill directory", 400)
     if not target.is_file():
@@ -579,7 +565,7 @@ async def api_extension_module(request: Request) -> Response:
     return Response(
         text,
         media_type="application/javascript; charset=utf-8",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"},
     )
 
 

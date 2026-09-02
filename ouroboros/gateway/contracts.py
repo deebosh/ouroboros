@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from ouroboros.gateway.widgets import ExtensionLiveSnapshot
+
 try:  # Python 3.11+
     from typing import Literal, NotRequired, Required, TypedDict  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - CI supports Python 3.10.
@@ -912,6 +914,7 @@ class UploadResponse(TypedDict):
 class ExtensionsIndexResponse(TypedDict, total=False):
     extensions: list[Dict[str, Any]]
     skills: list[Dict[str, Any]]
+    live: ExtensionLiveSnapshot
     lifecycle: Dict[str, Any]
     error: str
 
