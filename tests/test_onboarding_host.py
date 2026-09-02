@@ -393,6 +393,60 @@ def test_server_boot_never_writes_the_settings_file():
     assert applied_at < env_at < baseline_at
 
 
+def test_server_boot_leaves_the_settings_bytes_alone(tmp_path, monkeypatch):
+    """The behavioural half of the pin above. A REAL lifespan boot over a document
+    whose provider normalization reports a change (a retired model default the
+    normalization replaces — the exact case the retired boot write persisted) leaves
+    the file's bytes and mtime untouched. The syntactic pin is the fast tripwire; this
+    one also catches a boot write that reaches the disk through some helper other
+    than the named saver."""
+    import server as srv
+    from ouroboros import config as cfg
+    from ouroboros.server_runtime import (
+        _RETIRED_MODEL_DEFAULT_REPLACEMENTS,
+        apply_runtime_provider_defaults,
+    )
+
+    document = {"OUROBOROS_MODEL": next(iter(_RETIRED_MODEL_DEFAULT_REPLACEMENTS))}
+    assert apply_runtime_provider_defaults(dict(document))[1] is True, (
+        "the fixture must give boot something it could persist")
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path)
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.delenv("OUROBOROS_MODEL", raising=False)
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    # ``srv.app`` is the auth-gate wrapper; the inner Starlette state carries the roots.
+    monkeypatch.setattr(srv.app.app.state, "drive_root", drive_root, raising=False)
+    monkeypatch.setattr(srv.app.app.state, "repo_dir", tmp_path / "repo", raising=False)
+
+    class _NoServer:
+        def __init__(self, _config):
+            self.should_exit = False
+
+        async def serve(self):
+            return None
+
+    # Everything the boot segment does NOT own is stubbed; the settings read, the
+    # provider normalization and any writer stay real, which is the point.
+    monkeypatch.setattr(srv, "_apply_settings_to_env", lambda *_a, **_k: None)
+    monkeypatch.setattr(srv, "has_startup_ready_provider", lambda *_a, **_k: False)
+    monkeypatch.setattr("ouroboros.server_runtime.has_local_routing", lambda *_a, **_k: False)
+    monkeypatch.setattr(srv, "_start_supervisor_if_needed", lambda *_a, **_k: None)
+    monkeypatch.setattr(srv.uvicorn, "Server", _NoServer)
+    monkeypatch.setattr("ouroboros.launcher_bootstrap.ensure_data_skills_seeded", lambda: None)
+    monkeypatch.setattr("ouroboros.server_auth.get_configured_network_password", lambda: "")
+    before = settings_path.read_bytes()
+    before_mtime = settings_path.stat().st_mtime_ns
+
+    with TestClient(srv.app):
+        pass
+
+    assert settings_path.read_bytes() == before, "boot rewrote the settings document"
+    assert settings_path.stat().st_mtime_ns == before_mtime
+
+
 # --------------------------------------------------------------------------
 # 4. The served wizard host
 # --------------------------------------------------------------------------

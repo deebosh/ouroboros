@@ -900,7 +900,7 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
     # fail — turning the tripwire into either a red matrix or, worse, a guard that flags the
     # exempted writers while silently vouching for nothing.
     writers = {}
-    for path in sorted(pathlib.Path("ouroboros").rglob("*.py")) + [pathlib.Path("server.py")]:
+    for path in sorted(pathlib.Path("ouroboros").rglob("*.py")) + [pathlib.Path("server.py"), pathlib.Path("launcher.py")] + sorted(pathlib.Path("supervisor").rglob("*.py")):
         src = path.read_text(encoding="utf-8")
         if ("SETTINGS_PATH" not in src and "atomic_write_json" not in src
                 and "settings.json" not in src):
@@ -915,7 +915,7 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
             # signal for "this function persists a settings document".
             settings_write = (
                 ("SETTINGS_PATH" in seg or "settings" in node.name.lower())
-                and re.search(r"\.write_text\(|atomic_write_json\(|json\.dump\(", seg)
+                and re.search(r"\.write_text\(|\.write_bytes\(|atomic_write_json\(|write_text_atomic\(|json\.dump\(", seg)
             ) or "atomic_write_json(settings_path" in seg
             if settings_write:
                 writers[(path.as_posix(), node.name)] = "prepare_settings_for_persist" in seg

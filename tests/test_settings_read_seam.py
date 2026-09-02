@@ -459,12 +459,14 @@ def test_an_unreadable_settings_file_never_compares_equal(monkeypatch):
 
 
 def test_all_three_writers_serialize_a_document_to_the_same_bytes(isolated_settings):
-    """One serializer: the config saver, the owner-endpoint writer's atomic helper and
-    the packaged bootstrap saver produce identical text for identical content. They
-    disagreed on ``ensure_ascii``, so the same document had two spellings on disk."""
+    """One serializer: the config saver, the owner endpoints' locked writer and the
+    packaged bootstrap saver produce identical text for identical content. They
+    disagreed on ``ensure_ascii``, so the same document had two spellings on disk.
+    Each surface is driven through its real entry point, so a serializer swapped
+    inside any one of them fails here."""
     from ouroboros import config as cfg
+    from ouroboros.gateway.owner_settings import _owner_update_settings
     from ouroboros.packaged_cli import _save_settings
-    from ouroboros.utils import atomic_write_json
 
     document = {"TOTAL_BUDGET": 10.0, "OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE": "приоритет"}
 
@@ -472,8 +474,7 @@ def test_all_three_writers_serialize_a_document_to_the_same_bytes(isolated_setti
     by_config = isolated_settings.read_text(encoding="utf-8")
     isolated_settings.unlink()
 
-    atomic_write_json(isolated_settings, cfg.prepare_settings_for_persist(dict(document)),
-                      trailing_newline=False)
+    _owner_update_settings(lambda _current: dict(document))
     by_owner_endpoint = isolated_settings.read_text(encoding="utf-8")
     isolated_settings.unlink()
 
@@ -485,45 +486,61 @@ def test_all_three_writers_serialize_a_document_to_the_same_bytes(isolated_setti
         "the shared serializer escaped a non-ASCII owner value")
 
 
-def test_the_packaged_bootstrap_writes_the_path_the_prologue_reads():
+def test_the_packaged_bootstrap_writes_the_path_the_prologue_reads(isolated_settings, tmp_path,
+                                                                    monkeypatch):
     """The packaged saver owns its own path, and the persistence prologue proves its
     ratchets against ``config.SETTINGS_PATH``. That is only honest while the two are
-    the same file, which the packaged runtime resolves by construction: both derive
-    from ``Path.home() / "Ouroboros"`` when no path override is set."""
-    import inspect
-    import pathlib as _pathlib
-
+    the same file, which holds by construction in a process that carries no path
+    override: both derive from ``Path.home() / "Ouroboros"``. Asserted as the property
+    (the two resolutions, computed), not as the text of either resolver. The packaged
+    runtime ignores the environment by design (the inner CLI child is handed the
+    packaged paths explicitly), so the identity is CONDITIONAL on the outer process
+    having no override — disclosed in the saver's docstring, dormant while the
+    bootstrap callback has no caller."""
     from ouroboros import config as cfg
     from ouroboros import packaged_cli
 
-    # Both derivations, side by side, from their own source: config's per-call
-    # root resolvers (the module constants freeze them at import) and the packaged
-    # runtime's data dir.
-    config_source = _pathlib.Path(cfg.__file__).read_text(encoding="utf-8")
-    assert 'return pathlib.Path(os.environ.get("OUROBOROS_APP_ROOT", pathlib.Path.home() / "Ouroboros"))' in config_source
-    assert 'return pathlib.Path(os.environ.get("OUROBOROS_DATA_DIR", resolve_app_root() / "data"))' in config_source
-    assert "DATA_DIR = resolve_data_dir()" in config_source
-    assert 'SETTINGS_PATH = pathlib.Path(os.environ.get("OUROBOROS_SETTINGS_PATH", DATA_DIR / "settings.json"))' in config_source
+    for key in ("OUROBOROS_APP_ROOT", "OUROBOROS_REPO_DIR", "OUROBOROS_DATA_DIR",
+                "OUROBOROS_SETTINGS_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(packaged_cli, "_find_bundle_root", lambda _paths: tmp_path)
+    monkeypatch.setattr(packaged_cli, "_find_embedded_python", lambda _root: tmp_path / "python")
+    monkeypatch.setattr(packaged_cli, "_read_version", lambda _root: "0.0.0")
 
-    resolver = inspect.getsource(packaged_cli.resolve_packaged_runtime)
-    assert 'app_root = pathlib.Path.home() / "Ouroboros"' in resolver
-    assert 'data_dir=app_root / "data"' in resolver
-    # ...and the saver is wired to that data dir, not to some other root.
-    bootstrap = inspect.getsource(packaged_cli._bootstrap_runtime)
-    assert '_save_settings(runtime.data_dir / "settings.json", settings)' in bootstrap
+    runtime = packaged_cli.resolve_packaged_runtime()
+    assert runtime.data_dir / "settings.json" == cfg.resolve_data_dir() / "settings.json"
+
+    # ...and the bootstrap wires its saver to exactly that file: the context it hands
+    # `bootstrap_repo` names the file, and its saver persists there in seam bytes.
+    contexts: list = []
+    monkeypatch.setattr(packaged_cli, "check_git", lambda _windows: True)
+    monkeypatch.setattr(packaged_cli, "bootstrap_repo", contexts.append)
+    scratch = packaged_cli.PackagedRuntime(
+        bundle_root=tmp_path, embedded_python=tmp_path / "python", app_root=tmp_path,
+        repo_dir=tmp_path / "repo", data_dir=tmp_path / "data", app_version="0.0.0")
+    packaged_cli._bootstrap_runtime(scratch)
+    (context,) = contexts
+    assert context.settings_path == scratch.data_dir / "settings.json"
+    context.save_settings({"TOTAL_BUDGET": 1.0})
+    assert context.settings_path.read_text(encoding="utf-8") == cfg.serialize_settings(
+        cfg.prepare_settings_for_persist({"TOTAL_BUDGET": 1.0}))
 
 
 def test_the_three_settings_writers_are_exactly_these_three():
     """No fourth writer: the persisting surfaces are the config saver, the owner
     endpoint seam, and the packaged CLI bootstrap saver — and all three go through
-    the same persistence prologue and the same serializer."""
+    the same persistence prologue and the same serializer. The repo-root launcher is
+    scanned too: its ``_save_settings`` delegates to ``config.save_settings`` and must
+    keep doing so rather than growing a writer of its own (the whole-tree tripwire in
+    tests/test_runtime_mode_elevation.py covers ``ouroboros/**``, ``supervisor/**``,
+    ``server.py`` and ``launcher.py`` for the same reason)."""
     import ast
 
     repo = pathlib.Path(__file__).resolve().parents[1]
     writers: set[str] = set()
     for relpath in ("ouroboros/config.py", "ouroboros/gateway/owner_settings.py",
                     "ouroboros/packaged_cli.py", "ouroboros/context_mode_compat.py",
-                    "ouroboros/colab_bootstrap.py"):
+                    "ouroboros/colab_bootstrap.py", "launcher.py"):
         source = (repo / relpath).read_text(encoding="utf-8")
         tree = ast.parse(source)
         for node in ast.walk(tree):

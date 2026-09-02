@@ -3004,7 +3004,9 @@ caller of), and the packaged bootstrap's `packaged_cli._save_settings()`. All th
 through `prepare_settings_for_persist()` — the single point where the disk-authored
 silence rule and the owner-only context/safety ratchets are enforced against the value
 ON DISK — and serialize through `serialize_settings()`, so the same document has one
-spelling on disk whichever surface wrote it. Two writers are exempt from the prologue by
+spelling on disk whichever surface wrote it. The inventory is pinned over `ouroboros/**`,
+`supervisor/**`, `server.py` and the repo-root `launcher.py` (whose `_save_settings`
+delegates to `config.save_settings`). Two writers are exempt from the prologue by
 design and pinned as such: the one-window raw context-pair migration (written under the
 load lock, raw mapping plus the normalized pair, never a defaults-merged document) and
 `colab_bootstrap.write_colab_settings()`, which writes the generated document for the
