@@ -5918,3 +5918,20 @@ registry run table carries every matrix run through 33574822693 and R-WINWAVE
 Left for the owner: ``docs/CHECKLISTS.md`` still cites the removed
 ``contracts/api_v1.py`` (protected file) and ``review_model_routes``' typed
 views without production consumers (ABI-4 status).
+
+## Superseding note on «What `--release` still refuses» (as of c7992acf)
+
+The list above was written on the adoption lane's worktree and names eight
+rows; on the integrated branch the validator refuses exactly two: D03
+(`pending` — the settings read seam pin is still owed, owner fork open) and
+CPL-4 (`in-progress` — C6 waits on the owner checkpoint after review round
+4). D18 closed with 091ee3b3 (one `QUEUE_SNAPSHOT_PATH` authority) and
+R-WINWAVE with 9509d493 (green matrices 33569841899..33572515529). Scope
+review №10 (three read-only lanes on d21806d8: claude opus-5
+run-852bb8facb34, codex gpt-5.6-sol run-97075f418c64, cursor grok-4.6
+run-6e1963c63371) returned NOT READY on this release bar and on the same
+bookkeeping; every non-owner item is closed in 091ee3b3..c7992acf, the owner
+items (CHECKLISTS.md api_v1 clause, ABI-4 typed views, D03, D09/S24, web
+vision evidence) are in the owner batch. `git diff --check b9f7597f..HEAD`
+stays red on the vendored `web/mermaid.min.js` (upstream minified asset) and
+the generator-owned `DOMAIN_QUOTIENT_REPORT.md` EOF — disclosed, not edited.
