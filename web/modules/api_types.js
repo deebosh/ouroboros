@@ -1039,8 +1039,8 @@
  * @property {string[]=} hot_code_paths
  * @property {'auto_merge'|'assisted'=} recommended_strategy
  * @property {string=} recommended_strategy_downgraded_reason
- * @property {Object=} overlap_candidates
- * @property {Object=} semantic_overlap
+ * @property {Object<string, *>=} overlap_candidates
+ * @property {Object<string, *>=} semantic_overlap
  */
 
 /**
@@ -1092,4 +1092,4 @@
  * @property {?boolean} check_ok
  */
 
-export const GATEWAY_CONTRACT_VERSION = '6.111.1';
+export const GATEWAY_CONTRACT_VERSION = '6.113.1';

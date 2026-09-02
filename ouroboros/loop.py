@@ -36,6 +36,12 @@ from ouroboros.task_finalization import (
     TERMINAL_ORIGIN_HOST_SALVAGE,
     TERMINAL_ORIGIN_MODEL_FINAL,
 )
+from supervisor.owner_stop import (
+    _mark_owner_stop_control_drained,
+    _narrow_round_deadline,
+    _owner_stop_control_is_current,
+    _owner_stop_window_elapsed,
+)
 
 from ouroboros.loop_tool_execution import (
     StatefulToolExecutor,
@@ -2854,14 +2860,13 @@ def _maybe_inject_nanny_economics_reminder(
     # activity" — the burn is measured from the task's start, and the wording
     # says so instead of implying an activity that never happened.
     _baseline_known = isinstance(getattr(ctx, "_nanny_delegate_baseline", None), dict)
-    coordination = bool(getattr(ctx, "_nanny_coordination_activity", False))
     if _baseline_known:
         since_phrase = (
-            "since your last delegated-run or host-coordination activity"
-            if coordination else "since your last delegated-run activity"
+            "since your last act of delegation (delegate_start / "
+            "schedule_subagent), supervision included"
         )
     else:
-        since_phrase = "since this task started (no delegated-run activity yet)"
+        since_phrase = "since this task started (no act of delegation yet)"
     # BR1-3: never an unconditional "$0" claim — the owner's wording law is
     # typed cost classes: known-zero only on a settled $0 spend, never "free"
     # unqualified (estimated/undisclosed spend is never zero).
@@ -3100,64 +3105,6 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
     return tool_schemas, enabled_extra
 
 
-def _mark_owner_stop_control_drained(
-    owner_ctx: Any, drive_root: Optional[pathlib.Path], task_id: str,
-) -> None:
-    """Stamp the owner-stop finalize control's DELIVERY on the durable intent.
-
-    The intent lives on the CANONICAL data root (``budget_drive_root`` first;
-    a forked task's mailbox drive differs). Idempotent (first drain wins). A
-    failed stamp is retried ONCE; still unconfirmed, a typed forensic event
-    is appended and no extended budget is assumed: the sweep keeps the
-    request+outer-cap deadline, and ``_owner_stop_window_elapsed`` reads the
-    same unstamped intent, bounding the worker by that anchor."""
-    try:
-        from ouroboros.cancel_intents import active_intent, mark_finalize_control_drained
-
-        root = (
-            str(getattr(owner_ctx, "budget_drive_root", "") or "")
-            or (str(drive_root) if drive_root is not None else "")
-        )
-        if not (root and task_id):
-            return
-        root_path = pathlib.Path(root)
-        for _ in range(2):
-            if mark_finalize_control_drained(root_path, task_id):
-                return
-            row = active_intent(root_path, task_id)
-            if isinstance(row, dict) and str(row.get("control_drained_at") or ""):
-                return  # already stamped: the durable anchor is confirmed
-        from ouroboros.utils import append_jsonl, utc_now_iso
-
-        append_jsonl(root_path / "logs" / "events.jsonl", {
-            "ts": utc_now_iso(), "type": "owner_stop_stamp_failed",
-            "task_id": task_id,
-        })
-    except Exception:
-        log.debug("owner-stop drain stamp failed for %s", task_id, exc_info=True)
-
-
-def _owner_stop_window_elapsed(ctx: "_RoundLimitContext") -> bool:
-    """Bind and check the owner-stop deadline."""
-    try:
-        from ouroboros.cancel_intents import STOP_POLICY_FINALIZE, active_intent, stop_policy
-        from supervisor.owner_stop import owner_stop_deadline_ts
-
-        root = getattr(ctx, "status_drive_root", None) or ctx.drive_root
-        if root is None or not ctx.task_id:
-            return False
-        intent = active_intent(pathlib.Path(root), ctx.task_id)
-        if not isinstance(intent, dict) or stop_policy(intent) != STOP_POLICY_FINALIZE:
-            return False
-        deadline = owner_stop_deadline_ts(intent, float(task_pacing.get_finalization_grace_sec()))
-        if deadline:
-            ctx.deadline_ts = deadline
-        return time.time() >= deadline if deadline else True
-    except Exception:
-        log.debug("owner-stop window check failed for %s", ctx.task_id, exc_info=True)
-        return False
-
-
 def _drain_incoming_messages(
     messages: List[Dict[str, Any]],
     incoming_messages: queue.Queue,
@@ -3203,16 +3150,35 @@ def _drain_incoming_messages(
             kind = entry.get("kind") or KIND_OWNER_TEXT
             if kind == KIND_FINALIZE_NOW:
                 text = str(entry.get("text") or "deadline")
-                controls["finalize_now"] = text
-                opened = parse_deadline_ts(entry.get("ts"))
-                if opened is not None:
-                    controls["finalize_deadline_ts"] = (
-                        opened.timestamp() + task_pacing.effective_finalization_reserve_sec(owner_ctx)
-                    )
                 first_line = text.splitlines()[0].strip() if text else ""
                 if first_line == REASON_OWNER_REQUESTED_FINALIZATION:
+                    if not _owner_stop_control_is_current(
+                        owner_ctx,
+                        drive_root,
+                        task_id,
+                        str(entry.get("msg_id") or ""),
+                    ):
+                        continue
                     # Owner-stop budget starts at delivery; first drain wins.
-                    _mark_owner_stop_control_drained(owner_ctx, drive_root, task_id)
+                    if not _mark_owner_stop_control_drained(
+                        owner_ctx, drive_root, task_id,
+                    ):
+                        continue
+                    if not _owner_stop_control_is_current(
+                        owner_ctx,
+                        drive_root,
+                        task_id,
+                        str(entry.get("msg_id") or ""),
+                    ):
+                        continue
+                else:
+                    opened = parse_deadline_ts(entry.get("ts"))
+                    if opened is not None:
+                        controls["finalize_deadline_ts"] = (
+                            opened.timestamp()
+                            + task_pacing.effective_finalization_reserve_sec(owner_ctx)
+                        )
+                controls["finalize_now"] = text
                 continue
             if kind == KIND_HURRY:
                 # HQ1 no-chat contract (§19.7.2 item 6): a typed hurry control is
@@ -3541,7 +3507,9 @@ def _maybe_early_finalize(
     """Consume supervisor grace first, then a local deadline."""
     if controls.get("finalize_now"):
         if controls.get("finalize_deadline_ts") is not None:
-            limit_ctx.deadline_ts = float(controls["finalize_deadline_ts"])
+            _narrow_round_deadline(
+                limit_ctx, controls["finalize_deadline_ts"],
+            )
         return _handle_forced_finalization(limit_ctx, str(controls["finalize_now"]))
     return _maybe_deadline_local_finalize(limit_ctx, tools)
 
@@ -5561,8 +5529,8 @@ def _forced_delegation_note(tools_ctx: Any, llm_trace: Dict[str, Any]) -> str:
         if rounds >= NANNY_REMINDER_ROUNDS or cost >= NANNY_REMINDER_USD:
             return (
                 "\nNOTE: your delegated run(s) succeeded, but you have since spent "
-                f"{_nanny_burn_phrase(rounds, cost)} with no delegated-run activity. "
-                "Account for that metered spend honestly in your answer."
+                f"{_nanny_burn_phrase(rounds, cost)} beyond your last act of delegation. "
+                "Account for that spend honestly in your answer."
             )
         return ""
     if started > settled:
@@ -5934,18 +5902,21 @@ def _nanny_finalization_message(
             return ""
         return (
             "⚠️ NANNY_METERED_OVERRUN: your delegated run(s) succeeded, but you have "
-            f"since spent {_nanny_burn_phrase(rounds, cost)} with no delegated-run "
-            "activity. A successful run is verified and integrated, not rebuilt. If "
+            f"since spent {_nanny_burn_phrase(rounds, cost)} beyond your last act of "
+            "delegation (supervision included). "
+            "A successful run is verified and integrated, not rebuilt. If "
             "the remaining work is substantive, delegate it (a new delegate_start); "
             "if you are wrapping up, keep the wrap-up short and account for the "
             "metered spend honestly in your result."
         )
     started = int(evidence.get("delegated_runs_started") or 0)
     if not started and (evidence.get("evidence_read_failed") or not evidence):
-        # Zero attempts is an ACCUSATION and needs positively-established
-        # evidence: an unreadable custody log (or a failed read above) proves
-        # nothing (scope finding on a5e59bdf).
-        return ""
+        # Unreadable custody (a5e59bdf): configured -> unknown message; legacy -> silence.
+        from ouroboros.subagent_bootstrap import configured_actor_finalization_message
+
+        _actor = configured_actor_finalization_message(
+            tools._ctx, task_id=str(task_id or ""), fallback_root=drive_root)
+        return _actor or ""
     if not started and (trace_attempted or evidence.get("delegate_start_attempted")):
         # Pending, refused or uncustodied starts are still real attempts.
         return ""
@@ -5980,15 +5951,12 @@ def _nanny_finalization_message(
             "or state in your final answer that the delegated run failed and why "
             "the remaining work ran on metered API tokens."
         )
-    from ouroboros.subagent_bootstrap import (
-        actor_first_coordination_finalization_message,
-    )
+    from ouroboros.subagent_bootstrap import configured_actor_finalization_message
 
-    actor_first = actor_first_coordination_finalization_message(
-        tools._ctx, task_id=str(task_id or ""), fallback_root=drive_root,
-    )
-    if actor_first is not None:
-        return actor_first
+    _actor = configured_actor_finalization_message(
+        tools._ctx, task_id=str(task_id or ""), fallback_root=drive_root)
+    if _actor is not None:
+        return _actor
     return (
         "⚠️ NANNY_DID_NOT_DELEGATE: this task was dispatched onto the delegated "
         "substrate (executor=harness), but you are finalizing with ZERO "

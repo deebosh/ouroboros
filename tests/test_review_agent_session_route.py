@@ -992,6 +992,25 @@ def _run_session_directly(tmp_path, **overrides):
     return run_delegated_review_session(invocation=SessionInvocation(**invocation), **kwargs)
 
 
+def test_stale_retry_token_cannot_be_reinterpreted_as_fresh_review(
+    tmp_path, fake_route,
+):
+    """A missing durable invocation is custody loss, even with time left."""
+    from ouroboros.review_execution import ReviewRouteUnavailable
+
+    state = {"pending_invocation_id": "stale-token"}
+    with pytest.raises(ReviewRouteUnavailable) as raised:
+        _run_session_directly(
+            tmp_path, retry_state=state, operation_id="op-stale",
+        )
+
+    assert raised.value.code == "review_custody_lost"
+    gateway = fake_route.instances[-1] if fake_route.instances else None
+    if gateway is not None:
+        assert gateway.start_requests == []
+        assert gateway.registrations == []
+
+
 def test_pending_invocation_checkpoint_precedes_provider_post(
     tmp_path, fake_route, monkeypatch,
 ):
@@ -1933,16 +1952,27 @@ def test_late_worker_uses_its_captured_stamp_after_caller_restores_context(
         raise AssertionError("the delayed review worker did not settle its custody")
 
 
-def test_unhealthy_route_refuses_typed_never_falls_back(tmp_path, fake_route):
+def test_degraded_row_status_reaches_the_engine_whose_refusal_stays_typed(tmp_path, fake_route):
+    """cx-delegation sprint (owner 7=A, «статус обманывает»): the doctor's
+    aggregate row status is no longer a pre-POST refusal — for review slots
+    too, since route_health is deliberately ONE reader. The request reaches
+    the engine; the ENGINE's typed refusal rides the slot, and there is still
+    never a silent fallback onto the api route."""
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+
     fake_route.catalog_entry["status"] = "degraded"
+    fake_route.start_error = ClaudexorUnavailable(
+        "credential_pool_exhausted", "engine typed refusal: pool exhausted",
+        status_code=422)
     llm = FakeLLM()
     result = run_review_request(_agent_request(), slots=[_agent_slot()],
                                 drive_root=tmp_path, llm=llm)
+    starts = [r for inst in fake_route.instances for r in inst.start_requests]
+    assert len(starts) == 1  # the start attempt was actually posted
     actor = result.actors[0]
     assert actor["status"] == "error"
-    assert "route_status_degraded" in actor["error"]
-    assert llm.calls == []
-    assert not any(inst.start_requests for inst in fake_route.instances)
+    assert "engine typed refusal: pool exhausted" in actor["error"]
+    assert llm.calls == []  # never a silent fallback onto the api route
 
 
 def test_pinned_profile_passes_row_status_through_to_the_engine(tmp_path, fake_route):
@@ -1973,17 +2003,20 @@ def test_pinned_profile_passes_row_status_through_to_the_engine(tmp_path, fake_r
     assert llm.calls == []  # never a silent fallback onto the api route
 
 
-def test_route_status_refusal_carries_its_typed_code(tmp_path, fake_route):
-    """Phase D2: the route_health refusal rides ReviewRouteUnavailable with a
-    machine-readable `.code` (the rotation sprint's quorum classification keys
-    on failure codes; a bare RuntimeError is invisible to it)."""
+def test_owner_disabled_route_refusal_carries_its_typed_code(tmp_path, fake_route):
+    """The remaining pre-POST row refusal is the OWNER's settings toggle
+    (`enabled=false` — routing excludes it regardless of doctor status), and it
+    still rides ReviewRouteUnavailable with a machine-readable `.code` (the
+    rotation sprint's quorum classification keys on failure codes; a bare
+    RuntimeError is invisible to it). The aggregate doctor status alone no
+    longer refuses (owner 7=A)."""
     from ouroboros.review_execution import ReviewRouteUnavailable
 
     fake_route.catalog_entry["status"] = "unavailable"
     fake_route.catalog_entry["enabled"] = False
     with pytest.raises(ReviewRouteUnavailable) as excinfo:
         _run_session_directly(tmp_path)
-    assert excinfo.value.code == "route_status_unavailable"
+    assert excinfo.value.code == "route_disabled"
     assert not any(inst.start_requests for inst in fake_route.instances)
 
 
@@ -2183,7 +2216,7 @@ def test_agent_slot_without_session_task_refuses_the_api_pack(tmp_path, fake_rou
     result = run_review_request(request, slots=[_agent_slot()],
                                 drive_root=tmp_path, llm=llm)
     actor = result.actors[0]
-    assert actor["status"] == "error"
+    assert actor["status"] == "not_dispatched"
     assert "no session task" in actor["error"]
     assert llm.calls == []
     assert not any(inst.start_requests for inst in fake_route.instances)
