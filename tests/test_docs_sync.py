@@ -428,36 +428,7 @@ DOC_RESIDUE_BASELINE = {
             "codename_word": 0
         }
     },
-    "docs/DEVELOPMENT.md": {
-        "## Naming and boundaries": {
-            "version_stamp": 1,
-            "version_narrative": 0,
-            "narrative": 5,
-            "codename_paren": 0,
-            "codename_word": 1
-        },
-        "## Module Size & Complexity": {
-            "version_stamp": 0,
-            "version_narrative": 1,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## Core Governance Artifacts": {
-            "version_stamp": 2,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## Review & Commit Protocol": {
-            "version_stamp": 3,
-            "version_narrative": 0,
-            "narrative": 1,
-            "codename_paren": 7,
-            "codename_word": 8
-        }
-    }
+    "docs/DEVELOPMENT.md": {}
 }
 
 
