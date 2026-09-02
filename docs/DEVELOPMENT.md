@@ -726,16 +726,25 @@ behind. A UI instance may survive being hidden only under an explicit,
 owner-visible retention reason — a project chat with pending work (staged
 attachments, an upload in flight), a widget card the owner set to Keep running
 — and even then it still owns its disposer, and Stop / unload / reload /
-shutdown remain force-destroy boundaries. The untyped shape "hide the DOM node,
-keep the handlers" remains the leak this invariant forbids. Late async
-continuations check a `destroyed` flag before touching state or re-arming
-loops.
+shutdown remain force-destroy boundaries. The reason is re-evaluated at the
+instance's next lifecycle point, not continuously — a project chat's at the next
+navigation, a kept widget card's at the next Widgets entry or lifecycle event —
+so a hidden instance whose reason lapsed is released then, and this rule
+promises no earlier release. For a kept widget card the force-destroy
+boundaries are the owner's Stop, its skill leaving the live list (also while
+hidden), Refresh, a window reload and closing Ouroboros; a server reconnect
+with the same served SHA keeps the frame when its skill is live again with the
+same `revision` (a changed revision stops it in order and re-mounts it). The
+untyped shape "hide the DOM node, keep the handlers" remains the leak this
+invariant forbids. Late async continuations check a `destroyed` flag before
+touching state or re-arming loops.
 
-A framed widget's disposer is the ordered dispose with acknowledgement
-(ARCHITECTURE "Skills and Widgets"): it posts the dispose message, keeps the
-bridge answering the child's hooks, and finishes — abort, unlisten, remove the
-iframe — on the child's acknowledgement or after `WIDGET_DISPOSE_ACK_TIMEOUT_MS`.
-The Widgets masonry (`applyMasonry`) returns an idempotent disposer for its two
+A module widget's disposer (`kind: module`) is the ordered dispose with
+acknowledgement (ARCHITECTURE "Skills and Widgets"): it posts the dispose
+message, keeps the bridge answering the child's hooks, and finishes — abort,
+unlisten, remove the iframe — on the child's acknowledgement or after
+`WIDGET_DISPOSE_ACK_TIMEOUT_MS`; a route iframe (`kind: iframe`) has no bridge
+and its disposer removes the frame synchronously. The Widgets masonry (`applyMasonry`) returns an idempotent disposer for its two
 `ResizeObserver`s, its `MutationObserver` and its pending animation frame.
 That bounded wait is not the forbidden shape: the handlers live only until a
 settle promise the page tracks per card key resolves, and a remount of the same
@@ -2585,8 +2594,9 @@ control, the launch-policy menu, the stopped card's facade and the Refresh
 confirmation that counts the cards kept running — lives in
 `web/modules/widget_card.js`; the card reorder handles live in
 `web/modules/widget_reorder.js` (a reorder is a pure move in the key order handed
-back to the page; no node moves); the declarative `chart` helpers and the shared
-dotted-path reader live in `web/modules/widget_chart.js`; the masonry
+back to the page; no node moves); the declarative `chart` helpers, the table
+cell renderer and the shared dotted-path reader live in
+`web/modules/widget_chart.js`; the masonry
 (`web/modules/masonry.js`) packs the cards in that key order through
 `--masonry-*` custom properties and returns a disposer. The pure list helpers —
 per-card and order-independent list change signatures plus the keyed patch plan
@@ -2679,7 +2689,14 @@ explicitly:
   in ordinary pull-request tests; do not move provider secrets into PR jobs or
   edit the workflow merely to duplicate this existing trusted lane.
 - `browser` launches real Playwright Chromium/WebKit for agent browser tools.
-- `ui_browser` launches the host-side web UI under Playwright.
+- `ui_browser` launches the host-side web UI under Playwright. The marker is
+  the source of truth for what the lane collects; the Widgets lifecycle suites
+  in it are `tests/test_widgets_ui_browser.py` (geometry, job retry),
+  `tests/test_widgets_ui_browser_lifecycle.py` (launch policy, ordered stop,
+  `retain`, the streaming bridge) and `tests/test_widgets_ui_browser_patch.py`
+  (keyed patch of a running card, reconnect reconcile, serialized policy
+  writes) — run all of them before a release that touched Widgets, e.g.
+  `OUROBOROS_RUN_UI_SMOKE=1 OUROBOROS_DATA_DIR=$(mktemp -d) python -m pytest -o addopts="" -m ui_browser tests/test_widgets_ui_browser*.py`.
 - `ui_browser_docker` talks to an `ouroboros-web:test` container and must
   skip cleanly when Docker is unavailable locally.
 - `portable_detail` covers build/portable artifact invariants and also runs

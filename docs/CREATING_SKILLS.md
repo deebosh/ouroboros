@@ -102,7 +102,7 @@ scheduled_tasks:                    # optional reviewed cron jobs
 ui_tab:                             # extension widgets (optional)
   tab_id: live
   title: Weather
-  icon: cloud
+  icon: "⛅"                        # one glyph (emoji / symbol); a name like `cloud` is not rendered
   render:
     kind: declarative
     start: auto                     # launch policy; module/iframe may say manual | retain (see "Launch policy")
@@ -836,11 +836,15 @@ declaration, so every framed or declarative widget tab carries an explicit value
 | `start` | Behaviour | Default for |
 |---|---|---|
 | `auto` | Starts when the Widgets page is shown; leaving the page stops it. For cheap instruments (a quota gauge, a status board). | `declarative` — the only value it accepts: the host draws it, there is nothing to start |
-| `manual` | The card shows the title, icon, and a Start button; the program runs only after the owner presses Start. Leaving the page is an ordered Stop: the host sends the dispose message and gives the widget up to one second to save before the frame is removed. | `module`, `iframe` |
-| `retain` | "Keep running": starts on the first Widgets visit like `auto` and keeps running while the owner is on other pages; the card's status reads "Keeps running". It stops on the owner's Stop, on skill disable / unload / delete (also while Widgets is hidden), on the page's Refresh (the owner confirms first while a kept card runs), on app reload, on server restart, and when Ouroboros closes. | — |
+| `manual` | The card shows the title, icon, and a Start button; the program runs only after the owner presses Start. Leaving the page is an ordered Stop: for `kind: module` the host sends the dispose message and gives the widget up to one second to save before the frame is removed; a `kind: iframe` route frame has no bridge and is removed at once. | `module`, `iframe` |
+| `retain` | "Keep running": starts on the first Widgets visit like `auto` and keeps running while the owner is on other pages; the card's status reads "Keeps running". It stops on the owner's Stop, on skill disable / unload / delete (also while Widgets is hidden), on the page's Refresh (the owner confirms first while a kept card runs), when the window reloads, and when Ouroboros closes. A server reconnect with the same served code keeps the frame when the skill is live again with the same revision; a changed revision stops it in order and starts it again. | — |
 
 Rules every module author follows:
 
+- **`icon` is one glyph** — an emoji or a symbol character — shown beside the
+  title on a stopped card's facade. An identifier-like name (`cloud`,
+  `gamepad`, the `extension` default) is not a glyph: the host has no named-icon
+  set, does not render the word, and shows its own widgets glyph instead.
 - **Declare `start` explicitly for a heavy program.** A game, emulator, or
   simulation that should not run all the time is `manual`; only a program that
   genuinely must keep running while the owner is elsewhere — and that stays
@@ -861,8 +865,9 @@ Rules every module author follows:
   the bootstrap acknowledges, and only then is the frame removed. `localStorage`
   and cookies throw in the opaque origin; never keep state only in the frame.
 - **`retain` is not a daemon.** It never survives Ouroboros closing: closing the
-  app or stopping the server ends every widget together with every other
-  Ouroboros process. Retained instances are per browser client, not a singleton
+  app ends every widget together with every other Ouroboros process, and a page
+  reload ends every widget too — a frame cannot outlive the page that hosts it.
+  Retained instances are per browser client, not a singleton
   — a second window or device runs a second instance. A program that must be a
   singleton, be supervised, or be independent of any window is a
   `companion_process`, not a widget.
@@ -883,9 +888,12 @@ and stays mounted while the owner is elsewhere with a "Keeps running" status
 until Stop, the skill leaving the live list (even while Widgets is hidden),
 Refresh (after the owner confirms) or the window going away; the owner's
 per-card override wins over your declaration; and the dispose →
-acknowledgement handshake is live: your `__ouroWidgetOnDispose` hooks may be
-async and may use the fetch bridge, and the parent gives them up to one second
-before it removes the frame. Autosave while running plus the one-second flush
+acknowledgement handshake is live for `kind: module`: your
+`__ouroWidgetOnDispose` hooks may be async and may use the fetch bridge, and
+the parent gives them up to one second before it removes the frame — on Stop,
+on leaving the page, and when your skill's revision changes while the card
+runs (the old frame flushes first, then the fresh card mounts). A `kind: iframe`
+route frame has no bridge and is removed at once. Autosave while running plus the one-second flush
 is still the whole durable path — nothing survives a reload or Ouroboros
 closing, kept-running cards included.
 

@@ -8,7 +8,7 @@ import {
     boundedNumber,
     withWidgetRequestTimeout,
 } from './widget_job.js';
-import { chartConfig, getPath, renderChartDataTable } from './widget_chart.js';
+import { chartConfig, formatNumber, getPath, renderChartDataTable, renderTableCell } from './widget_chart.js';
 import { mountModuleWidget, mountRouteIframeWidget } from './widget_module.js';
 import { planWidgetListPatch, widgetKey, widgetTabsSignature } from './widget_list.js';
 import {
@@ -194,52 +194,6 @@ function indexComponentTree(components) {
     };
     (Array.isArray(components) ? components : []).forEach((component, idx) => visit(component, `components.${idx}`));
     return { entries, byKey };
-}
-
-function safeTableHref(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    try {
-        const parsed = new URL(raw, window.location.origin);
-        return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
-    } catch {
-        return '';
-    }
-}
-
-function formatNumber(value, precision) {
-    if (value === null || value === undefined || value === '') return '—';
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return '—';
-    const parsedPrecision = Number(precision);
-    if (precision === undefined || precision === null || precision === '' || !Number.isFinite(parsedPrecision)) {
-        return numeric.toLocaleString(undefined, { maximumFractionDigits: 12 });
-    }
-    const digits = Math.max(0, Math.min(12, parsedPrecision));
-    return numeric.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
-
-function renderTableCell(row, column) {
-    const presentation = String(column.presentation || column.format || 'plain');
-    const raw = getPath(row, column.path, '');
-    if (presentation === 'number') {
-        const rendered = formatNumber(raw, column.precision);
-        return `${escapeHtml(rendered)}${rendered !== '—' && column.unit ? ` ${escapeHtml(column.unit)}` : ''}`;
-    }
-    if (presentation === 'status') {
-        const label = raw && typeof raw === 'object' ? (raw.label ?? raw.value ?? raw.status ?? '') : raw;
-        const toneValue = raw && typeof raw === 'object' ? raw.tone : getPath(row, column.tone_path || '', 'muted');
-        const tone = normalizeTone(toneValue);
-        return `<span class="widget-table-status" data-tone="${escapeHtml(tone)}">${escapeHtml(label || '—')}</span>`;
-    }
-    if (presentation === 'link') {
-        const rawHref = getPath(row, column.href_path || column.path, '');
-        const href = safeTableHref(rawHref);
-        const label = column.label_path ? getPath(row, column.label_path, rawHref) : raw;
-        if (!href) return escapeHtml(label || rawHref || '—');
-        return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || href)}</a>`;
-    }
-    return escapeHtml(raw ?? '');
 }
 
 function renderComponent(tab, component, view, treePath, inheritedTarget = '') {
@@ -474,6 +428,8 @@ const widgetDisposers = new Map();
 // key → settle promise of an ordered stop still waiting for the child's
 // acknowledgement (its frame is still in the card until then).
 const widgetDisposing = new Map();
+// key → the mount in flight for it: one per key, a second request joins it.
+const widgetMounting = new Map();
 const widgetMountControllers = new Set();
 const widgetMessageHandlers = new Set();
 const widgetSessionState = new Map();
@@ -1101,11 +1057,24 @@ function liveCardFor(list, key) {
     return list.querySelector(`[data-widget-key="${CSS.escape(key)}"]:not([data-widget-removed])`);
 }
 
+// A card whose frame is stopping in order stays in the document, marked and in
+// the `stopping` state, until the acknowledgement or the timeout — both the
+// vanished card and the changed card (a revision or render change while its
+// frame runs) leave this way; the frame is never torn down in the same turn as
+// the dispose message. The keyed patch treats a marked card as already gone.
+function retireCard(card, settling) {
+    card.setAttribute('data-widget-removed', '');
+    syncWidgetCardControls(card, 'stopping');
+    settling.then(() => card.remove());
+}
+
 // Keyed patch over the existing <article> nodes: vanished cards go (their mounted
 // work disposed first, their session state evicted), cards whose own entry
-// changed are replaced, new cards are appended, every other card keeps its DOM
-// node. No node ever moves: the visible order is the masonry key order, and a
-// moved <iframe> would reload. The list's masonry relayouts on the mutation.
+// changed are replaced — a running one retires first while its fresh card is
+// inserted beside it and mounts once the stop settled (`mountTrackedTab` waits
+// on the same settle promise) — new cards are appended, every other card keeps
+// its DOM node. No node ever moves: the visible order is the masonry key order,
+// and a moved <iframe> would reload. The list's masonry relayouts on the mutation.
 function patchWidgetCards(list, previousTabs, nextTabs) {
     const plan = planWidgetListPatch(previousTabs, nextTabs);
     for (const key of plan.removed) {
@@ -1114,37 +1083,51 @@ function patchWidgetCards(list, previousTabs, nextTabs) {
         widgetSessionState.delete(key);
         stoppedByOwner.delete(key);
         if (!card) continue;
-        if (!settling) {
-            card.remove();
-            continue;
-        }
-        card.setAttribute('data-widget-removed', '');
-        syncWidgetCardControls(card, 'stopping');
-        settling.then(() => card.remove());
+        if (settling) retireCard(card, settling);
+        else card.remove();
     }
     for (const tab of nextTabs) {
         const key = widgetKey(tab);
         const card = liveCardFor(list, key);
         if (card && !plan.changed.includes(key)) continue;
-        disposeWidgetByKey(key);
+        const settling = disposeWidgetByKey(key);
         const fresh = createCardElement(tab);
-        if (card) card.replaceWith(fresh);
-        else list.append(fresh);
+        if (!card) list.append(fresh);
+        else if (!settling) card.replaceWith(fresh);
+        else {
+            card.after(fresh);
+            retireCard(card, settling);
+        }
     }
 }
 
-async function mountTrackedTab(card, tab, isCurrent = () => true) {
+// One mount in flight per key: a second request for the same key (the policy
+// menu's Auto / Keep running while the card is `starting`) joins the first
+// instead of racing it for the body and the disposer.
+function mountTrackedTab(card, tab, isCurrent = () => true) {
     const key = widgetKey(tab);
+    const inFlight = widgetMounting.get(key);
+    if (inFlight) return inFlight;
+    const mounting = mountTabOnce(card, tab, key, isCurrent).finally(() => {
+        if (widgetMounting.get(key) === mounting) widgetMounting.delete(key);
+    });
+    widgetMounting.set(key, mounting);
+    return mounting;
+}
+
+async function mountTabOnce(card, tab, key, isCurrent) {
     // One frame per key: a stop still awaiting its acknowledgement finishes first.
     const settling = disposeWidgetByKey(key);
     if (settling) await settling;
-    if (!isCurrent()) return;
+    if (!isCurrent() || !card.isConnected) return;
     const mountController = new AbortController();
     widgetMountControllers.add(mountController);
     try {
         const dispose = await mountTab(card, tab, mountController.signal);
         if (typeof dispose === 'function') {
-            if (!isCurrent()) {
+            // Stale (page left, hard reset, card replaced meanwhile): stop it in
+            // order instead of registering a frame nobody can reach.
+            if (!isCurrent() || !card.isConnected) {
                 trackSettling(key, dispose());
                 return;
             }
@@ -1229,18 +1212,15 @@ export function initWidgets(ctx = {}) {
 
     // WS-driven reconcile: visible → sync now (or mark dirty while one runs);
     // hidden → dirty flag, consumed by the next entry's unconditional fetch —
-    // plus the force-stop of kept-running frames whose skill left the list.
+    // plus the force-stop of kept-running frames whose skill left the list,
+    // whether or not a sync was still in flight when the owner left.
     function reconcileWidgetList() {
-        if (activeSync) {
-            listDirty = true;
-            return;
-        }
-        if (widgetsVisible) {
+        if (widgetsVisible && !activeSync) {
             syncWidgets(renderGeneration);
             return;
         }
         listDirty = true;
-        stopVanishedRetainedWidgets();
+        if (!widgetsVisible) stopVanishedRetainedWidgets();
     }
 
     // Lifecycle event while Widgets is hidden and frames are kept running: a
@@ -1356,23 +1336,26 @@ export function initWidgets(ctx = {}) {
     const startsOnShow = (tab) => effectiveStartMode(tab, uiPreferences) !== 'manual'
         && !stoppedByOwner.has(widgetKey(tab));
 
-    // Mount one card and keep its head controls truthful; a failed mount leaves
-    // the error in the body and Start available for a retry.
+    // Mount one card and keep its head controls truthful: the facade stands in
+    // while it starts (idempotent — never over a settling frame), a failed mount
+    // leaves the error in the body and Start available for a retry, and a card
+    // the owner left meanwhile ends stopped with its facade, never a stale Stop.
     async function startWidget(card, tab, isCurrent) {
-        const mode = effectiveStartMode(tab, uiPreferences);
-        syncWidgetCardControls(card, 'starting', mode);
+        const mount = card.querySelector('[data-widget-mount]');
+        if (isFramedWidget(tab)) renderWidgetFacade(mount, tab);
+        syncWidgetCardControls(card, 'starting', effectiveStartMode(tab, uiPreferences));
         try {
             await mountTrackedTab(card, tab, isCurrent);
         } catch (err) {
-            if (!isCurrent()) return;
-            const mount = card.querySelector('[data-widget-mount]');
-            if (mount) mount.innerHTML = `<div class="skills-load-error">widget failed: ${escapeHtml(err.message || err)}</div>`;
+            if (isCurrent() && mount) mount.innerHTML = `<div class="skills-load-error">widget failed: ${escapeHtml(err.message || err)}</div>`;
         }
-        if (isCurrent()) syncWidgetCardControls(card, widgetDisposers.has(widgetKey(tab)) ? 'running' : 'stopped', mode);
+        if (isCurrent()) syncWidgetCardControls(card, widgetDisposers.has(widgetKey(tab)) ? 'running' : 'stopped', effectiveStartMode(tab, uiPreferences));
+        else if (isFramedWidget(tab)) await settleStopped(card, tab);
     }
 
     // A framed card that is not to run now: let an ordered stop still in flight
-    // finish (its frame is still in the card), then show the facade.
+    // finish (its frame is still in the card), then show the facade — unless a
+    // mount for the key is already under way or running.
     async function settleStopped(card, tab) {
         const key = widgetKey(tab);
         const mode = effectiveStartMode(tab, uiPreferences);
@@ -1380,7 +1363,7 @@ export function initWidgets(ctx = {}) {
             syncWidgetCardControls(card, 'stopping', mode);
             await widgetDisposing.get(key);
         }
-        if (widgetDisposers.has(key) || !card.isConnected) return;
+        if (widgetDisposers.has(key) || widgetMounting.has(key) || !card.isConnected) return;
         renderWidgetFacade(card.querySelector('[data-widget-mount]'), tab);
         syncWidgetCardControls(card, 'stopped', mode);
     }
@@ -1399,13 +1382,12 @@ export function initWidgets(ctx = {}) {
         relayout();
     }
 
-    // Launch-policy change from the card menu: whole-map replace through the
-    // preferences API (read the current map first so a stale in-memory copy never
-    // drops another card's choice), applied immediately — Auto / Keep running
-    // start a stopped card now, Manual changes nothing until Start.
-    async function setWidgetStartMode(key, mode) {
-        const tab = tabByKey(key);
-        if (!tab || !WIDGET_START_MODES.includes(mode)) return;
+    // Launch-policy writes are a whole-map replace through the preferences API:
+    // read the stored map first (a stale in-memory copy never drops another
+    // card's choice), merge, POST. One at a time — two quick changes chain
+    // behind each other, so the second reads the first's map and loses nothing.
+    let startModeWrites = Promise.resolve();
+    async function persistWidgetStartMode(key, mode) {
         let current = uiPreferences.widget_start_mode;
         try {
             const stored = await apiClient.uiPreferences();
@@ -1413,9 +1395,19 @@ export function initWidgets(ctx = {}) {
         } catch { /* fall back to the in-memory map */ }
         const next = withWidgetStartMode(current, key, mode);
         uiPreferences = { ...uiPreferences, widget_start_mode: next };
-        apiClient.saveUiPreferences({ widget_start_mode: next }).catch((err) => {
+        await apiClient.saveUiPreferences({ widget_start_mode: next }).catch((err) => {
             console.warn('Failed to save widget start mode', err);
         });
+    }
+
+    // Launch-policy change from the card menu, applied once its write landed —
+    // Auto / Keep running start a stopped card now, Manual changes nothing until Start.
+    async function setWidgetStartMode(key, mode) {
+        const tab = tabByKey(key);
+        if (!tab || !WIDGET_START_MODES.includes(mode)) return;
+        const write = startModeWrites.then(() => persistWidgetStartMode(key, mode));
+        startModeWrites = write.catch(() => {});
+        await write;
         const card = liveCardFor(list, key);
         if (!card) return;
         syncWidgetCardControls(card, widgetDisposers.has(key) ? 'running' : 'stopped', mode);
@@ -1448,10 +1440,18 @@ export function initWidgets(ctx = {}) {
             // Leaving disposes the mounted work — except the frames the owner
             // keeps running, which stay mounted in the hidden page — and stops
             // stale paints; the cards stay in the DOM so the next entry mounts
-            // into them instead of rebuilding.
+            // into them instead of rebuilding. A stopped framed card ends with
+            // its facade and Start once its stop settled, so a hidden or
+            // returned card never shows a stale Stop / Running over an empty body.
             widgetsVisible = false;
             widgetsMounted = false;
+            const stopping = Array.from(widgetDisposers.keys()).filter((key) => !retainsWhileHidden(key));
             disposeMountedWidgets(retainsWhileHidden);
+            for (const key of stopping) {
+                const card = liveCardFor(list, key);
+                const tab = tabByKey(key);
+                if (card && tab && isFramedWidget(tab)) settleStopped(card, tab);
+            }
         }
     });
 }

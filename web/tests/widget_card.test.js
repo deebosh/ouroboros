@@ -7,7 +7,9 @@ import {
     isFramedWidget,
     isRetainedWidget,
     renderWidgetCardControls,
+    renderWidgetFacade,
     syncWidgetCardControls,
+    WIDGET_START_MODE_LABELS,
     WIDGET_START_MODES,
     withWidgetStartMode,
 } from '../modules/widget_card.js';
@@ -142,4 +144,60 @@ test('start-mode payload is a whole-map replace that keeps every other card', ()
     assert.deepEqual(current, { 'game:main': 'retain', 'gone:old': 'manual' });
     assert.deepEqual(withWidgetStartMode(null, 'demo:main', 'manual'), { 'demo:main': 'manual' });
     assert.deepEqual(withWidgetStartMode(['x'], 'demo:main', 'manual'), { 'demo:main': 'manual' });
+});
+
+function fakeMount(children = '') {
+    const mount = {
+        innerHTML: children,
+        firstElementChild: { style: { setProperty() {} } },
+        // A facade or a frame already in the mount is what `querySelector` finds.
+        querySelector: (selector) => (
+            (selector.includes('[data-widget-facade]') && mount.innerHTML.includes('data-widget-facade'))
+            || (selector.includes('iframe') && mount.innerHTML.includes('<iframe'))
+                ? {} : null
+        ),
+    };
+    return mount;
+}
+
+test('the facade shows a glyph icon as given and falls back to the page glyph for an icon NAME', () => {
+    const framed = { kind: 'module', entry: 'widget.js', height: 360 };
+    const emoji = fakeMount();
+    renderWidgetFacade(emoji, tab(framed, { icon: '🎮', title: 'Game' }));
+    assert.match(emoji.innerHTML, /widgets-facade-icon" aria-hidden="true">🎮</);
+    assert.match(emoji.innerHTML, /widgets-facade-title">Game</);
+    // `register_ui_tab` stamps the NAME `extension` when the author gives none;
+    // any identifier-like name (a named-icon set the host does not have) is not
+    // a glyph either — never render the word.
+    for (const name of ['extension', 'gamepad', 'cloud', 'my_icon-2']) {
+        const mount = fakeMount();
+        renderWidgetFacade(mount, tab(framed, { icon: name }));
+        assert.equal(mount.innerHTML.includes(`>${name}<`), false, name);
+        assert.match(mount.innerHTML, /<svg/);
+    }
+    const bare = fakeMount();
+    renderWidgetFacade(bare, tab(framed, { icon: '' }));
+    assert.match(bare.innerHTML, /<svg/);
+    // A symbol character is a glyph.
+    const star = fakeMount();
+    renderWidgetFacade(star, tab(framed, { icon: '★' }));
+    assert.match(star.innerHTML, />★</);
+});
+
+test('the facade is idempotent and never paints over a frame still settling its stop', () => {
+    const framed = { kind: 'module', entry: 'widget.js' };
+    const settling = fakeMount('<iframe class="widgets-frame"></iframe>');
+    renderWidgetFacade(settling, tab(framed));
+    assert.equal(settling.innerHTML, '<iframe class="widgets-frame"></iframe>');
+    const done = fakeMount('<div class="widgets-facade" data-widget-facade>kept</div>');
+    renderWidgetFacade(done, tab(framed));
+    assert.equal(done.innerHTML, '<div class="widgets-facade" data-widget-facade>kept</div>');
+    assert.equal(renderWidgetFacade(null, tab(framed)), undefined);
+});
+
+test('the launch-policy menu speaks to the owner: "Keep running", never the enum name', () => {
+    assert.deepEqual(WIDGET_START_MODE_LABELS, { auto: 'Auto', manual: 'Manual', retain: 'Keep running' });
+    const controls = renderWidgetCardControls(tab({ kind: 'module', entry: 'widget.js' }));
+    assert.doesNotMatch(controls, /\(retain\)/);
+    assert.match(controls, /Keep running</);
 });

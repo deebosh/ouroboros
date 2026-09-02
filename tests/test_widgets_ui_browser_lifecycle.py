@@ -415,12 +415,13 @@ def _click_nav(page, target: str) -> None:
 
 
 @pytest.mark.ui_browser
-def test_ui_smoke_widget_launch_policy_and_ordered_stop(direct_server_with_data):
-    """Widgets lifecycle phase 2 end to end: manual facade until Start, auto
-    mounts on show, ordered dispose with acknowledgement (async hook flushes
-    through the bridge before the frame goes; a hook that never resolves is cut
-    after ~1 s without delaying the page switch), one frame per key across a
-    leave/return race, session-local Stop suppression, owner override over the
+@pytest.mark.parametrize("browser_name", ("chromium", "webkit"))
+def test_ui_smoke_widget_launch_policy_and_ordered_stop(direct_server_with_data, browser_name):
+    """Widgets lifecycle phase 2 end to end, on both engines: manual facade until
+    Start, auto mounts on show, ordered dispose with acknowledgement (async hook
+    flushes through the bridge before the frame goes; a hook that never resolves
+    is cut after ~1 s without delaying the page switch), one frame per key across
+    a leave/return race, session-local Stop suppression, owner override over the
     author default (menu and API), and force-stop + removal on skill disable."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
@@ -447,7 +448,7 @@ def test_ui_smoke_widget_launch_policy_and_ordered_stop(direct_server_with_data)
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = getattr(pw, browser_name).launch(headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             page.add_init_script(_HOST_FETCH_PROBE_SCRIPT)
             try:
@@ -486,10 +487,10 @@ def test_ui_smoke_widget_launch_policy_and_ordered_stop(direct_server_with_data)
                     "node => node.getBoundingClientRect().height"
                 )
                 assert facade_height == 360, facade_height
-                page.screenshot(path=str(evidence_dir / "widget-lifecycle-cards.png"), full_page=True)
+                page.screenshot(path=str(evidence_dir / f"widget-lifecycle-cards-{browser_name}.png"), full_page=True)
                 page.locator(f"{card('manual')} [data-widget-menu-trigger]").click()
                 page.locator(f"{card('manual')} [data-widget-start-mode=\"manual\"]").wait_for(state="visible", timeout=5_000)
-                page.screenshot(path=str(evidence_dir / "widget-lifecycle-menu.png"), full_page=True)
+                page.screenshot(path=str(evidence_dir / f"widget-lifecycle-menu-{browser_name}.png"), full_page=True)
                 page.keyboard.press("Escape")
                 page.locator(f"{card('manual')} [data-widget-start-mode=\"manual\"]").wait_for(state="hidden", timeout=5_000)
 

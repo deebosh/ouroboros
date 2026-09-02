@@ -1,9 +1,12 @@
-/* Declarative `chart` component helpers, pure and DOM-free: the Chart.js config
-   built from the declaration plus the target data, the accessible data table
-   every chart carries, the finite-value coercion, and the dotted-path reader
-   (`getPath`) the whole declarative renderer in widgets.js shares with them.
-   Moved out of widgets.js unchanged (widgets lifecycle phase 3). */
+/* Declarative `chart` and `table` value presentation, pure and DOM-free: the
+   Chart.js config built from the declaration plus the target data, the
+   accessible data table every chart carries, the finite-value coercion, the
+   table cell renderer with its number formatter and http(s)-only link guard,
+   and the dotted-path reader (`getPath`) the whole declarative renderer in
+   widgets.js shares with them. Moved out of widgets.js unchanged (widgets
+   lifecycle phase 3; the table cell helpers in the cycle-A fix round). */
 
+import { normalizeTone } from './ui_helpers.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 
 export function getPath(root, path, fallback = '') {
@@ -71,4 +74,50 @@ export function renderChartDataTable(config, label, expanded) {
     const datasets = config.data.datasets || [];
     const rows = labels.map((item, idx) => `<tr><th scope="row">${escapeHtml(item)}</th>${datasets.map((dataset) => `<td data-label="${escapeHtml(dataset.label)}">${escapeHtml(dataset.data[idx] ?? '—')}</td>`).join('')}</tr>`).join('');
     return `<details class="widget-chart-data"${expanded ? ' open' : ''}><summary>View ${escapeHtml(label)} data</summary><div class="widget-table-wrap"><table class="widget-table"><thead><tr><th>Label</th>${datasets.map((dataset) => `<th>${escapeHtml(dataset.label)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
+
+function safeTableHref(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+        const parsed = new URL(raw, window.location.origin);
+        return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
+    } catch {
+        return '';
+    }
+}
+
+export function formatNumber(value, precision) {
+    if (value === null || value === undefined || value === '') return '—';
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '—';
+    const parsedPrecision = Number(precision);
+    if (precision === undefined || precision === null || precision === '' || !Number.isFinite(parsedPrecision)) {
+        return numeric.toLocaleString(undefined, { maximumFractionDigits: 12 });
+    }
+    const digits = Math.max(0, Math.min(12, parsedPrecision));
+    return numeric.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+export function renderTableCell(row, column) {
+    const presentation = String(column.presentation || column.format || 'plain');
+    const raw = getPath(row, column.path, '');
+    if (presentation === 'number') {
+        const rendered = formatNumber(raw, column.precision);
+        return `${escapeHtml(rendered)}${rendered !== '—' && column.unit ? ` ${escapeHtml(column.unit)}` : ''}`;
+    }
+    if (presentation === 'status') {
+        const label = raw && typeof raw === 'object' ? (raw.label ?? raw.value ?? raw.status ?? '') : raw;
+        const toneValue = raw && typeof raw === 'object' ? raw.tone : getPath(row, column.tone_path || '', 'muted');
+        const tone = normalizeTone(toneValue);
+        return `<span class="widget-table-status" data-tone="${escapeHtml(tone)}">${escapeHtml(label || '—')}</span>`;
+    }
+    if (presentation === 'link') {
+        const rawHref = getPath(row, column.href_path || column.path, '');
+        const href = safeTableHref(rawHref);
+        const label = column.label_path ? getPath(row, column.label_path, rawHref) : raw;
+        if (!href) return escapeHtml(label || rawHref || '—');
+        return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || href)}</a>`;
+    }
+    return escapeHtml(raw ?? '');
 }

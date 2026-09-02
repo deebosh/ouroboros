@@ -20,11 +20,12 @@ const KIND_DEFAULT_START = { declarative: 'auto', module: 'manual', iframe: 'man
 export const WIDGET_START_MODE_LABELS = {
     auto: 'Auto',
     manual: 'Manual',
-    retain: 'Keep running (retain)',
+    retain: 'Keep running',
 };
-// `register_ui_tab` stamps this icon NAME when the author gives none; the host
-// has no named-icon set, so the facade falls back to the page's own glyph.
-const DEFAULT_TAB_ICON = 'extension';
+// `tab.icon` is a glyph — an emoji or a symbol character. An identifier-like
+// name (the `extension` default `register_ui_tab` stamps, or a named-icon set
+// the host does not have) is not one; the facade shows the page's glyph instead.
+const ICON_NAME = /^[a-z][a-z0-9_-]*$/i;
 
 export function isFramedWidget(tab) {
     const kind = tab?.render?.kind;
@@ -133,13 +134,14 @@ export function syncWidgetCardControls(card, state, mode = '') {
 /**
  * The stopped card's body: icon + title at the declared frame height (or the
  * 320 px floor — an auto-height module grows after Start; a known jump).
- * Idempotent: an existing facade is left alone.
+ * Idempotent: an existing facade is left alone, and so is a frame still in the
+ * mount (a stop awaiting its acknowledgement keeps its iframe there).
  */
 export function renderWidgetFacade(mount, tab) {
-    if (!mount || mount.querySelector('[data-widget-facade]')) return;
+    if (!mount || mount.querySelector('[data-widget-facade], iframe')) return;
     const title = tab.title || tab.tab_id || tab.skill;
     const icon = String(tab.icon || '').trim();
-    const glyph = !icon || icon === DEFAULT_TAB_ICON ? PAGE_ICONS.widgets : escapeHtml(icon);
+    const glyph = !icon || ICON_NAME.test(icon) ? PAGE_ICONS.widgets : escapeHtml(icon);
     mount.innerHTML = `<div class="widgets-facade" data-widget-facade>
         <span class="widgets-facade-icon" aria-hidden="true">${glyph}</span>
         <strong class="widgets-facade-title">${escapeHtml(title)}</strong>
@@ -162,8 +164,13 @@ export function bindWidgetCardMenus(list, onSelectMode) {
         list.querySelectorAll('.skills-card-menu').forEach((menu) => {
             if (menu === exceptMenu) return;
             const popover = menu.querySelector('.skills-card-menu-dialog');
+            const trigger = menu.querySelector('[data-widget-menu-trigger]');
+            // Focus goes back to the trigger when it was inside the closing menu
+            // (Chromium does this for a <dialog>; WebKit does not).
+            const hadFocus = Boolean(popover?.open && popover.contains(document.activeElement));
             if (popover?.open) popover.close();
-            menu.querySelector('[data-widget-menu-trigger]')?.setAttribute('aria-expanded', 'false');
+            trigger?.setAttribute('aria-expanded', 'false');
+            if (hadFocus) trigger?.focus({ preventScroll: true });
         });
     };
     list.addEventListener('click', (event) => {

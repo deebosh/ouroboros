@@ -117,7 +117,9 @@ def test_widgets_escape_and_sanitize_untrusted_content():
     )
     assert "escapeHtml(JSON.stringify(value, null, 2))" in source
     assert "renderTableCell(row, c)" in source
-    assert "function safeTableHref" in source
+    # The table cell renderer and its http(s)-only link guard moved to
+    # widget_chart.js (cycle-A fix round, ratchet room); the guard still exists.
+    assert "function safeTableHref" in _read("web/modules/widget_chart.js")
 
 
 def test_widgets_media_sources_are_constrained_to_extension_routes_or_data_urls():
@@ -168,16 +170,23 @@ def test_widgets_keep_iframe_sandbox_locked_down():
     1. The legacy iframe path still uses the empty sandbox.
     2. The module iframe path adds ``allow-scripts`` but never adds
        ``allow-same-origin`` (the only token that would re-expose
-       parent storage).
+       parent storage). Since the cycle-A fix round the module frame is a
+       created ``<iframe>`` whose document is assigned through the ``srcdoc``
+       PROPERTY (no attribute-escaping round-trip of a module-sized payload)
+       and whose sandbox is set as the one token ``allow-scripts``.
     """
     source = _framed_widget_sources()
     assert 'sandbox=""' in source
     # ``allow-scripts`` is now legitimately present, but only inside the
     # ``kind === 'module'`` branch. The dangerous combined sandbox token
-    # must never appear in an actual iframe attribute.
-    assert 'sandbox="allow-scripts"' in source
+    # must never appear in an actual iframe attribute — nor, since the
+    # property form, anywhere in the framed sources at all.
+    assert "iframe.setAttribute('sandbox', 'allow-scripts');" in source
+    assert "iframe.srcdoc = srcdoc;" in source
+    assert 'srcdoc="' not in source
     assert 'sandbox="allow-scripts allow-same-origin"' not in source
     assert 'sandbox="allow-scripts allow-forms allow-same-origin"' not in source
+    assert "allow-same-origin" not in source
     assert "render.kind === 'module'" in source
     # Verify the module iframe carries a CSP that does NOT grant network
     # access directly. The parent injects a postMessage fetch bridge instead,
@@ -262,6 +271,24 @@ def test_widgets_framed_dispose_is_ordered_and_acknowledged():
     assert "if (settling) await settling;" in page
     assert "await widgetDisposing.get(key);" in page
     assert "return Promise.allSettled(Array.from(widgetDisposing.values()));" in page
+    # Cycle A, CA-1: a CHANGED card whose frame runs (revision / render change)
+    # follows the removed-card shape — the old <article> stands, marked and
+    # `stopping`, until the settle; the fresh card is inserted beside it and its
+    # mount waits on the same settle promise. Never `replaceWith` over a
+    # settling frame.
+    retire = page.split("function retireCard(card, settling) {", 1)[1].split("function patchWidgetCards", 1)[0]
+    assert "card.setAttribute('data-widget-removed', '');" in retire
+    assert "syncWidgetCardControls(card, 'stopping');" in retire
+    assert "settling.then(() => card.remove());" in retire
+    changed_branch = page.split("for (const tab of nextTabs) {", 1)[1].split("function mountTrackedTab", 1)[0]
+    assert "const settling = disposeWidgetByKey(key);" in changed_branch
+    assert "else if (!settling) card.replaceWith(fresh);" in changed_branch
+    assert "card.after(fresh);" in changed_branch
+    assert "retireCard(card, settling);" in changed_branch
+    # CA-3: one mount in flight per key — a second request joins the first.
+    assert "const widgetMounting = new Map();" in page
+    assert "if (inFlight) return inFlight;" in page
+    assert "if (!isCurrent() || !card.isConnected) return;" in page
 
 
 def test_widgets_launch_policy_controls_and_stop_suppression():
@@ -301,10 +328,27 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     assert '<dialog class="skills-card-menu-dialog" role="menu"' in card
     assert 'class="skills-card-menu-trigger"' in card
     assert '<span class="ui-status" data-tone="neutral" data-widget-status hidden>' in card
+    # Owner-facing menu wording, not the enum name (CA-11).
+    assert "retain: 'Keep running'," in card
+    assert "(retain)" not in card
+    # Facade: never over a settling frame (CA-13); `icon` is a glyph — an
+    # identifier-like NAME (the `extension` default) falls back to the page glyph (CA-15).
+    assert "mount.querySelector('[data-widget-facade], iframe')" in card
+    assert "const ICON_NAME = /^[a-z][a-z0-9_-]*$/i;" in card
     assert "setFrameHeight(mount.firstElementChild, frameHeight(tab.render || {}));" in card
+    # Closing a menu hands focus back to its trigger when it was inside (CA-16, WebKit).
+    assert "trigger?.focus({ preventScroll: true });" in card
     assert ".widgets-facade {" in style
     assert "height: var(--widget-frame-height, 320px);" in style.split(".widgets-facade {", 1)[1].split("}", 1)[0]
     assert ".widgets-card-controls .ui-status[data-tone]::before" in style
+    # An open policy menu is never painted under a sibling card (CA-14).
+    assert ".widgets-card:has(.skills-card-menu-dialog[open]) {" in style
+    # Widgets is not a migrated surface (DESIGN.md section 8): the phase-2/3 card
+    # controls / menu / facade rules keep the surface's literals, not type tokens;
+    # the shared `.ui-status[data-tone]` pair (section 4) is the one exception.
+    controls_css = style.split("/* Framed-card head controls", 1)[1].split(".widgets-card-source {", 1)[0]
+    for token in ("var(--type-", "var(--line-", "var(--text-meta)"):
+        assert token not in controls_css, token
     # Page: policy gate, suppression, owner controls, whole-map persistence.
     assert "const stoppedByOwner = new Set();" in page
     assert "effectiveStartMode(tab, uiPreferences) !== 'manual'" in page
@@ -314,6 +358,11 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     assert "stoppedByOwner.delete(widgetKey(tab));" in page
     assert "apiClient.saveUiPreferences({ widget_start_mode: next })" in page
     assert "const next = withWidgetStartMode(current, key, mode);" in page
+    # Launch-policy writes are serialized (AUD-13): the card applies after its write.
+    assert "let startModeWrites = Promise.resolve();" in page
+    assert "startModeWrites = write.catch(() => {});" in page
+    set_mode = page.split("async function setWidgetStartMode(key, mode) {", 1)[1].split("bindWidgetCardMenus", 1)[0]
+    assert set_mode.index("await write;") < set_mode.index("const card = liveCardFor(list, key);")
     assert "bindWidgetCardMenus(list, setWidgetStartMode);" in page
     assert "event.target.closest('[data-widget-power]')" in page
     # Force-stop + eviction on a vanished card; the frame keeps its ack window.
@@ -321,7 +370,17 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     assert "disposeWidgetByKey(key)" in removed_branch
     assert "widgetSessionState.delete(key);" in removed_branch
     assert "stoppedByOwner.delete(key);" in removed_branch
-    assert "card.setAttribute('data-widget-removed', '');" in removed_branch
+    assert "if (settling) retireCard(card, settling);" in removed_branch
+    # A stopped framed card ends with its facade and Start (CA-13): on leave for
+    # every card not kept running, and while a card starts (idempotent facade).
+    page_shown_branch = page.split("window.addEventListener('ouro:page-shown'", 1)[1]
+    assert "if (card && tab && isFramedWidget(tab)) settleStopped(card, tab);" in page_shown_branch
+    start_widget = page.split("async function startWidget(card, tab, isCurrent) {", 1)[1].split("async function settleStopped", 1)[0]
+    assert "if (isFramedWidget(tab)) renderWidgetFacade(mount, tab);" in start_widget
+    assert "else if (isFramedWidget(tab)) await settleStopped(card, tab);" in start_widget
+    assert "if (widgetDisposers.has(key) || widgetMounting.has(key) || !card.isConnected) return;" in page
+    # Hidden reconcile force-stops vanished kept frames even mid-sync (CA-18).
+    assert "if (!widgetsVisible) stopVanishedRetainedWidgets();" in page
     assert "localStorage" not in _framed_widget_sources()
 
 
@@ -390,7 +449,9 @@ def test_widgets_cards_do_not_stretch_to_row_height():
     card_block = css.split("height: var(--masonry-h, auto);", 1)[1].split(".widgets-card {", 1)[1].split("}", 1)[0]
     assert "width: var(--masonry-w, auto);" in card_block
     assert "transform: translate(var(--masonry-x, 0px), var(--masonry-y, 0px));" in card_block
-    assert ".widgets-card-span-2" in css
+    # `widgets-card-span-2` is the JS span signal only (masonry reads the class);
+    # the inert `grid-column: span 2` rules from the grid era are gone (CA-9).
+    assert ".widgets-card-span-2" not in css
 
 
 def test_widget_form_label_is_accessible_heading_fallback():
@@ -504,7 +565,9 @@ def test_widgets_schema_v1_composition_uses_stable_tree_keys():
 def test_widgets_forms_charts_and_kanban_keep_host_owned_contracts():
     """The chart helpers (config, finite-value coercion, accessible data table)
     and the shared dotted-path reader moved unchanged into
-    ``widget_chart.js`` (phase 3 made room in widgets.js)."""
+    ``widget_chart.js`` (phase 3 made room in widgets.js); the table cell
+    renderer with its number formatter and http(s)-only link guard followed in
+    the cycle-A fix round."""
     source = _widgets_js()
     helper = _read("web/modules/ui_helpers.js")
     chart = _read("web/modules/widget_chart.js")
@@ -514,6 +577,9 @@ def test_widgets_forms_charts_and_kanban_keep_host_owned_contracts():
     assert "pendingActions.has(key)" in source
     assert "from './widget_chart.js'" in source
     assert "export function getPath(root, path, fallback = '')" in chart
+    assert "export function formatNumber(value, precision)" in chart
+    assert "export function renderTableCell(row, column)" in chart
+    assert "['http:', 'https:'].includes(parsed.protocol)" in chart
     assert "spanGaps: false" in chart
     assert "export function finiteChartValue" in chart
     assert "data.map(finiteChartValue)" in chart

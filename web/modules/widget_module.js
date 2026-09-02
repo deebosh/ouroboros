@@ -102,8 +102,14 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
         )
         : '';
     const srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"></head><body><div id="root"></div><script>${bridge}</script><script>${resizeBridge}</script><script>${escapeScript(moduleSource)}</script></body></html>`;
-    mount.innerHTML = `<iframe class="widgets-frame" sandbox="allow-scripts" srcdoc="${escapeHtml(srcdoc)}"></iframe>`;
-    const iframe = mount.querySelector('iframe');
+    // The document goes in through the `srcdoc` property (no attribute
+    // escaping round-trip of a module-sized payload); the sandbox stays the
+    // one token `allow-scripts` — nothing that would re-expose the SPA origin.
+    const iframe = document.createElement('iframe');
+    iframe.className = 'widgets-frame';
+    iframe.setAttribute('sandbox', 'allow-scripts');
+    iframe.srcdoc = srcdoc;
+    mount.replaceChildren(iframe);
     let appliedHeight = frameHeight(render);
     setFrameHeight(iframe, appliedHeight);
     const pendingRequests = new Map();
