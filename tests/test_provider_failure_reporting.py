@@ -1,8 +1,11 @@
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from ouroboros.loop import _provider_failure_hint
 from ouroboros.loop_llm_call import call_llm_with_retry, classify_llm_exception
-from ouroboros.usage_accounting import PhysicalAttemptContext
+from ouroboros.usage_accounting import PhysicalAttemptContext, UsageAccountingError
 
 
 class _FailingLLM:
@@ -23,12 +26,56 @@ class _SuccessfulLLM:
         return {"content": "ok"}, {"provider": "anthropic", "resolved_model": "anthropic/claude-sonnet-4-6"}
 
 
+class _LengthStoppedLLM:
+    def chat(self, **kwargs):
+        return (
+            {"content": "partial response", "tool_calls": []},
+            {
+                "provider": "fake",
+                "resolved_model": "fake/model",
+                "response_finish_reason": "length",
+            },
+        )
+
+
+class _RetryThenStopLLM:
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return (
+                {"content": "", "tool_calls": []},
+                {"response_finish_reason": None},
+            )
+        return (
+            {"content": "complete", "tool_calls": []},
+            {"response_finish_reason": "stop"},
+        )
+
+
 class _ProviderError(Exception):
     def __init__(self, message, *, status_code=None, code=None):
         super().__init__(message)
         self.status_code = status_code
         if code is not None:
             self.code = code
+
+
+class _RecordingEvents:
+    def __init__(self):
+        self.events = []
+
+    def put(self, event):
+        self.events.append(event)
+
+    def put_nowait(self, event):
+        self.events.append(event)
+
+
+def _main_llm_state_events(events):
+    return [event for event in events.events if event.get("type") == "main_llm_call_state"]
 
 
 def test_call_llm_with_retry_records_last_error(tmp_path):
@@ -55,6 +102,55 @@ def test_call_llm_with_retry_records_last_error(tmp_path):
     assert "invalid_api_key" in usage["_last_llm_error"]
     assert usage["_last_llm_error_kind"] == "auth_error"
     assert usage["_last_llm_retry_same_request"] is False
+
+
+def test_call_llm_with_retry_exposes_attempt_local_response_metadata(tmp_path):
+    usage = {}
+    response_meta = {"stale": True}
+
+    msg, _cost = call_llm_with_retry(
+        _LengthStoppedLLM(),
+        [{"role": "user", "content": "hi"}],
+        "fake/model",
+        None,
+        "medium",
+        1,
+        tmp_path,
+        "task-response-meta",
+        1,
+        None,
+        usage,
+        "task",
+        False,
+        response_meta_out=response_meta,
+    )
+
+    assert msg == {"content": "partial response", "tool_calls": []}
+    assert response_meta == {
+        "finish_reason_present": True,
+        "finish_reason": "length",
+        "tool_call_count": 0,
+    }
+
+
+def test_response_metadata_tracks_the_returned_retry_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr("ouroboros.loop_llm_call.time.sleep", lambda _seconds: None)
+    response_meta = {}
+    llm = _RetryThenStopLLM()
+
+    msg, _cost = call_llm_with_retry(
+        llm, [{"role": "user", "content": "hi"}], "fake/model", None,
+        "medium", 2, tmp_path, "task-response-retry", 1, None, {},
+        "task", False, response_meta_out=response_meta,
+    )
+
+    assert llm.calls == 2
+    assert msg == {"content": "complete", "tool_calls": []}
+    assert response_meta == {
+        "finish_reason_present": True,
+        "finish_reason": "stop",
+        "tool_call_count": 0,
+    }
 
 
 class _OverflowStoppedLLM:
@@ -442,6 +538,135 @@ def test_classify_llm_exception_uses_provider_code_before_429_status():
     assert quota.provider_code == "insufficient_quota"
 
 
+def test_numeric_400_defers_to_size_and_context_semantics():
+    ordinary = classify_llm_exception(
+        _ProviderError("400 bad request", status_code=400, code="400")
+    )
+    output_size = classify_llm_exception(_ProviderError(
+        "max_tokens 65536 exceeds maximum context length 32768",
+        status_code=400,
+        code="400",
+    ))
+    context = classify_llm_exception(_ProviderError(
+        "Prompt is too long for this model context window",
+        status_code=400,
+        code="400",
+    ))
+
+    assert ordinary.kind == "bad_request"
+    assert output_size.kind == "request_too_large"
+    assert context.kind == "context_overflow"
+
+
+def test_meaningful_named_provider_code_keeps_precedence_over_error_text():
+    quota = classify_llm_exception(_ProviderError(
+        "Prompt is too long for this model context window",
+        status_code=400,
+        code="insufficient_quota",
+    ))
+
+    assert quota.kind == "quota_exhausted"
+    assert quota.provider_code == "insufficient_quota"
+
+
+def test_numeric_auth_and_quota_codes_keep_precedence_over_error_text():
+    for code, expected in (
+        ("401", "auth_error"),
+        ("402", "quota_exhausted"),
+        ("403", "auth_error"),
+    ):
+        classified = classify_llm_exception(_ProviderError(
+            "Prompt is too long for this model context window",
+            status_code=int(code),
+            code=code,
+        ))
+
+        assert classified.kind == expected
+        assert classified.provider_code == code
+
+
+def test_later_meaningful_provider_type_wins_over_generic_numeric_code():
+    for provider_type, expected in (
+        ("insufficient_quota", "quota_exhausted"),
+        ("unauthorized", "auth_error"),
+    ):
+        error = _ProviderError(
+            "Prompt is too long for this model context window",
+            status_code=400,
+            code="400",
+        )
+        error.type = provider_type
+
+        classified = classify_llm_exception(error)
+
+        assert classified.kind == expected
+        assert classified.provider_code == provider_type
+
+
+def test_generic_bad_request_wrappers_do_not_hide_400_size_or_context_semantics():
+    for provider_type in ("BadRequestError", "invalid_request_error"):
+        for message, expected in (
+            ("Prompt is too long for this model context window", "context_overflow"),
+            ("request body too large", "request_too_large"),
+        ):
+            error = _ProviderError(message, status_code=400, code="400")
+            error.type = provider_type
+
+            classified = classify_llm_exception(error)
+
+            assert classified.kind == expected
+            assert classified.provider_code == "400"
+
+
+def test_structured_context_code_stays_ahead_of_later_named_type():
+    error = _ProviderError(
+        "quota-looking transport detail",
+        status_code=400,
+        code="context_length_exceeded",
+    )
+    error.type = "insufficient_quota"
+
+    classified = classify_llm_exception(error)
+
+    assert classified.kind == "context_overflow"
+    assert classified.provider_code == "context_length_exceeded"
+
+
+def test_specific_named_bad_request_code_keeps_typed_precedence():
+    error = _ProviderError(
+        "Prompt is too long for this model context window",
+        status_code=400,
+        code="400",
+    )
+    error.type = "unsupported_parameter"
+
+    classified = classify_llm_exception(error)
+
+    assert classified.kind == "bad_request"
+    assert classified.provider_code == "unsupported_parameter"
+
+
+def test_non_http_numeric_provider_codes_do_not_inherit_the_400_marker():
+    for code in ("4001", "1400"):
+        context = classify_llm_exception(_ProviderError(
+            "Prompt is too long for this model context window",
+            status_code=400,
+            code=code,
+        ))
+        ordinary = classify_llm_exception(_ProviderError(
+            "ordinary bad request",
+            status_code=400,
+            code=code,
+        ))
+
+        assert context.kind == "context_overflow"
+        assert context.retry_same_request is False
+        assert context.provider_code == code
+        assert ordinary.kind == "bad_request"
+        assert ordinary.retry_same_request is False
+        assert ordinary.provider_code == code
+
+
 def test_classify_llm_exception_keeps_429_token_rate_retryable():
     rate = classify_llm_exception(
         _ProviderError("429 too many tokens per minute", status_code=429)
@@ -459,6 +684,46 @@ def test_classify_llm_exception_keeps_text_only_token_rate_retryable():
     assert rate.retry_same_request is True
     assert plain_429.kind == "provider_transient"
     assert plain_429.retry_same_request is True
+
+
+def test_dispatched_unknown_outcome_is_not_retried(tmp_path):
+    usage = {}
+
+    class _AmbiguousLLM:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            exc = TimeoutError("socket ended without a terminal response")
+            exc.physical_attempt_capture = SimpleNamespace(
+                state="unresolved", provider_status_code=None,
+                provider_code="", provider_error_type="TimeoutError",
+            )
+            raise exc
+
+    llm = _AmbiguousLLM()
+    msg, _cost = call_llm_with_retry(
+        llm, [{"role": "user", "content": "hi"}], "openai/gpt-5.5",
+        None, "medium", 3, tmp_path, "task-unknown", 1, None, usage,
+        "task", False,
+    )
+
+    assert msg is None
+    assert llm.calls == 1
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert usage["_last_llm_retry_same_request"] is False
+
+
+def test_explicit_terminal_5xx_remains_retryable():
+    for status in (500, 502, 503, 504, 599):
+        exc = _ProviderError("typed provider failure", status_code=status)
+        exc.physical_attempt_capture = SimpleNamespace(
+            state="unresolved", provider_status_code=status,
+            provider_code="", provider_error_type="APIStatusError",
+        )
+        result = classify_llm_exception(exc)
+        assert result.kind == "provider_transient"
+        assert result.retry_same_request is True
 
 
 def test_provider_failure_hint_formats_detail():
@@ -511,3 +776,137 @@ def test_call_llm_with_retry_accumulates_live_catalog_estimated_cost(tmp_path):
     events = [event_queue.get_nowait() for _ in range(event_queue.qsize())]
     usage_event = next(evt for evt in events if evt.get("type") == "llm_usage")
     assert usage_event["cost_estimated"] is True
+
+
+@pytest.mark.parametrize(
+    ("outcome", "terminal_phase"),
+    [
+        ("success", "finished"),
+        ("empty", "failed"),
+        ("exception", "failed"),
+        ("usage_error", "failed"),
+    ],
+)
+def test_main_llm_call_state_covers_every_terminal_path(
+    outcome, terminal_phase, tmp_path,
+):
+    events = _RecordingEvents()
+
+    class _OutcomeLLM:
+        def chat(self, **_kwargs):
+            started = _main_llm_state_events(events)
+            assert len(started) == 1
+            assert started[0]["phase"] == "started"
+            assert started[0]["task_attempt"] == 4
+            if outcome == "usage_error":
+                raise UsageAccountingError("ledger unavailable")
+            if outcome == "exception":
+                raise RuntimeError("400 bad request")
+            if outcome == "empty":
+                return {"content": ""}, {}
+            return {"content": "ok"}, {}
+
+    kwargs = dict(
+        llm=_OutcomeLLM(),
+        messages=[{"role": "user", "content": "hi"}],
+        model="openai/gpt-5.5",
+        tools=None,
+        effort="medium",
+        max_retries=1,
+        drive_logs=tmp_path,
+        task_id="task-lease",
+        round_idx=3,
+        event_queue=events,
+        accumulated_usage={},
+        task_type="task",
+        task_attempt=4,
+        attempt_cap=1,
+    )
+    if outcome == "usage_error":
+        with pytest.raises(UsageAccountingError, match="ledger unavailable"):
+            call_llm_with_retry(**kwargs)
+    else:
+        call_llm_with_retry(**kwargs)
+
+    state_events = _main_llm_state_events(events)
+    assert [event["phase"] for event in state_events] == ["started", terminal_phase]
+    identity = {
+        key: state_events[0][key]
+        for key in (
+            "task_id", "task_attempt", "llm_call_id", "execution_id",
+            "round_id", "call_attempt",
+        )
+    }
+    assert identity["task_id"] == "task-lease"
+    assert identity["task_attempt"] == 4
+    assert identity["call_attempt"] == 1
+    assert all(state_events[1].get(key) == value for key, value in identity.items())
+
+
+def test_main_llm_retry_closes_old_lease_before_starting_the_next(
+    monkeypatch, tmp_path,
+):
+    from ouroboros import loop_llm_call as call_module
+
+    events = _RecordingEvents()
+
+    class _RetryLLM:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {"content": ""}, {}
+            return {"content": "ok"}, {}
+
+    def _no_sleep(_seconds, _deadline):
+        assert [event["phase"] for event in _main_llm_state_events(events)] == [
+            "started", "failed",
+        ]
+        return True
+
+    monkeypatch.setattr(call_module, "_sleep_within_deadline", _no_sleep)
+    call_llm_with_retry(
+        _RetryLLM(),
+        [{"role": "user", "content": "hi"}],
+        "openai/gpt-5.5",
+        None,
+        "medium",
+        2,
+        tmp_path,
+        "task-retry-lease",
+        1,
+        events,
+        {},
+        "task",
+        task_attempt=2,
+    )
+
+    state_events = _main_llm_state_events(events)
+    assert [event["phase"] for event in state_events] == [
+        "started", "failed", "started", "finished",
+    ]
+    assert [event["call_attempt"] for event in state_events] == [1, 1, 2, 2]
+    assert state_events[0]["llm_call_id"] == state_events[1]["llm_call_id"]
+    assert state_events[2]["llm_call_id"] == state_events[3]["llm_call_id"]
+    assert state_events[0]["llm_call_id"] != state_events[2]["llm_call_id"]
+
+
+def test_main_llm_call_state_reads_the_loop_attempt_carrier(tmp_path):
+    events = _RecordingEvents()
+    call_llm_with_retry(
+        _SuccessfulLLM(),
+        [{"role": "user", "content": "hi"}],
+        "openai/gpt-5.5",
+        None,
+        "medium",
+        1,
+        tmp_path,
+        "task-loop-carrier",
+        1,
+        events,
+        {"_task_attempt": 7},
+        "task",
+    )
+    state_events = _main_llm_state_events(events)
+    assert [event["task_attempt"] for event in state_events] == [7, 7]

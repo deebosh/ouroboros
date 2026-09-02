@@ -8,7 +8,6 @@ store, transport route, or review policy of its own.
 
 from __future__ import annotations
 
-import dataclasses
 from hashlib import sha256
 import json
 import pathlib
@@ -79,6 +78,89 @@ def authority_wave(drive_root: Any, task_id: str, hot_wave: Optional[dict]) -> O
     return {**exact, **hot_wave, "findings": list(exact.get("findings") or [])}
 
 
+def in_flight_resume_inputs(
+    existing: Dict[str, Any], state: Dict[str, Any], state_root: pathlib.Path,
+    task_id: str, configured_slots: list,
+) -> Dict[str, Any]:
+    """Recover the exact physical set of one already-paid plan-review cycle."""
+    from ouroboros.tools.plan_review_runtime import plan_reviewer_config_fingerprint
+
+    stored_roster = str(existing.get("reviewer_config_fingerprint") or "")
+    if stored_roster and stored_roster != plan_reviewer_config_fingerprint(configured_slots):
+        return {"error": (
+            "The reviewer roster changed while the prior paid cycle is still in flight. "
+            "Refusing to mix rosters or start a second panel before that cycle settles."
+        )}
+    previous = None
+    previous_fingerprint = str(existing.get("previous_fingerprint") or "")
+    if previous_fingerprint:
+        from ouroboros.task_results import plan_review_wave
+
+        previous = plan_review_wave(state, previous_fingerprint)
+        if previous is not None:
+            try:
+                previous = authority_wave(state_root, task_id, previous)
+            except (OSError, ValueError, json.JSONDecodeError):
+                return {"error": (
+                    "Prior exact plan-review authority is unreadable; "
+                    "in-flight reconciliation is refused."
+                )}
+    actor_rows = [row for row in (existing.get("actors") or []) if isinstance(row, dict)]
+    configured_ids = {str(getattr(slot, "slot_id", "") or "") for slot in configured_slots}
+    actor_ids = [str(row.get("slot_id") or "") for row in actor_rows]
+    if not actor_rows or any(not slot_id for slot_id in actor_ids) \
+            or len(actor_ids) != len(set(actor_ids)) or set(actor_ids) != configured_ids:
+        return {"error": (
+            "The prior paid cycle's exact reviewer rows do not match its frozen roster. "
+            "Refusing to guess which physical calls own custody."
+        )}
+    dispatched_ids = {
+        str(row.get("slot_id") or "") for row in actor_rows
+        if str(row.get("operation_id") or "")
+    }
+    if not dispatched_ids or any(
+        (str(row.get("operation_state") or "") == "in_flight"
+         or bool(row.get("late_result_pending")))
+        and str(row.get("slot_id") or "") not in dispatched_ids
+        for row in actor_rows
+    ):
+        return {"error": (
+            "The prior paid cycle does not contain an exact physical-dispatch set. "
+            "Refusing to infer custody from current reviewer health."
+        )}
+    frozen_rows = []
+    for row in actor_rows:
+        if str(row.get("slot_id") or "") in dispatched_ids:
+            continue
+        if bool(row.get("ok")) or not str(row.get("error") or ""):
+            return {"error": (
+                "A prior reviewer row lacks physical-dispatch custody and is not a frozen "
+                "$0 refusal. Reconciliation is refused."
+            )}
+        frozen = dict(row)
+        frozen.setdefault("text", "")
+        frozen.setdefault("request_model", str(row.get("model") or ""))
+        frozen_rows.append(frozen)
+    health_evidence = {
+        str(row.get("slot") or ""): {
+            "failure_code": str(row.get("code") or ""),
+            "reset_at": str(row.get("reset_at") or ""),
+        }
+        for row in (existing.get("health_epoch") or []) if isinstance(row, dict)
+        and str(row.get("slot") or "")
+    }
+    cycle_index = int(existing.get("cycle_index") or state.get("cycles_paid") or 1)
+    return {
+        "previous": previous,
+        "cycle_index": cycle_index,
+        "retry_key": str(existing.get("retry_key") or "")
+        or f"plan_review:{existing.get('request_fingerprint')}:{cycle_index}",
+        "dispatched_slot_ids": sorted(dispatched_ids),
+        "frozen_rows": frozen_rows,
+        "health_evidence": health_evidence,
+    }
+
+
 def hot_index_wave(wave: dict, *, page_size: int) -> dict:
     """Keep a bounded per-slot page; exact authority stays in ``wave_artifact``."""
     findings = [dict(row) for row in wave.get("findings") or [] if isinstance(row, dict)]
@@ -101,11 +183,11 @@ def hot_index_wave(wave: dict, *, page_size: int) -> dict:
 def continuation_state(
     state_root: pathlib.Path, task_id: str, previous: Optional[dict], slots: List[Any],
     manifest: dict, *, user_content: str,
-) -> tuple[List[Any], Dict[str, List[Dict[str, Any]]], Dict[str, str], str]:
-    """Resolve one evidence continuation and its fail-closed reason."""
+) -> tuple[List[Any], Dict[str, List[Dict[str, Any]]], Dict[str, str], str, str]:
+    """Resolve one evidence continuation: fail-closed reason + fresh-restart cause."""
     if not manifest.get("reviewer_requested"):
-        return slots, {}, {}, ""
-    rebound, messages, threads, error = continuation_inputs(
+        return slots, {}, {}, "", ""
+    rebound, messages, threads, error, restarted = continuation_inputs(
         state_root, task_id, previous, slots, user_content=user_content,
     )
     requested = {str(item) for item in manifest.get("reviewer_requested") or []}
@@ -118,7 +200,7 @@ def continuation_state(
             f"{item.get('locator')}={item.get('reason')}" for item in missing
         ) if missing else ""
     )
-    return rebound, messages, threads, str(reason or "")
+    return rebound, messages, threads, str(reason or ""), restarted
 
 
 def record_exact_wave(
@@ -175,46 +257,73 @@ def slot_row(slot: Any) -> dict:
     }
 
 
+def continuation_restart_delta(cause: str) -> dict:
+    """The existing-style disclosure of one continuation that restarted fresh."""
+    return {
+        "kind": "capability_delta",
+        "requested": "continuation of prior thread",
+        "effective": "fresh session, full packet",
+        "reason": str(cause or ""),
+    }
+
+
+def attach_continuation_restart_delta(rows: List[dict], cause: str) -> None:
+    """Disclose one fresh continuation restart on every slot row (no-op when
+    the continuation held). Thread memory was lost and the wave re-dispatched
+    fresh with the full packet: disclosed per slot through the existing
+    capability-delta lane."""
+    if not cause:
+        return
+    for row in rows:
+        row["capability_delta"] = [
+            *(row.get("capability_delta") or []),
+            continuation_restart_delta(cause),
+        ]
+
+
 def continuation_inputs(
     state_root: pathlib.Path, task_id: str, previous: Optional[dict], slots: List[Any],
     *, user_content: str,
-) -> tuple[List[Any], Dict[str, List[Dict[str, Any]]], Dict[str, str], Optional[str]]:
+) -> tuple[List[Any], Dict[str, List[Dict[str, Any]]], Dict[str, str], Optional[str], str]:
+    """Rebuild one evidence continuation from the prior exact wave.
+
+    Fail-closed ONLY for the dispositions custody chain (a missing or unreadable
+    prior exact wave). Thread-memory misses — a changed reviewer roster, a prior
+    slot receipt or thread that is gone, an invalid prior API transcript —
+    degrade to a FRESH dispatch instead: the packet is self-contained on every
+    send (prior findings, dispositions and spec delta already ride it), so a
+    lost vendor thread is a cache miss, not a validity event. The fifth element
+    names the typed cause of such a restart ('' when continuation held); slots
+    are returned exactly as currently configured, never rebound to prior rows."""
     if not previous:
-        return slots, {}, {}, "prior_exact_wave_missing"
+        return slots, {}, {}, "prior_exact_wave_missing", ""
     ref = previous.get("wave_artifact") if isinstance(previous.get("wave_artifact"), dict) else {}
     if not ref:
-        return slots, {}, {}, "prior_exact_wave_ref_missing"
+        return slots, {}, {}, "prior_exact_wave_ref_missing", ""
     try:
         exact = read_wave(state_root, task_id, ref)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return slots, {}, {}, f"prior_exact_wave_unreadable:{type(exc).__name__}"
-    prior_slots = [r for r in exact.get("slots") or [] if isinstance(r, dict)]
-    if [slot_row(slot) for slot in slots] != prior_slots:
-        return slots, {}, {}, "prior_reviewer_assignment_set_changed"
-    configs = {str(r.get("slot_id") or ""): r for r in prior_slots}
-    outputs = {str(r.get("slot_id") or ""): r for r in exact.get("reviewer_outputs") or [] if isinstance(r, dict)}
-    rebound, slot_messages, session_threads = [], {}, {}
-    from ouroboros.review_execution import ReviewRouteKind
+        return slots, {}, {}, f"prior_exact_wave_unreadable:{type(exc).__name__}", ""
 
-    for current in slots:
-        sid = str(getattr(current, "slot_id", "") or "")
-        config, output = configs.get(sid), outputs.get(sid)
-        if not config or not output:
-            return slots, {}, {}, f"prior_slot_receipt_missing:{sid}"
-        route = ReviewRouteKind(str(config.get("route") or "api_chat"))
-        rebound.append(dataclasses.replace(
-            current, model=str(config.get("model") or ""), effort=str(config.get("effort") or ""),
-            route=route, session_target=str(config.get("session_target") or ""),
-            session_profile=str(config.get("session_profile") or ""),
-        ))
-        if route is ReviewRouteKind.AGENT_SESSION:
+    def fresh(cause: str) -> tuple[List[Any], Dict[str, List[Dict[str, Any]]], Dict[str, str], Optional[str], str]:
+        return slots, {}, {}, None, cause
+
+    current_rows = [slot_row(slot) for slot in slots]
+    if current_rows != [r for r in exact.get("slots") or [] if isinstance(r, dict)]:
+        return fresh("prior_reviewer_assignment_set_changed")
+    outputs = {str(r.get("slot_id") or ""): r for r in exact.get("reviewer_outputs") or [] if isinstance(r, dict)}
+    slot_messages: Dict[str, List[Dict[str, Any]]] = {}
+    session_threads: Dict[str, str] = {}
+    for config in current_rows:
+        sid = str(config.get("slot_id") or "")
+        output = outputs.get(sid)
+        if not output:
+            return fresh(f"prior_slot_receipt_missing:{sid}")
+        if str(config.get("route") or "") == "agent_session":
             thread_id = str(output.get("review_thread_id") or "")
             if not thread_id:
-                return slots, {}, {}, f"prior_review_thread_missing:{sid}"
+                return fresh(f"prior_review_thread_missing:{sid}")
             session_threads[sid] = thread_id
-            rebound[-1] = dataclasses.replace(
-                rebound[-1], session_profile=str(output.get("applied_profile") or ""),
-            )
         else:
             prior_messages = output.get("request_messages")
             if (
@@ -227,13 +336,13 @@ def continuation_inputs(
                     for row in prior_messages
                 )
             ):
-                return slots, {}, {}, f"prior_api_transcript_invalid:{sid}"
+                return fresh(f"prior_api_transcript_invalid:{sid}")
             slot_messages[sid] = [
                 *[dict(row) for row in prior_messages],
                 {"role": "assistant", "content": str(output.get("text") or "")},
                 {"role": "user", "content": user_content},
             ]
-    return rebound, slot_messages, session_threads, None
+    return slots, slot_messages, session_threads, None, ""
 
 
 def exact_wave(

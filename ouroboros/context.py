@@ -147,18 +147,18 @@ def build_user_content(task: Dict[str, Any]) -> Any:
                 f"Source: {source}.\n"
                 f"Resolved review enforcement: {review_enforcement}.\n"
                 "First call plan_task with the goal, the plan prose and a typed spec (in_scope, non_goals, "
-                "acceptance_claims, invariants, decisions, deferred, affected_resources, evidence). Then "
-                "follow OUROBOROS_REVIEW_ENFORCEMENT. Under blocking, continue analysis, evidence "
-                "gathering, and non-mutating preparation while review is open, but begin implementation "
-                "only after review closes or a real task-wide rail fires. Under advisory, you may proceed "
-                "by judgment with explicit disclosure. When the work decomposes into independent parts, "
-                "fan out subagents within the configured caps and reconcile them. Parallel children each "
-                "work from your base snapshot and cannot see each other's edits; their patches integrate "
-                "independently, so two children writing the same region of the same file conflict at "
-                "integration — expected mechanics, not a failure. Give children disjoint write regions, "
-                "or explicitly plan the parent-synthesis step that resolves the expected overlap. "
-                "Planning or reviewer "
-                "unavailability must not replace useful work with a terminal planning error.\n"
+                "acceptance_claims, invariants, decisions, deferred, affected_resources, evidence). Then follow "
+                "OUROBOROS_REVIEW_ENFORCEMENT. Under blocking, continue analysis, evidence gathering, and "
+                "non-mutating preparation while review is open, but begin implementation only after review closes "
+                "or a real task-wide rail fires. Under advisory, you may proceed by judgment with explicit "
+                "disclosure. When the work decomposes into independent parts, fan out subagents within the "
+                "configured caps and reconcile them. State the chosen execution shape explicitly in the plan's "
+                "decisions or acceptance claims — delegation required, optional, or intentionally not used — so "
+                "reviewers can judge it. Parallel children each work from your base snapshot and cannot see each "
+                "other's edits; their patches integrate independently, so two children writing the same region of "
+                "the same file conflict at integration — expected mechanics, not a failure. Give children disjoint "
+                "write regions, or explicitly plan the parent-synthesis step that resolves the expected overlap. "
+                "Planning or reviewer unavailability must not replace useful work with a terminal planning error.\n"
                 "[/SWARM_INITIATIVE]\n\n"
             )
         text = plan_notice + str(text or "")
@@ -601,25 +601,15 @@ def _delegation_capability_fact() -> Optional[Dict[str, Any]]:
 
 def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
     """Exact active task/origin/plan authority, before route-specific fitting."""
-    projection: Dict[str, Any] = {}
-    if isinstance(task.get("task_contract"), dict):
-        projection["task_contract"] = task.get("task_contract")
-    origin_ref, origin_text = task.get("origin_message_ref"), task.get("origin_message_text")
-    if isinstance(origin_ref, dict) and origin_ref:
-        projection["task_authority_origin"] = {
-            "ref": dict(origin_ref),
-            **({"text": origin_text} if isinstance(origin_text, str) and origin_text else {}),
-        }
-    if isinstance(task.get("predecessor_authority"), dict):
-        projection["predecessor_authority"] = task.get("predecessor_authority")
-    if isinstance(task.get("authority_historical_gaps"), list):
-        projection["authority_historical_gaps"] = task.get("authority_historical_gaps")
-    task_id = str(task.get("id") or "").strip()
-    if not task_id:
-        return projection
     canonical_root = pathlib.Path(
         task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or env.drive_root
     )
+    from ouroboros.main_context_authority import project_main_task_authority
+
+    projection = project_main_task_authority(task, drive_root=canonical_root)
+    task_id = str(task.get("id") or "").strip()
+    if not task_id:
+        return projection
     source = {
         "tool": "get_task_result",
         "arguments": {"task_id": task_id, "include_authority": True},
@@ -935,8 +925,8 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
                 "\n\n## Task-tree coordination ledger (shared swarm blackboard)\n\n"
                 "Shared across this task tree via tree_note/tree_read. Before fanning out "
                 "INTERDEPENDENT children, publish the shared frame (contract/decision/fact); "
-                "children build against it and raise blocker/question/interface_contract beacons "
-                "for attention (interface_contract when the shared seam/contract must change).\n\n"
+                "children build against it and raise blocker/question/interface_contract or exact-hash "
+                "review_requested beacons for attention (interface_contract when the shared seam/contract must change).\n\n"
                 + _tree_digest
             )
     except Exception:

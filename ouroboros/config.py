@@ -38,6 +38,7 @@ FINALIZATION_GRACE_DEFAULT_SEC = 120
 # Owner finalization outer cap starts at the stop request; grace starts at control delivery
 # (the loop's mailbox drain). No summary by this cap -> honest custody cancel.
 OWNER_STOP_OUTER_CAP_SEC = 600
+NESTED_SETTLEMENT_MARGIN_SEC = 30  # Structural ordering margin, not a cognition timeout.
 # Cadence for intrinsic self-pacing checkpoints when a task has NO deadline_at
 # (e.g. headless benchmark runs). Advisory only — surfaces elapsed/rounds/cost so
 # the model can self-pace; it is not a stop gate. 0 disables.
@@ -117,7 +118,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "CLAUDE_CODE_MODEL": OPENROUTER_REVIEW_DEFAULTS["advisory"],
     "OUROBOROS_MAX_WORKERS": 10, "OUROBOROS_PRESENCE_MAX_ACTIVE": 2,
     "OUROBOROS_MAX_ACTIVE_SUBAGENTS_PER_ROOT": 6,
-    "OUROBOROS_MAX_SUBAGENT_DEPTH": 2,
+    "OUROBOROS_MAX_SUBAGENT_DEPTH": 3,
     # Mutative ("acting") subagents master toggle. Empty = follow runtime mode
     # (ON in advanced/pro, OFF in light); explicit true/false overrides. Owner-
     # controlled; light-mode self-repo writes stay blocked by the sandbox.
@@ -273,9 +274,9 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # returning a 1-token/empty body that fails JSON parse and fail-closed blocks a benign command.
     "OUROBOROS_SAFETY_MAX_TOKENS": 2000,
     "OUROBOROS_SAFETY_CALL_TIMEOUT_SEC": 60,
-    # v6.54.3 transport-timeout SSOT (deadline package D). web_search: 480 keeps the
-    # transport failure messaged below the ToolEntry 540s outer thread-kill cap. LLM
-    # no_proxy read/write floor: 2700 leaves headroom for long silent reasoning without
+    # v6.54.3 transport-timeout SSOT (deadline package D). web_search: 480 is one
+    # provider-attempt bound; the ToolEntry envelope derives the configured paid
+    # cascade. LLM no_proxy: 2700 leaves room for long silent reasoning without
     # pinning a worker on a dead socket.
     "OUROBOROS_WEBSEARCH_TIMEOUT_SEC": 480,
     "OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC": 2700,
@@ -994,7 +995,7 @@ def get_safety_call_timeout_sec() -> float:
 
 
 def get_websearch_timeout_sec() -> float:
-    """Transport timeout for the web_search OpenAI streaming call (v6.54.3, D)."""
+    """Per-attempt transport timeout for provider-backed web_search calls."""
     return _clamped_number_setting("OUROBOROS_WEBSEARCH_TIMEOUT_SEC", low=30.0, high=3600.0)
 
 

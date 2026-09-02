@@ -33,6 +33,7 @@ from ouroboros.outcomes import (
     maybe_write_verification_artifact,
     normalize_outcome_axes,
 )
+from ouroboros.outcome_receipt_store import task_verification_receipts
 from ouroboros.contracts.task_contract import build_task_contract
 from ouroboros.subagents import envelope_from_task, substrate_result_fields
 from ouroboros.subagent_messages import subagent_message_meta
@@ -51,9 +52,8 @@ from ouroboros.skill_publish_result import apply_skill_publish_receipt_veto
 from ouroboros.task_finalization import (
     build_sealed_final_package,
     build_swarm_efficiency as _build_swarm_efficiency,  # moved (module ceiling); tests import it here
-    deliver_final_message_live,
-    register_final_answer_owed,
-    sealed_final_prompt_section,
+    deliver_final_message_live, prepare_terminal_send_event, register_final_answer_owed,
+    sealed_final_prompt_section, terminal_result_fields,
 )
 from ouroboros.host_bound_outcome import (  # split out (module ceiling); tests import these here
     _attach_host_mutation_projection,
@@ -605,7 +605,6 @@ def _apply_terminal_custody_outcome(
         ),
     }
 
-
 def emit_task_results(
     env: Any, memory: Any, llm: Any,
     pending_events: List[Dict[str, Any]],
@@ -615,14 +614,15 @@ def emit_task_results(
     ctx: Any = None, event_queue: Any = None,
 ) -> None:
     """Emit all end-of-task events to supervisor and run post-task processing."""
+    from ouroboros.subagent_bootstrap import actor_first_terminal_projection
+    actor_fact, usage, llm_trace = actor_first_terminal_projection(ctx, task, usage, llm_trace, task.get("budget_drive_root") or getattr(env, "drive_root", None))
     loop_outcome = _derive_host_bound_loop_outcome(env, task, text, usage, llm_trace)
-    # FR3 observability: apply the receipt_absent / expected_output_ungrounded objective-axis
-    # flag HERE — once — so the SAME flagged loop_outcome feeds events and the durable
-    # task_result.json. _store_task_result reuses this loop_outcome, so the
-    # flag is no longer applied to a second, independently-derived outcome the events never saw.
+    receipt_root = pathlib.Path(str(getattr(env, "drive_root", None) or "."))
+    receipt_rows = task_verification_receipts(ctx, receipt_root, task)
+    # Apply FR3 once so events and the durable result share the same flagged outcome.
     apply_receipt_absent_flag(
-        loop_outcome, llm_trace, getattr(env, "drive_root", None), str(task.get("id") or ""),
-        expected_output=str(task.get("expected_output") or ""),
+        loop_outcome, llm_trace, receipt_root, str(task.get("id") or ""),
+        expected_output=str(task.get("expected_output") or ""), receipts=receipt_rows,
     )
     outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
     execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
@@ -653,6 +653,7 @@ def emit_task_results(
         # Final frames carry their own durable identity; replay must not depend
         # on a nearby progress row that may age out independently.
         send_event["progress_meta"] = dict(_message_meta)
+    send_event = prepare_terminal_send_event(env.drive_root, task, text, usage, send_event, ephemeral=_ephemeral, presence=_presence)
     pending_events.append(build_presence_result_event(task, text, ctx) if _presence else send_event)
     duration_sec = round(time.time() - start_time, 3)
     n_tool_calls = len(llm_trace.get("tool_calls", []))
@@ -899,7 +900,7 @@ def emit_task_results(
 
         if not _ephemeral and not _root_post_task_already_completed(env, task):
             _dispatch_root_post_task(
-                env, task, text, event_queue, pending_events,
+                env, task, str(send_event.get("text") or ""), event_queue, pending_events,
                 post_usage, llm_trace, review_evidence, drive_logs,
                 budget_drive_root=budget_drive_root, split_drive=split_drive,
                 project_scoped=_project_scoped, project_task=_project_task,
@@ -991,12 +992,11 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         existing = load_task_result(env.drive_root, str(task.get("id") or "")) or {}
         if loop_outcome is None:
             loop_outcome = _derive_host_bound_loop_outcome(env, task, text, usage, llm_trace)
-            # FR3: inject durable verification receipts into the trace and flag
-            # receipt_absent on a clean-but-unverified effects turn — BEFORE normalize so
-            # the persisted axes and the ledger agree (claudexor lockstep fix).
+            # Apply FR3 before normalization so the persisted axes and ledger agree.
             apply_receipt_absent_flag(
                 loop_outcome, llm_trace, env.drive_root, str(task.get("id") or ""),
                 expected_output=str(task.get("expected_output") or ""),
+                receipts=task_verification_receipts(None, env.drive_root, task),
             )
         outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
         loop_outcome = _apply_terminal_custody_outcome(env, task, loop_outcome)
@@ -1060,7 +1060,8 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             artifact_axis.update(outcome_axes.get("artifacts") or {})
         artifact_axis["status"] = str(artifact_bundle.get("status") or artifact_axis.get("status") or "not_applicable")
         outcome_axes["artifacts"] = artifact_axis
-        # B1: swarm-efficiency rollup, only for a task that fanned out (None -> omitted).
+        # B1: swarm-efficiency rollup — observed fan-out, or the zero-fanout
+        # block for a host-attested Swarm task; None (omitted) for plain tasks.
         swarm_efficiency = _build_swarm_efficiency(env, task)
         subagent_envelope = task.get("subagent_envelope") if isinstance(task.get("subagent_envelope"), dict) else {}
         if str(task.get("delegation_role") or "").lower() == "subagent":
@@ -1155,7 +1156,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             parent_cognitive_route=task.get("parent_cognitive_route"),
             subagent_availability=task.get("subagent_availability"),
             metadata=task.get("metadata") if isinstance(task.get("metadata"), dict) else {},
-            result=text or "",
+            result=text or "", **terminal_result_fields(usage),
             final_answer=str(loop_outcome.get("final_answer") or ""),
             trace_summary=trace_summary,
             trace_refs=loop_outcome.get("trace_refs") or {},
@@ -1204,13 +1205,9 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                       sealed_final=None):
     """Generate a detailed task summary and inject it into chat.jsonl."""
     try:
-        from ouroboros.project_dialogue import append_canonical_task_summary, completion_status_label
+        from ouroboros.project_dialogue import append_authored_task_summary, completion_status_label
         from ouroboros.projects_registry import project_thread_note_for_task
-
-        from ouroboros.consolidator import (
-            CONSOLIDATION_REASONING_EFFORT,
-            _consolidation_route,
-        )
+        from ouroboros.consolidator import CONSOLIDATION_REASONING_EFFORT, _consolidation_route
         task_id = str(task.get("id") or "unknown")
         canonical_root = pathlib.Path(task.get("budget_drive_root") or drive_logs.parent)
         summary_id = f"task-narrative:{task_id}"
@@ -1224,8 +1221,9 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
         result_root = pathlib.Path(getattr(env, "drive_root", canonical_root))
         stored_result = load_task_result(result_root, task_id) or {}
         result_ref = {"kind": "task_result", "task_id": task_id, "reader": "get_task_result"}
+
         def _append_summary(value: str) -> None:
-            append_canonical_task_summary(canonical_root, {
+            row = {
                 "ts": utc_now_iso(), "direction": "system", "type": "task_summary",
                 "summary_kind": "authored_root_summary", "summary_id": summary_id,
                 "task_id": task_id, "parent_task_id": str(task.get("parent_task_id") or ""), "root_task_id": str(task.get("root_task_id") or task_id),
@@ -1235,7 +1233,10 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 "text": value, "tool_calls": n_tool_calls, "rounds": rounds, "outcome_axes": outcome_axes, "reason_code": reason_code,
                 "result_ref": result_ref, "source_coverage": {"task_result": result_ref}, **_summary_row_cost_fields(usage), **presence_fields,
                 **({"review_projection": review_projection} if review_projection.get("panels") else {}),
-            })
+            }
+            append_authored_task_summary(
+                canonical_root, result_root, row, status=str(stored_result.get("status") or ""),
+            )
         # Skip LLM summary for trivial tasks.
         if n_tool_calls == 0 and rounds <= 1:
             goal = _truncate_with_notice(task.get("text", ""), 200)

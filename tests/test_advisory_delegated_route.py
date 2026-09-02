@@ -10,7 +10,9 @@ agent-session route tests stands in for the Claudexor control plane.
 """
 
 import json
+import pathlib
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -93,6 +95,111 @@ def test_delegated_route_runs_without_the_key(tmp_path, monkeypatch, fake_route)
     start = fake_route.instances[0].start_requests[0]
     assert start["authPreference"] == "subscription"
     assert start["access"] == "readonly"
+
+
+def test_delegated_advisory_passes_expired_owner_deadline_before_dispatch(
+    tmp_path, monkeypatch, fake_route,
+):
+    """The advisory consumer must pass its task deadline into the shared runner.
+
+    An expired deadline is a host-side admission refusal, so the paid Claudexor
+    start must never be posted.  This exercises the real advisory caller rather
+    than only testing ``SessionInvocation`` in isolation.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv(advisory.ADVISORY_REVIEW_ROUTE_ENV, "agent_session")
+    ctx = _ctx(tmp_path)
+    ctx.task_metadata = {"deadline_at": "2000-01-01T00:00:00Z"}
+
+    result, _model = advisory._run_advisory_delegated(
+        "review", pathlib.Path(ctx.repo_dir), ctx,
+    )
+
+    assert result.success is False
+    assert "owner deadline leaves no dispatch window" in result.error
+    assert not any(instance.start_requests for instance in fake_route.instances)
+
+
+def test_delegated_advisory_narrows_poll_window_to_owner_deadline(
+    tmp_path, monkeypatch, fake_route,
+):
+    """A live advisory poll cannot outlive the task's remaining window."""
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv(advisory.ADVISORY_REVIEW_ROUTE_ENV, "agent_session")
+    monkeypatch.setattr("ouroboros.config.get_finalization_grace_sec", lambda: 0)
+    captured = {}
+
+    def _fake_runner(**kwargs):
+        captured["invocation"] = kwargs["invocation"]
+        return {
+            "text": "[]", "run_id": "run-1", "route_id": "fake-review",
+            "model": "fake-small", "spend": None, "spend_estimated": False,
+            "settlement": {}, "schema_asked": False, "conformance": "failed",
+            "effective_route_ids": ["fake-review"],
+        }
+
+    import ouroboros.review_execution as review_execution
+    monkeypatch.setattr(review_execution, "run_delegated_review_session", _fake_runner)
+    deadline = (datetime.now(timezone.utc) + timedelta(seconds=45)).isoformat()
+    ctx = _ctx(tmp_path)
+    ctx.task_metadata = {"deadline_at": deadline}
+
+    result, _model = advisory._run_advisory_delegated(
+        "review", pathlib.Path(ctx.repo_dir), ctx,
+    )
+
+    assert result.success is True
+    invocation = captured["invocation"]
+    assert invocation.owner_deadline_at == deadline
+    assert 0 < invocation.timeout_sec <= 45
+
+
+def test_delegated_advisory_does_not_start_inside_finalization_reserve(
+    tmp_path, monkeypatch, fake_route,
+):
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv(advisory.ADVISORY_REVIEW_ROUTE_ENV, "agent_session")
+    monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "120")
+    ctx = _ctx(tmp_path)
+    ctx.task_metadata = {
+        "deadline_at": (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat(),
+    }
+
+    result, _model = advisory._run_advisory_delegated(
+        "review", pathlib.Path(ctx.repo_dir), ctx,
+    )
+
+    assert result.success is False
+    assert "owner deadline leaves no dispatch window" in result.error
+    assert not any(instance.start_requests for instance in fake_route.instances)
+
+
+def test_structured_session_without_effort_preserves_the_route_default(
+    tmp_path, monkeypatch, fake_route,
+):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+        "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/x"}}],
+        "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai/y"}}],
+        "advisory": {
+            "enabled": True,
+            "route": {"kind": "agent_session", "target_id": "fake-review=fake-small"},
+        },
+    }))
+    fake_route.detail = _terminal_detail(_ADVISORY_ITEMS)
+    ctx = _ctx(tmp_path)
+
+    items, raw, _model, _chars = advisory._run_claude_advisory(
+        ctx.repo_dir, "msg", ctx,
+        options={"include_repo_diff": False},
+    )
+    assert not raw.startswith("⚠️ ADVISORY_ERROR")
+    assert [item["item"] for item in items] == ["correctness"]
+    assert "effort" not in fake_route.instances[0].start_requests[0]
 
 
 def test_unknown_route_token_is_a_loud_error_not_a_transport_pick(tmp_path, monkeypatch):
@@ -264,6 +371,26 @@ def test_session_slot_with_shared_route_reports_the_gate_available(monkeypatch):
     assert advisory.advisory_gate_unavailable() is False
 
 
+def test_structured_empty_session_slot_never_uses_the_shared_route(monkeypatch):
+    """A saved structured row names its own exact session route or refuses.
+
+    The shared route remains the legacy environment fallback covered above;
+    it must not silently replace an incomplete structured owner setting.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv(advisory.ADVISORY_REVIEW_ROUTE_ENV, raising=False)
+    _clear_session_route_envs(monkeypatch)
+    monkeypatch.setenv("OUROBOROS_REVIEW_SESSION_ROUTE", "codex=gpt-5.6-sol:high")
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({
+        "triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/x"}}],
+        "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "openai/y"}}],
+        "advisory": {"enabled": True,
+                     "route": {"kind": "agent_session", "target_id": ""}},
+    }))
+    with pytest.raises(ValueError, match="needs a non-empty target_id"):
+        advisory.advisory_gate_unavailability_reason()
+
+
 def test_session_slot_with_its_own_target_reports_the_gate_available(monkeypatch):
     """A structured advisory row carrying its own parseable session target
     needs no shared route at all."""
@@ -329,6 +456,61 @@ def test_api_route_applies_the_advisory_rows_model_and_effort(tmp_path, monkeypa
     assert [i["item"] for i in items] == ["correctness"]
     assert captured["model"] == "sonnet" and model == "sonnet"
     assert captured["effort"] == "high"
+
+
+def test_api_advisory_narrows_child_wait_to_owner_deadline(tmp_path, monkeypatch):
+    """The nested Claude child cannot outlive the owner's remaining window."""
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", _SLOTS_API_ADVISORY)
+    monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "1")
+    captured = {}
+
+    def _fake_run(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            success=True, result_text=_ADVISORY_ITEMS, session_id="sess-1",
+            cost_usd=0.0, usage={}, error="", stderr_tail="",
+        )
+
+    monkeypatch.setattr("ouroboros.gateways.claude_code.run_readonly", _fake_run)
+    ctx = _ctx(tmp_path)
+    ctx.task_metadata = {
+        "deadline_at": (datetime.now(timezone.utc) + timedelta(seconds=8)).isoformat(),
+    }
+
+    _items, raw, _model, _chars = advisory._run_claude_advisory(
+        ctx.repo_dir, "msg", ctx, options={"include_repo_diff": False},
+    )
+
+    assert not raw.startswith("⚠️ ADVISORY_ERROR"), raw
+    assert 0 < captured["timeout_sec"] <= 7.1
+
+
+def test_api_advisory_does_not_start_inside_finalization_reserve(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from ouroboros.gateways import claude_code
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "120")
+    monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", _SLOTS_API_ADVISORY)
+    calls = []
+    monkeypatch.setattr(
+        claude_code, "run_readonly",
+        lambda **_kwargs: calls.append(1),
+    )
+    ctx = _ctx(tmp_path)
+    ctx.task_metadata = {
+        "deadline_at": (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat(),
+    }
+
+    _items, raw, _model, _chars = advisory._run_claude_advisory(
+        ctx.repo_dir, "msg", ctx, options={"include_repo_diff": False},
+    )
+
+    assert calls == []
+    assert "owner deadline leaves no dispatch window" in raw
 
 
 def test_api_route_empty_target_falls_back_to_the_environment_default(tmp_path, monkeypatch):

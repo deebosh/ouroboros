@@ -183,8 +183,15 @@ Used by `commit_reviewed` for all changes to the Ouroboros repository.
 | 25 | source_completeness | If any changed consumer can authorize PASS, a destructive rewrite, or replacement of a full contract, does its input distinguish complete from partial and carry a source reference the same actor can resolve? Does the consumer materialize every named omitted source before the decision, or abstain with the existing typed incomplete/degraded outcome? A marker or host claim alone is never sufficient. | critical when applicable |
 | 26 | actor_readable_projection | If the diff adds a bounded projection, omission marker, summary, or status count, can the actor who must decide read the exact canonical source through an existing path? Verify the ref, root, generation/range or ID, and the reader's ability to resolve it; host-unattested or merely hypothetical retrieval does not certify completeness. | critical when applicable |
 | 27 | canonical_memory_fork | If the diff touches Project/fork/execution roots, summaries, memory, or GC, does it preserve one canonical identity and distinguish authority/biography from execution-local state? Are referenced canonical artifacts promoted or retained before a child/root is collected, with missing legacy bytes represented as gaps? | critical when applicable |
-| 28 | review_artifact_continuity | If the diff changes plan, triad, scope, advisory, or acceptance evidence, are exact artifact bodies, source selectors, candidate SHA, reviewer model/profile/thread/route continuity, and all omissions retained? A bounded hot index or partial reviewer view must remain DEGRADED/NOT_RUN rather than PASS. | critical when applicable |
+| 28 | review_artifact_continuity | If the diff changes plan, triad, scope, advisory, or acceptance evidence, are exact artifact bodies, source selectors, candidate SHA, reviewer model/profile/thread/route continuity, and all omissions retained? Continuity, transport, and coverage discrepancies are retained as typed facts beside the exact artifact bodies; a bounded or partial reviewer view must remain DEGRADED/NOT_RUN rather than PASS, and must never be implemented by discarding, blanking, or relabeling the bodies or their original cause. | critical when applicable |
 | 29 | display_identity_replay | If the diff changes routing, steering, task cards, or history replay, does it preserve the event-time human `Project › Task` presentation snapshot in both live and replay paths while keeping opaque IDs as internal/debug facts? | advisory when applicable |
+
+**Timeout-policy pointer for item 18 (2026-08-23):** cognitive/review waits must
+follow the layered policy in `DEVELOPMENT.md` and the timeout data-flow in
+`ARCHITECTURE.md`: transport is not a reasoning cutoff, active operations are
+typed idle-rail facts, owner deadlines narrow nested waits, and a late physical
+result stays in custody rather than enabling a blind retry. The checklist item
+does not create another timeout constant or a second scheduler.
 
 **Standing note for item 21 (2026-08-15), do not re-raise as a missing successor class:** the delegated-coding target class lost in the D10 migration — editing one exact non-Git installed skill payload — is restored through `delegate_start(subagent_id=..., prompt=..., root="skill_payload", bucket=..., skill_name=...)` (private standalone snapshot, explicit parent CAS apply, review goes stale), with a golden registry-level test pinning it.
 
@@ -315,8 +322,9 @@ A state-machine change that only passes the success-path test is incomplete.
 
 Used by `skill_review` to vet a single
 external skill before it is allowed to execute via `skill_exec`. This uses the
-shared reviewer-slot configuration (`OUROBOROS_REVIEW_MODELS`) but preserves the
-existing skill-review gate semantics against a skill package in the local
+shared triad reviewer-slot configuration (`OUROBOROS_REVIEWER_SLOTS`, with the
+legacy model/route settings read when absent) and follows every row's configured
+delivery, while preserving the existing gate semantics against a skill package in the local
 checkout of `OUROBOROS_SKILLS_REPO_PATH`, not against a staged git diff.
 
 ### Transport and control skills are first-class (binding for ALL reviewers)

@@ -39,6 +39,36 @@ from ouroboros.skill_loader import (
 )
 
 
+def _seed_acceptance_root(tmp_path, task_id: str, ctx: SimpleNamespace):
+    """Mirror the production pre-loop canonical RUNNING admission."""
+    from ouroboros.contracts.task_contract import build_task_contract
+    from ouroboros.task_results import STATUS_RUNNING, write_task_result
+
+    contract = build_task_contract({
+        "id": task_id,
+        "root_task_id": task_id,
+        "delegation_role": "root",
+    })
+    write_task_result(
+        tmp_path,
+        task_id,
+        STATUS_RUNNING,
+        root_task_id=task_id,
+        delegation_role="root",
+        task_contract=contract,
+        result="Task is running.",
+    )
+    metadata = getattr(ctx, "task_metadata", {})
+    metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    metadata.update({"root_task_id": task_id, "budget_drive_root": str(tmp_path)})
+    ctx.task_id = task_id
+    ctx.root_task_id = task_id
+    ctx.delegation_role = "root"
+    ctx.task_metadata = metadata
+    ctx.task_contract = contract
+    return contract
+
+
 # ---------------------------------------------------------------------------
 # _drain_incoming_messages — telegram image payload preservation
 # ---------------------------------------------------------------------------
@@ -74,7 +104,13 @@ def test_drain_incoming_messages_preserves_image_payload():
 
 
 def test_owner_directives_survive_compaction_without_control_prose(tmp_path):
-    from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, write_owner_message
+    from ouroboros import task_pacing
+    from ouroboros.deadline_utils import parse_deadline_ts
+    from ouroboros.owner_mailbox import (
+        KIND_FINALIZE_NOW,
+        drain_owner_entries,
+        write_owner_message,
+    )
 
     ctx = SimpleNamespace()
     messages = [
@@ -89,6 +125,14 @@ def test_owner_directives_survive_compaction_without_control_prose(tmp_path):
         tmp_path, "deadline control", task_id="root", msg_id="control-1",
         kind=KIND_FINALIZE_NOW,
     )
+    control_entry = next(
+        row for row in drain_owner_entries(tmp_path, "root")
+        if row["msg_id"] == "control-1"
+    )
+    expected_deadline = (
+        parse_deadline_ts(control_entry["ts"]).timestamp()
+        + task_pacing.effective_finalization_reserve_sec(ctx)
+    )
 
     controls = _drain_incoming_messages(
         messages,
@@ -100,7 +144,9 @@ def test_owner_directives_survive_compaction_without_control_prose(tmp_path):
         owner_ctx=ctx,
     )
 
-    assert controls == {"finalize_now": "deadline control"}
+    assert set(controls) == {"finalize_now", "finalize_deadline_ts"}
+    assert controls["finalize_now"] == "deadline control"
+    assert controls["finalize_deadline_ts"] == expected_deadline
     assert [row["source"] for row in ctx._owner_directives] == [
         "initial_user", "direct_incoming", "owner_mailbox",
     ]
@@ -468,6 +514,7 @@ def test_task_acceptance_agent_tool_is_advisory_before_auto_host_gate(monkeypatc
         is_direct_chat=True,
         drive_root=str(tmp_path),
     )
+    _seed_acceptance_root(tmp_path, "task1", ctx)
 
     def host_panel(*_args, **_kwargs):
         panel_state["calls"] += 1
@@ -580,6 +627,7 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
         inspect_acceptance_fence=inspect_fence,
         end_acceptance_fence=end_fence,
     )
+    task["task_contract"] = _seed_acceptance_root(tmp_path, root_id, acceptance_ctx)
     acknowledgements = []
     supervisor_ctx = SimpleNamespace(
         DRIVE_ROOT=tmp_path,
@@ -704,6 +752,7 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: solved)
     ctx = SimpleNamespace(_task_acceptance_reviewed=False, is_direct_chat=False, drive_root=str(tmp_path))
+    _seed_acceptance_root(tmp_path, "t", ctx)
     trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
     messages = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
     result = _run_task_acceptance_review_once(
@@ -724,11 +773,12 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: blocked)
     ctx2 = SimpleNamespace(_task_acceptance_reviewed=False, is_direct_chat=False, drive_root=str(tmp_path))
+    _seed_acceptance_root(tmp_path, "t-blocked", ctx2)
     trace2 = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
     messages2 = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
     tools2 = SimpleNamespace(_ctx=ctx2)
     result2 = _run_task_acceptance_review_once(
-        tools=tools2, content="done", task_id="t", task_type="task",
+        tools=tools2, content="done", task_id="t-blocked", task_type="task",
         llm_trace=trace2, drive_root=None, messages=messages2, emit_progress=lambda _m: None,
     )
     assert result2 is True                                        # capsule -> one bounded re-loop
@@ -746,7 +796,7 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: solved)
     replacement = _run_task_acceptance_review_once(
-        tools=tools2, content="revised", task_id="t", task_type="task",
+        tools=tools2, content="revised", task_id="t-blocked", task_type="task",
         llm_trace=trace2, drive_root=None, messages=messages2, emit_progress=lambda _m: None,
     )
     assert replacement is False
@@ -759,8 +809,9 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     # earlier revision_requested state rather than leaving stale telemetry.
     trace_ok = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
     messages_ok = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
+    _seed_acceptance_root(tmp_path, "t-ok", tools2._ctx)
     result_ok = _run_task_acceptance_review_once(
-        tools=tools2, content="revised", task_id="t", task_type="task",
+        tools=tools2, content="revised", task_id="t-ok", task_type="task",
         llm_trace=trace_ok, drive_root=None, messages=messages_ok, emit_progress=lambda _m: None,
     )
     assert result_ok is False
@@ -772,10 +823,11 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: blocked)
     trace3 = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
     messages3 = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
+    _seed_acceptance_root(tmp_path, "t-blocked-alt", tools2._ctx)
     result3 = _run_task_acceptance_review_once(
         # A changed candidate creates a fresh binding; an unchanged candidate
         # must reuse the already-paid host panel under the v6.65 contract.
-        tools=tools2, content="revised again", task_id="t", task_type="task",
+        tools=tools2, content="revised again", task_id="t-blocked-alt", task_type="task",
         llm_trace=trace3, drive_root=None, messages=messages3, emit_progress=lambda _m: None,
     )
     assert result3 is False                                       # capsule already spent -> finalize
@@ -809,6 +861,7 @@ def test_required_review_blocked_commit_does_not_surface_prior_head(monkeypatch,
     monkeypatch.setattr(re_mod, "collect_turn_diff", _fake_collect)
 
     ctx = SimpleNamespace(_task_acceptance_reviewed=False, is_direct_chat=False, drive_root=str(tmp_path))
+    _seed_acceptance_root(tmp_path, "t", ctx)
     # A blocked commit attempt: is_error False, but structured status is "blocked".
     trace = {"tool_calls": [{"tool": "commit_reviewed", "is_error": False, "status": "blocked"}]}
     messages = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
@@ -1081,6 +1134,48 @@ def test_budget_rail_after_dispatch_is_terminal_without_provider_fallback(tmp_pa
     root_fence = events.get_nowait()
     assert root_fence["type"] == "budget_root_fence"
     assert root_fence["root_task_id"] == "budget-root"
+
+
+def test_unknown_dispatched_outcome_skips_cross_model_fallback(tmp_path, monkeypatch):
+    from ouroboros.tools.registry import ToolRegistry
+
+    class FakeLLM:
+        def default_model(self):
+            return "test-model"
+
+    calls = {"primary": 0, "fallback": 0}
+
+    def ambiguous(*args, **_kwargs):
+        calls["primary"] += 1
+        usage = args[10]
+        usage["_last_llm_error"] = "provider outcome unknown"
+        usage["_last_llm_error_kind"] = "provider_outcome_unknown"
+        usage["_last_llm_retry_same_request"] = False
+        return None, 0.0
+
+    def forbidden_fallback(**_kwargs):
+        calls["fallback"] += 1
+        raise AssertionError("unknown physical work must stop the paid chain")
+
+    monkeypatch.setattr(loop_mod, "call_llm_with_retry", ambiguous)
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", forbidden_fallback)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+
+    result, usage, _trace = run_llm_loop(
+        messages=[{"role": "user", "content": "go"}],
+        tools=registry,
+        llm=FakeLLM(),
+        drive_logs=tmp_path,
+        emit_progress=lambda _text: None,
+        incoming_messages=queue.Queue(),
+        task_id="unknown-provider-task",
+        drive_root=tmp_path,
+    )
+
+    assert calls == {"primary": 1, "fallback": 0}
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert "no retry or paid fallback" in result
 
 
 def test_run_llm_loop_narrates_reasoning_to_bubble_not_trace(tmp_path, monkeypatch):

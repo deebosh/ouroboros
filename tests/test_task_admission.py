@@ -185,7 +185,7 @@ class TestReserveTaskAdmissionLookup:
     def test_load_task_result_raises_returns_task_id_lookup_failed(
         self, clean_admission_state, monkeypatch
     ):
-        def _explode(drive_root, task_id):
+        def _explode(drive_root, task_id, **_kw):
             raise RuntimeError("simulated drive I/O failure")
 
         monkeypatch.setattr(
@@ -200,7 +200,7 @@ class TestReserveTaskAdmissionLookup:
     def test_load_task_result_returns_none_treated_as_no_existing(
         self, clean_admission_state, monkeypatch
     ):
-        def _no_record(drive_root, task_id):
+        def _no_record(drive_root, task_id, **_kw):
             return None
 
         monkeypatch.setattr(
@@ -225,7 +225,7 @@ class TestReserveTaskAdmissionLookup:
 
         monkeypatch.setattr(
             "ouroboros.task_results.load_task_result",
-            lambda drive_root, task_id: existing,
+            lambda drive_root, task_id, **_kw: existing,
         )
         result = reserve_task_admission("tid-001", "tok-abc")
         assert result["status"] == "existing_same_token"
@@ -247,7 +247,7 @@ class TestReserveTaskAdmissionLookup:
         }
         monkeypatch.setattr(
             "ouroboros.task_results.load_task_result",
-            lambda drive_root, task_id: existing,
+            lambda drive_root, task_id, **_kw: existing,
         )
         result = reserve_task_admission("tid-001", "tok-different")
         assert result == {"status": "blocked", "reason": "duplicate_task_id"}
@@ -261,7 +261,7 @@ class TestReserveTaskAdmissionLookup:
         }
         monkeypatch.setattr(
             "ouroboros.task_results.load_task_result",
-            lambda drive_root, task_id: existing,
+            lambda drive_root, task_id, **_kw: existing,
         )
         result = reserve_task_admission("tid-001", "tok-abc")
         assert result == {"status": "blocked", "reason": "duplicate_task_id"}
@@ -275,7 +275,7 @@ class TestReserveTaskAdmissionLookup:
         }
         monkeypatch.setattr(
             "ouroboros.task_results.load_task_result",
-            lambda drive_root, task_id: existing,
+            lambda drive_root, task_id, **_kw: existing,
         )
         result = reserve_task_admission("tid-001", "tok-abc")
         assert result == {"status": "blocked", "reason": "duplicate_task_id"}
@@ -286,7 +286,7 @@ class TestReserveTaskAdmissionLookup:
         existing = {"status": "scheduled"}
         monkeypatch.setattr(
             "ouroboros.task_results.load_task_result",
-            lambda drive_root, task_id: existing,
+            lambda drive_root, task_id, **_kw: existing,
         )
         result = reserve_task_admission("tid-001", "tok-abc")
         assert result == {"status": "blocked", "reason": "duplicate_task_id"}
@@ -315,7 +315,7 @@ class TestReserveTaskAdmissionHappyPath:
         # exercised end-to-end.
         captured: Dict[str, Any] = {}
 
-        def _capture(drive_root, task_id):
+        def _capture(drive_root, task_id, **_kw):
             captured["drive_root"] = drive_root
             captured["task_id"] = task_id
             return None

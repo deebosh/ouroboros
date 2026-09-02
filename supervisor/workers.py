@@ -19,6 +19,9 @@ from supervisor.state import load_state, append_jsonl, reconstruct_task_cost
 from supervisor.message_bus import coerce_chat_identity, send_with_budget
 from ouroboros.config import DATA_DIR, REPO_DIR as CONFIG_REPO_DIR
 from ouroboros.outcomes import EXECUTION_FAILED, EXECUTION_INFRA_FAILED, terminal_outcome_axes
+from ouroboros.review_owner_custody import (
+    reconcile_confirmed_dead_review_owner as _reconcile_confirmed_dead_review_owner_for_root,
+)
 from ouroboros.utils import utc_now_iso
 
 
@@ -455,7 +458,9 @@ def _promote_duplicate_reason(task_id: str, ctx: Any) -> str:
         from ouroboros.task_results import load_task_result
 
         stored_duplicate = bool(
-            load_task_result(getattr(ctx, "DRIVE_ROOT", DRIVE_ROOT), task_id)
+            load_task_result(
+                getattr(ctx, "DRIVE_ROOT", DRIVE_ROOT), task_id, strict=True,
+            )
         )
     except Exception:
         log.warning("promote: duplicate-id lookup failed for %s", task_id, exc_info=True)
@@ -644,6 +649,22 @@ def _relocate_promoted_attachments(task: dict, tid: str, manifest: list[dict]) -
     except Exception:
         log.warning("promote: attachment relocation failed for %s", tid, exc_info=True)
         return False
+
+
+def _promoted_scheduled_outcome(task: dict, admitted: Any, tid: str) -> dict:
+    """Carry the exact admitted contract to the canonical result writer."""
+
+    admitted_contract = (
+        admitted.get("task_contract")
+        if isinstance(admitted, dict)
+        and isinstance(admitted.get("task_contract"), dict)
+        else task.get("task_contract")
+    )
+    return {
+        "status": "scheduled",
+        "task_id": tid,
+        "_admitted_task_contract": dict(admitted_contract or {}),
+    }
 
 
 def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
@@ -845,6 +866,12 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
                     get_bridge().broadcast({"type": "projects_changed", "project_id": pid, "chat_id": proj_chat})
                 except Exception:
                     log.debug("promote: projects_changed broadcast failed for %s", pid, exc_info=True)
+            if evt.get("_source_created") and not (project or {}).get("created"):
+                # The source-resolution half of THIS promote registered the
+                # project off-loop (_prepare_promote_source_off_loop) — same
+                # agent-initiated creation, so the announce gate honors it.
+                project = {**(project or {}), "created": True}
+            _announce_created_project(project, tid, task=task)
         except Exception:
             log.warning("promote: project registration failed for %s", pid, exc_info=True)
             return _reject_promoted_after_attachment_stage({
@@ -929,7 +956,9 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
     # message seam (tests/test_heartbeat_presentation.py). While it is still
     # PENDING the Dashboard Activity row cancels it; the card action appears once
     # it starts.
-    outcome = {"status": "scheduled", "task_id": tid}
+    # A project root may execute from a forked child drive.  Its budget-root
+    # result therefore receives this admitted contract before worker startup.
+    outcome = _promoted_scheduled_outcome(task, admitted, tid)
     if attachment_manifest:
         outcome["attachment_manifest"] = [dict(row) for row in attachment_manifest]
     if effective_pid:
@@ -1108,6 +1137,22 @@ def _fail_promoted_task_loudly(ctx: Any, task: dict, ws_error: str) -> None:
         log.debug("promote loud-fail: chat message failed for %s", tid, exc_info=True)
 
 
+def _announce_created_project(project: Any, tid: str, task: Any = None) -> None:
+    """Agent-initiated creation (owner 2=A): owe the durable Main "project
+    started" row, only when THIS call actually created the project
+    (``created is True`` from ``create_project``; idempotent replays stay
+    silent). Fail-soft — a cosmetic row must never reject the promotion or
+    the mid-task scope call."""
+    if not isinstance(project, dict) or project.get("created") is not True:
+        return
+    try:
+        from ouroboros.project_dialogue import announce_project_started
+
+        announce_project_started(DRIVE_ROOT, project, tid, task=task)
+    except Exception:
+        log.debug("project started row failed for %s", project.get("id"), exc_info=True)
+
+
 def ensure_project_scope(evt: dict, ctx: Any) -> None:
     """Create/attach the registry project for an in-task ensure_project_scope call
     and bind the CURRENT (already-running) task to it, then broadcast so the UI moves
@@ -1172,6 +1217,11 @@ def ensure_project_scope(evt: dict, ctx: Any) -> None:
                 get_bridge().broadcast({"type": "projects_changed", "project_id": pid, "chat_id": proj_chat})
             except Exception:
                 log.debug("ensure_project_scope: projects_changed broadcast failed for %s", pid, exc_info=True)
+        running = getattr(ctx, "RUNNING", None)
+        row = running.get(tid) if isinstance(running, dict) else None
+        _announce_created_project(
+            project, tid, task=row.get("task") if isinstance(row, dict) else None,
+        )
     except Exception:
         log.debug("ensure_project_scope: project registration failed for %s", pid, exc_info=True)
 
@@ -2091,6 +2141,10 @@ def _record_worker_pids() -> None:
         log.debug("Failed to ledger worker pids", exc_info=True)
 
 
+def _reconcile_confirmed_dead_review_owner(owner_pid: int) -> None:
+    _reconcile_confirmed_dead_review_owner_for_root(DRIVE_ROOT, owner_pid)
+
+
 def reap_orphaned_workers() -> int:
     """Kill leftover worker process groups left by a PRIOR server instance.
 
@@ -2245,6 +2299,16 @@ def kill_workers(
         for w in WORKERS.values():
             w.proc.join(timeout=3)
         _kill_survivors()
+        for w in WORKERS.values():
+            try:
+                if w.proc.pid and not w.proc.is_alive():
+                    _reconcile_confirmed_dead_review_owner(int(w.proc.pid))
+            except Exception:
+                log.debug(
+                    "Could not prove worker %s dead for review reconciliation",
+                    w.wid,
+                    exc_info=True,
+                )
         WORKERS.clear()
         orphaned_ids = []
         drained_ids = []
@@ -2399,6 +2463,10 @@ def kill_workers_for_update(*, result_reason: str, terminal_status: str = "inter
                 worker.proc.join(timeout=3)
             if worker.proc.is_alive():
                 survivors.append(f"worker:{worker.proc.pid or worker.wid}")
+            else:
+                _reconcile_confirmed_dead_review_owner(
+                    int(getattr(worker.proc, "pid", 0) or 0)
+                )
         except Exception as exc:
             survivors.append(f"worker:{worker.wid}:{type(exc).__name__}")
     if teardown_error:
@@ -2885,6 +2953,14 @@ def assign_tasks() -> None:
                 if str(task.get("delegation_role") or "") == "subagent" and str(task.get("drive_root") or ""):
                     try:
                         from ouroboros.task_results import STATUS_RUNNING, write_task_result
+                        from ouroboros.tools.control_delegation import stamp_task_assignment_depth
+                        from ouroboros.config import get_max_subagent_depth
+
+                        # Assignment is the first host-visible execution fact. Stamp
+                        # the worker payload and canonical result from one projection.
+                        _depth_fields = stamp_task_assignment_depth(
+                            task, max_depth=get_max_subagent_depth(),
+                        )
                         write_task_result(
                             DRIVE_ROOT,
                             str(task.get("id") or ""),
@@ -2906,6 +2982,7 @@ def assign_tasks() -> None:
                             child_drive_root=task.get("child_drive_root") or task.get("drive_root"),
                             budget_drive_root=task.get("budget_drive_root"),
                             task_constraint=task.get("task_constraint"),
+                            **_depth_fields,
                             # INTENT ONLY. This mirror is written at ASSIGNMENT, one
                             # step before the worker dispatches and resolves the
                             # child; naming `effective_model_lane`/`model` here wrote
@@ -2979,6 +3056,48 @@ def ensure_workers_healthy() -> None:
         queue.persist_queue_snapshot(reason="worker_respawn_after_crash")
 
 
+def _worker_crash_storm_detected(
+    *, busy_crashes: int, dead_detections: int, crashed_tasks: List[Dict[str, Any]]
+) -> bool:
+    now = time.time()
+    alive_now = sum(1 for worker in WORKERS.values() if worker.proc.is_alive())
+    if dead_detections:
+        # Only count busy crashes or all-workers-dead as storm signals.
+        if busy_crashes > 0 or alive_now == 0:
+            CRASH_TS.extend([now] * max(1, dead_detections))
+        else:
+            CRASH_TS.clear()
+
+    CRASH_TS[:] = [stamp for stamp in CRASH_TS if (now - stamp) < 60.0]
+    if len(CRASH_TS) < 3:
+        return False
+
+    # Do not execv on crash storms; keep direct-chat mode alive.
+    st = load_state()
+    append_jsonl(
+        DRIVE_ROOT / "logs" / "supervisor.jsonl",
+        {
+            "ts": utc_now_iso(),
+            "type": "crash_storm_detected",
+            "crash_count": len(CRASH_TS),
+            "worker_count": len(WORKERS),
+            "crashed_tasks": crashed_tasks,
+        },
+    )
+    if st.get("owner_chat_id"):
+        send_with_budget(
+            int(st["owner_chat_id"]),
+            "⚠️ Frequent worker crashes. Multiprocessing workers disabled, "
+            "continuing in direct-chat mode (threading).",
+            is_progress=True,
+            progress_meta={
+                "task_incident": "worker_crash_storm",
+                "toast_once": f"worker-crash-storm:{int(min(CRASH_TS) if CRASH_TS else now)}",
+            },
+        )
+    return True
+
+
 def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
     busy_crashes = 0
     dead_detections = 0
@@ -2991,6 +3110,9 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
         if not w.proc.is_alive():
             # Reserve the dead slot before the queue lock is released.
             w.reaping = True
+            _reconcile_confirmed_dead_review_owner(
+                int(getattr(w.proc, "pid", 0) or 0)
+            )
             dead_detections += 1
             if w.busy_task_id is not None:
                 busy_crashes += 1
@@ -3242,39 +3364,9 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
                             )
             respawn_ids.append(wid)
 
-    now = time.time()
-    alive_now = sum(1 for w in WORKERS.values() if w.proc.is_alive())
-    if dead_detections:
-        # Only count busy crashes or all-workers-dead as storm signals.
-        if busy_crashes > 0 or alive_now == 0:
-            CRASH_TS.extend([now] * max(1, dead_detections))
-        else:
-            CRASH_TS.clear()
-
-    CRASH_TS[:] = [t for t in CRASH_TS if (now - t) < 60.0]
-    disable_pool = len(CRASH_TS) >= 3
-    if disable_pool:
-        # Do not execv on crash storms; keep direct-chat mode alive.
-        st = load_state()
-        append_jsonl(
-            DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "crash_storm_detected",
-                "crash_count": len(CRASH_TS),
-                "worker_count": len(WORKERS),
-                "crashed_tasks": crashed_tasks,
-            },
-        )
-        if st.get("owner_chat_id"):
-            send_with_budget(
-                int(st["owner_chat_id"]),
-                "⚠️ Frequent worker crashes. Multiprocessing workers disabled, "
-                "continuing in direct-chat mode (threading).",
-                is_progress=True,
-                progress_meta={
-                    "task_incident": "worker_crash_storm",
-                    "toast_once": f"worker-crash-storm:{int(min(CRASH_TS) if CRASH_TS else now)}",
-                },
-            )
+    disable_pool = _worker_crash_storm_detected(
+        busy_crashes=busy_crashes,
+        dead_detections=dead_detections,
+        crashed_tasks=crashed_tasks,
+    )
     return respawn_ids, disable_pool

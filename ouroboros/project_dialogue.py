@@ -18,6 +18,7 @@ import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
+from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.utils import append_jsonl, iter_jsonl_objects, jsonl_append_lock_path, replace_atomic, utc_now_iso
 
 _ANNOTATIONS_NAME = "chat_annotations.jsonl"
@@ -424,6 +425,190 @@ def append_canonical_task_summary(drive_root: Any, row: Dict[str, Any]) -> bool:
     return append_jsonl(path, dict(row))
 
 
+def append_authored_task_summary(
+    canonical_root: Any, result_root: Any, row: Dict[str, Any], *, status: str = "",
+) -> bool:
+    """Append the authored row and persist its identical continuation narrative."""
+    appended = append_canonical_task_summary(canonical_root, row)
+    persist_continuation_narrative(
+        result_root,
+        str(row.get("task_id") or ""),
+        str(row.get("text") or ""),
+        summary_id=str(row.get("summary_id") or ""),
+        summary_kind=str(row.get("summary_kind") or ""),
+        result_ref=row.get("result_ref") if isinstance(row.get("result_ref"), dict) else {},
+        source_coverage=row.get("source_coverage") if isinstance(row.get("source_coverage"), dict) else {},
+        status=status,
+    )
+    return appended
+
+
+def _narrative_result_ref_is_valid(value: Any, task_id: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return (
+        str(value.get("kind") or "") == "task_result"
+        and str(value.get("task_id") or "") == str(task_id or "")
+        and str(value.get("reader") or "") == "get_task_result"
+    )
+
+
+def continuation_narrative_is_valid(value: Any, task_id: str) -> bool:
+    """Validate the small, authored summary persisted beside a task result."""
+    if not isinstance(value, dict) or not str(value.get("text") or "").strip():
+        return False
+    tid = str(task_id or "").strip()
+    if not tid or str(value.get("task_id") or "") != tid:
+        return False
+    if str(value.get("summary_kind") or "") != "authored_root_summary":
+        return False
+    if str(value.get("summary_id") or "") != f"task-narrative:{tid}":
+        return False
+    result_ref = value.get("result_ref")
+    coverage = value.get("source_coverage")
+    return bool(
+        _narrative_result_ref_is_valid(result_ref, tid)
+        and isinstance(coverage, dict)
+        and _narrative_result_ref_is_valid(coverage.get("task_result"), tid)
+        and coverage.get("task_result") == result_ref
+    )
+
+
+def persist_continuation_narrative(
+    drive_root: Any,
+    task_id: str,
+    text: str,
+    *,
+    summary_id: str,
+    summary_kind: str,
+    result_ref: Dict[str, Any],
+    source_coverage: Dict[str, Any],
+    status: str = "",
+) -> bool:
+    """Persist the exact authored summary through the task-result lock."""
+    tid = str(task_id or "").strip()
+    narrative = {
+        "text": str(text or ""),
+        "task_id": tid,
+        "summary_id": str(summary_id or ""),
+        "summary_kind": str(summary_kind or ""),
+        "result_ref": dict(result_ref) if isinstance(result_ref, dict) else {},
+        "source_coverage": dict(source_coverage) if isinstance(source_coverage, dict) else {},
+        "written_at": utc_now_iso(),
+    }
+    if not tid or not continuation_narrative_is_valid(narrative, tid):
+        return False
+    try:
+        from ouroboros.task_results import load_task_result, write_task_result
+
+        existing = load_task_result(drive_root, tid) or {}
+        if not existing and not str(status or "").strip():
+            return False
+        requested_status = str(status or existing.get("status") or "running")
+
+        def _project(current: Dict[str, Any], _patch: Dict[str, Any]) -> Dict[str, Any]:
+            current_narrative = current.get("continuation_narrative")
+            if continuation_narrative_is_valid(current_narrative, tid):
+                # The summary id is task-unique.  A second post-task worker must
+                # not race a complete narrative with a partial/empty rewrite.
+                return {
+                    "status": str(current.get("status") or requested_status),
+                    "continuation_narrative": dict(current_narrative),
+                }
+            return {
+                "status": str(current.get("status") or requested_status),
+                "continuation_narrative": dict(narrative),
+            }
+
+        write_task_result(
+            drive_root, tid, requested_status, _field_projector=_project,
+        )
+        return True
+    except Exception:
+        log.warning("Failed to persist continuation narrative for %s", tid, exc_info=True)
+        return False
+
+
+def _bounded_chat_tail_rows(
+    path: pathlib.Path, *, max_bytes: int, max_rows: int,
+) -> List[Dict[str, Any]]:
+    """Read only a bounded tail; never enter the unbounded archive resolver."""
+    if not path.is_file():
+        return []
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            start = max(0, size - max(1, int(max_bytes)))
+            handle.seek(start)
+            if start:
+                handle.readline()  # discard the partial first JSONL row
+            rows: List[Dict[str, Any]] = []
+            for raw in handle:
+                if len(rows) >= max(1, int(max_rows)):
+                    break
+                try:
+                    value = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if isinstance(value, dict):
+                    rows.append(value)
+            return rows
+    except OSError:
+        return []
+
+
+def resolve_legacy_continuation_narrative(
+    drive_root: Any, task_id: str, result_ref: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Find one recent authored row by exact task identity, within fixed bounds."""
+    from ouroboros.context_budget import (
+        CONTINUATION_NARRATIVE_LEGACY_GENERATIONS,
+        CONTINUATION_NARRATIVE_LEGACY_MAX_ROWS,
+        CONTINUATION_NARRATIVE_LEGACY_TAIL_BYTES,
+    )
+
+    tid = str(task_id or "").strip()
+    expected_ref = dict(result_ref) if isinstance(result_ref, dict) else {}
+    if not tid or not _narrative_result_ref_is_valid(expected_ref, tid):
+        return None
+    paths = _chat_paths(drive_root)
+    paths = paths[-max(1, int(CONTINUATION_NARRATIVE_LEGACY_GENERATIONS)):]
+    for path in reversed(paths):
+        rows = _bounded_chat_tail_rows(
+            path,
+            max_bytes=CONTINUATION_NARRATIVE_LEGACY_TAIL_BYTES,
+            max_rows=CONTINUATION_NARRATIVE_LEGACY_MAX_ROWS,
+        )
+        for row in reversed(rows):
+            if (
+                str(row.get("type") or "") != "task_summary"
+                or str(row.get("summary_kind") or "") != "authored_root_summary"
+                or str(row.get("summary_id") or "") != f"task-narrative:{tid}"
+                or str(row.get("task_id") or "") != tid
+                or not _narrative_result_ref_is_valid(row.get("result_ref"), tid)
+                or row.get("result_ref") != expected_ref
+                or not isinstance(row.get("source_coverage"), dict)
+                or row["source_coverage"].get("task_result") != expected_ref
+                or not str(row.get("text") or "").strip()
+            ):
+                continue
+            return {
+                "text": str(row.get("text") or ""),
+                "task_id": tid,
+                "summary_id": f"task-narrative:{tid}",
+                "summary_kind": "authored_root_summary",
+                "result_ref": dict(expected_ref),
+                "source_coverage": dict(row["source_coverage"]),
+                "source": {
+                    "kind": "chat_jsonl",
+                    "path": str(path),
+                    "summary_id": str(row.get("summary_id") or ""),
+                },
+                "written_at": str(row.get("ts") or ""),
+            }
+    return None
+
+
 def _append_terminal_task_projection(
     drive_root: Any, task_id: str, task: Dict[str, Any], result: Dict[str, Any],
     task_done_event: Dict[str, Any],
@@ -546,6 +731,8 @@ def append_terminal_task_projection(
 
 
 def _completion_excerpt(result: Dict[str, Any]) -> str:
+    if str(result.get("terminal_origin") or "") == TERMINAL_ORIGIN_HOST_SALVAGE:
+        return ""
     for key in ("summary", "result", "error"):
         text = " ".join(str(result.get(key) or "").split())
         if text:
@@ -610,7 +797,53 @@ def enqueue_project_completion_summary(
         return False
 
 
+def announce_project_started(
+    drive_root: Any, project: Dict[str, Any], task_id: str, *, task: Any = None,
+) -> bool:
+    """Owe Main's one durable entry row when the AGENT starts a Project.
+
+    Mirrors ``enqueue_project_completion_summary``'s delivery mechanics: the
+    same terminal-delivery outbox, with the restart-surviving
+    ``delivery_id=project-start:<project_id>`` dedupe as the ONLY dedupe.
+    Called exclusively from the agent-initiated creation seams (owner decision
+    2=A): the promote_chat_to_task bind and a REAL ensure_project_scope create
+    (``created is True`` from ``create_project``). Owner HTTP/API creation and
+    manual task-to-project conversion stay silent.
+    """
+    project = project if isinstance(project, dict) else {}
+    pid = str(project.get("id") or "").strip()
+    tid = str(task_id or "").strip()
+    if not pid:
+        return False
+    try:
+        from ouroboros.projects_registry import task_presentation_snapshot
+        from supervisor.terminal_delivery import enqueue_terminal_delivery
+
+        snapshot = task_presentation_snapshot(
+            drive_root, tid, task=task if isinstance(task, dict) else None,
+            project_id=pid,
+        )
+        event = {
+            "type": "send_message", "chat_id": 1, "task_id": tid,
+            "text": (f"{snapshot['target_label']} · Started\n"
+                     "Work is running in this Project."),
+            "role": "system", "system_type": "project_started",
+            "delivery_id": f"project-start:{pid}",
+            "progress_meta": {
+                "project_id": pid,
+                "project_name": snapshot["project_name"],
+                "target_label": snapshot["target_label"],
+            },
+        }
+        return bool(enqueue_terminal_delivery(drive_root, event))
+    except Exception:
+        log.warning("Failed to enqueue Project started row for %s", pid, exc_info=True)
+        return False
+
+
 __all__ = [
+    "announce_project_started",
+    "append_authored_task_summary",
     "append_chat_annotation",
     "append_canonical_task_summary",
     "append_terminal_task_projection",

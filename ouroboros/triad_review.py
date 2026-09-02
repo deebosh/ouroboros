@@ -29,6 +29,15 @@ class ReviewActorRecord:
     slot_id: str = ""  # the id the row physically ran under, carried not re-derived
     prompt_ref: Dict[str, Any] = field(default_factory=dict)
     response_ref: Dict[str, Any] = field(default_factory=dict)
+    failure_code: str = ""
+    reset_at: str = ""
+    http_status: Optional[int] = None
+    transport_status: str = ""
+    operation_id: str = ""
+    operation_state: str = "settled"
+    late_result_pending: bool = False
+    pending_invocation_id: str = ""
+    delegated_run_id: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         # The durable id is the one the review substrate actually ran this row
@@ -54,6 +63,15 @@ class ReviewActorRecord:
             "slot_id": self.slot_id or (slot_id_for_row(self.slot) if self.slot else ""),
             "prompt_ref": dict(self.prompt_ref),
             "response_ref": dict(self.response_ref),
+            "failure_code": self.failure_code,
+            "reset_at": self.reset_at,
+            "http_status": self.http_status,
+            "transport_status": self.transport_status,
+            "operation_id": self.operation_id,
+            "operation_state": self.operation_state,
+            "late_result_pending": self.late_result_pending,
+            "pending_invocation_id": self.pending_invocation_id,
+            "delegated_run_id": self.delegated_run_id,
         }
 
 
@@ -102,6 +120,15 @@ def _actor_record(
         slot_id=str(actor.get("slot_id") or ""),
         prompt_ref=dict(actor.get("prompt_ref") or {}),
         response_ref=dict(actor.get("response_ref") or {}),
+        failure_code=str(actor.get("failure_code") or ""),
+        reset_at=str(actor.get("reset_at") or ""),
+        http_status=(int(actor["http_status"]) if isinstance(actor.get("http_status"), int) else None),
+        transport_status=str(actor.get("transport_status") or ""),
+        operation_id=str(actor.get("operation_id") or ""),
+        operation_state=str(actor.get("operation_state") or "settled"),
+        late_result_pending=bool(actor.get("late_result_pending")),
+        pending_invocation_id=str(actor.get("pending_invocation_id") or ""),
+        delegated_run_id=str(actor.get("delegated_run_id") or ""),
     )
 
 
@@ -348,6 +375,7 @@ def parse_model_review_results(
     """
     findings: List[Dict[str, Any]] = []
     responsive: List[str] = []
+    responsive_ids: set[str] = set()
     records: List[ReviewActorRecord] = []
     required = set(required_items or [])
     for idx, actor in enumerate(result_json.get("results") or []):
@@ -356,6 +384,13 @@ def parse_model_review_results(
         model = str(actor.get("model") or actor.get("request_model") or "").strip()
         raw_text = str(actor.get("text") or "")
         model_label = model or "reviewer"
+        actor_slot_id = str(actor.get("slot_id") or "")
+        if str(actor.get("operation_state") or "") == "not_dispatched":
+            records.append(_actor_record(
+                actor, idx=idx, model_label=model_label,
+                status="not_dispatched", raw_text=raw_text,
+            ))
+            continue
         if str(actor.get("verdict") or "").upper() == "ERROR":
             records.append(_actor_record(actor, idx=idx, model_label=model_label, status="error", raw_text=raw_text))
             continue
@@ -387,13 +422,18 @@ def parse_model_review_results(
                 "severity": str(entry.get("severity") or "advisory").lower(),
                 "reason": str(entry.get("reason") or "").strip(),
                 "model": model_label,
+                "slot_id": actor_slot_id,
                 **({"obligation_id": str(entry.get("obligation_id") or "")} if entry.get("obligation_id") else {}),
             })
         if required and not required.issubset(covered_items):
             records.append(_actor_record(actor, idx=idx, model_label=model_label, status="partial", raw_text=raw_text, parsed_items=actor_findings))
             continue
         findings.extend(actor_findings)
-        responsive.append(f"{model_label}#{idx + 1}")
+        responsive_id = f"{model_label} [{actor_slot_id}]" if actor_slot_id else f"{model_label}#{idx + 1}"
+        response_identity = f"slot:{actor_slot_id}" if actor_slot_id else f"actor:{idx}"
+        if response_identity not in responsive_ids:
+            responsive.append(responsive_id)
+            responsive_ids.add(response_identity)
         records.append(_actor_record(actor, idx=idx, model_label=model_label, status="responded", raw_text=raw_text, parsed_items=actor_findings))
     return ParsedTriadReview(findings=findings, responsive_models=responsive, actor_records=records)
 

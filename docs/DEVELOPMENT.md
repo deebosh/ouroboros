@@ -5,6 +5,7 @@
 This is Ouroboros's engineering handbook: how to name, design, implement, and
 verify changes. `BIBLE.md` owns constitutional principles;
 `docs/ARCHITECTURE.md` owns the current structure, data flow, and rationale map;
+`docs/DESIGN.md` owns visual and interaction semantics;
 `docs/CHECKLISTS.md` owns reviewer items, severity, and output contracts. This
 file does not duplicate their inventories or serve as a changelog.
 
@@ -42,6 +43,10 @@ layer is required.
 Dependency direction is the test: UI/CLI → inbound gateway → domain owner;
 runtime policy → small host-owned contract → outbound adapter. Provider- or
 transport-specific decisions do not flow back into core policy.
+
+Preserve user-visible progress and reasoning. Chat authorship is stamped by the
+producer and preserved through persistence and replay; never infer it from text
+or promote host-selected intermediate output to a model final.
 
 ### CLI and headless work
 
@@ -83,6 +88,33 @@ clean up, or stop. Host code remains responsible only for deterministic
 integrity and authority boundaries plus truthful receipts; do not add
 task-specific auto-retry, fallback, cleanup, resume, or terminal-flow state
 machines.
+
+### Generality and emergence (P13)
+
+Every non-trivial change picks a level: patch the case in front of you,
+solve the class it belongs to, or build a framework for cases that do
+not exist yet. The first fossilizes, the third speculates; aim for the
+second. Two questions find it:
+
+- **The invariant question.** What must stay true here for every
+  install, provider, model, and consumer this seam serves — and what is
+  merely a feature of the case at hand? Mechanism goes where the
+  invariant lives, at its existing SSOT owner; the case's accidents —
+  today's provider quirk, config, workflow, team shape, benchmark —
+  stay out of shared surfaces.
+- **The stronger-mind question.** If tomorrow's model were sharply more
+  capable, would this change let it do more through the same seam — or
+  would the change itself have to be torn out first? Strategies the
+  current model exhibits (orderings, roles, decomposition habits) are
+  examples worth recording as hints, never contracts to enforce.
+
+The proof burden is symmetric: promoting a case detail into shared
+structure requires showing it is an invariant (several real variants,
+or one already-stable boundary); adding an abstraction requires a
+demonstrated class — an imagined consumer is not one. In doubt,
+generalize the meaning and the authority, keep the mechanism minimal
+and local, and let the next real case pay for the next step. Reviewer
+findings are evidence for this judgment, never policy that overrides it.
 
 ### Pricing and admission
 
@@ -522,6 +554,12 @@ Every new or changed continuity surface is reviewed as one narrow chain:
   disposable under the unified retention owner; an unavailable legacy source is
   represented as an explicit gap, never silently treated as complete.
 
+**Control-plane distrust is metadata, not a data-plane operation.** Paid model
+output is evidence until a typed validity predicate fails. Control-plane
+distrust — profile, route, parser, window — is metadata on that evidence: it
+may lower authority to DEGRADED/SKIPPED/NOT_RUN, but it must not blank,
+rewrite, or relabel the artifact or its original cause.
+
 #### Context and growth matrix
 
 | Store / surface | Complete producer and source | Interactive projection / consumer | Growth and retention proof |
@@ -530,6 +568,35 @@ Every new or changed continuity surface is reviewed as one narrow chain:
 | Chat and biography | Canonical `logs/chat.jsonl`, rotated generations, and dialogue blocks | Main/Project context and archive-aware `chat_history` | Rotation/archive readers carry generation/gap coverage; blocks are the compression path, not a deletion of the horizon |
 | Plan/review evidence | Exact task-artifact/observability bodies and reviewer route/thread receipts | Bounded review hot index, obligations, and latest-wave status | Exact artifact refs and candidate SHA bind the decision; index rotation cannot certify a missing or partial wave |
 | Task/project execution | Canonical task result plus promoted child artifacts and summaries | Status cards, terminal rows, and Main/Project summary projections | Canonical promotion precedes child-drive GC; disposable task scratch follows the unified retention owner |
+
+### Invariant: Continuation authority and bounded Main projection
+
+Continuation is an explicit relation, not an inferred chat-memory feature. The
+router contract requires `predecessor_task_id`: an empty string means a fresh
+task, a non-empty value means continuation, and omission or `null` is a typed
+refusal before any lookup, enqueue, or provider spend. The existing predecessor
+source is retained by queue snapshot/restore, so a restart cannot silently turn
+the selected task into a fresh one.
+
+The authored continuation narrative is written at the result owner together
+with its exact `get_task_result(include_authority=True)` source. A Project child
+must promote its child-born narrative before child-drive collection; for a
+non-Project split the parent-born narrative owns the field when a stale child
+replica is copied back. Main's provider projection is defensive and recursive:
+it deep-copies the authority, removes only the current task's duplicate nested
+predecessor, and thresholds only the closed raw keys `result` and
+`final_answer` using `context_budget.PREDECESSOR_RESULT_INLINE_CHARS`.
+Oversized values resolve as persisted narrative, bounded exact-key legacy
+authored lookup, or an explicit source-resolvable gap. They never use a raw
+head/tail slice, invent a summary, or mutate the canonical result. Exact task
+reads and external work-order consumers retain the full source.
+
+Provider context overflow is a typed recovery fact. The existing useful reclaim
+and one strictly-smaller same-route retry retain their route order; a final
+`context_overflow` skips the provider-unavailable/forced-provider path, keeps
+`execution_status=infra_failed` and `reason_code=llm_api_error`, and records the
+typed acceptance bypass and `failure.error_kind`. Ordinary provider outages keep
+their existing recovery behavior.
 
 ### Invariant: UI resources carry a disposer
 
@@ -565,10 +632,17 @@ geometry/overflow contract, a paired disposer for every long-lived resource,
 declared refresh/stream/error semantics, and a named real-consumer visual
 verification path. Intentional omissions record why they are safe to defer.
 For Widgets, framed `height` values are bounded and module auto-height is
-host-controlled; module source loading and declarative requests have a bounded
-host timeout; declarative job widgets keep their `job_id` and bounded
-retry/timeout behavior visible in the refresh contract rather than hiding them
-in an author script.
+host-controlled. Below its finite ceiling, applying a reported block size must
+not change the child's inline-size basis; the host owns vertical scrollbar mode
+without disabling the orthogonal horizontal overflow capability, and content
+measurement includes the measured document's bottom padding and border.
+Feedback-sensitive verification is event-driven on the relevant engine: it
+proves temporal convergence to a quiet fixed point with a real consumer or
+production-derived fixture that crosses the known wrapping threshold, rather
+than comparing two snapshots. Module source loading and declarative requests
+have a bounded host timeout; declarative job widgets keep their `job_id` and
+bounded retry/timeout behavior visible in the refresh contract rather than
+hiding them in an author script.
 Missing or malformed job status is an immediate protocol error, while unknown
 non-empty in-progress labels remain bounded pending states for producer
 compatibility.
@@ -601,10 +675,17 @@ Concrete requirements:
 | Triad review (`tools/review.py`) | ✅ via preamble | ✅ via `load_governance_doc` | ✅ via `load_governance_doc` |
 | ↳ Anti-thrashing (v4.35.1) | — | — | Open obligations loaded from `review_state` via `load_state(drive_root)` + `make_repo_key(repo_dir)`, injected unconditionally into `_build_review_history_section` prompt context. Same mechanism in `scope_review.py::_build_scope_prompt` (best-effort when `drive_root` available). |
 | Background consciousness (`consciousness.py`) | ✅ full | ✅ full (max) / navigation map (low) | — (not yet required) |
-| Advisory pre-review (`tools/claude_advisory_review.py`) | ✅ via `load_governance_doc` | ✅ via `load_governance_doc` | ✅ via `load_governance_doc` |
+| Advisory pre-review (`tools/claude_advisory_review.py`) | Two delivery forms: an `api` row receives the full doc inline via `load_governance_doc`; an `agent_session` row receives a resolvable pointer marked MANDATORY FULL READ and the session reads the full doc itself — retrieval is disclosed and non-certifying (the mirror of plan review's `agent_session` delivery form) | same two delivery forms (`api` inline / `agent_session` pointer) | same two delivery forms (`api` inline / `agent_session` pointer) |
 | Scope review (`tools/scope_review.py`) | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting |
+| Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) |
 | Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared target resolves under the system repo); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the lossless navigation map + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` and the host attaches it on the next cycle |
 | Deep self-review (`deep_self_review.py`) | full canonical doc + Atlas accounting | full (max) / navigation map (low) + Atlas accounting | full canonical doc + Atlas accounting |
+
+Skill Review keeps the full stable governance/host prefix for cache-friendly API rows. A
+retrieving session reads those same canonical files from its source-repository root and receives
+the byte-exact dynamic tail inline: manifest, frozen skill chunk, history and output contract.
+The payload snapshot and per-chunk quorum therefore stay identical without rebilling or crowding
+the session window with source text it can inspect sequentially.
 
 Plan review keeps the reviewed SPEC, the task objective, the agent-declared evidence, and
 reviewer-slot framing as first-class context. Governance packs are tiered by ONE structural
@@ -880,6 +961,16 @@ one chunked wave = ONE cycle). `unlimited` removes the local count
 everywhere; deadline, budget and lifecycle rails still bind. A malformed
 value fails closed to the bounded default and is logged once.
 
+For task acceptance, the exact-binding tree-wallet claim is a strict write-ahead
+stamp immediately before the API usage ledger crosses into physical dispatch.
+Panel assembly, an unavailable route, or another pre-transport refusal consumes
+no claim and leaves the binding retryable. Deadline and cancellation are
+rechecked by that stamp; an unavailable claim releases the usage reservation and
+blocks every parallel panel slot before reviewer transport rather than degrading
+hard authority into fail-open cost telemetry. Task acceptance remains API-only;
+the session-route stamp ordering continues to serve its separate replayable
+custody contract.
+
 Anti-pattern: paying for byte-identical review material. Never dispatch a paid
 reviewer wave for material a gate has already reviewed under the same review
 contract — the commit gate refuses a byte-identical staged diff for free from
@@ -911,6 +1002,8 @@ from the exhaustion free replay, not from the refusal streak.
 
 Scope of the review-contract fingerprint (deliberate): it covers the reviewer
 roster, routes, enforcement, resolved efforts, and the prompt constants —
+including the retrieval/task/prompt-wrapper serialization when Skill Review
+actually contains an agent-session row, without repricing API-only panels —
 governance-document CONTENTS (BIBLE.md, CHECKLISTS.md, ARCHITECTURE.md) are
 deliberately outside it, so editing those documents neither lapses recorded
 verdicts nor frees replays. The accepted trade-off is that an old verdict can
@@ -1054,7 +1147,7 @@ Before every commit, verify the following:
 - Project-room promotion with no working folder and no `workspace="none"` opt-out idempotently provisions a standalone git repo through `ensure_project_workspace`, then runs the ordinary workspace admission checks. Never provision over a non-empty broken binding or an unreadable registry; those cases fail loudly. Binding affects tool profile, memory, lease, and preflight, not the Max-mode Architecture projection.
 - Keep policy denials separate from execution failures: `user_files_path_blocked`, `cwd_blocked`, and `artifact_output_undeclared` are non-failure outcomes, while failure to register an explicitly declared output remains `artifact_output_error`.
 - The DEFAULT (non-workspace) shell lane carries the SAME target-aware git policy in every runtime mode including light (Q4=A sandbox unwind): mutating git is blocked only when it targets the Ouroboros runtime (system repo / any data drive — bidirectional, casefold, symlink-resolved containment; `commit_reviewed` is the remedy for self-repo changes), read-only git works everywhere including at the system repo, `allowed_resources.network=false` still fences network git subcommands, and acting `self_worktree` children keep the strict no-commit policy. `git init`/`commit`/`push` in `~/projects`, `/tmp`, an attached project folder, or a host-minted coop tree is legitimate task work, not a violation.
-- `claude_code_edit` is RETIRED (D10, owner-approved migration, phase 6.4): the SDK edit gateway's job moved to the configured session-actor path — `schedule_subagent(subagent_id=...)` freezes a mutating nanny's selected row and atomic bootstrap starts that exact subscription leaf before its first LLM turn; `delegate_wait`/`delegate_answer`/`delegate_cancel` supervise it, and explicit `delegate_start(subagent_id=..., prompt=...)` handles bounded direct or replacement starts. The D10 migration shipped INCOMPLETE for one supported target class — the old gateway could edit an exact non-Git skill payload directly, while the successor knew only Git workspaces — and that class was RESTORED (owner option A, 2026-08-14): a top-level task selects the session transport and exact user-managed payload with `delegate_start(subagent_id=..., prompt=..., root="skill_payload", bucket=..., skill_name=...)`, including a markerless physical native payload through logical `external`; the harness edits a private standalone Git snapshot, and the parent applies the captured diff explicitly under a whole-payload content-hash CAS, after which the existing skill review is stale. The resource fields select authority and never select transport. Compatibility is one-way and permanent: a saved task contract carrying `disabled_tools=["claude_code_edit"]` also withholds the successor `delegate_start` (registry `_disabled_tools`), and the frozen `GET /api/claude-code/status` + `POST /api/claude-code/install` endpoints stay — the Claude runtime still powers the api-route advisory review. Do not resurrect the tool name.
+- `claude_code_edit` is RETIRED (D10, owner-approved migration, phase 6.4): the SDK edit gateway's job moved to the configured session-actor path — `schedule_subagent(subagent_id=...)` freezes a mutating nanny's selected row and gives it an ordinary actor-first episode; if it chooses the exact subscription leaf, it starts it through the configured `delegate_start` bridge. `delegate_wait`/`delegate_answer`/`delegate_cancel` supervise it, and explicit `delegate_start(subagent_id=..., prompt=...)` handles bounded direct or replacement starts. The D10 migration shipped INCOMPLETE for one supported target class — the old gateway could edit an exact non-Git skill payload directly, while the successor knew only Git workspaces — and that class was RESTORED (owner option A, 2026-08-14): a top-level task selects the session transport and exact user-managed payload with `delegate_start(subagent_id=..., prompt=..., root="skill_payload", bucket=..., skill_name=...)`, including a markerless physical native payload through logical `external`; the harness edits a private standalone Git snapshot, and the parent applies the captured diff explicitly under a whole-payload content-hash CAS, after which the existing skill review is stale. The resource fields select authority and never select transport. Compatibility is one-way and permanent: a saved task contract carrying `disabled_tools=["claude_code_edit"]` also withholds the successor `delegate_start` (registry `_disabled_tools`), and the frozen `GET /api/claude-code/status` + `POST /api/claude-code/install` endpoints stay — the Claude runtime still powers the api-route advisory review. Do not resurrect the tool name.
 - Successor parity rule (from the D10 postmortem): a tool may be called replaced, retired with a successor, or fully migrated only after a persistent golden test proves every previously supported user-visible target class through the successor to the final outcome. Deleted-test tombstones and disclosure prove intentional code removal, not successor parity. Dropping a target class requires an explicit owner decision naming the lost user outcome; approval to remove the old tool name or implementation is not that approval.
 - Do not recommend `runtime_data/uploads`, skill payloads, or owner state directories as generic artifact transport.
 
@@ -1111,12 +1204,23 @@ Before every commit, verify the following:
   strict parsing, deadlines can only narrow, and `_narrow_child_delegation_budget`
   can only reduce a subagent parent's authority; a root's explicit mutation grant
   still passes through the ordinary runtime checks.
+- `delegation_budget.may_delegate=false` is an admission refusal for every new
+  descendant. `may_fan_out=false` still permits one direct child, but refuses a
+  second and later direct child using the existing parent/child status records;
+  it is not a topology mode. If that authority scan is incomplete, its count is
+  unknown and only an explicit fan-out/child cap refuses; omitted legacy budget
+  flags remain permissive. The existing budget carries additive
+  `depth_provenance` facts (`requested_depth`,
+  `permitted_depth`, `attempted_depth`, and host-visible `achieved_depth`), where
+  an absent explicit root request remains unknown rather than being inferred from
+  prose or a vendor's internal children.
 - `subagent_id` selects one complete row from the canonical enabled
   `OUROBOROS_SUBAGENTS` list. At schedule time, freeze the normalized row and list
   fingerprint into the task; dispatch/restart must use that snapshot rather than
   mutable Settings. An `api_model` row is the recursive API child. An
-  `agent_session` row is the recursive nanny plus one exact external leaf, whose
-  model/account facts come from requested→effective custody evidence. Do not add a
+  `agent_session` row is the recursive nanny bound to one exact external session
+  route; a physical leaf starts only if the actor chooses it, and its model/account
+  facts come from requested→effective custody evidence. Do not add a
   second model/lane/executor selector to the public schema, parse `recommended_use`,
   rank rows in host code, or substitute another actor after a typed refusal.
 - Legacy `model_lane`/`executor` parameters are handler-side compatibility only,
@@ -1124,23 +1228,52 @@ Before every commit, verify the following:
   one migrated configured row; new+legacy is a conflict and omitted/ambiguous
   `auto`, zero matches, or multiple matches returns `subagent_selection_required`.
   Historical task/result fields remain readable; do not make them active defaults.
-- A configured session child must start or recover its exact external leaf before
-  its first LLM call. Compile one complete work order from the immutable child brief
-  and authority, reuse `subagent_runtime.exact_start`, and inject the custody-durable
-  startup/fault receipt. started_uncustodied is a fault with a possibly live run:
-  do not enter quiet sleep or start a replacement until verified settlement, and
-  replay the original pending invocation/idempotency key after worker loss.
+- A configured session child opens one ordinary host actor episode before starting a
+  new external leaf. The actor may schedule zero, one, or many host-visible children,
+  publish typed tree evidence, call `delegate_start` for its immutable snapshotted
+  session row, or finish with an explicitly typed zero-run receipt through
+  `verify_and_record(contract_kind="delegation_zero_run", zero_run_decision,
+  zero_run_basis)`. The decision may be complete, incomplete, or unknown; prose
+  alone is not a zero-run receipt. Before writing it, the host must prove from the
+  canonical custody root that no open run, ambiguous start invocation, or undisposed
+  physical result remains. Once durably recorded, it is terminal for that actor; a
+  later physical start is refused rather than contradicting the receipt.
+  A malformed or unreadable receipt store with no still-parseable terminal row is
+  typed unknown and also blocks a physical start; the narrow zero-run form remains
+  available to re-ground the decision, and child copy-back must preserve rather
+  than rewrite away the corrupt evidence. A valid terminal row still wins over an
+  unrelated malformed row.
+  This is an affordance, not a topology state machine: host code must not infer a
+  required number or order of descendants. The canonical brief and its hash remain
+  unchanged; any coordination appendix is additive and separately disclosed. A
+  route-unavailable fact still permits this first episode, with no silent vendor/API
+  fallback. When a physical start or recovery actually occurs, inject the existing
+  custody-durable startup/wake receipt. `started_uncustodied` is a fault with a
+  possibly live run: do not enter quiet sleep or start a replacement until the
+  invocation is proven absent or terminal and any captured physical result is
+  explicitly disposed; replay the original pending invocation/idempotency key after
+  worker loss.
+  A fresh physical start and `delegation_zero_run` are mutually exclusive actor
+  decisions. Rebuild all run/start/patch blockers from one custody-log snapshot and
+  hold the existing short per-task file-lock seam only across the final recheck plus
+  START_REQUESTED/zero-run append (`delegate_start_claims` owns the start side);
+  never hold it across transport or waiting.
+  Treat supervisor delivery of one `schedule_subagent` event as at-least-once:
+  an exact task id with live or durable custody is an idempotent no-op before
+  write-surface provisioning, and the same identity check runs again under the
+  queue lock immediately before enqueue. Never use semantic duplicate judgement
+  as the physical identity fence.
   The complete external work-order wire budget is one total 250,000-character
   limit, not a model-context claim and not a per-field prefix rule. A brief that
   fits is sent byte-complete. A brief above that limit is never silently prefixed:
-  the bootstrap may send only a compact coverage=partial source-request lens
-  when the selected route's live manifest positively declares an interactive
-  question channel. The lens carries the full brief SHA/size and an
+  the actor-first exact-start path may send only a compact `coverage=partial`
+  source-request lens when the selected route's live manifest positively
+  declares an interactive question channel. The lens carries the full brief SHA/size and an
   actor-resolvable `get_task_result` canonical-work-order selector; the child must
   request exact character ranges through the existing interaction seam before
   substantive work. The reader and validator share one renderer, so the bytes and
   offsets the actor sees are exactly the bytes the host verifies.
-  A route whose channel is unavailable or unknown receives a typed cannot_verify
+  A route whose channel is unavailable or unknown receives a typed source-channel
   refusal before any external start. Pending recovery replays the stored compact
   request body and the full canonical fingerprint, never a fresh reconstruction
   from the oversized task. The source request and its host-verified character
@@ -1152,15 +1285,34 @@ Before every commit, verify the following:
   source selector; timeout or another resolution remains incomplete. Until the union covers the whole brief, terminal delivery carries
   `work_order_verification.status=cannot_verify`, and `integrate_delegated_patch`
   may reject the captured result but may not apply it.
+  The manifest observation is a point-in-time preflight, not a lease: capability
+  may change before the later POST. Never call the probe delivery evidence or add
+  a second probe/lease to pretend the race vanished. Durable verified range coverage
+  remains the authority; a raced run stays `cannot_verify` and its patch stays
+  unapplied until coverage is complete.
 - `delegate_wait` is an event-only model sleep. Renew bounded transport windows in
   `delegate_supervision` with zero LLM calls; journal progress may stream to the
   owner but is not a wake. Wake only for terminal/interaction/fault, an addressed
-  owner/task message, cancellation/deadline control, recovery judgment, or one
-  explicitly requested `checkpoint_after_sec` + `checkpoint_reason`. A real event
+  owner/task message, a direct-child attention beacon or terminal transition,
+  cancellation/deadline control, recovery judgment, or one explicitly requested
+  `checkpoint_after_sec` + `checkpoint_reason`. A real event
   consumes the one-shot checkpoint. Keep durable pending/ack/replay semantics for
-  wakes and message/interaction ids. On wake the nanny retains its full ordinary
+  wakes and message/interaction ids. An oversized combined wake must remain valid
+  bounded JSON with a hash-verified actor-readable source for the exact full payload;
+  if source staging or delivered-payload acknowledgement fails, leave the wake pending
+  and replay it rather than advancing the coordination cursor. On wake the nanny retains its full ordinary
   tool surface and inherited parent cognitive route; no-co-building is a
   prompt/review/receipt role contract, not a host allowlist.
+  Actor-first startup and every newly minted meaningful wake carry one fresh
+  `coordination_context`: full parent-authored advisory `intent_note`, explicit
+  deadline time remaining, known/partial/unknown tree spend, active host-visible
+  descendants and root acceptance capacity. Vendor-internal descendants stay opaque.
+  Persist this context inside the pending wake so replay is identical; recompute only
+  after acknowledgement on a later wake. When the combined wake spills, preserve the
+  complete context in the exact source and keep only a typed bounded projection in the
+  envelope. These facts inform the LLM and never become an automatic fan-out, hurry,
+  review or stop state machine. Treat active descendants as known only from a fresh
+  queue snapshot and targeted live-row ancestry; stale/missing lineage is unknown.
 - Recovery is cause-specific. A proven non-signal worker crash and an explicit
   planned-self-restart transaction may adopt the same exact run before orphan
   cleanup/LLM/start. Owner restart, signals, panic, timeout/deadline, explicit
@@ -1225,6 +1377,12 @@ Before every commit, verify the following:
   below the hard ceiling.
   Do not infer child needs from objective prose; the LLM declares them via the
   closed enum. Do not add fields to `contracts/task_contract.py` for this.
+- Preserve requested/permitted/attempted/achieved depth on every admitted child.
+  Root acceptance must summarize those persisted host-visible facts; do not
+  recompute historical permission from current Settings when child provenance exists,
+  do not fill missing historical permission from mutable live Settings, and do not
+  count opaque vendor-internal descendants as host depth. A tool-level over-cap
+  attempt must leave a typed durable rejected child result rather than only prose.
 - Treat a delegated 404 as scoped evidence. Project 404 discharges registration;
   run 404 after owned-daemon reprovisioning closes custody as unreachable, not
   settled, only after registration retirement and without invented usage/spend.
@@ -1234,14 +1392,29 @@ Before every commit, verify the following:
   (`constraint_id`, directive, scope, rationale). Consumers must read the payload,
   never parse the text. Overrides require an explicit reason and are recorded as
   decision rows.
+- `review_requested` is a typed, advisory task-tree beacon with the closed payload
+  `{evidence_ref, evidence_sha256}`. It wakes the waited/direct parent and preserves
+  separate typed concerns even when they reference the same bytes, but never starts
+  or waits for a reviewer. The full hash remains visible through `tree_read`/`peek_task`.
+  The parent/root decides whether to inspect, spawn an ordinary critic, or use the
+  root-owned acceptance path. The beacon itself spends no cycle, and its hash remains
+  caller-authored until host bytes are actually read and verified. Immediately before
+  a real root acceptance transport, strictly claim the complete candidate/evidence/fence
+  binding in canonical `task_acceptance_review_accounting` under the root task-result
+  lock. Cap check and exact-binding dedupe are one mutation; missing/malformed authority,
+  lock failure, or a prior claim without a recoverable terminal run is typed unknown and
+  starts no reviewer. Ordinary critic children remain ordinary budgeted tasks, not a role-
+  parsed hidden review flow.
 - Subagent changes must keep writes, commits, review mutation, runtime control,
   tool expansion, skills lifecycle, and shell blocked — except bounded task-tree
   coordination via `tree_note`/`tree_read`, parent-only
-  `override_delegation_constraint`, and bounded media projection such as
+  `override_delegation_constraint`, existing lineage-gated `peek_task`/
+  `cancel_task`/`discard_child_result` over the caller's own direct children, and
+  bounded media projection such as
   `extract_video_frames` writing derived frames only under the task artifact store
   (`artifact_store/video_frames`) through a host-owned command shape (the permitted
   local coordination/projection paths; not arbitrary workspace or repo mutation).
-  Nested readonly
+  Nested
   `schedule_subagent` recursion is allowed only within configured depth/cap
   limits; depth bounds nesting only and never rewrites a
   descendant's lane. Enabled/reviewed extension tools and enabled MCP tools may remain
@@ -1382,8 +1555,11 @@ Before every commit, verify the following:
   read-path only. `wait_task` and
   `get_task_result` keep the full handoff plus a bounded verification-receipt
   projection: every outstanding red/masked receipt first, then newest rows, with
-  an exact omitted count; read the canonical store and fall back to the recorded
-  child drive before copy-back. `wait_tasks` stays batch-compact:
+  an exact omitted count; union the canonical and recorded child-drive replicas
+  with exact-row de-duplication and stable receipt chronology before and during
+  copy-back, so neither a canonical zero-run fact nor a child-local ordinary check
+  can hide or erase the other and an older PASS cannot reconcile a newer FAIL.
+  `wait_tasks` stays batch-compact:
   `task_id, status, cost_usd (+ its honest alias accounted_upper_bound_usd and
   cost_final — C2), child_result_sha256, outcome_axes, result,
   trace_summary, capability_delta when disclosable, duplicate_of`; it points to
@@ -1606,7 +1782,9 @@ Before every commit, verify the following:
 - [ ] `usage.request_wire` describes the terminal candidate returned by one LLM call. Nested aggregation preserves those terminal disclosures in ordered `request_wire_history` with explicit omission accounting; it does not copy failed physical sends or replace `state/usage_attempts.jsonl`. Keep these evidence domains distinct in names, docs, and tests.
 - [ ] Official direct OpenAI Chat sends `max_completion_tokens` and the requested `reasoning_effort` for the provider route as a whole, not for a hand-maintained model-name allowlist. Every eligible function-tool/non-`none` call begins custom+same effort; generic repairs stay on that rung; exact custom rejection creates fresh function+the original effort; exact function rejection may create task-local function+`none`. Keep ordinals fixed at 1/2/3 and never persist custom→function as learned dialect evidence. The last rung exists only within remaining physical-attempt authority. There is no Responses migration in this contract.
 - [ ] Preserve exact direct-Anthropic native assistant content only as private unfinished-turn custody: same-route replay must include the complete original block list/order and every opaque member; cross-route send, summarizer input, and public observability must scrub values. The active assistant/tool-result unit cannot compact until a later successful assistant response consumes it. Owner `none` is `thinking.type=disabled`; do not guess legacy manual-thinking budgets.
-- [ ] Every core-mediated physical provider send goes through `usage_accounting.execute_physical_attempt[_async]`: reserve, mark dispatched, then settle/unresolve. A transport retry is a new attempt. `llm_usage`, state, and UI counters are projections carrying attempt ids, never a second monetary authority. Provider tier pricing and any empirical tokenizer margin affect only a known reservation; settlement prefers actual provider usage/cost. Unknown price reserves `None`, remains nullable in usage events, and never blocks a model merely because its tariff is unavailable. An external skill with granted model-provider credentials is explicitly unknown/unmetered when it bypasses core transport—not `$0`; an ordinary spawned process must not be mislabeled as monetary work.
+- [ ] Every core-mediated physical provider send goes through `usage_accounting.execute_physical_attempt[_async]`: reserve, mark dispatched, then settle/unresolve. A marked dispatch may be released only through a typed pre-dispatch connection/pool failure that proves no request bytes were sent; an ordinary timeout or unknown error remains unresolved. A transport retry is a new attempt. `llm_usage`, state, and UI counters are projections carrying attempt ids, never a second monetary authority. Provider tier pricing and any empirical tokenizer margin affect only a known reservation; settlement prefers actual provider usage/cost. Unknown price reserves `None`, remains nullable in usage events, and never blocks a model merely because its tariff is unavailable. An external skill with granted model-provider credentials is explicitly unknown/unmetered when it bypasses core transport—not `$0`; an ordinary spawned process must not be mislabeled as monetary work.
+- [ ] Custody classifiers must not treat Python's implicit exception `__context__` as transport provenance: a fallback raised inside a prior provider's `except` block inherits that prior attempt even after its own request was dispatched. Use the explicit `__cause__` chain or typed transport metadata only; an ambiguous timeout remains unresolved.
+- [ ] The low-level `call_llm_with_retry` seam treats an omitted transport reserve as the raw owner-deadline window; callers that own a finalization reserve must pass it explicitly so admission and the transport bound cannot disagree.
 - [ ] Hold the usage-ledger cross-process lock only for budget check, validated append, and fsync. Never hold it over network I/O. Preserve a paid response if settlement persistence fails and leave an honest dispatched/unresolved bound.
 - [ ] **Tree-spend visibility.** Under a root cap, pacing and stop text use root-subtree ledger spend including in-flight holds; own cost is diagnostic, and unavailable remains unknown rather than `$0`. Reuse `usage_accounting.last_root_accounting` and refresh only at rare cache-breaking/explicitly stale decision surfaces, never by an unconditional per-round ledger scan or inside a stable cached prefix. `task_pacing.resolve_cost_ceiling` returns `disabled|active|exhausted_soft_land|unknown` from the independent global-percentage and root-cap-minus-absolute-margin axes; graceful finalization precedes, but cannot bypass, the ledger fence. `resolve_deciding_spend` is the sole fallback seam and must label own-cost-under-root-cap as a lower bound.
 - [ ] Before dispatching any post-task consolidation or synthesis worker, read `usage_breakdown` once for the whole root subtree and pass the same loop-local snapshot to summary and reflection. It is explicitly non-final (`cost_final=false`, `cost_with_children_partial=true`) and carries child-inclusive accounted cost, reservations, unresolved upper bound, unknown/unmetered count, ledger integrity, and capture time. A read failure is unavailable/null, never `$0`. Consolidation, summary, and reflection model spend belongs only to the existing terminal checkpoint; do not add another ledger or reconciliation LLM call.
@@ -1633,6 +1811,17 @@ Before every commit, verify the following:
   invented — so "which account paid, under which access" is answerable from the ledger
   row, the settled event, and (for reviewer slots) the last-execution file. Those are
   three separate stores, deliberately not joined into one applied receipt.
+- [ ] New Skill Review waves attribute every canonical usage row with the exact
+  `review_skill`, `review_wave_id`, and stable `review_slot_id`. API attempts inherit
+  these fields through `UsageScope`; agent sessions persist them, plus review
+  category/source, in the existing `RunCustody` start/replay facts so restart and late
+  settlement pass them explicitly to `record_subscription_session`. The history row's
+  `physical_attempt_v1` marker only declares that this join key exists; lazy detail
+  projects the same `usage_attempts.jsonl` rows and persists no totals. Pre-marker waves
+  stay “exact attribution unavailable” and must never be reconstructed by time/model.
+  If a terminal row lands before a late worker dispatches, readers overlay only the exact
+  same-wave write-ahead marker; an idempotent retry must not clear that marker until its
+  facts are already durable in the raw append-only row.
 - [ ] `cost_final` on a projection is a COUNT of open rows (`non_final_rows`), never a
   truthiness test on a dollar sum: a reserved/dispatched/unresolved row, a settled row
   with an unknown price, and a settled row its writer marked non-final are each open
@@ -1648,16 +1837,18 @@ Before every commit, verify the following:
 - [ ] Provider failures must be classified before retrying the same request.
   Quota/auth/billing, hard bad-request, and request-too-large/context failures
   are non-retryable as-is: record the exact category and surface a recovery hint
-  instead of burning rounds on identical calls. Transient rate limits/timeouts may
-  still use the normal retry path.
+  instead of burning rounds on identical calls. A typed 408/429/5xx or a failure
+  proven pre-dispatch may retry; a dispatched request with no terminal provider
+  outcome must stop same-model and cross-model sends until it is reconciled.
 
 #### Timeout & Wait Control
 - [ ] For a session nanny, `delegate_wait` is **event-only** at the model surface.
   Host supervision renews bounded transport windows while the run is non-terminal;
   ordinary journal progress streams to the owner and advances the cursor but neither
   returns to the model nor ends sleep. Only terminal/interaction/fault, addressed
-  task/owner message, control/recovery judgment, or a model-requested one-shot
-  checkpoint wakes it. A quiet transport-window expiry is an internal renewal with
+  task/owner message, direct-child attention/terminal state, control/recovery
+  judgment, or a model-requested one-shot checkpoint wakes it. A quiet
+  transport-window expiry is an internal renewal with
   zero LLM calls. Do not reintroduce caller-visible `wait_sec`, repeating timers,
   progress wakes, or a host semantic stall detector. Reviews and ordinary task waits
   keep their own existing progress-aware/re-decidable contracts.
@@ -1668,9 +1859,125 @@ Before every commit, verify the following:
 - [ ] Fixed **kill**-timeouts (hard task/tool ceilings, watchdog) still exist as
   the outer safety bound and get sensible ceilings under high-reasoning models;
   progress-aware waiting tunes the *passive* wait, it does not remove the watchdog.
+- [ ] Keep transport dead-socket bounds, task deadlines, and cognitive in-flight
+  state separate. Each main-loop LLM call emits exact-attempt `started` and
+  `finished | failed` facts; while that row is active it spares only the task idle
+  rail. Silent elapsed reasoning is not semantic stall evidence. Explicit deadline,
+  budget, cancellation, and the absolute task ceiling still cut through, and a
+  terminal fact must match task-attempt plus execution/round/call identity before
+  it clears the row. Do not reuse `external_wait_lease`, a transport timeout, or a
+  heartbeat as this authority, and do not add an elapsed-time stall detector.
 - [ ] New numeric timeout constants are an SSOT in `config.py` `SETTINGS_DEFAULTS`
   with a getter and env registration; do not scatter magic wait numbers across
   call sites.
+- [ ] Cognitive waits use separate axes. A transport timeout only bounds a dead
+  socket; it is not a reasoning cutoff. The shared no-proxy LLM transport bound
+  is `OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC` (2700s), while review slots,
+  plan/acceptance wrappers, web-search attempts, delegated polling, and VLM
+  calls use their own logical deadline or provider-specific transport setting.
+  An explicit slot deadline narrows the route-owned bound. API review uses its
+  transport bound as a settlement fallback because that request ends there;
+  a delegated agent session instead inherits the existing task absolute ceiling
+  because the paid engine run can outlive an HTTP read. The owner deadline always
+  narrows either route. A caller/task deadline always narrows nested waits, and Anthropic (120s) plus
+  VLM captioning (90s) retain their separate provider transport defaults as
+  ceilings, not promises to run past the owner deadline. Delegated review uses
+  an opt-in strict poll bound for the remaining logical window; the general
+  delegate-wait floor remains unchanged for its existing transport contract.
+  Default reviewer slots intentionally have no short cognition cap. The outer
+  `plan_task` ToolEntry envelope covers `max(transport + 2 × grace,
+  task-absolute-ceiling + grace)`, so an `agent_session` worker can settle
+  inside the same existing task lifetime instead of being abandoned by an
+  API-only wrapper. The non-delegated Claude advisory child follows the same
+  owner-narrowed process bound; with no owner deadline it keeps its 900-second
+  child-safety ceiling.
+- [ ] A paid process-local review belongs to the exact existing process-custody
+  identity stamped in its commit-attempt row: server session plus pid. A new
+  Agent, a sibling worker boot, task return, heartbeat silence, or elapsed time
+  is not owner death. Settle tokenless rows only after an existing supervisor
+  teardown seam confirms that pid is dead, or when a later server generation
+  observes the prior-session pid already dead; retain delegated rows carrying
+  their durable invocation token, and leave legacy ownerless rows fail-closed.
+  Do not add a second process ledger or use TTL as resend authority.
+- [ ] Without an owner deadline, `web_search` sizes its outer ToolEntry
+  envelope for the complete configured paid cascade: two safe OpenAI attempts,
+  one OpenRouter attempt, one Anthropic attempt, and finalization grace. With
+  all three provider routes available at the defaults, that is
+  `4 × 480s + 120s = 2040s` (about 34 minutes). An owner deadline is narrower
+  authority: the outer wait and every provider leg recompute against the
+  remaining window minus finalization reserve, so the no-deadline envelope is
+  not promised under a shorter deadline.
+- [ ] Nested process wrappers are ordered, never tied: the provider bound must
+  settle before its killable child, and the child must settle before the generic
+  ToolEntry envelope. Explicit VLM helpers reuse the fixed structural settlement
+  margin from `config.py` (`provider`, `provider + margin`, and a ToolEntry
+  minimum of `provider + 2 × margin`) and subtract the whole hierarchy from the
+  owner window before dispatch. The global owner tool-timeout setting may widen
+  that outer envelope; the margin is not a user-facing cognition timeout.
+  Send-time captions have no child wrapper and keep the direct 90-second provider
+  contract.
+- [ ] Every physical LLM/review/VLM/tool operation that can outlive a logical
+  wait emits a typed `cognitive_operation` start and terminal fact. The
+  supervisor uses the active-operation map only to spare the idle rail; the
+  task deadline, budget, cancellation and absolute ceiling still cut through.
+  A logical timeout with a live worker is custody/reconciliation-pending, never
+  permission for a blind paid retry. Late review results settle the original
+  attempt and remain bound to its retry identity. Once the owner deadline minus
+  finalization reserve is spent, an unstarted review row is a typed `$0
+  not_dispatched` actor: no worker, paid stamp, or active lease is created.
+  A commit attempt cannot treat an in-flight reviewer as a final quorum verdict,
+  including under advisory enforcement. Plan review applies the same rule: if a
+  paid actor remains in flight, the wave is projected as the existing open
+  `DEGRADED` state with `review_late_result_pending`, even when the settled
+  responses already meet the arithmetic quorum; the counts remain factual, but
+  the wave cannot close until custody settles.
+- [ ] A returned provider response (including an empty/incomplete body) or typed
+  terminal 408/429/5xx is settled and may use the surface's bounded retry/repair
+  rail. A dispatched request whose socket or stream ends without terminal
+  provider evidence is `provider_outcome_unknown`: no same-model, fallback,
+  provider, local-server, or forced-final resend until custody settles.
+- [ ] A reviewed mutative wrapper must retain foreground custody until the
+  workflow settles. Inner phase bounds and the task/supervisor absolute deadline
+  are the stop axes; never use the global 600s tool default or a separately
+  guessed hard ceiling to abandon a still-live reviewer or commit pipeline.
+- [ ] A custody retry key names semantic material and an admitted cycle, not its
+  rendered prompt. Prior-round/history scaffolding may change while the same
+  physical operation is settling and must still join that operation; changed
+  snapshots, owner intent, route/model rows, or a genuinely new review cycle
+  must mint a new key. Use the canonical staged tree/parent binding for commit
+  review, pass the key immutably to every row, and do not admit the next paid
+  plan-review cycle while the previous cycle is still in flight. Plan-cycle
+  reconciliation freezes its originally dispatched rows and `$0` skip rows instead
+  of re-running live health/fit admission; reviewer-requested evidence advances
+  the next envelope only after every actor in the current cycle is terminal.
+  Skill Review keys additionally bind the exact skill, lifecycle wave, content,
+  panel/rebuttal contract, and frozen chunk digest/index so concurrent waves or
+  oversized chunks cannot join one another; they remain process-local custody,
+  not a promise of restart recovery without a durable invocation token.
+- [ ] Commit review writes and rereads `paid=True`, the exact nonempty retry
+  key, and both complete slot rosters with reserved operation ids in one locked
+  write before either parallel surface starts, except when the owner window
+  already has no dispatch capacity after finalization reserve: that prepared
+  roster remains an unpaid `$0` wave and no paid stamp is fired. A delegated row must add its
+  `pending_invocation_id` to that exact reservation after `START_REQUESTED` and
+  before POST. Exact resume keeps the durable actor roster. Deterministic packet reassembly may reconstruct unchanged executor
+  inputs, but cannot erase a frozen row, admit an unmatched paid row, or replace
+  a pending row with a different `slot_id`/`operation_id`. Delegated pending rows
+  carry the durable invocation token; API rows without process custody stay unresolved.
+- [ ] Cooperative cancellation is used where the existing route supports it
+  (delegated sessions); API/thread routes disclose an in-flight custody state
+  until their physical result settles. Do not replace this with a keyword or
+  model-name heuristic, a second scheduler, or a new global timing ledger.
+  A typed transport failure after a delegated run has an id is an unknown
+  outcome: retain the durable invocation token and replay that started run on
+  the permitted retry instead of posting a second paid run. A late tool worker
+  closes its own cognitive lease through its completion callback, and a partial
+  terminal event that lacks the stored correlation identity cannot close it.
+  While the process lives, unknown local custody remains a no-resend tombstone.
+  A later process startup is separate causal evidence that a tokenless local
+  waiter cannot return: settle that row as a typed paid infrastructure failure,
+  while rows with durable delegated tokens stay pending for exact rejoin. This
+  allows a new explicit attempt after restart; elapsed TTL alone never does.
 
 #### Loop / State-Machine Changes
 - [ ] Changes to `loop.py` or other task state-machine logic include adversarial tests for malformed output, false-completion prevention, replay/log durability, and failure modes — not just the happy path.
@@ -1910,6 +2217,17 @@ commit.
   shared toast host unless status belongs to a permanently reserved control
   row. Working, warning, error, and destructive states keep consistent meaning
   across Chat, Logs, Settings, and Skills.
+- Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
+  `taskTerminalPhase`; `taskPresentation` is the one compact factual projection
+  consumed by task chips, live completion, history replay, and child terminal
+  presentation. Keep raw reason codes in details/Logs. A non-terminal
+  LLM/tool/checkpoint diagnostic may add a timeline fact, but must not promote
+  the whole task, including when no earlier human headline exists. Unknown
+  event names never acquire Chat severity from `error`/`crash`/`fail` keyword
+  matching; Logs retains its independent diagnostic categorization.
+- The Chat header reports connection and server-authoritative activity only.
+  Failed task status does not synthesize header attention, a toast, unread
+  state, or an owner action; those remain explicit domain/incident contracts.
 - Floating chrome combines gradient and masked backdrop blur so the blur edge
   does not become a visible seam. The chat composer intentionally keeps blur on
   the input surface and reserves measured message padding around the dock.
@@ -2105,8 +2423,10 @@ that:
 
 ### The commit gate mirrors the CI split
 
-`ouroboros/preflight_runner.py::run_hermetic_pytest` runs the same two logical
-passes as CI in one disposable checkout and scrubbed temporary data root. The
+`ouroboros/preflight_runner.py::run_hermetic_pytest` runs the node test lane
+(`NODE_OPTIONS` scrubbed, as `PYTEST_*` is for the pytest passes)
+plus the same two logical pytest passes as CI in one disposable checkout and
+scrubbed temporary data root. The
 candidate is captured universally — one hardened worktree-vs-`HEAD` binary diff
 applied as raw bytes, assembled identically whether the source index is clean,
 dirty, or mid-merge — and a capture or apply failure is the typed
@@ -2118,13 +2438,27 @@ test failure:
 2. flag-free `serial` for tests whose real process/port/global-state behavior
    cannot be parallel-safe.
 
-Both passes share one total timeout. `LANE_EXCLUSION_EXPR` and
-`PARALLEL_PASS_FLAGS` are executable SSOTs pinned against both CI jobs. The
-selected interpreter must provide `pytest-xdist` and `pytest-timeout`; plugin
-presence is probed outside candidate control, forced on for the parallel pass,
-and proven by host-owned worker markers. `OUROBOROS_PREFLIGHT_SERIAL=1` is the
-explicit temporary rollback lever, never a silent fallback. Evidence runs set
-`OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS=1`.
+Before those two pytest passes, one contained `node` subprocess runs the
+browser-module suite (`ouroboros/preflight_node.py`): when the assembled
+candidate carries `web/tests/*.test.js` files, the gate runs `node --test`
+over them from the candidate's `web/` directory — the same suite
+`web/package.json` scripts and both CI jobs run — resolving the bundled signed
+node first and PATH second, with a 20.11 version floor. The lane is
+content-keyed: a candidate without web tests never requires node, but while
+the lane is active a missing or unusable runtime is the typed
+`PREFLIGHT_NODE_MISSING`/`PREFLIGHT_NODE_TOO_OLD` hard block and a red suite
+is `NODE_TESTS_FAILED` — never a silent skip.
+
+All passes share one total timeout. `LANE_EXCLUSION_EXPR` and
+`PARALLEL_PASS_FLAGS` are executable SSOTs pinned against both CI jobs, and so
+is the node step (`cd web && node --test tests/*.test.js`, derived from the
+lane's own glob constants). The selected interpreter must provide
+`pytest-xdist` and `pytest-timeout`; plugin presence is probed outside
+candidate control, forced on for the parallel pass, and proven by host-owned
+worker markers. `OUROBOROS_PREFLIGHT_SERIAL=1` is the explicit temporary
+rollback lever, never a silent fallback. Evidence runs set
+`OUROBOROS_PREFLIGHT_REQUIRE_PLUGINS=1` (and `OUROBOROS_PREFLIGHT_REQUIRE_NODE=1`
+for the node lane's real-spawn tests).
 
 The candidate environment cannot weaken the pass with inherited `PYTEST_*`
 values, delete an inherited suite and earn green, or replace required plugins

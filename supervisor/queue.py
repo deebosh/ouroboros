@@ -49,7 +49,7 @@ from supervisor.task_lifecycle import (  # noqa: F401 -- public queue API re-exp
     clear_acceptance_fence_for_root, record_scheduled_admission,
     resume_budget_paused_task, restore_queue_fences, transition_acceptance_fence,
 )
-
+from supervisor.cognitive_operations import _active_operation_progressing
 log = logging.getLogger(__name__)
 
 
@@ -246,7 +246,7 @@ def enqueue_task(
             try:
                 from ouroboros.task_results import load_task_result
 
-                if load_task_result(DRIVE_ROOT, task_id):
+                if load_task_result(DRIVE_ROOT, task_id, strict=True):
                     if ADMISSION_RESERVATIONS.get(task_id) == admission_token:
                         ADMISSION_RESERVATIONS.pop(task_id, None)
                     t["_admission_blocked"] = "duplicate_task_id"
@@ -769,7 +769,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
                 "memory_mode": t.get("memory_mode"), "drive_root": t.get("drive_root"), "parent_cognitive_route": t.get("parent_cognitive_route"), "subagent_availability": t.get("subagent_availability"),
                 "child_drive_root": t.get("child_drive_root"),
                 "budget_drive_root": t.get("budget_drive_root"),
-                "task_constraint": t.get("task_constraint"),
+                "task_constraint": t.get("task_constraint"), "predecessor_authority_source": t.get("predecessor_authority_source"),
                 "metadata": t.get("metadata"), "origin_message_ref": t.get("origin_message_ref"),
                 "origin_message_text": t.get("origin_message_text"), "_attempt": t.get("_attempt"),
                 "review_reason": t.get("review_reason"), "review_source_task_id": t.get("review_source_task_id"),
@@ -1171,7 +1171,6 @@ def _has_pending_descendant(task_id: str) -> bool:
             return True
     return False
 
-
 def _enforce_task_timeouts_locked(
     workers: Any, now: float, owner_chat_id: int, st: Dict[str, Any]
 ) -> None:
@@ -1229,11 +1228,12 @@ def _enforce_task_timeouts_locked(
         # is legitimate silence (hard-bounded by events._handle_external_wait_lease);
         # it spares ONLY this idle rail — ceiling/deadline/budget/cancel never consult it.
         lease_ts = meta.get("external_wait_lease_until")
-        # Keep an orchestrator alive on own progress, a freshly progressing RUNNING descendant,
-        # a QUEUED descendant (a kill would orphan the queued subtree), or a live external-wait
-        # lease; only abs ceiling / explicit deadline / budget are unconditional.
+        active_llm_call = meta.get("active_llm_call")
+        llm_call_in_flight = isinstance(active_llm_call, dict) and active_llm_call.get("task_attempt") == attempt
         progressing = (own_progress or subtree_progressing or _has_pending_descendant(task_id)
-                       or (isinstance(lease_ts, (int, float)) and float(lease_ts) > now))
+                       or (isinstance(lease_ts, (int, float)) and float(lease_ts) > now)
+                       or llm_call_in_flight
+                       or _active_operation_progressing(meta, now))
         ceiling_reached = runtime_sec >= abs_ceiling
 
         # Hard axes (deadline_at, abs ceiling) stop the task regardless of activity; the

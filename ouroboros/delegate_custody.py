@@ -23,20 +23,24 @@ import json
 import logging
 import pathlib
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
+from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
+from ouroboros.delegate_custody_usage import (
+    disclosed_spend,
+    disclosed_tokens,
+    summary_of,
+)
 from ouroboros.utils import append_jsonl, utc_now_iso
-
 log = logging.getLogger(__name__)
-
 # The harness's own terminal vocabulary — one definition for the tool, the settler and
 # the reconciler (a second copy is how a "cancelled" run stayed live on one branch).
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
 # The terminal states in which the run DID reach its contract write and DID act, so
 # absent containment evidence is a missing proof rather than "too early to tell".
 SUCCEEDED_STATES = frozenset({"succeeded"})
-
 # Durable row kinds. Every one of them is written to the event log the agent, the
 # supervisor and the forensic tooling already read.
 START_REQUESTED = "delegate_run_start_requested"
@@ -107,7 +111,6 @@ CANCEL_CONFIRMED = "confirmed"
 CANCEL_FAILED = "failed"
 CANCEL_CONTAINMENT_FAULT = "containment_fault_run_may_still_be_live"
 
-
 @dataclass
 class RunCustody:
     """One delegated run's lifecycle facts, replayed from the durable rows."""
@@ -122,12 +125,16 @@ class RunCustody:
     project_owned: bool = False
     root_task_id: str = ""
     parent_task_id: str = ""
+    category: str = "subagent"
+    source: str = "delegated_subagent"
+    review_skill: str = ""
+    review_wave_id: str = ""
+    review_slot_id: str = ""
     ledger_root: str = ""
     idempotency_key: str = ""
-    # The LOGICAL INVOCATION ID: minted once per intended invocation, reused verbatim as the wire Idempotency-Key
-    # on a transport retry of the SAME invocation (so the engine returns the run it already accepted), and fresh
-    # for every deliberately new ``delegate_start``. ``idempotency_key`` above is the content-derived identity
-    # used to FIND a pending invocation; this id is what actually rides the wire.
+    # Minted once per logical invocation and reused verbatim as the wire
+    # Idempotency-Key only for an exact transport retry; deliberately new work
+    # gets a fresh id. ``idempotency_key`` above only finds pending work.
     invocation_id: str = ""
     # Configured-actor binding. Empty on historical/root-legacy delegate starts.
     selected_subagent_id: str = ""
@@ -196,8 +203,6 @@ class RunCustody:
 # Process-local MEMOIZATION of the rows above — never the authority. A miss falls
 # through to the durable scan, which is why a restart no longer loses custody.
 _CUSTODY: Dict[str, RunCustody] = {}
-
-
 # -- durable record ------------------------------------------------------------
 
 def event_log_path(drive_root: Any) -> pathlib.Path:
@@ -265,6 +270,36 @@ def custody_log_unreadable(drive_root: Any) -> bool:
         return True
     return False
 
+
+@contextmanager
+def actor_decision_lock(drive_root: Any, task_id: str) -> Iterator[None]:
+    """Serialize one actor's mutually exclusive zero-run/start decisions.
+
+    The custody log and the verification-receipt store are separate append-only
+    authorities.  This short critical section joins only their decision edge:
+    re-read current authority, then append either a zero-run receipt or a fresh
+    START_REQUESTED row.  Transport, waiting and settlement stay outside it.
+    """
+
+    from ouroboros.platform_layer import (
+        acquire_exclusive_file_lock,
+        release_exclusive_file_lock,
+    )
+
+    identity = str(task_id or "").strip()
+    if not identity:
+        raise ValueError("actor decision lock requires a task id")
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    lock_path = pathlib.Path(drive_root) / "state" / "delegate_actor_claims" / f"{digest}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = acquire_exclusive_file_lock(lock_path, timeout_sec=20.0, stale_sec=120.0)
+    if fd is None:
+        raise TimeoutError("actor decision lock is unavailable")
+    try:
+        yield
+    finally:
+        release_exclusive_file_lock(lock_path, fd)
+
 def _iter_rows(path: pathlib.Path, tail_bytes: Optional[int] = None) -> Iterator[Dict[str, Any]]:
     try:
         with path.open("rb") as handle:
@@ -290,7 +325,8 @@ def _iter_rows(path: pathlib.Path, tail_bytes: Optional[int] = None) -> Iterator
 _STARTED_STR_FIELDS: Tuple[Tuple[str, str], ...] = tuple(
     (attr, "route" if attr == "route_id" else attr) for attr in (
         "task_id", "route_id", "model", "profile_id", "project_id", "root_task_id",
-        "parent_task_id", "ledger_root", "idempotency_key", "invocation_id",
+        "parent_task_id", "category", "source", *REVIEW_ATTRIBUTION_KEYS,
+        "ledger_root", "idempotency_key", "invocation_id",
         "snapshot_id", "execution_root", "baseline_sha", "target_root",
         "authority_source", "access", "mode", "isolation",
         "selected_subagent_id", "config_fingerprint", "work_order_fingerprint",
@@ -311,7 +347,8 @@ _STARTED_FIRST_WINS_FACTS: Tuple[str, ...] = (
     "snapshot_id", "execution_root", "baseline_sha", "target_root",
     "authority_source", "resource_ref", "selected_subagent_id",
     "config_fingerprint", "work_order_fingerprint", "work_order_coverage",
-    "authority_fingerprint", "work_order_source_request")
+    "authority_fingerprint", "work_order_source_request", "category", "source",
+    *REVIEW_ATTRIBUTION_KEYS)
 
 from ouroboros.delegate_source_coverage import (
     apply_source_delivery_confirmation,
@@ -368,6 +405,8 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
             ),
             **{attr: str(row.get(key) or "") for attr, key in _STARTED_STR_FIELDS},
         )
+        entry.category = entry.category or "subagent"
+        entry.source = entry.source or "delegated_subagent"
         previous = state.get(run_id)
         setattr(entry, "_source_delivery_confirmations", [])
         if previous is not None:
@@ -625,25 +664,24 @@ def new_invocation_id() -> str:
 
 
 def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str, Any]]:
-    """One invocation's durable fate: who requested it, the EXACT body it sent, the
-    resources that attempt bound, and how it resolved.
-
+    """One invocation's durable fate: who requested it, the EXACT body it sent,
+    the resources that attempt bound, and how it resolved.
     ``state`` is ``pending`` (requested, never bound, never definitely refused —
     the only state an explicit retry may replay), ``started`` (a run bound to it;
     carried with its ``run_id`` so the caller can wait instead of re-posting), or
     ``failed_definite`` (the daemon definitively refused; the id is dead — replaying
     it against a since-reconfigured route is how a key wedges into a permanent 409).
-
     ``request`` is the canonical POST body recorded before the wire attempt: a retry
     replays THESE bytes, never a re-derivation, because the engine's replay match
     digests the request and answers a same-key-different-digest POST with 409
     ``idempotency_conflict``.
-
     ``route``, ``project_id``, ``project_owned`` and ``idempotency_key`` are the
     attempt facts that never ride the wire, read from the FIRST request row — the
     minting — because the invocation stores its facts ONCE and a retry replays them.
     A retry that re-derived any of these from the current route/model/workspace
     context wrote a durable record contradicting the body it actually POSTed.
+    First-request lineage, usage attribution (category/source/skill/wave/slot),
+    and isolation facts are likewise replayed rather than re-derived.
     """
     target = str(invocation_id or "").strip()
     if not target:
@@ -657,11 +695,19 @@ def invocation_record(drive_root: Any, invocation_id: str) -> Optional[Dict[str,
         if kind == START_REQUESTED and found is None:
             found = {
                 "task_id": str(row.get("task_id") or ""),
+                "surface": str(row.get("surface") or ""),
+                "slot_id": str(row.get("slot_id") or ""),
+                "operation_id": str(row.get("operation_id") or ""),
                 "request": row.get("request") if isinstance(row.get("request"), dict) else None,
                 "route": str(row.get("route") or ""),
                 "project_id": str(row.get("project_id") or ""),
                 "project_owned": bool(row.get("project_owned")),
                 "idempotency_key": str(row.get("idempotency_key") or ""),
+                "root_task_id": str(row.get("root_task_id") or ""),
+                "parent_task_id": str(row.get("parent_task_id") or ""),
+                "category": str(row.get("category") or "subagent"),
+                "source": str(row.get("source") or "delegated_subagent"),
+                **{key: str(row.get(key) or "") for key in REVIEW_ATTRIBUTION_KEYS},
                 # The C1 isolation binding: a retry reproduces EXACTLY these — the
                 # snapshot, the execution root, the baseline and the authority
                 # target the original attempt bound — never a re-derivation.
@@ -751,54 +797,10 @@ def output_disposition(custody: RunCustody) -> Dict[str, Any]:
     return _disposition(custody)
 
 
-# -- money and terminal state --------------------------------------------------
-
-
-def summary_of(detail: Dict[str, Any]) -> Dict[str, Any]:
-    return detail.get("summary") if isinstance(detail.get("summary"), dict) else {}
-
-
-def disclosed_spend(summary: Dict[str, Any]) -> Tuple[Optional[float], bool]:
-    """The cash the harness reported AND whether it is settled — never one without both.
-
-    `spendUsd` is only half the disclosure: the engine populates the sibling
-    `spendEstimated` ("True when settled cash is estimated rather than exact") and really
-    sets it — 8 of 60 live `/v2/runs` rows carry it. Reading the amount alone made an
-    ESTIMATE indistinguishable from settled cash, so an unsettled charge was written to
-    the ledger as final and relayed to the agent as a closed book.
-
-    Returned as ONE pair rather than two readers, so no call site can ask half the
-    question — the shape that produced this defect. "Disclosed nothing" is `(None, False)`
-    and not `(None, None)`: the flag is DEFINITELY false with no amount, so the settled
-    envelope can publish it verbatim instead of deciding for itself what silence means.
-    """
-    raw = summary.get("spendUsd")
-    if raw is None:
-        return None, False
-    try:
-        return float(raw), summary.get("spendEstimated") is True
-    except (TypeError, ValueError):
-        return None, False
-
-
-def disclosed_tokens(raw: Any) -> Optional[int]:
-    """A reported token count, or None when the harness reported nothing.
-
-    The control schema is explicit that these are "null until a harness reported it —
-    never render null as 0", and null is what live rows really carry. `int(raw or 0)`
-    erased the distinction, making a run that disclosed nothing look like one that
-    genuinely used zero tokens. Same rule as cost, one axis over.
-    """
-    if raw is None:
-        return None
-    try:
-        return max(0, int(raw))
-    except (TypeError, ValueError):
-        return None
-
-
 def is_terminal(detail: Dict[str, Any]) -> bool:
-    return str(summary_of(detail).get("state") or "") in TERMINAL_STATES
+    from ouroboros.delegate_custody_usage import is_terminal as _is_terminal
+
+    return _is_terminal(detail, TERMINAL_STATES)
 
 
 def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
@@ -926,6 +928,8 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
                 task_id=custody.task_id,
                 root_task_id=custody.root_task_id,
                 parent_task_id=custody.parent_task_id,
+                category=custody.category,
+                source=custody.source,
                 prompt_tokens=disclosed_tokens(summary.get("inputTokens")),
                 completion_tokens=disclosed_tokens(summary.get("outputTokens")),
                 cached_tokens=disclosed_tokens(summary.get("cachedInputTokens")),
@@ -933,6 +937,7 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
                 spend_estimated=estimated,
                 credential_profile_id=applied_profile,
                 access_profile=applied_access,
+                **{key: getattr(custody, key) for key in REVIEW_ATTRIBUTION_KEYS},
             )
         except Exception:
             log.exception("Failed to record delegated subscription session %s", custody.run_id)
@@ -1405,6 +1410,9 @@ def _recover_pending_invocation(drive_root: Any, gateway: Any,
         project_id=record["project_id"], project_owned=bool(record["project_owned"]),
         root_task_id=str(record.get("root_task_id") or ""),
         parent_task_id=str(record.get("parent_task_id") or ""),
+        category=str(record.get("category") or "subagent"),
+        source=str(record.get("source") or "delegated_subagent"),
+        **{key: str(record.get(key) or "") for key in REVIEW_ATTRIBUTION_KEYS},
         # The sweep runs against the canonical root; a recovered run's ledger row
         # belongs there like every other (P34R.1).
         ledger_root=str(drive_root),
@@ -1462,41 +1470,9 @@ def _retire_recovered_registration(gateway: Any, record: Dict[str, Any]) -> bool
         return False
 
 
-def _capture_stranded_patch(drive_root: Any, run: RunCustody) -> Dict[str, Any]:
-    """Capture a reconciled mutating run's diff into the ordinary patch artifact.
-
-    The reconcile path is the ONLY terminal observer a dead-owner run gets, so
-    without this the child's work stayed in the snapshot with no captured patch
-    and no apply/reject material — stranded, invisible, and one binding loss away
-    from GC. Called ONLY where a terminal receipt PROVES the run is over (C1-R2):
-    a run closed absent/unreadable has unknowable state, and freezing a patch
-    there would put a "captured" receipt over work the child might still be
-    writing — those runs are captured lazily at disposition instead. Reuses the
-    one existing capture primitive (idempotent, durable ``PATCH_CAPTURED`` row);
-    capture ONLY — the apply/reject decision belongs to a live owner and is NEVER
-    taken by a sweep. Fail-soft: a capture error is disclosed in the reconcile
-    row, and the snapshot persists either way because the run has no recorded
-    disposition.
-    """
-    if not (run.execution_root and run.settled and not run.patch_disposed):
-        return {}
-    try:
-        from ouroboros.tools.delegate_integration import capture_terminal_patch_for_drive
-
-        block = capture_terminal_patch_for_drive(drive_root, run) or {}
-    except Exception:
-        log.warning("Reconcile patch capture failed for %s", run.run_id, exc_info=True)
-        return {"patch_capture": "failed", "patch_disposition": "pending"}
-    return {"patch_capture": str(block.get("status") or ""),
-            "patch_artifact": block.get("patch_artifact"),
-            # The typed disposition-pending disclosure: this rides the durable
-            # RECONCILED row, and the health surface (``undisposed_patches``)
-            # keeps the fact visible until an explicit apply/reject lands.
-            "patch_disposition": "pending"}
-
-
 def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody) -> Dict[str, Any]:
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.tools.delegate_integration import capture_stranded_patch
 
     try:
         detail = gateway.get_run(custody.run_id)
@@ -1530,7 +1506,7 @@ def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody) -> Dict[s
                   "settled": settled["settled"], **output_disposition(custody)}
         # The C1 half: a TERMINAL DETAIL proves the run is over, so the sweep — its
         # last terminal observer — captures the diff eagerly here.
-        result.update(_capture_stranded_patch(drive_root, custody))
+        result.update(capture_stranded_patch(drive_root, custody))
     else:
         cancelled = cancel_and_verify(drive_root, gateway, custody, "owner_task_gone")
         result = {"run_id": custody.run_id, "task_id": custody.task_id, "action": "cancelled",
@@ -1541,7 +1517,7 @@ def _reconcile_one(drive_root: Any, gateway: Any, custody: RunCustody) -> Dict[s
         # the run (same unknowable-state doctrine as above) — both leave the
         # capture to disposition.
         if cancelled["state"] in TERMINAL_STATES:
-            result.update(_capture_stranded_patch(drive_root, custody))
+            result.update(capture_stranded_patch(drive_root, custody))
     emit(drive_root, RECONCILED, result)
     return result
 
@@ -1557,6 +1533,7 @@ __all__ = [
     "SOURCE_RANGE_DELIVERY_CONFIRMED",
     "TERMINAL_STATES",
     "UNKNOWN",
+    "actor_decision_lock",
     "cancel_and_verify",
     "close_absent_run",
     "custody_log_unreadable",

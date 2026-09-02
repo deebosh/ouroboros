@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -9,6 +10,23 @@ import {
     createStateSnapshotSequencer,
     routingAnnotationText,
 } from '../modules/chat_activity.js';
+
+const chatSource = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+
+test('unkeyed terminal incidents do not clear unrelated live turns', () => {
+    const cleanupStart = chatSource.indexOf('if (!finalizing) {');
+    const finalCleanup = chatSource.slice(
+        cleanupStart,
+        chatSource.indexOf("if (msg.system_type === 'task_summary')", cleanupStart),
+    );
+    assert.match(
+        finalCleanup,
+        /} else if \(msg\.system_type !== 'terminal_incident'\) \{[^}]*?activeDirectActivities\.clear\(\);[^}]*?pendingSubmissions\.clear\(\);\s*}\s*}/,
+    );
+    // Ordinary unkeyed finals retain their existing global cleanup semantics.
+    assert.match(finalCleanup, /activeDirectActivities\.clear\(\);/);
+    assert.match(finalCleanup, /pendingSubmissions\.clear\(\);/);
+});
 
 test('routing receipts display the event-time label while keeping raw target metadata', () => {
     const annotation = {
@@ -142,17 +160,16 @@ test('computeDerivedChatStatus: sending state with dots when local submissions a
     });
 });
 
-test('computeDerivedChatStatus: attention state when terminal phase failed', () => {
+test('computeDerivedChatStatus: idle server status remains Online', () => {
     const status = computeDerivedChatStatus({
         isConnected: true,
         hasActiveLiveCard: false,
         activeDirectCount: 0,
         pendingSubmissionsCount: 0,
-        lastTerminalAttention: true,
     });
     assert.deepEqual(status, {
-        kind: 'error',
-        text: 'Attention',
+        kind: 'online',
+        text: 'Online',
         showDots: false,
     });
 });
@@ -163,7 +180,6 @@ test('computeDerivedChatStatus: online idle state by default', () => {
         hasActiveLiveCard: false,
         activeDirectCount: 0,
         pendingSubmissionsCount: 0,
-        lastTerminalAttention: false,
     });
     assert.deepEqual(status, {
         kind: 'online',
@@ -290,14 +306,13 @@ test('computeHydratedDirectActivities: a concluded turn is never resurrected by 
     assert.ok(updated.has('act-live'));
 });
 
-test('computeDerivedChatStatus: priority order is preserved (offline > live card > direct thinking > sending > attention > online)', () => {
+test('computeDerivedChatStatus: priority order is preserved (offline > live card > direct thinking > sending > online)', () => {
     // 1. Disconnected beats everything
     assert.equal(computeDerivedChatStatus({
         isConnected: false,
         hasActiveLiveCard: true,
         activeDirectCount: 5,
         pendingSubmissionsCount: 3,
-        lastTerminalAttention: true,
     }).text, 'Reconnecting...');
 
     // 2. Active live card beats direct thinking & sending & attention
@@ -306,7 +321,6 @@ test('computeDerivedChatStatus: priority order is preserved (offline > live card
         hasActiveLiveCard: true,
         activeDirectCount: 5,
         pendingSubmissionsCount: 3,
-        lastTerminalAttention: true,
     }).text, 'Working...');
 
     // 3. Direct thinking beats local pending submissions & attention
@@ -315,26 +329,23 @@ test('computeDerivedChatStatus: priority order is preserved (offline > live card
         hasActiveLiveCard: false,
         activeDirectCount: 2,
         pendingSubmissionsCount: 3,
-        lastTerminalAttention: true,
     }).text, 'Thinking...');
 
-    // 4. Local pending submissions beat terminal attention
+    // 4. Local pending submissions beat idle
     assert.equal(computeDerivedChatStatus({
         isConnected: true,
         hasActiveLiveCard: false,
         activeDirectCount: 0,
         pendingSubmissionsCount: 1,
-        lastTerminalAttention: true,
     }).text, 'Sending...');
 
-    // 5. Terminal attention beats default online
+    // 5. No server activity means Online
     assert.equal(computeDerivedChatStatus({
         isConnected: true,
         hasActiveLiveCard: false,
         activeDirectCount: 0,
         pendingSubmissionsCount: 0,
-        lastTerminalAttention: true,
-    }).text, 'Attention');
+    }).text, 'Online');
 
     // 6. Clean idle state
     assert.equal(computeDerivedChatStatus({
@@ -342,6 +353,5 @@ test('computeDerivedChatStatus: priority order is preserved (offline > live card
         hasActiveLiveCard: false,
         activeDirectCount: 0,
         pendingSubmissionsCount: 0,
-        lastTerminalAttention: false,
     }).text, 'Online');
 });

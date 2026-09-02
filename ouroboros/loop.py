@@ -32,6 +32,10 @@ from ouroboros.usage_accounting import (
     PhysicalAttemptPreconditionFailed,
     last_physical_attempt_capture,
 )
+from ouroboros.task_finalization import (
+    TERMINAL_ORIGIN_HOST_SALVAGE,
+    TERMINAL_ORIGIN_MODEL_FINAL,
+)
 
 from ouroboros.loop_tool_execution import (
     StatefulToolExecutor,
@@ -40,14 +44,13 @@ from ouroboros.loop_tool_execution import (
     reclaim_negative_memo,
     reclaim_trace_refs,
 )
-from ouroboros.loop_llm_call import call_llm_with_retry, emit_llm_usage_event
+from ouroboros.loop_llm_call import call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts
 from ouroboros.pricing import estimate_cost_optional
 
 # Backward-compat alias for source-inspecting/monkeypatched tests.
 _call_llm_with_retry = call_llm_with_retry
 
 log = logging.getLogger(__name__)
-
 
 @dataclass
 class DeliveryCandidate:
@@ -63,6 +66,7 @@ class DeliveryCandidate:
     repair_attempted: bool = False
     degraded: bool = False
     degraded_reason: str = ""
+    model_text: str = ""
 
 @dataclass
 class _CompactionRoundContext:
@@ -85,6 +89,11 @@ def _provider_failure_hint(accumulated_usage: Dict[str, Any]) -> str:
 def _provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
     """Explain whether retrying later is likely to help."""
     kind = str(accumulated_usage.get("_last_llm_error_kind") or "").strip()
+    if kind == "provider_outcome_unknown":
+        return (
+            " The dispatched request has no terminal provider outcome, so no "
+            "retry or paid fallback was sent; either could duplicate live work."
+        )
     if kind == "subscription_window_exhausted":
         reset_at = str(accumulated_usage.get("_last_llm_reset_at") or "").strip()
         when = f" It resets at {reset_at}." if reset_at else ""
@@ -125,6 +134,7 @@ def _handle_text_response(
     safe_content = sanitize_tool_result_for_log(content or "")
     if safe_content.strip():
         llm_trace["reasoning_notes"].append(safe_content.strip())
+        accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
     return safe_content, accumulated_usage, llm_trace
 
 
@@ -1055,6 +1065,7 @@ def _task_acceptance_subtree_snapshot(
             return False, []
     try:
         from ouroboros.task_status import SETTLED_STATUSES, find_child_tasks
+        from ouroboros.depth_evidence import task_depth_provenance
         from ouroboros.tools.join_ledger import _child_result_sha256
 
         meta = getattr(ctx, "task_metadata", {})
@@ -1084,6 +1095,8 @@ def _task_acceptance_subtree_snapshot(
                 "status": status,
                 "artifact_status": str(row.get("artifact_status") or ""),
             }
+            if depth_provenance := task_depth_provenance(row):
+                projected["depth_provenance"] = depth_provenance
             if status in SETTLED_STATUSES:
                 projected["child_result_sha256"] = _child_result_sha256(row)
             compact.append(projected)
@@ -1593,12 +1606,19 @@ def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, An
 
 def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
     """Perform the one substantive host panel over the pre-bound evidence."""
+    from ouroboros.review_evidence import task_acceptance_evidence_revision
     from ouroboros.review_substrate import (
         HARDNESS_ADVISORY_VISIBLE,
         ReviewRequest,
         ReviewRunResult,
         reviewer_slots,
         run_review_request,
+    )
+    from ouroboros.review_dispatch import (
+        TaskAcceptanceDispatchUnavailable,
+        bind_task_acceptance_paid_dispatch,
+        run_zero_physical_task_acceptance as _free_dispatch,
+        task_acceptance_preclaim_refusal,
     )
 
     evidence = ctx.evidence or _build_host_acceptance_evidence(ctx)
@@ -1620,8 +1640,17 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
             "classify_outcome_tier": True,
             "max_physical_attempts_per_actor": 2,
         },
-        task_id=ctx.task_id,
+        task_id=ctx.task_id, retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
     )
+    if not slots:
+        return ReviewRunResult(
+            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
+            actors=[],
+            parsed_findings=[],
+            aggregate_signal="DEGRADED",
+            degraded=True,
+            degraded_reasons=["no_review_slots"],
+        )
     # Budget admission for the whole acceptance wave (v6.69.0): a wave that
     # cannot fit the remaining root budget is declined up front as a terminal
     # DEGRADED (no-quorum semantics) instead of dying mid-wave. The estimate
@@ -1655,17 +1684,30 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
                 f"${_admission.get('remaining_usd')} (no reviewer was called)"
             ],
         )
+    free_result = _free_dispatch(
+        request, slots, drive_root=ctx.drive_root or ctx.tools._ctx.drive_root, usage_ctx=ctx.tools._ctx)
+    if free_result is not None:
+        return free_result
+    refusal = task_acceptance_preclaim_refusal(ctx)
+    if refusal is not None:
+        return refusal
+    # Q6: bind the exact tree wallet to the target's physical-dispatch stamp.
+    # Route/candidate refusals remain free; one strict stamp gates every slot.
     started = time.monotonic()
-    result = run_review_request(
-        request,
-        slots=slots,
-        drive_root=(
-            pathlib.Path(ctx.drive_root)
-            if ctx.drive_root is not None
-            else pathlib.Path(ctx.tools._ctx.drive_root)
-        ),
-        usage_ctx=ctx.tools._ctx,
-    )
+    try:
+        with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
+            result = run_review_request(
+                request, slots=slots,
+                drive_root=(pathlib.Path(ctx.drive_root) if ctx.drive_root is not None
+                            else pathlib.Path(ctx.tools._ctx.drive_root)),
+                usage_ctx=usage_ctx,
+            )
+    except TaskAcceptanceDispatchUnavailable as exc:
+        return ReviewRunResult(
+            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
+            actors=[], parsed_findings=[], aggregate_signal="DEGRADED", degraded=True,
+            degraded_reasons=[f"{exc} (no reviewer was called)"],
+        )
     duration_sec = round(time.monotonic() - started, 3)
     try:
         from ouroboros.utils import append_jsonl, utc_now_iso
@@ -2433,15 +2475,7 @@ def _run_cross_model_fallback_chain(
     accumulated_usage, task_type, emit_progress, context_fit_plan,
     active_context_mode,
 ) -> tuple:
-    """F1 (v6.39): 429-aware cross-model fallback CHAIN. Mark the failed primary on
-    cooldown if its last failure was transient (a swarm stops stampeding it), then
-    walk the configured chain, skipping cooled-down models, until one responds; a
-    small per-candidate attempt cap keeps a multi-model chain from a retry storm,
-    and every call stays deadline-aware. The bench (FALLBACKS==main) dedupes to an
-    empty chain -> no cross-model fallback, by design. Returns the new ``(msg,
-    active_model, active_use_local, context_fit_plan, context_mode)``; ``msg`` is
-    None when the whole (cooled-down / empty) chain is exhausted, leaving the
-    caller to join the provider-unavailable shelf."""
+    """Try fallbacks; unknown dispatch stops the chain."""
     from ouroboros import fallback_cooldown as _fcd
     from ouroboros.config import get_fallback_models
     from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS as _cooldown_kinds
@@ -2524,12 +2558,12 @@ def _run_cross_model_fallback_chain(
                 accumulated_usage,
             )
             break
-        # Candidate evidence was real for its dispatched attempts, but an
-        # unaccepted route must not become the task's canonical plan/transcript.
         tools._ctx.context_fit_plan = context_fit_plan
         tools._ctx.messages = messages
         tools._ctx.active_context_mode = active_context_mode
         _restore_context_fit_usage(accumulated_usage, primary_context_usage)
+        if str(accumulated_usage.get("_last_llm_error_kind") or "") in ("provider_outcome_unknown", "deadline_exhausted"):
+            break
         _cooled(fallback_model, fallback_use_local)
     return (
         msg,
@@ -2778,126 +2812,12 @@ def _maybe_inject_cost_budget_milestone(
     return True
 
 
-# The verbs whose call IS delegated-run activity for the nanny-economics baseline.
-# Exact tool-call transitions, observed in the loop as they happen — never a scan
-# of the custody log or events.jsonl (the baseline must be free to read per round).
-_DELEGATE_ACTIVITY_TOOLS = frozenset({
-    "delegate_start", "delegate_wait", "delegate_cancel", "delegate_answer",
-})
-
-
-def _note_nanny_delegate_activity(
-    ctx: Any, round_idx: int, accumulated_usage: Dict[str, Any],
-    tool_calls: List[Dict[str, Any]],
-) -> None:
-    """Advance the nanny's metered-progress marker, and its delegate-activity baseline
-    when this round actually touched a delegated run.
-
-    Two process-local marks on the ToolContext, written once per round: what the task
-    has spent so far (round index + accumulated cost), and where that stood at the
-    LAST delegate-verb call. Their difference is the whole input of the proportional
-    reminder — the poltergeist children burned $87 of opus rounds co-building around
-    their $0 runs, and nothing measured the burn while it happened.
-    """
-    if not getattr(ctx, "_nanny_route_dispatched", False):
-        return
-    try:
-        cost = float(accumulated_usage.get("cost") or 0.0)
-    except (TypeError, ValueError):
-        cost = 0.0
-    mark = {"round": int(round_idx), "cost": cost}
-    ctx._nanny_metered_progress = mark
-    verbs = set()
-    for call in tool_calls or []:
-        fn = call.get("function") if isinstance(call, dict) else None
-        name = str((fn or {}).get("name") or "").strip() if isinstance(fn, dict) else ""
-        if name in _DELEGATE_ACTIVITY_TOOLS:
-            verbs.add(name)
-    if not verbs:
-        return
-    if verbs == {"delegate_wait"}:
-        # R2-5: a wait is WATCHING, not delegating — it advances only the
-        # ROUND half of the baseline. Preserving the COST half keeps the
-        # dollar axis cumulative across waits: re-zeroing BOTH axes at every
-        # wait never heard the reminder ($0.24/round probe), while a genuinely
-        # holding nanny stays under the dollar threshold anyway.
-        prior = getattr(ctx, "_nanny_delegate_baseline", None)
-        prior_cost = float(prior.get("cost") or 0.0) if isinstance(prior, dict) else 0.0
-        ctx._nanny_delegate_baseline = {"round": mark["round"], "cost": prior_cost}
-    else:
-        ctx._nanny_delegate_baseline = dict(mark)
-    # Delegate activity also RE-ARMS the reminder: the fire cursor is
-    # cleared so a cooldown earned BEFORE this activity can never mute
-    # the reminder for burn that happens AFTER it (gemini, fix F1).
-    ctx._nanny_reminder_mark = None
-
-
-def _nanny_metered_since_delegate_activity(ctx: Any) -> Tuple[int, float]:
-    """(rounds, dollars) this task's OWN metered loop has spent since the last
-    delegate-verb call — zero before the first round is marked."""
-    progress = getattr(ctx, "_nanny_metered_progress", None)
-    progress = progress if isinstance(progress, dict) else {}
-    baseline = getattr(ctx, "_nanny_delegate_baseline", None)
-    baseline = baseline if isinstance(baseline, dict) else {}
-    try:
-        rounds = max(0, int(progress.get("round") or 0) - int(baseline.get("round") or 0))
-    except (TypeError, ValueError):
-        rounds = 0
-    try:
-        cost = max(0.0, float(progress.get("cost") or 0.0) - float(baseline.get("cost") or 0.0))
-    except (TypeError, ValueError):
-        cost = 0.0
-    return rounds, cost
-
-
-def _nanny_reminder_due(ctx: Any, round_idx: int) -> Tuple[int, float, bool]:
-    """The measured burn plus whether the proportional reminder is due THIS round.
-
-    Due when EITHER axis (rounds or dollars, ``task_pacing.NANNY_REMINDER_*``)
-    crossed its threshold since the last delegate-verb call. The re-arm is
-    dual-axis too (fix F1): the next firing waits for a further threshold-width
-    on EITHER axis, so a fast dollar burn is never muted by round spacing. The
-    first firing has no spacing gate; delegate activity clears the fire cursor
-    (``_note_nanny_delegate_activity``). Proportional and repeating, never a cap
-    (owner decision 2=B). With no delegate verb AND no prior firing, the first
-    reminder fires early (``NANNY_FIRST_REMINDER_ROUNDS``, owner-approved
-    2026-08-15) regardless of dollars; any delegate activity or re-arm restores
-    the ordinary dual-axis thresholds unchanged."""
-    from ouroboros.task_pacing import (
-        NANNY_FIRST_REMINDER_ROUNDS, NANNY_REMINDER_ROUNDS, NANNY_REMINDER_USD,
-    )
-
-    rounds, cost = _nanny_metered_since_delegate_activity(ctx)
-    round_threshold = NANNY_REMINDER_ROUNDS
-    if (
-        not isinstance(getattr(ctx, "_nanny_delegate_baseline", None), dict)
-        and not isinstance(getattr(ctx, "_nanny_reminder_mark", None), dict)
-    ):
-        # No delegate verb AND no reminder yet: first firing comes early.
-        round_threshold = NANNY_FIRST_REMINDER_ROUNDS
-    if rounds < round_threshold and cost < NANNY_REMINDER_USD:
-        return rounds, cost, False
-    mark = getattr(ctx, "_nanny_reminder_mark", None)
-    if not isinstance(mark, dict):
-        return rounds, cost, True  # first firing: no spacing gate
-    progress = getattr(ctx, "_nanny_metered_progress", None)
-    progress = progress if isinstance(progress, dict) else {}
-    try:
-        rounds_since_fire = int(progress.get("round") or 0) - int(mark.get("round") or 0)
-    except (TypeError, ValueError):
-        rounds_since_fire = 0
-    try:
-        cost_since_fire = float(progress.get("cost") or 0.0) - float(mark.get("cost") or 0.0)
-    except (TypeError, ValueError):
-        cost_since_fire = 0.0
-    if rounds_since_fire >= NANNY_REMINDER_ROUNDS or cost_since_fire >= NANNY_REMINDER_USD:
-        return rounds, cost, True
-    return rounds, cost, False
-
-
-def _nanny_burn_phrase(rounds: int, cost: float) -> str:
-    return (f"{rounds} of your own metered LLM rounds (~${cost:.2f})" if cost > 0
-            else f"{rounds} of your own metered LLM rounds")
+from ouroboros.nanny_pacing import (
+    _nanny_burn_phrase,
+    _nanny_metered_since_delegate_activity,
+    _nanny_reminder_due,
+    _note_nanny_delegate_activity,
+)
 
 
 def _maybe_inject_nanny_economics_reminder(
@@ -2934,8 +2854,14 @@ def _maybe_inject_nanny_economics_reminder(
     # activity" — the burn is measured from the task's start, and the wording
     # says so instead of implying an activity that never happened.
     _baseline_known = isinstance(getattr(ctx, "_nanny_delegate_baseline", None), dict)
-    since_phrase = ("since your last delegated-run activity" if _baseline_known
-                    else "since this task started (no delegated-run activity yet)")
+    coordination = bool(getattr(ctx, "_nanny_coordination_activity", False))
+    if _baseline_known:
+        since_phrase = (
+            "since your last delegated-run or host-coordination activity"
+            if coordination else "since your last delegated-run activity"
+        )
+    else:
+        since_phrase = "since this task started (no delegated-run activity yet)"
     # BR1-3: never an unconditional "$0" claim — the owner's wording law is
     # typed cost classes: known-zero only on a settled $0 spend, never "free"
     # unqualified (estimated/undisclosed spend is never zero).
@@ -3018,7 +2944,7 @@ def _last_assistant_text(messages: List[Dict[str, Any]]) -> str:
 
 
 def _task_deadline_epoch(tools: ToolRegistry) -> Optional[float]:
-    """Task deadline as epoch seconds, for deadline-bounded LLM retry backoff."""
+    """Return the task deadline for retry backoff."""
     meta = getattr(tools._ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return None
@@ -3212,14 +3138,9 @@ def _mark_owner_stop_control_drained(
 
 
 def _owner_stop_window_elapsed(ctx: "_RoundLimitContext") -> bool:
-    """Whether the durable owner-stop deadline already passed at consume.
-
-    Reads the SAME durable intent the custody sweep budgets from (no drain
-    stamp -> the conservative request+outer-cap anchor). Fail-soft: an
-    unreadable intent keeps the bounded summary running."""
+    """Bind and check the owner-stop deadline."""
     try:
         from ouroboros.cancel_intents import STOP_POLICY_FINALIZE, active_intent, stop_policy
-        from ouroboros.config import get_finalization_grace_sec
         from supervisor.owner_stop import owner_stop_deadline_ts
 
         root = getattr(ctx, "status_drive_root", None) or ctx.drive_root
@@ -3228,7 +3149,9 @@ def _owner_stop_window_elapsed(ctx: "_RoundLimitContext") -> bool:
         intent = active_intent(pathlib.Path(root), ctx.task_id)
         if not isinstance(intent, dict) or stop_policy(intent) != STOP_POLICY_FINALIZE:
             return False
-        deadline = owner_stop_deadline_ts(intent, float(get_finalization_grace_sec()))
+        deadline = owner_stop_deadline_ts(intent, float(task_pacing.get_finalization_grace_sec()))
+        if deadline:
+            ctx.deadline_ts = deadline
         return time.time() >= deadline if deadline else True
     except Exception:
         log.debug("owner-stop window check failed for %s", ctx.task_id, exc_info=True)
@@ -3281,6 +3204,11 @@ def _drain_incoming_messages(
             if kind == KIND_FINALIZE_NOW:
                 text = str(entry.get("text") or "deadline")
                 controls["finalize_now"] = text
+                opened = parse_deadline_ts(entry.get("ts"))
+                if opened is not None:
+                    controls["finalize_deadline_ts"] = (
+                        opened.timestamp() + task_pacing.effective_finalization_reserve_sec(owner_ctx)
+                    )
                 first_line = text.splitlines()[0].strip() if text else ""
                 if first_line == REASON_OWNER_REQUESTED_FINALIZATION:
                     # Owner-stop budget starts at delivery; first drain wins.
@@ -3452,16 +3380,7 @@ def _handle_round_limit(ctx: _RoundLimitContext) -> Tuple[str, Dict[str, Any], D
 
 
 def _handle_forced_finalization(ctx: _RoundLimitContext, reason: str) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Cooperative finalize-and-exit when the supervisor opens a grace window.
-
-    The supervisor sends a typed finalize_now control through the owner
-    mailbox when the task deadline/hard-timeout is reached; this extracts one
-    tool-less best final answer inside the grace window so a deadline NEVER
-    returns emptiness. An OWNER-STOP control (its payload's first line is the
-    typed ``owner_requested_finalization`` literal, optionally followed by the
-    bounded child projection) routes to its own rail: the owner's stop must
-    never persist the deadline's false reason (CF-02).
-    """
+    """Finalize within the cooperative grace window."""
     reason_lines = str(reason or "").splitlines()
     if reason_lines and reason_lines[0].strip() == REASON_OWNER_REQUESTED_FINALIZATION:
         return _handle_owner_stop_finalization(ctx, str(reason))
@@ -3478,16 +3397,7 @@ def _handle_forced_finalization(ctx: _RoundLimitContext, reason: str) -> Tuple[s
 def _handle_owner_stop_finalization(
     ctx: _RoundLimitContext, control_text: str,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Owner-requested finalization (Q1/Q3=A): ZERO or ONE tool-less model turn.
-
-    A current valid complete DeliveryCandidate is reused with zero new model
-    turns; otherwise exactly one logical tool-less call runs (transport retries
-    keep the existing call seam; the generic second semantic refresh is
-    structurally disabled — owner steering is fenced during a pending stop, so
-    no late directive can arrive). The typed ``owner_requested_finalization``
-    reason flows through the best-effort gate, so a successful synthesis
-    terminalizes ``completed``/best-effort — never the deadline's
-    ``acceptance_bypassed_deadline`` falsehood (CF-02)."""
+    """Owner-requested finalization: zero or one tool-less model turn."""
     live_trace = getattr(ctx, "llm_trace", None)
     llm_trace = live_trace if isinstance(live_trace, dict) else {}
     candidate = _current_delivery_candidate(ctx, llm_trace)
@@ -3504,8 +3414,6 @@ def _handle_owner_stop_finalization(
         "produced inside the grace window."
     )
     if _owner_stop_window_elapsed(ctx):
-        # An expired control never buys a paid summary: the honest fallback
-        # rides the same typed rail and custody settles it.
         _finalize_forced_services(ctx, llm_trace)
         ctx.accumulated_usage["execution_status"] = "failed"
         ctx.accumulated_usage["reason_code"] = REASON_OWNER_REQUESTED_FINALIZATION
@@ -3527,25 +3435,19 @@ def _handle_owner_stop_finalization(
     )
 
 
-def _handle_provider_unavailable(ctx: _RoundLimitContext) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Provider-death terminalization: the model returned no usable response
-    after the transport same-model reroute + retries (+ any configured
-    cross-model fallback). SALVAGE like the other forced rails — one tool-less
-    final answer (which itself benefits from the same-model reroute) and,
-    failing that, the last assistant text already produced — but terminalize as
-    an INFRA FAILURE, never as a completion: an outage interrupts the task with
-    the objective unmet, and calling that "completed (best effort)" was a lie
-    that hid a real outage from the owner (95 minutes of silence)."""
-    # A stale DeliveryCandidate is still the best complete text available when
-    # the provider is dead. _forced_fallback_result preserves its original
-    # evidence provenance and adds a host-owned resume disclosure rather than
-    # laundering unchanged text onto the newer evidence fingerprint.
+def _handle_provider_unavailable(
+    ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """Salvage provider failure without an unsafe retry."""
+    kind = str(error_kind or "")
+    is_context_overflow = kind == "context_overflow"
+    is_deadline_exhausted = kind == "deadline_exhausted" or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") == "deadline_exhausted"
+    forced_reason = "deadline_local" if is_deadline_exhausted else "provider_unavailable"
+    llm_trace = getattr(ctx, "llm_trace", None)
+    llm_trace = llm_trace if isinstance(llm_trace, dict) else {}
     candidate = _live_delivery_candidate(ctx)
     salvaged = candidate.full_text if candidate is not None else _last_assistant_text(ctx.messages)
     if candidate is None and not salvaged and ctx.drive_root is not None:
-        # B2: the current (possibly compacted) transcript may no longer hold the
-        # last useful assistant text, but every LLM round was persisted — fall back
-        # to the durable salvage source named by the plan (latest_llm_response_text).
         try:
             from ouroboros.observability import latest_llm_response_text
             salvaged = latest_llm_response_text(pathlib.Path(ctx.drive_root), ctx.task_id) or ""
@@ -3555,27 +3457,50 @@ def _handle_provider_unavailable(ctx: _RoundLimitContext) -> Tuple[str, Dict[str
         fallback = salvaged
     else:
         fallback = (
+            "⚠️ The context exceeded the selected model window; no further provider call was made. "
+            "Any files written so far are preserved in the workspace."
+            if is_context_overflow else
+            "⚠️ The owner deadline ended primary model work; any files written so far are preserved."
+            if is_deadline_exhausted else
             "⚠️ The model provider returned no usable response after retries and same-model reroute."
             f"{_provider_failure_hint(ctx.accumulated_usage)}{_provider_recovery_hint(ctx.accumulated_usage)} "
             "Any files written so far are preserved in the workspace."
         )
+    if is_context_overflow:
+        text, usage, llm_trace = _forced_fallback_result(
+            ctx, llm_trace, fallback, "context_overflow",
+            source="context_overflow_local_salvage",
+        )
+        usage.update(
+            execution_status=RESULT_INFRA_FAILED,
+            reason_code="llm_api_error",
+            _last_llm_error_kind="context_overflow",
+        )
+        return text, usage, llm_trace
+    if str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") == "provider_outcome_unknown":
+        live_trace = getattr(ctx, "llm_trace", None)
+        llm_trace = live_trace if isinstance(live_trace, dict) else {}
+        text, usage, llm_trace = _forced_fallback_result(
+            ctx, llm_trace, fallback, reason_code="provider_unavailable",
+            source="provider_outcome_unknown_no_resend",
+        )
+        if str(usage.get("reason_code") or "") == "provider_unavailable":
+            usage["execution_status"] = RESULT_INFRA_FAILED
+        return text, usage, llm_trace
     prompt = (
+        "[DEADLINE] Primary model work reached the owner deadline. Produce the best final answer now from verified work and state what remains undone."
+        if is_deadline_exhausted else
         "[PROVIDER_UNAVAILABLE] The model provider failed to return a usable response. "
         "The task is being INTERRUPTED by this outage, not completed. Summarize the "
         "verified work so far and state plainly what remains undone."
     )
     text, usage, llm_trace = _forced_final_answer(
-        ctx, prompt=prompt, fallback_text=fallback, reason_code="provider_unavailable",
+        ctx, prompt=prompt, fallback_text=fallback, reason_code=forced_reason,
+        provider_terminal=not is_deadline_exhausted,
     )
-    # Honesty (P1): a provider outage interrupts the task — it never "completes"
-    # it. Stamp the infra-failure execution status so the outcome reducer lands
-    # on infra_failed/provider (terminal: failed) instead of the old best-effort
-    # promotion to "completed"; the salvage text still rides the result body.
-    # Skipped when a swarm routing handoff already cleared the rail (the admitted
-    # task owns its lifecycle). NOTE: "interrupted" is deliberately NOT used —
-    # STATUS_INTERRUPTED is a pre-requeue, non-terminal state in this codebase.
-    if str(usage.get("reason_code") or "") == "provider_unavailable":
+    if not is_deadline_exhausted and str(usage.get("reason_code") or "") == "provider_unavailable":
         usage["execution_status"] = RESULT_INFRA_FAILED
+        usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_SALVAGE)
     return text, usage, llm_trace
 
 
@@ -3596,12 +3521,8 @@ def _maybe_deadline_local_finalize(
     deadline = parse_deadline_ts(meta.get("deadline_at"))
     if deadline is None:
         return None
+    ctx.deadline_ts = deadline.timestamp()
     remaining = (deadline - utc_now()).total_seconds()
-    # v6.55.0: the plain finalization GRACE emit-window (task_pacing SSOT), NOT
-    # the pct reserve — this path fires just before the kill to emit one answer,
-    # so a percentage-of-total reserve would amputate the working tail (a 6h task
-    # would self-finalize ~54 min early on a 15% profile). The pct reserve is an
-    # acceptance-review gate concept only.
     if remaining > task_pacing.effective_finalization_reserve_sec(tools._ctx):
         return None
     prompt = (
@@ -3617,9 +3538,10 @@ def _maybe_deadline_local_finalize(
 def _maybe_early_finalize(
     limit_ctx: _RoundLimitContext, tools: ToolRegistry, controls: Dict[str, Any]
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """One early-exit gate per round: supervisor finalize_now first, then a
-    loop-local real-deadline finalize. Returns the forced answer or None."""
+    """Consume supervisor grace first, then a local deadline."""
     if controls.get("finalize_now"):
+        if controls.get("finalize_deadline_ts") is not None:
+            limit_ctx.deadline_ts = float(controls["finalize_deadline_ts"])
         return _handle_forced_finalization(limit_ctx, str(controls["finalize_now"]))
     return _maybe_deadline_local_finalize(limit_ctx, tools)
 
@@ -3724,7 +3646,7 @@ def _delivery_evidence_state(
 ) -> tuple[int, str]:
     """Fingerprint only evidence that can invalidate a complete answer."""
 
-    from ouroboros.outcomes import read_verification_receipts
+    from ouroboros.outcomes import read_context_verification_receipts
     from ouroboros.tools.join_ledger import _child_result_sha256
 
     owner_directives = getattr(tools._ctx, "_owner_directives", [])
@@ -3738,7 +3660,12 @@ def _delivery_evidence_state(
             "disposition": _child_disposition_state(child),
         })
     receipt_root = pathlib.Path(
-        str(getattr(tools._ctx, "drive_root", "") or ctx.drive_root or ctx.status_drive_root or ctx.drive_logs.parent)
+        str(
+            getattr(tools._ctx, "drive_root", "")
+            or ctx.drive_root
+            or ctx.status_drive_root
+            or ctx.drive_logs.parent
+        )
     )
     evidence = {
         "owner_directives": owner_directives,
@@ -3756,7 +3683,9 @@ def _delivery_evidence_state(
             if isinstance(call, dict) and call.get("plan_review_outcome")
         ],
         "children": children,
-        "verification_receipts": read_verification_receipts(receipt_root, ctx.task_id),
+        "verification_receipts": read_context_verification_receipts(
+            tools._ctx, ctx.task_id, fallback_root=receipt_root,
+        ),
         # Task-scoped service teardown can register declared outputs or surface an
         # output-finalization failure.  Those facts are produced outside an ordinary
         # tool call, so bind their stable projection explicitly; otherwise a host
@@ -3931,8 +3860,12 @@ def _replace_delivery_candidate(
     full_text: str,
     *,
     control: str,
+    model_text: Optional[str] = None,
 ) -> DeliveryCandidate:
     full_text = sanitize_tool_result_for_log(full_text)
+    model_text = sanitize_tool_result_for_log(
+        full_text if model_text is None else model_text
+    )
     previous_candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if isinstance(previous_candidate, DeliveryCandidate):
         _supersede_delivery_acceptance_binding(
@@ -3953,6 +3886,7 @@ def _replace_delivery_candidate(
         evidence_fingerprint=evidence_fingerprint,
         acceptance_binding=_unaccepted_delivery_binding(tools, content_hash),
         finalization_control=control,
+        model_text=model_text,
     )
     tools._ctx._delivery_candidate = candidate
     tools._ctx._delivery_control_required = False
@@ -5022,6 +4956,7 @@ def _no_tool_final_answer(
             llm_trace,
             composed_content,
             control="host_suffix" if normal_suffix else "candidate",
+            model_text=str(content or ""),
         )
     if isinstance(candidate, DeliveryCandidate):
         if orphan_suffix:
@@ -5115,8 +5050,8 @@ def _no_tool_final_answer(
         if provisional_assistant is not None and messages[-1] is provisional_assistant:
             messages.pop()
         if post_controls.get("finalize_now"):
-            text, usage, forced_trace = _handle_forced_finalization(
-                limit_ctx, str(post_controls.get("finalize_now") or "deadline"),
+            text, usage, forced_trace = _maybe_early_finalize(
+                limit_ctx, tools, post_controls,
             )
             _merge_finalization_trace(llm_trace, forced_trace)
             return text, usage, llm_trace
@@ -5280,6 +5215,7 @@ def _drain_forced_owner_directives(
 
 
 def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
+    response_meta: Dict[str, Any] = {}
     final_msg, _final_cost = call_llm_with_retry(
         ctx.llm,
         ctx.messages,
@@ -5295,7 +5231,10 @@ def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
         ctx.task_type,
         use_local=ctx.active_use_local,
         deadline_ts=ctx.deadline_ts,
+        response_meta_out=response_meta,
+        transport_reserve_sec=0.0,
     )
+    ctx.accumulated_usage["_forced_response_meta"] = response_meta
     return str((final_msg or {}).get("content") or "").strip()
 
 
@@ -5305,7 +5244,7 @@ def _publish_model_forced_candidate(
     full_text: str,
     reason_code: str,
 ) -> Optional[DeliveryCandidate]:
-    """Replace the retained answer and invalidate any verdict for the old SHA."""
+    """Replace the retained answer and old verdict."""
 
     tools = getattr(ctx, "tools", None)
     if tools is None:
@@ -5334,7 +5273,7 @@ def _publish_stale_forced_candidate(
     reason_code: str,
     suffix: str,
 ) -> Optional[DeliveryCandidate]:
-    """Preserve useful old text without pretending it absorbed newer evidence."""
+    """Preserve old text."""
 
     tools = getattr(ctx, "tools", None)
     if tools is None:
@@ -5360,10 +5299,7 @@ def _publish_stale_forced_candidate(
         full_text,
         control=f"forced_stale_preserve:{reason_code}",
     )
-    # The host-added disclosure is current, but the substantive answer it
-    # qualifies is not. Preserve the answer's original evidence provenance so
-    # every projection remains conservative instead of laundering unchanged
-    # text onto the newer fingerprint.
+    # A host disclosure cannot make the preserved model text current.
     candidate.evidence_revision = stale_candidate.evidence_revision
     candidate.evidence_fingerprint = stale_candidate.evidence_fingerprint
     candidate.acceptance_binding = _forced_unaccepted_binding(
@@ -5390,8 +5326,9 @@ def _forced_fallback_result(
     source: str = "host_fallback",
     retained_source: str = "",
     retained_control: str = "",
+    provider_terminal: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Return one exact candidate; reuse only current unchanged full text."""
+    """Return a current or fallback candidate."""
 
     router_result = _forced_swarm_router_result(ctx, llm_trace, reason_code)
     if router_result is not None:
@@ -5409,9 +5346,15 @@ def _forced_fallback_result(
     )
     candidate = _current_delivery_candidate(ctx, llm_trace)
     if candidate is not None:
-        composed = sanitize_tool_result_for_log(
-            _compose_delivery_suffix(candidate.full_text, suffix)
+        composed = (
+            candidate.model_text or candidate.full_text if provider_terminal else
+            sanitize_tool_result_for_log(_compose_delivery_suffix(candidate.full_text, suffix))
         )
+        if provider_terminal:
+            ctx.accumulated_usage.update(
+                terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
+                terminal_plan_review_open=bool(plan_suffix),
+            )
         if composed != candidate.full_text:
             candidate = _publish_model_forced_candidate(
                 ctx, llm_trace, composed, reason_code,
@@ -5435,7 +5378,6 @@ def _forced_fallback_result(
             control=retained_control or f"forced_preserve:{reason_code}",
             reason_code=reason_code,
         )
-        # The preserved candidate is a previously model-produced complete answer.
         ctx.accumulated_usage["_best_effort_extracted"] = True
         _record_forced_finalization(
             ctx,
@@ -5455,6 +5397,8 @@ def _forced_fallback_result(
             suffix,
         )
         if candidate is not None:
+            if provider_terminal:
+                ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_SALVAGE
             ctx.accumulated_usage["_best_effort_extracted"] = True
             _record_forced_finalization(
                 ctx,
@@ -5471,6 +5415,8 @@ def _forced_fallback_result(
     )
     if fallback_is_retained_model_text:
         ctx.accumulated_usage["_best_effort_extracted"] = True
+    if provider_terminal:
+        ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_SALVAGE
     _record_forced_finalization(
         ctx,
         llm_trace,
@@ -5538,21 +5484,7 @@ def _resolve_forced_delivery_control(
     tools_ctx: Any,
     extracted: str,
 ) -> Tuple[str, str]:
-    """PURE, no-retry delivery-control resolution for the forced rail.
-
-    While the latch is armed, the one forced answer may legitimately be the
-    protocol object ``{"delivery_control": ...}`` — shipped raw it leaked
-    protocol JSON into the owner's chat and the durable result. Resolve it
-    before suffix composition, never re-looping (``_resolve_delivery_control``
-    can inject a repair round, which a hard forced stop must never do): valid
-    ``keep`` = the retained candidate's full text, valid ``replace`` =
-    ``full_answer``, malformed/duplicate/invalid = the retained candidate with
-    the typed degraded reason. Armed protocol intent is ANY parsed object with
-    the ``delivery_control`` key AND any JSON-looking text that fails to parse
-    (the model was told to answer with the object, so that is a mangled
-    control, never the answer). JSON while NOT armed passes through untouched.
-    Disclosed residual: armed PROSE stands as-is. Clears the latch. Returns
-    ``(resolved_text, degraded_reason)``."""
+    """Resolve an armed delivery-control object without another model round."""
     if tools_ctx is None or not extracted:
         return extracted, ""
     candidate = getattr(tools_ctx, "_delivery_candidate", None)
@@ -5664,15 +5596,18 @@ def _forced_final_answer(
     fallback_text: str,
     reason_code: str,
     single_semantic_turn: bool = False,
+    provider_terminal: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Force one tool-less final answer; stamp the typed forced-finalization
-    reason code (the best_effort outcome gate reads it downstream).
-    ``single_semantic_turn`` (owner-stop rail, CF-03): exactly ONE logical
-    model call — the late-owner-directive semantic refresh is disabled because
-    steering is fenced while the stop intent is pending."""
+    """Forced rail."""
     live_trace = getattr(ctx, "llm_trace", None)
     llm_trace = live_trace if isinstance(live_trace, dict) else {}
     _finalize_forced_services(ctx, llm_trace)
+    if ctx.deadline_ts is not None and time.time() >= float(ctx.deadline_ts):
+        ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code)
+        return _forced_fallback_result(
+            ctx, llm_trace, fallback_text, reason_code,
+            source=f"{reason_code}_window_elapsed",
+        )
     router_result = _forced_swarm_router_result(ctx, llm_trace, reason_code)
     if router_result is not None:
         return router_result
@@ -5680,54 +5615,69 @@ def _forced_final_answer(
     prompt += _forced_delegation_note(tools_ctx, llm_trace)
     _append_or_merge_user_message(ctx.messages, prompt)
     extracted = ""
+    response_meta: Dict[str, Any] = {}
     for attempt in range(1 if single_semantic_turn else 2):
         try:
-            extracted = _call_forced_model_once(ctx)
+            ctx.accumulated_usage.pop("_forced_response_meta", None)
+            extracted, response_meta = forced_response_parts(
+                _call_forced_model_once(ctx), ctx.accumulated_usage,
+            )
         except BudgetExceeded:
             _drain_forced_owner_directives(ctx, llm_trace)
             raise
         except Exception:
             log.warning("Failed to get final response after %s", reason_code, exc_info=True)
             extracted = ""
+            response_meta = {}
         ctx.accumulated_usage["execution_status"] = "failed"
         ctx.accumulated_usage["reason_code"] = reason_code
         if not _drain_forced_owner_directives(ctx, llm_trace):
             break
+        if str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") == "provider_outcome_unknown":
+            return _forced_fallback_result(
+                ctx, llm_trace,
+                "⚠️ Provider outcome unknown; directive retained. Resume the task without a blind resend.",
+                reason_code,
+                source="provider_outcome_unknown_no_resend",
+            )
         if attempt == 1:
             return _forced_fallback_result(
                 ctx,
                 llm_trace,
-                (
-                    "⚠️ A new owner directive arrived during the forced refresh and could "
-                    "not be incorporated safely before the hard stop. Resume the task to "
-                    "produce an answer bound to the latest directive."
-                ),
+                "⚠️ Another directive arrived. Resume the task for a current answer.",
                 reason_code,
                 source="late_owner_directive_requires_resume",
+                provider_terminal=provider_terminal,
             )
         _finalize_forced_services(ctx, llm_trace)
         _append_or_merge_user_message(
             ctx.messages,
-            "[FORCED_OWNER_REFRESH] A new typed owner directive arrived while the prior "
-            "forced answer was being generated. Discard that stale draft and produce one "
-            "new complete answer bound to every owner directive now present.",
+            "[FORCED_OWNER_REFRESH] Answer all current directives; ignore the stale draft.",
+        )
+
+    if provider_terminal and extracted and forced_response_is_incomplete(response_meta):
+        return _forced_fallback_result(
+            ctx, llm_trace, extracted, reason_code,
+            source="forced_model_incomplete", provider_terminal=True,
         )
 
     extracted, control_degraded = _resolve_forced_delivery_control(
         getattr(getattr(ctx, "tools", None), "_ctx", None), extracted,
     )
     if extracted:
-        # Typed fact for the best_effort outcome gate: a REAL model answer
-        # was extracted (host fallback strings never set this).
         ctx.accumulated_usage["_best_effort_extracted"] = True
         tool_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
         plan_suffix = (
             _force_plan_disclosure(tool_ctx, llm_trace, forced_reason=reason_code)
             if tool_ctx is not None else ""
         )
-        full_text = _compose_delivery_suffix(
+        if provider_terminal:
+            ctx.accumulated_usage["terminal_plan_review_open"] = bool(plan_suffix)
+        full_text = extracted if provider_terminal else _compose_delivery_suffix(
             extracted, plan_suffix + _forced_orphan_note(ctx),
         )
+        if provider_terminal:
+            ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
         candidate = _publish_model_forced_candidate(
             ctx, llm_trace, full_text, reason_code,
         )
@@ -5756,6 +5706,7 @@ def _forced_final_answer(
         llm_trace,
         fallback_text,
         reason_code,
+        provider_terminal=provider_terminal,
     )
 
 
@@ -6029,6 +5980,15 @@ def _nanny_finalization_message(
             "or state in your final answer that the delegated run failed and why "
             "the remaining work ran on metered API tokens."
         )
+    from ouroboros.subagent_bootstrap import (
+        actor_first_coordination_finalization_message,
+    )
+
+    actor_first = actor_first_coordination_finalization_message(
+        tools._ctx, task_id=str(task_id or ""), fallback_root=drive_root,
+    )
+    if actor_first is not None:
+        return actor_first
     return (
         "⚠️ NANNY_DID_NOT_DELEGATE: this task was dispatched onto the delegated "
         "substrate (executor=harness), but you are finalizing with ZERO "
@@ -6050,6 +6010,19 @@ def _maybe_inject_finalization_nudges(
     run_llm_loop to keep it under the method size gate."""
     if drive_root is None:
         return False
+    # Forked actors keep ordinary verification locally while actor-first zero-run
+    # authority is canonical immediately. Never let one non-empty replica hide the
+    # other: all verification/nudge decisions consume the shared merged view.
+    try:
+        from ouroboros.outcomes import read_context_verification_receipts
+
+        receipt_rows = read_context_verification_receipts(
+            tools._ctx, task_id, fallback_root=drive_root,
+        )
+    except Exception:
+        from ouroboros.outcomes import read_verification_receipts
+
+        receipt_rows = read_verification_receipts(drive_root, task_id)
     if (getattr(tools._ctx, "_nanny_route_dispatched", False)
             and not getattr(tools._ctx, "_nanny_finalization_injected", False)):
         # Nanny postcondition (owner 2026-08-07): a harness-dispatched child
@@ -6103,7 +6076,9 @@ def _maybe_inject_finalization_nudges(
         # ("no grounding" vs "grounding says FAIL"). Ordered BEFORE the FR3 verify
         # nudge. Binary latch; advisory; forced-finalization paths bypass it.
         # Keyed on the typed receipt status, never content (Bible P5).
-        _failed_receipt = latest_unreconciled_failed_verification(drive_root, task_id)
+        _failed_receipt = latest_unreconciled_failed_verification(
+            drive_root, task_id, receipts=receipt_rows,
+        )
         if _failed_receipt is not None:
             tools._ctx._verify_red_nudged = True
             _check = str(_failed_receipt.get("check") or "").strip()
@@ -6128,7 +6103,9 @@ def _maybe_inject_finalization_nudges(
         # false-green tutanota hit). Distinct from the red nudge; ordered
         # after it. Binary latch; advisory; forced paths bypass it. Flag-
         # driven on the typed receipt sensor, never content (Bible P5).
-        _masked_receipt = latest_unreconciled_masked_verification(drive_root, task_id)
+        _masked_receipt = latest_unreconciled_masked_verification(
+            drive_root, task_id, receipts=receipt_rows,
+        )
         if _masked_receipt is not None:
             tools._ctx._verify_masked_nudged = True
             _mcheck = str(_masked_receipt.get("check") or "").strip()
@@ -6155,7 +6132,9 @@ def _maybe_inject_finalization_nudges(
         # confirm equivalence with the task's real requirement (or state the basis via
         # criterion_basis). Ordered AFTER the masked nudge, BEFORE FR3. Flag-driven on
         # the typed receipt field, never content (P5); forced paths bypass earlier.
-        _agent_defined = latest_agent_defined_verification(drive_root, task_id)
+        _agent_defined = latest_agent_defined_verification(
+            drive_root, task_id, receipts=receipt_rows,
+        )
         if _agent_defined is not None:
             tools._ctx._criterion_source_nudged = True
             _acheck = str(_agent_defined.get("check") or "").strip()
@@ -6173,7 +6152,24 @@ def _maybe_inject_finalization_nudges(
             emit_progress("Criterion-provenance nudge injected before final response.")
             llm_trace["reasoning_notes"].append("Criterion-provenance nudge injected before final response.")
             return True
-    if not getattr(tools._ctx, "_verify_nudged", False) and should_nudge_verification(llm_trace, drive_root, task_id):
+    suppress_unavailable_zero_run_verify = False
+    try:
+        from ouroboros.outcomes import _terminal_zero_run_receipt_present
+        from ouroboros.tool_access import active_tool_profile
+
+        suppress_unavailable_zero_run_verify = (
+            active_tool_profile(tools._ctx) == "local_readonly_subagent"
+            and _terminal_zero_run_receipt_present(receipt_rows)
+        )
+    except Exception:
+        pass
+    if (
+        not getattr(tools._ctx, "_verify_nudged", False)
+        and not suppress_unavailable_zero_run_verify
+        and should_nudge_verification(
+            llm_trace, drive_root, task_id, receipts=receipt_rows,
+        )
+    ):
         # FR3 one-shot verify-before-done nudge: real effects, no host-attested grounding
         # yet. Binary latch (not a tunable counter), sibling BEFORE the acceptance-review
         # gate so it reaches both required and auto. Forced finalization paths return
@@ -6398,6 +6394,7 @@ def _dispatch_round_model(
         ctx.task_type,
         use_local=ctx.active_use_local,
         deadline_ts=_task_deadline_epoch(ctx.tools),
+        transport_reserve_sec=task_pacing.get_finalization_grace_sec(),
         attempt_cap=attempt_cap,
         allow_server_web_search=_server_web_allowed_by_task(ctx.tools._ctx),
         physical_context=(
@@ -6993,13 +6990,14 @@ def run_llm_loop(
     else:
         active_context_mode = _preferred_context_mode
     llm_trace: Dict[str, Any] = {"reasoning_notes": [], "tool_calls": []}
-    accumulated_usage: Dict[str, Any] = {}
+    accumulated_usage: Dict[str, Any] = {"_task_attempt": getattr(ctx, "task_attempt", None)}
     tools._ctx._accumulated_usage = accumulated_usage
+    ctx._accumulated_usage = accumulated_usage
     max_retries = 3
     cost_ceiling = _resolve_task_cost_ceiling(ctx, budget_remaining_usd)
     if cost_ceiling.root_cap_usd is not None:
-        # Loop-start seed (one rare ledger read): a resumed/late-started member
-        # of a spending tree must see the real tree number before its first
+        # One ledger read seeds a resumed/late-started member
+        # of a spending tree must see tree spend before its first
         # pacing surface, not a process-local empty stash.
         _loop_tree_accounting(refresh=True, max_age_sec=0.0)
     from ouroboros.tools import tool_discovery as _td
@@ -7056,6 +7054,7 @@ def run_llm_loop(
                 task_id, round_idx, event_queue, accumulated_usage, task_type,
                 active_use_local, MAX_ROUNDS, drive_root=drive_root,
                 incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen,
+                llm_trace=llm_trace,
             )
             _finalize_limit_ctx(limit_ctx, tools, llm_trace)
             if round_idx > MAX_ROUNDS:
@@ -7137,7 +7136,12 @@ def run_llm_loop(
             )
             tools._ctx._current_llm_call_meta = dict(accumulated_usage.get("_last_llm_call_meta") or {})
 
-            if msg is None and not bool(getattr(ctx, "exact_model_route", False)):
+            last_error_kind = str(accumulated_usage.get("_last_llm_error_kind") or "")
+            if (
+                msg is None
+                and not bool(getattr(ctx, "exact_model_route", False))
+                and last_error_kind not in ("context_overflow", "provider_outcome_unknown", "deadline_exhausted")
+            ):
                 (
                     msg,
                     active_model,
@@ -7153,7 +7157,10 @@ def run_llm_loop(
                     active_context_mode=active_context_mode)
             if msg is None:
                 # Exact actor routes skip generic substitution and fail as infrastructure.
-                text, accumulated_usage, forced_trace = _handle_provider_unavailable(limit_ctx)
+                text, accumulated_usage, forced_trace = _handle_provider_unavailable(
+                    limit_ctx,
+                    error_kind=str(accumulated_usage.get("_last_llm_error_kind") or "provider_unavailable"),
+                )
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
 

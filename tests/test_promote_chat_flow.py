@@ -38,7 +38,7 @@ def test_promote_tool_emits_event_with_chat_and_project(tmp_path, monkeypatch):
         current_chat_id=1,
         drive_root=tmp_path,
     )
-    out = _promote_chat_to_task(ctx, "Build the racer prototype", project_id="racer")
+    out = _promote_chat_to_task(ctx, "Build the racer prototype", project_id="racer", predecessor_task_id="")
     assert out.startswith("OK: task")
     assert "accepted and durably scheduled" in out
     assert len(events) == 1
@@ -187,7 +187,7 @@ def test_cat_router_preview_promote_first_request_and_direct_harness_keep_full_a
             "project_last_task_result": preview,
         },
     )
-    assert _promote_chat_to_task(fresh_router, "Build a fresh Cat demo").startswith("OK: task")
+    assert _promote_chat_to_task(fresh_router, "Build a fresh Cat demo", predecessor_task_id="").startswith("OK: task")
     assert "predecessor_authority_source" not in fresh_router.pending_events[0]
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
     admitted = []
@@ -287,7 +287,7 @@ def test_main_promotion_selects_only_manifested_canonical_predecessor(tmp_path, 
         "force_plan": True, "force_plan_source": "swarm",
         "main_routing_manifest": manifest,
     })
-    assert _promote_chat_to_task(fresh, "Start unrelated work").startswith("OK: task")
+    assert _promote_chat_to_task(fresh, "Start unrelated work", predecessor_task_id="").startswith("OK: task")
     assert "predecessor_authority_source" not in fresh.pending_events[0]
 
     selected_source = manifest["final_results"][1]["authority_source"]
@@ -358,6 +358,7 @@ def test_presence_promotion_preserves_ceiling_and_cannot_choose_new_scope(tmp_pa
         project_name="Injected",
         workspace_root="/tmp/foreign",
         source="https://example.invalid/repo.git",
+        predecessor_task_id="",
     )
     assert out.startswith("OK: task")
     event = ctx.pending_events[0]
@@ -416,6 +417,7 @@ def test_real_presence_promotion_rebases_root_and_materializes_all_attachments(
         expected_output="A grounded report",
         project_name="forbidden scope",
         workspace_root="/tmp/forbidden",
+        predecessor_task_id="",
     )
     assert result.startswith("OK: task")
     event = tool_ctx.pending_events[0]
@@ -499,7 +501,7 @@ def test_real_presence_promotion_rejection_cleans_promoted_attachment_copy(
         },
         task_contract=presence_task["task_contract"],
     )
-    assert _promote_chat_to_task(tool_ctx, "Long work").startswith("OK: task")
+    assert _promote_chat_to_task(tool_ctx, "Long work", predecessor_task_id="").startswith("OK: task")
     event = tool_ctx.pending_events[0]
 
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
@@ -549,6 +551,7 @@ def test_ephemeral_swarm_promotion_carries_intent_and_pins_host_scope(tmp_path, 
         workspace_root="/tmp/foreign",
         workspace="none",
         source="https://example.invalid/repo.git",
+        predecessor_task_id="",
     )
 
     assert out.startswith("OK: task")
@@ -580,6 +583,7 @@ def test_ephemeral_swarm_projectless_room_inherits_explicit_project_name(tmp_pat
         project_name="Slime Lab Escape",
         workspace_root="/tmp/foreign",
         source="https://example.invalid/repo.git",
+        predecessor_task_id="",
     )
 
     assert out.startswith("OK: task")
@@ -600,7 +604,7 @@ def test_ephemeral_swarm_projectless_room_inherits_explicit_project_id(tmp_path,
     _confirm_promote(monkeypatch)
     ctx = _swarm_ctx(tmp_path)  # project_id="" — projectless main chat
 
-    out = _promote_chat_to_task(ctx, "Continue the racer build", project_id="racer")
+    out = _promote_chat_to_task(ctx, "Continue the racer build", project_id="racer", predecessor_task_id="")
 
     assert out.startswith("OK: task")
     assert "in project 'racer'" in out
@@ -621,14 +625,14 @@ def test_ephemeral_swarm_room_scope_override_matrix(tmp_path, monkeypatch):
         ({"project_name": "Beta Project"}, "Beta Project"),
     ):
         ctx = _swarm_ctx(tmp_path, project_id="alpha")
-        out = _promote_chat_to_task(ctx, "Audit the issue", **kwargs)
+        out = _promote_chat_to_task(ctx, "Audit the issue", predecessor_task_id="", **kwargs)
         assert out.startswith("OK: task")
         assert ctx.pending_events[0]["project_id"] == "alpha"
         assert f"Explicit project {shown!r} was ignored" in out
         assert "bound to project 'alpha'" in out
 
     ctx = _swarm_ctx(tmp_path, project_id="alpha")
-    out = _promote_chat_to_task(ctx, "Audit the issue", project_id="alpha")
+    out = _promote_chat_to_task(ctx, "Audit the issue", project_id="alpha", predecessor_task_id="")
     assert out.startswith("OK: task")
     assert ctx.pending_events[0]["project_id"] == "alpha"
     assert "ignored" not in out
@@ -668,6 +672,122 @@ def test_promoted_named_project_from_projectless_chat_provisions_workspace(tmp_p
     assert workspace_root, "file-less named project must get an auto-provisioned workspace"
     assert (pathlib.Path(workspace_root) / ".git").exists()
     assert str(project.get("working_dir") or "") == workspace_root
+
+
+def test_promote_announces_project_started_only_on_real_creation(tmp_path, monkeypatch):
+    """B1 seam 1 (owner 2=A): the promote path announces the durable Main
+    `project_started` row exactly when create_project actually created the row;
+    a second promote into the SAME project (idempotent replay, created=False)
+    stays silent — the created gate, not the delivery dedupe, is under test."""
+    import supervisor.workers as workers
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    queued = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda _root, event, **_k: queued.append(dict(event)) or True,
+    )
+    ctx = types.SimpleNamespace(
+        enqueue_task=lambda task: True,
+        persist_queue_snapshot=lambda **_kwargs: True,
+        load_state=lambda: {"owner_chat_id": 1},
+    )
+    evt = {
+        "type": "promote_chat_to_task",
+        "task_id": "slime0001",
+        "objective": "Build the slime lab escape game",
+        "project_id": "slime-lab-escape",
+        "project_name": "Slime Lab Escape",
+        "chat_id": 0,
+    }
+
+    assert workers.promote_chat_to_task(evt, ctx)["status"] == "scheduled"
+    assert [row["system_type"] for row in queued] == ["project_started"]
+    row = queued[0]
+    assert row["chat_id"] == 1
+    assert row["task_id"] == "slime0001"
+    assert row["delivery_id"] == "project-start:slime-lab-escape"
+    assert row["progress_meta"]["project_id"] == "slime-lab-escape"
+    assert row["progress_meta"]["project_name"] == "Slime Lab Escape"
+
+    queued.clear()
+    outcome = workers.promote_chat_to_task(
+        {**evt, "task_id": "slime0002"}, ctx,
+    )
+    assert outcome["status"] == "scheduled"
+    assert queued == []  # idempotent re-create (created=False) announces nothing
+
+
+def test_ensure_project_scope_announces_started_only_on_real_create(tmp_path, monkeypatch):
+    """B1 seam 2 (owner 2=A): a mid-task ensure_project_scope announces the
+    `project_started` row only when it REALLY created the project; scoping a
+    later task to the existing project stays silent."""
+    import supervisor.workers as workers
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    queued = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda _root, event, **_k: queued.append(dict(event)) or True,
+    )
+    ctx = types.SimpleNamespace(RUNNING={})
+
+    workers.ensure_project_scope({
+        "type": "ensure_project_scope", "task_id": "midtask01",
+        "project_id": "research-hub", "project_name": "Research Hub",
+    }, ctx)
+    assert [row["system_type"] for row in queued] == ["project_started"]
+    assert queued[0]["chat_id"] == 1
+    assert queued[0]["delivery_id"] == "project-start:research-hub"
+    assert queued[0]["progress_meta"]["project_name"] == "Research Hub"
+
+    queued.clear()
+    workers.ensure_project_scope({
+        "type": "ensure_project_scope", "task_id": "midtask02",
+        "project_id": "research-hub",
+    }, ctx)
+    assert queued == []  # attach to the existing project announces nothing
+
+
+def test_source_prepared_promote_announces_started_for_flow_created_project(
+    tmp_path, monkeypatch,
+):
+    """B1: a source-bearing promote registers its project OFF-LOOP
+    (`resolve_promote_source` in `_prepare_promote_source_off_loop`), so the
+    workers-side create_project replay reports created=False — the continuation
+    carries `_source_created` and the one announce still fires for this
+    agent-initiated creation."""
+    import supervisor.workers as workers
+    from ouroboros.projects_registry import create_project
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    queued = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda _root, event, **_k: queued.append(dict(event)) or True,
+    )
+    ctx = types.SimpleNamespace(
+        enqueue_task=lambda task: True,
+        persist_queue_snapshot=lambda **_kwargs: True,
+        load_state=lambda: {"owner_chat_id": 1},
+    )
+    # The off-loop source half already registered the project.
+    assert create_project(
+        tmp_path, "cloned-repo", name="Cloned Repo", origin="promote_chat_to_task",
+    )["created"] is True
+
+    outcome = workers.promote_chat_to_task({
+        "type": "promote_chat_to_task",
+        "task_id": "clone0001",
+        "objective": "Work on the cloned repo",
+        "project_id": "cloned-repo",
+        "chat_id": 0,
+        "_source_prepared": True,
+        "_source_created": True,
+    }, ctx)
+    assert outcome["status"] == "scheduled"
+    assert [row["system_type"] for row in queued] == ["project_started"]
+    assert queued[0]["delivery_id"] == "project-start:cloned-repo"
 
 
 def test_worker_admits_promoted_presence_with_same_verified_ceiling(tmp_path, monkeypatch):
@@ -733,8 +853,8 @@ def test_ephemeral_swarm_unconfirmed_promotion_reuses_one_task_id(tmp_path, monk
     )
     ctx = _swarm_ctx(tmp_path)
 
-    first = _promote_chat_to_task(ctx, "Audit and fix the issue")
-    second = _promote_chat_to_task(ctx, "Audit and fix the issue")
+    first = _promote_chat_to_task(ctx, "Audit and fix the issue", predecessor_task_id="")
+    second = _promote_chat_to_task(ctx, "Audit and fix the issue", predecessor_task_id="")
 
     assert first == second
     assert first.startswith("PROMOTE_UNCONFIRMED")
@@ -752,8 +872,8 @@ def test_ephemeral_swarm_receipt_error_after_emit_keeps_one_attempt(tmp_path, mo
     event_queue = queue.Queue()
     ctx = _swarm_ctx(tmp_path, event_queue=event_queue)
 
-    first = _promote_chat_to_task(ctx, "Audit and fix the issue")
-    second = _promote_chat_to_task(ctx, "Audit and fix the issue")
+    first = _promote_chat_to_task(ctx, "Audit and fix the issue", predecessor_task_id="")
+    second = _promote_chat_to_task(ctx, "Audit and fix the issue", predecessor_task_id="")
 
     assert first == second
     assert first.startswith("PROMOTE_UNCONFIRMED")
@@ -772,8 +892,8 @@ def test_ephemeral_swarm_rejected_promotion_is_latched_without_event(tmp_path, m
     )
     ctx = _swarm_ctx(tmp_path)
 
-    first = _promote_chat_to_task(ctx, "Audit and fix the issue")
-    second = _promote_chat_to_task(ctx, "Audit and fix the issue")
+    first = _promote_chat_to_task(ctx, "Audit and fix the issue", predecessor_task_id="")
+    second = _promote_chat_to_task(ctx, "Audit and fix the issue", predecessor_task_id="")
 
     assert first == second
     assert first.startswith("PROMOTE_REJECTED")
@@ -787,7 +907,7 @@ def test_managed_swarm_does_not_recursively_propagate_routing_intent(tmp_path, m
     _confirm_promote(monkeypatch)
     ctx = _swarm_ctx(tmp_path, is_ephemeral_turn=False)
 
-    _promote_chat_to_task(ctx, "A later task chosen during execution")
+    _promote_chat_to_task(ctx, "A later task chosen during execution", predecessor_task_id="")
 
     assert "force_plan" not in ctx.pending_events[0]
     assert not hasattr(ctx, "_swarm_handoff_attempt")
@@ -809,7 +929,7 @@ def test_promote_tool_rejects_dirty_project_id(tmp_path):
     ctx = types.SimpleNamespace(
         pending_events=[], event_queue=None, current_chat_id=1, drive_root=tmp_path,
     )
-    out = _promote_chat_to_task(ctx, "x", project_id="Bad Name!")
+    out = _promote_chat_to_task(ctx, "x", project_id="Bad Name!", predecessor_task_id="")
     assert "TOOL_ARG_ERROR" in out
     assert not ctx.pending_events
 
@@ -827,6 +947,7 @@ def test_promote_tool_project_name_creates_named_project_event(tmp_path, monkeyp
     out = _promote_chat_to_task(
         ctx, "research everything about the airi institute",
         project_name="Airi Research", title="Airi Research",
+        predecessor_task_id="",
     )
     assert out.startswith("OK: task")
     assert "new project 'Airi Research'" in out
@@ -859,7 +980,7 @@ def test_promote_tool_cyrillic_project_name_still_creates(tmp_path, monkeypatch)
     ctx = types.SimpleNamespace(
         pending_events=events, event_queue=None, current_chat_id=1, drive_root=tmp_path,
     )
-    out = _promote_chat_to_task(ctx, "исследуй динозавров", project_name="динозавры", title="динозавры")
+    out = _promote_chat_to_task(ctx, "исследуй динозавров", project_name="динозавры", title="динозавры", predecessor_task_id="")
     assert "TOOL_ARG_ERROR" not in out
     assert out.startswith("OK: task")
     evt = events[0]
@@ -1204,7 +1325,11 @@ def test_promoted_skill_repair_is_canonical_confined_managed_task(tmp_path, monk
         },
     }, ctx)
 
-    assert result == {"status": "scheduled", "task_id": "repair01"}
+    assert {key: result[key] for key in ("status", "task_id")} == {
+        "status": "scheduled",
+        "task_id": "repair01",
+    }
+    assert result["_admitted_task_contract"] == enqueued[0]["task_contract"]
     assert len(enqueued) == 1
     task = enqueued[0]
     assert task.get("_ephemeral_turn") is None
@@ -2738,3 +2863,37 @@ def test_promote_provisioning_failure_loud_fails_not_silent_fileless(tmp_path, m
     assert outcome["status"] == "needs_manual_target"
     assert outcome["reason"] == "workspace_provisioning_failed"
     assert enqueued == []
+
+
+def test_swarm_intent_survives_admission_to_the_finalization_read(tmp_path, monkeypatch):
+    """rc-phaseC propagation pin: `force_plan_source="swarm"` attached at chat
+    admission rides the promote event into the admitted root's task["metadata"]
+    and is the exact fact build_swarm_efficiency reads at finalization — so a
+    Swarm-button root that fanned out nothing finalizes with the
+    no_fanout_observed block instead of a silent None."""
+    import supervisor.workers as workers
+    from ouroboros.agent_task_pipeline import _build_swarm_efficiency
+    from ouroboros.tools.control import _promote_chat_to_task
+
+    _confirm_promote(monkeypatch)
+    router_ctx = _swarm_ctx(tmp_path)
+    assert _promote_chat_to_task(router_ctx, "Build it with a swarm", predecessor_task_id="").startswith("OK: task")
+    evt = router_ctx.pending_events[0]
+    assert evt["force_plan_source"] == "swarm"
+
+    monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
+    admitted = []
+    outcome = workers.promote_chat_to_task(evt, _promote_ctx(admitted))
+    assert outcome["status"] == "scheduled"
+    task = admitted[0]
+    assert task["metadata"]["force_plan_source"] == "swarm"
+
+    # Deliberately NO logs/events.jsonl: a fresh drive root has none, and the
+    # zero-fanout block must still be returned (the reader is fail-soft).
+    block = _build_swarm_efficiency(types.SimpleNamespace(drive_root=str(tmp_path)), task)
+    assert block == {
+        "intent_source": "swarm",
+        "planned": None,
+        "observed_started": 0,
+        "status": "no_fanout_observed",
+    }

@@ -84,17 +84,22 @@ def test_ui_project_completion_pointer_keeps_project_history_scoped(direct_serve
                 assert "Project progress: nested delegation is running." not in main_text
                 assert "Project task summary" not in main_text
 
-                summary.locator(".chat-live-project-btn").click()
+                summary.locator(".system-message-action").click()
                 page.wait_for_selector("#project-panel:not([hidden])", timeout=30_000)
                 assert page.locator("#project-panel-title").inner_text() == project["name"]
                 panel = page.locator(f"#panel-pchat-{project['id']}")
                 panel.wait_for(state="visible", timeout=30_000)
-                assert "Project progress: nested delegation is running." in panel.inner_text()
                 task_card = panel.locator(f'.chat-live-card[data-task-id="{task_id}"]')
                 task_card.wait_for(state="visible", timeout=10_000)
                 assert task_card.locator(".chat-live-phase").inner_text().strip() == "Done"
+                task_card.locator("[data-live-summary-button]").click()
+                task_card.get_by_text(
+                    "Project progress: nested delegation is running.",
+                    exact=False,
+                ).first.wait_for(state="visible", timeout=30_000)
+                assert "Project progress: nested delegation is running." in task_card.inner_text()
                 assert panel.locator('.chat-bubble[data-system-type="project_completion_summary"]').count() == 0
-                assert panel.locator(".chat-live-project-btn").count() == 0
+                assert panel.locator(".system-message-action").count() == 0
             finally:
                 browser.close()
     except PlaywrightError as exc:

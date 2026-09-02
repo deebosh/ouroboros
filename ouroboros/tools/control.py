@@ -28,10 +28,13 @@ from ouroboros.contracts.task_contract import (
 )
 from ouroboros.tools.control_delegation import (
     _ensure_project_scope,
+    admitted_depth_cap,
     child_budget_for_schedule,
     normalize_required_capabilities,
     profile_from_task_constraint,
+    record_depth_limit_refusal,
     resolve_cooperative_write_root,
+    schedule_delegation_refusal,
 )
 from ouroboros.tools.registry import active_repo_dir_for, system_repo_dir_for
 from ouroboros.outcomes import normalize_outcome_axes
@@ -67,6 +70,17 @@ VALID_SUBTASK_MEMORY_MODES = frozenset({"forked", "empty"})
 _SCHEDULE_EMIT_LOCK = threading.Lock()
 _PROMOTE_CONFIRM_TIMEOUT_SEC = 15.0
 _PROMOTE_CONFIRM_POLL_SEC = 0.05
+_MISSING_PREDECESSOR_SELECTOR = object()
+
+
+def _predecessor_selector_error(value: Any, tool_name: str) -> str:
+    """Require the router to state fresh work or a named continuation."""
+    if value is _MISSING_PREDECESSOR_SELECTOR or value is None:
+        return (
+            f"⚠️ TOOL_ARG_ERROR ({tool_name}): predecessor_task_id is required; "
+            "pass an empty string for fresh work or the host-listed result id to continue it"
+        )
+    return ""
 
 
 def _record_scheduled_subagent(ctx: ToolContext, record: Dict[str, Any]) -> None:
@@ -134,6 +148,47 @@ def _emit_swarm_fanout(
         append_jsonl(ctx.drive_logs() / "events.jsonl", evt)
     except Exception:
         log.debug("Failed to emit swarm_fanout telemetry", exc_info=True)
+
+
+def maybe_emit_delegated_run_fanout(ctx: ToolContext, *, run_id: str, route_id: str,
+                                    objective: str, durable: bool) -> None:
+    """swarm_fanout for a delegated harness run, only under host-attested Swarm intent.
+
+    A task admitted through the Swarm button carries the typed metadata fact
+    ``force_plan_source == "swarm"`` — the gate reads exactly that admission fact,
+    never keywords or prompt text (P5). Only such a hosting task folds its
+    delegate_start into swarm telemetry; an ordinary delegated run on a task that
+    never asked for a swarm emits nothing. The event reuses the exact existing
+    ``swarm_fanout`` wave shape (``requested_count=1``, ``role="delegated_run"``,
+    requested lane = the selected session route) and means STARTED/REQUESTED, not
+    completed. An uncustodied start (``durable=False``) is not attested and emits
+    nothing. Telemetry must never break a start that already succeeded, so
+    failures stay logged, never raised.
+    """
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if not durable or metadata.get("force_plan_source") != "swarm":
+        return
+    task_id = str(getattr(ctx, "task_id", "") or "")
+    try:
+        depth = int(getattr(ctx, "task_depth", 0) or 0) + 1
+    except (TypeError, ValueError):
+        depth = 1
+    try:
+        _emit_swarm_fanout(
+            ctx,
+            parent_task_id=task_id,
+            root_task_id=str(metadata.get("root_task_id") or task_id),
+            depth=depth,
+            task_group_id="",
+            task_ids=[str(run_id or "")],
+            role="delegated_run",
+            requested_model_lane=str(route_id or ""),
+            objective=str(objective or ""),
+            emitted_live=True,
+        )
+    except Exception:
+        log.debug("Failed to emit delegated-run swarm_fanout telemetry", exc_info=True)
 
 
 def _subagent_slot_note(ctx: ToolContext, root_task_id: str) -> str:
@@ -282,7 +337,7 @@ def _finalize_schedule_emission(ctx: ToolContext, emission: Dict[str, Any]) -> s
     commitment = (
         "ordinary recursive API actor"
         if route_kind == "api_model"
-        else "recursive nanny; exact external start is committed before its first model call"
+        else "recursive nanny; exact route/work-order authority is frozen before its first model call"
     )
     legacy_note = (
         "\nDEPRECATED_LEGACY_SELECTOR: deterministically mapped to this exact configured row; "
@@ -770,6 +825,7 @@ def _attach_predecessor_authority_from_metadata(
     from ouroboros.agent_startup_checks import valid_task_result_authority_source
 
     if valid_task_result_authority_source(source, selected_id):
+        evt["predecessor_task_id"] = selected_id
         evt["predecessor_authority_source"] = dict(source)
     else:
         return "the selected predecessor has no readable authority source"
@@ -840,7 +896,7 @@ def _promote_chat_to_task(
     project_name: str = "",
     workspace: str = "",
     source: str = "",
-    predecessor_task_id: str = "",
+    predecessor_task_id: Any = _MISSING_PREDECESSOR_SELECTOR,
 ) -> str:
     """Route real work out of the conversation lane into a supervised pooled task.
 
@@ -856,6 +912,9 @@ def _promote_chat_to_task(
     "create a named project and work there" call: the project is created NOW
     with that display name and the task runs inside it (v6.33.0).
     """
+    selector_error = _predecessor_selector_error(predecessor_task_id, "promote_chat_to_task")
+    if selector_error:
+        return selector_error
     goal = str(objective or "").strip()
     if not goal:
         return "⚠️ TOOL_ARG_ERROR (promote_chat_to_task): objective is required"
@@ -1075,7 +1134,7 @@ def _list_projects(ctx: ToolContext, limit: int = 50) -> str:
 
 def _route_to_project(
     ctx: ToolContext, project_id: str = "", message: str = "", reason: str = "",
-    predecessor_task_id: str = "",
+    predecessor_task_id: Any = _MISSING_PREDECESSOR_SELECTOR,
 ) -> str:
     """Route a main-chat message to an EXISTING project so the work continues in
     that project's context (its memory/journal/thread), keeping the main chat free.
@@ -1085,6 +1144,9 @@ def _route_to_project(
     receipt. The receipt is host metadata on the owner message; any non-empty
     final decision-turn explanation remains a separate conversational reply.
     """
+    selector_error = _predecessor_selector_error(predecessor_task_id, "route_to_project")
+    if selector_error:
+        return selector_error
     from ouroboros.project_facts import explicit_project_id_ok, sanitize_project_id
     from ouroboros.projects_registry import get_project
 
@@ -1111,6 +1173,12 @@ def _route_to_project(
         else {}
     )
     client_message_id = str(metadata.get("client_message_id") or "").strip()
+    predecessor_event: Dict[str, Any] = {}
+    predecessor_error = _attach_predecessor_authority_from_metadata(
+        ctx, predecessor_event, predecessor_task_id,
+    )
+    if predecessor_error:
+        return "⚠️ AUTHORITY_SOURCE_UNAVAILABLE (route_to_project): " + predecessor_error
     requested_pid = str(project_id or "").strip()
     pid = sanitize_project_id(requested_pid) if requested_pid and explicit_project_id_ok(requested_pid) else ""
     proj = get_project(Path(ctx.drive_root), pid) if pid else None
@@ -1128,7 +1196,7 @@ def _route_to_project(
             else "target_not_found"
         )
         routing_token = uuid.uuid4().hex
-        mode, receipt = _emit_and_wait_for_routing(ctx, {
+        manual_event: Dict[str, Any] = {
             "type": "routing_manual_target",
             "routing_token": routing_token,
             "chat_id": current_chat_id,
@@ -1137,7 +1205,9 @@ def _route_to_project(
             "reason": str(reason or "").strip() or failure,
             "options": options,
             "ts": utc_now_iso(),
-        })
+        }
+        manual_event.update(predecessor_event)
+        mode, receipt = _emit_and_wait_for_routing(ctx, manual_event)
         if str(receipt.get("status") or "") == "needs_manual_target":
             durable_options = (
                 receipt.get("options") if isinstance(receipt.get("options"), list) else options
@@ -1170,11 +1240,7 @@ def _route_to_project(
         "ts": utc_now_iso(),
     }
     _attach_origin_from_metadata(ctx, evt)
-    predecessor_error = _attach_predecessor_authority_from_metadata(
-        ctx, evt, predecessor_task_id,
-    )
-    if predecessor_error:
-        return "⚠️ AUTHORITY_SOURCE_UNAVAILABLE (route_to_project): " + predecessor_error
+    evt.update(predecessor_event)
     _attach_swarm_intent(ctx, evt)
     _attach_client_surface(ctx, evt)
     mode, receipt = _emit_and_wait_for_routing(ctx, evt)
@@ -1773,9 +1839,16 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     except (TypeError, ValueError):
         current_depth = 0
     new_depth = current_depth + 1
-    max_depth = get_max_subagent_depth()
+    metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
+    parent_contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
+    if not parent_contract and isinstance(getattr(ctx, "task_contract", None), dict):
+        parent_contract = getattr(ctx, "task_contract")
+    max_depth = admitted_depth_cap(parent_contract, get_max_subagent_depth())
     if new_depth > max_depth:
-        return f"ERROR: Subtask depth limit ({max_depth}) exceeded. Simplify your approach."
+        return record_depth_limit_refusal(
+            ctx, fields, params, configured_subagent,
+            current_depth=current_depth, new_depth=new_depth, max_depth=max_depth,
+        )
 
     if getattr(ctx, 'is_direct_chat', False):
         from ouroboros.utils import append_jsonl
@@ -1789,14 +1862,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         except Exception:
             pass
 
-    metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     # EMPTINESS decides, not type. `ToolContext.task_contract` defaults to `{}`, so testing
     # only `isinstance(..., dict)` let that empty default win over a contract that really is
     # in `task_metadata` — and the parent's `deadline_at` lives in the contract, so the miss
     # silently un-narrowed every child deadline. Same precedence the registry already uses.
-    parent_contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
-    if not parent_contract and isinstance(getattr(ctx, "task_contract", None), dict):
-        parent_contract = getattr(ctx, "task_contract")
     current_task_id = str(getattr(ctx, "task_id", "") or "")
     parent_task_id = str(current_task_id or metadata.get("parent_task_id") or "").strip()
     root_task_id_seed = str(metadata.get("root_task_id") or current_task_id or "").strip()
@@ -1807,6 +1876,8 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         current_chat_id = 0
     budget_drive_root = str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root)
     status_drive_root = Path(budget_drive_root)
+    if refusal := schedule_delegation_refusal(parent_contract, status_drive_root, parent_task_id):
+        return refusal
     workspace_root = str(getattr(ctx, "workspace_root", "") or metadata.get("workspace_root") or "").strip()
     workspace_mode = str(getattr(ctx, "workspace_mode", "") or metadata.get("workspace_mode") or "").strip()
     workspace_root, workspace_mode = _inherited_workspace_from_active_repo(ctx, workspace_root, workspace_mode)
@@ -2423,25 +2494,16 @@ def _get_task_result(
     result = data.get("result", "")
     trace = data.get("trace_summary", "")
     try:
-        from ouroboros.outcomes import read_verification_receipts
+        from ouroboros.outcomes import read_verification_receipts_from_roots
+        from ouroboros.task_status import _child_drive_candidates
 
-        receipts = read_verification_receipts(status_drive_root, task_id)
-        if not receipts:
-            # Pre-copy-back window: the effective read above already serves a child's
-            # self-finalized result straight off its ISOLATED drive before the
-            # supervisor's task_done copy-back publishes verification_receipts.jsonl
-            # to the canonical root (headless._publish_child_verification_receipts).
-            # Fall back to the child drive recorded on that result (same candidate
-            # SSOT the effective read used) so the W2 receipt rows are never silently
-            # absent in the window the parent most often absorbs the child in.
-            from ouroboros.task_status import _child_drive_candidates
-
-            for child_drive in _child_drive_candidates(data):
-                if Path(child_drive) == status_drive_root:
-                    continue
-                receipts = read_verification_receipts(child_drive, task_id)
-                if receipts:
-                    break
+        # During the pre-copy-back window ordinary verification lives on the
+        # isolated child drive while a zero-run lifecycle receipt is already on
+        # the canonical root. Merge both replicas; a non-empty canonical file is
+        # not evidence that the local one contains nothing new.
+        receipts = read_verification_receipts_from_roots(
+            [*_child_drive_candidates(data), status_drive_root], task_id,
+        )
     except Exception:
         receipts = []
     outcome_summary = _subtask_outcome_summary(data, receipts=receipts)
@@ -2479,24 +2541,89 @@ def _get_task_result(
     return output
 
 
-def _wait_attention_poll(ctx: ToolContext, after_ts: str) -> Callable[..., Any]:
+def _wait_attention_poll(
+    ctx: ToolContext, after_ts: str, task_ids: List[str],
+) -> Callable[..., Any]:
     """on_poll hook: break a sliced wait early when a child appends an attention beacon
-    (blocker/question/interface_contract/delegation_constraint) after the wait started, so a waiting parent reacts mid-flight."""
+    (blocker/question/interface_contract/review_requested/delegation_constraint).
+
+    The cursor is context-local and per child: a beacon written before this
+    particular tool call is still delivered, while a later wait in the same
+    actor context does not replay it.  Equal-timestamp rows use their stable
+    content identity, so the five-row response bound cannot strand the rest.
+    """
     # tree_note/tree_read live in ouroboros/tools/task_tree.py (extracted for module size).
     from ouroboros.tools.task_tree import tree_root_id
 
     rid = tree_root_id(ctx)
 
+    cursor_store = getattr(ctx, "_wait_attention_cursors", None)
+    if not isinstance(cursor_store, dict):
+        cursor_store = {}
+        try:
+            setattr(ctx, "_wait_attention_cursors", cursor_store)
+        except Exception:
+            # An exotic immutable context still gets correct delivery within
+            # this hook instance; ordinary ToolContext objects retain it across
+            # subsequent wait_task/wait_tasks calls.
+            pass
+
+    child_cursors: Dict[str, Dict[str, Any]] = {}
+    for task_id in task_ids:
+        key = f"{rid}:{task_id}"
+        cursor = cursor_store.get(key)
+        if not isinstance(cursor, dict):
+            cursor = {"after_ts": str(after_ts or ""), "seen_ids": set()}
+            cursor_store[key] = cursor
+        if not isinstance(cursor.get("seen_ids"), set):
+            cursor["seen_ids"] = {
+                str(item) for item in (cursor.get("seen_ids") or []) if str(item)
+            }
+        child_cursors[str(task_id)] = cursor
+
     def _hook(_results: Dict[str, Any], _terminal: Dict[str, bool]) -> Any:
         if not rid:
             return None
         try:
-            from ouroboros.task_tree_ledger import tree_ledger_attention_after
+            from ouroboros.task_tree_ledger import (
+                tree_ledger_attention_after,
+                tree_ledger_row_id,
+            )
 
-            att = tree_ledger_attention_after(rid, after_ts)
+            attention = tree_ledger_attention_after(rid, "", task_ids=set(task_ids))
         except Exception:
             return None
-        return {"reason": "child_attention_beacon", "beacons": att[-5:]} if att else None
+        pending: List[tuple[Dict[str, Any], str]] = []
+        for row in attention:
+            task_id = str(row.get("task_id") or "")
+            cursor = child_cursors.get(task_id)
+            if cursor is None:
+                continue
+            ts = str(row.get("ts") or "")
+            cursor_ts = str(cursor.get("after_ts") or "")
+            row_id = tree_ledger_row_id(row)
+            if ts < cursor_ts:
+                continue
+            if ts == cursor_ts and row_id in cursor["seen_ids"]:
+                continue
+            pending.append((row, row_id))
+        if not pending:
+            return None
+
+        delivered = pending[:5]
+        for row, row_id in delivered:
+            cursor = child_cursors[str(row.get("task_id") or "")]
+            ts = str(row.get("ts") or "")
+            cursor_ts = str(cursor.get("after_ts") or "")
+            if ts > cursor_ts:
+                cursor["after_ts"] = ts
+                cursor["seen_ids"] = set()
+            cursor["seen_ids"].add(row_id)
+        return {
+            "reason": "child_attention_beacon",
+            "beacons": [row for row, _row_id in delivered],
+            "beacons_remaining": len(pending) - len(delivered),
+        }
 
     return _hook
 
@@ -2565,7 +2692,7 @@ def _wait_for_task(ctx: ToolContext, task_id: str, timeout_sec: int = 180) -> st
     status_drive_root = Path(str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root))
     waited = wait_for_effective_tasks(
         status_drive_root, [tid], timeout_sec=timeout,
-        on_poll=_wait_attention_poll(ctx, utc_now_iso()), poll_interval_sec=2.0,
+        on_poll=_wait_attention_poll(ctx, "", [tid]), poll_interval_sec=2.0,
     )
     early = waited.get("early_return")
     if early:
@@ -2757,7 +2884,7 @@ def _wait_for_tasks(
     entry_unknown_ids = _unminted_wait_ids(ctx, status_drive_root, normalized_ids)
     # One beacon cursor for the whole wait, so a two-phase window cannot skip an
     # attention beacon emitted during its first phase.
-    _wait_since = utc_now_iso()
+    _wait_since = ""
     # A wait set in which EVERY id is unminted cannot be satisfied by waiting —
     # nothing was ever scheduled to terminate. Spend only the registration-race
     # grace on it (wave1's root blocked its whole window on three hallucinated
@@ -2767,7 +2894,7 @@ def _wait_for_tasks(
     first_window = min(float(timeout), _UNMINTED_WAIT_GRACE_SEC) if _phantom_only else float(timeout)
     waited = wait_for_effective_tasks(
         status_drive_root, normalized_ids, timeout_sec=first_window, mode=normalized_mode,
-        on_poll=_wait_attention_poll(ctx, _wait_since), poll_interval_sec=2.0,
+        on_poll=_wait_attention_poll(ctx, _wait_since, normalized_ids), poll_interval_sec=2.0,
     )
     if _phantom_only and first_window < float(timeout) and waited.get("early_return") is None:
         entry_unknown_ids = _unminted_wait_ids(ctx, status_drive_root, normalized_ids)
@@ -2776,7 +2903,7 @@ def _wait_for_tasks(
             resumed = wait_for_effective_tasks(
                 status_drive_root, normalized_ids,
                 timeout_sec=max(0.0, float(timeout) - elapsed), mode=normalized_mode,
-                on_poll=_wait_attention_poll(ctx, _wait_since), poll_interval_sec=2.0,
+                on_poll=_wait_attention_poll(ctx, _wait_since, normalized_ids), poll_interval_sec=2.0,
             )
             resumed["elapsed_sec"] = float(resumed.get("elapsed_sec") or 0.0) + elapsed
             resumed["timeout_sec"] = float(timeout)
@@ -2933,7 +3060,7 @@ _PROMOTE_CHAT_DESCRIPTION = (
     "called, and do not just answer or spawn a project-less task). `project_id` "
     "scopes to an existing project. When this new task continues one specific "
     "completed result shown by the host (the Main manifest or Project last-result "
-    "preview), pass its internal id as `predecessor_task_id`; omit it for fresh work. "
+    "preview), pass its internal id as `predecessor_task_id`; pass an empty string for fresh work. "
     "`workspace_root` points at a working folder. A project-scoped task inherits "
     "the project's working folder as its ACTIVE WORKSPACE by default (its file/"
     "shell/git tools operate there, not on the Ouroboros repo); pass "
@@ -2977,9 +3104,9 @@ def get_tools() -> List[ToolEntry]:
                     "workspace_root": {"type": "string", "description": "Optional absolute working-folder path (validated at admission: must be a git worktree root outside the Ouroboros repo/data). When omitted for a project-scoped task, the project's registered working_dir is used by default.", "default": ""},
                     "workspace": {"type": "string", "description": "Pass 'none' to opt OUT of the project room's default working folder (a folder-less task in a folder-ful project). Leave empty otherwise.", "default": ""},
                     "source": {"type": "string", "description": "Attach or clone the project's working folder in ONE move: a git URL (https://... or git@host:path — cloned server-side into the projects root; private repos fail typed auth_required) or an existing folder path (validated attach). The folder is registered on the project (provenance + trusted_at) and becomes this task's active workspace. Use for 'help me debug this GitHub repo / this folder' asks.", "default": ""},
-                    "predecessor_task_id": {"type": "string", "description": "Internal selector for one completed result already listed by the host routing manifest. Use only when the new task continues that result; omit for fresh work.", "default": ""},
+                    "predecessor_task_id": {"type": "string", "description": "Required explicit selector: pass an empty string for fresh work, or the completed result id shown by the host routing manifest to continue it."},
                 },
-                "required": ["objective"],
+                "required": ["objective", "predecessor_task_id"],
             },
         }, _promote_chat_to_task),
         ToolEntry("ensure_project_scope", {
@@ -3025,15 +3152,15 @@ def get_tools() -> List[ToolEntry]:
                 "needs_manual_target acknowledgement with host-validated task options and New task "
                 "in Project; prose alone cannot emit that typed choice. For brand-new work that is not yet a project, "
                 "use promote_chat_to_task instead. When continuing one completed result from the "
-                "Main host manifest, pass its internal `predecessor_task_id`; omit it for fresh work. "
+                "Main host manifest, pass its internal `predecessor_task_id`; pass an empty string for fresh work. "
                 "Returns a visible routing receipt."
             ),
             "parameters": {"type": "object", "properties": {
                 "project_id": {"type": "string", "default": "", "description": "Target project id (filesystem-clean; see list_projects), or empty to emit typed needs_manual_target."},
                 "message": {"type": "string", "description": "The owner message / work to route into the project."},
                 "reason": {"type": "string", "default": "", "description": "Optional short why-this-project note (provenance)."},
-                "predecessor_task_id": {"type": "string", "default": "", "description": "Internal selector for one completed result listed by the Main host manifest. Omit for fresh work."},
-            }, "required": ["message"]},
+                "predecessor_task_id": {"type": "string", "description": "Required explicit selector: pass an empty string for fresh work, or the completed result id listed by the Main host manifest to continue it."},
+            }, "required": ["message", "predecessor_task_id"]},
         }, _route_to_project),
         ToolEntry("steer_task", {
             "name": "steer_task",
@@ -3203,7 +3330,7 @@ def get_tools() -> List[ToolEntry]:
         }, _get_task_result),
         ToolEntry("wait_task", {
             "name": "wait_task",
-            "description": "Wait for ONE subtask to reach a terminal status and return its effective result. May return EARLY (before terminal) if the child raises a tree_note blocker/question/interface_contract/delegation_constraint beacon — the result then carries a [CHILD_BEACONS] block so you can steer or override it. With SEVERAL children in flight, prefer wait_tasks(any_terminal) to absorb whichever finishes first rather than blocking serially on one id at a time.",
+            "description": "Wait for ONE subtask to reach a terminal status and return its effective result. May return EARLY (before terminal) if the child raises a tree_note blocker/question/interface_contract/review_requested/delegation_constraint beacon — the result then carries a [CHILD_BEACONS] block so you can steer, review, or override it. With SEVERAL children in flight, prefer wait_tasks(any_terminal) to absorb whichever finishes first rather than blocking serially on one id at a time.",
             "parameters": {"type": "object", "required": ["task_id"], "properties": {
                 "task_id": {"type": "string", "description": "Task ID to check"},
                 "timeout_sec": {"type": "integer", "default": 180, "description": "Maximum seconds to wait (default 180)."},
@@ -3211,7 +3338,7 @@ def get_tools() -> List[ToolEntry]:
         }, _wait_for_task, timeout_sec=7200),
         ToolEntry("wait_tasks", {
             "name": "wait_tasks",
-            "description": "Wait for MULTIPLE subtasks at once and return a compact structural projection per child (task_id, status, cost_usd, child_result_sha256, outcome_axes, result, trace_summary, capability_delta when the child has something to disclose, duplicate_of) — the right tool to ABSORB a batch of independent children you scheduled in one burst. The full per-child envelope stays on disk in task_results/<task_id>.json (child_result_sha256 pins the exact result you saw; get_task_result returns the full result text plus trace/outcome summaries). With mode=any_terminal it returns as soon as the FIRST child finishes (handle it, then call again for the rest) instead of blocking serially. The JSON also includes live_child_status (running/scheduled/terminal per child) and may early_return (before all terminal) on a child tree_note blocker/question/interface_contract/delegation_constraint beacon so you can steer or override mid-flight. An id no surface of this tree ever minted (no task result, no queue row, no tree-ledger row) is flagged unknown_task_id — 'not yet registered or never scheduled' — and unknown_task_ids + a compact children_roster of your ACTUAL direct children are attached so you can repair the wait set instead of re-polling phantoms.",
+            "description": "Wait for MULTIPLE subtasks at once and return a compact structural projection per child (task_id, status, cost_usd, child_result_sha256, outcome_axes, result, trace_summary, capability_delta when the child has something to disclose, duplicate_of) — the right tool to ABSORB a batch of independent children you scheduled in one burst. The full per-child envelope stays on disk in task_results/<task_id>.json (child_result_sha256 pins the exact result you saw; get_task_result returns the full result text plus trace/outcome summaries). With mode=any_terminal it returns as soon as the FIRST child finishes (handle it, then call again for the rest) instead of blocking serially. The JSON also includes live_child_status (running/scheduled/terminal per child) and may early_return (before all terminal) on a child tree_note blocker/question/interface_contract/review_requested/delegation_constraint beacon so you can steer, review, or override mid-flight. An id no surface of this tree ever minted (no task result, no queue row, no tree-ledger row) is flagged unknown_task_id — 'not yet registered or never scheduled' — and unknown_task_ids + a compact children_roster of your ACTUAL direct children are attached so you can repair the wait set instead of re-polling phantoms.",
             "parameters": {"type": "object", "required": ["task_ids"], "properties": {
                 "task_ids": {"type": "array", "items": {"type": "string"}, "description": "Task IDs returned by schedule_subagent."},
                 "timeout_sec": {"type": "integer", "default": 600, "description": "Maximum seconds to wait (default 600)."},

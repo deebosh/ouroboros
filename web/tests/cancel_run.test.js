@@ -42,7 +42,11 @@ test('the cancel click shows the honest interim, not an instant Cancelled', () =
     // interim for a nonterminal record with cancel_state=pending instead of
     // finishing the card — through the SHARED taskCancelPending helper (AR2-8:
     // one consumer path for the typed projection, never an inline status peek).
-    const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
+    // Git's Windows checkout may expose CRLF even though the committed blob is
+    // LF. Normalize the source before asserting the cross-file wiring so the
+    // contract tests check behavior, not the platform's line-ending policy.
+    const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8')
+        .replace(/\r\n/g, '\n');
     assert.match(chat, /function markLiveCardCancelPending\(/);
     assert.match(chat, /markLiveCardCancelPending\(taskId, soft\);\n[\s\S]{0,600}await requestStop\(/);
     assert.match(chat, /taskCancelPending\(stored\)[\s\S]{0,400}markLiveCardCancelPending\(taskId[,)]/);
@@ -158,7 +162,10 @@ test('a timeout-retry root gains Cancel run: the host marker is the truth', () =
     assert.match(chat, /grantCancelAuthority && msg\?\.cancelable === true && msg\?\.task_id/);
     // Project-owned progress is now panel-local; Main only accepts its typed
     // terminal completion projection, so the old `!isMirror` branch is gone.
-    assert.match(chat, /const isMyThread = \(msg\) => \{[\s\S]{0,260}return !isKnownProjectFrame\(msg\);/);
+    // Main's gate is the pure mainThreadAccepts predicate (server project_thread
+    // stamp + known project set) — behaviour is node-tested in
+    // chat_thread_routing.test.js; here we pin only that Main routes through it.
+    assert.match(chat, /const isMyThread = \(msg\) => \{[\s\S]{0,260}return mainThreadAccepts\(msg, state\.projectChatIds\);/);
     assert.match(chat, /updateLiveCardFromProgressMessage\(msg, \{ grantCancelAuthority: true \}\)/);
     assert.doesNotMatch(chat, /frameRoot === taskId\) *&&[\s\S]{0,80}markTaskCancelable/);
     // ...and the eligibility reducer still refuses subagent/finished/reusable cards,
@@ -218,8 +225,9 @@ test('a failed cancel reconciles through the shared helper before touching the b
     // cancel_state=pending, finish the card for a terminal record — and only
     // a genuinely-live, non-pending task gets its prior phase restored and
     // the button re-enabled.
-    const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
-    assert.match(chat, /const priorPhase = captureLiveCardPhase\(record\);\n\s*markLiveCardCancelPending\(taskId, soft\);/);
+    const chat = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8')
+        .replace(/\r\n/g, '\n');
+    assert.match(chat, /const priorPhase = captureLiveCardPhaseState\(record\);\n\s*markLiveCardCancelPending\(taskId, soft\);/);
     const failure = chat.slice(chat.indexOf('showToast(`Cancel failed:'));
     const branch = failure.slice(0, 2200);
     // The shared seam runs BEFORE any button re-enable.
@@ -230,5 +238,5 @@ test('a failed cancel reconciles through the shared helper before touching the b
     // Pending or terminal ⇒ return WITHOUT re-enabling or restoring the phase.
     assert.match(branch, /if \(record\.finished \|\| stillPending\) return;/);
     assert.match(branch, /taskCancelPending\(stored\)/);
-    assert.match(branch, /restoreLiveCardPhase\(record, priorPhase\)/);
+    assert.match(branch, /restoreLiveCardPhaseState\(record, priorPhase\)/);
 });

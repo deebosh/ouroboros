@@ -329,6 +329,7 @@
  * @property {string=} project_id
  * @property {string=} project_name
  * @property {number=} chat_id
+ * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  */
 
 /**
@@ -336,6 +337,7 @@
  * @property {"typing"} type
  * @property {string} action
  * @property {number=} chat_id  // multi-project: routes the indicator to the owning panel
+ * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  * @property {string=} activity_id
  * @property {string=} client_message_id
  * @property {string=} phase
@@ -357,6 +359,7 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  * @property {number=} telegram_chat_id
  */
 
@@ -375,6 +378,7 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  * @property {number=} telegram_chat_id
  */
 
@@ -395,6 +399,7 @@
  * @property {string=} client_message_id
  * @property {Object=} transport
  * @property {number=} chat_id
+ * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  * @property {number=} telegram_chat_id
  */
 
@@ -403,6 +408,7 @@
  * @property {"log"} type
  * @property {Object} data
  * @property {number=} chat_id  // multi-project thread routing (v6.32.0); main chat = 1
+ * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
  */
 
 /**
@@ -601,6 +607,22 @@
  * @property {string[]=} permissions
  * @property {string[]=} conflicts
  * @property {{code: "skill_conflict", skills: string[], omitted: number}=} conflict
+ * @property {string} content_hash
+ * @property {?{slug: string, version: string, content_hash: string, repository: string, pr_number: number, pr_url: string, published_at: string}=} published
+ * @property {boolean=} published_malformed
+ * @property {boolean=} identity_collision
+ */
+
+/**
+ * One `/api/marketplace/ouroboroshub/catalog` result row (additive hubflow fields).
+ * `POST /api/marketplace/ouroboroshub/install` additionally accepts the adopt
+ * body fields `{adopt: true, expected_content_hash: string}` (64 lowercase hex;
+ * adopt forces auto_review and conflicts with overwrite).
+ * @typedef {Object} HubCatalogRow
+ * @property {string} slug
+ * @property {string} sanitized_name
+ * @property {string} latest_version
+ * @property {boolean} identity_conflict
  */
 
 /**
@@ -1070,4 +1092,4 @@
  * @property {?boolean} check_ok
  */
 
-export const GATEWAY_CONTRACT_VERSION = '6.110.2';
+export const GATEWAY_CONTRACT_VERSION = '6.111.1';

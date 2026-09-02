@@ -653,9 +653,8 @@ def _review_diag(name: str, status: str, error: str, payload: Dict[str, Any]) ->
     return "\n".join(parts)
 
 
-def _actor_cost_usd(review: Dict[str, Any]) -> float:
-    # SkillReviewOutcome.cost_usd is never populated from actor usage; the
-    # authoritative per-call costs live in raw_actor_records.
+def _actor_reported_valuation_usd(review: Dict[str, Any]) -> float:
+    """Non-authoritative reviewer telemetry, kept only for live-smoke diagnostics."""
     return sum(float(rec.get("cost_usd") or 0.0) for rec in review.get("raw_actor_records") or [])
 
 
@@ -708,7 +707,11 @@ def test_review_grants_and_enable(slug, review_secret, install_skill, review_env
     review = json.loads((_skill_state_dir(name) / "review.json").read_text(encoding="utf-8"))
     assert review.get("content_hash") == loaded.content_hash
     models = list(review.get("reviewer_models") or [])
-    assert len(models) == 1 and models[0].rsplit("#", 1)[0] == _REVIEW_MODEL, models
+    assert len(models) == 1, models
+    # Reviewer identity may carry the stable slot attribution suffix introduced
+    # by the shared review substrate, while the model id remains the contract.
+    model_id = models[0].split(" [", 1)[0].rsplit("#", 1)[0]
+    assert model_id == _REVIEW_MODEL, models
     # Hash-verified official payloads get the official_hub profile (the
     # severity-downgrade that stabilizes verdicts); losing it silently would
     # change what this lane proves.
@@ -745,5 +748,6 @@ def test_review_grants_and_enable(slug, review_secret, install_skill, review_env
 
     print(
         f"{slug}: review={status} slots={models} "
-        f"cost=${_actor_cost_usd(review):.4f} elapsed={time.time() - started:.1f}s"
+        f"actor_reported_valuation=${_actor_reported_valuation_usd(review):.4f} "
+        f"elapsed={time.time() - started:.1f}s"
     )

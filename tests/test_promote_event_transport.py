@@ -260,6 +260,7 @@ def test_tool_snapshot_precheck_skips_source_side_effects(monkeypatch, tmp_path)
         "Build",
         project_name="Must Not Exist",
         source="/tmp/must-not-attach",
+        predecessor_task_id="",
     )
     assert out.startswith("PROMOTE_REJECTED:")
     assert "worker_crash_storm" in out
@@ -321,7 +322,7 @@ def test_real_event_queue_reaches_dispatch_and_confirms_durable_admission(
     )
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(control._promote_chat_to_task, tool_ctx, "Build the racer")
+            future = executor.submit(control._promote_chat_to_task, tool_ctx, "Build the racer", predecessor_task_id="")
             event = queue.get(timeout=2)
             assert event["type"] == "promote_chat_to_task"
             outcome = _handle_promote_chat_to_task(event, handler_ctx)
@@ -354,6 +355,11 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
     import supervisor.workers as workers
     from ouroboros.projects_registry import create_project
     from ouroboros.project_dialogue import chat_annotation_receipt
+    from ouroboros.task_results import (
+        claim_task_acceptance_review_cycle,
+        load_task_result,
+        review_binding_hash,
+    )
     from ouroboros.tools import control
     from supervisor.events import _handle_promote_chat_to_task
 
@@ -364,8 +370,13 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
     pending = []
 
     def enqueue(task):
-        pending.append(dict(task))
-        return task
+        admitted = dict(task)
+        admitted["task_contract"] = {
+            **task["task_contract"],
+            "source": "queue_admitted_test",
+        }
+        pending.append(admitted)
+        return admitted
 
     handler_ctx = types.SimpleNamespace(
         DRIVE_ROOT=tmp_path,
@@ -393,6 +404,7 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
                 "racer",
                 "Continue the racer",
                 "belongs there",
+                predecessor_task_id="",
             )
             event = queue.get(timeout=2)
             outcome = _handle_promote_chat_to_task(event, handler_ctx)
@@ -400,6 +412,32 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
         assert outcome["status"] == "scheduled"
         assert text.startswith("✉️ Routed to project 'Racer'")
         assert "durably scheduled" in text
+        task = next(row for row in pending if row["id"] == event["task_id"])
+        assert task["budget_drive_root"] == str(tmp_path)
+        assert task["drive_root"] != str(tmp_path)
+        stored = load_task_result(tmp_path, event["task_id"])
+        assert stored["root_task_id"] == event["task_id"]
+        assert stored["delegation_role"] == "root"
+        assert stored["task_contract"] == task["task_contract"]
+        candidate_hash = "a" * 64
+        evidence_revision = "b" * 64
+        fence_hash = "c" * 64
+        claim = claim_task_acceptance_review_cycle(
+            tmp_path,
+            event["task_id"],
+            {
+                "binding_hash": review_binding_hash(
+                    candidate_hash=candidate_hash,
+                    evidence_revision=evidence_revision,
+                    fence_hash=fence_hash,
+                ),
+                "candidate_hash": candidate_hash,
+                "evidence_revision": evidence_revision,
+                "fence_hash": fence_hash,
+            },
+            claimed_by_task_id=event["task_id"],
+        )
+        assert claim["status"] == "claimed"
         receipt = chat_annotation_receipt(
             tmp_path, "route-owner-1", event["routing_token"]
         )
@@ -436,6 +474,7 @@ def test_manual_target_tool_waits_for_durable_handler_receipt(monkeypatch, tmp_p
                 "missing-project",
                 "Continue",
                 "uncertain target",
+                predecessor_task_id="",
             )
             event = queue.get(timeout=2)
             _handle_routing_manual_target(event, handler_ctx)
@@ -503,7 +542,7 @@ def test_stale_live_transport_returns_unconfirmed_not_ok(monkeypatch, tmp_path):
         task_metadata={},
     )
     try:
-        out = control._promote_chat_to_task(ctx, "Never drained")
+        out = control._promote_chat_to_task(ctx, "Never drained", predecessor_task_id="")
         event = stale_queue.get(timeout=2)
         assert event["type"] == "promote_chat_to_task"
         assert out.startswith("PROMOTE_UNCONFIRMED:")
@@ -708,6 +747,66 @@ def test_admission_reservation_rejects_tokenless_competing_enqueue(
     }
 
 
+def test_exact_id_ingress_fails_closed_on_unreadable_result(monkeypatch, tmp_path):
+    import supervisor.queue as supervisor_queue
+    import supervisor.workers as workers
+
+    result_path = tmp_path / "task_results" / "malformed-id.json"
+    result_path.parent.mkdir()
+    malformed = b"{not-json"
+    result_path.write_bytes(malformed)
+    monkeypatch.setattr(supervisor_queue, "DRIVE_ROOT", tmp_path)
+    monkeypatch.setattr(supervisor_queue, "PENDING", [])
+    monkeypatch.setattr(supervisor_queue, "RUNNING", {})
+    monkeypatch.setattr(supervisor_queue, "ADMISSION_RESERVATIONS", {})
+
+    reservation = supervisor_queue.reserve_task_admission(
+        "malformed-id", "reservation-token", drive_root=tmp_path,
+    )
+    queued = supervisor_queue.enqueue_task({
+        "id": "malformed-id",
+        "type": "task",
+        "_require_unique_task_id": True,
+    })
+    duplicate_reason = workers._promote_duplicate_reason(
+        "malformed-id", types.SimpleNamespace(
+            DRIVE_ROOT=tmp_path, PENDING=[], RUNNING={},
+        ),
+    )
+
+    assert reservation == {"status": "blocked", "reason": "task_id_lookup_failed"}
+    assert queued["_admission_blocked"] == "task_id_lookup_failed"
+    assert duplicate_reason == "task_id_lookup_failed"
+    assert supervisor_queue.PENDING == []
+    assert result_path.read_bytes() == malformed
+
+    empty_path = tmp_path / "task_results" / "empty-id.json"
+    empty_path.write_text("{}\n", encoding="utf-8")
+    assert supervisor_queue.reserve_task_admission(
+        "empty-id", "empty-token", drive_root=tmp_path,
+    ) == {"status": "blocked", "reason": "task_id_lookup_failed"}
+    empty_queued = supervisor_queue.enqueue_task({
+        "id": "empty-id", "type": "task", "_require_unique_task_id": True,
+    })
+    assert empty_queued["_admission_blocked"] == "task_id_lookup_failed"
+    assert empty_path.read_text(encoding="utf-8") == "{}\n"
+
+
+def test_promote_lookup_failure_never_overwrites_exact_result(tmp_path):
+    from supervisor.events import _persist_promote_rejection
+
+    result_path = tmp_path / "task_results" / "promote-corrupt.json"
+    result_path.parent.mkdir()
+    original = b"{corrupt"
+    result_path.write_bytes(original)
+    _persist_promote_rejection(
+        types.SimpleNamespace(DRIVE_ROOT=tmp_path),
+        {"task_id": "promote-corrupt", "routing_token": "token"},
+        {"task_id": "promote-corrupt", "reason": "task_id_lookup_failed"},
+    )
+    assert result_path.read_bytes() == original
+
+
 def test_project_registry_lookup_failure_prevents_clone(monkeypatch, tmp_path):
     from ouroboros.promotion_source import resolve_promote_source
 
@@ -723,7 +822,7 @@ def test_project_registry_lookup_failure_prevents_clone(monkeypatch, tmp_path):
     )
     ctx = types.SimpleNamespace(DRIVE_ROOT=tmp_path, REPO_DIR=tmp_path / "repo")
 
-    folder, note, error, project_id = resolve_promote_source(
+    folder, note, error, project_id, source_created = resolve_promote_source(
         ctx, "https://github.com/example/project.git", "project"
     )
 
@@ -731,6 +830,7 @@ def test_project_registry_lookup_failure_prevents_clone(monkeypatch, tmp_path):
     assert note == ""
     assert error.startswith("project_lookup_failed: OSError: registry unreadable")
     assert project_id == "project"
+    assert source_created is False
 
 
 def test_duplicate_promote_uses_negative_annotation_without_overwriting_result(
@@ -808,7 +908,7 @@ def test_source_resolution_runs_off_supervisor_loop_and_continues_once(
     def slow_resolve(_ctx, _source, project_id):
         started.set()
         assert release.wait(2)
-        return "", "source checked", "", project_id
+        return "", "source checked", "", project_id, False
 
     monkeypatch.setattr(
         "ouroboros.promotion_source.resolve_promote_source", slow_resolve
