@@ -680,12 +680,17 @@ yes.
 
 ### Release Invariant
 
-Version sources are always in sync:
-`VERSION` == `pyproject.toml` == latest git tag == `README.md` badge ==
-`docs/ARCHITECTURE.md` header (using the same author-facing spelling;
-`pyproject.toml` carries the PEP 440 canonical form when the spelling
-differs, e.g. `4.50.0-rc.2` vs `4.50.0rc2`). Discrepancy is a bug that
-must be fixed immediately.
+Version sources are always in sync: `VERSION`, `pyproject.toml`, the root
+version in `uv.lock`, `web/package.json`, `web/modules/api_types.js`
+(`GATEWAY_CONTRACT_VERSION`), the `README.md` badge, the named direct-download
+links (`README.md` and both install pages), the latest `README.md` history
+row, and the `docs/ARCHITECTURE.md` header all carry the same version in the
+same diff (the same author-facing spelling, except that `pyproject.toml` and
+the `uv.lock` root version carry the PEP 440 canonical form when the spelling
+differs, e.g. `4.50.0-rc.2` vs `4.50.0rc2`); the annotated git tag follows on
+commit (see Git Tags).
+`release_sync.version_carrier_desyncs()` checks the file carriers.
+Discrepancy is a bug that must be fixed immediately.
 
 ### Git Tags
 
