@@ -362,13 +362,26 @@ def test_lockfileex_refusals_classify_by_the_win32_error():
     """Only ERROR_LOCK_VIOLATION (33) means held by someone: it reads as the
     busy errno and re-contends. Access denied (5) and sharing violation (32)
     land on EACCES beside it on Windows, so EACCES cannot be in the busy set
-    (POSIX flock never answers it) — every other Win32 error keeps its own
-    errno and fails the acquisition closed at once, not after the timeout."""
+    (POSIX flock never answers it). ERROR_INVALID_FUNCTION (1) and
+    ERROR_NOT_SUPPORTED (50) — what a redirector answers when the volume takes
+    no byte-range locks at all — must reach the UNSUPPORTED set, or the name
+    tier is unreachable on Windows and a lock-less volume fails every monetary
+    append closed instead of degrading to the disclosed name protocol. Every
+    other error is in neither set: it fails the acquisition closed at once, not
+    after the timeout. The classified codes carry their errno themselves — the
+    4-argument OSError form derives errno FROM the winerror on Windows and
+    ignores the one passed, and answers 0 here — so this arithmetic is the same
+    on both platforms."""
     assert errno.EACCES not in platform_layer._LOCK_HELD_ERRNOS
     busy = platform_layer._win32_lock_error(33)
     assert busy.errno in platform_layer._LOCK_HELD_ERRNOS and busy.winerror == 33
+    for err in (1, 50):
+        unsupported = platform_layer._win32_lock_error(err)
+        assert unsupported.errno in platform_layer._LOCK_UNSUPPORTED_ERRNOS and unsupported.winerror == err
     for err in (5, 32, 6):
-        assert platform_layer._win32_lock_error(err).errno not in platform_layer._LOCK_HELD_ERRNOS
+        answered = platform_layer._win32_lock_error(err).errno
+        assert answered not in platform_layer._LOCK_HELD_ERRNOS
+        assert answered not in platform_layer._LOCK_UNSUPPORTED_ERRNOS
 
 
 @pytest.mark.skipif(

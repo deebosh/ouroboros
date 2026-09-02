@@ -168,14 +168,13 @@ def _lock_identity(target: "int | pathlib.Path") -> tuple:
     return (info.st_ino, info.st_dev, info.st_mtime_ns)
 
 
-# Kernel answers meaning "the lock is HELD by someone": stand down and re-contend
-# (flock's EWOULDBLOCK; ``_win32_lock_error`` maps LockFileEx's lock violation onto
-# it). On the enforced tier EVERY other refusal fails closed — not a hold.
+# What a kernel refusal MEANS. Held by someone (flock's EWOULDBLOCK): stand down
+# and re-contend. The FILESYSTEM takes no kernel locks at all (bare NFS and
+# friends): the only evidence that selects the name tier. Windows answers both
+# through LockFileEx winerrors, mapped below. EVERY other refusal fails closed.
 _LOCK_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK})
-_ERROR_LOCK_VIOLATION = 33  # the ONE Win32 answer that means held by someone
-# Kernel answers that the FILESYSTEM takes no kernel locks at all (bare NFS
-# and friends): the only evidence that selects the name tier.
 _LOCK_UNSUPPORTED_ERRNOS = frozenset({errno.ENOLCK, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
+_WIN32_LOCK_ERRNOS = {33: errno.EAGAIN, 1: errno.ENOLCK, 50: errno.EOPNOTSUPP}  # violation = held; invalid function / not supported = no byte-range locks here
 _KERNEL_LOCK_TIER: dict = {}  # lock directory -> kernel locks enforced there
 
 
@@ -383,11 +382,9 @@ def release_exclusive_file_lock(lock_path: pathlib.Path, lock_fd: Optional[int])
 
 def unlink_lockfile(lock_path: pathlib.Path) -> None:
     """Best-effort cleanup for path-only locks whose fd was closed after acquire."""
-    lock_path = pathlib.Path(lock_path)
     try:
-        if lock_path.exists():
-            lock_path.unlink()
-    except Exception:
+        pathlib.Path(lock_path).unlink(missing_ok=True)  # no exists() race in between
+    except OSError:
         log.debug("Failed to unlink lock file %s", lock_path, exc_info=True)
 
 
@@ -645,12 +642,18 @@ def _win32_lock(fd: int, *, exclusive: bool = True, blocking: bool = True) -> No
 
 
 def _win32_lock_error(err: int) -> OSError:
-    """The OSError a refused LockFileEx raises: ERROR_LOCK_VIOLATION alone means
-    HELD BY SOMEONE and reads as EAGAIN (re-contend); every other Win32 error keeps
-    its derived errno (access denied and sharing violation land on EACCES) and fails closed."""
-    if err != _ERROR_LOCK_VIOLATION:
+    """The OSError a refused LockFileEx raises. ERROR_LOCK_VIOLATION means HELD BY SOMEONE
+    (busy: re-contend); ERROR_INVALID_FUNCTION / ERROR_NOT_SUPPORTED are what a redirector
+    answers when the volume takes no byte-range locks AT ALL, and read as the unsupported
+    errnos — without them the name tier is unreachable on Windows and a lock-less volume
+    fails every monetary append closed instead of degrading to it. Anything else keeps its
+    winerror-derived errno (access denied, sharing violation -> EACCES) and fails closed.
+    The 4-argument form derives errno FROM the winerror on Windows and ignores the one
+    passed, so a classified code carries its own errno instead."""
+    code = _WIN32_LOCK_ERRNOS.get(err)
+    if code is None:
         return OSError(0, f"LockFileEx failed (error {err})", None, err)
-    refused = OSError(errno.EAGAIN, f"LockFileEx: lock violation (error {err})")
+    refused = OSError(code, f"LockFileEx refused (error {err})")
     refused.winerror = err  # kept for diagnostics; the errno carries the verdict
     return refused
 
