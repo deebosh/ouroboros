@@ -255,3 +255,69 @@ def test_refused_negotiation_blocks_the_load_before_import(tmp_path):
     assert _module_key("badgen") not in sys.modules, (
         "plugin.py was imported although negotiation refused the load"
     )
+
+
+# --- surface fingerprint: SHAPE, not just names ------------------------------
+
+
+def _mutant_module(tmp_path, old: str, new: str):
+    """Load a copy of the contract with one surface edit applied.
+
+    The copy keeps the RECORDED fingerprint table verbatim — that is the whole
+    point: a shape change without a version bump must make the live surface
+    disagree with what the release recorded, so negotiation refuses.
+    """
+    import importlib.util
+    import pathlib
+    import sys
+
+    source = pathlib.Path(papi.__file__).read_text(encoding="utf-8")
+    assert source.count(old) == 1, old
+    target = tmp_path / "plugin_api_mutant.py"
+    target.write_text(source.replace(old, new), encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("plugin_api_mutant", target)
+    module = importlib.util.module_from_spec(spec)
+    # @dataclass resolves its own module through sys.modules while the class
+    # body executes, so the entry must exist before exec_module.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+@pytest.mark.parametrize(("old", "new", "what"), (
+    ("def get_settings(self, keys: Sequence[str]) -> Dict[str, Any]:",
+     "def get_settings(self, keys: List[str]) -> Dict[str, Any]:",
+     "a method's parameter annotation"),
+    ("    server_port: int\n", "    server_port: str\n",
+     "a RuntimeInfo value type"),
+), ids=("method-parameter-annotation", "runtime_info-value-type"))
+def test_a_shape_change_without_a_version_bump_fails_closed(tmp_path, old, new, what):
+    """The digest hashed method NAMES and RuntimeInfo KEYS only, so every
+    signature-level break — the exact class this module's header says requires
+    a version bump — left the recorded digest byte-identical and negotiated
+    happily. Both directions of the fingerprint contract were therefore blind
+    to the changes an extension author actually collides with."""
+    mutant = _mutant_module(tmp_path, old, new)
+
+    assert mutant.plugin_api_surface_fingerprint() != plugin_api_surface_fingerprint(), what
+    refused = mutant.negotiate_plugin_api(_manifest('plugin_api: "2.0"\n'))
+    assert not refused.ok and "drifted" in refused.error, what
+
+
+def test_the_fingerprint_covers_every_public_method_signature_and_runtime_key():
+    """Naming the payload's two halves so a future narrowing is visible: the
+    digest must move for ANY public method's signature text and for ANY
+    RuntimeInfo annotation, not merely for an added or removed name."""
+    import inspect
+
+    methods = sorted(
+        m for m in dir(papi.PluginAPI)
+        if not m.startswith("_") and callable(getattr(papi.PluginAPI, m, None))
+    )
+    assert methods, "the surface cannot be empty"
+    for name in methods:
+        assert str(inspect.signature(getattr(papi.PluginAPI, name)))
+    assert set(papi.RuntimeInfo.__annotations__) >= {"server_port", "capabilities"}

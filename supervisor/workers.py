@@ -31,7 +31,6 @@ DRIVE_ROOT: pathlib.Path = pathlib.Path(DATA_DIR)
 MAX_WORKERS: int = 10
 HEARTBEAT_STALE_SEC: int = 120
 QUEUE_MAX_RETRIES: int = 1
-TOTAL_BUDGET_LIMIT: float = 0.0
 BRANCH_DEV: str = "ouroboros"
 BRANCH_STABLE: str = "ouroboros-stable"
 
@@ -65,14 +64,11 @@ def _get_ctx():
 
 
 def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, max_workers: int,
-         total_budget_limit: float,
          branch_dev: str = "ouroboros", branch_stable: str = "ouroboros-stable") -> None:
-    global REPO_DIR, DRIVE_ROOT, MAX_WORKERS
-    global TOTAL_BUDGET_LIMIT, BRANCH_DEV, BRANCH_STABLE
+    global REPO_DIR, DRIVE_ROOT, MAX_WORKERS, BRANCH_DEV, BRANCH_STABLE
     REPO_DIR = repo_dir
     DRIVE_ROOT = drive_root
     MAX_WORKERS = max_workers
-    TOTAL_BUDGET_LIMIT = total_budget_limit
     BRANCH_DEV = branch_dev
     BRANCH_STABLE = branch_stable
 

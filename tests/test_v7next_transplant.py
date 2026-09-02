@@ -49,6 +49,25 @@ def _read(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _pinned_upstream(base_sha: str, rel_path: str) -> str:
+    """The exact pre-split monolith bytes the real extraction ran against.
+
+    Empty when the object is unreachable (a shallow clone without that commit),
+    and the probes that need it SKIP. The corpus is the probe's INPUT: each
+    real case feeds it to the tool and compares the tool's output against the
+    landed leaf. Reconstructing the corpus by inverse-normalizing that same
+    leaf — the earlier fallback — made the tool prove its own transformation
+    against its own output: the byte comparisons could not fail, `transplant`
+    could not report a drifted body, and the declared-set recalculation loop
+    had nothing to recalculate. A green run then proved nothing about the
+    transplant, and no marker said so.
+    """
+    done = subprocess.run(
+        ["git", "-C", str(REPO), "show", f"{base_sha}:{rel_path}"],
+        capture_output=True, text=True)
+    return done.stdout if done.returncode == 0 else ""
+
+
 def _span_text(source: str, symbol: str) -> str:
     return tp.extract_spans(source, [symbol])[symbol].text
 
@@ -88,19 +107,14 @@ def _recalculate(upstream: str, symbols, declared, handle: str, parent_module: s
 # The F2.2 lane landed the queue_snapshot/queue_timeouts split, so the LIVE
 # queue.py no longer carries these defs. The probe keeps its real-case shape on
 # the PRE-SPLIT monolith bytes of the lane base (the D10 recipe for probes
-# pinned to live monoliths); when the object is unreachable it falls back to
-# reconstructing the same bytes from the landed leaf by inverse-normalizing the
-# handle reads (`_queue().X` -> `X`) — the exact inversion the tool's own proof
-# performs.
+# pinned to live monoliths), and skips when that object is unreachable.
 
 _QUEUE_BASE_SHA = "2878560ed298c4173e65068f16b6d09e672ba19f"
-_queue_pre_split = subprocess.run(
-    ["git", "-C", str(REPO), "show", f"{_QUEUE_BASE_SHA}:supervisor/queue.py"],
-    capture_output=True, text=True)
-QUEUE_UPSTREAM = (
-    _queue_pre_split.stdout
-    if _queue_pre_split.returncode == 0 and _queue_pre_split.stdout
-    else _read(REPO / "supervisor" / "queue_snapshot.py").replace("_queue().", ""))
+QUEUE_UPSTREAM = _pinned_upstream(_QUEUE_BASE_SHA, "supervisor/queue.py")
+needs_queue_corpus = pytest.mark.skipif(
+    not QUEUE_UPSTREAM,
+    reason=f"pre-split supervisor/queue.py bytes not reachable via "
+           f"`git show {_QUEUE_BASE_SHA}`")
 
 # The v7 ledger's declared set for supervisor/queue_snapshot.py (D18).
 QUEUE_LEDGER_DECLARED = frozenset({
@@ -132,6 +146,7 @@ log = logging.getLogger(__name__)
 
 
 @needs_ref
+@needs_queue_corpus
 def test_queue_stable_symbols_match_the_v7_leaf_byte_for_byte():
     """Symbols whose upstream bodies did not change since the v7 cut transform
     into exactly the reference leaf's spans."""
@@ -144,6 +159,7 @@ def test_queue_stable_symbols_match_the_v7_leaf_byte_for_byte():
         assert _span_text(result.leaf_source, symbol) == _span_text(ref_leaf, symbol), symbol
 
 
+@needs_queue_corpus
 def test_queue_drifted_symbols_need_a_recalculated_declared_set():
     """The ledger's declared set no longer covers the drifted upstream bodies:
     the tool fails closed naming the new dependencies, classifies each one, and
@@ -199,18 +215,14 @@ def test_queue_drifted_symbols_need_a_recalculated_declared_set():
 # The D01 lane landed the L-B split, so ouroboros/loop.py no longer carries
 # these defs. The probe keeps its real-case shape on the PRE-SPLIT monolith
 # bytes of the lane base (the D10 lane's recipe for probes pinned to live
-# monoliths); when the object is unreachable (e.g. a shallow clone without
-# that commit) it falls back to reconstructing the same bytes from the landed
-# leaf by inverse-normalizing the handle reads (`_loop().X` -> `X`) — the
-# exact inversion the tool's own proof performs.
+# monoliths), and skips when that object is unreachable.
 
 _D01_BASE = "a56bb76a38ca92b39a659b4b6e63e07a76243a4f"
-_pre_split = subprocess.run(
-    ["git", "-C", str(REPO), "show", f"{_D01_BASE}:ouroboros/loop.py"],
-    capture_output=True, text=True)
-LOOP_UPSTREAM = (
-    _pre_split.stdout if _pre_split.returncode == 0 and _pre_split.stdout
-    else _read(REPO / "ouroboros" / "loop_messages.py").replace("_loop().", ""))
+LOOP_UPSTREAM = _pinned_upstream(_D01_BASE, "ouroboros/loop.py")
+needs_loop_corpus = pytest.mark.skipif(
+    not LOOP_UPSTREAM,
+    reason=f"pre-split ouroboros/loop.py bytes not reachable via "
+           f"`git show {_D01_BASE}`")
 
 LOOP_PREAMBLE = '''"""Loop messages leaf (test preamble)."""
 
@@ -228,6 +240,7 @@ def _loop():
 '''
 
 
+@needs_loop_corpus
 def test_loop_declared_name_that_is_also_a_moved_symbol():
     """`_record_owner_directive` moves into the leaf AND stays in the declared
     set: its own def is emitted verbatim while `_initialize_owner_directives`
@@ -246,6 +259,7 @@ def test_loop_declared_name_that_is_also_a_moved_symbol():
 
 
 @needs_ref
+@needs_loop_corpus
 def test_loop_stable_symbols_match_the_v7_leaf_byte_for_byte():
     result = tp.transplant(
         LOOP_UPSTREAM, ["_record_owner_directive", "_initialize_owner_directives"],
@@ -265,21 +279,11 @@ def test_loop_stable_symbols_match_the_v7_leaf_byte_for_byte():
 # the exact bytes the real extraction ran against.
 
 _GO_BASE_SHA = "a56bb76a38ca92b39a659b4b6e63e07a76243a4f"
-try:
-    GO_UPSTREAM = subprocess.run(
-        ["git", "show", f"{_GO_BASE_SHA}:supervisor/git_ops.py"],
-        cwd=REPO, capture_output=True, text=True, check=True,
-    ).stdout
-except (subprocess.CalledProcessError, OSError):
-    GO_UPSTREAM = "\n".join(
-        _read(REPO / "supervisor" / leaf)
-        .replace("from __future__ import annotations\n", "")
-        .replace("_go().", "")
-        for leaf in ("git_ops_remotes.py", "git_ops_reset.py", "git_ops_updates.py")
-    )
-
+GO_UPSTREAM = _pinned_upstream(_GO_BASE_SHA, "supervisor/git_ops.py")
 needs_go_corpus = pytest.mark.skipif(
-    not GO_UPSTREAM, reason="pre-split git_ops.py bytes not reachable via git show")
+    not GO_UPSTREAM,
+    reason=f"pre-split supervisor/git_ops.py bytes not reachable via "
+           f"`git show {_GO_BASE_SHA}`")
 
 # Ledger set minus BRANCH_DEV: only push_to_remote reads it, and that body
 # drifted upstream, so this fixture moves the three stable symbols.

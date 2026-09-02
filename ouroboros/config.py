@@ -11,6 +11,7 @@ the one import surface for settings knowledge.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pathlib
 import re
@@ -696,6 +697,14 @@ def _seed_review_cycles_from_legacy_passes(loaded: dict) -> None:
         loaded["OUROBOROS_REVIEW_MAX_CYCLES"] = str(max(0, passes) + 1)
 
 
+log = logging.getLogger(__name__)
+
+# Dropped-retired-key sets this process has already reported (the notice in
+# ``normalize_settings_raw``). Keyed by the exact set so a document carrying a
+# second ghost still gets its own line.
+_RETIREMENT_NOTICE_SEEN: set[tuple[str, ...]] = set()
+
+
 def normalize_settings_raw(raw: dict) -> dict:
     """THE raw-stage normalization every settings READER applies BEFORE defaults.
 
@@ -710,10 +719,15 @@ def normalize_settings_raw(raw: dict) -> dict:
     never promoted into a live key. Unknown keys pass through untouched — ``settings.json``
     is the owner's document.
 
-    Pure — it reads no file, writes no file, and consults no environment, so a reader can
-    apply it and a read stays a read. It is the seam BECAUSE it was previously inline in
+    Pure — it reads no file, persists no document, and consults no environment, so a reader
+    can apply it and a read stays a read. It is the seam BECAUSE it was previously inline in
     ``load_settings``: the owner endpoints' reader merged defaults over the raw document
-    instead, and then wrote that document back, turning a wrong read into a lost setting."""
+    instead, and then wrote that document back, turning a wrong read into a lost setting.
+    The ONE disclosed effect is the retirement notice below: dropping a key the owner
+    authored is a loss the owner has to be able to see, so the first read that finds one
+    says so on the module logger (once per process per dropped set — this seam runs on
+    every settings read, and routing the notice into the typed event store would make each
+    read a write, which is exactly what the seam exists to prevent)."""
     from ouroboros.retention import LEGACY_RETENTION_KEYS, pick_legacy_retention_seed
 
     loaded = {
@@ -729,8 +743,29 @@ def normalize_settings_raw(raw: dict) -> dict:
     for _legacy in LEGACY_RETENTION_KEYS:
         loaded.pop(_legacy, None)
     _seed_review_cycles_from_legacy_passes(loaded)
+    dropped = tuple(key for key in RETIRED_SETTING_KEYS if key in loaded)
     for _retired in RETIRED_SETTING_KEYS:
         loaded.pop(_retired, None)
+    if dropped and dropped not in _RETIREMENT_NOTICE_SEEN:
+        _RETIREMENT_NOTICE_SEEN.add(dropped)
+        comma = [key for key in dropped if key in RETIRED_COMMA_LIST_SETTING_KEYS]
+        if comma:
+            replacement = (
+                "the reviewer comma-lists (%s) are replaced by the structured "
+                "OUROBOROS_REVIEWER_SLOTS, so this install now runs the SHIPPED "
+                "default reviewer panel until that setting is authored"
+                % ", ".join(comma)
+            )
+        else:
+            replacement = (
+                "no replacement setting: what they used to configure is fixed "
+                "behavior in this release"
+            )
+        log.warning(
+            "settings: retired key(s) %s are present in the settings document and "
+            "are NOT honored; %s",
+            ", ".join(dropped), replacement,
+        )
     migrate_legacy_slot_keys(loaded)
     return strip_masked_secrets(loaded, known_setting_keys=SETTINGS_DEFAULTS)
 

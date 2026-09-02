@@ -177,10 +177,16 @@ def broadcast_ws_sync(msg: dict) -> None:
     loop = _event_loop
     if loop is None:
         return
+    coro = broadcast_ws(msg)
     try:
-        asyncio.run_coroutine_threadsafe(broadcast_ws(msg), loop)
+        asyncio.run_coroutine_threadsafe(coro, loop)
     except RuntimeError:
-        pass
+        # A closed or already-stopped loop never schedules the coroutine. The
+        # broadcast is deliberately a no-op then, but the coroutine object must
+        # still be closed here: dropped un-awaited it emits "coroutine
+        # 'broadcast_ws' was never awaited" from whatever code is running when
+        # it is collected, blaming an innocent caller for this line.
+        coro.close()
 
 
 async def _dispatch_extension_message(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import os
 
 import pytest
 
@@ -710,6 +709,7 @@ def test_light_actionable_redirects_keep_legacy_mapping_without_light_remap(
 
     from ouroboros.loop_tool_execution import _execute_single_tool
     from ouroboros.tools.registry import ToolRegistry
+    from ouroboros.tools.tool_resolution import _build_builtin_target_binding
     from ouroboros.tools.tool_result import LegacyTextResultAdapter, ToolResult
 
     repo = tmp_path / "repo"
@@ -802,14 +802,24 @@ def test_light_actionable_redirects_keep_legacy_mapping_without_light_remap(
         "tool_result_meta": {},
     }
     # The refusal CONTRACT (status/code/text/meta, asserted above) is identical on
-    # every OS; the ROUTE can differ for the PATH-based scenario only. On POSIX the
-    # access-layer detector produces the legacy TEXT and the adapter wraps it
-    # (3 calls). On Windows pytest's tmp_path arrives in 8.3 short form, resolve()
-    # expands it, relative_to() misses — the access detector stays silent and the
-    # resolution-layer detector answers with a NATIVE ToolResult instead (0 adapter
-    # calls): the second line of defense, same product outcome. The cognitive
-    # scenario detects by ARGS (root=runtime_data), path-free, so it keeps the
-    # adapter route on every OS.
-    expected_adapter_calls = 0 if (os.name == "nt" and scenario != "cognitive") else 3
+    # every OS; only the ROUTE can differ, and the code's own predicate for it is
+    # whether the target BINDING resolves — never which platform we are on
+    # (R-WINWAVE class 5, expression follow-up). registry_core takes the light
+    # repo-mutation branch only when _build_builtin_target_binding returned a
+    # binding; that branch answers with the legacy TEXT and the adapter wraps it
+    # (3 calls). When the binding RAISES, the except arm answers from the
+    # resolution layer with a NATIVE ToolResult (0 adapter calls) — the second
+    # line of defense, same product outcome. `os.name == "nt"` was a stand-in
+    # for one outcome of that predicate: on Windows pytest's tmp_path arrives in
+    # 8.3 short form, resolve() expands it and relative_to() misses inside the
+    # binding. The cognitive scenario binds on every OS (root=runtime_data is
+    # path-free), which is why it kept the adapter route unconditionally.
+    try:
+        _build_builtin_target_binding(registry._ctx, "write_file", dict(args))
+    except Exception:
+        binding_resolves = False
+    else:
+        binding_resolves = True
+    expected_adapter_calls = 3 if binding_resolves else 0
     assert len(adapter_calls) == expected_adapter_calls
     assert downstream_calls == []
