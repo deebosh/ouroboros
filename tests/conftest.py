@@ -290,10 +290,30 @@ def _rebind_runtime_roots_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _restore_process_environment_between_tests():
+    """Code under test may write ``os.environ`` directly — the benchmark launchers
+    do (`run_tb.apply_all_model`, `fixed_model_actor_snapshot(target=os.environ)`)
+    and `monkeypatch.delenv(raising=False)` records nothing for a key that did
+    not exist, so a written key survived the test and reached every later test
+    of the same xdist worker (the `benchmark-scope-1` contamination class).
+    Snapshot the environment before each test and restore it afterwards,
+    whatever the test wrote; tests that need a value set it themselves."""
+    saved = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
 def _scrub_inherited_subagent_selection(monkeypatch):
-    """Keep tests independent of the operator's saved actor list and account pin."""
+    """Keep tests independent of the operator's saved actor list, account pin
+    and structured reviewer panel: a test that pins the legacy comma-list
+    branch must never read the shell's `OUROBOROS_REVIEWER_SLOTS`."""
     monkeypatch.delenv("OUROBOROS_SUBAGENT_PROFILE", raising=False)
     monkeypatch.delenv("OUROBOROS_SUBAGENTS", raising=False)
+    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
 
 
 @pytest.fixture(autouse=True)

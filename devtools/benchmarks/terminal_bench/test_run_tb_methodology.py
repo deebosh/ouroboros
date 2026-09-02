@@ -7,12 +7,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 
 import pytest
 
 from devtools.benchmarks.terminal_bench import run_tb
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_process_environment():
+    """`run_tb.apply_all_model` (and `main --all-model` through it) writes the
+    fixed-model contract into `os.environ` directly — the launcher's real
+    behaviour, kept. Under xdist that leaked `OUROBOROS_REVIEWER_SLOTS` and the
+    forwarded slot keys into every later test of the same worker (the
+    `benchmark-scope-1` contamination class). Every test here runs on a
+    snapshot of the environment that is restored afterwards, whatever it wrote."""
+    saved = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 # --- validate_methodology gates -------------------------------------------------
@@ -400,6 +417,46 @@ def test_metadata_declares_what_the_container_executes_from_the_structured_panel
     assert run_tb.triad_rows_not_executable_in_container("openai/gpt-5.5", settings) == ["codex=gpt-5.6-sol"]
     # No structured panel at all: nothing to disclose.
     assert run_tb.triad_rows_not_executable_in_container("openai/gpt-5.5") == []
+
+
+_PANEL_WITH_TWO_SESSIONS = {
+    "triad": [
+        {"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "openai/gpt-5.5"}},
+        {"slot_id": "t2", "route": {"kind": "agent_session", "target_id": "codex=gpt-5.6-sol"}},
+        {"slot_id": "t3", "route": {"kind": "agent_session", "target_id": "cursor=openai/gpt-5"}},
+    ],
+    "scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "google/gemini-3.5-pro"}}],
+    "advisory": {"enabled": False},
+}
+
+
+def test_run_manifest_and_metadata_carry_the_rows_the_container_cannot_run(tmp_path, monkeypatch):
+    """End to end through `main` (command generation, no harbor): the durable
+    `run_manifest.json` carries `extra.triad_rows_not_executable_in_container`
+    with the session rows' targets verbatim and in row order — a target with
+    its own `/` (`cursor=openai/gpt-5`) included — and `metadata.yaml` carries
+    the same list as a comment while declaring no session row as a model."""
+    model = "openai/gpt-5.5"
+    run_root = tmp_path / "run"
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"OUROBOROS_REVIEWER_SLOTS": json.dumps(_PANEL_WITH_TWO_SESSIONS)}), encoding="utf-8")
+    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
+    monkeypatch.delenv("OUROBOROS_WEBSEARCH_MODEL", raising=False)
+    monkeypatch.setattr(run_tb, "harbor_version", lambda _binary: "test-harbor")
+    assert run_tb.main([
+        "--model", model, "--allow-low-k", "--allow-dirty-seed",
+        "--run-root", str(run_root), "--submission-root", str(tmp_path / "submission"),
+        "--settings-path", str(settings),
+    ]) == 0
+    manifest = json.loads((run_root / "run_manifest.json").read_text(encoding="utf-8"))
+    extra = manifest["extra"]
+    assert extra["outcome"] == "command_generated"
+    assert extra["triad_rows_not_executable_in_container"] == ["codex=gpt-5.6-sol", "cursor=openai/gpt-5"]
+    meta = pathlib.Path(extra["metadata_yaml"]).read_text(encoding="utf-8")
+    assert '# triad_rows_not_executable_in_container: ["codex=gpt-5.6-sol", "cursor=openai/gpt-5"]' in meta
+    assert 'model_name: "codex' not in meta and 'model_name: "cursor' not in meta
+    assert f'model_name: "{model}"' in meta and 'role: "agent+commit_review_triad"' in meta
 
 
 def test_metadata_parses_the_panel_under_the_container_roster(monkeypatch):
