@@ -5314,3 +5314,176 @@ Cross-cutting disclosures:
    - hermeticity of the battery against the live data root: `find ~/ouro/data -newermt <battery start>` names only `claudexor/daemon/journal/global-…/journal.bin` — the live Claudexor daemons' own journal, held open by six daemon processes with 3–13 day uptimes — no pytest write; every pytest data root was an isolated mktemp under /tmp/claude-1006, and the lane's HEAD (`24b410d8`) and each clone's HEAD were unmoved after every run.
    With this recorded, round 5.2 is executed and verified on this host; the
    Windows LockFileEx mechanics remain owed to the 3-OS CI matrix (item 3a).
+
+## From the C6 fix-round 5.3 (base 5e4829e3)
+
+1. Adversarial lenses over the round-5.2 tree (`5e4829e3`; PoCs executed
+   against this lane's own code) left six HIGH/MEDIUM findings open and
+   seven LOW. All thirteen ACCEPTED: twelve fixed in code, each red-first;
+   one closed by the disclosure the finding itself offered. The round ran in
+   two halves — the first fix agent hit its session limit after `cbfd23ce`
+   with the docs staged and this section unwritten; the resumed half
+   re-observed every red below in a scratch copy of the worktree before
+   changing anything, kept all ten commits, and closed two residues of the
+   round's own fixes (3b, 4b). Full disposition:
+   `docs/v7next/C6_REVIEW_PACKET.md` §9, "Round 5.3".
+   - **A lock whose own identity cannot be read is never a hold** (HIGH):
+     `_lock_identity` answers `()` for a descriptor it cannot `fstat`
+     (ESTALE/EIO on the network filesystems the enforced tier exists for)
+     and the acquisition compared the two identities raw, so with the path
+     momentarily absent — a reclaimer's own unlink→re-create window —
+     `() == ()` returned a descriptor for an unlinked inode as the monetary
+     lock (PoC: two holders; the append transaction never heartbeats). The
+     won lock is returned only when its own identity READS and matches; an
+     unreadable one fails closed and removes the file we stamped with our
+     LIVE pid when its bytes are still exactly ours — left behind, no
+     owner-aware reclaimer could ever evict it. Commit `7e6b935e`, after
+     `7d134fd8` (both kill-tree sweeps on the module's own `force_kill_pid`,
+     no behaviour change: the bytes that keep `platform_layer.py` at 1500).
+   - **The design note names the exact refusal sets** (MEDIUM): the ratified
+     note still called EACCES a contention code — the negation of the code,
+     of round 5.2's own pin and of packet §5.10 — and the unsupported set
+     was spelled three-of-four in three places. DESIGN §8 now states both
+     sets exactly (`EAGAIN`/`EWOULDBLOCK`; `ENOLCK`/`EOPNOTSUPP`/`ENOTSUP`/
+     `ENOSYS`) with the Win32 answers mapped onto them, and
+     `test_the_design_note_names_the_exact_kernel_refusal_sets` compares the
+     note's spelled sets with the code's by number. SUPERSEDES the round-5
+     entry above where it says "only ENOLCK/EOPNOTSUPP/ENOSYS" and
+     "contention (EAGAIN/EACCES/EWOULDBLOCK)"; the packet's round-5 row
+     carries the correction marker. Docs commit (this section).
+   - **The compaction pass requires the lock's heartbeat** (MEDIUM):
+     `heartbeat` defaulted to `None` and `_beat` returned at once on it, so
+     a pass entered without one swapped the authority with no ownership
+     proof at all, and deleting the single production wire (MUT-U) left the
+     whole battery green. Both entry points take `heartbeat` as a required
+     keyword, `_beat` has no `None` case, and the reserve-path pin asserts
+     the callable it is handed. Commit `c71a36ea`. Resumed half (3b): a
+     caller passing `heartbeat=None` is refused too — `_beat(None)` fails at
+     the call and that failure is the existing abort — pinned beside the
+     False and the raising heartbeats. Commit `48f7b115`.
+   - **The orphan exemption is a prefix proof, and the anchor runs without
+     a stamp** (HIGH + MEDIUM): the exemption decided on ONE row, so a
+     ledger restored from a backup taken just after a compaction — its
+     leading row equal to the newest segment's — was admitted as an orphan
+     while being a strict SUBSET of that segment, and the attempts the pass
+     folded (nowhere else on disk) were reported absent (PoC: 4 of 8 hidden,
+     no corruption raised); with the stamp itself gone the anchor never ran
+     and the whole archive was invisible. An orphan is the pre-swap COPY of
+     the live file, which only grows behind it, so its bytes are still a
+     PREFIX of it — that is the test — and the anchor runs on a stamp-less
+     file with the floor at epoch zero (a root with no archive directory and
+     no stamp still answers empty at once). Commit `e08a0392`. Resumed half
+     (4b): the proof re-opened the entry by name after classifying it, so an
+     entry swapped between the two opens read as zero bytes and passed; one
+     open per entry now, the comparison from the descriptor that was
+     classified. Commit `72d17f51`.
+   - **The archive root open is typed corruption** (MEDIUM): the ROOT's
+     `O_DIRECTORY` open sat outside `_archive_dir_fds`' `try`, so an
+     unreadable data root (permissions, EMFILE) left a bare `OSError` on the
+     join surface — the class round 5.2 closed one function away. Commit
+     `82250a45`.
+   - **A name-tier refusal event that did not land is not "already told"**
+     (LOW): the root was marked before the append, so one transient failure
+     downgraded the durable typed event to a log line for the process's
+     life; the mark now follows the row that landed and both per-root maps
+     key on the resolved root. Commit `023b2e84`.
+   - **Non-regular entries are skipped on the path shape too** (LOW):
+     without a dir-fd the entry was opened first — a directory refuses that
+     on Windows and a writer-less FIFO blocks on it; the classification now
+     happens BEFORE the open there, and the path-based open carries
+     `O_NONBLOCK` where the platform has one. Commit `232500f4`.
+   - **The swap's crash durability and the byte half of its snapshot proof
+     are pinned** (LOW ×2): deleting the candidate temp's fsync (MUT-H), the
+     ledger directory's fsync after the rename (MUT-L) or the byte compare
+     of `_snapshot_intact` (MUT-E) had left the battery green. Commit
+     `c5fa1ac7`.
+   - **The name tier is reachable on Windows** (LOW): no LockFileEx refusal
+     could select it (CPython lands ERROR_INVALID_FUNCTION and
+     ERROR_NOT_SUPPORTED on EINVAL), so a lock-less Windows volume failed
+     every monetary append closed instead of degrading as disclosed.
+     `_win32_lock_error` classifies by one table — 33 busy, 1/50
+     unsupported, anything else winerror-derived and fail-closed. Live
+     evidence for exactly those two codes: LockFileEx on `\\wsl$` answers
+     ERROR_INVALID_FUNCTION (microsoft/WSL#5762) and on a Samba share
+     ERROR_NOT_SUPPORTED (error 50, samba list thread "FileLockEx Problem").
+     Commit `f7b8a578`.
+   - **The chain-union cache is bounded; DESIGN §10 states the anchor's
+     per-question cost** (LOW): the cache is keyed by the chain identity,
+     which changes at every compaction, and was never evicted. Commit
+     `cbfd23ce`.
+   - **Recycled pid: disclosed, not changed** (LOW): a lock whose owner
+     died and whose pid was reused reads as alive (POSIX `kill(0)` answers
+     EPERM for another user's process on this shared host) and is never
+     reclaimed by age; the alternative — the probe flock on any aged file —
+     would also evict a LIVE name-tier holder of a mixed-tier install.
+     DESIGN §8, the ARCHITECTURE row and the PERSISTENCE row state the
+     wedge and the hand repair.
+2. Red observed, not argued (each pin run against the exact pre-fix shape
+   or mutation it names; every row re-observed by the resumed half in a
+   scratch copy, then green together as one control):
+
+   | pin | mutation / base | red observed |
+   |---|---|---|
+   | `test_a_lock_whose_identity_cannot_be_read_is_never_a_hold` | `platform_layer.py` @ `7e6b935e^` | `assert 14 is None`: a descriptor for an unlinked inode returned |
+   | same, second half | the truthiness guard kept, the stamp cleanup removed | `a live pid was stamped on a lock nobody may reclaim` |
+   | `test_lockfileex_refusals_classify_by_the_win32_error` (unsupported clause) | `platform_layer.py` @ `f7b8a578^` | `assert (0 in frozenset({37, 38, 95}))` for winerror 1 |
+   | `test_reserve_path_compacts_only_past_config_threshold` | `usage_compaction.py` @ `c71a36ea^` + MUT-U | `the pass was entered without the lock's heartbeat`; at the tip the same mutation is a `TypeError` at the call |
+   | `test_a_lost_lock_aborts_the_pass_instead_of_swapping` (`None` clause) | `usage_compaction.py` @ `c71a36ea^` | a receipt returned: `None` skipped every proof |
+   | `test_a_restored_previous_generation_…[stamped]` / `[unstamped]` | `usage_compaction.py` @ `e08a0392^` | `DID NOT RAISE UsageLedgerCorrupt`, both |
+   | same, second-open clause | `cbfd23ce` (the two-open anchor) | `DID NOT RAISE UsageLedgerCorrupt`, both |
+   | `test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption[True]` (chmod half) | `usage_compaction.py` @ `82250a45^` | bare `PermissionError` from the root open |
+   | same, `[False]` | `usage_compaction.py` @ `232500f4^` | `TimeoutError: FIFO open blocked` after the 5 s alarm |
+   | `test_the_pass_refuses_on_the_name_tier_while_appends_continue` (event clauses) | `usage_compaction.py` @ `023b2e84^` | `FileNotFoundError: …/logs/events.jsonl` — one failed append suppressed the event for good |
+   | `test_the_swap_fsyncs_the_candidate_before_the_rename_and_its_directory_after` | MUT-H / MUT-L | the candidate's inode absent from the fsyncs before the rename / the directory absent after it |
+   | `test_a_same_size_rewrite_between_the_recheck_and_the_replace_also_refuses` | MUT-E | a receipt returned over the rewritten row |
+   | `test_archived_id_union_is_built_once_per_chain` (bound clause) | `usage_compaction.py` @ `cbfd23ce^` | `AttributeError: … '_CHAIN_UNION_CACHE_MAX'` |
+   | `test_the_design_note_names_the_exact_kernel_refusal_sets` | the note as committed at `5e4829e3` | `AssertionError: []` — no set spelled at all |
+
+   The three PoCs of the lenses (a stamped restore, an unstamped restore,
+   the unreadable root) all reach typed `UsageLedgerCorrupt` on the tip.
+3. Disclosed, not fixed: (a) the LockFileEx call and the Windows-only
+   contention pin stay unexecuted on this host (owed to the 3-OS matrix);
+   the two mapped codes rest on the cited live reports, not on a run here.
+   (b) Identity residuals of finding 1: a descriptor that READS while the
+   path's stat does not (ESTALE on the directory) still takes the
+   re-contend branch and leaves its stamped file behind; a release whose
+   own descriptor identity cannot be read unlinks nothing (it cannot prove
+   the file is ours), which wedges that lock for the life of the process;
+   and the byte test identifies our file by the stamp, so a caller-supplied
+   `metadata` without a pid (`git_plumbing`'s `locked_at=`, an age-only
+   non-monetary lock) could match another creator's stamp only if it wrote
+   the identical string in the same window. (c) The recycled-pid wedge
+   (item 1, last bullet). (d) The epoch anchor lists the archive and reads
+   one leading row per unwalked entry on every question, ahead of the
+   union cache (DESIGN §10 states it). (e) A UNIX socket in the archive
+   directory reads as corruption (ENXIO), carried from round 5.2. (f) Size:
+   `tests/test_usage_compaction.py` LEFT the 1001-1500 band at `e08a0392`
+   and sits at 1597 in the ungated 1501-1600 zone, three lines under the
+   hard cap; the manifest is regenerated with it and `--check` replays green
+   at every commit of the round; the next pin on this surface needs an owner
+   decision (packet §9 "Round 5.3"). `ouroboros/usage_compaction.py`
+   1158 → 1197 inside its band (rationale immutable between adjacent
+   manifests); `platform_layer.py` at exactly 1500.
+4. Gate evidence (this host, isolated env roots per invocation, venv python
+   3.10.12; `git rev-parse HEAD` verified unmoved after every pytest run):
+   - targeted suites at `72d17f51`: `tests/test_usage_compaction.py` 61
+     passed; `tests/test_lockfile_helpers.py` 18 passed, 1 skipped
+     (Windows-only); the five `tests/test_usage_*.py` suites 152 passed —
+     each as its own command, exit 0;
+   - `ruff check . --select F` exit 0; `scripts/check_domains.py` exit 0;
+     `scripts/regenerate_size_ratchet.py --check` exit 0 (and replayed exit
+     0 at each of the twelve commits `5e4829e3..72d17f51` in a scratch
+     clone); `scripts/regenerate_inventories.py --check` exit 0;
+     `git diff --check` exit 0;
+   - CI-shape non-serial battery (round 5's marker expression and flags,
+     `-n 16`) on a scratch clone at `72d17f51`: EXIT=0, 13507 outcomes (13503 passed, 4 skipped, zero FAILED/ERROR — counted from the progress markers: the doubled `-q` suppressed the summary line, as in round 5.2); no write under the live `~/ouro/data`
+     during the run (`find -newermt` of its start time answered nothing);
+   - `-m serial` pass (`--timeout=600 --timeout-method=thread`) on a scratch
+     clone at `72d17f51`: EXIT=0, 661 outcomes (622 passed, 39 skipped, zero FAILED/ERROR — counted from the progress markers: the doubled `-q` suppressed the summary line, as in round 5.2); the only paths under the live `~/ouro/data`
+     newer than its start (26) are the live Claudexor daemon's journal and the
+     `codex-ouro-reviewer` profile's own files under `data/claudexor/` —
+     sqlite side files, plugin cache, a codex `tmp/arg0` sandbox helper: a
+     live delegated run in that profile, not a pytest write (every pytest
+     data root was an isolated mktemp); the lane's HEAD unmoved after both.
+   With this recorded, round 5.3 is executed and verified on this host; the
+   Windows LockFileEx mechanics remain owed to the 3-OS CI matrix (item 3a).
