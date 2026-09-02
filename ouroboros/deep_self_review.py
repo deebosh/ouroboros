@@ -675,19 +675,28 @@ def _header_value(value: Any) -> str:
     return text
 
 
-def _delivery_incomplete(delivery: str, usage: Dict[str, Any]) -> str:
+def _delivery_incomplete(delivery: str, usage: Dict[str, Any], message: Optional[Dict[str, Any]] = None) -> str:
     """Completeness from the facts each delivery carries: the native episode's
-    typed `native_incomplete`; the packed call's `finish_reason == "length"`
-    (the report hit the output reserve); a session's is not host-observable."""
+    typed `native_incomplete`; the packed call's provider stop marker — the
+    OpenAI-compatible normalizer's `usage["response_finish_reason"] == "length"`
+    or the message's own `finish_reason`, and the direct-Anthropic lane's
+    `message["stop_reason"] == "max_tokens"` (the shipped direct default route
+    sets no usage finish reason at all) — meaning the report hit the output
+    reserve; a session's completeness is not host-observable."""
     if delivery == "native_tool_rounds":
         return str(usage.get("native_incomplete") or "") or "none"
     if delivery == "api_packet":
-        return "output_reserve" if str(usage.get("response_finish_reason") or "") == "length" else "none"
+        msg = message if isinstance(message, dict) else {}
+        cut = (str(usage.get("response_finish_reason") or "") == "length"
+               or str(msg.get("finish_reason") or "") == "length"
+               or str(msg.get("stop_reason") or "") == "max_tokens")
+        return "output_reserve" if cut else "none"
     return "unobserved"
 
 
 def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory: Dict[str, Any],
-                       coverage: Dict[str, str], human: str, *, extra: Optional[Dict[str, Any]] = None) -> str:
+                       coverage: Dict[str, str], human: str, *, incomplete: str,
+                       extra: Optional[Dict[str, Any]] = None) -> str:
     """R9: the host's provenance header (machine-readable comment + one human
     line) prepended to every delivered report. The fact set is built PER
     DELIVERY (a session never carries rounds/receipts; its attestation is
@@ -704,7 +713,7 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
         if names:
             facts[f"memory_{d}"] = ",".join(names)
     facts["coverage"] = ",".join(f"{rel}:{state}" for rel, state in coverage.items())
-    facts["incomplete"] = _delivery_incomplete(delivery, usage)
+    facts["incomplete"] = incomplete  # computed ONCE by the caller from the facts its delivery holds
     if delivery == "native_tool_rounds":
         facts.update({
             "attestation": usage.get("host_file_read_attestation") or "unobserved",
@@ -910,7 +919,7 @@ def _run_retrieving_review(
             + f" — reads not host-observed (coverage unobserved); {_memory_line(task_facts['memory'])}; {completeness}"
         )
     emit_progress(f"Deep self-review complete ({len(text):,} chars; {delivery}, incomplete={incomplete}).")
-    return _provenance_header(delivery, model, usage, task_facts["memory"], coverage, human) + text, usage
+    return _provenance_header(delivery, model, usage, task_facts["memory"], coverage, human, incomplete=incomplete) + text, usage
 
 
 def _run_packed_review(
@@ -1054,7 +1063,10 @@ def _run_packed_review(
     memory = stats.get("memory") or {"inlined": 0, "total": len(_MEMORY_WHITELIST), "dispositions": {}}
     usage["deep_review_memory"] = memory
     _record_execution(slot, usage, status="responded")
-    incomplete = _delivery_incomplete("api_packet", usage)
+    # Completeness from the response the packed path holds: the provider's
+    # stop marker (OpenAI-compatible finish_reason OR direct-Anthropic
+    # stop_reason), not only the normalizer's usage projection.
+    incomplete = _delivery_incomplete("api_packet", usage, response if isinstance(response, dict) else None)
     emit_progress(f"Deep self-review complete ({len(text):,} chars; incomplete={incomplete}).")
     window_label = f"{deep_window}" if int(window_fact.window_tokens) > 0 else f"assumed_{deep_window}"
     header = _provenance_header(
@@ -1062,7 +1074,7 @@ def _run_packed_review(
         f"Deep self-review: one packed API review on {_header_value(model)} — {stats['file_count']} files; "
         f"{_memory_line(memory)}; window {deep_window:,}" + (" (unknown, full window assumed)" if int(window_fact.window_tokens) <= 0 else "")
         + "; " + ("complete" if incomplete == "none" else f"INCOMPLETE ({incomplete}: the report hit the output reserve)"),
-        extra={"window": window_label},
+        incomplete=incomplete, extra={"window": window_label},
     )
     return header + text, usage
 
