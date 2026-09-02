@@ -13,10 +13,16 @@ client→server WS messages and the typed HTTP request bodies:
 
 ``GATEWAY_ABI_VERSION`` is the ABI version carrier, deliberately decoupled
 from the product version: it moves when the wire contract breaks (this is the
-7.0 break), not on ordinary releases. The browser mirror
-(``web/modules/api_types.js`` ``GATEWAY_CONTRACT_VERSION``) still carries the
-pre-7.0 product-version spelling — its switch to this carrier is deferred with
-the rest of the web mirror (docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md).
+7.0 break), not on ordinary releases.
+
+``web/modules/api_types.js`` ``GATEWAY_CONTRACT_VERSION`` is NOT a mirror of
+this constant and is not becoming one, whatever its name suggests (RES-15a):
+it is a RELEASE version carrier, pinned equal to the ``VERSION`` file by
+``tests/test_gateway_parity.py`` and rewritten beside ``pyproject.toml`` and
+``web/package.json`` by ``ouroboros.tools.release_sync``. The JSDoc typedefs
+in that file ARE the exact browser mirror of ``gateway.contracts`` — the
+ABI-3 deferrals were paid off in the F3.3 sweep; only the version constant
+answers a different question.
 """
 
 from __future__ import annotations

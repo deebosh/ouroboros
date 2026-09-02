@@ -5935,3 +5935,147 @@ items (CHECKLISTS.md api_v1 clause, ABI-4 typed views, D03, D09/S24, web
 vision evidence) are in the owner batch. `git diff --check b9f7597f..HEAD`
 stays red on the vendored `web/mermaid.min.js` (upstream minified asset) and
 the generator-owned `DOMAIN_QUOTIENT_REPORT.md` EOF — disclosed, not edited.
+
+## Integration corrections — the SHA a lane reported vs the SHA that landed (RES-27)
+
+Every section above records the SHA its lane produced. Integration rebases, so
+several of those SHAs name commits that are not on this branch: the work landed
+under a different id. Reading a lane section literally therefore sends you to a
+commit `git show` cannot resolve on the integration line, and in one case the
+lane's result was briefly LOST and had to land twice.
+
+This section is the reconciliation. It is derived, not remembered: every row
+below was produced by taking each 8-hex token in this file, keeping the ones
+that are commits, dropping the ones reachable from the integration HEAD, and
+matching the remainder to the integration commit with the identical subject.
+
+### Lane SHA -> landed SHA
+
+| lane section | lane SHA | landed as | subject |
+|---|---|---|---|
+| F4 wave 4 (W2-F2) | `68b19a61` | `2e93906f` | update: honor the configured managed update source on every fetch (W2-F2) |
+| F4 wave 4 (scenarios) | `4e68526c` | `592434d0` | tests: system_e2e wave 4 — update variants, chat-lineage cancel, absorb kill-recovery, interactive delegate_answer (S18-S23) |
+| F4 wave 4 (tail) | `0196b3d7` | `fc12f7cc` | docs: regenerate the facade inventory for managed_update_remote_url (W2-F2 tail) |
+| F5 lane D (CPL-5) | `50d68aaa` | `45904d87` | CPL-5: model-visible <=> logged invariant for model_send at the dispatch seam |
+| F3.1 lane A | `0f715831` | `fa2f6fc5` | v7next F3.1 lane A: producer cutovers — core/shell/services/mcp/git and the six control leaves |
+| ADOPTION truth wave | `fc1528d5` | `497333de` | test: pin the four F2.2 queue/worker handle leaves that never entered LEAVES |
+| domain-placement base | `8e885412` | `93065f77` | docs: the 80 proposed domain placements are the accepted 7.0 base |
+
+### Waves 3a, 3b and lane D named no SHAs of their own
+
+Their sections cite only their base (`8827fd2c`), so there is nothing to
+reconcile for them and this map must not pretend otherwise. What landed:
+
+- **wave 3a** — `676ebe8c` (plan review, commit enforcement classes, acceptance
+  loop) and its section `2021fba1`. Its scenarios were RENUMBERED at
+  integration; the note at "Integration note for the F4 wave-3a section above"
+  (`f71f4e42`) is the mapping and stays the authority.
+- **wave 3b** — `13c93a2a` (delegated transport + skills lifecycle), plus
+  `02feb1a3`, a size-ratchet band entry for `tests/system_e2e/harness.py` that
+  integration added and the lane did not produce.
+- **lane D** — `45904d87` (the CPL-5 row above) and its section `e26cfb61`.
+
+### CPL-5 landed twice
+
+`50d68aaa` was the lane's commit. It did not survive integration, and the
+ADOPTION row that recorded CPL-5 as done was then OVERWRITTEN by the
+persistence-fix union — so for a stretch the tree neither carried the lane's
+SHA nor claimed the work. `45904d87` is the implementation as it actually
+landed, and `bef13f5e` ("integration: restore the CPL-5 done row overwritten
+by the persfix union (45904d87 truth)") is the repair of the claim. Both
+halves are named here because the loss is the interesting fact: an ADOPTION
+row can be un-done by a neighbouring merge without anything failing.
+
+### SHAs that are correctly NOT on this branch
+
+Not every unresolvable SHA is an integration defect. `9f691656` is the frozen
+`ouroboros_v7_wip` reference oracle the transplant lanes were cut against, and
+`5440e407`, `705ffc51`, `a5e1cea3` and `e3c107bd` are upstream/oracle-only
+commits cited as provenance for a decision. They were never meant to land here
+and are listed so a future reader stops looking for them.
+
+## RES-15a — retraction: `GATEWAY_CONTRACT_VERSION` is not a browser ABI mirror
+
+`ouroboros/gateway/schema.py` and `docs/ARCHITECTURE.md` both said that the
+browser mirror's `GATEWAY_CONTRACT_VERSION` "still carries the pre-7.0
+product-version spelling — its switch to this carrier is deferred with the rest
+of the web mirror". Two things in that sentence are false on this tree.
+
+1. **There is no "rest of the web mirror" left deferred.** The F3.3 comma-sweep
+   section above records that the eight HOT-DEFERRED JSDoc lines were removed
+   and the `_abi3_deferred_js_extras` excuse set in `tests/test_gateway_parity.py`
+   was deleted — "the browser mirror is exact again". The prose kept pointing at
+   a backlog that had already been paid.
+2. **The switch is not deferred; it is refused.** `GATEWAY_CONTRACT_VERSION` is
+   a RELEASE VERSION carrier, not an ABI mirror: `tests/test_gateway_parity.py`
+   asserts it equals the `VERSION` file byte for byte, and
+   `ouroboros/tools/release_sync.py` rewrites it beside `pyproject.toml`,
+   `uv.lock`, `web/package.json` and the README badge on every release. Pointing
+   it at `GATEWAY_ABI_VERSION` would break both. The name is the whole
+   confusion — "CONTRACT" in a constant that carries a product version.
+
+Corrected, not rewritten: the two prose sites now say what the carrier is and
+why it will not move, and the F3.3 row above stays as written, because it was
+right — it recorded the switch as deferred "to the release tact ... version
+carriers move synchronously in release mechanics only", which is the same fact
+this retraction generalises. The claim being retracted is the ARCHITECTURE /
+schema.py framing of it as an outstanding web-mirror cleanup item.
+
+## From the simplification lane (owner 16A, base 9238cc2d)
+
+Nine accepted audit items, one single-intent commit each. The governing rule
+throughout is docs/DEVELOPMENT.md "Paying down a size cap": when an item's fix
+ran into a cap, the cap was paid down by SIMPLIFYING the module the change
+belongs to — never by a new helper, wrapper or neighbour module, and never by
+loosening a pin. Two items are reported as dispositions rather than done,
+with numbers, because no honest simplification supported them.
+
+| item | what was done | lines before -> after | pins |
+|---|---|---|---|
+| **CH-4** (MEDIUM) | `extension_child_catalog.skill_state_path` was a byte-for-byte re-derivation of `skill_loader.skill_state_dir_path` reached through a private back-import of `_skills_state_root` / `_sanitize_skill_name`. Deleted; `extension_loader` resolves through the SSOT, and the fix-round-6 pre-fence contract the duplicate's docstring carried moved onto `skill_state_dir_path` | child_catalog 271 -> 258 | 11 companion-race monkeypatch sites in `tests/test_extension_companion.py` follow the name; no pin weakened |
+| **CH-1 part 1** (HIGH, paydown) | `extension_plugin_api.py` sat at 999/1000, which is why ~100 lines of companion policy were pushed out in the first place. Paid down by simplification: the route-method vocabulary had two implementations (`register_route` and the child-catalog re-check) and became one `contracts.plugin_api.normalize_extension_route_methods`; the `_StagedRegistrations.disposers` list had NO producer anywhere (no caller appended, no caller passed `extra=`) so the empty-loop disposer machinery is gone; `get_runtime_info` lost three aliased-import blocks and a `getattr` for a field `__init__` always sets; `log` and `_wrap_runtime_handler` lost dead statements | plugin_api 999 -> 962 | both route refusal messages byte-identical; `test_disposers_stay_out_of_the_plugin_api_surface` still green |
+| **CH-1 part 2** (HIGH) | `materialize_companion_env(api, ...)`, which read five `PluginAPIImpl` privates from outside the class, is now the method `PluginAPIImpl._companion_env`. `companion_node_argv` / `companion_manifest_path_override` are `node_runtime.skill_node_argv` / `skill_manifest_owns_path`, beside `select_skill_node_runtime` and `skill_node_emergency_path_dir` — the module that already documents the npm-shebang contract they restated. The emergency PATH prepend had two copies (companion env, isolated-dep installer env) and became `node_runtime.prepend_skill_node_emergency_path`. The five surface kinds were enumerated three times and became `extension_registry_state.SURFACE_KINDS` | child_catalog 258 -> 154; plugin_api 962 -> 999; node_runtime 226 -> 271 | node-policy tests moved from the `platform_layer` re-export facade to `node_runtime`, where the policy lives; the `600 <= plugin_api <= 1000` band pin held, not raised |
+| **CH-3** (MEDIUM) | 17 module-handle helpers with zero call sites deleted, together with docstrings promising call-time rebinding the leaf never performed | 13 lines each, 221 total | none loosened: `tests/test_module_handle_extraction.py::LEAVES` declares only leaves that DO read through a handle, and none of the 17 were in it (the table already records that precedent) |
+| **CH-6** (LOW) | `provider_models.delegated_route_target(route)` — four `getattr` defaults over a frozen `str`-field dataclass, in another module — is `DelegationRoute.resolved_target()`. `delegate._start_request` now declares `route: "DelegationRoute"` instead of `Any` | provider_models 580 -> 562; subagents 1381 -> 1399 | the source-string pin `"delegated_route_target(route)" in source` is rewritten as behaviour: build a real run request and assert the wire body carries exactly the typed target's fields, plus the case the grep never covered (a bare route sends no empty `model`/`effort`/`credentialProfileId` keys) |
+| **CH-7** (LOW) | `registry_core._resolve_node_postgates_predispatch` — a six-argument forward whose docstring said "off the hot dispatch body for the function-size gate" — inlined at its one caller, funded by simplifying `_execute_legacy_text`: a thrice-asked `_binding_set_targets_system_repo(...) or acting_self_worktree` computed once, an `implicit_skill_cwd_allowed` that recomputed the existing `heal_no_enable`, a double-negated branch order, and four one-argument-per-line guard calls | `_execute_legacy_text` 296 -> 263 (37 under the 300 gate) | function gate not raised |
+| **CH-12 / CH-2 docs** (INFO/MEDIUM) | five `__import__("base64")` / `__import__("mimetypes")` calls became two module-level imports; the `core_artifacts` docstring and its ARCHITECTURE row now name the `escalate` verb and the validators they omitted | core_artifacts 522 -> 517 | none |
+| **RES-14b** (class fix) | `append_jsonl` and `state.atomic_write_text` guarded their paths; every OTHER full-file writer went through `_atomic_overwrite` unguarded. The guard moves onto that seam, so `write_bytes_atomic`, `write_text_atomic`, `atomic_write_json` and `state.atomic_write_text` are all covered and the next writer is covered by construction | utils 1599 -> 1596 | red-first: `test_every_atomic_writer_fails_closed_on_live_root_write` observed failing (`DID NOT RAISE`) before the fix |
+| **RES-27 / RES-15a** (docs) | the integration-corrections SHA map and the `GATEWAY_CONTRACT_VERSION` retraction, both in the sections immediately above | — | — |
+
+### Two dispositions, not done
+
+- **CH-7, `shell_process._publish_unfinished_process_facts`** — the audit called
+  it a two-line passthrough cut for the 300-line gate. On these bytes it has
+  TWO callers (the timeout and the pre-exec failure paths), it is one half of a
+  pair with `_publish_finished_process_facts` in the module that owns process
+  facts, and its docstring is the only statement that a child with no
+  returncode publishes duration plus the attested substituted runtime and
+  nothing else. The audit's premise is also stale: `_run_shell` is **265**
+  lines, not 296, so it sits 35 under the gate and no size pressure argues for
+  the change. Inlining would duplicate a lazy import across two except branches
+  and delete a contract. NOT DONE, reported instead.
+- **CH-2, moving the validators to "their owners"** — `validate_link_actions`
+  and `validate_quiz_payload` define the wire shapes the verbs beside them
+  emit, and `supervisor.message_bus` re-validates through the same functions
+  rather than owning a copy. There is no more natural owner, so only the
+  docs half of CH-2 landed. This is the "otherwise report" branch the item
+  itself allows.
+
+### Owner item 16 (A) — the pins that held a cap-driven placement
+
+Only ONE existed. CH-6's `"delegated_route_target(route)" in source` named the
+cross-module function and so pinned the PLACEMENT; it is rewritten as a
+behaviour pin. Nothing pinned the companion env/argv placement — those names
+were never in `test_extension_loader_extraction.py::_MOVED_OWNERS` — and
+nothing pinned `_resolve_node_postgates_predispatch`. The extraction suite's
+`600 <= extension_plugin_api <= 1000` band pins SIZE, not placement, and is
+untouched: it held at 999 across the whole lane, which is the point.
+
+### Residual disclosed
+
+`extension_plugin_api.py` lands at **999/1000** — the same number it started
+at, with ~85 lines of returned policy inside it and the paydown funding the
+difference. That is one line of headroom, and it is honest to say so: the
+next change there has to pay its own way in, exactly as this one did. The
+alternative was to leave the companion env in a module that validates child
+catalogs, which is the defect the item exists to close.
