@@ -2622,7 +2622,10 @@ explicitly:
   The KEYLESS `tests/system_e2e/` scenario lane also rides this marker (plus
   `serial` and the `OUROBOROS_E2E_DEEP=mock` env gate): real isolated servers,
   no provider keys — see the "System E2E suite" section of
-  `docs/ARCHITECTURE.md`.
+  `docs/ARCHITECTURE.md`. Because those three gates shut it out of every other
+  pass, the only thing that runs it is the dedicated `system-e2e-mock` CI job
+  on a daily schedule (or manual dispatch) — never push or pull_request, and
+  carrying no secret.
 - `browser` launches real Playwright Chromium/WebKit for agent browser tools.
 - `ui_browser` launches the host-side web UI under Playwright.
 - `ui_browser_docker` talks to an `ouroboros-web:test` container and must

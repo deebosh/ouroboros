@@ -5,6 +5,7 @@
 # Tier 2.5 (Integration): Push to main / ouroboros / ouroboros-stable / manual / tag  → Real-provider tests       (~2 min)
 # Tier 2.6 (Skill smoke): Push to ouroboros-stable / manual / tag                     → LIVE OuroborosHub official-skill install smoke (3-OS, ~5 min) + review→grant→enable-persistence flow on one cheap reviewer slot (ubuntu-only step, OPENROUTER_API_KEY, ~$1.2/run)
 # Tier 3 (Build+Release): Tag v*                                                       → PyInstaller + GitHub Release (~15 min)
+# Scheduled (System E2E): Daily cron / manual                                          → KEYLESS tests/system_e2e/ scenario lane (Ubuntu, ≤40 min)
 #
 # Tier 2.5 requires OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY.
 # Optional MiniMax / Cloud.ru / GigaChat rows run when their repository secrets
@@ -52,6 +53,12 @@ on:
   pull_request:
     branches: [ouroboros]
   workflow_dispatch:
+  # Only the system-e2e-mock job below matches a scheduled run. Off the hour
+  # deliberately: GitHub's cron queue is deepest at :00. NOTE for any job added
+  # later — a scheduled run reports the DEFAULT BRANCH in github.ref, so a job
+  # gated on a branch ref alone will fire here too (see integration-test).
+  schedule:
+    - cron: '37 4 * * *'
 
 # Note: GitHub Actions evaluates `branches` + `paths` together but `tags`
 # separately — a tag push matching `v*` will trigger regardless of paths.
@@ -233,12 +240,16 @@ jobs:
   # classifier keeps quota/rate-limit/5xx/timeout outcomes inconclusive.
   # ──────────────────────────────────────────────────────────────────
   integration-test:
+    # The leading schedule guard is what keeps the nightly cron above OFF this
+    # paid lane: a scheduled run carries the default branch in github.ref, which
+    # three of the conditions below already match.
     if: |
-      github.event_name == 'workflow_dispatch'
+      github.event_name != 'schedule'
+      && (github.event_name == 'workflow_dispatch'
       || github.ref == 'refs/heads/main'
       || github.ref == 'refs/heads/ouroboros'
       || github.ref == 'refs/heads/ouroboros-stable'
-      || startsWith(github.ref, 'refs/tags/v')
+      || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -446,6 +457,36 @@ jobs:
         run: |
           docker run --rm --entrypoint sh -e OUROBOROS_EXPECT_HEADLESS_SHELL=1 ouroboros-web:test -c \
             "PLAYWRIGHT_BROWSERS_PATH=0 python -m playwright install --only-shell chromium && python -m pytest tests/ -m portable_detail -q --tb=short"
+
+  # ──────────────────────────────────────────────────────────────────
+  # Scheduled: the KEYLESS system_e2e scenario lane (tests/system_e2e/).
+  # Those tests carry `integration` + `serial` AND the OUROBOROS_E2E_DEEP env
+  # gate, so no other job in this file can reach them — without this one the
+  # suite would be proof nobody executes. Deliberately NOT a push/PR lane
+  # (owner 9A, replacing the plan §8 PR lane): each scenario spawns a real
+  # isolated server, so the cost belongs on a nightly, not on every review.
+  # No provider secrets: the lane is keyless by construction and this job
+  # names none, which is the only way a job gets one. The four OUROBOROS_*
+  # roots point into runner.temp so no scenario can reach a real install.
+  # Red here = investigate; there is no fallback-skip.
+  # ──────────────────────────────────────────────────────────────────
+  system-e2e-mock:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-env
+      # -o addopts="" replaces the pyproject default markexpr wholesale: the
+      # lane's own `integration` marker is exactly what that default excludes.
+      - name: Run the keyless system E2E scenario lane (real isolated servers)
+        env:
+          OUROBOROS_E2E_DEEP: mock
+          OUROBOROS_APP_ROOT: ${{ runner.temp }}/ouroboros-system-e2e/app
+          OUROBOROS_REPO_DIR: ${{ runner.temp }}/ouroboros-system-e2e/repo
+          OUROBOROS_DATA_DIR: ${{ runner.temp }}/ouroboros-system-e2e/data
+          OUROBOROS_SETTINGS_PATH: ${{ runner.temp }}/ouroboros-system-e2e/data/settings.json
+        run: python -m pytest tests/system_e2e/ -o addopts="" -q
 
   # ──────────────────────────────────────────────────────────────────
   # Tier 3: Build & Release (tag push only)
