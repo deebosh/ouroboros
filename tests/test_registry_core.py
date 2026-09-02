@@ -709,7 +709,10 @@ def test_light_actionable_redirects_keep_legacy_mapping_without_light_remap(
 
     from ouroboros.loop_tool_execution import _execute_single_tool
     from ouroboros.tools.registry import ToolRegistry
-    from ouroboros.tools.tool_resolution import _build_builtin_target_binding
+    from ouroboros.tools.tool_resolution import (
+        _build_builtin_target_binding,
+        _light_binding_failure_result,
+    )
     from ouroboros.tools.tool_result import LegacyTextResultAdapter, ToolResult
 
     repo = tmp_path / "repo"
@@ -803,23 +806,28 @@ def test_light_actionable_redirects_keep_legacy_mapping_without_light_remap(
     }
     # The refusal CONTRACT (status/code/text/meta, asserted above) is identical on
     # every OS; only the ROUTE can differ, and the code's own predicate for it is
-    # whether the target BINDING resolves — never which platform we are on
-    # (R-WINWAVE class 5, expression follow-up). registry_core takes the light
-    # repo-mutation branch only when _build_builtin_target_binding returned a
-    # binding; that branch answers with the legacy TEXT and the adapter wraps it
-    # (3 calls). When the binding RAISES, the except arm answers from the
-    # resolution layer with a NATIVE ToolResult (0 adapter calls) — the second
-    # line of defense, same product outcome. `os.name == "nt"` was a stand-in
-    # for one outcome of that predicate: on Windows pytest's tmp_path arrives in
-    # 8.3 short form, resolve() expands it and relative_to() misses inside the
-    # binding. The cognitive scenario binds on every OS (root=runtime_data is
-    # path-free), which is why it kept the adapter route unconditionally.
+    # never which platform we are on (R-WINWAVE class 5, expression follow-up).
+    # Two arms reach the same product outcome: registry_core's light repo-mutation
+    # branch (when _build_builtin_target_binding RETURNED a binding) answers with
+    # the legacy TEXT, and the except arm (when it RAISES) answers from the
+    # resolution layer. The adapter count follows the SHAPE that arm returns, NOT
+    # whether the binding resolved: `_light_binding_failure_result` types the root
+    # redirect as a NATIVE ToolResult (0 adapter calls) and hands the cognitive
+    # redirect back as legacy TEXT (3 calls, exactly like the binding-resolves
+    # branch). So derive the expected route from the code's own except arm.
+    # `os.name == "nt"` was a stand-in for one outcome of the binding predicate
+    # (on Windows pytest's tmp_path arrives in 8.3 short form, resolve() expands
+    # it and relative_to() misses inside the binding) — and keying on the binding
+    # predicate ALONE inherits that stand-in's second, unstated assumption, that
+    # the cognitive scenario can never take the except arm: forced onto it, the
+    # cognitive redirect still costs 3 adapter calls while `binding_resolves`
+    # would demand 0.
     try:
         _build_builtin_target_binding(registry._ctx, "write_file", dict(args))
     except Exception:
-        binding_resolves = False
+        failure_route = _light_binding_failure_result("write_file", dict(args))
     else:
-        binding_resolves = True
-    expected_adapter_calls = 3 if binding_resolves else 0
+        failure_route = None
+    expected_adapter_calls = 0 if isinstance(failure_route, ToolResult) else 3
     assert len(adapter_calls) == expected_adapter_calls
     assert downstream_calls == []
