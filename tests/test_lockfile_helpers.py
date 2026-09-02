@@ -358,6 +358,19 @@ def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monke
     assert list(refusing.iterdir()) == []
 
 
+def test_lockfileex_refusals_classify_by_the_win32_error():
+    """Only ERROR_LOCK_VIOLATION (33) means held by someone: it reads as the
+    busy errno and re-contends. Access denied (5) and sharing violation (32)
+    land on EACCES beside it on Windows, so EACCES cannot be in the busy set
+    (POSIX flock never answers it) — every other Win32 error keeps its own
+    errno and fails the acquisition closed at once, not after the timeout."""
+    assert errno.EACCES not in platform_layer._LOCK_HELD_ERRNOS
+    busy = platform_layer._win32_lock_error(33)
+    assert busy.errno in platform_layer._LOCK_HELD_ERRNOS and busy.winerror == 33
+    for err in (5, 32, 6):
+        assert platform_layer._win32_lock_error(err).errno not in platform_layer._LOCK_HELD_ERRNOS
+
+
 @pytest.mark.skipif(
     not platform_layer.IS_WINDOWS,
     reason="LockFileEx error classification is Windows mechanics",

@@ -168,10 +168,11 @@ def _lock_identity(target: "int | pathlib.Path") -> tuple:
     return (info.st_ino, info.st_dev, info.st_mtime_ns)
 
 
-# Kernel answers meaning "the lock is HELD by someone": stand down and
-# re-contend. On the enforced tier EVERY other refusal fails closed — a
-# descriptor without its kernel lock is not a hold.
-_LOCK_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK})
+# Kernel answers meaning "the lock is HELD by someone": stand down and re-contend
+# (flock's EWOULDBLOCK; ``_win32_lock_error`` maps LockFileEx's lock violation onto
+# it). On the enforced tier EVERY other refusal fails closed — not a hold.
+_LOCK_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK})
+_ERROR_LOCK_VIOLATION = 33  # the ONE Win32 answer that means held by someone
 # Kernel answers that the FILESYSTEM takes no kernel locks at all (bare NFS
 # and friends): the only evidence that selects the name tier.
 _LOCK_UNSUPPORTED_ERRNOS = frozenset({errno.ENOLCK, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
@@ -229,9 +230,8 @@ def acquire_exclusive_file_lock(
     kernel lock (flock / LockFileEx): exclusion rests on the fd, not on the
     O_EXCL name alone, and a kernel refusal that is not contention fails
     CLOSED — no descriptor, our own file removed.  The name tier is selected
-    by that predicate, never by a refusal.  On either tier a freshly won
-    lock is returned only if the path still names the descriptor: a creator
-    evicted while it was still lock-less re-contends instead.
+    by that predicate, never by a refusal.  On either tier a won lock is
+    returned only while the path still names it: an evicted creator re-contends.
 
     Authority streams opt into ``owner_aware_stale`` so elapsed time alone
     never steals a lock from a live writer; a dead/malformed legacy owner
@@ -262,10 +262,9 @@ def acquire_exclusive_file_lock(
                     log.warning("Kernel lock refused at %s (errno %s): no lock taken", lock_path, exc.errno)
                     return None
             else:
-                # A creator stalled between its create and its lock (SIGSTOP, a
-                # suspend, clock skew) can be judged abandoned — aged by the stall,
-                # no hold yet to refuse the evictor — and evicted: the lock it then
-                # takes is on an inode the path no longer names. Not a hold.
+                # A creator stalled between its create and its lock (SIGSTOP, suspend,
+                # clock skew) is judged abandoned — aged, with no hold yet to refuse the
+                # evictor — and evicted: its lock lands on an unlinked inode. Not a hold.
                 if _lock_identity(fd)[:2] == _lock_identity(lock_path)[:2]:
                     return fd
             os.close(fd)  # the file we created was kernel-locked by a racing
@@ -625,12 +624,20 @@ def _win32_lock(fd: int, *, exclusive: bool = True, blocking: bool = True) -> No
     ov = OVERLAPPED()
     # Win32 whole-file lock pattern: huge range from offset 0.
     if not kernel32.LockFileEx(hfile, flags, 0, 0xFFFFFFFF, 0xFFFFFFFF, ctypes.byref(ov)):
-        err = ctypes.get_last_error()
-        # winerror -> errno (ERROR_LOCK_VIOLATION 33 -> EACCES): the acquisition
-        # tells contention from a refusal instead of reading an errno-less error.
-        raise OSError(0, f"LockFileEx failed (error {err})", None, err)
+        raise _win32_lock_error(ctypes.get_last_error())
 
     _win32_overlapped[fd] = (hfile, ov)
+
+
+def _win32_lock_error(err: int) -> OSError:
+    """The OSError a refused LockFileEx raises: ERROR_LOCK_VIOLATION alone means
+    HELD BY SOMEONE and reads as EAGAIN (re-contend); every other Win32 error keeps
+    its derived errno (access denied and sharing violation land on EACCES) and fails closed."""
+    if err != _ERROR_LOCK_VIOLATION:
+        return OSError(0, f"LockFileEx failed (error {err})", None, err)
+    refused = OSError(errno.EAGAIN, f"LockFileEx: lock violation (error {err})")
+    refused.winerror = err  # kept for diagnostics; the errno carries the verdict
+    return refused
 
 
 def _win32_unlock(fd: int) -> None:
