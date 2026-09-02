@@ -569,3 +569,89 @@ def test_register_ui_tab_rejects(tmp_path, case_id, name, plugin, expected_subst
     err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
     assert err is not None
     assert expected_substr in err
+
+
+# --- render.start launch policy (widgets-lifecycle W1b) -----------------------------
+
+
+@pytest.mark.parametrize(
+    "render,expected_start",
+    [
+        ({"kind": "module", "entry": "widget.js"}, "manual"),
+        ({"kind": "module", "entry": "widget.js", "start": "auto"}, "auto"),
+        ({"kind": "module", "entry": "widget.js", "start": "retain"}, "retain"),
+        ({"kind": "iframe", "route": "view"}, "manual"),
+        ({"kind": "iframe", "route": "view", "start": "retain"}, "retain"),
+        ({"kind": "declarative", "schema_version": 1, "components": []}, "auto"),
+        ({"kind": "declarative", "schema_version": 1, "components": [], "start": "auto"}, "auto"),
+    ],
+    ids=[
+        "module-default", "module-auto", "module-retain", "iframe-default",
+        "iframe-retain", "declarative-default", "declarative-auto",
+    ],
+)
+def test_validate_ui_render_fills_explicit_start_mode(render, expected_start):
+    clean = validate_ui_render(render)
+    assert clean["start"] == expected_start
+    # The declaration passed in is never mutated; the filled default lives in the copy.
+    assert render.get("start", expected_start) == expected_start
+
+
+@pytest.mark.parametrize(
+    "render,expected",
+    [
+        ({"kind": "module", "entry": "widget.js", "start": "whenever"}, "expected one of"),
+        ({"kind": "iframe", "route": "view", "start": "always"}, "expected one of"),
+        ({"kind": "declarative", "schema_version": 1, "components": [], "start": "manual"}, "nothing to start"),
+        ({"kind": "declarative", "schema_version": 1, "components": [], "start": "retain"}, "nothing to start"),
+    ],
+    ids=["module-unknown", "iframe-unknown", "declarative-manual", "declarative-retain"],
+)
+def test_validate_ui_render_rejects_bad_start_mode(render, expected):
+    with pytest.raises(ExtensionRegistrationError, match=expected):
+        validate_ui_render(render)
+
+
+def test_widget_start_modes_is_one_enum_for_validator_and_owner_override():
+    from ouroboros.extension_ui_validation import WIDGET_START_MODES
+    from ouroboros.gateway import ui_preferences
+
+    assert WIDGET_START_MODES == ("auto", "manual", "retain")
+    assert ui_preferences.WIDGET_START_MODES is WIDGET_START_MODES
+
+
+def test_settings_section_schema_carries_no_start_mode():
+    from ouroboros.extension_ui_validation import validate_settings_schema
+
+    clean = validate_settings_schema({"components": [{"type": "markdown", "text": "ok"}]})
+    assert "start" not in clean
+
+
+def test_register_ui_tab_snapshot_carries_explicit_start_mode(tmp_path):
+    loaded, _, drive_root = _prepare_extension(
+        tmp_path,
+        "startui",
+        "def register(api):\n"
+        "    api.register_ui_tab('game', 'Game', render={'kind': 'module', 'entry': 'widget.js'})\n"
+        "    api.register_ui_tab('gauge', 'Gauge', render={'kind': 'module', 'entry': 'gauge.js', 'start': 'auto'})\n"
+        "    api.register_ui_tab('board', 'Board', render={'kind': 'declarative', 'schema_version': 1, 'components': [{'type': 'markdown', 'text': 'ok'}]})\n",
+        permissions=["widget"],
+    )
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+    assert err is None, err
+    starts = {tab["key"]: tab["render"]["start"] for tab in extension_loader.snapshot()["ui_tabs"]}
+    assert starts == {"startui:game": "manual", "startui:gauge": "auto", "startui:board": "auto"}
+    extension_loader.unload_extension("startui")
+
+
+def test_register_ui_tab_rejects_declarative_start_mode(tmp_path):
+    loaded, _, drive_root = _prepare_extension(
+        tmp_path,
+        "badstart",
+        "def register(api):\n"
+        "    api.register_ui_tab('board', 'Board', render={'kind': 'declarative', 'schema_version': 1, 'start': 'retain', 'components': [{'type': 'markdown', 'text': 'ok'}]})\n",
+        permissions=["widget"],
+    )
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+    assert err is not None
+    assert "nothing to start" in err

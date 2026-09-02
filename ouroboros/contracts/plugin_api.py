@@ -148,6 +148,17 @@ class PluginAPI(Protocol):
         ``render`` is host-owned declarative UI, iframe, or a reviewed sandboxed
         module served only for a live tab and bridged to this skill's route prefix.
         Same-origin SPA modules are outside this contract.
+
+        ``render.start`` declares the card's launch policy: ``"auto"`` starts when
+        the Widgets page is shown and stops when the owner leaves; ``"manual"``
+        shows a Start button and leaving the page is an ordered Stop; ``"retain"``
+        starts on the first Widgets visit and keeps running while the owner is on
+        other pages until Stop, skill disable/unload, app reload, or server
+        restart — it never outlives Ouroboros. Defaults: ``module``/``iframe`` →
+        ``"manual"``; ``declarative`` → ``"auto"`` and accepts nothing else. The
+        validator (``ouroboros/extension_ui_validation.py::WIDGET_START_MODES``) is
+        the SSOT and fills the default into the stored declaration; the owner's
+        per-card override (``ui_preferences.widget_start_mode``) always wins.
         """
         ...
 

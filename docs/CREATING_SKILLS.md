@@ -105,6 +105,7 @@ ui_tab:                             # extension widgets (optional)
   icon: cloud
   render:
     kind: declarative
+    start: auto                     # launch policy; module/iframe may say manual | retain (see "Launch policy")
     schema_version: 1
     components:
       - type: form
@@ -749,6 +750,7 @@ ui_tab:
   render:
     kind: module
     entry: widget.js
+    start: manual                   # auto | manual | retain — see "Launch policy" below
 ```
 
 The host fetches reviewed JS through `GET /api/extensions/<skill>/module/<entry>`,
@@ -765,7 +767,10 @@ module-only `max_height` lowers the ceiling. A fixed `height` disables
 auto-growth. Legacy route iframes accept explicit `height` only because the
 host cannot inspect their opaque document. The parent owns iframe removal and
 the module bootstrap rejects pending fetch promises on disposal, so module
-code must not invent a second resize, vertical-scrolling, or teardown protocol.
+code must not invent a second resize, vertical-scrolling, or teardown protocol:
+the host-owned dispose → acknowledgement handshake described under "Launch
+policy" below is the teardown protocol, and `window.__ouroWidgetOnDispose(fn)`
+is the only hook into it.
 These geometry keys are valid only for framed `iframe` and `module` renders;
 declarative renders remain content-driven and reject them.
 
@@ -778,6 +783,61 @@ host-owned resize contract. For auto-height modules, the host bootstrap
 suppresses only document-viewport `overflow-y` below the ceiling and releases
 it at the ceiling; horizontal document overflow remains author-controlled and
 reachable.
+
+#### Launch policy (`render.start`)
+
+A widget card declares how it starts with `render.start`. The validator in
+`ouroboros/extension_ui_validation.py` (`WIDGET_START_MODES`) is the single
+source of truth for the allowed values and fills the default into the stored
+declaration, so every live tab carries an explicit value:
+
+| `start` | Behaviour | Default for |
+|---|---|---|
+| `auto` | Starts when the Widgets page is shown; leaving the page stops it. For cheap instruments (a quota gauge, a status board). | `declarative` — the only value it accepts: the host draws it, there is nothing to start |
+| `manual` | The card shows the title, icon, and a Start button; the program runs only after the owner presses Start. Leaving the page is an ordered Stop: the host sends the dispose message and gives the widget up to one second to save before the frame is removed. | `module`, `iframe` |
+| `retain` | "Keep running": starts on the first Widgets visit and keeps running while the owner is on other pages, with a "running in the background" badge on the card. It stops on the owner's Stop, on skill disable / unload / delete, on app reload, on server restart, and when Ouroboros closes. | — |
+
+Rules every module author follows:
+
+- **Declare `start` explicitly for a heavy program.** A game, emulator, or
+  simulation that should not run all the time is `manual`; only a program that
+  genuinely must keep running while the owner is elsewhere — and that stays
+  cheap while hidden — is `retain`. Omitting the key gives a framed widget
+  `manual`.
+- **The owner always wins, and Stop always wins.** The owner can change any
+  card's mode from the card; that choice is stored in
+  `ui_preferences.widget_start_mode` (`"<skill>:<tab_id>"` → mode) and
+  overrides your declaration. Stop is always available and wins over every
+  mode; do not build your own keep-alive or restart logic against it.
+- **The view is disposable — durable state lives in the skill.** Treat the
+  frame like an editor tab (VS Code's `getState`/`setState` model): autosave
+  through your own `/api/extensions/<skill>/...` routes while running, and
+  register `window.__ouroWidgetOnDispose(fn)` — the hook may be async — to
+  flush what is left. Register with the function; never assign over it. The
+  declared handshake is the teardown protocol: the host posts the dispose
+  message, your hooks run and may finish bridged requests within one second,
+  the bootstrap acknowledges, and only then is the frame removed. `localStorage`
+  and cookies throw in the opaque origin; never keep state only in the frame.
+- **`retain` is not a daemon.** It never survives Ouroboros closing: closing the
+  app or stopping the server ends every widget together with every other
+  Ouroboros process. Retained instances are per browser client, not a singleton
+  — a second window or device runs a second instance. A program that must be a
+  singleton, be supervised, or be independent of any window is a
+  `companion_process`, not a widget.
+- **Hidden pages are throttled by the browser, not by the host.** In
+  Chromium-based browsers animation frames pause while the page is hidden;
+  timers, audio, and bridged requests continue at the rate the browser allows.
+  The desktop app does not throttle. Keep work that must progress off
+  `requestAnimationFrame`.
+- **Install and enable never start browser code.** The first visit to Widgets
+  does; nothing runs at app load.
+
+Until the Widgets host ships its launch-policy phase, every framed widget still
+mounts when Widgets is shown and is stopped when the owner leaves, and the parent
+removes the frame right after posting the dispose message — hooks get no
+acknowledgement grace yet, so autosave while running is the only durable path
+today. `start` and the owner override are validated and stored now so
+declarations and reviews can lead the host.
 
 For everything else, prefer declarative components (`form`, `action`, `poll`,
 `subscription`, `stream`, `table`, `chart`, `markdown`, `json`, `kv`, `status`,
@@ -974,7 +1034,7 @@ def register(api):
 | `EXTENSION_NOT_LIVE` on tool dispatch | The skill is disabled or the loader had a load_error — check the Skills UI. |
 | `HEAL_MODE_BLOCKED: ...` | The Repair task tried to call a tool the internal heal-mode allowlist does not permit; finish the Repair flow with `skill_review` and exit. |
 | `PluginAPI.register_*` raises `ExtensionRegistrationError` | Usually the skill is missing the matching permission in its manifest. For `register_companion_process` the name must also be alnum/underscore and declared under `companion_processes` — see "Declaring a companion process". |
-| Reviewer marks `widget_module_safety: FAIL` | `widget.js` is touching `document.cookie` / `localStorage` / cross-origin `fetch`. Move the data through `/api/extensions/<skill>/` routes. |
+| Reviewer marks `widget_module_safety: FAIL` | `widget.js` fetches outside `/api/extensions/<skill>/`, talks to the parent through its own `postMessage` protocol, declares a `start` mode heavier than the widget needs, or keeps state only inside the frame. Move data through your own routes and save it from `__ouroWidgetOnDispose`. |
 
 For deeper integration questions read
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) §13 (external skills layer)
