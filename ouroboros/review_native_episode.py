@@ -22,6 +22,7 @@ the session executor.
 from __future__ import annotations
 
 import contextlib
+import time
 import hashlib
 import json
 import logging
@@ -339,6 +340,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         final_answer: Optional[str] = None
         last_content = ""  # the reviewer's latest prose — the product of an exhausted report episode
         landed = False
+        landing_sent = False  # the notice was posted AND a send carried it
         end_reason = "not_started"  # the true reason is set by whichever end the episode takes
         round_idx = 0
         transcript_chars = 0
@@ -374,10 +376,15 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     f"native review episode bound ({transcript_cap} chars) leaves no "
                     f"room to read: the first send alone carries {transcript_chars} "
                     "chars; the episode fails closed", code="native_bound_below_first_send")
+            logical_deadline = getattr(self, "_logical_deadline_monotonic", None)
             while True:
+                # Two clocks bound the episode: the owner's deadline on the
+                # task and the coordinator's logical window for THIS slot —
+                # the same window the session executor honours. Past either,
+                # a paid round would buy an answer the wave can no longer use.
                 if owner_deadline_exhausted(
                     deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
-                ):
+                ) or (logical_deadline is not None and time.monotonic() >= float(logical_deadline)):
                     end_reason = "deadline_exhausted"
                     if shape == "report" and last_content:
                         break  # a report keeps its draft (marked incomplete below)
@@ -403,25 +410,16 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     if transcript_chars > transcript_cap:
                         break  # even the notice would not fit: the bound has landed
                 round_idx += 1
-                chat_kwargs: Dict[str, Any] = {
-                    "messages": messages,
-                    "model": slot.model,
-                    "tools": schemas,
-                    "tool_choice": "auto",
-                    "reasoning_effort": slot.effort,
-                    "max_tokens": max_tokens,
-                    "no_proxy": bool(request.no_proxy),
-                    "use_local": bool(slot.use_local),
-                    "cache_affinity": f"{request.surface}:{request.task_id or 'review'}",
-                }
-                if request.temperature is not None or slot.temperature is not None:
-                    chat_kwargs["temperature"] = (
-                        request.temperature if request.temperature is not None
-                        else slot.temperature
-                    )
+                if landed and not landing_sent:
+                    landing_sent = True  # this send carries the notice
+                chat_kwargs = self._chat_kwargs(messages, schemas, max_tokens)
                 transport = review_transport_timeout(
                     slot.model, getattr(slot, "transport_timeout_sec", None), deadline_at,
                 )
+                if logical_deadline is not None:
+                    # One send never outlives the slot's window.
+                    remaining = max(1.0, float(logical_deadline) - time.monotonic())
+                    transport = remaining if transport is None else min(float(transport), remaining)
                 if transport is not None:
                     chat_kwargs["timeout"] = transport
                 with bind_api_review_paid_stamp(self.assignment.dispatch_stamp):
@@ -463,6 +461,12 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 content = str(msg.get("content") or "") if isinstance(msg, dict) else ""
                 if content:
                     last_content = content
+                # The envelope joins the record BEFORE any terminal branch, so
+                # the terminal-round fact describes the decision-ending output
+                # itself — an empty or malformed final round included.
+                assistant = dict(msg) if isinstance(msg, dict) else {"content": content}
+                assistant.setdefault("role", "assistant")
+                messages.append(assistant)
                 if not tool_calls:
                     # The reviewer's answer — or an empty round, which is the
                     # episode's honest end: the empty answer rides the ordinary
@@ -484,9 +488,6 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     # end and rides the ordinary empty-response rail above.)
                     end_reason = "round_without_progress"
                     break
-                assistant = dict(msg)
-                assistant.setdefault("role", "assistant")
-                messages.append(assistant)
                 # The WHOLE assistant envelope (content + tool-call objects,
                 # names and argument JSON) joins `messages` and rides every
                 # later send — counting only its parts understated each send.
@@ -497,15 +498,15 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     # The per-result room is what is left below the bound minus
                     # the landing reserve: one read can never jump over the
                     # landing notice and the bound in a single round.
-                    call_id, result = self._execute_inspection_call(
+                    # The WHOLE tool message rides the next send — role and the
+                    # provider's call id included — so an empty withheld result
+                    # still costs its envelope, and the clamp and the charge
+                    # measure the SAME serialized size (JSON escaping inflates
+                    # real text); the call executor returns a message that fits.
+                    tool_message = self._execute_inspection_call(
                         registry, tc, validation_by_id, round_idx=round_idx,
                         room=transcript_cap - _LANDING_RESERVE_CHARS - transcript_chars,
                     )
-                    tool_message = {"role": "tool", "tool_call_id": call_id, "content": result}
-                    # The WHOLE tool message rides the next send — role and the
-                    # provider's call id included — so an empty withheld result
-                    # still costs its envelope; counting only the content let a
-                    # batch of withheld calls grow the send past the bound unseen.
                     transcript_chars += len(json.dumps(tool_message, ensure_ascii=False, default=str))
                     messages.append(tool_message)
             if shape == "report" and not final_answer and last_content:
@@ -521,9 +522,12 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             # Only the host's own scratch is removed; an opted-in data root
             # belongs to the caller and survives a failed episode untouched.
             shutil.rmtree(scratch, ignore_errors=True)
-            if (final_answer is None or episode.get("native_incomplete")) and any(
+            if (not final_answer or episode.get("native_incomplete")) and any(
                 m.get("role") == "assistant" for m in messages
             ):
+                # Non-delivering (refused, or an EMPTY final answer riding the
+                # empty-response rail) or incomplete: the record keeps the
+                # decision-ending envelope itself.
                 # The terminal round — the exact assistant envelope and the
                 # tool results that led to a bound, deadline or transport end
                 # — is not reconstructible from the receipts alone (P1): keep
@@ -542,7 +546,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 "native_tool_calls": self._tool_calls_total,
                 "native_transcript_chars": transcript_chars,
                 "native_transcript_bound": transcript_cap,
-                "native_landing_notified": landed,
+                "native_landing_notified": landed,  # posted to the transcript
+                "native_landing_sent": landing_sent,  # a provider send carried it
                 "native_end_reason": end_reason,
             })
             episode["native_custody_row"] = self._emit_episode_fact(episode)
@@ -586,18 +591,38 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             })
         self._raw_transcript = final_answer
 
+    def _chat_kwargs(self, messages: List[Dict[str, Any]], schemas: List[Dict[str, Any]], max_tokens: int) -> Dict[str, Any]:
+        """One round's provider call, shaped from the request and the slot."""
+        request, slot = self.assignment.request, self.assignment.slot
+        kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "model": slot.model,
+            "tools": schemas,
+            "tool_choice": "auto",
+            "reasoning_effort": slot.effort,
+            "max_tokens": max_tokens,
+            "no_proxy": bool(request.no_proxy),
+            "use_local": bool(slot.use_local),
+            "cache_affinity": f"{request.surface}:{request.task_id or 'review'}",
+        }
+        if request.temperature is not None or slot.temperature is not None:
+            kwargs["temperature"] = request.temperature if request.temperature is not None else slot.temperature
+        return kwargs
+
     def _execute_inspection_call(
         self, registry: Any, tc: Dict[str, Any], validation_by_id: Dict[str, Any],
         *, round_idx: int, room: int,
-    ) -> tuple[str, str]:
-        """Run ONE inspection tool call of a round and return ``(call_id, result)``.
+    ) -> Dict[str, Any]:
+        """Run ONE inspection tool call of a round and return its tool MESSAGE.
 
         Owns the tool-policy half of the episode — wire-validation refusal, the
         inspection allowlist, argument parsing, execution, the disclosed result
-        bound (the fixed per-result cap, clamped to ``room``) and the
-        host-observed receipt — while the caller owns the loop, the transcript
-        counter and the messages. Provenance comes from CONTROL FLOW, never
-        string-sniffing: a refused call must not read as an executed one.
+        bound (the fixed per-result cap, clamped to ``room`` and measured on the
+        SERIALIZED message the send will carry, so JSON escaping cannot inflate
+        it past the room) and the host-observed receipt — while the caller owns
+        the loop, the transcript counter and the messages. Provenance comes from
+        CONTROL FLOW, never string-sniffing: a refused call must not read as an
+        executed one.
         """
         call_id = str(tc.get("id") or "")
         function = tc.get("function") if isinstance(tc.get("function"), dict) else {}
@@ -639,24 +664,29 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     outcome = "error"
                     result = f"⚠️ {type(exc).__name__}: {exc}"
                 result_cap = max(0, min(_EPISODE_TOOL_RESULT_CHAR_CAP, room))
-                if len(result) > result_cap:
-                    # Disclosed bound with a continuation handle — the reader
-                    # keeps reading in chunks (read_file supports offset/limit),
-                    # so nothing is silently cut. The marker is budgeted INSIDE
-                    # the cap: the whole returned message fits the room.
-                    marker = (
-                        " — the episode transcript budget is nearly spent;"
-                        " answer now from what you have read."
-                        if room < _EPISODE_TOOL_RESULT_CHAR_CAP else
-                        ". Continue reading the remainder in bounded"
-                        " chunks (read_file supports offset/limit)."
-                    )
-                    shown = max(0, result_cap - len(marker) - 64)
-                    result = (
-                        result[:shown]
-                        + f"\n⚠️ RESULT TRUNCATED: showed {shown} of {len(result)} chars"
-                        + marker
-                    )
+                # Disclosed bound with a continuation handle — the reader keeps
+                # reading in chunks (read_file supports offset/limit), so
+                # nothing is silently cut. The marker is budgeted INSIDE the
+                # cap, and the cut is measured on the SERIALIZED message (JSON
+                # escaping inflates real text) until it fits the room — a raw
+                # result under the cap can still overshoot the room on the wire.
+                marker = (
+                    " — the episode transcript budget is nearly spent;"
+                    " answer now from what you have read."
+                    if room < _EPISODE_TOOL_RESULT_CHAR_CAP else
+                    ". Continue reading the remainder in bounded"
+                    " chunks (read_file supports offset/limit)."
+                )
+                full = result
+                shown = len(full) if len(full) <= result_cap else max(0, result_cap - len(marker) - 64)
+                for _ in range(5):
+                    result = full if shown >= len(full) else (
+                        full[:shown] + f"\n⚠️ RESULT TRUNCATED: showed {shown} of {len(full)} chars" + marker)
+                    overshoot = len(json.dumps({"role": "tool", "tool_call_id": call_id, "content": result},
+                                               ensure_ascii=False, default=str)) - max(0, room)
+                    if overshoot <= 0 or shown == 0:
+                        break
+                    shown = max(0, min(shown, len(full) - 1) - overshoot)
         # Host-observed evidence (bounded): which artifacts THIS episode
         # actually opened — disclosure, never a claim of full-surface coverage.
         self._tool_calls_total += 1
@@ -669,7 +699,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             receipt["result_chars"] = len(result)
             receipt["outcome"] = outcome
             self._tool_receipts.append(receipt)
-        return call_id, result
+        return {"role": "tool", "tool_call_id": call_id, "content": result}
 
     @staticmethod
     def _terminal_round_fact(messages: List[Dict[str, Any]]) -> str:
@@ -681,6 +711,21 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         from ouroboros.observability import redact_projection
         from ouroboros.utils import truncate_within_limit
 
+        def _redacted(value: Any) -> Any:
+            # Structural key masking works on OBJECTS: JSON carried inside a
+            # string (tool-call arguments, a JSON tool result) is parsed first
+            # so a secret-named field is masked, then serialized back; plain
+            # text is redacted as text.
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except (TypeError, ValueError):
+                    return redact_projection(value).value
+                if isinstance(parsed, (dict, list)):
+                    return json.dumps(redact_projection(parsed).value, ensure_ascii=False, default=str)
+                return value
+            return redact_projection(value).value
+
         tail: List[Dict[str, Any]] = []
         for msg_item in reversed(messages):
             tail.insert(0, msg_item)
@@ -691,24 +736,35 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         # host landing notice (a user message) is disclosed, never relabelled.
         results = [m for m in tail[1:] if m.get("role") == "tool"]
         trailing_notice = any(m.get("role") == "user" for m in tail[1:])
+        calls = []
+        for tc in (assistant.get("tool_calls") or []):
+            if isinstance(tc, dict):
+                tc = dict(tc)
+                function = tc.get("function")
+                if isinstance(function, dict):
+                    function = dict(function)
+                    function["arguments"] = _redacted(function.get("arguments"))
+                    tc["function"] = function
+                calls.append(_redacted(tc))
+            else:
+                calls.append(_redacted(tc))
         bounded: List[Dict[str, Any]] = [{
             "role": "assistant",
-            "content": truncate_within_limit(str(assistant.get("content") or ""), 1_200),
-            "tool_calls": truncate_within_limit(
-                json.dumps(assistant.get("tool_calls") or [], ensure_ascii=False, default=str), 1_200),
+            "content": truncate_within_limit(str(_redacted(str(assistant.get("content") or "")) or ""), 1_200),
+            "tool_calls": truncate_within_limit(json.dumps(calls, ensure_ascii=False, default=str), 1_200),
         }]
         kept = results[-4:]
         for item in kept:
             bounded.append({
                 "role": "tool",
-                "tool_call_id": truncate_within_limit(str(item.get("tool_call_id") or ""), 200),
-                "content": truncate_within_limit(str(item.get("content") or ""), 1_000),
+                "tool_call_id": truncate_within_limit(str(_redacted(str(item.get("tool_call_id") or "")) or ""), 200),
+                "content": truncate_within_limit(str(_redacted(str(item.get("content") or "")) or ""), 1_000),
             })
         doc = {
             "messages": bounded, "omitted_tool_results": len(results) - len(kept),
             "trailing_host_notice": trailing_notice,
         }
-        return json.dumps(redact_projection(doc).value, ensure_ascii=False, default=str)
+        return json.dumps(doc, ensure_ascii=False, default=str)
 
     def failure_custody(self) -> Dict[str, Any]:
         """The proven facts of a refused or errored episode for the error actor:

@@ -267,6 +267,37 @@ def test_one_read_can_never_jump_over_the_landing_notice_and_the_bound(subject_r
     assert round2[-1]["role"] == "user" and "[EPISODE_BUDGET]" in round2[-1]["content"]
 
 
+def test_escaping_inflation_cannot_jump_the_landing_notice(subject_repo, monkeypatch):
+    """The clamp bounds raw chars but the send carries the JSON-serialized
+    message: real text (newlines, quotes, backslashes) inflates 2–5 % under
+    escaping. A truncated read that filled its room is re-cut by the
+    serialized overshoot, so the charged message fits the room and the
+    landing notice is still posted before the bound — never a refusal the
+    reviewer was not warned of."""
+    import ouroboros.review_native_episode as native_episode
+
+    line = 'def f(x):\n    return "quoted \\ value"\n'
+    (subject_repo / "source.py").write_text(line * 8_000, encoding="utf-8")  # ~330K chars, escape-heavy
+    first_send = _first_send_chars(subject_repo)
+    bound = 50_000  # one read_file result (tool-capped near 38K) lands the transcript past 80 %
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: bound)
+    llm = _ScriptedLLM([
+        {"tool_calls": [_tool_call("read_file", {"path": "source.py"}, "c1")]},
+        {"content": _VERDICT},
+    ])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    result = executor.execute()
+    assert result.raw_text == _VERDICT
+    usage = result.usage
+    assert usage["native_landing_notified"] is True and usage["native_landing_sent"] is True
+    assert usage["native_transcript_chars"] <= usage["native_transcript_bound"] == bound
+    # The SERIALIZED tool message fits the room it was given (bound − reserve −
+    # what the first send carried), escaping inflation included.
+    tool_msg = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"][0]
+    assert len(json.dumps(tool_msg, ensure_ascii=False)) <= bound - 2_048 - first_send
+    assert "RESULT TRUNCATED" in tool_msg["content"] and "\\n" not in tool_msg["content"]  # real text, escaped only on the wire
+
+
 def test_bound_below_the_first_send_is_a_typed_refusal_before_any_send(subject_repo, monkeypatch):
     """A bound that leaves no room to read anything must not make the landing
     notice the first thing the reviewer hears (an obedient `[]` would then be a
@@ -540,6 +571,86 @@ def test_report_keeps_its_draft_on_a_deadline_or_ledger_end(subject_repo, monkey
     assignment.request.surface = "deep_self_review"
     result = NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
     assert result.raw_text == draft and result.usage["native_incomplete"] == "budget_exhausted"
+
+
+def test_empty_and_malformed_terminal_rounds_are_recorded(subject_repo, tmp_path):
+    """The terminal-round fact describes the decision-ending envelope itself:
+    a first-round malformed answer, and a report draft followed by an EMPTY
+    terminal round, both leave the actual last envelope on the record."""
+    llm = _ScriptedLLM([{"tool_calls": ["junk"]}])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "malformed")
+    with pytest.raises(ReviewRouteUnavailable):
+        NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    fact = _episode_rows(tmp_path / "malformed")[0]
+    terminal = json.loads(fact["native_terminal_round"])
+    assert terminal["messages"][0]["role"] == "assistant" and "junk" in terminal["messages"][0]["tool_calls"]
+
+    draft = "# Draft\n\n- item\n"
+    llm = _ScriptedLLM([
+        {"content": draft, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]},
+        {"content": ""},
+    ])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "empty")
+    assignment.request.surface = "deep_self_review"
+    result = NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    assert result.usage["native_incomplete"] == "empty_answer"
+    terminal = json.loads(_episode_rows(tmp_path / "empty")[0]["native_terminal_round"])
+    assert terminal["messages"][0] == {"role": "assistant", "content": "", "tool_calls": "[]"}
+
+
+def test_terminal_round_masks_secrets_structurally(subject_repo):
+    """Secrets are masked BEFORE the structured values are flattened: a
+    tool-call argument, JSON tool-call arguments and a JSON tool result that
+    carry a secret-named field never reach the custody row in clear."""
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "search_code",
+             "arguments": json.dumps({"query": "x", "password": "hunter2"})}},
+            {"id": "c2", "password": "hunter2", "function": {"name": "read_file", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": json.dumps({"api_key": "hunter2", "hits": 1})},
+        {"role": "tool", "tool_call_id": "c2", "content": "plain text, no secret"},
+    ]
+    doc = NativeToolRoundReviewExecutor._terminal_round_fact(messages)
+    assert "hunter2" not in doc
+    parsed = json.loads(doc)
+    assert parsed["messages"][2]["content"] == "plain text, no secret"
+
+
+def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path):
+    """The coordinator's logical window for the slot is a bound like the owner
+    deadline: past it, a verdict episode refuses typed and a report keeps its
+    draft; one send's transport timeout never outlives the window."""
+    import time as _time
+
+    llm = _ScriptedLLM([
+        {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]},
+        {"content": _VERDICT},
+    ])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "window")
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
+    executor._logical_deadline_monotonic = _time.monotonic() + 0.05
+    _time.sleep(0.08)
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        executor.execute()
+    assert exc.value.code == "deadline_exhausted" and not llm.calls
+    assert _episode_rows(tmp_path / "window")[0]["native_end_reason"] == "deadline_exhausted"
+
+    llm = _ScriptedLLM([{"content": "# Draft\n", "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}])
+    assignment = _assignment(subject_repo, llm)
+    assignment.request.surface = "deep_self_review"
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
+    executor._logical_deadline_monotonic = _time.monotonic() + 0.2  # the window is read once, at the start
+    original_chat = llm.chat
+
+    def slow_chat(**kwargs):
+        _time.sleep(0.3)  # the round outlives the window
+        return original_chat(**kwargs)
+
+    llm.chat = slow_chat
+    result = executor.execute()
+    assert result.raw_text == "# Draft\n" and result.usage["native_incomplete"] == "deadline_exhausted"
+    assert llm.calls[0]["timeout"] <= 1.0  # one send never outlives the window (floor 1s)
 
 
 def test_round_without_progress_is_a_typed_malformed_end(subject_repo):
