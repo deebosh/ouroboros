@@ -25,6 +25,7 @@ import logging
 import os
 import pathlib
 import shutil
+import signal
 import stat
 import time
 from decimal import Decimal
@@ -852,6 +853,10 @@ def test_warm_segment_cache_revalidates_the_file_it_cached(data_root):
     segment.write_bytes(b'{"kind":"attempt"}\n')
     with pytest.raises(UsageLedgerCorrupt):
         uc.archived_attempt_ids(data_root)
+    segment.unlink()
+    segment.mkdir()  # a directory where the header names a segment: typed, never a bare IsADirectoryError
+    with pytest.raises(UsageLedgerCorrupt, match="not a regular file"):
+        uc.archived_attempt_ids(data_root)
 
 
 def _rewrite_segment_in_place(segment, marker):
@@ -1005,18 +1010,33 @@ def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root,
         uc.archived_attempt_ids(data_root)
 
 
+@pytest.mark.skipif(
+    platform_layer.IS_WINDOWS,
+    reason="a dangling link, a FIFO and O_NONBLOCK are POSIX shapes; Windows keeps the path-based scan",
+)
 def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root):
     """An entry the anchor scan cannot open or read is not "no evidence": the
     scan did not complete, so the history question is UNKNOWN (typed) — never
-    an answer built on the part of the archive that could be read."""
+    an answer built on the part of the archive that could be read. A directory
+    or a FIFO is no segment at all (segments are regular files by construction):
+    classified and skipped — and the FIFO, which has no writer, must not hang
+    the open, so the scan opens O_NONBLOCK."""
     _seed_mixed_ledger(data_root)
     assert _compact(data_root) is not None
-    assert uc.archived_attempt_ids(data_root)
-    planted = data_root / "archive" / "usage_ledger" / "segment_ep0009_planted.jsonl"
+    known = uc.archived_attempt_ids(data_root)
+    archive_dir = data_root / "archive" / "usage_ledger"
+    (archive_dir / "backup").mkdir()
+    os.mkfifo(archive_dir / "segment_ep0009_fifo.jsonl")
+    previous = signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError("FIFO open blocked")))
+    signal.alarm(5)
+    try:
+        assert uc.archived_attempt_ids(data_root) == known
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    planted = archive_dir / "segment_ep0009_planted.jsonl"
     planted.symlink_to(data_root / "nowhere.jsonl")  # dangling: unopenable either way
-    uc._SEGMENT_CACHE.clear()
-    uc._CHAIN_UNION_CACHE.clear()
-    with pytest.raises(UsageLedgerCorrupt):
+    with pytest.raises(UsageLedgerCorrupt, match="could not complete"):
         uc.archived_attempt_ids(data_root)
 
 

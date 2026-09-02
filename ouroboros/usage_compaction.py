@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import pathlib
+import stat
 import threading
 import time
 import uuid
@@ -910,11 +911,13 @@ def _open_archive_entry(path: pathlib.Path, dir_fd: Optional[int]) -> int:
     """Open one archive entry for reading: POSIX opens ``path.name``
     ``O_NOFOLLOW`` relative to the held archive handle, so the file read is a
     plain file inside the directory that was checked — a link planted after
-    any path-based look is an open error, never a read through it. Without a
-    handle (Windows) the open is path-based, best effort, by the predicate."""
+    any path-based look is an open error, never a read through it — and
+    ``O_NONBLOCK``, so a FIFO planted there (no writer: a blocking open never
+    returns) opens at once and is classified by the caller's ``fstat``. Without
+    a handle (Windows) the open is path-based, best effort, by the predicate."""
     if dir_fd is None:
         return os.open(str(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
-    return os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    return os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
 
 
 def _load_segment(
@@ -937,6 +940,8 @@ def _load_segment(
         raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
     try:
         info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):  # a directory/FIFO/device standing where a segment is named
+            raise UsageLedgerCorrupt(f"usage archive segment is not a regular file: {path}")
         fingerprint = (info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns)
         now = time.time()
         cached = _SEGMENT_CACHE.get(key)
@@ -955,6 +960,8 @@ def _load_segment(
                 break
             chunks.append(chunk)
         payload = b"".join(chunks)
+    except OSError as exc:  # the CPL-5 sweep maps typed corruption to UNKNOWN; a bare OSError escapes it
+        raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
     finally:
         os.close(fd)
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
@@ -993,15 +1000,21 @@ def _no_newer_archived_epoch(
     is read from its CONTENT, never from its name.
 
     The scan runs in the directory the chain was walked in — through the held
-    ``dir_fd`` on POSIX, so a directory swapped after the walk cannot hide a
-    generation from it; by path elsewhere. An entry the scan cannot list, open
-    or read is typed corruption: the scan did not complete, so the history
-    question is UNKNOWN. One generation newer is the legal case, not
+    ``dir_fd`` on POSIX, entries opened relative to it, so a directory swapped
+    after the walk cannot hide a generation from it; by path elsewhere. An
+    entry the scan cannot list, open or read is typed corruption: the scan did
+    not complete, so the history question is UNKNOWN. An entry that opens but
+    is not a regular file (a stray directory, a FIFO) is no segment — segments
+    are regular files by construction, no generation lives there — and is
+    skipped, not corruption. One generation newer is the legal case, not
     tampering: a pass that lost the snapshot race, or died before its swap,
     leaves a segment holding THIS generation's bytes — its embedded leading
-    row IS the live header. A first row that reads but does not parse is a
-    torn segment from a crashed write: no evidence of any generation, left to
-    the walk, which verifies every segment the answer actually depends on.
+    row IS the live header (so a rollback that restores the previous
+    generation VERBATIM is admitted too: the same power as truncating the live
+    tail, and it hides no id from the join). A first row that reads but does
+    not parse is a torn segment from a crashed write: no evidence of any
+    generation, left to the walk, which verifies every segment the answer
+    actually depends on.
     """
     live_epoch = int(live_header.get("compaction_epoch") or 0)
     directory = root / ARCHIVE_SEGMENT_DIR_REL
@@ -1011,9 +1024,12 @@ def _no_newer_archived_epoch(
                 continue
             fd = _open_archive_entry(directory / name, dir_fd)
             try:
-                first = os.read(fd, 1 << 16).split(b"\n", 1)[0]
+                regular = stat.S_ISREG(os.fstat(fd).st_mode)
+                first = os.read(fd, 1 << 16).split(b"\n", 1)[0] if regular else b""
             finally:
                 os.close(fd)
+            if not regular:
+                continue
             try:
                 row = json.loads(first.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -1051,10 +1067,10 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     anchors it: no segment on disk may carry a generation newer than the live
     stamp except an uncommitted orphan of the live generation itself.
     Segments are immutable, so per-segment reads and the union over a given
-    chain are cached. An unreadable, hash-mismatched, mis-stepped, cyclic or
-    out-anchored chain raises ``UsageLedgerCorrupt`` — the CPL-5 reverse sweep
-    must treat that as its existing UNKNOWN / skip-pass state, never as
-    evidence of an orphan."""
+    chain are cached. An unreadable (or not-a-regular-file), hash-mismatched,
+    mis-stepped, cyclic or out-anchored chain raises ``UsageLedgerCorrupt`` —
+    the CPL-5 reverse sweep must treat that as its existing UNKNOWN /
+    skip-pass state, never as evidence of an orphan."""
     root = pathlib.Path(_drive_root(root))
     live_header = _live_baseline_header(root)
     # POSIX holds the archive directory handles for the WHOLE question: the
