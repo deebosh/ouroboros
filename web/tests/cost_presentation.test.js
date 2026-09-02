@@ -122,6 +122,14 @@ test('a bare per-round cost_usd delta is NOT task cost (v6.82 P1)', () => {
     // evidence — so it must render nothing and produce no sticky projection.
     assert.deepEqual(taskCostMeta({ cost_usd: 0.03 }), []);
     assert.equal(taskCostProjection({ cost_usd: 0.03 }, '2026-07-29T00:00:00Z'), null);
+    // Nor is a frame that merely carries the NAMES: chat.js `costMetaKeys`
+    // materializes all twelve as own properties valued `undefined`, and a key
+    // without a value is not accounting evidence.
+    assert.deepEqual(taskCostMeta({
+        cost_usd: undefined, accounted_upper_bound_usd: undefined,
+        cost_accounting_status: undefined, cost_final: undefined,
+        unknown_unmetered: undefined, reserved_usd: undefined,
+    }), []);
     // Task-scope frames (subagent progress_meta shape) still qualify.
     const projection = taskCostProjection({
         cost_usd: 0.12,
@@ -309,6 +317,12 @@ test('one precedence rule: the deprecated alias wins a diverged pair, in every r
     // The additive name alone still reads (a producer that only writes it).
     assert.equal(accountedUpperBound({ accounted_upper_bound_usd: 9 }), 9);
     assert.equal(accountedUpperBound({}), null);
+    // ABI-3: a browser producer literal materializes the retired name as an own
+    // property valued `undefined`. That is a key the wire never carried, not a
+    // diverged pair — so the honest name is read. An explicit `null` IS present
+    // and still wins (Python parity with `old in src`).
+    assert.equal(accountedUpperBound({ cost_usd: undefined, accounted_upper_bound_usd: 9 }), 9);
+    assert.equal(accountedUpperBound({ cost_usd: null, accounted_upper_bound_usd: 9 }), null);
     assert.equal(accountedUpperBoundWithChildren(
         { cost_usd_with_children: 2, accounted_upper_bound_usd_with_children: 7 }), 2);
 });

@@ -211,6 +211,7 @@ BAND_PATHS = {
     "web/modules/reviewer_slots.js": "Owner-approved 5A editor: per-row Direct model / Configured subagent source picker with read-only derived disclosure replaces the legacy Claude-SDK advisory input in the same module that owns reviewer-row editing.",
     "web/modules/settings.js": None,
     "web/modules/widgets.js": None,
+    "web/tests/chat_instance_dom.test.js": "Entered the band from 1000 lines with the alias-free subagent cost pin (stage-2 fix wave): that regression reproduces only through the real createChatInstance card path, and this file owns the DOM harness that drives it; split when the next createChatInstance face lands.",
     "web/tests/harness_login_cards.test.js": "Login-card suite grew past 1000 lines with the name-the-account face cases (agy pickup, issue #232); split when the next face lands.",
     "web/tests/review_presentation.test.js": "Review Checkpoint lifecycle and verdict reconciliation remain covered by one focused presentation suite.",
 }
