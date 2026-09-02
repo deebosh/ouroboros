@@ -7667,3 +7667,66 @@ Three read-only lenses on the 5.4 delta: NEEDS_FIXES × 3, no HIGH (3 MEDIUM, 7 
 3. **R3 stamp-less symlink levels (LOW) — fixed**, pin deferred (suite at its 1600-line cap; mutation-verified by hand). **R5 witness inode tie + `_Abort` on a vanished ledger (LOW) — fixed**, no pin (disclosed). **R6 heartbeat-ownership pin (LOW) — disclosed, not fixed.** **R1 uncached unprobeable directory, R7 shared liveness primitive, R8d epoch-floor duration, R8e socket shape (LOW) — docs corrected** in DESIGN §8/§10/§12.5, packet §5.9/§5.10/§9/§10, ARCHITECTURE row.
 
 Gates at the close-out tip: `tests/test_lockfile_helpers.py` + `tests/test_usage_compaction.py` + `tests/test_usage_*` + `tests/test_persistence_inventory.py` rc 0 (107 passed, 1 skipped Windows-only); `ruff --select F` rc 0; `scripts/check_domains.py` rc 0; `scripts/regenerate_size_ratchet.py --check` rc 0 (`platform_layer.py` 1500, `tests/test_usage_compaction.py` 1600 — both AT their ceilings); `git diff --check` rc 0. The CI-shape battery and `-m serial` run on the integration tree after the lane merges.
+
+## From the stage-2 fix wave, lane docs-truth (base 9faccf31)
+
+Nine documentation and generated-report defects the stage-2 review verified on
+the integration tree. Every one is pinned red-first: the pin was run against
+the pre-fix shape of its own subject (working tree reverted per file, or the
+pre-fix commit range for the whitespace gate) and shown red before the fix.
+
+| # | defect (pre-fix state) | red-first witness | disposition |
+|---|---|---|---|
+| 1 | `docs/ARCHITECTURE.md` — README calls it the full component map, but 24 tracked runtime modules had no row: `_usage_response`, `context_mode_compat`, `credential_shapes`, `delegate_custody_usage`, `evolution_fingerprint`, `gateway/onboarding_host`, `gateway/task_events`, `marketplace/install_specs`, `review_actor_aggregation`, `review_session_usage`, `review_thread_continuity`, `settings_integrity`, `skill_owner_attestation`, `tools/{compact_context,control_delegation,evolution_stats,knowledge,memory_tools,plan_review_artifacts,search,tool_discovery}`, `transport_custody`, `version`, `supervisor/subagent_task_truth` | `test_docs_sync.py::test_architecture_component_map_covers_every_live_runtime_module` on the pre-row document: AssertionError naming exactly those 24 paths | **fixed** — a row each, written from the module docstring and its callers (purpose, data flow, facade relation), placed under its real package next to its domain neighbours (`ouroboros/domains.toml` used for the owner). No module was judged deliberately private, so the pin was NOT weakened |
+| 2 | `ARCHITECTURE.md` deep-review row promised an atlas retry "once with the compact manifest", which `deep_self_review.py` explicitly removed (compact IS the default; there is no fuller form to fall back from) | `…::test_architecture_deep_review_has_no_compact_manifest_retry_rung`: red on `retries once with the compact manifest` | **fixed** — the row now states the no-retry rule and the P3 no-pack outcome; the distinct final-shrink rebuild (`hard_budget_reduction`, still live) stays described |
+| 3 | Default-settings table skipped two live `SETTINGS_DEFAULTS` keys: `OUROBOROS_CONTEXT_MODE_AUTO_LOW`, `OUROBOROS_CLAWHUB_REGISTRY_URL` | `…::test_settings_docs_name_every_key_owner_and_what_startup_persists`: red at `OUROBOROS_CONTEXT_MODE_AUTO_LOW is missing from the settings table` | **fixed** — a row each, keyed to their real consumers (`config.get_owner_context_mode` provenance rule; `config.get_clawhub_registry_url` normalization, with the callers' host allowlists named so the row is not read as an authorization) |
+| 4 | Two places said server startup "persists nothing", while the lifespan's `load_settings()` runs `context_mode_compat.normalize_and_persist_context_mode_compat`, which rewrites the compat pair under a held lock (topology line 19 and the settings-write section) | same pin: red on `boot provider normalization in-process and persists nothing` | **fixed** — both places now say that no provider decision is persisted AND that the one write startup can make is the compat-pair migration inside the read seam (raw mapping plus the pair, lock-held, warn-and-retry otherwise). The document's two other "persists nothing" statements (onboarding failure path, no-change owner transform) are true and were left alone — the pin is phrase-scoped for that reason |
+| 5 | `README.md`, the `DEVELOPMENT.md` numeric-timeout checklist item and ARCHITECTURE invariant 3 assigned settings/defaults ownership to the `config.py` facade after the v7next split moved the vocabularies into leaves | same pin: red on the README `exact settings and defaults live in` clause, on the DEVELOPMENT `an SSOT in \`config.py\` \`SETTINGS_DEFAULTS\`` clause, and on invariant 3 not naming the owners | **fixed** — all three now point at `settings_defaults` / `settings_scales` / `model_slots` / `review_model_routes` / `runtime_limits` / `settings_integrity` with `config.py` kept as the one import surface. Note on the review's line numbers: `DEVELOPMENT.md:2074-2076` is the provider-failure checklist on this base; the actual carrier is the numeric-timeout SSOT item (`:2103`), and `ARCHITECTURE.md:2956` already described the five-leaf family correctly |
+| 6 | `docs/v7next/DESIGN_MODEL_VISIBLE_LOGGED.md` still opened "DESIGN ONLY … code lands in a later lane" and its §3.2 still demanded a fail-closed dispatch refusal on a reconstruction mismatch, against the landed observability-only contract | `…::test_model_send_design_note_matches_the_landed_observability_contract`: red on `Status: DESIGN ONLY` (and on the `PhysicalAttemptPreparationFailed` clause) | **fixed** — status names the landed module, its wiring and its pins; §3.2 states the observability rule and why fail-closed was rejected on its merits (a record defect must not stop a paid, otherwise-correct call, and the candidate fact keeps its unchanged fail-closed refusal above the call); the stale "gap the implementation must close" paragraph is retired |
+| 7 | `ARCHITECTURE.md` §11.4 "Recent ABI Retirements" ended at `5.25.0-rc.4` — no ABI 7.0 entry at all | `…::test_recent_abi_retirements_section_carries_the_abi_70_window`: red on `**ABI 7.0**` absent from the section | **fixed** — one entry summarising the window from the ADOPTION rows ABI-1..ABI-10, including the pre-upgrade migration note for the reviewer comma-list keys, `scripts/rc_audit.py` as the executable note, and the explicit statement that the handler ABI (ABI-8) is NOT in it. Membership of `RETIRED_SETTING_KEYS` is deliberately delegated to the tuple instead of claimed exhaustively in prose |
+| 8 | `ouroboros/domains.toml` and `docs/DOMAIN_MAP.md` were reachable from neither `DEVELOPMENT.md` nor `README.md`, so a contributor met the domain gate only as a red run | `…::test_the_domain_manifest_is_reachable_from_the_handbook`: red on `DEVELOPMENT.md never mentions ouroboros/domains.toml` | **fixed** — the handbook's Role-and-authority section names the manifest as the module→domain SSOT, the map as its generated projection, `scripts/check_domains.py --write` as the one regeneration for both, the witness report, and that a new cross-domain direction is an owner decision rather than a manifest edit |
+| 9 | `scripts/v7next_domain_report.py` wrote `"\n".join(L) + "\n"` over a list whose last element is a section separator `""`, so the report ended with a blank line and the whitespace gate was red; the committed report was also bound to HEAD `5187fcdc` / 488 modules / 80 `proposed` / a domains.toml sha that no longer exists | `git diff --check f3fbfdbb..HEAD` → `docs/v7next/DOMAIN_QUOTIENT_REPORT.md:1966: new blank line at EOF`, plus `…::test_the_domain_quotient_report_ends_without_a_blank_line` red on the committed artifact | **fixed** — the generator drops trailing separators and writes exactly one newline; the report is regenerated as the current witness (509 modules, 0 proposed, manifest drift none, 1614 module edges / 164 domain edges / 1 cycle group). `git diff --check f3fbfdbb..HEAD` is now rc 0 |
+
+Disclosed, not fixed:
+
+1. `docs/v7next/DESIGN_USAGE_COMPACTION.md` §10 still calls CPL-5's
+   implementation "not yet landed on this base". That was true on the C6 lane
+   base and is stale on this tip (`ouroboros/model_send_seal.py` is wired and
+   swept). It is the same class as item 6 but was not in this lane's verified
+   item list, so it is reported rather than edited: a one-line parenthetical an
+   owner can sanction.
+2. `docs/CHECKLISTS.md` is untouched by instruction (protected; its two stale
+   sentences are an owner question).
+
+Rejected: none. Every item reproduced on the tree exactly as the review
+described it, apart from the two line-number drifts noted in row 5.
+
+Gate evidence (this host, a fresh isolated env root plus private `TMPDIR` per
+invocation, `~/ouro/venv` python; `git rev-parse HEAD` verified unmoved after
+every pytest run; author and committer
+`Ouroboros <311266734+ouroboros-agent@users.noreply.github.com>` on all seven
+commits; no push), each as its own command with its rc printed:
+
+- `tests/test_docs_sync.py` rc 0 (15 passed) — run after every item, and per
+  item against the reverted subject to show the red first;
+- `tests/test_architecture_facts.py tests/test_docs_sync.py
+  tests/test_doc_context.py tests/test_packaging_sync.py
+  tests/test_domain_manifest.py tests/test_model_send_seal.py
+  tests/test_legacy_timeout_retirement.py tests/test_skip_tests_doc_only.py
+  tests/test_public_site_metadata.py` rc 0 (160 passed, `-n 6`);
+- `tests/test_smoke.py tests/test_context_layout.py tests/test_context.py
+  tests/test_repo_read_limits.py tests/test_settings_read_seam.py
+  tests/test_release_proof.py tests/test_contracts.py` rc 0 (`-n 6`);
+- `ruff check . --select F` rc 0; `scripts/check_domains.py` rc 0 (no manifest
+  row moved, so no `--write` commit was needed);
+  `scripts/regenerate_inventories.py --check` rc 0 (no inventory changed);
+  `scripts/regenerate_size_ratchet.py --check` rc 0
+  (`ouroboros/utils.py`, `ouroboros/platform_layer.py` and
+  `tests/test_usage_compaction.py` untouched at their caps);
+  `scripts/v7next_adoption.py` rc 0 and `--release` rc 0 (37 rows, unchanged);
+  `git diff --check` rc 0, `git diff --check 9faccf31..HEAD` rc 0 and
+  `git diff --check f3fbfdbb..HEAD` rc 0.
+
+Not run for this lane: the CI-shape battery and the `-m serial` pass. The
+delta is documentation, one generated report, one report-only generator write
+and one test module; no runtime module changed.
