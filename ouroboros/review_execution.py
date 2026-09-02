@@ -120,6 +120,25 @@ def _poll_detail(gateway: Any, run_id: str, seconds: float) -> Dict[str, Any]:
         return bounded_poll(gateway, run_id, seconds, strict=True)
     return expiring_poll(gateway, run_id, strict=True) or {}
 
+_DELIVERY_RANK = {"api_chat": 0, "native_tool_rounds": 1, "agent_session": 2}
+
+
+def slot_delivery(slot: Any) -> str:
+    """The delivery a slot runs on — `api_chat` (packet), `native_tool_rounds`
+    (an api row bound to a configured subagent) or `agent_session` — the same
+    names the executors stamp on actor usage."""
+    if getattr(slot, "route", None) is ReviewRouteKind.AGENT_SESSION:
+        return "agent_session"
+    return "native_tool_rounds" if getattr(slot, "retrieves", False) else "api_chat"
+
+
+def panel_delivery_class(slots: Any) -> str:
+    """A panel's pacing class is its slowest delivery (owner R16): a session
+    panel is paced by session wall clock, a native one by native wall clock,
+    a pure packet panel as before; an empty panel is a packet panel."""
+    return max((slot_delivery(slot) for slot in slots or ()), key=_DELIVERY_RANK.__getitem__, default="api_chat")
+
+
 # Policy keys a retrieving executor consumes itself (`review_native_episode`,
 # `AgentSessionReviewExecutor`); the rendered Policy JSON omits them so the api
 # pack states the review contract once, in its governance segment.

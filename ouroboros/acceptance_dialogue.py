@@ -1072,15 +1072,17 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     # cannot fit the remaining root budget is declined up front as a terminal
     # DEGRADED (no-quorum semantics) instead of dying mid-wave. Route-aware: a
     # session row rides the owner's subscription, not API money, so it is not
-    # priced; a native row IS paid API, estimated as one episode send of its
-    # work order (its rounds are unknown up front); a packet row renders its
-    # REAL message pair. The rare second physical attempt is not multiplied
-    # in — fail-open coarse filter, no reservation.
-    from ouroboros.review_execution import ReviewRouteKind
+    # priced; a native row IS paid API — rounds × the price of a send of its
+    # work order, the rounds sized from this tree's observed native panels
+    # (R16; one send before any history); a packet row renders its REAL
+    # message pair. The rare second physical attempt is not multiplied in —
+    # fail-open coarse filter, no reservation.
+    from ouroboros.review_execution import ReviewRouteKind, panel_delivery_class, slot_delivery
     from ouroboros.tools.review_helpers import review_wave_budget_gate
 
     paid = [slot for slot in slots if getattr(slot, "route", None) is not ReviewRouteKind.AGENT_SESSION]
     if paid:
+        rounds = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
         try:
             from ouroboros.review_substrate import _messages_char_count, _request_messages
 
@@ -1095,7 +1097,8 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
         _admission = review_wave_budget_gate(
             ctx.tools._ctx,
             surface="task_acceptance",
-            models=[getattr(slot, "model", "") for slot in paid],
+            models=[getattr(slot, "model", "")
+                    for slot in paid for _ in range(rounds if getattr(slot, "retrieves", False) else 1)],
             prompt_chars=_prompt_chars,
         )
         if _admission is not None:
@@ -1125,7 +1128,15 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
 
         # A panel that just cost money says what bounded it and how many the tree
         # has bought: "21 paid panels" was invisible until someone summed receipts.
+        # It also names the deliveries it ran on and the native rounds it took, so
+        # pacing sizes the NEXT panel of the same class (R16), not a mixed average.
         _cap = review_max_cycles()
+        _deliveries = [slot_delivery(slot) for slot in slots]
+        _native_rounds = sum(
+            int(actor["usage"].get("native_rounds") or 0)
+            for actor in (getattr(result, "actors", None) or [])
+            if isinstance(actor, dict) and isinstance(actor.get("usage"), dict)
+        )
         append_jsonl(
             task_pacing.acceptance_timing_events_path(ctx.tools._ctx),
             {
@@ -1133,6 +1144,10 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                 "type": "task_acceptance_review_timing",
                 "task_id": str(ctx.task_id),
                 "duration_sec": duration_sec,
+                "delivery": panel_delivery_class(slots),
+                "deliveries": _deliveries,
+                "native_rounds": _native_rounds,
+                "native_rows": _deliveries.count("native_tool_rounds"),
                 "pass_index": ctx.passes_done,
                 "aggregate_signal": str(result.aggregate_signal or ""),
                 "effective_max_cycles": "unlimited" if _cap is None else _cap,

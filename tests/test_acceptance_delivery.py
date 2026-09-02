@@ -578,3 +578,83 @@ def test_replayed_panel_keeps_the_delivery_it_actually_ran_on(monkeypatch, tmp_p
     _cache, prior = _prior_acceptance_run(ctx.tools._ctx, ctx.llm_trace, ctx.review_binding["binding_hash"])
     assert prior is record and prior["actors"][0]["usage"]["delivery"] == "native_tool_rounds"
     assert len(llm.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Delivery-aware pacing (R16).
+# ---------------------------------------------------------------------------
+
+
+def _timing(events, **row):
+    from ouroboros.utils import append_jsonl
+
+    append_jsonl(events, {"type": "task_acceptance_review_timing", **row})
+
+
+def test_pacing_estimate_follows_the_configured_panels_delivery_class(structured_env, tmp_path):
+    from ouroboros import task_pacing
+
+    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
+    events = task_pacing.acceptance_timing_events_path(ctx)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    _timing(events, duration_sec=100)                                   # pre-R16 row: a packet panel
+    _timing(events, duration_sec=100, delivery="api_chat")
+    _timing(events, duration_sec=900, delivery="agent_session")
+    _timing(events, duration_sec=300, delivery="native_tool_rounds")
+    # The mixed triad's slowest delivery is the session: paced by session wall clock.
+    assert task_pacing.acceptance_panel_delivery(ctx) == "agent_session"
+    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1) == 1350.0
+    # A packet-only triad ignores the session and native history (EWMA 100 → floor).
+    structured_env.setenv(REVIEWER_SLOTS_ENV, json.dumps({**_TRIAD, "triad": [_TRIAD["triad"][0]]}))
+    assert task_pacing.acceptance_panel_delivery(ctx) == "api_chat"
+    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1) == 200.0
+    # An explicit class, a class without history, the first pass, a malformed panel.
+    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="native_tool_rounds") == 450.0
+    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="unknown") == 200.0
+    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=0) == 200.0
+    structured_env.setenv(REVIEWER_SLOTS_ENV, "{broken")
+    assert task_pacing.acceptance_panel_delivery(ctx) == "api_chat"
+    # Native rounds: none observed → one send; observed → per-row EWMA, rounded up.
+    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 1
+    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=6, native_rows=1)
+    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=6, native_rows=2)
+    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 5  # ewma(6, 3) = 4.5 → 5
+
+
+def test_timing_event_names_the_deliveries_and_the_native_rounds(monkeypatch, tmp_path):
+    from ouroboros import loop as loop_mod
+    from ouroboros import task_pacing
+    from ouroboros.utils import iter_jsonl_objects
+
+    _offline_env(monkeypatch, _ROW_API, _ROW_NATIVE)
+    governance, workspace = _roots(tmp_path)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 2)
+    _real_panel(monkeypatch, llm)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    assert loop_mod._execute_task_acceptance_panel(ctx).aggregate_signal == "PASS"
+    (event,) = [e for e in iter_jsonl_objects(task_pacing.acceptance_timing_events_path(ctx.tools._ctx))
+                if e.get("type") == "task_acceptance_review_timing"]
+    assert event["delivery"] == "native_tool_rounds"
+    assert event["deliveries"] == ["api_chat", "native_tool_rounds"]
+    assert event["native_rounds"] == 1 and event["native_rows"] == 1 and event["duration_sec"] > 0
+
+
+def test_wave_gate_prices_a_native_row_by_its_observed_rounds(structured_env, tmp_path):
+    import ouroboros.review_substrate as rs
+    from ouroboros import loop as loop_mod, task_pacing
+    from ouroboros.tools import review_helpers
+
+    gate_calls = []
+    structured_env.setattr(
+        rs, "run_review_request", lambda request, **kw: SimpleNamespace(aggregate_signal="PASS", actors=[]))
+    structured_env.setattr(review_helpers, "review_wave_budget_gate", lambda _ctx, **kw: gate_calls.append(kw))
+    governance, workspace = _roots(tmp_path)
+    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
+                          workspace_root=str(workspace), workspace_mode="project")
+    events = task_pacing.acceptance_timing_events_path(ctx.tools._ctx)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    _timing(events, duration_sec=40, delivery="native_tool_rounds", native_rounds=6, native_rows=1)
+    loop_mod._execute_task_acceptance_panel(ctx)
+    (kw,) = gate_calls
+    assert kw["models"] == ["openai/gpt-5.6-luna"] + ["openai/gpt-5.6-terra"] * 6

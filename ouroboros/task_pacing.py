@@ -20,6 +20,7 @@ Design contract (owner-decided, sprint v6.55):
 from __future__ import annotations
 
 import logging
+import math
 import pathlib
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -145,13 +146,56 @@ def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
     return normalize_budget_profile(profile)
 
 
-def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0) -> float:
+def _acceptance_timing_events(ctx: Any):
+    """The canonical ``task_acceptance_review_timing`` rows (bounded tail read)."""
+    try:
+        events_path = acceptance_timing_events_path(ctx)
+    except (TypeError, OSError, ValueError):
+        return
+    for event in iter_jsonl_objects(events_path, max_entries=4000, tail_bytes=8_000_000):
+        if str(event.get("type") or "") == _ACCEPTANCE_TIMING_EVENT:
+            yield event
+
+
+def _ewma(values: Any) -> Optional[float]:
+    """EWMA (alpha 0.5) over positive numbers; None when nothing positive was seen."""
+    ewma: Optional[float] = None
+    for raw in values:
+        try:
+            value = float(raw or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0.0:
+            ewma = value if ewma is None else (
+                _ACCEPTANCE_REVIEW_EWMA_ALPHA * value + (1.0 - _ACCEPTANCE_REVIEW_EWMA_ALPHA) * ewma)
+    return ewma
+
+
+def acceptance_panel_delivery(ctx: Any) -> str:
+    """The delivery class of the acceptance panel that WILL run: the configured
+    triad rows' slowest delivery. A malformed configuration refuses the panel
+    typed, so it is paced as the legacy packet panel."""
+    del ctx  # the configuration is process-wide; the argument keeps the call site honest
+    try:
+        from ouroboros.review_execution import panel_delivery_class
+        from ouroboros.reviewer_slot_config import triad_delivery_slots
+
+        return panel_delivery_class(triad_delivery_slots())
+    except Exception:
+        return "api_chat"
+
+
+def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: str = "") -> float:
     """Return the review-time reservation reconstructed from existing events.
 
     The first review reserves 200 seconds.  Later reviews use
-    ``max(200, 1.5 * EWMA)`` with alpha 0.5.  The existing
-    ``OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC`` value remains the initial estimate
-    and a floor; no additional timing database is introduced.
+    ``max(200, 1.5 * EWMA)`` with alpha 0.5 over panels of the SAME delivery
+    class (owner R16, 2026-09-01): a session panel is paced by session wall
+    clock, a native-episode panel by native wall clock, a packet panel as
+    before; events without a recorded class are pre-R16 packet panels. The
+    class defaults to the configured panel's (``acceptance_panel_delivery``).
+    The existing ``OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC`` value remains the
+    initial estimate and a floor; no additional timing database is introduced.
     """
     configured = max(
         _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC,
@@ -159,29 +203,25 @@ def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0) -> float:
     )
     if passes_done <= 0:
         return configured
-    try:
-        events_path = acceptance_timing_events_path(ctx)
-    except (TypeError, OSError, ValueError):
-        return configured
-    ewma: Optional[float] = None
-    for event in iter_jsonl_objects(
-        events_path, max_entries=4000, tail_bytes=8_000_000,
-    ):
-        if str(event.get("type") or "") != _ACCEPTANCE_TIMING_EVENT:
-            continue
-        try:
-            duration = float(event.get("duration_sec") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if duration <= 0.0:
-            continue
-        ewma = duration if ewma is None else (
-            _ACCEPTANCE_REVIEW_EWMA_ALPHA * duration
-            + (1.0 - _ACCEPTANCE_REVIEW_EWMA_ALPHA) * ewma
-        )
-    if ewma is None:
-        return configured
-    return max(configured, 1.5 * ewma)
+    wanted = str(delivery or "").strip() or acceptance_panel_delivery(ctx)
+    ewma = _ewma(
+        event.get("duration_sec") for event in _acceptance_timing_events(ctx)
+        if str(event.get("delivery") or "api_chat") == wanted
+    )
+    return configured if ewma is None else max(configured, 1.5 * ewma)
+
+
+def acceptance_native_rounds_estimate(ctx: Any) -> int:
+    """Rounds ONE native inspection row is expected to take (owner R16: native
+    cost is rounds × the price of a send): the EWMA of observed per-row rounds
+    from the same timing events, at least 1 — the first native panel is priced
+    as one send, and a run that read more re-prices the next wave."""
+    ewma = _ewma(
+        float(event.get("native_rounds") or 0) / max(1, int(event.get("native_rows") or 1))
+        for event in _acceptance_timing_events(ctx)
+        if str(event.get("delivery") or "") == "native_tool_rounds"
+    )
+    return 1 if ewma is None else max(1, math.ceil(ewma))
 
 
 def acceptance_timing_events_path(ctx: Any) -> pathlib.Path:
