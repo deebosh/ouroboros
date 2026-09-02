@@ -2818,13 +2818,14 @@ The local `ouroboros-stable` ref is also a recovery fallback maintained by expli
 
 ### CI topology
 
-`.github/workflows/ci.yml` has 13 jobs in three trust tiers:
+`.github/workflows/ci.yml` has 13 jobs, grouped by trigger and secret exposure:
 
 | Tier | Jobs | Trust boundary |
 |---|---|---|
-| Fork-safe PR | `quick-test`, `full-test`, `marker-guards`, `ui-smoke`, `docker-ui-smoke`, `docker-portable-test` | read-only, no provider secrets, never `pull_request_target`; no scheduled paid run |
-| Trusted branch/dispatch | `betterleaks-platform-smoke`, `integration-test`, `skill-smoke` | provider secrets on `main`/`ouroboros`/`ouroboros-stable` pushes, manual runs, and tags only |
-| Release chain | `release-preflight` (needs full + integration) → `build` → `release`; `vendor-package-smoke` stays informational | tag-triggered; a reproducible provider-contract failure blocks tag builds, a typed inconclusive provider outage does not |
+| Fork-safe PR validation | `quick-test`, `betterleaks-platform-smoke` | `ouroboros` pushes, pull requests into `ouroboros`, manual runs; read-only, no provider secrets, never `pull_request_target` |
+| Stable/tag matrix | `full-test` (no secrets), `skill-smoke` (`OPENROUTER_API_KEY`) | `ouroboros-stable` pushes, manual runs, `v*` tags — never pull requests |
+| Trusted provider run | `integration-test` | provider secrets; `main`/`ouroboros`/`ouroboros-stable` pushes and manual runs only — never pull requests |
+| Tag-only gates and release chain | `marker-guards`, `ui-smoke`, `docker-ui-smoke`, `docker-portable-test` (manual runs or tags, no secrets); `release-preflight` (needs `full-test` + `integration-test`) → `build` (signing secrets) → `release` (needs `build`, `release-preflight`, `skill-smoke` and the four tag-only gates); `vendor-package-smoke` needs `build` and stays informational | tag-triggered; a reproducible provider-contract failure blocks tag builds, a typed inconclusive provider outage does not |
 
 Quick and full jobs each run a dedicated blocking `size_ratchet` pytest step — the ONLY enforcing surface for the repository size gates (local runs exclude the marker and warn): manifest exactness on the tip plus the pairwise shrink-only transition against the event base in `OURO_SIZE_RATCHET_BASE_REF`; an unresolvable base degrades to the tip's parent manifest verified against the parent's own tree — never a skip — while a resolvable base without a manifest fails closed. Both jobs also run the browser-module suite (`cd web && node --test tests/*.test.js`), the same node lane the hermetic commit gate executes through `ouroboros/preflight_node.py`. Secret-bearing skill review runs before any step that imports downloaded plugin code — untrusted payload code must never share a process with provider credentials — and a missing required key is red rather than skipped.
 
