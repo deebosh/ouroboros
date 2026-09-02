@@ -781,7 +781,11 @@ def test_packed_incomplete_follows_the_provider_finish_reason(review_repo, revie
     for message, expected in (
         ({"content": "Cut repo", "stop_reason": "max_tokens"}, "output_reserve"),
         ({"content": "Whole repo", "stop_reason": "end_turn"}, "none"),
-        ({"content": "Cut repo", "finish_reason": "length"}, "output_reserve"),  # a message-level finish_reason
+        # Fail-safe for a NON-normalized message shape only: the OpenAI-compatible
+        # normalizer keeps finish_reason in usage (`response_finish_reason`), so a
+        # message-level finish_reason is not a shipped contract — this pins the
+        # arm's fail-safe reading of an unexpected shape, nothing more.
+        ({"content": "Cut repo", "finish_reason": "length"}, "output_reserve"),
     ):
         llm.chat.return_value = (message, {"cost": 0.0})
         with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
