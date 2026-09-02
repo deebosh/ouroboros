@@ -5900,3 +5900,21 @@ continuation; the closing table below records how):
    directly (the `!= 'schedule'` guard is present in the `integration-test`
    block), which is strictly stronger than what the ban bought: the ban would
    have passed a workflow whose schedule existed but whose guard did not.
+
+## Integration evidence for the gates lane (2B/11A) and the finale bookkeeping (base d21806d8)
+
+The 2B safety port (0bf723cc) and the 11A doc-only carve (0ebbfaeb) landed
+without their own gate run (the lane's Bash was read-only); the debt the lane
+disclosed is discharged on the integrated tree: CI-shape non-serial and
+serial batteries green on 0ebbfaeb, E2E W3A 12/12 (S16 re-run on the
+committed carve), and the full 3-OS matrix green on 8b27b507 (run
+33569841899) and on every later tip. Scope-review lane 1 (claude opus-5,
+run-852bb8facb34) also surfaced: the RC auditor's attestation now names the
+removed ``ouroboros.contracts.api_v1`` module; ``supervisor.state`` no longer
+carries a second ``QUEUE_SNAPSHOT_PATH`` (MIGRATION row 1030, D18 -> done);
+the W3A scenario prose is renumbered to the manifest (S14-S17); the WINWAVE
+registry run table carries every matrix run through 33574822693 and R-WINWAVE
+-> done; the ADOPTION notes name the rows that still owe work (D03, CPL-4).
+Left for the owner: ``docs/CHECKLISTS.md`` still cites the removed
+``contracts/api_v1.py`` (protected file) and ``review_model_routes``' typed
+views without production consumers (ABI-4 status).
