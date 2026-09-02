@@ -146,14 +146,15 @@ test('subagent projection keeps identity, compact facts and complete disclosure'
     assert.doesNotMatch(summary.meta.join(' '), /subagent|role=|parent=|root=/);
 });
 
-test('the collapsed activity line is plain text: exactly the renderer\'s markdown inventory', () => {
+test('the collapsed activity line is plain text: the renderer\'s markdown inventory', () => {
     // The expanded timeline renders the same headline through renderMarkdown, so
-    // the compact line strips that inventory and nothing else.
+    // the compact line strips that marker inventory (line by line, over-strip
+    // preferred to a leaked marker).
     assert.equal(plainActivityText('**Planning a network update** I need `git fetch`'),
         'Planning a network update I need git fetch');
     assert.equal(plainActivityText('### Title\n- one\n- two [link](http://x)'), 'Title\none\ntwo link');
     assert.equal(plainActivityText('~~old~~ *new*'), 'old new');
-    assert.equal(plainActivityText('```js\nlet a = 1;\n```'), 'let a = 1;\n');
+    assert.equal(plainActivityText('```js\nlet a = 1;\n```'), 'let a = 1;');
     assert.equal(boundActivityPreview('| a | b |\n|---|---|\n| 1 | 2 |'), 'a b 1 2');
     // Markers-only text keeps its source: an empty projection would flip the
     // reserved activity band's :empty rules on the card.

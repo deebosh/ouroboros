@@ -1073,7 +1073,9 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     assert geometry["title"]["lines"] <= 2.2, geometry
                     assert geometry["activity"]["lines"] <= 2.2, geometry
                     assert geometry["scrollWidth"] <= geometry["clientWidth"] + 1, geometry
-                    assert "$0.42" in named.locator('[data-live-meta]').inner_text()
+                    named_meta = named.locator('[data-live-meta]').inner_text().split()
+                    # Final ledger: the plain amount first, never the open-ledger ceiling.
+                    assert named_meta[:1] == ["$0.42"] and "up" not in named_meta, named_meta
 
                     unnamed_activity = unnamed.locator('[data-live-activity]')
                     assert "Doing things without a name" in unnamed.locator('[data-live-title]').text_content()

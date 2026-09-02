@@ -1047,8 +1047,11 @@ def test_ui_smoke_project_pointer_is_a_main_root_affordance(direct_server_with_d
                 page.wait_for_selector(f"{main_card} .chat-live-bound-pointer", state="attached", timeout=30_000)
                 assert page.locator(f"{main_card} .chat-live-project-name").inner_text().strip() == "Pointer panel"
                 assert page.locator(f"{main_card} .chat-live-project-icon svg").count() == 1
-                with page.expect_response(lambda response: response.url.endswith("/api/ui/preferences") and response.request.method == "POST", timeout=30_000):
-                    page.click('.nav-project-row[data-project-id="ptr-panel"]')
+                page_errors = []
+                page.on("pageerror", lambda exc: page_errors.append(str(exc)))
+                # Positive path: the pointer OPENS its project panel from Main.
+                assert page.locator("#project-panel:not([hidden])").count() == 0
+                page.locator(f"{main_card} .chat-live-bound-pointer").click()
                 page.wait_for_selector("#project-panel:not([hidden])", timeout=30_000)
                 page.wait_for_selector(panel_card, state="attached", timeout=30_000)
                 # Re-apply the bindings now that the panel card exists: it stays pointer-free.
@@ -1062,6 +1065,7 @@ def test_ui_smoke_project_pointer_is_a_main_root_affordance(direct_server_with_d
                 page.wait_for_timeout(400)
                 assert page.locator("#project-panel:not([hidden])").count() == 1
                 assert page.locator(panel_card).count() == 1
+                assert page_errors == [], page_errors
             finally:
                 browser.close()
     except PlaywrightError as exc:

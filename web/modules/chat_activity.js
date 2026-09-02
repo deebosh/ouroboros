@@ -406,11 +406,14 @@ export const COLLAPSED_ACTIVITY_MAX = 240;
 
 /**
  * The collapsed activity line is plain text: the expanded timeline renders the
- * same headline through `renderMarkdown`, so the compact projection strips
- * exactly that renderer's inventory (utils.js) — fences, inline code, bold,
- * emphasis, strikethrough, headings, bullets, links, table pipes — and nothing
- * more. A headline that is nothing but markers keeps its source text: an empty
- * projection would flip the reserved activity band's `:empty` rules.
+ * same headline through `renderMarkdown`, so the compact projection strips that
+ * renderer's marker inventory (utils.js) — fences, inline code, bold, emphasis,
+ * strikethrough, headings, bullets, links, table pipes. It strips line by line
+ * without the renderer's block context, so a stray pipe row or list marker the
+ * timeline would show literally is dropped here too: over-stripping is the
+ * accepted side of that trade, a leaked marker is not. A headline that is
+ * nothing but markers keeps its source text: an empty projection would flip
+ * the reserved activity band's `:empty` rules.
  */
 export function plainActivityText(text = '') {
     const source = String(text || '');
@@ -425,7 +428,8 @@ export function plainActivityText(text = '') {
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
         .replace(/^\|(.+)\|$/gm, (_, row) => row.split('|').map((cell) => cell.trim()).join(' '))
         .replace(/^[\s\-:|]+$/gm, '');
-    return plain.trim() ? plain : source;
+    const trimmed = plain.trim();
+    return trimmed || source;
 }
 
 export function boundActivityPreview(value = '') {
