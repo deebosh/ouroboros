@@ -341,17 +341,33 @@ export function accountedUpperBoundWithChildren(payload) {
     return resolveCostPair(payload, ...COST_ALIAS_PAIRS[1]);
 }
 
+// Longest line renderMarkdown still treats as an ATX heading; a longer `#` line
+// is a paragraph that happens to start with a marker (models emit those). The
+// length is the VISIBLE text: inline tags already rendered and HTML entities
+// count as what the reader sees, not as their markup.
+export const MARKDOWN_HEADING_MAX_CHARS = 80;
+
+function headingOrProse(cls, text) {
+    // Links render later, so their destination is not visible text either.
+    const visible = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/<[^>]*>/g, '').replace(/&[#\w]+;/g, 'x');
+    if (visible.length > MARKDOWN_HEADING_MAX_CHARS) return text;
+    return `<strong class="${cls}">${text}</strong>`;
+}
+
 export function renderMarkdown(text) {
     let html = escapeHtmlText(text);
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-    html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+    // One pass for both span forms: a double-backtick span may contain backticks.
+    html = html.replace(/(``|`)(.+?)\1/g, '<code class="inline-code">$2</code>');
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
     html = html.replace(/~~(.+?)~~/g, '<del>$1</del>');
-    // Header order matters: ### before ## before #.
-    html = html.replace(/^### (.+)$/gm, '<strong class="md-h3">$1</strong>');
-    html = html.replace(/^## (.+)$/gm, '<strong class="md-h2">$1</strong>');
-    html = html.replace(/^# (.+)$/gm, '<strong class="md-h1">$1</strong>');
+    // Header order matters: deeper levels first. Levels 4+ have no own size. A
+    // marker in front of a whole paragraph is not a heading: past the length
+    // cap the marker is dropped and the line stays prose.
+    html = html.replace(/^#{3,6} (.+)$/gm, (_, text) => headingOrProse('md-h3', text));
+    html = html.replace(/^## (.+)$/gm, (_, text) => headingOrProse('md-h2', text));
+    html = html.replace(/^# (.+)$/gm, (_, text) => headingOrProse('md-h1', text));
     html = html.replace(/^- (.+)$/gm, '<span class="md-li">\u2022 $1</span>');
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, text, url) {
         const safe = safeExternalUrl(decodeHtmlEntities(url));

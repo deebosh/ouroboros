@@ -261,6 +261,20 @@ not move them into the migrated set in section 8.
 - An item in a popup menu or a picker list highlights with
   `--menu-item-hover`. One gesture, one fill: a menu that highlights at a
   different strength than the menu beside it reads as a different control.
+- **Content text is always selectable and copyable.** A control may suppress
+  selection (`user-select: none`) only on its own label or chrome, never on
+  content it contains. Where content lives inside a click-to-toggle surface
+  (a task card's summary), the surface ignores a pointer click whose drag
+  produced a non-empty selection; keyboard activation is unaffected.
+- **A markdown heading inside chat is a subsection label**, never a page
+  title: in chat bubbles and in a task card's timeline every heading level
+  renders at `--type-body` semibold (inline, without block margins, in the
+  timeline). The page-size `md-h1` belongs to non-chat surfaces only.
+- **A nested child card is subordinate to its root.** Collapsed, it is one
+  identity row — status chip · `role · model` · notes/toggle — in
+  `--text-secondary` ink at weight 400, with no reserved title or activity
+  lines; its activity and metadata appear only when it is expanded. The root
+  keeps `--text-primary` at weight 500 for its title.
 
 ### List editors
 
@@ -292,7 +306,8 @@ not child-task cards and never prove execution by themselves.
 
 - A collapsed task card shows only a quiet `Reviews N` count, docked on the
   metadata row (it wraps under the metadata on a narrow card), optionally with an
-  active count. It has no aggregate pass/fail alert, no synthesized verdict, and
+  active count; a collapsed nested child card shows it only once expanded, with
+  the rest of its metadata. It has no aggregate pass/fail alert, no synthesized verdict, and
   no review dollars.
 - Expanding `Reviews` reveals one row per currently admitted review group
   (`Skill review`, `Plan review`, or `Task acceptance`). Expanding a group
