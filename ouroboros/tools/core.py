@@ -136,10 +136,12 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     end = min(start + max_raw - 1, total)
     window_lines = lines[start - 1:end]
     window = "".join(window_lines)
-    # ONE line-boundary definition — the `splitlines` lines above (U+2028, a
-    # bare CR, … are line ends too) — serves the rendering, the cursor
-    # arithmetic AND the consumer's bound-cut arithmetic: the end offset of
-    # every window line, in window chars.
+    # ONE line-boundary definition — the `splitlines` lines above (U+2028 and
+    # U+2029 are line ends too; CR/CRLF never reach this renderer from
+    # `read_file`, whose `read_text` opens with universal newlines and so
+    # delivers LF) — serves the rendering, the cursor arithmetic AND the
+    # consumer's bound-cut arithmetic: the end offset of every window line, in
+    # window chars.
     ends: List[int] = []
     for line in window_lines:
         ends.append((ends[-1] if ends else 0) + len(line))

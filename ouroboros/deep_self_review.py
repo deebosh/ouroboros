@@ -698,7 +698,8 @@ def _delivery_incomplete(delivery: str, usage: Dict[str, Any], message: Optional
     """Completeness from the facts each delivery carries: the native episode's
     typed `native_incomplete`; the packed call's provider stop marker — the
     OpenAI-compatible normalizer's `usage["response_finish_reason"] == "length"`
-    or the message's own `finish_reason`, and the direct-Anthropic lane's
+    or the message's own `finish_reason` (fail-safe for a non-normalized
+    message shape — no shipped normalizer authors it), and the direct-Anthropic lane's
     `message["stop_reason"] == "max_tokens"` (the shipped direct default route
     sets no usage finish reason at all) — meaning the report hit the output
     reserve; a session's completeness is not host-observable."""
