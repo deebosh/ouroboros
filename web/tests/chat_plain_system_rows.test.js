@@ -403,8 +403,12 @@ test('render arm order and enhancement guard are pinned in source', () => {
 });
 
 test('chat bubble heading clamp is scoped in style.css', () => {
-    // Owner D5: inside chat bubbles H1 clamps to the section size and H2/H3 to
-    // body size; the global md-h1 page-size rule stays for non-chat surfaces.
-    assert.match(styleSource, /\.chat-bubble \.message \.md-h1 \{\n\s+font-size: var\(--type-section\);\n\}/);
-    assert.match(styleSource, /\.chat-bubble \.message \.md-h2,\n\.chat-bubble \.message \.md-h3 \{\n\s+font-size: var\(--type-body\);\n\}/);
+    // Inside chat bubbles every markdown heading is a subsection label at body
+    // size (DESIGN.md §2); the global md-h1 page-size rule stays for non-chat
+    // surfaces, and the live-card timeline carries its own inline clamp.
+    assert.match(styleSource, /\.chat-bubble \.message \.md-h1,\n\.chat-bubble \.message \.md-h2,\n\.chat-bubble \.message \.md-h3 \{\n\s+font-size: var\(--type-body\);\n\s+font-weight: 600;\n\}/);
+    assert.match(styleSource, /\.chat-live-line-body \.md-h3 \{\n(\s+[^\n]+\n)*\s+display: inline;/);
+    // The rich bubble renderer demotes h4-h6 to the smallest label so the clamp reaches them.
+    const richSource = readFileSync(new URL('../modules/chat_markdown.js', import.meta.url), 'utf8');
+    assert.match(richSource, /querySelectorAll\('h1, h2, h3, h4, h5, h6'\)[\s\S]{0,160}Math\.min\(Number\(heading\.tagName\.slice\(1\)\), 3\)/);
 });

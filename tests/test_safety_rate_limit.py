@@ -473,7 +473,7 @@ def test_http200_body_transient_that_is_not_429_still_blocks(monkeypatch, tmp_pa
 
 def test_local_fallback_lane_rate_limit_takes_the_audited_fail_open(monkeypatch, tmp_path, _no_backoff):
     """Disclosed nuance: the local-FALLBACK lane keeps its documented fail-open contract
-    (SYSTEM.md case (c)) — a genuine 429 there takes the two-attempt fail-open WITH the
+    (ARCHITECTURE "Safety and runtime mode" case (c)) — a genuine 429 there takes the two-attempt fail-open WITH the
     audit row (a 429 must not be stricter than the RuntimeError beside it), while every
     other error keeps its unchanged one-attempt 'Local safety runtime unreachable'
     warning. Both allow; the remote lanes are the ones that block typed."""

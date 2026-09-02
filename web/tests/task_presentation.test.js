@@ -140,8 +140,8 @@ test('failed child remains a compact local fact without owner-alarm semantics', 
     });
     assert.equal(child.phase, 'error');
     assert.equal(child.terminal, true);
-    assert.match(child.headline, /— Failed$/);
-    assert.doesNotMatch(child.headline, /Issue|Attention|delegated_custody_unreconciled/);
+    // Identity only; the chip carries `Failed` (DESIGN.md §4), the headline never does.
+    assert.equal(child.headline, 'researcher');
     assert.doesNotMatch(child.body, /delegated_custody_unreconciled/);
     assert.match(child.fullBody, /Reason: delegated_custody_unreconciled/);
     assert.equal('ownerAlarm' in child, false);
@@ -163,7 +163,7 @@ test('interrupted child stays retryable with a Working chip and inspectable deta
     assert.equal(child.phase, 'warn');
     assert.equal(child.terminal, false);
     assert.equal(child.visible, true);
-    assert.match(child.headline, /— Working$/);
+    assert.equal(child.headline, 'researcher');
     assert.match(child.fullBody, /transport interrupted; retry remains available/);
     assert.equal(taskPresentation(child.terminal ? child.phase : 'working').headline, 'Working');
     const applyState = chatSource.slice(

@@ -820,7 +820,7 @@ def _rate_limited_outcome(
     attempts: int = 2,
 ) -> Tuple[bool, str]:
     """Terminal outcome of a rate-limited safety check, split by lane. The local-FALLBACK
-    lane keeps its documented fail-open contract (SYSTEM.md case (c): a broken
+    lane keeps its documented fail-open contract (ARCHITECTURE "Safety and runtime mode" case (c): a broken
     chosen-as-fallback local runtime warns instead of blocking every unknown tool) — a
     429 there must not be stricter than the RuntimeError beside it. Every other lane
     blocks with the typed non-verdict outcome below."""
@@ -849,7 +849,7 @@ def _safety_unavailable_blocked(
     call — reporting it as SAFETY_VIOLATION told the agent its own command was unsafe,
     sending it hunting for a "safer" rewording of a benign command. The honest outcome
     keeps `full` mode's owner contract (an unchecked guarded call never executes; the
-    existing fail-open cases stay exactly the SYSTEM.md-documented no-backend three) while
+    existing fail-open cases stay exactly the ARCHITECTURE-documented no-backend three) while
     removing the false accusation: the ⚠️ *_UNAVAILABLE prefix classifies as a plain
     tool ERROR downstream, never as `safety_violation`, and the message itself carries
     the retry contract (P5: the instruction lives with the fact). Disclosed twice: the

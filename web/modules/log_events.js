@@ -234,16 +234,18 @@ export function executorChip(evt) {
     };
 }
 
-function subagentHeadline(sid = '', role = '', label = '', model = '') {
+// The child card's headline is its identity, not its status: `role · model`
+// (or `Subagent · model` when the role is unknown). The status lives in the
+// card's chip, so no ` — Done` suffix, and the short task id is never part of
+// the compact form — chat.js appends it for twins at render time. Logs keep
+// the full diagnostic form (`role · model (id) — status`).
+function subagentHeadline(sid = '', role = '', label = '', model = '', { full = false } = {}) {
     const shortId = String(sid || '').slice(0, 8);
-    const cleanRole = String(role || '').trim();
-    const suffix = label ? ` — ${label}` : '';
+    const cleanRole = String(role || '').trim() || 'Subagent';
+    const suffix = full && label ? ` — ${label}` : '';
     // Show the resolved model compactly NEXT TO the role (e.g. "planning-scout · gemini-3.5-flash").
     const modelPart = compactModel(model) ? ` · ${compactModel(model)}` : '';
-    if (cleanRole) {
-        return `${cleanRole}${modelPart}${shortId ? ` (${shortId})` : ''}${suffix}`;
-    }
-    return `Subagent ${shortId || 'child'}${modelPart}${suffix}`;
+    return `${cleanRole}${modelPart}${shortId && full ? ` (${shortId})` : ''}${suffix}`;
 }
 
 const SUBAGENT_CARD_LABEL = {
@@ -476,7 +478,7 @@ export function summarizeLogEvent(evt) {
             const sid = subagentId(evt);
             const event = String(evt.subagent_event || 'update').toLowerCase();
             const role = String(evt.subagent_role || '').trim();
-            return view(event === 'completed' ? 'done' : event === 'failed' || event === 'rejected' ? 'warn' : 'progress', subagentHeadline(sid, role, event, evt.model), {
+            return view(event === 'completed' ? 'done' : event === 'failed' || event === 'rejected' ? 'warn' : 'progress', subagentHeadline(sid, role, event, evt.model, { full: true }), {
                 body: shortText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240),
                 meta: [
                     sid ? `task=${sid}` : '',
