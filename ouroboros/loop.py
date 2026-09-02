@@ -17,25 +17,31 @@ import logging
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, add_usage
 from ouroboros import task_pacing
 # The acceptance obligations/dialogue/decision machinery moved WHOLE into
-# `acceptance_dialogue.py`; loop.py keeps the fence, checkpoint, panel-execution
-# and message rails. Names unused here are re-exported on purpose: external
-# callers and the acceptance-writer inventory still import them from `loop`.
+# `acceptance_dialogue.py` — obligations, dialogue, paid identity, the host
+# packet and the panel execution; loop.py keeps the fence, checkpoint,
+# run-record and message rails. Names unused here are re-exported on purpose:
+# external callers and the acceptance-writer inventory still import them from `loop`.
 from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
+    _ACCEPTANCE_REVIEW_CHECKLIST,
     ACCEPTANCE_DECISION_REASONS,
     ACCEPTANCE_REASON_UNSPECIFIED,
     _acceptance_dialogue_quorum,
     _apply_task_acceptance_result,
+    _build_host_acceptance_evidence,
     _collect_acceptance_obligations,
     _dispose_obligations_on_clean_pass,
+    _execute_task_acceptance_panel,
     _format_obligations_clause,
+    _latest_agent_acceptance_evidence,
     _mark_agent_acceptance_runs_advisory,
     _open_acceptance_obligations,
     _prior_acceptance_run,
     _set_acceptance_decision,
+    _total_paid_acceptance_cycles,
     acceptance_dialogue_history,
     bind_acceptance_paid_identity,
 )
-from ouroboros.config import adaptive_quorum, get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode, resolve_effort
+from ouroboros.config import get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode
 from ouroboros.outcomes import ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_DELIVERY_CONTROL_DEGRADED, REASON_OWNER_REQUESTED_FINALIZATION, RESULT_INFRA_FAILED, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects
 from ouroboros.observability import new_execution_id
 # Protocol leaf keeps historical names importable at this module's size ceiling.
@@ -1142,30 +1148,6 @@ def _server_web_allowed_by_task(ctx: Any) -> bool:
     return not any(resources.get(name) is False for name in forbidden_names)
 
 
-# The host-forced acceptance-review checklist (module constant for the size
-# gate). v6.60.0 adds the explicit SCOPE-CUT question — a silent/unjustified
-# narrowing is a high-severity finding, which under blocking enforcement
-# becomes a typed obligation.
-_ACCEPTANCE_REVIEW_CHECKLIST = (
-    "Check whether the claimed result follows from the tool trace, "
-    "whether errors/timeouts/artifacts were handled honestly, and "
-    "whether each explicit original requirement was verified through "
-    "the interface/surface the task itself names (not a weaker "
-    "surrogate self-test), and "
-    "whether the final response should be changed before release. "
-    "SCOPE CUTS (v6.60.0): did the agent knowingly narrow the task's scope "
-    "(dropped/limited requirements, simplified formats, skipped inputs)? "
-    "A DISCLOSED, task-justified cut is honest best_effort; an unjustified "
-    "or silent cut is a finding — name it with severity high and a concrete "
-    "recommendation (under blocking enforcement it becomes an obligation). "
-    "Classify the deliverable tier (solved / best_effort / "
-    "blocked_with_evidence) and name the single highest-value change "
-    "that would move it one tier up. If the task asks for a specific "
-    "value or short answer, check the FINAL ANSWER line matches the "
-    "requested format exactly."
-)
-
-
 @dataclass
 class _TaskAcceptanceContext:
     tools: ToolRegistry
@@ -1186,209 +1168,6 @@ class _TaskAcceptanceContext:
     # in loop.py from each real source, fed into the improvement capsule
     # (v6.74.0 A1, owner Q6); the capsule builder never gains ctx.
     rails_line: str = ""
-
-
-def _latest_agent_acceptance_evidence(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
-    """Return the latest validated root self-call packet for host review.
-
-    ``process_tool_results`` records only typed, non-authoritative root
-    deferrals here.  The payload is already bounded and redacted by the shared
-    evidence builder; the host builder will redact it again while assigning the
-    explicit ``agent_supplied`` provenance.
-    """
-    for call in reversed(llm_trace.get("acceptance_evidence_calls") or []):
-        if not isinstance(call, dict):
-            continue
-        if (
-            str(call.get("status") or "") != "deferred_to_host_acceptance"
-            or call.get("authoritative") is not False
-        ):
-            continue
-        evidence = call.get("agent_supplied")
-        if isinstance(evidence, dict):
-            return dict(evidence)
-    return {}
-
-
-def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, Any]:
-    """Build the one bounded host packet shared by binding and reviewer input."""
-    from ouroboros.review_evidence import (
-        UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY,
-        build_task_acceptance_evidence,
-    )
-
-    committed_this_turn = any(
-        isinstance(call, dict)
-        and str(call.get("tool") or "") in ("commit_reviewed", "vcs_commit_reviewed")
-        and str(call.get("status") or "") == "ok"
-        for call in (ctx.llm_trace.get("tool_calls") or [])
-    )
-    evidence = build_task_acceptance_evidence(
-        ctx.tools._ctx,
-        llm_trace=ctx.llm_trace,
-        drive_root=ctx.drive_root,
-        task_id=ctx.task_id,
-        task_type=ctx.task_type,
-        agent_evidence=_latest_agent_acceptance_evidence(ctx.llm_trace),
-        include_recent_commit=committed_this_turn,
-        canonical_subject=str(ctx.content or ""),
-        subtree_statuses=ctx.subtree_statuses,
-    )
-    # Owner Q2A: the forced children_unabsorbed rail stashes the process debt
-    # (undispositioned children) so the panel sees it; part of the binding hash.
-    undecided = getattr(ctx.tools._ctx, "_forced_undispositioned_children", None)
-    if isinstance(undecided, list) and undecided:
-        evidence["undispositioned_children"] = undecided
-    # The dialogue so far, so this panel adjudicates knowing what the previous
-    # ones judged instead of re-raising blind. Bounded here rather than by the
-    # packet budget because it is attached AFTER the builder's budget pass — and
-    # it is the one key `task_acceptance_evidence_revision` excludes, so growing
-    # history can never mint a fresh revision (and thus a fresh paid binding).
-    history = acceptance_dialogue_history(ctx.llm_trace)
-    if history:
-        evidence[UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY] = history
-    return evidence
-
-
-def _total_paid_acceptance_cycles(ctx: _TaskAcceptanceContext) -> Any:
-    """Paid acceptance panels this task TREE has already bought, read from the
-    SAME ledger the wallet claim counts (``claimed_cycles``); ``None`` when the
-    projection is unavailable (a descendant that may observe but not initialize)."""
-    from ouroboros.task_results import project_task_acceptance_review_capacity
-
-    return project_task_acceptance_review_capacity(
-        ctx.tools._ctx, task_id=str(ctx.task_id or ""),
-    ).get("claimed_cycles")
-
-
-def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
-    """Perform the one substantive host panel over the pre-bound evidence."""
-    from ouroboros.review_evidence import task_acceptance_evidence_revision
-    from ouroboros.review_substrate import (
-        HARDNESS_ADVISORY_VISIBLE,
-        ReviewRequest,
-        ReviewRunResult,
-        reviewer_slots,
-        run_review_request,
-    )
-    from ouroboros.review_dispatch import (
-        TaskAcceptanceDispatchUnavailable,
-        bind_task_acceptance_paid_dispatch,
-        run_zero_physical_task_acceptance as _free_dispatch,
-        task_acceptance_preclaim_refusal,
-    )
-
-    evidence = ctx.evidence or _build_host_acceptance_evidence(ctx)
-    slots = reviewer_slots(effort=resolve_effort("review"), role_hint="task acceptance")
-    request = ReviewRequest(
-        surface="task_acceptance",
-        goal=(
-            _extract_plain_text_from_content(ctx.messages[1].get("content"))
-            if len(ctx.messages) > 1 else ""
-        ),
-        subject=str(ctx.content or ""),
-        evidence=evidence,
-        checklist=_ACCEPTANCE_REVIEW_CHECKLIST,
-        policy={
-            "full_output_enters_context": False,
-            "hardness": HARDNESS_ADVISORY_VISIBLE,
-            "min_successful_slots": adaptive_quorum(len(slots)),
-            "fail_closed_on_errors": True,
-            "classify_outcome_tier": True,
-            "max_physical_attempts_per_actor": 2,
-        },
-        task_id=ctx.task_id, retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
-    )
-    if not slots:
-        return ReviewRunResult(
-            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
-            actors=[],
-            parsed_findings=[],
-            aggregate_signal="DEGRADED",
-            degraded=True,
-            degraded_reasons=["no_review_slots"],
-        )
-    # Budget admission for the whole acceptance wave (v6.69.0): a wave that
-    # cannot fit the remaining root budget is declined up front as a terminal
-    # DEGRADED (no-quorum semantics) instead of dying mid-wave. The estimate
-    # renders the REAL per-slot message pair; the rare second physical
-    # attempt is not multiplied in — fail-open coarse filter, no reservation.
-    from ouroboros.tools.review_helpers import review_wave_budget_gate
-
-    try:
-        from ouroboros.review_substrate import _messages_char_count, _request_messages
-
-        _prompt_chars = _messages_char_count(_request_messages(request, slots[0])) if slots else 0
-    except Exception:
-        _prompt_chars = len(json.dumps(evidence, ensure_ascii=False, default=str))
-    _admission = review_wave_budget_gate(
-        ctx.tools._ctx,
-        surface="task_acceptance",
-        models=[getattr(slot, "model", "") for slot in slots],
-        prompt_chars=_prompt_chars,
-    )
-    if _admission is not None:
-        return ReviewRunResult(
-            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
-            actors=[],
-            parsed_findings=[],
-            aggregate_signal="DEGRADED",
-            degraded=True,
-            degraded_reasons=[
-                "review_wave_budget_insufficient: estimated "
-                f"~${_admission.get('estimated_wave_usd')} > remaining "
-                f"${_admission.get('remaining_usd')} (no reviewer was called)"
-            ],
-        )
-    free_result = _free_dispatch(
-        request, slots, drive_root=ctx.drive_root or ctx.tools._ctx.drive_root, usage_ctx=ctx.tools._ctx)
-    if free_result is not None:
-        return free_result
-    refusal = task_acceptance_preclaim_refusal(ctx)
-    if refusal is not None:
-        return refusal
-    # Q6: bind the exact tree wallet to the target's physical-dispatch stamp.
-    # Route/candidate refusals remain free; one strict stamp gates every slot.
-    started = time.monotonic()
-    try:
-        with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
-            result = run_review_request(
-                request, slots=slots,
-                drive_root=(pathlib.Path(ctx.drive_root) if ctx.drive_root is not None
-                            else pathlib.Path(ctx.tools._ctx.drive_root)),
-                usage_ctx=usage_ctx,
-            )
-    except TaskAcceptanceDispatchUnavailable as exc:
-        return ReviewRunResult(
-            request={"surface": "task_acceptance", "task_id": str(ctx.task_id)},
-            actors=[], parsed_findings=[], aggregate_signal="DEGRADED", degraded=True,
-            degraded_reasons=[f"{exc} (no reviewer was called)"],
-        )
-    duration_sec = round(time.monotonic() - started, 3)
-    try:
-        from ouroboros.review_cycles import review_max_cycles, review_max_cycles_source
-        from ouroboros.utils import append_jsonl, utc_now_iso
-
-        # A panel that just cost money says what bounded it and how many the tree
-        # has bought: "21 paid panels" was invisible until someone summed receipts.
-        _cap = review_max_cycles()
-        append_jsonl(
-            task_pacing.acceptance_timing_events_path(ctx.tools._ctx),
-            {
-                "ts": utc_now_iso(),
-                "type": "task_acceptance_review_timing",
-                "task_id": str(ctx.task_id),
-                "duration_sec": duration_sec,
-                "pass_index": ctx.passes_done,
-                "aggregate_signal": str(result.aggregate_signal or ""),
-                "effective_max_cycles": "unlimited" if _cap is None else _cap,
-                "cycles_source": review_max_cycles_source(),
-                "total_paid_cycles": _total_paid_acceptance_cycles(ctx),
-            },
-        )
-    except Exception:
-        log.debug("Failed to persist task-acceptance timing event", exc_info=True)
-    return result
 
 
 def _record_host_acceptance_run(ctx: _TaskAcceptanceContext, result: Any) -> Dict[str, Any]:

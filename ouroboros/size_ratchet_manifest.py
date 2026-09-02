@@ -134,6 +134,7 @@ BAND_PATHS = {
     "devtools/benchmarks/swe_bench_pro/e1v2/run_pro.py": None,
     "devtools/benchmarks/terminal_bench/harbor_installed_agent.py": None,
     "devtools/benchmarks/terminal_bench/run_tb.py": None,
+    "ouroboros/acceptance_dialogue.py": "Entered the band from 853 lines by absorbing the acceptance packet builder and panel execution WHOLE from loop.py (which sits at its shrink-only byte debt): the acceptance surface's one owner now holds contract, obligations, dialogue, paid identity, packet and panel, so the retrieving work order (three deliveries) lands beside the packet it renders instead of in a fourth module.",
     "ouroboros/agent.py": "Subagent message identity now lives in a shared helper; keep agent.py below the giant-file threshold rather than re-expanding it.",
     "ouroboros/agent_startup_checks.py": "Shrank below 1500 by moving the envelope producer to the contracts SSOT; band re-entry is the reduction's artifact.",
     "ouroboros/artifacts.py": "Exact task-source persistence and repository-diff materialization now share the actor-readable artifact seam for acceptance evidence.",
@@ -236,7 +237,7 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "ouroboros/loop.py": 284435,
+    "ouroboros/loop.py": 274203,
     "tests/test_delegated_subagent_transport.py": 320337,
     "tests/test_devtools_benchmarks.py": 328084,
     "web/modules/chat.js": 208394,
