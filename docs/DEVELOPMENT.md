@@ -2721,9 +2721,8 @@ that:
   changes — the autouse conftest snapshot (`_os_environ_isolation`) restores `os.environ` at every
   test boundary, so a bare `os.environ[...] = ...` no longer leaks, but monkeypatch stays the rule
   because it reverses exactly the named change inside the test (its undo runs last, after the
-  snapshot); residual: a `monkeypatch.setenv` of a variable another autouse fixture popped at setup
-  ends up ABSENT for the next test on that worker (pre-existing, not closed by the snapshot); never
-  assume execution order; and if you must mutate a module global, reset it around the test (pattern:
+  snapshot); never assume execution order; and if you must mutate a module global, reset it around
+  the test (pattern:
   `tests/conftest.py::_isolate_workspace_executor_globals`).
 
 ### The commit gate mirrors the CI split
