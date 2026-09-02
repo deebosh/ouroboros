@@ -305,18 +305,15 @@ export function taskCostMeta(payload = {}) {
     const pendingKnown = payload.cost_final === false
         || payload.cost_with_children_partial === true
         || payload.cost_accounting_status === 'available' && !has('cost_final');
-    // ONE amount (owner decision, 2026-09-02): the accounted upper bound already
+    // ONE amount (owner decisions, 2026-09-02): the accounted upper bound already
     // contains settled + reserved + unresolved (cost_projection.py), so the card
     // states that number once and lets its wording carry the openness — a ceiling
-    // (`up to`) while the ledger is open, a plain amount once final, and a floor
-    // (`or more`) when calls with no known price sit outside the number entirely.
-    // Component breakdowns stay on Costs, Logs and task detail.
-    const unknown = optionalFiniteNumber(payload.unknown_unmetered);
-    const unpriced = unknown !== null && unknown > 0;
+    // (`up to`) while the ledger is open, a plain amount once final. Calls with no
+    // known price are not named here (owner: no separate counter); component
+    // breakdowns and unmetered counts stay on Costs, Logs and task detail.
     if (total === null) return ['cost pending'];
     if (!(finalKnown || pendingKnown || total !== 0)) return [];
     const amount = `$${total.toFixed(2)}`;
-    if (unpriced) return [`${amount} or more`];
     return [finalKnown ? amount : `up to ${amount}`];
 }
 
@@ -386,7 +383,7 @@ export function clearStickyCardState(record) {
     record.finalizingHold = false;
     // The activity clock is cycle state too: a
     // recycled slot ('bg-consciousness', 'active') would otherwise open showing
-    // the previous cycle's "Latest" time.
+    // the previous cycle's "updated" time.
     record.latestActivityTs = '';
     if (record.activityEl) {
         record.activityEl.textContent = '';

@@ -61,7 +61,8 @@ test('task cards distinguish unavailable, pending zero, and final zero', () => {
 });
 
 test('compact task cards show ONE amount whose wording carries the openness', () => {
-    // Calls with no known price sit outside the number, so the number is a floor.
+    // Calls with no known price are not named on the card (owner: no counter);
+    // the open ledger still reads as a ceiling.
     assert.deepEqual(taskCostMeta({
         cost_usd: 55.86,
         cost_usd_with_children: 76.82,
@@ -71,7 +72,7 @@ test('compact task cards show ONE amount whose wording carries the openness', ()
         reserved_usd: 1.25,
         unresolved_upper_bound_usd: 0.5,
         unknown_unmetered: 2,
-    }), ['$76.82 or more']);
+    }), ['up to $76.82']);
     // Every call priced, ledger still open: a ceiling.
     assert.deepEqual(taskCostMeta({
         cost_usd: 55.86,
