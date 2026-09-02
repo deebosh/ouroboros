@@ -370,7 +370,7 @@ def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monke
 
     def probing(fd):
         answers.append(fd)
-        raise OSError(errno.ENOLCK, "no locks available")
+        raise OSError(errno.EOPNOTSUPP, "operation not supported")
 
     monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", probing)
     assert platform_layer.kernel_file_locks_enforced(lockless / "a.lock") is False
@@ -378,11 +378,62 @@ def test_the_capability_probe_decides_once_and_leaves_no_residue(tmp_path, monke
     assert len(answers) == 1  # one probe per directory
     assert list(lockless.iterdir()) == []
 
-    refusing = tmp_path / "refusing"
-    refusing.mkdir()
-    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", _refusing(errno.EIO))
-    assert platform_layer.kernel_file_locks_enforced(refusing / "a.lock") is True
-    assert list(refusing.iterdir()) == []
+    # EIO is no capability answer; nor is ENOLCK — "no locks available" is a
+    # missing lock daemon OR an exhausted lock table, and the round-3 race
+    # lives on the tier it used to select. Both keep the enforced tier.
+    for code in (errno.EIO, errno.ENOLCK):
+        refusing = tmp_path / f"refusing-{code}"
+        refusing.mkdir()
+        monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", _refusing(code))
+        assert platform_layer.kernel_file_locks_enforced(refusing / "a.lock") is True, code
+        assert list(refusing.iterdir()) == []
+
+
+def test_enolck_keeps_the_enforced_tier_and_the_acquisition_fails_closed(tmp_path, monkeypatch):
+    """A filesystem without a lock daemon answers ENOLCK to every kernel lock;
+    so does an exhausted lock table. Neither is the kernel saying "this
+    filesystem cannot", so it selects no tier: the probe keeps the enforced
+    tier and a live acquisition the kernel then refuses fails closed at once —
+    no descriptor, our own file removed, the name protocol never run — instead
+    of degrading to the tier where the round-3 reclaimer race returns. Every
+    monetary writer then refuses typed (no lock, no append, no pass)."""
+    lock_path = tmp_path / "state.lock"
+    monkeypatch.setattr(platform_layer, "_KERNEL_LOCK_TIER", {})
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", _refusing(errno.ENOLCK))
+    assert platform_layer.kernel_file_locks_enforced(lock_path) is True
+    started = time.time()
+    assert acquire_exclusive_file_lock(lock_path, timeout_sec=5.0, poll_sec=0.01) is None
+    assert time.time() - started < 2.0 and not lock_path.exists()
+
+
+def test_two_threads_racing_the_first_probe_run_one_probe_and_read_one_tier(tmp_path, monkeypatch):
+    """The tier cache is read and written under one lock: two threads asking
+    about a directory nobody has probed run ONE probe and read one verdict —
+    never two probes whose answers could disagree (a lock-less answer on one,
+    a transient refusal on the other) and leave one thread on each tier of the
+    same directory, the compactor trusting a name-tier descriptor as enforced."""
+    monkeypatch.setattr(platform_layer, "_KERNEL_LOCK_TIER", {})
+    barrier = threading.Barrier(2)
+    probes: list = []
+
+    def probing(fd):
+        probes.append(fd)
+        with contextlib.suppress(threading.BrokenBarrierError):
+            barrier.wait(timeout=0.4)  # two probes can only meet here without the cache lock
+        raise OSError(errno.EOPNOTSUPP, "operation not supported")
+
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", probing)
+    answers: list = [None, None]
+
+    def ask(slot):
+        answers[slot] = platform_layer.kernel_file_locks_enforced(tmp_path / "a.lock")
+
+    threads = [threading.Thread(target=ask, args=(slot,)) for slot in (0, 1)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert answers == [False, False] and len(probes) == 1
 
 
 def test_lockfileex_refusals_classify_by_the_win32_error():

@@ -12,6 +12,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable, List, Optional
 
@@ -169,49 +170,53 @@ def _lock_identity(target: "int | pathlib.Path") -> tuple:
 
 
 # What a kernel refusal MEANS. Held by someone (flock's EWOULDBLOCK): stand down
-# and re-contend. The FILESYSTEM takes no kernel locks at all (bare NFS and
-# friends): the only evidence that selects the name tier. Windows answers both
-# through LockFileEx winerrors, mapped below. EVERY other refusal fails closed.
+# and re-contend. The FILESYSTEM takes no kernel locks at all (EOPNOTSUPP/ENOSYS
+# to flock): the only evidence that selects the name tier; Windows answers both
+# through LockFileEx winerrors, mapped below. EVERY other refusal fails closed,
+# ENOLCK included — "no locks available" is a missing lock daemon OR an exhausted
+# lock table, not the kernel saying this filesystem cannot (a lockd-less NFS fails closed).
 _LOCK_HELD_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK})
-_LOCK_UNSUPPORTED_ERRNOS = frozenset({errno.ENOLCK, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
-_WIN32_LOCK_ERRNOS = {33: errno.EAGAIN, 1: errno.ENOLCK, 50: errno.EOPNOTSUPP}  # violation = held; invalid function / not supported = no byte-range locks here
+_LOCK_UNSUPPORTED_ERRNOS = frozenset({errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
+_WIN32_LOCK_ERRNOS = {33: errno.EAGAIN, 1: errno.ENOSYS, 50: errno.EOPNOTSUPP}  # violation = held; invalid function / not supported = no byte-range locks here
 _KERNEL_LOCK_TIER: dict = {}  # lock directory -> kernel locks enforced there
+_KERNEL_LOCK_TIER_LOCK = threading.Lock()  # one probe per directory, one verdict for every thread
 
 
 def kernel_file_locks_enforced(lock_path: pathlib.Path) -> bool:
-    """Capability predicate: are locks in ``lock_path``'s directory kernel-
-    enforced (flock / LockFileEx held on the fd) or name-only?  Decided ONCE
-    per directory by locking a scratch file there — never by a refusal on a
-    live acquisition: only the kernel's own "this filesystem cannot" selects
-    the name tier; an unprobeable directory and every other answer keep the
-    enforced tier, where a refused live lock fails closed.  Name-tier locks
-    run the O_EXCL name protocol alone (re-check-then-unlink eviction, no
-    kernel exclusion): disclosed best effort — the monetary compaction pass
-    refuses to run there while ordinary appends continue."""
+    """Capability predicate: are locks in ``lock_path``'s directory kernel-enforced
+    (flock / LockFileEx held on the fd) or name-only?  Decided ONCE per directory —
+    under one module lock, so racing threads share one probe and one verdict — by
+    locking a scratch file there, never by a refusal on a live acquisition: only the
+    kernel's own "this filesystem cannot" selects the name tier; an unprobeable
+    directory and every other answer keep the enforced tier, where a refused live
+    lock fails closed.  Name-tier locks run the O_EXCL name protocol alone
+    (re-check-then-unlink eviction, no kernel exclusion): disclosed best effort —
+    the monetary compaction pass refuses to run there while ordinary appends continue."""
     directory = os.path.realpath(str(pathlib.Path(lock_path).parent))
-    tier = _KERNEL_LOCK_TIER.get(directory)
-    if tier is None:
-        probe = os.path.join(directory, f".kernel-lock-probe.{os.getpid()}.{time.time_ns()}")
-        try:
-            fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-        except OSError:
-            log.debug("Cannot probe kernel lock support under %s", directory, exc_info=True)
-            return True  # undecided: enforced now, probed again next time
-        try:
-            file_lock_exclusive_nb(fd)
-            file_unlock(fd)
-            tier = True
-        except OSError as exc:
-            tier = exc.errno not in _LOCK_UNSUPPORTED_ERRNOS
-        finally:
-            os.close(fd)
+    with _KERNEL_LOCK_TIER_LOCK:
+        tier = _KERNEL_LOCK_TIER.get(directory)
+        if tier is None:
+            probe = os.path.join(directory, f".kernel-lock-probe.{os.getpid()}.{time.time_ns()}")
             try:
-                os.unlink(probe)
+                fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
             except OSError:
-                log.debug("Kernel-lock probe %s left behind", probe, exc_info=True)
-        if not tier:
-            log.warning("No kernel file locks under %s: locks there use the name protocol only", directory)
-        _KERNEL_LOCK_TIER[directory] = tier
+                log.debug("Cannot probe kernel lock support under %s", directory, exc_info=True)
+                return True  # undecided: enforced now, probed again next time
+            try:
+                file_lock_exclusive_nb(fd)
+                file_unlock(fd)
+                tier = True
+            except OSError as exc:
+                tier = exc.errno not in _LOCK_UNSUPPORTED_ERRNOS
+            finally:
+                os.close(fd)
+                try:
+                    os.unlink(probe)
+                except OSError:
+                    log.debug("Kernel-lock probe %s left behind", probe, exc_info=True)
+            if not tier:
+                log.warning("No kernel file locks under %s: locks there use the name protocol only", directory)
+            _KERNEL_LOCK_TIER[directory] = tier
     return tier
 
 
@@ -532,9 +537,8 @@ def pid_is_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if IS_WINDOWS:
-        # os.kill(pid, 0) is WRONG here: signal 0 is CTRL_C_EVENT, delivered to
-        # the pid's whole console group. Probe with OpenProcess +
-        # GetExitCodeProcess, which never signals anything.
+        # os.kill(pid, 0) is WRONG here: signal 0 is CTRL_C_EVENT, delivered to the pid's
+        # whole console group. Probe with OpenProcess + GetExitCodeProcess, which never signals anything.
         import ctypes
         from ctypes import wintypes
 
@@ -550,8 +554,7 @@ def pid_is_alive(pid: int) -> bool:
         _ERROR_ACCESS_DENIED = 5
         handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
         if not handle:
-            # A live but access-protected process reads as alive; anything else
-            # (invalid parameter -> no such pid) reads as dead.
+            # A live but access-protected process reads as alive; anything else (invalid parameter -> no such pid) reads as dead.
             return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
         try:
             code = wintypes.DWORD()
@@ -570,12 +573,10 @@ def pid_is_alive(pid: int) -> bool:
 
 
 def pid_provably_gone(pid: int) -> bool:
-    """True only when the OS positively answers that ``pid`` does not exist.
-
-    The negation of :func:`pid_is_alive`, which reads EPERM — the process
-    EXISTS and merely refuses our signal — and anything else undeterminable as
-    still present; a caller deciding whether a killed process is really gone
-    gets that same fail-safe answer under the name that says what it proves."""
+    """True only when the OS positively answers that ``pid`` does not exist: the
+    negation of :func:`pid_is_alive`, which reads EPERM — the process EXISTS and
+    merely refuses our signal — and anything else undeterminable as still present;
+    a killed-process check gets that fail-safe answer under the name that says what it proves."""
     return not pid_is_alive(pid)
 
 

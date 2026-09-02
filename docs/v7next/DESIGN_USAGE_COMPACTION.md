@@ -205,12 +205,23 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   only the kernel's own "this filesystem cannot" selects the **name tier**;
   every other answer is the **enforced tier**. The tier is never chosen by a
   refusal on a live acquisition. The refusals that mean the filesystem takes
-  no kernel locks at all are exactly `ENOLCK`/`EOPNOTSUPP`/`ENOTSUP`/`ENOSYS`
-  — on Windows `ERROR_INVALID_FUNCTION` and `ERROR_NOT_SUPPORTED`, which
-  `_win32_lock_error` maps onto the first two, because CPython's own
-  winerror→errno table lands both on `EINVAL` and would leave the name tier
-  structurally unreachable there: a Windows volume without byte-range locks
-  would fail EVERY monetary append closed instead of degrading to it.
+  no kernel locks at all are exactly `EOPNOTSUPP`/`ENOTSUP`/`ENOSYS` — on
+  Windows `ERROR_INVALID_FUNCTION` and `ERROR_NOT_SUPPORTED`, which
+  `_win32_lock_error` maps onto `ENOSYS` and `EOPNOTSUPP`, because CPython's
+  own winerror→errno table lands both on `EINVAL` and would leave the name
+  tier structurally unreachable there: a Windows volume without byte-range
+  locks would fail EVERY monetary append closed instead of degrading to it.
+  `ENOLCK` ("no locks available") is NOT in that set (round 5.4; until then
+  it selected the name tier): a filesystem without a lock daemon answers it,
+  but so does an exhausted kernel lock table, and neither is the kernel
+  saying this filesystem cannot — the probe keeps the enforced tier and every
+  live acquisition the kernel refuses with it fails closed, so an install
+  whose `state/` answers ENOLCK persistently (bare NFS without lockd) refuses
+  every monetary write with `UsageAccountingError` — no lock, no append, no
+  pass — instead of running the name protocol; moving `state/` onto a
+  filesystem that locks is the repair. The verdict is cached per process per
+  directory under one module lock, so racing threads share one probe and one
+  answer rather than two probes that could disagree.
   *Enforced tier* (POSIX `fcntl.flock`, Windows `LockFileEx` — both held on
   the lock fd): every other hold of this lock is milliseconds; a compaction
   pass over a multi-megabyte ledger can legitimately exceed its 90 s
@@ -277,8 +288,9 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   the post-swap re-read or quarantined seq-misnumbered at the next read. A
   `False` heartbeat — or one that cannot be answered at all — aborts the
   pass, leaving the ledger byte-identical.
-  *Name tier* (a filesystem the kernel says cannot lock — bare NFS and
-  friends): the O_EXCL name protocol runs alone with re-check-then-unlink
+  *Name tier* (a filesystem the kernel says cannot lock — one answering
+  `EOPNOTSUPP`/`ENOSYS` to `flock`; a lockd-less NFS answers `ENOLCK` and is
+  fail-closed, above): the O_EXCL name protocol runs alone with re-check-then-unlink
   eviction. There is no kernel exclusion, so a heartbeat there is an identity
   check, not a proof. The pass therefore **refuses to run at all** on the
   name tier (`usage_compaction.NAME_TIER_REFUSAL`: logged, and written ONCE
