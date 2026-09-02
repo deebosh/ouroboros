@@ -752,7 +752,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         receipt[key] = str(args[key])[:300]
             receipt["result_chars"] = len(result)
             receipt["outcome"] = outcome
-            receipt.update(extent)  # read_file only: the DELIVERED extent + the opened root-relative path (see _read_extent)
+            receipt.update(extent)  # read_file only: the DELIVERED extent + the opened path/root (see _read_extent)
             self._tool_receipts.append(receipt)
         return {"role": "tool", "tool_call_id": call_id, "content": result}
 
@@ -760,12 +760,13 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         """The extent an executed ``read_file`` actually DELIVERED, as bounded
         facts on the receipt: ``start_line``/``end_line`` (the COMPLETE lines
         the reviewer received; an empty delivery is an empty range with
-        ``end_line < start_line``), ``total_lines`` of the file, ``eof``, and
-        ``opened_path`` — the root-relative path the reader actually opened
-        (the receipt's ``path`` stays the model's spelling; the registry
-        normalizes absolute in-repo, whitespace-padded and redundant-root
-        spellings before the handler runs, so coverage folds on the opened
-        path, never on the spelling).
+        ``end_line < start_line``), ``total_lines`` of the file, ``eof``,
+        ``opened_path`` — the root-relative path the reader actually opened —
+        and ``opened_root``, the normalized root it used (the receipt's ``path``
+        and ``root`` stay the model's spelling; the registry normalizes absolute
+        in-repo, whitespace-padded and redundant-root path spellings and padded
+        root spellings before the handler runs, so coverage folds on the
+        opened path and root, never on the spelling).
 
         Every fact comes from the reader's own stamp (``ctx.last_read_view``,
         written by the renderer AFTER its sub-line cursor cut: ``first_line`` is
@@ -777,24 +778,28 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         entry, the caller clears it before every dispatch, the context is
         instance-local and dispatch is synchronous — so a call refused before
         the tool ran, or one that returned without rendering, finds no stamp
-        and records no extent. When this episode's result bound cut the body,
-        only the complete lines whose end lies inside the delivered prefix
-        count. Fail-safe: a stamp missing any fact records NO extent, which
-        coverage reads as ``unobserved``. Extends the receipt contract; the
-        existing fields and the outcome vocabulary are unchanged."""
+        and records no extent. The ``last_read_view`` WRITER-SET invariant
+        backs this: exactly three writers exist — the reader's entry reset and
+        its stamp in ``tools/core.py`` and this episode's clear-before-dispatch
+        — pinned by a static test, so a fourth writer cannot forge coverage
+        silently. When this episode's result bound cut the body, only the
+        complete lines whose end lies inside the delivered prefix count.
+        Fail-safe: a stamp missing any fact records NO extent, which coverage
+        reads as ``unobserved``. Extends the receipt contract; the existing
+        fields and the outcome vocabulary are unchanged."""
         view = getattr(self._inspection_ctx, "last_read_view", None)
         keys = ("first_line", "end_line", "total_lines", "body_start")
         ends = view.get("line_ends") if isinstance(view, dict) else None
         if (not isinstance(view, dict) or not all(isinstance(view.get(k), int) for k in keys)
                 or not isinstance(ends, (list, tuple)) or not all(isinstance(e, int) for e in ends)
-                or not isinstance(view.get("opened_path"), str)):
+                or not isinstance(view.get("opened_path"), str) or not isinstance(view.get("opened_root"), str)):
             return {}
         start, end, total, body_start = (int(view[k]) for k in keys)
         if shown < len(full):
             delivered = bisect.bisect_right(ends, shown - body_start) if shown > body_start else 0
             end = min(end, start + delivered - 1)
         return {"start_line": start, "end_line": end, "total_lines": total, "eof": end >= start and end >= total,
-                "opened_path": view["opened_path"][:300]}
+                "opened_path": view["opened_path"][:300], "opened_root": view["opened_root"][:64]}
 
     @staticmethod
     def _terminal_round_fact(messages: List[Dict[str, Any]]) -> str:

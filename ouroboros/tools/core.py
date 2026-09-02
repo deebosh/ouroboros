@@ -1152,19 +1152,23 @@ def _annotate_reread(ctx: ToolContext, target: Any, start_line: int, max_lines: 
     return result
 
 
-def _stamp_read_view(ctx: ToolContext, target: Any, opened: str, extent: Dict[str, Any], rendered: str) -> str:
+def _stamp_read_view(ctx: ToolContext, target: Any, opened: str, opened_root: str,
+                     extent: Dict[str, Any], rendered: str) -> str:
     """Record on the context what THIS read delivered (``ctx.last_read_view``:
     the resolved ``target``, ``opened_path`` — the root-relative path the reader
     ACTUALLY opened, i.e. the binding's target under its root, not the model's
     spelling (the registry normalizes absolute in-repo, whitespace-padded and
-    redundant-root spellings before the handler runs) — and the renderer's
-    window facts). Same per-context bookkeeping class as ``_annotate_reread``;
-    consumed by the native review episode's receipts. The stamp's binding to
-    ONE call is structural: ``_read_file`` resets it on entry and the episode
-    clears it before every dispatch. Disclosure only — never gates or alters
-    the read."""
+    redundant-root spellings before the handler runs) — ``opened_root``, the
+    NORMALIZED root the binding actually used (a padded ``" system_repo "`` is
+    read as ``system_repo``), and the renderer's window facts). Same
+    per-context bookkeeping class as ``_annotate_reread``; consumed by the
+    native review episode's receipts. The stamp's binding to ONE call is
+    structural: ``_read_file`` resets it on entry and the episode clears it
+    before every dispatch (these are the ONLY writers — a static test pins the
+    writer set). Disclosure only — never gates or alters the read."""
     if extent:
-        ctx.last_read_view = {"target": str(target), "opened_path": str(opened), **extent}
+        ctx.last_read_view = {"target": str(target), "opened_path": str(opened),
+                              "opened_root": str(opened_root), **extent}
     return rendered
 
 
@@ -1200,6 +1204,7 @@ def _read_file(
         opened = target.relative_to(binding.base_path).as_posix()  # what is read, relative to its root
     except ValueError:
         opened = str(target)
+    opened_root = str(binding.root)  # the NORMALIZED root the binding used, not the model's spelling
     protected_block = block_reason_for_path(ctx, target, "read_bytes", binding)
     if protected_block:
         return protected_block
@@ -1215,7 +1220,7 @@ def _read_file(
             if binding.source == "project_room"
             else _root_display_path(normalized, path)
         )
-        return _stamp_read_view(ctx, target, opened, extent, _annotate_reread(ctx, target, start_line, max_lines, _repo_read(
+        return _stamp_read_view(ctx, target, opened, opened_root, extent, _annotate_reread(ctx, target, start_line, max_lines, _repo_read(
             ctx,
             path,
             max_lines=max_lines,
@@ -1226,7 +1231,7 @@ def _read_file(
             extent=extent,
         ), start_char=start_char))
     if normalized == "runtime_data":
-        return _stamp_read_view(ctx, target, opened, extent, _annotate_reread(ctx, target, start_line, max_lines, _data_read(
+        return _stamp_read_view(ctx, target, opened, opened_root, extent, _annotate_reread(ctx, target, start_line, max_lines, _data_read(
             ctx,
             path,
             max_lines=max_lines,
@@ -1270,7 +1275,7 @@ def _read_file(
                                                start_char=start_char, rendered=rendered)
             except Exception:
                 log.warning("staged-output coverage acknowledgement hook failed", exc_info=True)
-        return _stamp_read_view(ctx, target, opened, extent,
+        return _stamp_read_view(ctx, target, opened, opened_root, extent,
                                 _annotate_reread(ctx, target, start_line, max_lines, rendered, start_char=start_char))
     except FileNotFoundError:
         return f"⚠️ NOT_FOUND: {_root_display_path(normalized, path)} (resolved: {target})"

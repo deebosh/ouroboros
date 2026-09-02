@@ -631,12 +631,13 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
     the file was delivered — no receipt names it at a repository root (a
     data-plane read never counts), or every measured receipt delivered zero
     lines (a cursor past the window, a start past EOF). Receipts are matched
-    on the path the reader actually OPENED (``opened_path``, stamped by the
-    reader; the model's spelling is only disclosure), falling back to the raw
-    spelling for a receipt that rendered nothing — where a ``..`` component
-    names nothing (the registry refuses traversal shapes before dispatch — see
-    ``_repo_relative``). Disclosure, never a refusal: the report is delivered
-    with the flag in its header.
+    on the path AND root the reader actually OPENED (``opened_path`` /
+    ``opened_root``, stamped by the reader; the model's spellings are only
+    disclosure — a padded ``" system_repo "`` counts, a ``runtime_data`` read
+    never does), falling back to the raw spellings for a receipt that rendered
+    nothing — where a ``..`` component names nothing (the registry refuses
+    traversal shapes before dispatch — see ``_repo_relative``). Disclosure,
+    never a refusal: the report is delivered with the flag in its header.
     """
     receipts = [r for r in (usage.get("native_tool_receipts") or []) if isinstance(r, dict)]
     capped = int(usage.get("native_tool_calls") or 0) > len(receipts)
@@ -646,8 +647,9 @@ def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict
         total, unmeasured = 0, False
         for r in receipts:
             named = r.get("opened_path") if isinstance(r.get("opened_path"), str) and r.get("opened_path") else r.get("path")
+            root = r.get("opened_root") if isinstance(r.get("opened_root"), str) and r.get("opened_root") else str(r.get("root") or "")
             if (r.get("tool") != "read_file" or r.get("outcome") != "executed"
-                    or str(r.get("root") or "") not in _REPO_ROOTS or _repo_relative(named, repo_dir) != rel):
+                    or root not in _REPO_ROOTS or _repo_relative(named, repo_dir) != rel):
                 continue
             if not all(isinstance(r.get(k), int) for k in ("start_line", "end_line", "total_lines")):
                 # Names the file but carries no extent: it may never have opened

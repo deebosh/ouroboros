@@ -380,6 +380,15 @@ def test_native_row_missing_mandatory_read_is_disclosed_not_refused(review_repo,
         assert (receipt["path"], receipt["opened_path"], receipt["eof"], receipt["total_lines"]) == (spelled, "BIBLE.md", True, total), receipt
         assert "coverage=BIBLE.md:read" in text and "BIBLE.md read in full" in text, (spelled, text.split("\n")[0])
         assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
+    # ...and on the OPENED root: a padded root spelling the registry reads as a
+    # repository root credits `read` (the raw `root` stays the model's spelling).
+    for root in (" system_repo ", "active_workspace ", "system_repo"):
+        llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "root": root}, "c1")]}, {"content": _REPORT}])
+        text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
+        receipt = usage["native_tool_receipts"][0]
+        assert (receipt["root"], receipt["opened_root"], receipt["opened_path"], receipt["eof"]) == (root, root.strip(), "BIBLE.md", True), receipt
+        assert "coverage=BIBLE.md:read" in text, (root, text.split("\n")[0])
+        assert not [d for d in usage.get("capability_delta", []) if d["reason"].startswith("deep_review_")]
     # A receipt without an opened path is matched by its raw spelling, where a
     # `..` component names nothing (refused before dispatch, nothing rendered).
     assert cov([{"tool": "read_file", "path": "a/../BIBLE.md", "root": "", "outcome": "executed"}])["state"] == "missing"
@@ -902,6 +911,7 @@ def test_native_read_extent_rides_the_receipts_and_drives_coverage(review_repo, 
     llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "BIBLE.md", "root": "runtime_data"}, "c1")]}, {"content": _REPORT}])
     text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_native_row())
     assert usage["native_tool_receipts"][0]["root"] == "runtime_data" and usage["native_tool_receipts"][0]["eof"] is True
+    assert usage["native_tool_receipts"][0]["opened_root"] == "runtime_data"  # the opened root never credits a data-plane read
     assert "coverage=BIBLE.md:missing" in text
 
     # The episode's own result bound cut the body: only complete delivered lines count.
@@ -939,7 +949,7 @@ def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review
     for i, p in enumerate(shapes, 1):
         assert tool_msgs[f"c{i + 1}"].startswith("⚠️ READ_FILE_ERROR") and receipts[i]["path"] == p
         assert receipts[i]["outcome"] == "executed"  # the registry answered with text; the vocabulary is unchanged
-        assert not any(k in receipts[i] for k in ("start_line", "end_line", "total_lines", "eof", "opened_path")), receipts[i]
+        assert not any(k in receipts[i] for k in ("start_line", "end_line", "total_lines", "eof", "opened_path", "opened_root")), receipts[i]
     assert "coverage=BIBLE.md:missing" in text and "BIBLE.md NOT read" in text
     assert [d["reason"] for d in usage["capability_delta"]] == ["deep_review_mandatory_read_missing"]
     # A real PARTIAL read followed by a traversal shape stays partial — never `read`.
