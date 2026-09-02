@@ -185,6 +185,37 @@ def test_executor_cleanup_ignores_owner_shaped_forged_host_pid_records(tmp_path,
     assert workspace_executor.kill_all_foreground(data, wait=False) == []
 
 
+def test_executor_cleanup_kills_a_hash_less_record_of_our_own_live_child(tmp_path, monkeypatch):
+    """A record whose command line could not be captured at register time (macOS
+    `ps` right after the spawn, Windows always) still names OUR child: it is alive
+    and answers signal 0, so the panic cleanup must kill it — the forged-record
+    rule above refuses only pids we cannot signal (macOS full-test 33658408570)."""
+    import subprocess
+    import sys
+
+    import ouroboros.workspace_executor as workspace_executor
+    from ouroboros.platform_layer import subprocess_new_group_kwargs
+
+    data = tmp_path / "data"
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+        **subprocess_new_group_kwargs(),
+    )
+    killed: list = []
+    try:
+        monkeypatch.setattr(workspace_executor, "_process_command_sha256", lambda _pid: "")
+        workspace_executor._register_process(
+            data, {"record_type": "foreground", "executor_type": "local", "host_pid": child.pid},
+        )
+        monkeypatch.setattr(workspace_executor, "_kill_host_pid", lambda pid: killed.append(int(pid)))
+        assert [r["id"] for r in workspace_executor.kill_all_foreground(data, wait=False)]
+        assert killed == [child.pid]
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+
 def test_executor_cleanup_ignores_pidless_docker_service_records(tmp_path, monkeypatch):
     import ouroboros.workspace_executor as workspace_executor
 

@@ -42,6 +42,8 @@ from ouroboros.usage_ledger import UsageLedgerCorrupt, _validate_records
 
 @pytest.fixture
 def data_root(tmp_path, monkeypatch):
+    if platform_layer.IS_WINDOWS:  # 7.0 ships Windows on the name tier: the pass REFUSES there by design (packet §10 addendum)
+        pytest.skip("compaction never runs on Windows in 7.0 (name tier); the lock-tier pins live in test_lockfile_helpers")
     root = tmp_path / "data"
     monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
     monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
@@ -1399,10 +1401,8 @@ def test_reserve_path_compacts_only_past_config_threshold(data_root, monkeypatch
             _lock_path(data_root), timeout_sec=0.05, stale_sec=3600.0, poll_sec=0.01,
             owner_aware_stale=True,
         )
-        # ... and the hold is WIRED THROUGH: without the heartbeat every ownership proof
-        # inside the pass (commit beats, the beat/look/beat around the rename) is a no-op
-        # and the swap runs unproven. The only production caller, so the wire is pinned where
-        # it is made — to THIS lock: a constant-True stub proves nothing (judged outside the call).
+        # ... and the hold is WIRED THROUGH: without the heartbeat every ownership proof inside the
+        # pass is a no-op and the swap runs unproven; pinned at the only production caller, to THIS lock.
         os.utime(_lock_path(data_root), (0.0, 0.0))
         renewed.append(kwargs["heartbeat"]() is True and _lock_path(data_root).stat().st_mtime > time.time() - 60)
         holds.append(probe is None)

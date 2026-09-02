@@ -609,11 +609,19 @@ def _host_pid_matches_record(record: dict[str, Any]) -> bool:
         # kill_all_foreground/_services would never dispatch taskkill for it (the
         # worktree/service cleanup leak): there, fall back to liveness — owner/
         # schema/id are already verified by the caller (_valid_process_record).
-        # On POSIX a registered process always has a command line, so an empty
-        # hash is not ours to kill: liveness is NOT proof of ownership — EPERM
-        # reads alive (C6 round 5.4), so an owner-shaped forged record naming a
-        # foreign pid would otherwise be signalled. Fail safe: no hash, no kill.
-        return IS_WINDOWS and pid_is_alive(host_pid)
+        # On POSIX the capture can also fail for a genuine child (macOS `ps` right
+        # after the spawn), so liveness must still count — but the platform
+        # predicate answers the wrong question for a KILL decision: since C6 round
+        # 5.4 it reads EPERM as alive, and an owner-shaped forged record naming a
+        # foreign pid would be signalled. Ours to kill means signalable by us: a
+        # pid that refuses signal 0 (another user's process, pid 1) is not ours.
+        if IS_WINDOWS:
+            return pid_is_alive(host_pid)
+        try:
+            os.kill(host_pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return False
+        return True
     return _process_command_sha256(host_pid) == expected
 
 
