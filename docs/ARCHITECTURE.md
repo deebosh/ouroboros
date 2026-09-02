@@ -16,7 +16,7 @@ launcher.py (PyWebView)       ← desktop window, release-reviewed outer shell (
   │
   │  spawns subprocess
   ▼
-server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (default localhost:8765; Docker/non-loopback supported via OUROBOROS_SERVER_HOST=0.0.0.0)
+server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (default localhost:8765; Docker/non-loopback supported via OUROBOROS_SERVER_HOST=0.0.0.0); its lifespan APPLIES the boot provider normalization in-process and persists nothing (D03: startup is a read, every reader re-derives the normalization through the settings read seam)
   │
   ├── web/                     ← Web UI (SPA with ES modules in web/modules/)
   │   └── modules/review_presentation.js, review_dom_patch.js, and harness_presentation.js ← Review Checkpoint grouping/status, keyed DOM reconciliation, and neutral harness identity presentation; read-side only
@@ -76,7 +76,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
   │   └── update_merge_policy.py ← Presentation-only doc/code/hot conflict labels; every conflict uses the same reviewed assisted path
   │
   └── ouroboros/               ← Agent core (runs inside worker processes)
-      ├── config.py            ← SSOT: paths, settings load/save, PID lock; v7next facade — the D12 vocabulary spans moved to the five sibling leaves below and are re-exported here, so `ouroboros.config` remains the one import surface
+      ├── config.py            ← SSOT: paths, settings load/save, PID lock; the settings READ seam `normalize_settings_raw()` (the one raw-stage normalization every reader applies before defaults) and the one serializer `serialize_settings()` every persisting writer emits through (D03); v7next facade — the D12 vocabulary spans moved to the five sibling leaves below and are re-exported here, so `ouroboros.config` remains the one import surface
       ├── settings_defaults.py ← The settings vocabulary: what settings exist, fresh-install values, retired keys, and keys that never travel between disk and environment — data and derivations only, no settings.json I/O (split from config.py; re-exported there)
       ├── settings_scales.py   ← The closed scales a settings value is clamped to (reasoning effort, prompt-cache tier, runtime mode, safety-supervisor coverage), each defined once with its clamp (split from config.py; re-exported there)
       ├── model_slots.py       ← Model slot resolution: Main/Heavy/Light/Vision/Consciousness/deep-review slots and the ordered cross-model fallback chain, environment-over-defaults, plus the rename-alias migration; imported by `provider_models` as well as `config`, so it holds no settings-file knowledge (split from config.py; re-exported there). Also home of the ABI-4 `ResolvedModelTarget` frozen dataclass — the typed resolved-model destination (model_id/provider_route/credential_ref/effort/context_window, ""/0 sentinels, no pricing fields) constructed only at the existing resolution seams (`provider_models.resolve_model_target`, the fallback ladder `fallback_candidate_targets`, the reviewer-list `resolved_review_model_target`, the delegated `subagents.DelegationRoute.resolved_target` bridge) and consumed downstream without string re-parsing
@@ -86,7 +86,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── update_channels.py   ← Closed Stable/QA/Development mapping and update-network defaults
       ├── colab_bootstrap.py   ← Google Colab source-mode bootstrap helpers: selected official update source, stable local `ouroboros` branch, Drive-backed settings/data, personal origin, no-UI server command, and native Telegram setup
       ├── cli.py               ← Source/headless CLI over gateway tasks, logs, settings, skills, marketplace, local-model, and MCP wrappers
-      ├── packaged_cli.py      ← Packaged desktop CLI bridge: resolves bundle roots, bootstraps the launcher-managed repo, and delegates to cli.py
+      ├── packaged_cli.py      ← Packaged desktop CLI bridge: resolves bundle roots, bootstraps the launcher-managed repo, and delegates to cli.py; its bootstrap settings saver owns its own path and atomic rename but persists through the shared `prepare_settings_for_persist()` prologue and `serialize_settings()` (D03)
       ├── packaged_cli_install.py ← Packaged CLI installer planning/execution for user-local command shims
       ├── agent.py             ← Task orchestrator (the compatibility dispatch-note pair moved to `subagent_dispatch_notes.py`; same-name re-exports remain for legacy callers)
       ├── agent_dispatch.py    ← The delegated-child dispatch seam of the agent: everything between taking a task and entering the loop when the task is (or may be) a delegated child — dispatch-axes resolution with its durable/supervisor mirrors, delegate-visibility preflight, executor disclosures in the child's prompt, nanny-economics mark reset (split from agent.py; re-exported there)
@@ -378,9 +378,9 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── task_decision.py ← `POST /api/decisions` — the ONE owner decision-card answer ingress (decision 1=A): family-parsed composite `decision_id` (`quiz:` served here; `routing:` dispatched to routing_decision.py; `interaction:` RESERVED — #204 is served by the escalation hierarchy, see §11.1), request-id idempotent, projection-validated, writes the typed `KIND_QUIZ_ANSWER` mailbox control and broadcasts `quiz_state`
       │   ├── routing_decision.py ← (#198) The `routing:{client_message_id}:{routing_token}` decision family: validates the click against the durable `needs_manual_target` annotation row (its host-built `options` list is the validation authority), recovers the owner's ORIGINAL message text from the chat log (verbatim; optional picker comment appended under a signed frame) plus the refusal row's staged-attachment manifest, and dispatches the EXISTING `steer_task`/`promote_chat_to_task` supervisor events through `supervisor.workers.get_event_q` with identities DERIVED from `(client_message_id, token, option_index)` — a replay re-emits byte-identical identities so the admission reservation and steer mailbox dedupe it. Confirmation is read from the same durable receipts the LLM routing tools poll (`ouroboros/routing_wait.py`); one closing annotation row under the ORIGINAL token carries the winning `request_id`
       │   ├── logs.py          ← Read-only runtime log tail endpoint for CLI/headless clients
-      │   ├── onboarding.py    ← POST /api/onboarding/complete — the ONE atomic owner-scoped completion (D-8): server-side install-time latch (no recorded completion + no preset generation + no settings file), shared setup validation + startup gate, ONE live agent-account/model read whose harnesses come from the engine's own durable seat facts (an API-key seat is never a subscription; a spent quota window is not a missing subscription), preset compile, provider normalization then preset keys, a single settings write whose eligibility is re-proved under the settings lock, then supervisor start. A daemon that cannot answer is a typed 503 that persists nothing and keeps the wizard open
-      │   ├── owner_settings.py ← the shared owner settings WRITE seam: the settings lock is a precondition of the write (timed-out acquisition = typed refusal, never an unlocked write), a locked-in precondition, and the `CommitBoundary` that separates "nothing was saved" from "saved, and a later step failed"
-      │   ├── settings.py      ← /api/settings, /api/owner/*, onboarding; (6.1/D22) GET /api/reviewer-slots — the parsed slot rows (structured or migrated, labeled by source; an actor row round-trips its subagent_id reference with the resolved route as read-only disclosure), the real row limits (triad 10 / scope 4 / advisory 1), and the «выполняется как» last-execution projection per slot_id; a malformed structured value returns a typed config_error beside the editor instead of a 500
+      │   ├── onboarding.py    ← POST /api/onboarding/complete — the ONE atomic owner-scoped completion (D-8): server-side install-time latch (no recorded completion + no preset generation + no settings file), shared setup validation + startup gate, ONE live agent-account/model read whose harnesses come from the engine's own durable seat facts (an API-key seat is never a subscription; a spent quota window is not a missing subscription), preset compile, provider normalization then preset keys, a single settings write whose eligibility (freshness by the shared `settings_document_digest`, then install phase) is re-proved under the settings lock, then supervisor start. A daemon that cannot answer is a typed 503 that persists nothing and keeps the wizard open
+      │   ├── owner_settings.py ← the shared owner settings WRITE seam: `_owner_update_settings(transform, expected_digest)` reads, changes and persists ONE document inside ONE settings lock (the reader `_owner_read_settings_raw` applies `config.normalize_settings_raw` before defaults, exactly as `load_settings`; a transform returning None persists nothing), `settings_document_digest()` binds a decision taken from an earlier read to the document it saw, the settings lock is a precondition of the write (timed-out acquisition = typed refusal, never an unlocked write), a locked-in precondition, and the `CommitBoundary` that separates "nothing was saved" from "saved, and a later step failed"
+      │   ├── settings.py      ← /api/settings, /api/owner/*, onboarding — the four single-decision owner endpoints hand a transform to the locked `_owner_update_settings` (runtime/context/safety mode bound to the digest their decision was read from; auto-grant decides nothing from the document and passes none); (6.1/D22) GET /api/reviewer-slots — the parsed slot rows (structured or migrated, labeled by source; an actor row round-trips its subagent_id reference with the resolved route as read-only disclosure), the real row limits (triad 10 / scope 4 / advisory 1), and the «выполняется как» last-execution projection per slot_id; a malformed structured value returns a typed config_error beside the editor instead of a 500
       │   ├── control.py       ← reset, command, git/update, and evolution-data handlers; `schedule_subagent` publishes the strict `subagent_id` + objective + expected-output contract and snapshots that exact configured actor, while its hidden legacy parameters exist only for deterministic migration; `wait_task` emits a burst/absorb advisory when other children are still in flight, and the descriptions steer burst+absorb and cooperative-multi-builder (external_workspace, omit write_root) vs genesis
       │   ├── schedules.py     ← queue-backed cron schedule HTTP surface (list/upsert/delete)
       │   ├── files.py         ← File Browser + chat upload endpoints
@@ -607,12 +607,14 @@ second copy of queue, review, settings, or lifecycle policy.
 `gateway/owner_settings.py` is the one owner-scoped settings WRITE seam shared by
 the generic settings POST, the four single-decision owner endpoints (runtime
 mode, auto-grant, context mode, safety mode) and the
-onboarding transaction; membership is calling `_owner_write_settings`, so the
-capability-evidence acknowledgement, which writes its own route-fingerprinted
+onboarding transaction; membership is calling `_owner_update_settings` (directly
+with a transform, or through `_owner_write_settings` with a whole document), so
+the capability-evidence acknowledgement, which writes its own route-fingerprinted
 ledger and no settings, is not one of them and takes no settings lock. The
 settings lock is a precondition of the write (a timed-out acquisition refuses
-before any precondition or write, instead of writing unlocked), an optional
-precondition is proved under that lock, and a `CommitBoundary` marks the instant
+before any precondition or write, instead of writing unlocked), the read the
+transform sees and the persistence prologue both happen under that lock, an
+optional precondition is proved under it, and a `CommitBoundary` marks the instant
 the bytes land so a failure in a LATER step (environment projection, supervisor
 start, hot reload) is reported as that step failing — never as "nothing was
 saved". `saved` is a field on both sides of that boundary: every pre-commit
@@ -2934,7 +2936,8 @@ Single source of truth for:
 - **Paths**: HOME, APP_ROOT, REPO_DIR, DATA_DIR, SETTINGS_PATH, PID_FILE, PORT_FILE
 - **Constants**: RESTART_EXIT_CODE (42), AGENT_SERVER_PORT (8765)
 - **Settings defaults**: all model names, budget, timeouts, worker count
-- **Functions**: `load_settings()`, `save_settings()`,
+- **Functions**: `load_settings()`, `save_settings()`, `normalize_settings_raw()`
+  (the raw-stage read seam, below), `serialize_settings()` (the one on-disk spelling),
   `apply_settings_to_env()` (copies hot-reloadable/runtime keys — models, API keys,
   GitHub integration settings, update channel, review/effort settings, local-model config,
   and the Phase 2 three-layer-refactor axes
@@ -2964,6 +2967,43 @@ first-party paid OpenRouter request, including runtime, review probes, and bench
 diagnostics. Its canonical public URL is the primary OpenRouter application id and
 `X-OpenRouter-Title` supplies the display name. A fork or another product must use
 its own URL rather than sharing this identity and competing to rename one app record.
+
+### Reading and writing the settings document
+
+A settings document on disk was written by whatever release the owner last used, so
+reading one begins by translating it into today's vocabulary. `normalize_settings_raw()`
+is that translation and the only copy of it: type coercion against the declared
+defaults, the deprecated per-subsystem retention keys folded into the unified one, the
+retired acceptance-pass count consumed into the shared review-cycle cap, the keys a
+release retired dropped, the renamed model slots promoted, and secret placeholders
+repaired. Every step preserves an owner customization written under a former key, and
+the order is load-bearing (the pass count is consumed before the retired purge would
+drop it; the purge runs before the slot rename so a retired spelling is never promoted),
+so every reader applies it BEFORE the shipped defaults are merged — `load_settings()`
+and the owner endpoints' `_owner_read_settings_raw()` alike. "Raw" in that name is about
+the runtime-mode ratchets it deliberately skips, never about the migrations. The
+normalization is pure and idempotent: it touches no file and no environment, which is
+what lets a read stay a read and lets a read-modify-write apply it on every save.
+
+Three surfaces persist a settings document: `config.save_settings()`,
+`gateway/owner_settings._owner_update_settings()` (which `_owner_write_settings()` is one
+caller of), and the packaged bootstrap's `packaged_cli._save_settings()`. All three pass
+through `prepare_settings_for_persist()` — the single point where the disk-authored
+silence rule and the owner-only context/safety ratchets are enforced against the value
+ON DISK — and serialize through `serialize_settings()`, so the same document has one
+spelling on disk whichever surface wrote it.
+
+An owner endpoint changes one decision inside a document it does not otherwise own, so it
+must write the whole document back. `_owner_update_settings(transform, expected_digest)`
+does that read, change and write inside ONE settings lock: the transform receives the
+document as it is under the lock and returns what to persist, or nothing at all, which is
+how a no-change decision avoids rewriting the file. An endpoint that took a decision from
+an earlier read passes the digest that read saw (`settings_document_digest()`, the same
+staleness question the onboarding transaction asks), and a mismatch refuses before the
+transform runs, so a concurrent owner change can never be reverted key by key while the
+request answers "saved". Startup is a read: the launcher's and the server's boot provider
+normalization is applied to the process environment and re-derived by every reader rather
+than persisted.
 
 ### LLM output token budgets
 

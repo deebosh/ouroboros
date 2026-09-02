@@ -1335,34 +1335,6 @@ def test_an_uncontended_save_is_never_refused(onboarding):
         onboarding.settings_path.read_text(encoding="utf-8"))
 
 
-def test_an_unreadable_settings_file_can_never_compare_equal(onboarding, monkeypatch):
-    """Fail-OPEN corner, found by the delta review of this very seam: folding
-    every read failure of one exception class into one stable token let a swap
-    between two DIFFERENT unreadable files satisfy the equality check.
-
-    Reachable, because the loader silently falls back to defaults when it cannot
-    read while the atomic rename still lands (the directory stays writable).
-
-    The refusal is injected rather than provoked with chmod 0o000: on Windows
-    chmod only toggles the read-only bit, so the file stays readable and the
-    unreadable branch never runs — this failed the first full matrix on
-    windows-latest while staying green everywhere it had been run before.
-    """
-    import ouroboros.config as cfg
-    import ouroboros.gateway.onboarding as gw_onboarding
-
-    class _Unreadable:
-        def read_bytes(self):
-            raise PermissionError("injected: settings unreadable")
-
-    monkeypatch.setattr(cfg, "SETTINGS_PATH", _Unreadable(), raising=False)
-    first = gw_onboarding._settings_fingerprint()
-    second = gw_onboarding._settings_fingerprint()
-
-    assert first.startswith("unreadable:") and second.startswith("unreadable:")
-    assert first != second, "an unreadable file must refuse, never satisfy equality"
-
-
 def test_a_connected_agy_account_composes_with_core_reviewers(onboarding):
     # The REAL agy wire shape (Claudexor INV-135): a harness with no default
     # credential store reports its harness ROW "unavailable" structurally and

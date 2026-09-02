@@ -323,8 +323,9 @@ def test_a_malformed_body_says_saved_false(monkeypatch, isolated_settings):
 
 
 # The FOUR single-decision owner endpoints — membership is "calls
-# `_owner_write_settings`", not "wears the decorator". Each entry is the route,
-# the handler name and a payload its own validation accepts.
+# `_owner_update_settings`" (directly, or through `_owner_write_settings`), not
+# "wears the decorator". Each entry is the route, the handler name and a payload
+# its own validation accepts.
 _OWNER_SETTINGS_WRITERS = [
     ("/api/owner/runtime-mode", "api_owner_runtime_mode", {"mode": "pro"}),
     ("/api/owner/auto-grant", "api_owner_auto_grant", {"enabled": False}),
@@ -548,16 +549,17 @@ def test_settings_save_body_runs_off_the_event_loop():
     else:
         raise AssertionError("onboarding.py holds no settings_document_mutation block")
 
-    # And any FUTURE writer: every _owner_write_settings call site in this
-    # module must live inside one of the locked writers above. The locked body
-    # itself is the one exemption — its caller _api_settings_post_sync holds
-    # the lock for it.
+    # And any FUTURE writer: every _owner_write_settings / _owner_update_settings
+    # call site in this module must live inside one of the locked writers above.
+    # The locked body itself is the one exemption — its caller
+    # _api_settings_post_sync holds the lock for it.
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name in writers or node.name == "_api_settings_post_locked":
                 continue
-            if "_owner_write_settings(" in ast.unparse(node):
-                assert "settings_document_mutation" in ast.unparse(node), (
+            text = ast.unparse(node)
+            if "_owner_write_settings(" in text or "_owner_update_settings(" in text:
+                assert "settings_document_mutation" in text, (
                     f"new settings writer {node.name} does not hold the document lock"
                 )
 

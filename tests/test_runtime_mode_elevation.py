@@ -890,6 +890,10 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
             "reads/hashes the settings file for the usage archive; its writes target the archive.",
         ("ouroboros/tools/core.py", "_data_write"):
             "names SETTINGS_PATH only to REFUSE agent writes to it.",
+        ("ouroboros/colab_bootstrap.py", "write_colab_settings"):
+            "generates a settings document for ANOTHER root (the Colab Drive data dir) from "
+            "scratch. The prologue proves its ratchets against the value on THIS process's "
+            "disk, so routing a foreign path through it would answer the wrong file.",
     }
     # Keys are POSIX-normalised: `str(WindowsPath(...))` is backslash-separated, so on Windows
     # every `exempt` lookup below would miss and every hardcoded assertion at the end would
@@ -898,14 +902,19 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
     writers = {}
     for path in sorted(pathlib.Path("ouroboros").rglob("*.py")) + [pathlib.Path("server.py")]:
         src = path.read_text(encoding="utf-8")
-        if "SETTINGS_PATH" not in src and "atomic_write_json" not in src:
+        if ("SETTINGS_PATH" not in src and "atomic_write_json" not in src
+                and "settings.json" not in src):
             continue
         for node in ast.walk(ast.parse(src)):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             seg = ast.get_source_segment(src, node) or ""
+            # A writer that takes its destination as a PARAMETER never names SETTINGS_PATH,
+            # so the path-literal trigger alone left the packaged bootstrap saver invisible
+            # to this tripwire for as long as it existed. Its name is the other honest
+            # signal for "this function persists a settings document".
             settings_write = (
-                "SETTINGS_PATH" in seg
+                ("SETTINGS_PATH" in seg or "settings" in node.name.lower())
                 and re.search(r"\.write_text\(|atomic_write_json\(|json\.dump\(", seg)
             ) or "atomic_write_json(settings_path" in seg
             if settings_write:
@@ -918,9 +927,12 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
         f"(naming any key they genuinely author in `authored_keys`), or add them to `exempt` with "
         f"a reason. Do not re-implement the silence/ratchet rule at the call site."
     )
-    # The two real writers must still BE routed — deleting the call must fail this test.
+    # The three real writers must still BE routed — deleting the call must fail this test.
+    # The owner endpoints' write lives in the locked read-modify-write primitive that
+    # `_owner_write_settings` is now one caller of.
     assert writers.get(("ouroboros/config.py", "save_settings")) is True
-    assert writers.get(("ouroboros/gateway/owner_settings.py", "_owner_write_settings")) is True
+    assert writers.get(("ouroboros/gateway/owner_settings.py", "_owner_update_settings")) is True
+    assert writers.get(("ouroboros/packaged_cli.py", "_save_settings")) is True
 
 
 def test_generic_settings_post_does_not_author_a_mode_decision(isolated_settings, monkeypatch):

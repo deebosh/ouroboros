@@ -686,6 +686,56 @@ def _seed_review_cycles_from_legacy_passes(loaded: dict) -> None:
         loaded["OUROBOROS_REVIEW_MAX_CYCLES"] = str(max(0, passes) + 1)
 
 
+def normalize_settings_raw(raw: dict) -> dict:
+    """THE raw-stage normalization every settings READER applies BEFORE defaults.
+
+    A settings document on disk is written by whatever release the owner last used, so a
+    reader's first job is to translate it into today's vocabulary: coerce every known key to
+    the type its default declares, fold the deprecated per-subsystem retention keys into the
+    unified one, seed the shared review-cycle cap from the retired acceptance-pass count,
+    drop the keys a release retired, promote the renamed model slots, and repair secret
+    placeholders. Every step exists to PRESERVE an owner customization written under a
+    former key, which is why the order matters: the pass count is consumed BEFORE the retired
+    purge would drop it, and the purge runs BEFORE the slot rename so a retired spelling is
+    never promoted into a live key. Unknown keys pass through untouched — ``settings.json``
+    is the owner's document.
+
+    Pure — it reads no file, writes no file, and consults no environment, so a reader can
+    apply it and a read stays a read. It is the seam BECAUSE it was previously inline in
+    ``load_settings``: the owner endpoints' reader merged defaults over the raw document
+    instead, and then wrote that document back, turning a wrong read into a lost setting."""
+    from ouroboros.retention import LEGACY_RETENTION_KEYS, pick_legacy_retention_seed
+
+    loaded = {
+        key: _coerce_setting_value(key, value) if key in SETTINGS_DEFAULTS else value
+        for key, value in dict(raw or {}).items()
+    }
+    # Prefer a CUSTOMIZED legacy retention value so a rename never orphans it; an
+    # all-defaults file collapses to the unified default.
+    if "OUROBOROS_GC_RETENTION_DAYS" not in loaded:
+        seed = pick_legacy_retention_seed(loaded.get)
+        if seed is not None:
+            loaded["OUROBOROS_GC_RETENTION_DAYS"] = seed
+    for _legacy in LEGACY_RETENTION_KEYS:
+        loaded.pop(_legacy, None)
+    _seed_review_cycles_from_legacy_passes(loaded)
+    for _retired in RETIRED_SETTING_KEYS:
+        loaded.pop(_retired, None)
+    migrate_legacy_slot_keys(loaded)
+    return strip_masked_secrets(loaded, known_setting_keys=SETTINGS_DEFAULTS)
+
+
+def serialize_settings(settings: dict) -> str:
+    """THE bytes a settings document is persisted as, for every writer that persists one.
+
+    ``ouroboros.utils.atomic_write_json`` produces exactly this text, which is what lets the
+    owner-endpoint writer keep its atomic helper while the config saver and the packaged
+    bootstrap saver produce byte-identical output through the same function (pinned by
+    tests/test_settings_read_seam.py). Without one serializer the writers disagreed on
+    ``ensure_ascii`` alone, so the same document had two spellings on disk."""
+    return json.dumps(settings, ensure_ascii=False, indent=2)
+
+
 def load_settings() -> dict:
     fd = _acquire_settings_lock()
     try:
@@ -710,36 +760,16 @@ def load_settings_lock_held(*, _settings_lock_held: bool = True) -> dict:
         raise
     except Exception:
         raw = None
-    if raw is not None:
-        if isinstance(raw, dict):
-            raw = normalize_and_persist_context_mode_compat(
-                raw,
-                settings_path=SETTINGS_PATH,
-                lock_held=_settings_lock_held,
-                guard_live_write=_guard_live_settings_write,
-            )
-            loaded = {
-                key: _coerce_setting_value(key, value) if key in SETTINGS_DEFAULTS else value
-                for key, value in raw.items()
-            }
-    # Rename-alias migration: fold deprecated per-subsystem retention keys into the unified
-    # OUROBOROS_GC_RETENTION_DAYS, then drop the legacy keys. Prefer a CUSTOMIZED legacy value
-    # so a rename never orphans it; an all-defaults file collapses to the unified default.
-    from ouroboros.retention import LEGACY_RETENTION_KEYS, pick_legacy_retention_seed
-    if "OUROBOROS_GC_RETENTION_DAYS" not in loaded:
-        seed = pick_legacy_retention_seed(loaded.get)
-        if seed is not None:
-            loaded["OUROBOROS_GC_RETENTION_DAYS"] = seed
-    for _legacy in LEGACY_RETENTION_KEYS:
-        loaded.pop(_legacy, None)
-    # Rename alias: a customized acceptance-pass count seeds the shared review-cycle knob
-    # (cycles = passes + 1) unless the owner authored one, then the legacy key is dropped.
-    _seed_review_cycles_from_legacy_passes(loaded)
-    for _retired in RETIRED_SETTING_KEYS:
-        loaded.pop(_retired, None)
-    migrate_legacy_slot_keys(loaded)
+    if isinstance(raw, dict):
+        raw = normalize_and_persist_context_mode_compat(
+            raw,
+            settings_path=SETTINGS_PATH,
+            lock_held=_settings_lock_held,
+            guard_live_write=_guard_live_settings_write,
+        )
+        loaded = normalize_settings_raw(raw)
     settings = dict(SETTINGS_DEFAULTS)
-    settings.update(strip_masked_secrets(loaded, known_setting_keys=SETTINGS_DEFAULTS))
+    settings.update(loaded)
     for key in SETTINGS_DEFAULTS:
         raw_env = os.environ.get(key)
         if raw_env is None or key in _DISK_AUTHORED_SETTINGS or key in ENDPOINT_AUTHORED_SETTINGS:  # DISK-authored
@@ -822,10 +852,10 @@ def save_settings(
         try:
             from ouroboros.utils import replace_atomic
             tmp = SETTINGS_PATH.with_suffix(".tmp")
-            tmp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+            tmp.write_text(serialize_settings(settings), encoding="utf-8")
             replace_atomic(str(tmp), str(SETTINGS_PATH))
         except OSError:
-            SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+            SETTINGS_PATH.write_text(serialize_settings(settings), encoding="utf-8")
     finally:
         _release_settings_lock(fd)
 

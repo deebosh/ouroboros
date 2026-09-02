@@ -56,6 +56,7 @@ from ouroboros.gateway.owner_settings import (
     _owner_read_settings_raw,
     _owner_write_settings,
     post_commit_failure_response,
+    settings_document_digest,
     settings_document_mutation,
     unsaved_error,
 )
@@ -554,7 +555,7 @@ def _write_precondition(expect_preset: bool, expect_safety_light: bool, read_fin
         # keeps the transaction honest: the owner's other change survives and
         # this one is told, in the seam that already exists for exactly this,
         # that nothing was written.
-        if _settings_fingerprint() != read_fingerprint:
+        if settings_document_digest() != read_fingerprint:
             # Deliberately OVER-refuses in two narrow cases rather than risk
             # under-refusing in any: a write that lands in the microseconds
             # between the digest and the read is rejected even though this
@@ -579,40 +580,6 @@ def _write_precondition(expect_preset: bool, expect_safety_light: bool, read_fin
 # ---------------------------------------------------------------------------
 # The endpoint.
 # ---------------------------------------------------------------------------
-
-
-def _settings_fingerprint() -> str:
-    """What the settings document looked like at a given instant.
-
-    Completion derives the WHOLE document from an unlocked read and then writes
-    that whole dictionary back. Between the two, another owner write can land —
-    and every key it changed would be silently restored to the value this
-    request read, while the owner is told the save succeeded. The fingerprint
-    turns that into something the locked precondition can notice.
-
-    A digest of the raw bytes, not of a parsed dict: it is the file this write
-    replaces.
-
-    Exactly two answers can ever COMPARE EQUAL: a digest, and the absent
-    sentinel. An unreadable file is neither — it is returned as a value that
-    never equals anything, itself included, because a stable
-    ``unreadable:PermissionError`` token on both sides would let a swap between
-    two different unreadable files satisfy the check. That is fail-OPEN, and it
-    is reachable: the loader silently falls back to defaults when it cannot
-    read, while the atomic rename still lands because the parent directory is
-    writable. So an unreadable settings file refuses the write.
-    """
-    from hashlib import sha256
-    from uuid import uuid4
-
-    from ouroboros.config import SETTINGS_PATH
-
-    try:
-        return sha256(SETTINGS_PATH.read_bytes()).hexdigest()
-    except FileNotFoundError:
-        return "absent"
-    except OSError as exc:
-        return f"unreadable:{type(exc).__name__}:{uuid4()}"
 
 
 def _prepared_settings(
@@ -796,8 +763,12 @@ async def api_onboarding_complete(request: Request) -> JSONResponse:
     # this request goes on to derive is NEWER than the fingerprint, the locked
     # precondition sees the mismatch and refuses. Taken the other way round the
     # same interleaving would be invisible, and this is the one ordering that
-    # fails closed.
-    read_fingerprint = _settings_fingerprint()
+    # fails closed. Completion derives the WHOLE document from an unlocked read
+    # and writes that whole dictionary back, so without this a concurrent owner
+    # write would be silently restored key by key while the owner is told the
+    # save succeeded. The digest is the one the single-decision owner endpoints
+    # ask the same staleness question with.
+    read_fingerprint = settings_document_digest()
     old_settings, current, error = _prepared_settings(body)
     if error:
         return unsaved_error(error, 400)

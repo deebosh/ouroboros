@@ -4,9 +4,11 @@ Every owner endpoint that persists SETTINGS goes through here: the generic
 ``POST /api/settings``, the FOUR single-decision owner endpoints (runtime mode,
 auto-grant, context mode, safety mode), and the atomic
 ``POST /api/onboarding/complete``. Membership is defined by calling
-``_owner_write_settings``, not by wearing the decorator: the capability-evidence
-acknowledgement writes its own route-fingerprinted ledger and never touches
-settings.json, so it is NOT one of these and holds no settings lock. Four
+``_owner_update_settings`` — directly with a transform, or through
+``_owner_write_settings`` with a whole document — not by wearing the decorator:
+the capability-evidence acknowledgement writes its own route-fingerprinted
+ledger and never touches settings.json, so it is NOT one of these and holds no
+settings lock. Four
 invariants live in this module because each of them was previously
 re-implemented (or silently skipped) per call site:
 
@@ -57,7 +59,7 @@ _CONTEXT_MODE_KEYS = ("OUROBOROS_CONTEXT_MODE", "OUROBOROS_CONTEXT_MODE_AUTO_LOW
 
 
 # In-PROCESS serialization for every read-merge-write on the settings document.
-# The FILE lock inside ``_owner_write_settings`` serializes only the WRITES: a
+# The FILE lock inside ``_owner_update_settings`` serializes only the WRITES: a
 # writer that reads the document, merges (possibly for a long time, off the
 # event loop), then writes, would silently revert a single-decision endpoint
 # that landed in between. Every event-loop writer used to inherit this
@@ -142,7 +144,8 @@ def owner_write_guard(endpoint: Callable) -> Callable:
     raising into Starlette's 500 handler, which says nothing about whether the
     file changed. Both refusals persist nothing, so both are safe to retry.
 
-    Belongs ONLY on an endpoint that actually calls ``_owner_write_settings``.
+    Belongs ONLY on an endpoint that actually calls ``_owner_update_settings``
+    (directly, or through ``_owner_write_settings``).
     On one that does not, it translates exceptions that cannot be raised, and
     the decoration itself becomes the claim that the endpoint is lock-guarded —
     which the next reader (and the last reviewer) will believe."""
@@ -184,8 +187,40 @@ def _owner_audit(request: Request, action: str, payload: Dict[str, Any]) -> None
         log.debug("Failed to write owner API audit event", exc_info=True)
 
 
+def settings_document_digest() -> str:
+    """What the settings document looked like at a given instant.
+
+    A digest of the raw BYTES, not of a parsed dict: it identifies the file a write is
+    about to replace. Exactly two answers can ever COMPARE EQUAL — a digest, and the
+    absent sentinel. An unreadable file is neither: it is returned as a value that never
+    equals anything, itself included, because a stable ``unreadable:PermissionError``
+    token on both sides would let a swap between two DIFFERENT unreadable files satisfy
+    the check. That is fail-OPEN, and it is reachable — a reader silently falls back to
+    defaults when it cannot read the file, while the atomic rename still lands because
+    the parent directory is writable. So an unreadable settings file refuses the write."""
+    from hashlib import sha256
+    from uuid import uuid4
+
+    from ouroboros.config import SETTINGS_PATH
+
+    try:
+        return sha256(SETTINGS_PATH.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return "absent"
+    except OSError as exc:
+        return f"unreadable:{type(exc).__name__}:{uuid4()}"
+
+
 def _owner_read_settings_raw() -> Dict[str, Any]:
-    """Read settings for owner endpoints without applying runtime-mode ratchets."""
+    """Read settings for owner endpoints without applying runtime-mode ratchets.
+
+    "Raw" is about the RATCHETS, never about the migrations: the document is normalized
+    through ``config.normalize_settings_raw`` BEFORE the defaults are merged, exactly as
+    ``load_settings`` does. Skipping that step made every renamed slot answer its shipped
+    default while the legacy key it should have been promoted from sat untouched in the
+    same mapping — and because these endpoints write the mapping back, the defaults the
+    merge invented were persisted as owner choices and the rename migration never fired
+    again."""
     from ouroboros import config as _config
 
     merged = dict(_SETTINGS_DEFAULTS)
@@ -196,7 +231,7 @@ def _owner_read_settings_raw() -> Dict[str, Any]:
                 raw = normalize_context_mode_compat(
                     raw, settings_path=_config.SETTINGS_PATH, warn_ambiguous=True,
                 )
-                merged.update(raw)
+                merged.update(_config.normalize_settings_raw(raw))
     except Exception:
         log.debug("Failed to read raw owner settings; using defaults", exc_info=True)
     return merged
@@ -228,12 +263,61 @@ def _owner_write_settings(
     a non-empty return value aborts with ``SettingsPreconditionFailed``. ``boundary`` (optional) is
     marked committed the moment the bytes land, so the caller can tell a failed save from a failed
     post-save step."""
+    _owner_update_settings(
+        lambda _current: settings,
+        authored_keys=authored_keys,
+        allow_context_lowering=allow_context_lowering,
+        allow_safety_lowering=allow_safety_lowering,
+        precondition=precondition,
+        boundary=boundary,
+    )
+
+
+STALE_SETTINGS_READ_REFUSAL = (
+    "The settings file changed while this change was being saved, so saving it would have "
+    "overwritten that change; nothing was written. Try again."
+)
+
+
+def _owner_update_settings(
+    transform: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
+    expected_digest: str = "",
+    *,
+    authored_keys: Sequence[str] = (),
+    allow_context_lowering: bool = False,
+    allow_safety_lowering: bool = False,
+    precondition: Optional[Callable[[], str]] = None,
+    boundary: Optional[CommitBoundary] = None,
+) -> None:
+    """Read, change and persist ONE settings document inside ONE settings lock.
+
+    An owner endpoint changes a single decision inside a document it does not otherwise
+    own, so it must read the whole document and write the whole document back. Doing that
+    around the lock rather than inside it makes every such endpoint a last-writer-wins
+    race: a concurrent owner change that lands between the read and the write is reverted
+    key by key while this request answers "saved" (BIBLE P1). Here ``transform`` receives
+    the settings as they are INSIDE the lock and returns the document to persist, or
+    ``None`` to persist nothing — which is also how a no-change decision avoids rewriting
+    the file at all.
+
+    ``expected_digest`` closes the other half: an endpoint that took a DECISION from an
+    earlier read (the previous mode, whether anything changed at all) passes the digest
+    that read saw, and a mismatch refuses with ``SettingsPreconditionFailed`` before the
+    transform runs. It is the same fingerprint precondition the onboarding transaction
+    uses, and it deliberately over-refuses in two narrow cases — a write landing in the
+    microseconds between digest and read, and a formatting-only rewrite of identical
+    content — rather than risk under-refusing in any. Both cost one retry; the opposite
+    error costs the owner a change they made.
+
+    Everything else is the contract ``_owner_write_settings`` already advertised, now
+    genuinely held: the lock is REQUIRED (a timed-out acquisition raises
+    ``SettingsLockUnavailable`` before anything is read, checked or written), the
+    persistence prologue (`config.prepare_settings_for_persist`, which proves the
+    context/safety ratchets against the value ON DISK) runs while that lock is held rather
+    than before it, and ``boundary`` flips the instant the bytes land."""
     from ouroboros import config as _config
 
     _config._guard_live_settings_write()
-    to_write = _config.prepare_settings_for_persist(
-        dict(settings), authored_keys=authored_keys,
-        allow_context_lowering=allow_context_lowering, allow_safety_lowering=allow_safety_lowering)
     _config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     fd = _config._acquire_settings_lock()
     if fd is None:
@@ -242,10 +326,19 @@ def _owner_write_settings(
             "nothing was saved. Retry in a moment."
         )
     try:
+        if expected_digest and settings_document_digest() != expected_digest:
+            raise SettingsPreconditionFailed(STALE_SETTINGS_READ_REFUSAL)
         if precondition is not None:
             refusal = str(precondition() or "")
             if refusal:
                 raise SettingsPreconditionFailed(refusal)
+        proposed = transform(_owner_read_settings_raw())
+        if proposed is None:
+            return
+        to_write = _config.prepare_settings_for_persist(
+            dict(proposed), authored_keys=authored_keys,
+            allow_context_lowering=allow_context_lowering,
+            allow_safety_lowering=allow_safety_lowering)
         atomic_write_json(_config.SETTINGS_PATH, to_write, trailing_newline=False)
         if boundary is not None:
             boundary.commit()
@@ -255,14 +348,17 @@ def _owner_write_settings(
 
 __all__ = [
     "CommitBoundary",
+    "STALE_SETTINGS_READ_REFUSAL",
     "SettingsLockUnavailable",
     "SettingsPreconditionFailed",
     "settings_document_mutation",
     "_CONTEXT_MODE_KEYS",
     "_owner_audit",
     "_owner_read_settings_raw",
+    "_owner_update_settings",
     "_owner_write_settings",
     "owner_write_guard",
     "post_commit_failure_response",
+    "settings_document_digest",
     "unsaved_error",
 ]
