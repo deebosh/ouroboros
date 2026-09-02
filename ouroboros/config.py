@@ -550,6 +550,7 @@ def _exclusive_direct_remote_provider_env() -> str:
 def resolve_effort(task_type: str) -> str:
     """Return the configured reasoning effort for the given task type."""
     t = (task_type or "").lower().strip()
+
     if t == "evolution":
         key = "OUROBOROS_EFFORT_EVOLUTION"
         default = "high"
@@ -989,11 +990,10 @@ def get_llm_transport_read_timeout_sec() -> float:
     The DEAD-SOCKET bound, not a latency target; explicit per-call timeouts win."""
     return _clamped_number_setting("OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC", low=60.0, high=7200.0)
 
-ACCEPTANCE_REVIEW_EST_SEC_MAX = 3600.0  # SSOT ceiling: the setting clamp AND task_pacing's per-event duration bound
 
 def get_acceptance_review_est_sec() -> float:
     """Estimated duration of one acceptance review/improvement pass (v6.54.4)."""
-    return _clamped_number_setting("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", low=10.0, high=ACCEPTANCE_REVIEW_EST_SEC_MAX)
+    return _clamped_number_setting("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", low=10.0, high=3600.0)
 
 
 def get_acceptance_reserve_pct() -> int:

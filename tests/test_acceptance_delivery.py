@@ -874,56 +874,60 @@ def test_a_poisoned_duration_keeps_the_review_estimate_finite_and_a_finite_deadl
 
 
 @pytest.mark.parametrize("poison", ("1e12", "1e300", "1.3e308", "1.797e308"))
-def test_a_finite_absurd_duration_is_bounded_to_the_owner_ceiling_before_the_ewma(tmp_path, poison):
-    """Item 3(ii): a finite but absurd `duration_sec` is bounded to
-    `ACCEPTANCE_REVIEW_EST_SEC_MAX` before the EWMA, so the reserve is finite
-    and at most 1.5 × the ceiling — a 24 h deadline stays admissible through the
-    real `review_launch_allowed`. What a shorter deadline does with an inflated
-    reserve is the open owner decision (item 3(i)) and is deliberately not
-    pinned here."""
+def test_a_finite_absurd_duration_is_bounded_to_the_task_ceiling_before_the_ewma(tmp_path, poison):
+    """A finite but absurd `duration_sec` contributes at most the task's absolute
+    wall-clock ceiling (the one limit an honest panel cannot outlive — the
+    configurable 3600 s clamp of the initial estimate is not a bound on
+    observations), so the reserve is finite and at most 1.5 × that ceiling."""
     import math
 
     from ouroboros import task_pacing
-    from ouroboros.config import ACCEPTANCE_REVIEW_EST_SEC_MAX
+    from ouroboros.config import get_task_abs_ceiling_sec
 
+    ceiling = float(get_task_abs_ceiling_sec())
+    assert ceiling == 21600.0  # the shipped default; the bound follows the setting, not a literal
     ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
     events = task_pacing.acceptance_timing_events_path(ctx)
     events.parent.mkdir(parents=True, exist_ok=True)
     _raw_timing(events, f'"native_rows": 0, "native_rounds": 0, "duration_sec": {poison}, "delivery": "api_chat"')
     _timing(events, duration_sec=100, delivery="api_chat")
     estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
-    assert math.isfinite(estimate) and estimate == 1.5 * (0.5 * 100 + 0.5 * ACCEPTANCE_REVIEW_EST_SEC_MAX)
-    assert estimate <= 1.5 * ACCEPTANCE_REVIEW_EST_SEC_MAX == 5400.0
-    day = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=86400.0, elapsed_sec=0.0,
-                                     remaining_sec=86400.0, reserve_sec=3600.0)
-    assert task_pacing.review_launch_allowed(day, estimated_sec=estimate) == (True, "")
+    assert math.isfinite(estimate) and estimate == 1.5 * (0.5 * 100 + 0.5 * ceiling) <= 1.5 * ceiling
+    # An honest agent-session panel beyond an hour is a real observation, not a poison.
+    _timing(events, duration_sec=4000, delivery="agent_session")
+    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="agent_session") == 6000.0
 
 
 def test_honest_timing_streams_are_priced_exactly_as_before(tmp_path):
     """The bounds change nothing for honest history: 300 random streams of
-    in-range durations and rounds give byte-identical estimates to the plain
-    alpha-0.5 EWMA formulas."""
+    durations across the whole honest range — packet seconds up to agent-session
+    hours in (3600, 21600] — and rounds give byte-identical estimates to the
+    plain alpha-0.5 EWMA formulas."""
     import math
     import random
 
     from ouroboros import task_pacing
 
     rng = random.Random(20260902)
+    deliveries = ("api_chat", "native_tool_rounds", "agent_session")
     for i in range(300):
         ctx = SimpleNamespace(drive_root=tmp_path / f"s{i}", task_metadata={})
         events = task_pacing.acceptance_timing_events_path(ctx)
         events.parent.mkdir(parents=True, exist_ok=True)
-        durations = [rng.uniform(1.0, 3600.0) for _ in range(rng.randint(1, 6))]
+        delivery = deliveries[i % 3]
+        high = 21600.0 if delivery == "agent_session" else 3600.0
+        low = 3600.0 if delivery == "agent_session" and i % 2 else 1.0
+        durations = [rng.uniform(low, high) for _ in range(rng.randint(1, 6))]
         rounds = [(rng.randint(1, 64), rng.randint(1, 3)) for _ in durations]
         for duration, (per_row, rows) in zip(durations, rounds):
-            _timing(events, duration_sec=duration, delivery="native_tool_rounds",
+            _timing(events, duration_sec=duration, delivery=delivery,
                     native_rounds=per_row * rows, native_rows=rows)
         ewma_d = ewma_r = None
         for duration, (per_row, _rows) in zip(durations, rounds):
             ewma_d = duration if ewma_d is None else 0.5 * duration + 0.5 * ewma_d
             ewma_r = per_row if ewma_r is None else 0.5 * per_row + 0.5 * ewma_r
         assert task_pacing.acceptance_review_estimate_sec(
-            ctx, passes_done=1, delivery="native_tool_rounds") == max(200.0, 1.5 * ewma_d)
+            ctx, passes_done=1, delivery=delivery) == max(200.0, 1.5 * ewma_d)
         assert task_pacing.acceptance_native_rounds_estimate(ctx) == min(64, max(1, math.ceil(ewma_r)))
 
 

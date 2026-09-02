@@ -26,11 +26,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from ouroboros.config import (
-    ACCEPTANCE_REVIEW_EST_SEC_MAX,
     get_acceptance_reserve_pct,
     get_acceptance_review_est_sec,
     get_finalization_grace_sec,
     get_pacing_interval_sec,
+    get_task_abs_ceiling_sec,
 )
 from ouroboros.contracts.task_contract import answer_protocol_active, normalize_budget_profile
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
@@ -49,9 +49,12 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # its pricing (P13: the episode itself has no round cap; the floor stays 1).
 # Every timing reader skips counters that are non-numeric, non-finite (the JSON
 # token 1e999, "Infinity", NaN) or non-positive, and bounds a numeric but absurd
-# value BEFORE the EWMA — per-row rounds to this cap, `duration_sec` to the owner
-# ceiling `ACCEPTANCE_REVIEW_EST_SEC_MAX` — so every estimate is finite and
-# bounded (rounds ≤ 64; reserve ≤ 1.5 × the ceiling). What a bounded-but-inflated
+# value BEFORE the EWMA — per-row rounds to this cap, `duration_sec` to the task's
+# absolute wall-clock ceiling (`get_task_abs_ceiling_sec`, default 21600 s: the
+# review operation inherits it, so no honest panel can outlive it, while a
+# legitimate agent-session panel may well run past the configurable 3600 s
+# initial-estimate clamp) — so every estimate is finite and bounded (rounds ≤ 64;
+# reserve ≤ 1.5 × the task ceiling). What a bounded-but-inflated
 # estimate still DOES: it raises the priced wave and the deadline reserve, and a
 # wave or reserve that then does not fit is refused typed before dispatch
 # (`review_wave_budget_insufficient` / `review_skipped_deadline_reserve`); the
@@ -228,10 +231,11 @@ def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: 
     clock, a native-episode panel by native wall clock, a packet panel as
     before; events without a recorded class are pre-R16 packet panels. The
     class defaults to the configured panel's (``acceptance_panel_delivery``).
-    Each recorded duration is bounded to the owner ceiling
-    ``ACCEPTANCE_REVIEW_EST_SEC_MAX`` before the EWMA, so the estimate is always
-    finite and at most 1.5× that ceiling; non-numeric, non-finite and
-    non-positive rows are skipped. The existing
+    Each recorded duration is bounded to the task's absolute wall-clock ceiling
+    (``get_task_abs_ceiling_sec``: the review operation inherits it, so no honest
+    panel — an hours-long agent session included — can outlive it) before the
+    EWMA, so the estimate is always finite and at most 1.5× that ceiling;
+    non-numeric, non-finite and non-positive rows are skipped. The existing
     ``OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC`` value remains the initial estimate
     and a floor; no additional timing database is introduced.
     """
@@ -245,7 +249,7 @@ def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: 
     ewma = _ewma(
         (event.get("duration_sec") for event in _acceptance_timing_events(ctx)
          if str(event.get("delivery") or "api_chat") == wanted),
-        cap=ACCEPTANCE_REVIEW_EST_SEC_MAX,
+        cap=float(get_task_abs_ceiling_sec()),
     )
     return configured if ewma is None else max(configured, 1.5 * ewma)
 
