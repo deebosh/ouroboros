@@ -42,7 +42,9 @@ from .scripts.telegram_settings import (
 
 # Decided once in the server process: a proxy-routed install keeps its only egress, every
 # other install is isolated from ambient proxy and SSL_CERT env; the worker guard mirrors
-# the core's macOS fork-safety rule.
+# the core's macOS fork-safety rule. Residual: a CA-only install (custom CA via
+# SSL_CERT_FILE/SSL_CERT_DIR, no proxy) loses Telegram egress until that CA is trusted
+# system-wide or a proxy is set; the menu client stays pinned either way.
 _HONOR_ENV_PROXIES = (not in_worker_process()) and env_proxies_configured()
 
 _SLASH_COMMAND_RE = re.compile(r"^\s*/[A-Za-z]")
