@@ -725,8 +725,13 @@ def deep_review_slot(config: Optional[ReviewerSlotConfig] = None) -> ConfiguredR
     ``config`` lets a caller that already parsed the setting avoid a second parse.
     """
     row = (config if config is not None else load_reviewer_slot_config()).deep_review
-    if row is not None:
-        return row
+    return row if row is not None else synthesized_deep_review_slot()
+
+
+def synthesized_deep_review_slot() -> ConfiguredReviewerSlot:
+    """The packed api row the legacy model key stands for — the ONE synthesis
+    rule, shared by ``deep_review_slot`` and the settings endpoint (which must
+    still show the effective row beside a malformed structured value)."""
     from ouroboros.config import get_deep_self_review_model
 
     return ConfiguredReviewerSlot(
@@ -1180,6 +1185,7 @@ __all__ = [
     "commit_scope_rows",
     "commit_triad_rows",
     "deep_review_slot",
+    "synthesized_deep_review_slot",
     "reviewer_slot_api_fallback_warning",
     "load_reviewer_slot_config",
     "parse_reviewer_slots",

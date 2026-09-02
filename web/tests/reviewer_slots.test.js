@@ -16,6 +16,7 @@ import {
     composeSessionTarget,
     decodeRouteChoice,
     deepReviewDeliveryNote,
+    deepReviewMetaNotes,
     describeLastExecution,
     describeSubagentReference,
     encodeRouteChoice,
@@ -797,4 +798,48 @@ test('neither facet gap is dropped: the tab banner names it and the section clai
     assert.doesNotMatch(serviceBannerLine(healthy).text, /could not be read/,
         'nothing to say when everything was read');
     healthy.dispose();
+});
+
+test('an untouched deep self-review placeholder is omitted from the save; an edited or saved row rides it (items 1/10)', () => {
+    const base = {
+        triad: [{ slot_id: 't1', route: { kind: ROUTE_KIND_API, target_id: 'openai/x' }, effort: '' }],
+        scope: [{ slot_id: 's1', route: { kind: ROUTE_KIND_API, target_id: 'openai/y' }, effort: '' }],
+        advisory: { enabled: true, route: { kind: ROUTE_KIND_API, target_id: '' }, effort: 'low' },
+    };
+    // Synthesized (shown from the key) but untouched: OMITTED — the runtime
+    // synthesizes the identical row and nothing is written behind the owner.
+    const untouched = { route: { kind: ROUTE_KIND_API, target_id: 'openai/from-key' }, effort: '', subagent_id: '',
+                        synthesizedFrom: 'OUROBOROS_MODEL_DEEP_SELF_REVIEW', materialized: false };
+    assert.equal('deep_review' in JSON.parse(buildReviewerSlotsSetting({ ...base, deepReview: untouched })), false);
+    // An empty placeholder (older server answered no row) is omitted too — a
+    // triad/scope edit is never blocked by the singleton.
+    const empty = { route: { kind: ROUTE_KIND_API, target_id: '' }, effort: '', subagent_id: '', synthesizedFrom: '', materialized: false };
+    assert.equal('deep_review' in JSON.parse(buildReviewerSlotsSetting({ ...base, deepReview: empty })), false);
+    // Edited (materialized) or loaded as SAVED: emitted verbatim.
+    const edited = { ...untouched, materialized: true };
+    assert.deepEqual(JSON.parse(buildReviewerSlotsSetting({ ...base, deepReview: edited })).deep_review,
+        { route: { kind: 'api_chat', target_id: 'openai/from-key' } });
+    // A blanked model box on an edited row IS emitted (the server's typed 400
+    // is the refusal; the row itself says so before the save).
+    const blanked = { ...edited, route: { kind: ROUTE_KIND_API, target_id: '' } };
+    assert.deepEqual(JSON.parse(buildReviewerSlotsSetting({ ...base, deepReview: blanked })).deep_review,
+        { route: { kind: 'api_chat', target_id: '' } });
+    assert.match(deepReviewMetaNotes(blanked).join(' '), /Model id required — an empty model id is refused at save/);
+    assert.match(deepReviewMetaNotes(untouched).join(' '), /Not saved as a row yet — shown from OUROBOROS_MODEL_DEEP_SELF_REVIEW/);
+    assert.match(deepReviewMetaNotes(untouched).join(' '), /an untouched row is not written/);
+    assert.deepEqual(deepReviewMetaNotes(edited), []);
+    assert.deepEqual(deepReviewMetaNotes({ ...blanked, subagent_id: 'deep' }), []);
+    assert.deepEqual(deepReviewMetaNotes({ ...blanked, route: { kind: ROUTE_KIND_SESSION, target_id: 'codex' } }), []);
+});
+
+test('the missing-account warning walks the deep self-review row too (items 2/21)', () => {
+    const deepReview = { route: { kind: ROUTE_KIND_SESSION, target_id: 'codex=gpt-5.6-sol', profile_id: 'gone' }, effort: '', subagent_id: '' };
+    const warning = pinnedAccountWarning({ deepReview, profilesByHarness: { codex: ['koshak'] }, accountsKnown: true });
+    assert.match(warning, /A review row is\s+pinned to an account the agent service no longer lists \(codex · gone\)/);
+    // A present account, a reference row and an api row raise nothing.
+    assert.equal(pinnedAccountWarning({ deepReview, profilesByHarness: { codex: ['gone'] }, accountsKnown: true }), '');
+    assert.equal(pinnedAccountWarning({ deepReview: { subagent_id: 'deep' }, profilesByHarness: {}, accountsKnown: true }), '');
+    assert.equal(pinnedAccountWarning({ deepReview: { route: { kind: ROUTE_KIND_API, target_id: 'openai/x' } }, profilesByHarness: {}, accountsKnown: true }), '');
+    // An unread accounts facet licenses no claim.
+    assert.equal(pinnedAccountWarning({ deepReview, profilesByHarness: {}, accountsKnown: false }), '');
 });

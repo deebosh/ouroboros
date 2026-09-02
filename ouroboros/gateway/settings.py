@@ -931,6 +931,7 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
         deep_review_slot,
         load_reviewer_slot_config,
         reviewer_slot_last_executions,
+        synthesized_deep_review_slot,
     )
 
     payload: Dict[str, Any] = {
@@ -941,6 +942,13 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
         config = load_reviewer_slot_config()
     except ValueError as exc:
         payload["config_error"] = str(exc)
+        # The deep-review singleton stays visible beside the error: with the
+        # structured value unparseable, the EFFECTIVE row is the one the runtime
+        # synthesizes from the legacy model key, so the repair save shows a
+        # real row instead of inventing an empty placeholder.
+        synthesized = synthesized_deep_review_slot()
+        payload["deep_review"] = {"route": {"kind": synthesized.kind, "target_id": synthesized.target_id},
+                                  "effort": "", "synthesized_from": "OUROBOROS_MODEL_DEEP_SELF_REVIEW"}
         return JSONResponse(payload)
     # The stored form must round-trip: an actor row comes back as its
     # subagent_id REFERENCE (with the resolved route only as read-only

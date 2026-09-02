@@ -156,15 +156,33 @@ export function buildReviewerSlotsSetting(state) {
         advisory: advisoryOut,
     };
     // The deep self-review singleton is OPTIONAL server-side (absent = the
-    // packed row synthesized from OUROBOROS_MODEL_DEEP_SELF_REVIEW); a loaded
-    // editor always writes what it shows, which is how the migration
-    // materializes. Same two stored forms as every row, minus slot_id
-    // (fixed identity) and minus `enabled` (no standing gate to switch off).
-    if (state.deepReview) {
+    // packed row synthesized from OUROBOROS_MODEL_DEEP_SELF_REVIEW). An
+    // UNTOUCHED synthesized or empty placeholder (`materialized: false`) is
+    // OMITTED: the runtime then synthesizes the identical row, and an
+    // unrelated save never writes the key's value into the setting behind the
+    // owner's back. Editing the row (or loading a SAVED one) materializes it.
+    // Same two stored forms as every row, minus slot_id (fixed identity) and
+    // minus `enabled` (no standing gate to switch off).
+    if (state.deepReview && state.deepReview.materialized !== false) {
         setting.deep_review = rowOut({ ...state.deepReview, slot_id: '' });
         delete setting.deep_review.slot_id;
     }
     return JSON.stringify(setting);
+}
+
+export function deepReviewMetaNotes(row) {
+    // The deep row's two owner-facing facts beside its badge: an untouched
+    // synthesized row is shown but not written, and a blanked model box is a
+    // typed save refusal (owner fork 3 = A) — said HERE, before the 400.
+    const notes = [];
+    if (row?.synthesizedFrom && row.materialized === false) {
+        notes.push(`Not saved as a row yet — shown from ${row.synthesizedFrom}; edit it to store it as the deep_review row (an untouched row is not written)`);
+    }
+    if (row?.materialized !== false && !row?.subagent_id && row?.route?.kind !== ROUTE_KIND_SESSION
+        && !String(row?.route?.target_id || '').trim()) {
+        notes.push('Model id required — an empty model id is refused at save; enter one, or pick a configured subagent or an agent');
+    }
+    return notes;
 }
 
 export function deepReviewDeliveryNote(row, { roster = [], rosterKnown = true, harnesses = {}, catalogKnown = true } = {}) {
@@ -389,7 +407,7 @@ export function profileOptionsFor(profiles, savedPin, { accountsKnown = true } =
     return routeEditor.profileOptionsFor(profiles, savedPin, { accountsKnown });
 }
 
-export function pinnedAccountWarning({ triad = [], scope = [], advisory = null,
+export function pinnedAccountWarning({ triad = [], scope = [], advisory = null, deepReview = null,
                                        profilesByHarness = {}, accountsKnown = false } = {}) {
     // A removed (or signed-out) account must not silently reroute the row that
     // pinned it. `profileOptionsFor` already keeps such a pin selectable, so
@@ -401,7 +419,8 @@ export function pinnedAccountWarning({ triad = [], scope = [], advisory = null,
     // service banner is already saying nobody could be asked.
     if (!accountsKnown) return '';
     const missing = [];
-    const rows = [...triad, ...scope, ...(advisory ? [{ ...advisory, slot_id: 'advisory' }] : [])];
+    const rows = [...triad, ...scope, ...(advisory ? [{ ...advisory, slot_id: 'advisory' }] : []),
+                  ...(deepReview ? [{ ...deepReview, slot_id: 'deep_review' }] : [])];
     for (const row of rows) {
         // A configured-subagent reference carries no pin of its own — the
         // roster row is that route's SSOT, checked on its own surface.
@@ -480,7 +499,7 @@ const state = {
     advisory: { enabled: true, route: { kind: ROUTE_KIND_API, target_id: '' }, effort: 'low', subagent_id: '' },
     // The deep self-review singleton; `synthesizedFrom` names the legacy model
     // key when the server showed a row that is not saved yet (Save stores it).
-    deepReview: { route: { kind: ROUTE_KIND_API, target_id: '' }, effort: '', subagent_id: '', synthesizedFrom: '' },
+    deepReview: { route: { kind: ROUTE_KIND_API, target_id: '' }, effort: '', subagent_id: '', synthesizedFrom: '', materialized: false },
     limits: { triad: 10, scope: 4, advisory: 1, deep_review: 1 },
     lastExecutions: {},
     catalogModels: [],
@@ -526,12 +545,11 @@ const SINGLETONS = {
         attr: 'deep-review', stateKey: 'deepReview', lastKey: 'deep_review_slot_1', ariaName: 'Deep self-review',
         rowId: 'reviewer-deep-review-row', enabledToggle: false, apiEffortDefault: '', apiEffortLabel: 'deep self-review effort',
         apiLabel: 'API model (one packed review)', apiPlaceholder: 'provider/model-id',
-        memory: deepReviewRouteMemory, badgeOnReference: true,
+        memory: deepReviewRouteMemory, badgeOnReference: true, materializeOnEdit: true,
         badge: (row) => deepReviewDeliveryNote(row, {
             roster: state.roster, rosterKnown: state.rosterKnown, harnesses: harnessesById(), catalogKnown: state.catalogKnown,
         }),
-        extraMeta: (row) => (row.synthesizedFrom
-            ? [`Not saved as a row yet — shown from ${row.synthesizedFrom}; Save stores it as the deep_review row`] : []),
+        extraMeta: deepReviewMetaNotes,
     },
 };
 
@@ -911,9 +929,16 @@ function bindSingletonEvents(section, spec) {
     if (!el) return;
     const a = spec.attr;
     const row = state[spec.stateKey];
+    // An edit MATERIALIZES an optional singleton: from here on the save
+    // payload carries it (an untouched placeholder is omitted, see
+    // buildReviewerSlotsSetting).
+    const edited = () => {
+        if (spec.materializeOnEdit) row.materialized = true;
+        state.onChange();
+    };
     el.querySelector(`[data-${a}-enabled]`)?.addEventListener('change', (event) => {
         row.enabled = Boolean(event.target.checked);
-        state.onChange();
+        edited();
     });
     el.querySelector(`[data-${a}-route]`)?.addEventListener('change', (event) => {
         const value = String(event.target.value || '');
@@ -921,6 +946,7 @@ function bindSingletonEvents(section, spec) {
             const next = advisoryReferenceTransition(row, value.slice(SUBAGENT_CHOICE_PREFIX.length));
             row.subagent_id = next.subagent_id;
             row.effort = next.effort;
+            if (spec.materializeOnEdit) row.materialized = true;
             renderRows();
             state.onChange();
             return;
@@ -933,6 +959,7 @@ function bindSingletonEvents(section, spec) {
         if (row.route.kind !== ROUTE_KIND_SESSION && !row.effort && spec.apiEffortDefault) {
             row.effort = spec.apiEffortDefault;
         }
+        if (spec.materializeOnEdit) row.materialized = true;
         renderRows();
         state.onChange();
     });
@@ -942,15 +969,15 @@ function bindSingletonEvents(section, spec) {
     el.querySelector(`[data-${a}-model]`)?.addEventListener('change', (event) => {
         const split = splitSessionTarget(row.route?.target_id);
         row.route.target_id = composeSessionTarget(split.harness, event.target.value);
-        state.onChange();
+        edited();
     });
     el.querySelector(`[data-${a}-api-model]`)?.addEventListener('input', (event) => {
         row.route.target_id = String(event.target.value || '').trim();
-        state.onChange();
+        edited();
     });
     el.querySelector(`[data-${a}-profile]`)?.addEventListener('change', (event) => {
         row.route.profile_id = String(event.target.value || '');
-        state.onChange();
+        edited();
     });
     el.querySelector(`[data-${a}-effort]`)?.addEventListener('change', (event) => {
         const selected = String(event.target.value || '');
@@ -959,7 +986,7 @@ function bindSingletonEvents(section, spec) {
         // route/roster-row default on a session or subagent reference.
         row.effort = selected
             || (row.subagent_id || row.route?.kind === ROUTE_KIND_SESSION ? '' : spec.apiEffortDefault);
-        state.onChange();
+        edited();
     });
 }
 
@@ -1014,6 +1041,10 @@ export async function reloadReviewerSlots() {
             effort: String(deep.effort || ''),
             subagent_id: String(deep.subagent_id || ''),
             synthesizedFrom: String(deep.synthesized_from || ''),
+            // Only a SAVED row is materialized on load; a synthesized one (or
+            // no row at all, e.g. beside a config_error on an older server)
+            // stays an omitted placeholder until the owner edits it.
+            materialized: Boolean(data.deep_review) && !deep.synthesized_from,
         };
         deepReviewRouteMemory[state.deepReview.route?.kind === ROUTE_KIND_SESSION ? 'session' : 'api']
             = { ...(state.deepReview.route || {}) };

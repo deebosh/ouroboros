@@ -593,3 +593,52 @@ def test_agent_keeps_the_previous_report_when_the_review_fails(tmp_path, monkeyp
     assert seen["task_id"] == "dsr-agent" and seen["deadline_at"] == "2099-01-01T00:00:00+00:00"
     usage_events = [e for e in events if e.get("type") == "llm_usage"]
     assert usage_events and usage_events[0]["model"] == "openai/x"
+
+
+# ---------------------------------------------------------------------------
+# Fix batch №1 — optional-key wire and repair save (items 1, 10).
+# ---------------------------------------------------------------------------
+
+
+def test_endpoint_carries_the_synthesized_row_beside_a_config_error(env):
+    """A malformed structured value must not blank the deep-review editor: the
+    EFFECTIVE row (synthesized from the model key) rides beside the typed
+    config_error so the repair save shows a real row, never a placeholder."""
+    env.setenv(REVIEWER_SLOTS_ENV, "{broken")
+    body = _get_endpoint()
+    assert "not valid JSON" in body["config_error"]
+    assert body["deep_review"] == {
+        "route": {"kind": "api_chat", "target_id": "openai/legacy-deep-model"},
+        "effort": "",
+        "synthesized_from": "OUROBOROS_MODEL_DEEP_SELF_REVIEW",
+    }
+    assert "triad" not in body  # the rows themselves are still unparseable
+
+
+def test_repair_save_without_the_optional_key_succeeds_and_an_emptied_target_is_refused(env, tmp_path, monkeypatch):
+    """The optional key absent on the wire = the runtime synthesizes the row;
+    an EXPLICITLY emptied api target is the typed 400 (owner fork 3 = A)."""
+    from starlette.requests import Request
+
+    from ouroboros.gateway.settings import _api_settings_post_locked
+
+    monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    (tmp_path / "settings.json").write_text(json.dumps({REVIEWER_SLOTS_ENV: "{broken"}), encoding="utf-8")
+    env.setenv(REVIEWER_SLOTS_ENV, "{broken")
+    request = Request({"type": "http", "method": "POST", "path": "/api/settings", "headers": [], "query_string": b""})
+    # Repair: a valid value WITHOUT deep_review saves (the singleton stays synthesized).
+    response = _api_settings_post_locked(request, {REVIEWER_SLOTS_ENV: _payload()})
+    body = json.loads(response.body)
+    # The envelope carries `saved` on both sides of the commit boundary: a
+    # pre-commit refusal is 400/saved=False; the disk write here landed (the
+    # supervisor post-commit step has no harness in this test and is not the subject).
+    assert response.status_code != 400 and body.get("saved") is True, body
+    assert deep_review_slot(parse_reviewer_slots(_payload())).target_id == "openai/legacy-deep-model"
+    # Explicitly emptied target: typed refusal, at the parser and at the boundary.
+    emptied = _payload({"route": {"kind": "api_chat", "target_id": ""}})
+    with pytest.raises(ValueError, match="deep_review route.target_id"):
+        reviewer_slot_save_check(emptied)
+    response = _api_settings_post_locked(request, {REVIEWER_SLOTS_ENV: emptied})
+    body = json.loads(response.body)
+    assert response.status_code == 400 and body["saved"] is False
+    assert "deep_review route.target_id" in body["error"]
