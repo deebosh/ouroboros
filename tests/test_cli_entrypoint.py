@@ -76,3 +76,27 @@ def test_chat_history_limit_maps_to_n_human(monkeypatch, capsys):
     assert result == 0
     assert seen["request"] == ("GET", "/api/chat/history?n_human=25")
     capsys.readouterr()
+
+
+def test_chat_history_without_limit_sends_no_quota(monkeypatch, capsys):
+    """Through the real parser: an omitted `--limit` requests the bare endpoint.
+
+    No quota parameter is sent, so the default window has exactly one owner
+    (the server's `_DEFAULT_N_HUMAN`) and the CLI cannot drift from it.
+    """
+    from ouroboros import cli
+
+    seen = {}
+
+    class FakeClient:
+        def request(self, method, path, body=None):
+            seen["request"] = (method, path)
+            return {"messages": []}
+
+    monkeypatch.setattr(cli, "_client", lambda _args, **_kwargs: FakeClient())
+
+    args = cli.build_parser().parse_args(["chat", "history"])
+
+    assert args.func(args) == 0
+    assert seen["request"] == ("GET", "/api/chat/history")
+    capsys.readouterr()
