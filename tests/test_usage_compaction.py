@@ -424,24 +424,43 @@ def test_the_directory_chain_is_re_synced_on_the_retry_after_a_failed_pass(data_
     """A pass that died on the directory fsync leaves the directories PRESENT
     but not durable; the retry must sync them again rather than skip them for
     existing, or a crash after its swap loses the archive the swap relies on."""
-    _seed_mixed_ledger(data_root)
-    archive_dir = data_root / "archive" / "usage_ledger"
     real_fsync = os.fsync
-
-    def failing_dir_fsync(fd):
-        if stat.S_ISDIR(os.fstat(fd).st_mode):
-            raise OSError(errno.EIO, "injected directory fsync failure")
-        return real_fsync(fd)
-
-    monkeypatch.setattr(os, "fsync", failing_dir_fsync)
-    with ua._locked(data_root) as heartbeat:
-        with pytest.raises(OSError):
-            uc.compact_usage_ledger_locked(data_root, heartbeat=heartbeat)
-    assert archive_dir.is_dir()  # present after the failure, durability unknown
+    test_posix_directory_fsync_failure_aborts_before_the_swap(data_root, monkeypatch)
+    assert (data_root / "archive" / "usage_ledger").is_dir()  # present, durability unknown
     monkeypatch.setattr(os, "fsync", real_fsync)
     # The retry is the first-pass proof itself, run over the directories the
     # failed pass left behind: every level is fsync'd again before the swap.
     test_archive_directory_chain_is_durable_before_the_swap(data_root, monkeypatch)
+
+
+def test_the_swap_fsyncs_the_candidate_before_the_rename_and_its_directory_after(data_root, monkeypatch):
+    """"A crash during the swap leaves either the old file or the new one, both
+    valid" rests on two calls and nothing else: the candidate temp is fsync'd
+    BEFORE the replace — without it the renamed inode can hold unwritten data,
+    neither the old ledger nor the approved new one — and the ledger's own
+    directory after it, without which the rename may not survive the power cut.
+    The archive half of the same guarantee carries three pins; this is the file
+    the money is in."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    real_fsync, real_replace = os.fsync, os.replace
+    synced: list = []
+    swap: dict = {}
+
+    def recording_fsync(fd):
+        synced.append(os.fstat(fd).st_ino)
+        return real_fsync(fd)
+
+    def watched_replace(src, dst):
+        if pathlib.Path(dst) == ledger_path:
+            swap.update(candidate=os.stat(src).st_ino, before=len(synced))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", watched_replace)
+    assert _compact(data_root) is not None
+    assert swap["candidate"] in synced[: swap["before"]]  # the bytes, before the rename
+    assert ledger_path.parent.stat().st_ino in synced[swap["before"]:]  # the directory, after
 
 
 # --- 1b: the lock the pass runs under ----------------------------------------
@@ -609,6 +628,27 @@ def test_an_append_between_the_recheck_and_the_replace_aborts_without_loss(
     _snapshot_looks(monkeypatch, land_after_the_recheck)
     assert _compact(data_root) is None  # the replace was refused
     _charge_survived(data_root, injected, before_money)
+
+
+def test_a_same_size_rewrite_between_the_recheck_and_the_replace_also_refuses(data_root, monkeypatch):
+    """The in-swap look proves the live file is still the snapshot by size AND
+    by bytes. Every intrusion the other pins inject is an append, so the size
+    half alone would satisfy all of them — and a foreign repair that rewrites a
+    row in place, changing no length, is exactly the swap that must not land."""
+    _seed_mixed_ledger(data_root)
+    ledger_path = data_root / ua.LEDGER_REL
+    rewritten: dict = {}
+
+    def rewrite_after_the_recheck(looks):
+        if len(looks) == 2 and looks[-1] and not rewritten:
+            raw = ledger_path.read_bytes()
+            spot = raw.rindex(b'"attempt_id"') + 20  # inside the id, one byte for one byte
+            rewritten["bytes"] = raw[:spot] + bytes([raw[spot] ^ 1]) + raw[spot + 1:]
+            ledger_path.write_bytes(rewritten["bytes"])
+
+    _snapshot_looks(monkeypatch, rewrite_after_the_recheck)
+    assert _compact(data_root) is None  # the replace was refused
+    assert ledger_path.read_bytes() == rewritten["bytes"]  # and nothing was erased
 
 
 def test_a_hold_lost_at_the_archive_is_seen_before_the_snapshot_is_trusted(
