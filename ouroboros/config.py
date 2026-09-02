@@ -204,9 +204,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_ONBOARDING_COMPLETED_AT": "",
     # Pre-commit review enforcement: advisory | blocking
     "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
-    # Native tool-round reviewer episode caps (review_native_episode.py owns
-    # the getters); both fail CLOSED — typed refusal, never compaction/resume.
-    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS": "16",
+    # Native tool-round reviewer episode transcript CEILING (chars); the effective
+    # bound is derived from the reviewer window (review_native_episode.py). No round cap.
     "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS": "900000",
     # Auto-grant reviewed-skill requests by default; grants stay bound to the
     # reviewed content hash and editing a skill still invalidates them.
@@ -1308,6 +1307,7 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
+    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # a ceiling on rounds; bounds are transcript/deadline/ledger
 )
 
 

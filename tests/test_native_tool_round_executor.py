@@ -1,12 +1,16 @@
 """The bounded native tool-round review executor (configured-subagent api rows).
 
-One episode = ONE logical review attempt of at most the configured round cap of
-``chat(tools=…)`` calls against a fresh instance-local inspection registry.
-Caps fail closed (typed refusal, never compaction); the second actor attempt
-repairs format locally over the collected answer; every read is host-observed
-disclosure, never a full-coverage claim.
+One episode = ONE logical review attempt of ``chat(tools=…)`` calls against a
+fresh instance-local inspection registry until the reviewer answers: no round
+cap; the bounds are the window-derived transcript bound (with a once-only
+landing notice), the owner deadline and the ledger. Exhaustion is a typed
+refusal for verdict shapes and a disclosed incomplete product for the report
+shape; the second actor attempt repairs format locally over the collected
+answer; every read is host-observed disclosure, never a full-coverage claim.
 """
 
+import copy
+import dataclasses
 import json
 
 import pytest
@@ -31,7 +35,9 @@ class _ScriptedLLM:
         self.calls = []
 
     def chat(self, **kwargs):
-        self.calls.append(kwargs)
+        # Snapshot: the executor mutates ONE messages list across rounds, so a
+        # live reference would show every later message on every earlier call.
+        self.calls.append({**kwargs, "messages": copy.deepcopy(kwargs.get("messages"))})
         if not self.script:
             raise AssertionError("script exhausted — executor made an extra call")
         entry = self.script.pop(0)
@@ -118,32 +124,197 @@ def test_second_execute_repairs_locally_without_new_episode(subject_repo):
     assert second.raw_text == first.raw_text
 
 
-def test_round_cap_fails_closed(subject_repo, monkeypatch):
-    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS", "2")
+def test_no_round_cap_many_rounds_then_answer(subject_repo, monkeypatch):
+    """P13: the floor is hardcoded, never the ceiling — 40 inspection rounds
+    (well past the retired 16-round cap) end in the reviewer's own answer."""
+    monkeypatch.delenv("OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS", raising=False)
+    script = [
+        {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, f"c{i}")]}
+        for i in range(40)
+    ] + [{"content": _VERDICT}]
+    llm = _ScriptedLLM(script)
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    result = executor.execute()
+    assert result.raw_text == _VERDICT
+    assert result.usage["native_rounds"] == 41
+    assert result.usage["native_end_reason"] == "final_answer"
+    assert result.usage["native_landing_notified"] is False
+    assert not llm.script
+
+
+def _first_send_chars(subject_repo):
+    """What the first send carries (prompt + instructions + schemas), measured
+    from a one-shot episode's own counter rather than re-deriving it here."""
+    llm = _ScriptedLLM([{"content": _VERDICT}])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    usage = executor.execute().usage
+    return usage["native_transcript_chars"] - len(_VERDICT)
+
+
+def test_landing_notice_is_posted_once_at_the_landing_fraction(subject_repo, monkeypatch):
+    """The host's budget fact: when the transcript crosses 80% of its bound,
+    ONE typed user message tells the reviewer to answer on the next send —
+    never a silent cut, never repeated on later rounds."""
+    import ouroboros.review_native_episode as native_episode
+
+    (subject_repo / "chunk.txt").write_text("y" * 4_000, encoding="utf-8")
+    first_send = _first_send_chars(subject_repo)
+    assert first_send >= 6_000
+    # Below 80% after the first send alone, above it once one 4K read lands,
+    # and still under the bound after that read (see the module's arithmetic).
+    bound = int(first_send * 1.25) + 2_500
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound",
+                        lambda *a, **k: bound)
     llm = _ScriptedLLM([
-        {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]},
+        {"tool_calls": [_tool_call("read_file", {"path": "chunk.txt"}, "c1")]},
         {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c2")]},
+        {"content": _VERDICT},
     ])
     executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
-    with pytest.raises(ReviewRouteUnavailable) as exc:
-        executor.execute()
-    assert exc.value.code == "native_rounds_exhausted"
-    # The settled failure replays; no second paid episode.
-    with pytest.raises(ReviewRouteUnavailable):
-        executor.execute()
-    assert not llm.script and len(llm.calls) == 2
+    result = executor.execute()
+    assert result.raw_text == _VERDICT
+    notices = [
+        [m for m in call["messages"] if m.get("role") == "user" and "[EPISODE_BUDGET]" in str(m.get("content"))]
+        for call in llm.calls
+    ]
+    assert [len(n) for n in notices] == [0, 1, 1]  # posted before send 2, carried (not repeated) on send 3
+    notice = notices[1][0]["content"]
+    assert f"of {bound} chars" in notice and "no tool calls" in notice
+    # The notice follows the tool results of the round that crossed the line.
+    round2 = llm.calls[1]["messages"]
+    assert round2[-1] == notices[1][0] and round2[-2]["role"] == "tool"
+    assert result.usage["native_landing_notified"] is True
+    assert result.usage["native_transcript_bound"] == bound
 
 
-def test_transcript_cap_fails_closed(subject_repo, monkeypatch):
+def test_transcript_bound_is_the_window_capacity_never_above_the_ceiling(monkeypatch):
+    """A 1M reviewer lands on the owner ceiling; a 200K route gets the bound
+    its own window can carry (density-calibrated, in chars)."""
+    import ouroboros.review_native_episode as native_episode
+    from ouroboros.reviewer_window import REVIEWER_FULL_WINDOW
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "900000")
+    monkeypatch.setattr(native_episode, "_CHARS_PER_ESTIMATED_TOKEN", 4)
+    import ouroboros.reviewer_window as reviewer_window
+    windows = {"openai/big": REVIEWER_FULL_WINDOW, "openai/small": 200_000}
+    monkeypatch.setattr(reviewer_window, "reviewer_context_window",
+                        lambda model_id, **_: windows[model_id])
+    big = native_episode.review_native_transcript_bound("openai/big", output_reserve=16_000)
+    small = native_episode.review_native_transcript_bound("openai/small", output_reserve=16_000)
+    assert big == 900_000
+    assert 0 < small < big
+    # (200K − 16K) / 1.65 cold density ≈ 111K tokens ≈ 446K chars, below the
+    # absolute-margin form and far below the ceiling.
+    assert 400_000 <= small <= 460_000
+
+
+@pytest.mark.parametrize("surface", ["multi_model_review", "task_acceptance"])
+def test_transcript_bound_fails_closed_for_verdict_shapes(subject_repo, monkeypatch, surface):
     monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
     (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
     llm = _ScriptedLLM([
-        {"tool_calls": [_tool_call("read_file", {"path": "big.txt"})]},
+        {"content": "Reading the big file first.",
+         "tool_calls": [_tool_call("read_file", {"path": "big.txt"})]},
     ])
-    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    assignment = _assignment(subject_repo, llm)
+    assignment.request.surface = surface
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
     with pytest.raises(ReviewRouteUnavailable) as exc:
         executor.execute()
     assert exc.value.code == "native_transcript_cap_exceeded"
+    # The settled failure replays; no second paid episode.
+    with pytest.raises(ReviewRouteUnavailable):
+        executor.execute()
+    assert len(llm.calls) == 1
+
+
+def test_report_shape_delivers_the_collected_draft_marked_incomplete(subject_repo, monkeypatch):
+    """A report is a product, not a verdict: when the bound lands before the
+    final answer, the reviewer's last draft is delivered with a typed
+    `native_incomplete` fact and a capability delta — never discarded, never
+    compacted."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    draft = "# Deep self-review (draft)\n\nCRITICAL: loop.py finalization race.\n"
+    llm = _ScriptedLLM([
+        {"content": draft, "tool_calls": [_tool_call("read_file", {"path": "big.txt"})]},
+    ])
+    assignment = _assignment(subject_repo, llm)
+    assignment.request.surface = "deep_self_review"
+    executor = NativeToolRoundReviewExecutor(assignment, llm=llm)
+    result = executor.execute()
+    assert result.raw_text == draft and result.message["content"] == draft
+    assert result.usage["verdict_method"] == "report"
+    assert result.usage["native_incomplete"] == "transcript_bound"
+    assert result.usage["native_end_reason"] == "transcript_bound"
+    assert result.usage["capability_delta"][0]["reason"] == "native_transcript_bound_before_final_answer"
+    # An exhausted report episode with NOTHING collected still fails closed.
+    llm2 = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "big.txt"})]}])
+    assignment2 = _assignment(subject_repo, llm2)
+    assignment2.request.surface = "deep_self_review"
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        NativeToolRoundReviewExecutor(assignment2, llm=llm2).execute()
+    assert exc.value.code == "native_transcript_cap_exceeded"
+
+
+def test_data_root_is_opt_in_and_never_removed(subject_repo, tmp_path, monkeypatch):
+    """Default: the inspection tools see an EMPTY scratch as their data plane
+    (removed after the episode). Opt-in: `policy["native_data_root"]` names
+    the caller's real root, readable through the same read-only tools and
+    left untouched even when the episode fails."""
+    import shutil
+
+    import ouroboros.review_native_episode as native_episode
+
+    removed = []
+    real_rmtree = shutil.rmtree
+    monkeypatch.setattr(shutil, "rmtree", lambda path, **kw: (removed.append(str(path)), real_rmtree(path, **kw)))
+    seen_roots = []
+    original = native_episode.NativeToolRoundReviewExecutor._inspection_registry
+
+    def spy(self, root, drive_root):
+        seen_roots.append(str(drive_root))
+        return original(self, root, drive_root)
+
+    monkeypatch.setattr(native_episode.NativeToolRoundReviewExecutor, "_inspection_registry", spy)
+
+    # Default: scratch.
+    llm = _ScriptedLLM([{"content": _VERDICT}])
+    NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm).execute()
+    assert seen_roots[-1] in removed and "ouro-native-review-" in seen_roots[-1]
+
+    # Opt-in: the real root survives a FAILED episode.
+    data_root = tmp_path / "data"
+    (data_root / "task_results").mkdir(parents=True)
+    (data_root / "task_results" / "t.json").write_text('{"ok": true}', encoding="utf-8")
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "big.txt"})]}])
+    assignment = _assignment(subject_repo, llm)
+    assignment.request.policy["native_data_root"] = str(data_root)
+    with pytest.raises(ReviewRouteUnavailable):
+        NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    assert seen_roots[-1] == str(data_root)
+    assert str(data_root) not in removed
+    assert (data_root / "task_results" / "t.json").read_text(encoding="utf-8") == '{"ok": true}'
+    assert any("ouro-native-review-" in path for path in removed[1:])  # the scratch still went
+
+
+def test_episode_fact_is_custodied_even_when_the_episode_refuses(subject_repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    (subject_repo / "big.txt").write_text("x" * 60_000, encoding="utf-8")
+    llm = _ScriptedLLM([{"tool_calls": [_tool_call("read_file", {"path": "big.txt"})]}])
+    assignment = dataclasses.replace(_assignment(subject_repo, llm), custody_root=tmp_path / "custody")
+    with pytest.raises(ReviewRouteUnavailable):
+        NativeToolRoundReviewExecutor(assignment, llm=llm).execute()
+    from ouroboros.delegate_custody import event_log_path
+
+    rows = [json.loads(line) for line in event_log_path(tmp_path / "custody").read_text(encoding="utf-8").splitlines() if line.strip()]
+    fact = [r for r in rows if r.get("type") == "review_native_episode"]
+    assert len(fact) == 1
+    assert fact[0]["native_end_reason"] == "transcript_bound"
+    assert fact[0]["native_rounds"] == 1 and fact[0]["slot_id"] == "t1"
+    assert fact[0]["native_transcript_chars"] > fact[0]["native_transcript_bound"] == 50_000
 
 
 def test_transcript_counter_includes_system_schemas_and_args(subject_repo, monkeypatch):

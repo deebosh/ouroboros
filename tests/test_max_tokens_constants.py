@@ -92,19 +92,19 @@ def test_summary_and_background_token_budgets():
     assert context_compaction._summarizer_spec()["output_budget"] == 32_768
 
 
-def test_native_review_episode_caps_are_ssot():
-    """The bounded native inspection episode (the advisory/actor-row successor
-    of the retired Claude-SDK max-turns budget) reads its caps from config
-    SSOT settings with shipped defaults, never a hardcoded literal."""
-    from ouroboros.config import SETTINGS_DEFAULTS
-    from ouroboros.review_native_episode import (
-        review_native_max_rounds,
-        review_native_max_transcript_chars,
-    )
+def test_native_review_episode_ceiling_is_ssot_and_round_cap_is_retired():
+    """The native inspection episode (the advisory/actor-row successor of the
+    retired Claude-SDK max-turns budget) reads its transcript CEILING from
+    config SSOT with a shipped default, never a hardcoded literal — and has
+    no round cap at all (P13: the floor is hardcoded, never the ceiling)."""
+    from ouroboros.config import RETIRED_SETTING_KEYS, SETTINGS_DEFAULTS
+    from ouroboros import review_native_episode
+    from ouroboros.review_native_episode import review_native_max_transcript_chars
 
-    assert SETTINGS_DEFAULTS["OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS"] == "16"
     assert SETTINGS_DEFAULTS["OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS"] == "900000"
-    assert review_native_max_rounds() >= 1
+    assert "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS" not in SETTINGS_DEFAULTS
+    assert "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS" in RETIRED_SETTING_KEYS
+    assert not hasattr(review_native_episode, "review_native_max_rounds")
     assert review_native_max_transcript_chars() >= 10_000
 
 

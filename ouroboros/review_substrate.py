@@ -1382,9 +1382,9 @@ class ReviewCoordinator:
             acceptance_actor = request.surface == "task_acceptance"
             actor_attempts = 2 if (p3_actor or acceptance_actor) else 1
             # Acceptance and P3 share one two-send rail: transport/empty retry
-            # or same-route format repair; a native tool-round slot instead
-            # gets its episode's own config-owned send cap (its second actor
-            # attempt repairs format locally, spending no send).
+            # or same-route format repair; a native tool-round slot carries no
+            # send count — its episode is bounded by transcript, deadline and
+            # ledger (its second actor attempt repairs format locally).
             from ouroboros.review_native_episode import native_or_packet_attempt_rail
 
             attempt_rail = native_or_packet_attempt_rail(

@@ -6,10 +6,15 @@ assembled packet. Not a third public route kind — ``api_chat`` stays the wire
 vocabulary; the slot's actor binding selects this executor at the one transport
 seam (``review_execution._review_route_executor``).
 
-ONE episode is ONE logical review attempt: up to the configured round cap of
-``LLMClient.chat(tools=…)`` calls against a fresh, instance-local
-inspection-only ``ToolRegistry``. Every provider call is its own ledger row;
-the caps fail closed (typed refusal, never mid-episode compaction or resume);
+ONE episode is ONE logical review attempt: ``LLMClient.chat(tools=…)`` calls
+against a fresh, instance-local inspection-only ``ToolRegistry`` until the
+reviewer answers. There is NO round cap (BIBLE P13: the floor is hardcoded,
+never the ceiling): the episode's bounds are the transcript bound derived from
+the reviewer's own context window (never above the owner ceiling), the owner
+deadline and the paid ledger. The host announces the bound once at the landing
+fraction so the reviewer can finish; exhaustion is a typed refusal for verdict
+shapes and a disclosed INCOMPLETE product for the report shape — never
+mid-episode compaction or resume. Every provider call is its own ledger row;
 the coordinator's second actor attempt repairs FORMAT locally, exactly like
 the session executor.
 """
@@ -44,29 +49,63 @@ from ouroboros.review_execution import (
 log = logging.getLogger("review_native_episode")
 
 
-def review_native_max_rounds() -> int:
-    """Provider-call cap of one native episode (config-owned, fail closed)."""
-    from ouroboros.config import _clamped_number_setting
-
-    return _clamped_number_setting("OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS", low=2, high=64, cast=int)
-
-
 def review_native_max_transcript_chars() -> int:
-    """Episode transcript bound; exceeding it is a typed refusal, never compaction."""
+    """Owner CEILING on the episode transcript (chars). The effective bound is
+    the reviewer window's calibrated capacity (`review_native_transcript_bound`),
+    never above this number."""
     from ouroboros.config import _clamped_number_setting
 
     return _clamped_number_setting(
         "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", low=50_000, high=2_000_000, cast=int)
 
 
+# The landing fraction of the transcript bound: the host announces the bound
+# ONCE when the transcript crosses it, so the reviewer answers from what it has
+# read instead of discovering the wall on the send that would have exceeded it.
+NATIVE_LANDING_FRACTION = 0.8
+
+# Chars per estimated token — the `utils.estimate_tokens` heuristic inverted,
+# so the transcript counter (chars) and the reviewer window (tokens) meet on
+# the SAME scale the review packet sizer uses.
+_CHARS_PER_ESTIMATED_TOKEN = 4
+
+
+def review_native_transcript_bound(
+    model_id: str, *, output_reserve: int, use_local: Optional[bool] = None,
+) -> int:
+    """The episode's SEND bound in chars, derived from the reviewer's window.
+
+    The same density-calibrated input capacity the packet route sizes its pack
+    with (`calibrated_input_token_limit`: window minus the output reserve,
+    divided by the freshest exact-model token density, never above the
+    absolute-margin form), converted back to chars and capped by the owner
+    ceiling `OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS`. A 1M reviewer
+    therefore lands on the ceiling; a 200K route gets a bound its own window
+    can carry instead of a number written for a different model — the
+    previous fixed cap either starved a large window or overflowed a small one.
+    """
+    from ouroboros.reviewer_window import reviewer_context_window, window_scaled_reserves
+    from ouroboros.tools.review_helpers import calibrated_input_token_limit
+
+    ceiling = review_native_max_transcript_chars()
+    window = int(reviewer_context_window(str(model_id or ""), use_local=use_local))
+    reserve, margin = window_scaled_reserves(
+        window, output_reserve=int(output_reserve or 0), tokenizer_margin=window // 8)
+    tokens = calibrated_input_token_limit(
+        str(model_id or ""), context_window=window, output_reserve=reserve,
+        tokenizer_margin=margin, budget_cap=ceiling // _CHARS_PER_ESTIMATED_TOKEN)
+    return max(0, min(ceiling, int(tokens) * _CHARS_PER_ESTIMATED_TOKEN))
+
+
 def native_or_packet_attempt_rail(slot: Any, two_send_surface: bool) -> Any:
-    """The physical-send rail for one actor: the episode cap for a native
-    tool-round slot, the historical two-send rail for a packet/session actor
-    on the P3/acceptance surfaces, no rail otherwise."""
-    if not two_send_surface:
+    """The physical-send rail for one actor: the historical two-send rail for
+    a packet/session actor on the P3/acceptance surfaces; NO local send count
+    for a native tool-round slot (its bounds are the transcript bound, the
+    owner deadline and the paid ledger — a count would be a round cap by
+    another name, and `llm.py` already rails its own recovery sends); no rail
+    otherwise."""
+    if not two_send_surface or bool(getattr(slot, "native_retrieval", False)):
         return contextlib.nullcontext()
-    if bool(getattr(slot, "native_retrieval", False)):
-        return physical_attempt_limit(native_episode_physical_send_cap())
     return physical_attempt_limit(2)
 
 # ---------------------------------------------------------------------------
@@ -88,11 +127,23 @@ _NATIVE_REVIEW_INSTRUCTIONS = (
     "query_code, vcs_status, vcs_diff; no other tools exist here. You cannot "
     "modify anything and have no shell. Read LARGE files in bounded chunks "
     "(read_file supports offset/limit) instead of requesting a whole large "
-    "document at once: the episode has hard round and transcript budgets, and "
-    "an oversized read spends both. Read what the checklist requires, then "
-    "answer. Your FINAL message must contain no tool calls and must follow "
-    "the output contract in the task EXACTLY; your host parses it "
+    "document at once: the episode has a hard transcript budget sized to your "
+    "own context window, and an oversized read spends it. There is no round "
+    "limit. Your host will tell you once when the budget is nearly spent; "
+    "answer from what you have read at that point. Read what the checklist "
+    "requires, then answer. Your FINAL message must contain no tool calls and "
+    "must follow the output contract in the task EXACTLY; your host parses it "
     "structurally, and prose around the verdict is a non-response."
+)
+
+# The host's budget fact (same class as the main loop's [ROUND_LIMIT] notice):
+# a typed, once-only user message — never a silent cut of the transcript.
+_LANDING_NOTICE = (
+    "[EPISODE_BUDGET] Your inspection transcript is at {pct}% of its bound "
+    "({used} of {bound} chars); no further reading fits. Your NEXT message "
+    "must be the final deliverable in the output contract, with no tool "
+    "calls. Mark anything you could not verify as unverified — an honest "
+    "bounded answer is the expected outcome here, not a failure."
 )
 
 # Per-tool-result bound inside the episode: one greedy full read of a giant
@@ -101,24 +152,19 @@ _NATIVE_REVIEW_INSTRUCTIONS = (
 # unlike compaction, nothing unseen is summarized into the record.
 _EPISODE_TOOL_RESULT_CHAR_CAP = 120_000
 
-# Physical-send headroom per provider call: llm.py may spend one internal
-# one-shot recovery send per chat() (param-drop/wire-recovery/reroute), and the
-# limit counts PHYSICAL sends. +2 keeps the final-answer round and the
-# coordinator's bookkeeping honest without unbounding anything.
-def native_episode_physical_send_cap() -> int:
-    return 2 * review_native_max_rounds() + 2
-
-
 class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
     """Bounded native inspection episode for a configured-subagent api row.
 
-    ONE episode is ONE logical review attempt: up to the configured round cap
-    of ``LLMClient.chat(tools=…)`` calls against a fresh, instance-local
-    inspection-only ``ToolRegistry``. Every provider call is its own ledger
-    row (the ambient usage scope attributes them); the coordinator's second
-    actor attempt repairs FORMAT locally over the collected answer, exactly
-    like the session executor — there is no mid-episode resume, transcript
-    compaction, or per-round durable ledger, and the caps fail closed.
+    ONE episode is ONE logical review attempt: ``LLMClient.chat(tools=…)``
+    calls against a fresh, instance-local inspection-only ``ToolRegistry``
+    until the reviewer answers or a bound lands — the window-derived transcript
+    bound, the owner deadline, the paid ledger; never a round count. Every
+    provider call is its own ledger row (the ambient usage scope attributes
+    them); the coordinator's second actor attempt repairs FORMAT locally over
+    the collected answer, exactly like the session executor — there is no
+    mid-episode resume, transcript compaction, or per-round durable ledger.
+    Exhaustion is a typed refusal for verdict shapes; the report shape delivers
+    what was collected, marked INCOMPLETE.
     """
 
     route = ReviewRouteKind.API_CHAT
@@ -131,6 +177,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         self._tool_receipts: List[Dict[str, Any]] = []
         self._tool_calls_total = 0
         self._rounds_used = 0
+        self._episode_deltas: List[Dict[str, Any]] = []
         self._settled_failure: Optional[BaseException] = None
 
     # -- prompt (route-owned; never the api pack) ------------------------------
@@ -194,7 +241,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             raise
         return self._verdict_result()
 
-    def _inspection_registry(self, root: str, scratch: Any) -> tuple[Any, List[Dict[str, Any]]]:
+    def _inspection_registry(self, root: str, drive_root: Any) -> tuple[Any, List[Dict[str, Any]]]:
         """A fresh instance-local registry pinned to ``root``, read-only.
 
         Reuses the existing capability machinery wholesale instead of a new
@@ -203,16 +250,21 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         broader name allowlist down to the inspection six, and the resource
         contract keeps extension/MCP discovery off. ``registry._ctx`` is
         per-instance, so the worker's own registry/context is never touched.
+        ``drive_root`` is the data plane the inspection tools may read: an
+        empty scratch directory by default, or the surface's opt-in
+        ``policy["native_data_root"]`` (task acceptance reads task results and
+        receipts there; deep self-review reads memory) — the read-only
+        constraint applies to it exactly as to the repository.
         """
         import pathlib as _pathlib
 
         from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
         from ouroboros.tools.registry import ToolContext, ToolRegistry
 
-        registry = ToolRegistry(repo_dir=_pathlib.Path(root), drive_root=_pathlib.Path(scratch))
+        registry = ToolRegistry(repo_dir=_pathlib.Path(root), drive_root=_pathlib.Path(drive_root))
         ctx = ToolContext(
             repo_dir=_pathlib.Path(root),
-            drive_root=_pathlib.Path(scratch),
+            drive_root=_pathlib.Path(drive_root),
             task_id=str(self.assignment.request.task_id or "") or None,
             task_constraint={"mode": "local_readonly_subagent"},
             task_contract={
@@ -257,14 +309,27 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 "native tool-round episode needs a synchronous chat transport",
                 code="api_chat_unavailable")
         deadline_at = str(getattr(request, "deadline_at", "") or "")
-        rounds_cap = review_native_max_rounds()
-        transcript_cap = review_native_max_transcript_chars()
+        max_tokens = int(request.max_tokens or slot.max_tokens)
+        transcript_cap = review_native_transcript_bound(
+            slot.model, output_reserve=max_tokens, use_local=bool(slot.use_local))
+        landing_at = int(transcript_cap * NATIVE_LANDING_FRACTION)
+        shape = review_output_shape(request.surface)
+        # The data plane is opt-in per surface (policy["native_data_root"]):
+        # the default is an empty scratch directory so a repository review
+        # cannot read the host's state; a surface that needs task results or
+        # memory names the real root, which is the caller's and is never removed.
+        data_root = str((request.policy or {}).get("native_data_root") or "").strip()
         scratch = tempfile.mkdtemp(prefix="ouro-native-review-")
         registry = None
         total_usage: Dict[str, Any] = {}
         final_answer: Optional[str] = None
+        last_content = ""  # the reviewer's latest prose — the product of an exhausted report episode
+        landed = False
+        end_reason = "transcript_bound"
+        round_idx = 0
+        transcript_chars = 0
         try:
-            registry, schemas = self._inspection_registry(root, scratch)
+            registry, schemas = self._inspection_registry(root, data_root or scratch)
             # The counter measures what every send actually carries: the
             # system instructions and the tool schemas ride EVERY provider
             # call, and tool-call argument objects accumulate in `messages`
@@ -281,7 +346,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 {"role": "system", "content": _NATIVE_REVIEW_INSTRUCTIONS},
                 {"role": "user", "content": self.episode_prompt},
             ]
-            for round_idx in range(1, rounds_cap + 1):
+            while True:
                 if owner_deadline_exhausted(
                     deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
                 ):
@@ -294,18 +359,24 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 # for it to poison, and refusing a completed verdict would
                 # protect nothing.
                 if transcript_chars > transcript_cap:
-                    raise ReviewRouteUnavailable(
-                        f"native review episode transcript ({transcript_chars} chars) "
-                        f"exceeded its bound ({transcript_cap}); the episode fails "
-                        "closed — compaction would review a fabricated cut",
-                        code="native_transcript_cap_exceeded")
+                    break
+                if not landed and transcript_chars >= landing_at:
+                    # Once: the host's budget fact, so the reviewer lands on
+                    # the next send instead of walking into the bound.
+                    landed = True
+                    notice = _LANDING_NOTICE.format(
+                        pct=int(100 * transcript_chars / max(1, transcript_cap)),
+                        used=transcript_chars, bound=transcript_cap)
+                    messages.append({"role": "user", "content": notice})
+                    transcript_chars += len(notice)
+                round_idx += 1
                 chat_kwargs: Dict[str, Any] = {
                     "messages": messages,
                     "model": slot.model,
                     "tools": schemas,
                     "tool_choice": "auto",
                     "reasoning_effort": slot.effort,
-                    "max_tokens": int(request.max_tokens or slot.max_tokens),
+                    "max_tokens": max_tokens,
                     "no_proxy": bool(request.no_proxy),
                     "use_local": bool(slot.use_local),
                     "cache_affinity": f"{request.surface}:{request.task_id or 'review'}",
@@ -355,13 +426,14 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     len(json.dumps(tc, ensure_ascii=False, default=str))
                     for tc in tool_calls if isinstance(tc, dict)
                 )
-                if content and not tool_calls:
-                    final_answer = content
-                    break
+                if content:
+                    last_content = content
                 if not tool_calls:
-                    # An empty round is the episode's honest end; the empty
-                    # answer rides the ordinary empty-response rail upstream.
+                    # The reviewer's answer — or an empty round, which is the
+                    # episode's honest end: the empty answer rides the ordinary
+                    # empty-response rail upstream.
                     final_answer = content
+                    end_reason = "final_answer" if content else "empty_answer"
                     break
                 assistant = dict(msg)
                 assistant.setdefault("role", "assistant")
@@ -428,30 +500,69 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     messages.append({
                         "role": "tool", "tool_call_id": call_id, "content": result,
                     })
-                if transcript_chars > transcript_cap:
-                    raise ReviewRouteUnavailable(
-                        f"native review episode transcript ({transcript_chars} chars) "
-                        f"exceeded its bound ({transcript_cap}); the episode fails "
-                        "closed — compaction would review a fabricated cut",
-                        code="native_transcript_cap_exceeded")
-            if final_answer is None:
-                raise ReviewRouteUnavailable(
-                    f"native review episode spent its round budget ({rounds_cap}) "
-                    "without a final answer; the episode fails closed",
-                    code="native_rounds_exhausted")
         finally:
+            # Only the host's own scratch is removed; an opted-in data root
+            # belongs to the caller and survives a failed episode untouched.
             shutil.rmtree(scratch, ignore_errors=True)
+        episode = {
+            "native_rounds": self._rounds_used,
+            "native_tool_calls": self._tool_calls_total,
+            "native_transcript_chars": transcript_chars,
+            "native_transcript_bound": transcript_cap,
+            "native_landing_notified": landed,
+            "native_end_reason": end_reason,
+        }
+        self._emit_episode_fact(episode)
+        if final_answer is None:
+            if shape != "report" or not last_content:
+                raise ReviewRouteUnavailable(
+                    f"native review episode transcript ({transcript_chars} chars) "
+                    f"exceeded its bound ({transcript_cap}) before a final answer; "
+                    "the episode fails closed — compaction would review a "
+                    "fabricated cut", code="native_transcript_cap_exceeded")
+            # A report is a product, not a verdict: the collected draft is
+            # delivered marked INCOMPLETE rather than discarded — the consumer
+            # discloses the bound; nothing unseen is summarized into it.
+            final_answer = last_content
+            episode["native_incomplete"] = "transcript_bound"
+            self._episode_deltas.append({
+                "kind": "capability_delta",
+                "requested": "a finished report from the episode",
+                "effective": (
+                    f"the reviewer's last draft ({len(last_content)} chars) — the "
+                    f"transcript bound ({transcript_cap} chars) landed after "
+                    f"{self._rounds_used} rounds without a final answer"
+                ),
+                "reason": "native_transcript_bound_before_final_answer",
+            })
         self._raw_transcript = final_answer
         self._episode_usage = dict(total_usage)
         self._episode_usage.update({
             "provider": str(total_usage.get("provider") or ""),
             "resolved_model": str(total_usage.get("resolved_model") or slot.model),
-            "native_rounds": self._rounds_used,
-            "native_tool_calls": self._tool_calls_total,
+            **episode,
             "native_tool_receipts": list(self._tool_receipts),
             # Provenance class of this delivery: the host SAW these reads.
             "host_file_read_attestation": "host_observed",
             "delivery": "native_tool_rounds",
+        })
+
+    def _emit_episode_fact(self, episode: Dict[str, Any]) -> None:
+        """One typed custody row per episode end (rounds, transcript vs bound,
+        landing, end reason) — the durable telemetry the actor usage carries
+        only when the episode DELIVERS; a refused episode used to leave no
+        trace of how far it got. Never raises; no custody root, no row."""
+        drive = self.assignment.custody_root
+        if not drive:
+            return
+        from ouroboros.delegate_custody import emit
+
+        emit(drive, "review_native_episode", {
+            "surface": str(self.assignment.request.surface or ""),
+            "task_id": str(self.assignment.request.task_id or ""),
+            "slot_id": str(self.assignment.slot.slot_id or ""),
+            "model": str(self.assignment.slot.model or ""),
+            **episode,
         })
 
     def _verdict_result(self, force_extraction: bool = False) -> ReviewAttemptResult:
@@ -466,7 +577,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             shape=review_output_shape(self.assignment.request.surface),
         )
         usage = dict(self._episode_usage)
-        deltas: List[Dict[str, Any]] = []
+        deltas: List[Dict[str, Any]] = list(self._episode_deltas)
         if method == "light_model_extraction":
             usage["extraction"] = extraction_usage
             deltas.append({
