@@ -53,21 +53,23 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # absolute wall-clock ceiling (`get_task_abs_ceiling_sec`, default 21600 s: the
 # review operation inherits it, so no honest panel can outlive it, while a
 # legitimate agent-session panel may well run past the configurable 3600 s
-# initial-estimate clamp) — so every estimate is finite and bounded (rounds ≤ 64;
-# reserve ≤ 1.5 × the task ceiling). A history-derived estimate is a pacing
-# FLOOR-raiser, never an admission ceiling (owner R36, 2026-09-02): the review
-# launches when the spendable window (remaining − reserve) exceeds the bounded
-# estimate; when it does not but exceeds the configured floor
-# (max(200 s, OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC)) it launches at the floor and
-# records `acceptance_estimate_unaffordable_launched_at_floor`; only a spendable
-# window below the floor is refused `review_skipped_deadline_reserve`. Likewise
-# the acceptance wave gate decides on the FLOOR-priced wave (one work-order send
-# per paid row): a rounds-priced wave that does not fit while the floor does is
+# initial-estimate clamp) — so every estimate is finite and bounded: rounds ≤ 64,
+# reserve ≤ max(configured floor, 1.5 × the task ceiling). A history-derived
+# estimate is a pacing FLOOR-raiser, never an admission ceiling (owner R36,
+# 2026-09-02): the review launches when the spendable window (remaining − reserve)
+# exceeds the bounded estimate; when it does not but exceeds the configured floor
+# (max(200 s, OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC)) it launches at the floor and the
+# LAUNCH OWNER (loop.py's review launch; the improvement-pass gate) records
+# `acceptance_estimate_unaffordable_launched_at_floor` once — the predicates are
+# pure, a read-only projection records nothing; a spendable window at or below the
+# floor is refused `review_skipped_deadline_reserve`. Likewise the acceptance wave
+# gate DECIDES on one work-order send per paid row; the rounds-priced wave is a
+# read-only check, and when it does not fit while the floor did the panel is
 # dispatched at the floor with `acceptance_estimate_unaffordable_dispatched_at_floor`
-# on the panel usage; only a floor that does not fit is refused
-# `review_wave_budget_insufficient`. The per-send wallet binding at dispatch and
-# the review's logical window remain the protection, and the honest event of the
-# dispatched panel decays the estimate (its excess halves per panel, alpha 0.5).
+# attached only after the paid seam fired; only a floor that does not fit is
+# refused `review_wave_budget_insufficient`. The per-send wallet binding at
+# dispatch and the review's logical window remain the protection, and the honest
+# event of the dispatched panel decays the estimate (its excess halves per panel).
 # 64 is the plan's measured deep-review ceiling (Б2-2), far above the 3–5 rounds a
 # verdict-shaped episode takes.
 ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP = 64

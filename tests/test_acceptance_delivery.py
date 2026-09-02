@@ -854,10 +854,10 @@ def test_native_counters_that_are_not_finite_positive_numbers_are_skipped_by_the
 
 
 def test_a_finite_bogus_count_is_clamped_before_the_ewma(tmp_path):
-    """Only the clamp is pinned here. Whether the inflated estimate then
-    refuses waves or is admitted at the floor is the open owner decision (Ф2
-    item 3(i)); a hand-appended stream of honest panels would model panels
-    that may never have dispatched, so no decay is asserted."""
+    """Only the clamp is pinned here; floor admission (owner R36) and the decay
+    through a REAL floor dispatch are pinned by the real-gate tests below — a
+    hand-appended stream of honest panels would model panels that never
+    dispatched."""
     from ouroboros import task_pacing
 
     ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
